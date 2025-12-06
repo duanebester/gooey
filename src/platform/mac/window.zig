@@ -4,7 +4,7 @@ const std = @import("std");
 const objc = @import("objc");
 const geometry = @import("../../core/geometry.zig");
 const platform = @import("platform.zig");
-const metal = @import("metal.zig");
+const metal = @import("metal/metal.zig");
 
 pub const Window = struct {
     allocator: std.mem.Allocator,

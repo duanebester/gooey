@@ -1,48 +1,14 @@
+//! Metal Renderer - handles GPU rendering with clean API types
 const std = @import("std");
 const objc = @import("objc");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../../core/geometry.zig");
+const mtl = @import("api.zig");
+const shaders = @import("shaders.zig");
 
-// Metal Shading Language source for triangle
-const shader_source =
-    \\#include <metal_stdlib>
-    \\using namespace metal;
-    \\
-    \\struct VertexIn {
-    \\    float2 position [[attribute(0)]];
-    \\    float4 color [[attribute(1)]];
-    \\};
-    \\
-    \\struct VertexOut {
-    \\    float4 position [[position]];
-    \\    float4 color;
-    \\};
-    \\
-    \\vertex VertexOut vertex_main(VertexIn in [[stage_in]]) {
-    \\    VertexOut out;
-    \\    out.position = float4(in.position, 0.0, 1.0);
-    \\    out.color = in.color;
-    \\    return out;
-    \\}
-    \\
-    \\fragment float4 fragment_main(VertexOut in [[stage_in]]) {
-    \\    return in.color;
-    \\}
-;
-
-// Vertex data: position (x, y) + color (r, g, b, a)
-const Vertex = extern struct {
+/// Vertex data: position (x, y) + color (r, g, b, a)
+pub const Vertex = extern struct {
     position: [2]f32,
     color: [4]f32,
-};
-
-// Triangle vertices with RGB colors at each corner
-const triangle_vertices = [_]Vertex{
-    // Top vertex - Red
-    .{ .position = .{ 0.0, 0.5 }, .color = .{ 1.0, 0.0, 0.0, 1.0 } },
-    // Bottom left - Green
-    .{ .position = .{ -0.5, -0.5 }, .color = .{ 0.0, 1.0, 0.0, 1.0 } },
-    // Bottom right - Blue
-    .{ .position = .{ 0.5, -0.5 }, .color = .{ 0.0, 0.0, 1.0, 1.0 } },
 };
 
 pub const Renderer = struct {
@@ -58,12 +24,9 @@ pub const Renderer = struct {
     const Self = @This();
 
     pub fn init(layer: objc.Object, size: geometry.Size(f64)) !Self {
-        // Get default Metal device
-        const MTLCreateSystemDefaultDevice = getMTLCreateSystemDefaultDevice() orelse
+        // Get default Metal device using clean extern declaration
+        const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse
             return error.MetalNotAvailable;
-
-        const device_ptr = MTLCreateSystemDefaultDevice();
-        if (device_ptr == null) return error.MetalNotAvailable;
 
         const device = objc.Object.fromId(device_ptr);
 
@@ -74,7 +37,7 @@ pub const Renderer = struct {
         layer.msgSend(void, "setDevice:", .{device.value});
 
         // Set drawable size on layer
-        const drawable_size = CGSize{
+        const drawable_size = mtl.CGSize{
             .width = size.width,
             .height = size.height,
         };
@@ -91,10 +54,7 @@ pub const Renderer = struct {
             .sample_count = 4, // MSAA 4x
         };
 
-        // Create MSAA texture
         try self.createMSAATexture();
-
-        // Setup pipeline for triangle rendering
         try self.setupPipeline();
 
         return self;
@@ -107,25 +67,31 @@ pub const Renderer = struct {
             self.msaa_texture = null;
         }
 
-        const MTLTextureDescriptor = objc.getClass("MTLTextureDescriptor") orelse return error.ClassNotFound;
+        const MTLTextureDescriptor = objc.getClass("MTLTextureDescriptor") orelse
+            return error.ClassNotFound;
 
-        // Create 2D multisample texture descriptor
+        // Create 2D multisample texture descriptor with clean enum values
         const desc = MTLTextureDescriptor.msgSend(
             objc.Object,
             "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
             .{
-                @as(u64, 80), // MTLPixelFormatBGRA8Unorm
-                @as(u64, @intFromFloat(self.size.width)),
-                @as(u64, @intFromFloat(self.size.height)),
+                @intFromEnum(mtl.MTLPixelFormat.bgra8unorm),
+                @as(c_ulong, @intFromFloat(self.size.width)),
+                @as(c_ulong, @intFromFloat(self.size.height)),
                 false,
             },
         );
 
-        // Set texture type to 2DMultisample
-        desc.msgSend(void, "setTextureType:", .{@as(u64, 4)}); // MTLTextureType2DMultisample
-        desc.msgSend(void, "setSampleCount:", .{@as(u64, self.sample_count)});
-        desc.msgSend(void, "setUsage:", .{@as(u64, 1)}); // MTLTextureUsageRenderTarget
-        desc.msgSend(void, "setStorageMode:", .{@as(u64, 2)}); // MTLStorageModePrivate (GPU only)
+        // Set texture type to 2DMultisample using clean enum
+        desc.msgSend(void, "setTextureType:", .{@intFromEnum(mtl.MTLTextureType.type_2d_multisample)});
+        desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, self.sample_count)});
+
+        // Use clean packed struct for texture usage
+        const usage = mtl.MTLTextureUsage.render_target_only;
+        desc.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(usage))});
+
+        // Private storage mode (GPU only)
+        desc.msgSend(void, "setStorageMode:", .{@intFromEnum(mtl.MTLResourceOptions.StorageMode.private)});
 
         const texture_ptr = self.device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{desc.value});
         if (texture_ptr == null) {
@@ -140,7 +106,7 @@ pub const Renderer = struct {
         const source_str = NSString.msgSend(
             objc.Object,
             "stringWithUTF8String:",
-            .{shader_source.ptr},
+            .{shaders.triangle_shader.ptr},
         );
 
         // Compile shader library
@@ -154,6 +120,7 @@ pub const Renderer = struct {
             return error.ShaderCompilationFailed;
         }
         const library = objc.Object.fromId(library_ptr);
+        defer library.msgSend(void, "release", .{});
 
         // Get vertex and fragment functions
         const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"vertex_main"});
@@ -163,50 +130,51 @@ pub const Renderer = struct {
         const fragment_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{fragment_name.value});
 
         if (vertex_fn_ptr == null or fragment_fn_ptr == null) {
-            std.debug.print("Failed to get shader functions\n", .{});
             return error.ShaderFunctionNotFound;
         }
         const vertex_fn = objc.Object.fromId(vertex_fn_ptr);
         const fragment_fn = objc.Object.fromId(fragment_fn_ptr);
+        defer vertex_fn.msgSend(void, "release", .{});
+        defer fragment_fn.msgSend(void, "release", .{});
 
-        // Create vertex descriptor
-        const MTLVertexDescriptor = objc.getClass("MTLVertexDescriptor") orelse return error.ClassNotFound;
+        // Create vertex descriptor with clean enum values
+        const MTLVertexDescriptor = objc.getClass("MTLVertexDescriptor") orelse
+            return error.ClassNotFound;
         const vertex_desc = MTLVertexDescriptor.msgSend(objc.Object, "vertexDescriptor", .{});
 
         // Position attribute (float2)
         const attributes = vertex_desc.msgSend(objc.Object, "attributes", .{});
-        const attr0 = attributes.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(u64, 0)});
-        attr0.msgSend(void, "setFormat:", .{@as(u64, 29)}); // MTLVertexFormatFloat2
-        attr0.msgSend(void, "setOffset:", .{@as(u64, 0)});
-        attr0.msgSend(void, "setBufferIndex:", .{@as(u64, 0)});
+        const attr0 = attributes.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
+        attr0.msgSend(void, "setFormat:", .{@intFromEnum(mtl.MTLVertexFormat.float2)});
+        attr0.msgSend(void, "setOffset:", .{@as(c_ulong, 0)});
+        attr0.msgSend(void, "setBufferIndex:", .{@as(c_ulong, 0)});
 
         // Color attribute (float4)
-        const attr1 = attributes.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(u64, 1)});
-        attr1.msgSend(void, "setFormat:", .{@as(u64, 31)}); // MTLVertexFormatFloat4
-        attr1.msgSend(void, "setOffset:", .{@as(u64, 8)}); // After float2 (8 bytes)
-        attr1.msgSend(void, "setBufferIndex:", .{@as(u64, 0)});
+        const attr1 = attributes.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 1)});
+        attr1.msgSend(void, "setFormat:", .{@intFromEnum(mtl.MTLVertexFormat.float4)});
+        attr1.msgSend(void, "setOffset:", .{@as(c_ulong, 8)}); // After float2 (8 bytes)
+        attr1.msgSend(void, "setBufferIndex:", .{@as(c_ulong, 0)});
 
         // Layout
         const layouts = vertex_desc.msgSend(objc.Object, "layouts", .{});
-        const layout0 = layouts.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(u64, 0)});
-        layout0.msgSend(void, "setStride:", .{@as(u64, @sizeOf(Vertex))});
+        const layout0 = layouts.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
+        layout0.msgSend(void, "setStride:", .{@as(c_ulong, @sizeOf(Vertex))});
 
         // Create pipeline descriptor
-        const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse return error.ClassNotFound;
+        const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
+            return error.ClassNotFound;
         const pipeline_desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{});
         const pipeline_desc_init = pipeline_desc.msgSend(objc.Object, "init", .{});
 
         pipeline_desc_init.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
         pipeline_desc_init.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
         pipeline_desc_init.msgSend(void, "setVertexDescriptor:", .{vertex_desc.value});
+        pipeline_desc_init.msgSend(void, "setSampleCount:", .{@as(c_ulong, self.sample_count)});
 
-        // Set MSAA sample count on pipeline
-        pipeline_desc_init.msgSend(void, "setSampleCount:", .{@as(u64, self.sample_count)});
-
-        // Set pixel format
+        // Set pixel format using clean enum
         const color_attachments = pipeline_desc_init.msgSend(objc.Object, "colorAttachments", .{});
-        const color_attachment_0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(u64, 0)});
-        color_attachment_0.msgSend(void, "setPixelFormat:", .{@as(u64, 80)}); // MTLPixelFormatBGRA8Unorm
+        const color_attachment_0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
+        color_attachment_0.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.bgra8unorm)});
 
         // Create pipeline state
         const pipeline_ptr = self.device.msgSend(
@@ -215,31 +183,24 @@ pub const Renderer = struct {
             .{ pipeline_desc_init.value, @as(?*anyopaque, null) },
         );
         if (pipeline_ptr == null) {
-            std.debug.print("Failed to create pipeline state\n", .{});
             return error.PipelineCreationFailed;
         }
         self.pipeline_state = objc.Object.fromId(pipeline_ptr);
 
-        // Create vertex buffer
+        // Create vertex buffer with triangle vertices
         const buffer_ptr = self.device.msgSend(
             ?*anyopaque,
             "newBufferWithBytes:length:options:",
             .{
-                @as(*const anyopaque, @ptrCast(&triangle_vertices)),
-                @as(u64, @sizeOf(@TypeOf(triangle_vertices))),
-                @as(u64, 0), // MTLResourceStorageModeShared
+                @as(*const anyopaque, @ptrCast(&shaders.triangle_vertices)),
+                @as(c_ulong, @sizeOf(@TypeOf(shaders.triangle_vertices))),
+                @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
             },
         );
         if (buffer_ptr == null) {
-            std.debug.print("Failed to create vertex buffer\n", .{});
             return error.BufferCreationFailed;
         }
         self.vertex_buffer = objc.Object.fromId(buffer_ptr);
-
-        // Release temporary objects
-        library.msgSend(void, "release", .{});
-        vertex_fn.msgSend(void, "release", .{});
-        fragment_fn.msgSend(void, "release", .{});
     }
 
     pub fn deinit(self: *Self) void {
@@ -255,18 +216,14 @@ pub const Renderer = struct {
     }
 
     pub fn render(self: *Self, clear_color: geometry.Color, draw_triangle: bool) void {
-        // Get next drawable
         const drawable_ptr = self.layer.msgSend(?*anyopaque, "nextDrawable", .{});
-        if (drawable_ptr == null) {
-            return;
-        }
+        if (drawable_ptr == null) return;
         const drawable = objc.Object.fromId(drawable_ptr);
 
         const texture_ptr = drawable.msgSend(?*anyopaque, "texture", .{});
         if (texture_ptr == null) return;
         const resolve_texture = objc.Object.fromId(texture_ptr);
 
-        // Need MSAA texture to render
         const msaa_tex = self.msaa_texture orelse return;
 
         // Create render pass descriptor
@@ -274,40 +231,33 @@ pub const Renderer = struct {
         const render_pass = MTLRenderPassDescriptor.msgSend(objc.Object, "renderPassDescriptor", .{});
 
         const color_attachments = render_pass.msgSend(objc.Object, "colorAttachments", .{});
-        const color_attachment_0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(u64, 0)});
+        const color_attachment_0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
 
-        // Render to MSAA texture, resolve to drawable
+        // Use clean enum values for load/store actions
         color_attachment_0.msgSend(void, "setTexture:", .{msaa_tex.value});
         color_attachment_0.msgSend(void, "setResolveTexture:", .{resolve_texture.value});
-        color_attachment_0.msgSend(void, "setLoadAction:", .{@as(u64, 2)}); // MTLLoadActionClear
-        color_attachment_0.msgSend(void, "setStoreAction:", .{@as(u64, 2)}); // MTLStoreActionMultisampleResolve
+        color_attachment_0.msgSend(void, "setLoadAction:", .{@intFromEnum(mtl.MTLLoadAction.clear)});
+        color_attachment_0.msgSend(void, "setStoreAction:", .{@intFromEnum(mtl.MTLStoreAction.multisample_resolve)});
+        color_attachment_0.msgSend(void, "setClearColor:", .{mtl.MTLClearColor.fromColor(clear_color)});
 
-        const mtl_clear_color = MTLClearColor{
-            .red = @floatCast(clear_color.r),
-            .green = @floatCast(clear_color.g),
-            .blue = @floatCast(clear_color.b),
-            .alpha = @floatCast(clear_color.a),
-        };
-        color_attachment_0.msgSend(void, "setClearColor:", .{mtl_clear_color});
-
-        // Create command buffer
         const command_buffer = self.command_queue.msgSend(objc.Object, "commandBuffer", .{});
-
-        // Create render encoder
         const encoder_ptr = command_buffer.msgSend(?*anyopaque, "renderCommandEncoderWithDescriptor:", .{render_pass.value});
         if (encoder_ptr == null) return;
         const encoder = objc.Object.fromId(encoder_ptr);
 
-        // Draw triangle if requested and pipeline is ready
         if (draw_triangle) {
             if (self.pipeline_state) |pipeline| {
                 if (self.vertex_buffer) |buffer| {
                     encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
-                    encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{ buffer.value, @as(u64, 0), @as(u64, 0) });
+                    encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                        buffer.value,
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 0),
+                    });
                     encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
-                        @as(u64, 3), // MTLPrimitiveTypeTriangle
-                        @as(u64, 0),
-                        @as(u64, 3),
+                        @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 3),
                     });
                 }
             }
@@ -320,34 +270,10 @@ pub const Renderer = struct {
 
     pub fn resize(self: *Self, size: geometry.Size(f64)) void {
         self.size = size;
-        const drawable_size = CGSize{
+        self.layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
             .width = size.width,
             .height = size.height,
-        };
-        self.layer.msgSend(void, "setDrawableSize:", .{drawable_size});
-
-        // Recreate MSAA texture for new size
+        }});
         self.createMSAATexture() catch {};
     }
 };
-
-// Metal types
-const MTLClearColor = extern struct {
-    red: f64,
-    green: f64,
-    blue: f64,
-    alpha: f64,
-};
-
-const CGSize = extern struct {
-    width: f64,
-    height: f64,
-};
-
-// Function pointer type for MTLCreateSystemDefaultDevice
-const MTLCreateSystemDefaultDeviceFn = *const fn () callconv(.c) ?*anyopaque;
-
-fn getMTLCreateSystemDefaultDevice() ?MTLCreateSystemDefaultDeviceFn {
-    var lib = std.DynLib.open("/System/Library/Frameworks/Metal.framework/Metal") catch return null;
-    return lib.lookup(MTLCreateSystemDefaultDeviceFn, "MTLCreateSystemDefaultDevice");
-}
