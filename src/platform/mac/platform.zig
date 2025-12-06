@@ -4,8 +4,14 @@ const std = @import("std");
 const objc = @import("objc");
 const App = @import("../../core/app.zig").App;
 
-// External Foundation constant - linked at runtime
-extern "c" const NSDefaultRunLoopMode: *anyopaque;
+// External Foundation constants - linked at runtime
+extern "c" var NSDefaultRunLoopMode: *anyopaque;
+
+// We need distantFuture for blocking event wait
+fn getDistantFuture() objc.Object {
+    const NSDate = objc.getClass("NSDate") orelse unreachable;
+    return NSDate.msgSend(objc.Object, "distantFuture", .{});
+}
 
 pub const MacPlatform = struct {
     app: objc.Object,
@@ -54,20 +60,22 @@ pub const MacPlatform = struct {
         // Finish launching
         _ = self.app.msgSend(void, "finishLaunching", .{});
 
-        // Run the event loop manually so we have control
+        // Run the event loop - BLOCKING on events
+        // Rendering happens on DisplayLink thread, not here!
         while (self.running) {
             // Create an inner autorelease pool for each iteration
             const inner_pool = NSAutoreleasePoolClass.msgSend(objc.Object, "alloc", .{});
             const inner_pool_init = inner_pool.msgSend(objc.Object, "init", .{});
             defer inner_pool_init.msgSend(void, "drain", .{});
 
-            // Poll for events using the extern NSDefaultRunLoopMode
+            // Block waiting for events (CPU efficient!)
+            // DisplayLink handles rendering on its own thread
             const event = self.app.msgSend(
                 ?*anyopaque,
                 "nextEventMatchingMask:untilDate:inMode:dequeue:",
                 .{
                     @as(u64, 0xFFFFFFFFFFFFFFFF), // NSEventMaskAny
-                    @as(?*anyopaque, null), // distantPast - don't wait
+                    getDistantFuture().value, // Block until event arrives
                     NSDefaultRunLoopMode,
                     true,
                 },
@@ -75,15 +83,13 @@ pub const MacPlatform = struct {
 
             if (event) |e| {
                 self.app.msgSend(void, "sendEvent:", .{e});
+                self.app.msgSend(void, "updateWindows", .{});
             }
-
-            // Brief sleep to avoid spinning
-            std.Thread.sleep(16 * std.time.ns_per_ms); // ~60fps
         }
     }
 
     pub fn quit(self: *Self) void {
         self.running = false;
-        _ = self.app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
+        self.app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
     }
 };

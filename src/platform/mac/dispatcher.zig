@@ -20,7 +20,7 @@ pub const Task = struct {
 };
 
 /// Trampoline function that GCD calls, which then invokes our Zig callback
-fn trampoline(context: ?*anyopaque) callconv(.C) void {
+fn trampoline(context: ?*anyopaque) callconv(.c) void { // lowercase .c
     if (context) |ctx| {
         const task: *Task = @ptrCast(@alignCast(ctx));
         task.callback(task.context);

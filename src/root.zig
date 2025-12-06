@@ -14,6 +14,7 @@ pub const Color = geometry.Color;
 pub const platform = @import("platform/mac/platform.zig");
 pub const MacPlatform = platform.MacPlatform;
 pub const Window = @import("platform/mac/window.zig").Window;
+pub const DisplayLink = @import("platform/mac/display_link.zig").DisplayLink;
 
 // App context
 pub const App = @import("core/app.zig").App;

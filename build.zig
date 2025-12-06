@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("Metal", .{});
     exe.root_module.linkFramework("QuartzCore", .{});
     exe.root_module.linkFramework("CoreFoundation", .{});
+    exe.root_module.linkFramework("CoreVideo", .{});
 
     // Also link libc for dispatch
     exe.root_module.link_libc = true;
@@ -48,6 +49,9 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
+
+    // Enable Metal HUD for FPS/GPU stats
+    // run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
 
     if (b.args) |args| {
         run_cmd.addArgs(args);

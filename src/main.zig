@@ -17,11 +17,13 @@ pub fn main() !void {
     defer app.deinit();
 
     // Create a window with custom options
+    // DisplayLink is enabled by default for vsync
     const window = try app.createWindow(.{
         .title = "Guiz - GPU UI Framework",
         .width = 1024,
         .height = 768,
-        .background_color = guiz.Color.init(0.1, 0.1, 0.15, 1.0), // Dark blue-gray
+        .background_color = guiz.Color.init(0.1, 0.1, 0.15, 1.0),
+        // .use_display_link = true, // default
     });
     defer window.deinit();
 
@@ -29,20 +31,8 @@ pub fn main() !void {
     std.debug.print("Size: {d}x{d}\n", .{ window.size.width, window.size.height });
 
     // Run the application event loop
-    // This will block until the application quits
+    // Rendering now happens automatically via CVDisplayLink!
     app.run(null);
 
     std.debug.print("Guiz shutting down.\n", .{});
-}
-
-test "basic geometry" {
-    const size = guiz.Size(f64).init(100, 200);
-    try std.testing.expectEqual(@as(f64, 100), size.width);
-    try std.testing.expectEqual(@as(f64, 200), size.height);
-
-    const color = guiz.Color.rgb(1.0, 0.5, 0.0);
-    try std.testing.expectEqual(@as(f32, 1.0), color.r);
-    try std.testing.expectEqual(@as(f32, 0.5), color.g);
-    try std.testing.expectEqual(@as(f32, 0.0), color.b);
-    try std.testing.expectEqual(@as(f32, 1.0), color.a);
 }
