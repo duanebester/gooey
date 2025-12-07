@@ -16,8 +16,6 @@ Gooey is a hybrid immediate/retained mode UI framework designed for building fas
 
 ## Architecture
 
-## Architecture
-
 ```mermaid
 graph TB
     subgraph Application
@@ -58,8 +56,6 @@ graph TB
     Window --> DL
     Renderer --> Metal
 ```
-
-`
 
 ## Project Structure
 
