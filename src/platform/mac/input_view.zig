@@ -1,5 +1,5 @@
 //! Custom NSView subclass for receiving mouse/keyboard events
-//! Follows the same pattern as window_delegate.zig
+//! Implements NSTextInputClient for IME support (emoji, dead keys, CJK input)
 
 const std = @import("std");
 const objc = @import("objc");
@@ -10,6 +10,7 @@ const Window = @import("window.zig").Window;
 
 const NSRect = appkit.NSRect;
 const NSPoint = appkit.NSPoint;
+const NSRange = appkit.NSRange;
 const NSEventModifierFlags = appkit.NSEventModifierFlags;
 
 var view_class: ?objc.Class = null;
@@ -29,6 +30,13 @@ pub fn registerClass() !void {
         return error.IvarAddFailed;
     }
 
+    // Register NSTextInputClient protocol conformance (required for IME)
+    const NSTextInputClient = objc.getProtocol("NSTextInputClient") orelse
+        return error.ProtocolNotFound;
+    if (!objc.c.class_addProtocol(cls.value, NSTextInputClient.value)) {
+        return error.ProtocolAddFailed;
+    }
+
     // Required for receiving events
     if (!cls.addMethod("acceptsFirstResponder", acceptsFirstResponder)) return error.MethodAddFailed;
     if (!cls.addMethod("isFlipped", isFlipped)) return error.MethodAddFailed;
@@ -45,10 +53,23 @@ pub fn registerClass() !void {
     if (!cls.addMethod("mouseDragged:", mouseDragged)) return error.MethodAddFailed;
     if (!cls.addMethod("mouseEntered:", mouseEntered)) return error.MethodAddFailed;
     if (!cls.addMethod("mouseExited:", mouseExited)) return error.MethodAddFailed;
-
     if (!cls.addMethod("rightMouseDown:", rightMouseDown)) return error.MethodAddFailed;
     if (!cls.addMethod("rightMouseUp:", rightMouseUp)) return error.MethodAddFailed;
     if (!cls.addMethod("scrollWheel:", scrollWheel)) return error.MethodAddFailed;
+
+    // NSTextInputClient protocol methods (for IME support)
+    if (!cls.addMethod("hasMarkedText", hasMarkedText)) return error.MethodAddFailed;
+    if (!cls.addMethod("markedRange", markedRange)) return error.MethodAddFailed;
+    if (!cls.addMethod("selectedRange", selectedRange)) return error.MethodAddFailed;
+    if (!cls.addMethod("setMarkedText:selectedRange:replacementRange:", setMarkedText)) return error.MethodAddFailed;
+    if (!cls.addMethod("unmarkText", unmarkText)) return error.MethodAddFailed;
+    if (!cls.addMethod("validAttributesForMarkedText", validAttributesForMarkedText)) return error.MethodAddFailed;
+    if (!cls.addMethod("attributedSubstringForProposedRange:actualRange:", attributedSubstring)) return error.MethodAddFailed;
+    if (!cls.addMethod("insertText:replacementRange:", insertText)) return error.MethodAddFailed;
+    if (!cls.addMethod("characterIndexForPoint:", characterIndexForPoint)) return error.MethodAddFailed;
+    if (!cls.addMethod("firstRectForCharacterRange:actualRange:", firstRectForCharacterRange)) return error.MethodAddFailed;
+    if (!cls.addMethod("doCommandBySelector:", doCommandBySelector)) return error.MethodAddFailed;
+    if (!cls.addMethod("performKeyEquivalent:", performKeyEquivalent)) return error.MethodAddFailed;
 
     objc.registerClassPair(cls);
     view_class = cls;
@@ -94,7 +115,6 @@ fn parseMouseEvent(self: objc.c.id, event_id: objc.c.id, comptime kind: std.meta
     const view = objc.Object{ .value = self };
     const event = objc.Object{ .value = event_id };
 
-    // Get location in window, convert to view coordinates
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
     const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
 
@@ -115,8 +135,41 @@ fn parseMouseEvent(self: objc.c.id, event_id: objc.c.id, comptime kind: std.meta
     });
 }
 
+fn parseEnterExitEvent(self_id: objc.c.id, event_id: objc.c.id) input.MouseEvent {
+    const view = objc.Object{ .value = self_id };
+    const event = objc.Object{ .value = event_id };
+
+    const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
+    const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
+    const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
+
+    return .{
+        .position = geometry.Point(f64).init(view_loc.x, view_loc.y),
+        .button = .left,
+        .click_count = 0,
+        .modifiers = parseModifiers(modifier_flags),
+    };
+}
+
+/// Extract UTF-8 string from NSString or NSAttributedString
+fn extractString(text_id: objc.c.id) ?[]const u8 {
+    const text = objc.Object{ .value = text_id };
+
+    // Check if it's an NSAttributedString
+    const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
+    const is_attributed = text.msgSend(bool, "isKindOfClass:", .{NSAttributedString.value});
+
+    const ns_string = if (is_attributed)
+        text.msgSend(objc.Object, "string", .{})
+    else
+        text;
+
+    const cstr = ns_string.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return null;
+    return std.mem.span(cstr);
+}
+
 // =============================================================================
-// Method Implementations
+// NSView Method Implementations
 // =============================================================================
 
 fn acceptsFirstResponder(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
@@ -124,8 +177,12 @@ fn acceptsFirstResponder(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
 }
 
 fn isFlipped(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
-    return true; // Use top-left origin like most UI frameworks
+    return true;
 }
+
+// =============================================================================
+// Mouse Method Implementations
+// =============================================================================
 
 fn mouseDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
@@ -155,24 +212,6 @@ fn mouseEntered(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) v
 fn mouseExited(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     window.handleInput(.{ .mouse_exited = parseEnterExitEvent(self, event) });
-}
-
-/// Parse enter/exit events (no button or click count)
-fn parseEnterExitEvent(self_id: objc.c.id, event_id: objc.c.id) input.MouseEvent {
-    const view = objc.Object{ .value = self_id };
-    const event = objc.Object{ .value = event_id };
-
-    const window_loc: appkit.NSPoint = event.msgSend(appkit.NSPoint, "locationInWindow", .{});
-    const view_loc: appkit.NSPoint = view.msgSend(appkit.NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
-
-    const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
-
-    return .{
-        .position = geometry.Point(f64).init(view_loc.x, view_loc.y),
-        .button = .left, // N/A for enter/exit
-        .click_count = 0, // N/A for enter/exit
-        .modifiers = parseModifiers(modifier_flags),
-    };
 }
 
 fn rightMouseDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
@@ -208,18 +247,50 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
 // Keyboard Method Implementations
 // =============================================================================
 
-fn keyDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+fn keyDown(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
-    if (parseKeyEvent(event)) |key_event| {
-        window.handleInput(.{ .key_down = key_event });
+    const view = objc.Object{ .value = self };
+
+    std.debug.print("keyDown called\n", .{});
+
+    // Check inputContext
+    const input_context = view.msgSend(?objc.c.id, "inputContext", .{});
+    if (input_context != null) {
+        std.debug.print("inputContext: EXISTS\n", .{});
+    } else {
+        std.debug.print("inputContext: NULL\n", .{});
     }
+
+    // Store the current event for doCommandBySelector fallback
+    window.pending_key_event = event_id;
+    defer window.pending_key_event = null;
+
+    // Route through interpretKeyEvents for IME support
+    const NSArray = objc.getClass("NSArray") orelse return;
+    const event_array = NSArray.msgSend(objc.Object, "arrayWithObject:", .{event_id});
+
+    std.debug.print("calling interpretKeyEvents\n", .{});
+    view.msgSend(void, "interpretKeyEvents:", .{event_array.value});
+    std.debug.print("interpretKeyEvents returned\n", .{});
 }
 
-fn keyUp(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+fn keyUp(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
-    if (parseKeyEvent(event)) |key_event| {
-        window.handleInput(.{ .key_up = key_event });
-    }
+    const event = objc.Object{ .value = event_id };
+
+    const key_code = event.msgSend(u16, "keyCode", .{});
+    const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
+    const is_repeat = event.msgSend(bool, "isARepeat", .{});
+
+    // Don't try to get characters - they can be invalid for system events
+    // Text input comes through insertText: via IME
+    window.handleInput(.{ .key_up = .{
+        .key = input.KeyCode.from(key_code),
+        .modifiers = parseModifiers(modifier_flags),
+        .characters = null,
+        .characters_ignoring_modifiers = null,
+        .is_repeat = is_repeat,
+    } });
 }
 
 fn flagsChanged(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
@@ -236,7 +307,6 @@ fn parseKeyEvent(event_id: objc.c.id) ?input.KeyEvent {
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
     const is_repeat = event.msgSend(bool, "isARepeat", .{});
 
-    // Get characters - call selectors directly (comptime requirement)
     const characters = getCharacters(event);
     const characters_unmod = getCharactersIgnoringModifiers(event);
 
@@ -259,4 +329,135 @@ fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
     const ns_string = event.msgSend(?objc.Object, "charactersIgnoringModifiers", .{}) orelse return null;
     const cstr = ns_string.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return null;
     return std.mem.span(cstr);
+}
+
+// =============================================================================
+// NSTextInputClient Protocol Implementation
+// =============================================================================
+
+fn hasMarkedText(self: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
+    const window = getWindow(self) orelse return false;
+    return window.marked_text.len > 0;
+}
+
+fn markedRange(self: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
+    const window = getWindow(self) orelse return NSRange.invalid();
+    if (window.marked_text.len > 0) {
+        return .{ .location = 0, .length = window.marked_text.len };
+    }
+    return NSRange.invalid();
+}
+
+fn selectedRange(_: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
+    // For now, return an empty selection at position 0
+    // A real implementation would query the focused text element
+    return .{ .location = 0, .length = 0 };
+}
+
+fn performKeyEquivalent(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) bool {
+    // Return false to let the system handle key equivalents
+    // This allows Cmd+Ctrl+Space (emoji picker) and other system shortcuts to work
+    return false;
+}
+
+fn setMarkedText(
+    self: objc.c.id,
+    _: objc.c.SEL,
+    text_id: objc.c.id,
+    _: NSRange,
+    _: NSRange,
+) callconv(.c) void {
+    const window = getWindow(self) orelse return;
+    const str = extractString(text_id) orelse "";
+
+    std.debug.print("setMarkedText: \"{s}\"\n", .{str});
+
+    window.setMarkedText(str);
+    window.handleInput(.{ .composition = .{ .text = window.marked_text } });
+}
+
+fn unmarkText(self: objc.c.id, _: objc.c.SEL) callconv(.c) void {
+    const window = getWindow(self) orelse return;
+    window.clearMarkedText();
+
+    // Send empty composition to signal end
+    window.handleInput(.{ .composition = .{
+        .text = "",
+    } });
+}
+
+fn validAttributesForMarkedText(_: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c.id {
+    // Return empty array - we don't support styled marked text
+    const NSArray = objc.getClass("NSArray") orelse return null;
+    return NSArray.msgSend(objc.c.id, "array", .{});
+}
+
+fn attributedSubstring(
+    _: objc.c.id,
+    _: objc.c.SEL,
+    _: NSRange, // range
+    _: *NSRange, // actual_range
+) callconv(.c) objc.c.id {
+    // Return nil - we don't support this for now
+    return null;
+}
+
+fn insertText(
+    self: objc.c.id,
+    _: objc.c.SEL,
+    text_id: objc.c.id,
+    _: NSRange,
+) callconv(.c) void {
+    const window = getWindow(self) orelse return;
+    const str = extractString(text_id) orelse return;
+
+    std.debug.print("insertText: \"{s}\"\n", .{str});
+
+    // Copy to window-owned buffer before the objc call returns
+    window.setInsertedText(str);
+    window.clearMarkedText();
+    window.handleInput(.{ .text_input = .{ .text = window.inserted_text } });
+}
+
+fn characterIndexForPoint(_: objc.c.id, _: objc.c.SEL, _: NSPoint) callconv(.c) c_ulong {
+    // Return 0 - we don't support click-to-position in IME candidate window
+    return 0;
+}
+
+fn firstRectForCharacterRange(
+    self: objc.c.id,
+    _: objc.c.SEL,
+    _: NSRange, // range
+    _: *NSRange, // actual_range
+) callconv(.c) NSRect {
+    const view = objc.Object{ .value = self };
+    const window = getWindow(self) orelse {
+        return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
+    };
+
+    // Get the view's window
+    const ns_window = view.msgSend(?objc.Object, "window", .{}) orelse {
+        return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
+    };
+
+    // Use the IME cursor rect set by the focused TextInput
+    const view_rect = window.ime_cursor_rect;
+
+    // Convert from view coordinates to window coordinates, then to screen coordinates
+    const window_rect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(?objc.c.id, null) });
+    const screen_rect = ns_window.msgSend(NSRect, "convertRectToScreen:", .{window_rect});
+
+    return screen_rect;
+}
+
+fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, selector: objc.c.SEL) callconv(.c) void {
+    std.debug.print("doCommandBySelector called: {*}\n", .{selector});
+
+    const window = getWindow(self) orelse return;
+
+    if (window.pending_key_event) |event_id| {
+        if (parseKeyEvent(event_id)) |key_event| {
+            window.handleInput(.{ .key_down = key_event });
+        }
+    }
 }

@@ -33,11 +33,13 @@ pub const CachedGlyph = struct {
     /// Region in the atlas
     region: Region,
     /// Horizontal bearing (offset from pen position to left edge)
-    bearing_x: i16,
+    bearing_x: f32,
     /// Vertical bearing (offset from baseline to top edge)
-    bearing_y: i16,
+    bearing_y: f32,
+    /// Logical glyph height (for precise positioning)
+    height: f32,
     /// Horizontal advance to next glyph
-    advance_x: u16,
+    advance_x: f32,
     /// Whether this glyph uses the color atlas (emoji)
     is_color: bool,
     scale: f32,
@@ -112,9 +114,10 @@ pub const GlyphCache = struct {
         if (metrics.width < 1 or metrics.height < 1) {
             return CachedGlyph{
                 .region = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-                .bearing_x = @intFromFloat(metrics.bearing_x),
-                .bearing_y = @intFromFloat(metrics.bearing_y),
-                .advance_x = @intFromFloat(metrics.advance_x),
+                .bearing_x = metrics.bearing_x,
+                .bearing_y = metrics.bearing_y,
+                .advance_x = metrics.advance_x,
+                .height = metrics.height,
                 .is_color = false,
                 .scale = scale,
             };
@@ -185,9 +188,10 @@ pub const GlyphCache = struct {
         // Store region in PHYSICAL pixels (scaled)
         return CachedGlyph{
             .region = region,
-            .bearing_x = @intFromFloat(metrics.bearing_x - @as(f32, @floatFromInt(padding)) / scale),
-            .bearing_y = @intFromFloat(metrics.bearing_y + @as(f32, @floatFromInt(padding)) / scale),
-            .advance_x = @intFromFloat(metrics.advance_x),
+            .bearing_x = metrics.bearing_x - @as(f32, @floatFromInt(padding)) / scale,
+            .bearing_y = metrics.bearing_y + @as(f32, @floatFromInt(padding)) / scale,
+            .height = metrics.height + 2.0 * @as(f32, @floatFromInt(padding)) / scale,
+            .advance_x = metrics.advance_x,
             .is_color = false,
             .scale = scale,
         };

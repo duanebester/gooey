@@ -39,6 +39,10 @@ pub const DisplayLink = @import("platform/mac/display_link.zig").DisplayLink;
 // App context
 pub const App = @import("core/app.zig").App;
 
+// UI Elements
+pub const elements = @import("elements.zig");
+pub const TextInput = elements.TextInput;
+
 test {
     std.testing.refAllDecls(@This());
 }

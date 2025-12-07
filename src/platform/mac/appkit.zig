@@ -165,6 +165,33 @@ pub const KeyCode = enum(u16) {
     _,
 
     pub fn from(code: u16) KeyCode {
-        return std.meta.intToEnum(KeyCode, code) catch .unknown;
+        // intToEnum doesn't error for non-exhaustive enums with unnamed values,
+        // so we need to check if we got a named variant
+        const result = std.meta.intToEnum(KeyCode, code) catch return .unknown;
+        // Check if it's actually a named variant
+        if (std.enums.tagName(KeyCode, result) == null) return .unknown;
+        return result;
+    }
+};
+
+// ============================================================================
+// NSRange (for NSTextInputClient)
+// ============================================================================
+
+/// https://developer.apple.com/documentation/foundation/nsrange
+/// Note: NSUInteger is `unsigned long` on macOS, which is `c_ulong` in Zig.
+/// We must use c_ulong (not usize) for Objective-C runtime compatibility.
+pub const NSRange = extern struct {
+    location: c_ulong,
+    length: c_ulong,
+
+    pub const NotFound: c_ulong = std.math.maxInt(c_ulong);
+
+    pub fn invalid() NSRange {
+        return .{ .location = NotFound, .length = 0 };
+    }
+
+    pub fn isEmpty(self: NSRange) bool {
+        return self.length == 0;
     }
 };

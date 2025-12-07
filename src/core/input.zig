@@ -43,7 +43,19 @@ pub const KeyEvent = struct {
     is_repeat: bool,
 };
 
-// Update InputEvent union:
+/// Text inserted via IME (Input Method Editor)
+/// This includes emoji picker, dead keys, CJK input, dictation, etc.
+pub const TextInputEvent = struct {
+    /// The inserted text (UTF-8 encoded)
+    text: []const u8,
+};
+
+/// IME composition (preedit) state changed
+pub const CompositionEvent = struct {
+    /// The composing text (UTF-8 encoded), empty if composition ended
+    text: []const u8,
+};
+
 pub const InputEvent = union(enum) {
     mouse_down: MouseEvent,
     mouse_up: MouseEvent,
@@ -55,4 +67,8 @@ pub const InputEvent = union(enum) {
     key_down: KeyEvent,
     key_up: KeyEvent,
     modifiers_changed: Modifiers,
+    /// Text inserted via IME (final, committed text)
+    text_input: TextInputEvent,
+    /// IME composition state changed (preedit text)
+    composition: CompositionEvent,
 };

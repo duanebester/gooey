@@ -40,6 +40,14 @@ pub const Window = struct {
     /// Whether mouse is inside the window
     mouse_inside: bool = false,
     hovered_quad_index: ?usize = null,
+    // IME (Input Method Editor) state
+    marked_text: []const u8 = "",
+    marked_text_buffer: [256]u8 = undefined,
+    inserted_text: []const u8 = "",
+    inserted_text_buffer: [256]u8 = undefined,
+    pending_key_event: ?objc.c.id = null,
+    /// IME cursor rect in view coordinates (for candidate window positioning)
+    ime_cursor_rect: appkit.NSRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } }, // NEW
 
     pub const InputCallback = *const fn (*Window, input.InputEvent) bool;
 
@@ -150,6 +158,47 @@ pub const Window = struct {
             return &s.quads.items[idx];
         }
         return null;
+    }
+
+    /// Set the marked (composing) text for IME
+    pub fn setMarkedText(self: *Self, text: []const u8) void {
+        if (text.len > self.marked_text_buffer.len) {
+            // Text too long, truncate
+            @memcpy(self.marked_text_buffer[0..], text[0..self.marked_text_buffer.len]);
+            self.marked_text = self.marked_text_buffer[0..self.marked_text_buffer.len];
+        } else {
+            @memcpy(self.marked_text_buffer[0..text.len], text);
+            self.marked_text = self.marked_text_buffer[0..text.len];
+        }
+    }
+
+    /// Clear the marked text (composition ended or cancelled)
+    pub fn clearMarkedText(self: *Self) void {
+        self.marked_text = "";
+    }
+
+    /// Set the inserted text for IME (copies to window-owned buffer)
+    pub fn setInsertedText(self: *Self, text: []const u8) void {
+        if (text.len > self.inserted_text_buffer.len) {
+            @memcpy(self.inserted_text_buffer[0..], text[0..self.inserted_text_buffer.len]);
+            self.inserted_text = self.inserted_text_buffer[0..self.inserted_text_buffer.len];
+        } else {
+            @memcpy(self.inserted_text_buffer[0..text.len], text);
+            self.inserted_text = self.inserted_text_buffer[0..text.len];
+        }
+    }
+
+    /// Set the IME cursor rect (call from TextInput during render)
+    pub fn setImeCursorRect(self: *Self, x: f32, y: f32, width: f32, height: f32) void {
+        self.ime_cursor_rect = .{
+            .origin = .{ .x = @floatCast(x), .y = @floatCast(y) },
+            .size = .{ .width = @floatCast(width), .height = @floatCast(height) },
+        };
+    }
+
+    /// Check if there's active IME composition
+    pub fn hasMarkedText(self: *const Self) bool {
+        return self.marked_text.len > 0;
     }
 
     fn setupTrackingArea(self: *Self) !void {
