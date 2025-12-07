@@ -19,6 +19,8 @@ pub fn main() !void {
     });
     defer window.deinit();
 
+    window.setInputCallback(onInput);
+
     // Initialize text system with Retina scale factor
     var text_system = try gooey.TextSystem.initWithScale(allocator, @floatCast(window.scale_factor));
     defer text_system.deinit();
@@ -90,4 +92,77 @@ pub fn main() !void {
     std.debug.print("Glyphs: {}, Text width: {d:.1}px\n", .{ scene.glyphCount(), shaped.width });
 
     app.run(null);
+}
+
+fn onInput(window: *gooey.Window, event: gooey.InputEvent) bool {
+    switch (event) {
+        .mouse_moved => |m| {
+            if (window.scene) |scene| {
+                const new_idx = scene.quadIndexAtPoint(
+                    @floatCast(m.position.x),
+                    @floatCast(m.position.y),
+                );
+
+                if (new_idx != window.hovered_quad_index) {
+                    if (window.hovered_quad_index != null) {
+                        std.debug.print("Mouse left quad\n", .{});
+                    }
+                    if (new_idx != null) {
+                        std.debug.print("Mouse entered quad\n", .{});
+                    }
+                    window.hovered_quad_index = new_idx;
+                }
+            }
+        },
+        .mouse_entered => {
+            std.debug.print("Mouse entered window\n", .{});
+        },
+        .mouse_exited => {
+            std.debug.print("Mouse left window\n", .{});
+            window.hovered_quad_index = null;
+        },
+        .mouse_down => |m| {
+            std.debug.print("Click at ({d:.0}, {d:.0})\n", .{ m.position.x, m.position.y });
+
+            if (m.click_count == 2) {
+                std.debug.print("  Double-click!\n", .{});
+            }
+            if (m.modifiers.cmd) {
+                std.debug.print("  Cmd+click!\n", .{});
+            }
+            if (m.modifiers.shift) {
+                std.debug.print("  Shift+click!\n", .{});
+            }
+        },
+        .scroll => |s| std.debug.print("Scroll delta: ({d:.1}, {d:.1})\n", .{ s.delta.x, s.delta.y }),
+        .key_down => |k| {
+            std.debug.print("Key down: {s}", .{@tagName(k.key)});
+
+            if (k.characters) |chars| {
+                std.debug.print(" chars='{s}'", .{chars});
+            }
+            if (k.modifiers.cmd) std.debug.print(" [cmd]", .{});
+            if (k.modifiers.shift) std.debug.print(" [shift]", .{});
+            if (k.modifiers.ctrl) std.debug.print(" [ctrl]", .{});
+            if (k.modifiers.alt) std.debug.print(" [alt]", .{});
+            if (k.is_repeat) std.debug.print(" (repeat)", .{});
+            std.debug.print("\n", .{});
+
+            // Example: Cmd+Q to quit
+            if (k.key == .q and k.modifiers.cmd) {
+                std.debug.print("Quit requested!\n", .{});
+                return true;
+            }
+        },
+        .key_up => |k| {
+            std.debug.print("Key up: {s}\n", .{@tagName(k.key)});
+        },
+        .modifiers_changed => |m| {
+            std.debug.print("Modifiers: cmd={} shift={} ctrl={} alt={}\n", .{
+                m.cmd, m.shift, m.ctrl, m.alt,
+            });
+        },
+        else => {},
+    }
+    return false;
 }

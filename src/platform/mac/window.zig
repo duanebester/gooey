@@ -7,7 +7,13 @@ const scene_mod = @import("../../core/scene.zig");
 const Atlas = @import("../../font/atlas.zig").Atlas;
 const platform = @import("platform.zig");
 const metal = @import("metal/metal.zig");
+const input_view = @import("input_view.zig");
+const input = @import("../../core/input.zig");
 const display_link = @import("display_link.zig");
+const appkit = @import("appkit.zig");
+
+const NSRect = appkit.NSRect;
+const NSSize = appkit.NSSize;
 const DisplayLink = display_link.DisplayLink;
 
 pub const Window = struct {
@@ -28,6 +34,14 @@ pub const Window = struct {
     resize_mutex: std.Thread.Mutex = .{},
     benchmark_mode: bool = false, // Set true to force
     in_live_resize: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    on_input: ?InputCallback = null,
+    /// Current mouse position (updated on every mouse event)
+    mouse_position: geometry.Point(f64) = .{ .x = 0, .y = 0 },
+    /// Whether mouse is inside the window
+    mouse_inside: bool = false,
+    hovered_quad_index: ?usize = null,
+
+    pub const InputCallback = *const fn (*Window, input.InputEvent) bool;
 
     pub const Options = struct {
         title: []const u8 = "gooey Window",
@@ -92,8 +106,12 @@ pub const Window = struct {
         // Set window title
         self.setTitle(options.title);
 
-        // Get content view
-        self.ns_view = self.ns_window.msgSend(objc.Object, "contentView", .{});
+        const view_frame: NSRect = self.ns_window.msgSend(NSRect, "contentLayoutRect", .{});
+        self.ns_view = try input_view.create(view_frame, self);
+        self.ns_window.msgSend(void, "setContentView:", .{self.ns_view.value});
+
+        // Enable mouse tracking for mouseMoved events
+        try self.setupTrackingArea();
 
         // Get backing scale factor for Retina displays
         self.scale_factor = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
@@ -123,6 +141,75 @@ pub const Window = struct {
         self.requestRender();
 
         return self;
+    }
+
+    pub fn getHoveredQuad(self: *const Self) ?*const scene_mod.Quad {
+        const idx = self.hovered_quad_index orelse return null;
+        const s = self.scene orelse return null;
+        if (idx < s.quads.items.len) {
+            return &s.quads.items[idx];
+        }
+        return null;
+    }
+
+    fn setupTrackingArea(self: *Self) !void {
+        const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
+
+        const NSTrackingArea = objc.getClass("NSTrackingArea") orelse return error.ClassNotFound;
+
+        const opts = appkit.NSTrackingAreaOptions;
+        const options = opts.mouse_moved |
+            opts.mouse_entered_and_exited |
+            opts.active_in_key_window |
+            opts.in_visible_rect;
+
+        const tracking_area = NSTrackingArea.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "initWithRect:options:owner:userInfo:", .{
+            bounds,
+            options,
+            self.ns_view.value,
+            @as(?objc.c.id, null),
+        });
+
+        self.ns_view.msgSend(void, "addTrackingArea:", .{tracking_area.value});
+    }
+
+    // Add handler method:
+    pub fn handleInput(self: *Self, event: input.InputEvent) void {
+        // Track mouse position
+        switch (event) {
+            .mouse_down, .mouse_up, .mouse_moved, .mouse_dragged => |m| {
+                self.mouse_position = m.position;
+            },
+            .mouse_entered => |m| {
+                self.mouse_position = m.position;
+                self.mouse_inside = true;
+            },
+            .mouse_exited => |m| {
+                self.mouse_position = m.position;
+                self.mouse_inside = false;
+            },
+            else => {},
+        }
+
+        if (self.on_input) |callback| {
+            _ = callback(self, event);
+        }
+        self.requestRender();
+    }
+
+    /// Get current mouse position
+    pub fn getMousePosition(self: *const Self) geometry.Point(f64) {
+        return self.mouse_position;
+    }
+
+    /// Check if mouse is inside window
+    pub fn isMouseInside(self: *const Self) bool {
+        return self.mouse_inside;
+    }
+
+    pub fn setInputCallback(self: *Self, callback: InputCallback) void {
+        self.on_input = callback;
     }
 
     pub fn deinit(self: *Self) void {
@@ -256,7 +343,7 @@ pub const Window = struct {
         self.ns_view.msgSend(void, "setLayer:", .{self.metal_layer});
 
         // Set drawable size (scaled for Retina)
-        const drawable_size = CGSize{
+        const drawable_size = NSSize{
             .width = self.size.width * self.scale_factor,
             .height = self.size.height * self.scale_factor,
         };
@@ -376,21 +463,3 @@ fn createAutoreleasePool() ?objc.Object {
 fn drainAutoreleasePool(pool: objc.Object) void {
     pool.msgSend(void, "drain", .{});
 }
-
-// CoreGraphics types for Objective-C interop
-const CGFloat = f64;
-
-const CGPoint = extern struct {
-    x: CGFloat,
-    y: CGFloat,
-};
-
-const CGSize = extern struct {
-    width: CGFloat,
-    height: CGFloat,
-};
-
-const NSRect = extern struct {
-    origin: CGPoint,
-    size: CGSize,
-};

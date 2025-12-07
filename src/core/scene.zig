@@ -418,4 +418,24 @@ pub const Scene = struct {
     pub fn getQuads(self: *const Self) []const Quad {
         return self.quads.items;
     }
+
+    /// Check if a point is inside a quad bounds
+    fn quadContainsPoint(quad: Quad, x: f32, y: f32) bool {
+        return x >= quad.bounds_origin_x and
+            x <= quad.bounds_origin_x + quad.bounds_size_width and
+            y >= quad.bounds_origin_y and
+            y <= quad.bounds_origin_y + quad.bounds_size_height;
+    }
+
+    /// Find quad at point, returns index (for stable reference)
+    pub fn quadIndexAtPoint(self: *const Self, x: f32, y: f32) ?usize {
+        var i = self.quads.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (quadContainsPoint(self.quads.items[i], x, y)) {
+                return i;
+            }
+        }
+        return null;
+    }
 };

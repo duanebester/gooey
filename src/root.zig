@@ -10,6 +10,12 @@ pub const Point = geometry.Point;
 pub const Rect = geometry.Rect;
 pub const Color = geometry.Color;
 
+// Input events
+pub const input = @import("core/input.zig");
+pub const InputEvent = input.InputEvent;
+pub const MouseEvent = input.MouseEvent;
+pub const MouseButton = input.MouseButton;
+
 // Scene and primitives
 pub const scene = @import("core/scene.zig");
 pub const Scene = scene.Scene;
