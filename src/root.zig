@@ -16,6 +16,13 @@ pub const Scene = scene.Scene;
 pub const Quad = scene.Quad;
 pub const Shadow = scene.Shadow;
 pub const Hsla = scene.Hsla;
+pub const GlyphInstance = scene.GlyphInstance;
+
+// Font system
+pub const font = @import("font/main.zig");
+pub const TextSystem = font.TextSystem;
+pub const Face = font.Face;
+pub const TextStyle = font.TextStyle;
 
 // Re-export platform types
 pub const platform = @import("platform/mac/platform.zig");

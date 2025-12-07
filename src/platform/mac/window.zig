@@ -4,6 +4,7 @@ const std = @import("std");
 const objc = @import("objc");
 const geometry = @import("../../core/geometry.zig");
 const scene_mod = @import("../../core/scene.zig");
+const Atlas = @import("../../font/atlas.zig").Atlas;
 const platform = @import("platform.zig");
 const metal = @import("metal/metal.zig");
 const display_link = @import("display_link.zig");
@@ -22,6 +23,7 @@ pub const Window = struct {
     background_color: geometry.Color,
     needs_render: std.atomic.Value(bool),
     scene: ?*const scene_mod.Scene,
+    text_atlas: ?*const Atlas = null,
     delegate: ?objc.Object = null,
     resize_mutex: std.Thread.Mutex = .{},
     benchmark_mode: bool = false, // Set true to force
@@ -187,6 +189,11 @@ pub const Window = struct {
             const pool = createAutoreleasePool() orelse return;
             defer drainAutoreleasePool(pool);
 
+            // Auto-update text atlas during resize
+            if (self.text_atlas) |atlas| {
+                self.renderer.updateTextAtlas(atlas) catch {};
+            }
+
             if (self.scene) |s| {
                 self.renderer.renderSceneSynchronous(s, self.background_color) catch {};
             } else {
@@ -285,6 +292,11 @@ pub const Window = struct {
         self.requestRender(); // Mark dirty for next vsync
     }
 
+    /// Set the text atlas for automatic GPU sync
+    pub fn setTextAtlas(self: *Self, atlas: *const Atlas) void {
+        self.text_atlas = atlas;
+    }
+
     pub fn setScene(self: *Self, s: *const scene_mod.Scene) void {
         self.scene = s;
         self.requestRender();
@@ -334,6 +346,11 @@ fn displayLinkCallback(
             // Lock to prevent race with resize on main thread
             window.resize_mutex.lock();
             defer window.resize_mutex.unlock();
+
+            // Auto-update text atlas if set (checks generation, no-op if unchanged)
+            if (window.text_atlas) |atlas| {
+                window.renderer.updateTextAtlas(atlas) catch {};
+            }
 
             if (window.scene) |s| {
                 window.renderer.renderScene(s, window.background_color) catch |err| {

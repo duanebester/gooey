@@ -9,6 +9,8 @@ const mtl = @import("api.zig");
 const quad_shader = @import("quad.zig");
 const shaders = @import("shaders.zig");
 const shadow_shader = @import("shadow.zig");
+const text_pipeline = @import("text.zig");
+const Atlas = @import("../../../font/atlas.zig").Atlas;
 
 /// Vertex data: position (x, y) + color (r, g, b, a)
 pub const Vertex = extern struct {
@@ -38,6 +40,8 @@ pub const Renderer = struct {
     shadow_instance_buffer: ?objc.Object,
     shadow_instance_capacity: usize,
 
+    text_pipeline_state: ?text_pipeline.TextPipeline,
+
     // MSAA
     msaa_texture: ?objc.Object,
     size: geometry.Size(f64),
@@ -53,7 +57,6 @@ pub const Renderer = struct {
         const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse
             return error.MetalNotAvailable;
 
-        // In init(), after getting device:
         const device = objc.Object.fromId(device_ptr);
 
         // Detect unified memory (Apple Silicon)
@@ -85,6 +88,7 @@ pub const Renderer = struct {
             .shadow_pipeline_state = null,
             .shadow_instance_buffer = null,
             .shadow_instance_capacity = 0,
+            .text_pipeline_state = null, // Initialize as null first
             .msaa_texture = null,
             .size = size,
             .scale_factor = scale_factor,
@@ -96,6 +100,13 @@ pub const Renderer = struct {
         try self.setupPipeline();
         try self.setupQuadPipeline();
         try self.setupShadowPipeline();
+
+        // Initialize text pipeline AFTER we know pixel format and sample count
+        self.text_pipeline_state = text_pipeline.TextPipeline.init(
+            device,
+            mtl.MTLPixelFormat.bgra8unorm,
+            self.sample_count,
+        ) catch null;
 
         return self;
     }
@@ -455,6 +466,7 @@ pub const Renderer = struct {
         if (self.quad_pipeline_state) |ps| ps.msgSend(void, "release", .{});
         if (self.quad_unit_vertex_buffer) |vb| vb.msgSend(void, "release", .{});
         if (self.quad_instance_buffer) |ib| ib.msgSend(void, "release", .{});
+        if (self.text_pipeline_state) |*tp| tp.deinit();
         self.command_queue.msgSend(void, "release", .{});
         self.device.msgSend(void, "release", .{});
     }
@@ -650,6 +662,13 @@ pub const Renderer = struct {
                     @as(c_ulong, 6),
                     @as(c_ulong, quads.len),
                 });
+            }
+        }
+
+        if (self.text_pipeline_state) |*tp| {
+            const glyphs = s.getGlyphs();
+            if (glyphs.len > 0) {
+                tp.render(encoder, glyphs, .{ @as(f32, @floatCast(self.size.width)), @as(f32, @floatCast(self.size.height)) }) catch {};
             }
         }
 
@@ -895,6 +914,13 @@ pub const Renderer = struct {
             }
         }
 
+        if (self.text_pipeline_state) |*tp| {
+            const glyphs = s.getGlyphs();
+            if (glyphs.len > 0) {
+                tp.render(encoder, glyphs, .{ @as(f32, @floatCast(self.size.width)), @as(f32, @floatCast(self.size.height)) }) catch {};
+            }
+        }
+
         // =========================================================================
         // FINISH
         // =========================================================================
@@ -919,5 +945,12 @@ pub const Renderer = struct {
         self.createMSAATexture() catch |err| {
             std.debug.print("Failed to recreate MSAA texture on resize: {}\n", .{err});
         };
+    }
+
+    /// Update the text atlas texture (lazy - checks generation)
+    pub fn updateTextAtlas(self: *Self, atlas: *const Atlas) !void {
+        if (self.text_pipeline_state) |*tp| {
+            try tp.updateAtlas(atlas);
+        }
     }
 };

@@ -38,6 +38,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("QuartzCore", .{});
     exe.root_module.linkFramework("CoreFoundation", .{});
     exe.root_module.linkFramework("CoreVideo", .{});
+    exe.root_module.linkFramework("CoreText", .{});
+    exe.root_module.linkFramework("CoreGraphics", .{});
 
     // Also link libc for dispatch
     exe.root_module.link_libc = true;

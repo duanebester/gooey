@@ -271,6 +271,52 @@ pub const Shadow = extern struct {
 };
 
 // ============================================================================
+// Text/Glyph Primitive
+// ============================================================================
+
+/// A single glyph instance for GPU rendering
+/// Layout matches Metal shader (must be 16-byte aligned)
+pub const GlyphInstance = extern struct {
+    // Screen position (top-left of glyph quad)
+    pos_x: f32 = 0,
+    pos_y: f32 = 0,
+    // Glyph size in pixels
+    size_x: f32 = 0,
+    size_y: f32 = 0,
+    // Atlas UV coordinates
+    uv_left: f32 = 0,
+    uv_top: f32 = 0,
+    uv_right: f32 = 0,
+    uv_bottom: f32 = 0,
+    // Color (HSLA)
+    color: Hsla = Hsla.black,
+
+    pub fn init(
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        uv_left: f32,
+        uv_top: f32,
+        uv_right: f32,
+        uv_bottom: f32,
+        color: Hsla,
+    ) GlyphInstance {
+        return .{
+            .pos_x = x,
+            .pos_y = y,
+            .size_x = width,
+            .size_y = height,
+            .uv_left = uv_left,
+            .uv_top = uv_top,
+            .uv_right = uv_right,
+            .uv_bottom = uv_bottom,
+            .color = color,
+        };
+    }
+};
+
+// ============================================================================
 // Scene - collects primitives for rendering
 // ============================================================================
 
@@ -278,6 +324,7 @@ pub const Scene = struct {
     allocator: std.mem.Allocator,
     shadows: std.ArrayList(Shadow),
     quads: std.ArrayList(Quad),
+    glyphs: std.ArrayList(GlyphInstance),
     next_order: DrawOrder,
 
     const Self = @This();
@@ -287,6 +334,7 @@ pub const Scene = struct {
             .allocator = allocator,
             .shadows = .{},
             .quads = .{},
+            .glyphs = .{},
             .next_order = 0,
         };
     }
@@ -294,12 +342,31 @@ pub const Scene = struct {
     pub fn deinit(self: *Self) void {
         self.shadows.deinit(self.allocator);
         self.quads.deinit(self.allocator);
+        self.glyphs.deinit(self.allocator);
     }
 
     pub fn clear(self: *Self) void {
         self.shadows.clearRetainingCapacity();
         self.quads.clearRetainingCapacity();
+        self.glyphs.clearRetainingCapacity();
         self.next_order = 0;
+    }
+
+    pub fn insertGlyph(self: *Self, glyph: GlyphInstance) !void {
+        try self.glyphs.append(self.allocator, glyph);
+    }
+
+    /// Insert multiple glyphs at once
+    pub fn insertGlyphs(self: *Self, glyph_instances: []const GlyphInstance) !void {
+        try self.glyphs.appendSlice(self.allocator, glyph_instances);
+    }
+
+    pub fn glyphCount(self: *const Self) usize {
+        return self.glyphs.items.len;
+    }
+
+    pub fn getGlyphs(self: *const Self) []const GlyphInstance {
+        return self.glyphs.items;
     }
 
     /// Insert a shadow (call BEFORE the quad it shadows)
