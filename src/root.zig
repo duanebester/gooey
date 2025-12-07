@@ -10,10 +10,11 @@ pub const Point = geometry.Point;
 pub const Rect = geometry.Rect;
 pub const Color = geometry.Color;
 
-// NEW: Scene and primitives
+// Scene and primitives
 pub const scene = @import("core/scene.zig");
 pub const Scene = scene.Scene;
 pub const Quad = scene.Quad;
+pub const Shadow = scene.Shadow;
 pub const Hsla = scene.Hsla;
 
 // Re-export platform types

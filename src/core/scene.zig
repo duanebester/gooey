@@ -141,26 +141,21 @@ pub const ContentMask = extern struct {
 pub const Quad = extern struct {
     order: DrawOrder = 0,
     _pad0: u32 = 0,
-    // Bounds (flattened)
     bounds_origin_x: f32 = 0,
     bounds_origin_y: f32 = 0,
     bounds_size_width: f32 = 0,
     bounds_size_height: f32 = 0,
-    // Content mask / clip (flattened)
     clip_origin_x: f32 = -1e9,
     clip_origin_y: f32 = -1e9,
     clip_size_width: f32 = 2e9,
     clip_size_height: f32 = 2e9,
-    // Padding for float4 alignment (offset 40 -> 48)
     _pad1: u32 = 0,
     _pad2: u32 = 0,
-    // Colors (float4 needs 16-byte alignment, now at offset 48)
     background: Hsla = Hsla.transparent,
     border_color: Hsla = Hsla.transparent,
     corner_radii: Corners = Corners.zero,
     border_widths: Edges = Edges.zero,
 
-    /// Create a simple filled rectangle
     pub fn filled(x: f32, y: f32, width: f32, height: f32, color: Hsla) Quad {
         return .{
             .bounds_origin_x = x,
@@ -171,7 +166,6 @@ pub const Quad = extern struct {
         };
     }
 
-    /// Create a rounded rectangle
     pub fn rounded(x: f32, y: f32, width: f32, height: f32, color: Hsla, radius: f32) Quad {
         return .{
             .bounds_origin_x = x,
@@ -183,7 +177,6 @@ pub const Quad = extern struct {
         };
     }
 
-    /// Set border
     pub fn withBorder(self: Quad, color: Hsla, width: f32) Quad {
         var q = self;
         q.border_color = color;
@@ -193,11 +186,97 @@ pub const Quad = extern struct {
 };
 
 // ============================================================================
+// Shadow Primitive
+// ============================================================================
+
+/// Shadow - drop shadow behind UI elements
+/// Renders as an expanded, blurred rounded rectangle using SDF.
+///
+/// Memory layout must match Metal shader exactly.
+/// float4 types require 16-byte alignment in Metal!
+pub const Shadow = extern struct {
+    // Offset 0
+    order: DrawOrder = 0,
+    _pad0: u32 = 0,
+
+    // Offset 8
+    content_origin_x: f32 = 0,
+    content_origin_y: f32 = 0,
+
+    // Offset 16
+    content_size_width: f32 = 0,
+    content_size_height: f32 = 0,
+
+    // Offset 24 - need padding to reach 32 for float4 alignment
+    blur_radius: f32 = 10.0,
+    offset_x: f32 = 0,
+
+    // Offset 32 (16-byte aligned for float4)
+    corner_radii: Corners = Corners.zero,
+
+    // Offset 48 (16-byte aligned for float4)
+    color: Hsla = Hsla.init(0, 0, 0, 0.25),
+
+    // Offset 64
+    offset_y: f32 = 4.0,
+    _pad1: f32 = 0,
+    _pad2: f32 = 0,
+    _pad3: f32 = 0,
+
+    // Total: 80 bytes
+
+    pub fn drop(x: f32, y: f32, width: f32, height: f32, blur: f32) Shadow {
+        return .{
+            .content_origin_x = x,
+            .content_origin_y = y,
+            .content_size_width = width,
+            .content_size_height = height,
+            .blur_radius = blur,
+            .color = Hsla.init(0, 0, 0, 0.25),
+            .offset_y = blur * 0.4,
+        };
+    }
+
+    pub fn forQuad(quad: Quad, blur: f32) Shadow {
+        return .{
+            .content_origin_x = quad.bounds_origin_x,
+            .content_origin_y = quad.bounds_origin_y,
+            .content_size_width = quad.bounds_size_width,
+            .content_size_height = quad.bounds_size_height,
+            .corner_radii = quad.corner_radii,
+            .blur_radius = blur,
+            .color = Hsla.init(0, 0, 0, 0.25),
+            .offset_y = blur * 0.4,
+        };
+    }
+
+    pub fn withColor(self: Shadow, c: Hsla) Shadow {
+        var s = self;
+        s.color = c;
+        return s;
+    }
+
+    pub fn withOffset(self: Shadow, x: f32, y: f32) Shadow {
+        var s = self;
+        s.offset_x = x;
+        s.offset_y = y;
+        return s;
+    }
+
+    pub fn withCornerRadius(self: Shadow, radius: f32) Shadow {
+        var s = self;
+        s.corner_radii = Corners.all(radius);
+        return s;
+    }
+};
+
+// ============================================================================
 // Scene - collects primitives for rendering
 // ============================================================================
 
 pub const Scene = struct {
     allocator: std.mem.Allocator,
+    shadows: std.ArrayList(Shadow),
     quads: std.ArrayList(Quad),
     next_order: DrawOrder,
 
@@ -206,18 +285,29 @@ pub const Scene = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
+            .shadows = .{},
             .quads = .{},
             .next_order = 0,
         };
     }
 
     pub fn deinit(self: *Self) void {
+        self.shadows.deinit(self.allocator);
         self.quads.deinit(self.allocator);
     }
 
     pub fn clear(self: *Self) void {
+        self.shadows.clearRetainingCapacity();
         self.quads.clearRetainingCapacity();
         self.next_order = 0;
+    }
+
+    /// Insert a shadow (call BEFORE the quad it shadows)
+    pub fn insertShadow(self: *Self, shadow: Shadow) !void {
+        var s = shadow;
+        s.order = self.next_order;
+        self.next_order += 1;
+        try self.shadows.append(self.allocator, s);
     }
 
     pub fn insertQuad(self: *Self, quad: Quad) !void {
@@ -227,7 +317,18 @@ pub const Scene = struct {
         try self.quads.append(self.allocator, q);
     }
 
+    /// Insert a quad with its shadow in one call
+    pub fn insertQuadWithShadow(self: *Self, quad: Quad, blur_radius: f32) !void {
+        try self.insertShadow(Shadow.forQuad(quad, blur_radius));
+        try self.insertQuad(quad);
+    }
+
     pub fn finish(self: *Self) void {
+        std.sort.pdq(Shadow, self.shadows.items, {}, struct {
+            fn lessThan(_: void, a: Shadow, b: Shadow) bool {
+                return a.order < b.order;
+            }
+        }.lessThan);
         std.sort.pdq(Quad, self.quads.items, {}, struct {
             fn lessThan(_: void, a: Quad, b: Quad) bool {
                 return a.order < b.order;
@@ -235,8 +336,16 @@ pub const Scene = struct {
         }.lessThan);
     }
 
+    pub fn shadowCount(self: *const Self) usize {
+        return self.shadows.items.len;
+    }
+
     pub fn quadCount(self: *const Self) usize {
         return self.quads.items.len;
+    }
+
+    pub fn getShadows(self: *const Self) []const Shadow {
+        return self.shadows.items;
     }
 
     pub fn getQuads(self: *const Self) []const Quad {

@@ -24,7 +24,7 @@ pub const Window = struct {
     scene: ?*const scene_mod.Scene,
     delegate: ?objc.Object = null,
     resize_mutex: std.Thread.Mutex = .{},
-    benchmark_mode: bool = true, // Set true to force
+    benchmark_mode: bool = false, // Set true to force
     in_live_resize: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub const Options = struct {
@@ -99,12 +99,8 @@ pub const Window = struct {
         // Setup Metal layer
         try self.setupMetalLayer();
 
-        // Initialize renderer with scaled drawable size
-        const drawable_size = geometry.Size(f64).init(
-            self.size.width * self.scale_factor,
-            self.size.height * self.scale_factor,
-        );
-        self.renderer = try metal.Renderer.init(self.metal_layer, drawable_size);
+        // Initialize renderer with logical size and scale factor
+        self.renderer = try metal.Renderer.init(self.metal_layer, self.size, self.scale_factor);
 
         // Setup display link for vsync
         if (options.use_display_link) {
@@ -178,9 +174,9 @@ pub const Window = struct {
 
         // Let renderer handle drawable size and MSAA texture
         self.renderer.resize(geometry.Size(f64).init(
-            new_width * new_scale,
-            new_height * new_scale,
-        ));
+            new_width,
+            new_height,
+        ), new_scale);
 
         // Request re-render
         self.requestRender();

@@ -1,11 +1,14 @@
 //! Metal Renderer - handles GPU rendering with clean API types
 const std = @import("std");
+
 const objc = @import("objc");
+
 const geometry = @import("../../../core/geometry.zig");
 const scene_mod = @import("../../../core/scene.zig");
 const mtl = @import("api.zig");
-const shaders = @import("shaders.zig");
 const quad_shader = @import("quad.zig");
+const shaders = @import("shaders.zig");
+const shadow_shader = @import("shadow.zig");
 
 /// Vertex data: position (x, y) + color (r, g, b, a)
 pub const Vertex = extern struct {
@@ -30,15 +33,22 @@ pub const Renderer = struct {
     quad_instance_buffer: ?objc.Object,
     quad_instance_capacity: usize,
 
+    // Shadow pipeline
+    shadow_pipeline_state: ?objc.Object,
+    shadow_instance_buffer: ?objc.Object,
+    shadow_instance_capacity: usize,
+
     // MSAA
     msaa_texture: ?objc.Object,
     size: geometry.Size(f64),
+    scale_factor: f64,
     sample_count: u32,
 
     const Self = @This();
     const INITIAL_QUAD_CAPACITY = 256;
 
-    pub fn init(layer: objc.Object, size: geometry.Size(f64)) !Self {
+    pub fn init(layer: objc.Object, size: geometry.Size(f64), scale_factor: f64) !Self {
+
         // Get default Metal device
         const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse
             return error.MetalNotAvailable;
@@ -55,10 +65,10 @@ pub const Renderer = struct {
         // Set device on layer
         layer.msgSend(void, "setDevice:", .{device.value});
 
-        // Set drawable size on layer
+        // Set drawable size on layer (physical pixels)
         const drawable_size = mtl.CGSize{
-            .width = size.width,
-            .height = size.height,
+            .width = size.width * scale_factor,
+            .height = size.height * scale_factor,
         };
         layer.msgSend(void, "setDrawableSize:", .{drawable_size});
 
@@ -72,8 +82,12 @@ pub const Renderer = struct {
             .quad_unit_vertex_buffer = null,
             .quad_instance_buffer = null,
             .quad_instance_capacity = 0,
+            .shadow_pipeline_state = null,
+            .shadow_instance_buffer = null,
+            .shadow_instance_capacity = 0,
             .msaa_texture = null,
             .size = size,
+            .scale_factor = scale_factor,
             .sample_count = 4, // MSAA 4x
             .unified_memory = unified_memory,
         };
@@ -81,6 +95,7 @@ pub const Renderer = struct {
         try self.createMSAATexture();
         try self.setupPipeline();
         try self.setupQuadPipeline();
+        try self.setupShadowPipeline();
 
         return self;
     }
@@ -101,8 +116,8 @@ pub const Renderer = struct {
             "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
             .{
                 @intFromEnum(mtl.MTLPixelFormat.bgra8unorm),
-                @as(c_ulong, @intFromFloat(self.size.width)),
-                @as(c_ulong, @intFromFloat(self.size.height)),
+                @as(c_ulong, @intFromFloat(self.size.width * self.scale_factor)),
+                @as(c_ulong, @intFromFloat(self.size.height * self.scale_factor)),
                 false,
             },
         );
@@ -238,6 +253,71 @@ pub const Renderer = struct {
             return error.BufferCreationFailed;
         }
         self.vertex_buffer = objc.Object.fromId(buffer_ptr);
+    }
+
+    // Add new method:
+    fn setupShadowPipeline(self: *Self) !void {
+        const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+        const source_str = NSString.msgSend(
+            objc.Object,
+            "stringWithUTF8String:",
+            .{shadow_shader.shadow_shader_source.ptr},
+        );
+
+        const library_ptr = self.device.msgSend(
+            ?*anyopaque,
+            "newLibraryWithSource:options:error:",
+            .{ source_str.value, @as(?*anyopaque, null), @as(?*anyopaque, null) },
+        );
+        if (library_ptr == null) {
+            std.debug.print("Failed to compile shadow shader\n", .{});
+            return error.ShaderCompilationFailed;
+        }
+        const library = objc.Object.fromId(library_ptr);
+        defer library.msgSend(void, "release", .{});
+
+        // Get vertex and fragment functions
+        const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"shadow_vertex"});
+        const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"shadow_fragment"});
+
+        const vertex_fn = library.msgSend(objc.Object, "newFunctionWithName:", .{vertex_name.value});
+        const fragment_fn = library.msgSend(objc.Object, "newFunctionWithName:", .{fragment_name.value});
+        defer vertex_fn.msgSend(void, "release", .{});
+        defer fragment_fn.msgSend(void, "release", .{});
+
+        // Create pipeline descriptor
+        const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
+            return error.ClassNotFound;
+        const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+        defer desc.msgSend(void, "release", .{});
+
+        desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
+        desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
+        desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, self.sample_count)});
+
+        // Configure blending for transparency
+        const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
+        const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
+        attachment0.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.bgra8unorm)});
+        attachment0.msgSend(void, "setBlendingEnabled:", .{true});
+        attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.source_alpha)});
+        attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+        attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
+        attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+
+        // Create pipeline state
+        const pipeline_ptr = self.device.msgSend(
+            ?*anyopaque,
+            "newRenderPipelineStateWithDescriptor:error:",
+            .{ desc.value, @as(?*anyopaque, null) },
+        );
+        if (pipeline_ptr == null) {
+            return error.PipelineCreationFailed;
+        }
+        self.shadow_pipeline_state = objc.Object.fromId(pipeline_ptr);
+
+        std.debug.print("Shadow pipeline created successfully\n", .{});
     }
 
     fn setupQuadPipeline(self: *Self) !void {
@@ -435,27 +515,16 @@ pub const Renderer = struct {
         command_buffer.msgSend(void, "commit", .{});
     }
 
-    /// Render a scene containing quads
     pub fn renderScene(self: *Self, s: *const scene_mod.Scene, clear_color: geometry.Color) !void {
+        const shadows = s.getShadows();
         const quads = s.getQuads();
 
-        if (quads.len == 0) {
+        if (shadows.len == 0 and quads.len == 0) {
             self.render(clear_color, false);
             return;
         }
 
-        // Ensure we have enough buffer space
-        try self.ensureQuadCapacity(quads.len);
-
-        // Copy quad data to GPU buffer
-        const buffer = self.quad_instance_buffer orelse return error.NoBuffer;
-        const contents_ptr = buffer.msgSend(?*anyopaque, "contents", .{});
-        if (contents_ptr) |ptr| {
-            const dest: [*]scene_mod.Quad = @ptrCast(@alignCast(ptr));
-            @memcpy(dest[0..quads.len], quads);
-        }
-
-        // Begin rendering
+        // Begin rendering - get drawable and textures
         const drawable_ptr = self.layer.msgSend(?*anyopaque, "nextDrawable", .{});
         if (drawable_ptr == null) return;
         const drawable = objc.Object.fromId(drawable_ptr);
@@ -484,21 +553,36 @@ pub const Renderer = struct {
         if (encoder_ptr == null) return;
         const encoder = objc.Object.fromId(encoder_ptr);
 
-        // Draw quads
-        if (self.quad_pipeline_state) |pipeline| {
-            if (self.quad_unit_vertex_buffer) |unit_verts| {
-                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
+        // =========================================================================
+        // COMMON SETUP - viewport and shared data (BEFORE any drawing)
+        // =========================================================================
+        const viewport = mtl.MTLViewport{
+            .x = 0,
+            .y = 0,
+            .width = self.size.width * self.scale_factor,
+            .height = self.size.height * self.scale_factor,
+            .znear = 0,
+            .zfar = 1,
+        };
+        encoder.msgSend(void, "setViewport:", .{viewport});
 
-                // Set viewport
-                const viewport = mtl.MTLViewport{
-                    .x = 0,
-                    .y = 0,
-                    .width = self.size.width,
-                    .height = self.size.height,
-                    .znear = 0,
-                    .zfar = 1,
-                };
-                encoder.msgSend(void, "setViewport:", .{viewport});
+        const viewport_size: [2]f32 = .{
+            @floatCast(self.size.width),
+            @floatCast(self.size.height),
+        };
+
+        // Unit vertices buffer is shared between shadows and quads
+        const unit_verts = self.quad_unit_vertex_buffer orelse {
+            encoder.msgSend(void, "endEncoding", .{});
+            return;
+        };
+
+        // =========================================================================
+        // DRAW SHADOWS (first - they render behind everything)
+        // =========================================================================
+        if (shadows.len > 0) {
+            if (self.shadow_pipeline_state) |pipeline| {
+                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
 
                 // Buffer 0: unit vertices
                 encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
@@ -507,25 +591,59 @@ pub const Renderer = struct {
                     @as(c_ulong, 0),
                 });
 
-                // Buffer 1: quad instances - use setVertexBytes instead of buffer
+                // Buffer 1: shadow instances
                 encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(quads.ptr)),
-                    @as(c_ulong, quads.len * @sizeOf(scene_mod.Quad)),
+                    @as(*const anyopaque, @ptrCast(shadows.ptr)),
+                    @as(c_ulong, shadows.len * @sizeOf(scene_mod.Shadow)),
                     @as(c_ulong, 1),
                 });
 
-                // Buffer 2: viewport size (accounting for retina scale)
-                const viewport_size: [2]f32 = .{
-                    @floatCast(self.size.width),
-                    @floatCast(self.size.height),
-                };
+                // Buffer 2: viewport size
                 encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
                     @as(*const anyopaque, @ptrCast(&viewport_size)),
                     @as(c_ulong, @sizeOf([2]f32)),
                     @as(c_ulong, 2),
                 });
 
-                // Draw instanced quads (6 vertices per quad, quads.len instances)
+                // Draw instanced shadows (6 vertices per shadow)
+                encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                    @as(c_ulong, 0),
+                    @as(c_ulong, 6),
+                    @as(c_ulong, shadows.len),
+                });
+            }
+        }
+
+        // =========================================================================
+        // DRAW QUADS (on top of shadows)
+        // =========================================================================
+        if (quads.len > 0) {
+            if (self.quad_pipeline_state) |pipeline| {
+                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
+
+                // Buffer 0: unit vertices (same buffer, just re-bind after pipeline change)
+                encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                    unit_verts.value,
+                    @as(c_ulong, 0),
+                    @as(c_ulong, 0),
+                });
+
+                // Buffer 1: quad instances
+                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                    @as(*const anyopaque, @ptrCast(quads.ptr)),
+                    @as(c_ulong, quads.len * @sizeOf(scene_mod.Quad)),
+                    @as(c_ulong, 1),
+                });
+
+                // Buffer 2: viewport size
+                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                    @as(*const anyopaque, @ptrCast(&viewport_size)),
+                    @as(c_ulong, @sizeOf([2]f32)),
+                    @as(c_ulong, 2),
+                });
+
+                // Draw instanced quads (6 vertices per quad)
                 encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
                     @intFromEnum(mtl.MTLPrimitiveType.triangle),
                     @as(c_ulong, 0),
@@ -535,6 +653,9 @@ pub const Renderer = struct {
             }
         }
 
+        // =========================================================================
+        // FINISH
+        // =========================================================================
         encoder.msgSend(void, "endEncoding", .{});
         command_buffer.msgSend(void, "presentDrawable:", .{drawable.value});
         command_buffer.msgSend(void, "commit", .{});
@@ -626,9 +747,10 @@ pub const Renderer = struct {
 
     /// Synchronous scene render - for live resize
     pub fn renderSceneSynchronous(self: *Self, s: *const scene_mod.Scene, clear_color: geometry.Color) !void {
+        const shadows = s.getShadows();
         const quads = s.getQuads();
 
-        if (quads.len == 0) {
+        if (shadows.len == 0 and quads.len == 0) {
             self.renderSynchronous(clear_color, false);
             return;
         }
@@ -681,20 +803,70 @@ pub const Renderer = struct {
         }
         const encoder = objc.Object.fromId(encoder_ptr);
 
-        // Draw quads
-        if (self.quad_pipeline_state) |pipeline| {
-            if (self.quad_unit_vertex_buffer) |unit_verts| {
+        // =========================================================================
+        // COMMON SETUP
+        // =========================================================================
+        const viewport = mtl.MTLViewport{
+            .x = 0,
+            .y = 0,
+            .width = self.size.width * self.scale_factor,
+            .height = self.size.height * self.scale_factor,
+            .znear = 0,
+            .zfar = 1,
+        };
+        encoder.msgSend(void, "setViewport:", .{viewport});
+
+        const viewport_size: [2]f32 = .{
+            @floatCast(self.size.width),
+            @floatCast(self.size.height),
+        };
+
+        const unit_verts = self.quad_unit_vertex_buffer orelse {
+            encoder.msgSend(void, "endEncoding", .{});
+            CATransaction.msgSend(void, "commit", .{});
+            return;
+        };
+
+        // =========================================================================
+        // DRAW SHADOWS (first)
+        // =========================================================================
+        if (shadows.len > 0) {
+            if (self.shadow_pipeline_state) |pipeline| {
                 encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
 
-                const viewport = mtl.MTLViewport{
-                    .x = 0,
-                    .y = 0,
-                    .width = self.size.width,
-                    .height = self.size.height,
-                    .znear = 0,
-                    .zfar = 1,
-                };
-                encoder.msgSend(void, "setViewport:", .{viewport});
+                encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                    unit_verts.value,
+                    @as(c_ulong, 0),
+                    @as(c_ulong, 0),
+                });
+
+                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                    @as(*const anyopaque, @ptrCast(shadows.ptr)),
+                    @as(c_ulong, shadows.len * @sizeOf(scene_mod.Shadow)),
+                    @as(c_ulong, 1),
+                });
+
+                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                    @as(*const anyopaque, @ptrCast(&viewport_size)),
+                    @as(c_ulong, @sizeOf([2]f32)),
+                    @as(c_ulong, 2),
+                });
+
+                encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                    @as(c_ulong, 0),
+                    @as(c_ulong, 6),
+                    @as(c_ulong, shadows.len),
+                });
+            }
+        }
+
+        // =========================================================================
+        // DRAW QUADS (on top)
+        // =========================================================================
+        if (quads.len > 0) {
+            if (self.quad_pipeline_state) |pipeline| {
+                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
 
                 encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
                     unit_verts.value,
@@ -708,10 +880,6 @@ pub const Renderer = struct {
                     @as(c_ulong, 1),
                 });
 
-                const viewport_size: [2]f32 = .{
-                    @floatCast(self.size.width),
-                    @floatCast(self.size.height),
-                };
                 encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
                     @as(*const anyopaque, @ptrCast(&viewport_size)),
                     @as(c_ulong, @sizeOf([2]f32)),
@@ -727,6 +895,9 @@ pub const Renderer = struct {
             }
         }
 
+        // =========================================================================
+        // FINISH
+        // =========================================================================
         encoder.msgSend(void, "endEncoding", .{});
 
         // Wait until scheduled, then present via drawable
@@ -738,11 +909,12 @@ pub const Renderer = struct {
         CATransaction.msgSend(void, "commit", .{});
     }
 
-    pub fn resize(self: *Self, size: geometry.Size(f64)) void {
+    pub fn resize(self: *Self, size: geometry.Size(f64), scale_factor: f64) void {
         self.size = size;
+        self.scale_factor = scale_factor;
         self.layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
-            .width = size.width,
-            .height = size.height,
+            .width = size.width * scale_factor,
+            .height = size.height * scale_factor,
         }});
         self.createMSAATexture() catch |err| {
             std.debug.print("Failed to recreate MSAA texture on resize: {}\n", .{err});
