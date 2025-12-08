@@ -82,15 +82,15 @@ pub const Shaper = struct {
             byte_idx = @intCast(iter.i);
 
             if (cp <= 0xFFFF) {
-                try self.utf16_buffer.append(@intCast(cp));
-                try cluster_map.append(start_byte);
+                try self.utf16_buffer.append(self.allocator, @intCast(cp));
+                try cluster_map.append(self.allocator, start_byte);
             } else {
                 // Surrogate pair
                 const adjusted = cp - 0x10000;
-                try self.utf16_buffer.append(@intCast(0xD800 + (adjusted >> 10)));
-                try self.utf16_buffer.append(@intCast(0xDC00 + (adjusted & 0x3FF)));
-                try cluster_map.append(start_byte);
-                try cluster_map.append(start_byte);
+                try self.utf16_buffer.append(self.allocator, @intCast(0xD800 + (adjusted >> 10)));
+                try self.utf16_buffer.append(self.allocator, @intCast(0xDC00 + (adjusted & 0x3FF)));
+                try cluster_map.append(self.allocator, start_byte);
+                try cluster_map.append(self.allocator, start_byte);
             }
         }
 
@@ -171,7 +171,7 @@ pub const Shaper = struct {
                 else
                     0;
 
-                try self.glyph_buffer.append(.{
+                try self.glyph_buffer.append(self.allocator, .{
                     .glyph_id = glyphs[i],
                     .x_offset = @floatCast(positions[i].x),
                     .y_offset = @floatCast(positions[i].y),
@@ -196,7 +196,10 @@ pub const Shaper = struct {
 
     /// Simple shape without full CoreText pipeline (faster for ASCII)
     pub fn shapeSimple(self: *Self, face: *const Face, text: []const u8) !ShapedRun {
-        self.glyph_buffer.clearRetainingCapacity();
+        // Allocate a fresh buffer for this call to avoid race conditions
+        var glyph_list = std.ArrayList(ShapedGlyph){};
+        defer glyph_list.deinit(self.allocator);
+
         var total_width: f32 = 0;
         var byte_idx: u32 = 0;
 
@@ -208,7 +211,7 @@ pub const Shaper = struct {
             const glyph_id = face.glyphIndex(cp);
             const metrics = face.glyphMetrics(glyph_id);
 
-            try self.glyph_buffer.append(self.allocator, .{
+            try glyph_list.append(self.allocator, .{
                 .glyph_id = glyph_id,
                 .x_offset = 0,
                 .y_offset = 0,
@@ -220,8 +223,8 @@ pub const Shaper = struct {
             total_width += metrics.advance_x;
         }
 
-        const result = try self.allocator.alloc(ShapedGlyph, self.glyph_buffer.items.len);
-        @memcpy(result, self.glyph_buffer.items);
+        // Transfer ownership of the backing array to the result
+        const result = try glyph_list.toOwnedSlice(self.allocator);
 
         return ShapedRun{
             .glyphs = result,

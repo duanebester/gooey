@@ -49,6 +49,33 @@ pub const Element = element.Element;
 pub const ElementId = element.ElementId;
 pub const asElement = element.asElement;
 
+// Entity system (for reactive state management)
+pub const entity = @import("core/entity.zig");
+pub const EntityId = entity.EntityId;
+pub const Entity = entity.Entity;
+pub const WeakEntity = entity.WeakEntity;
+pub const AnyEntity = entity.AnyEntity;
+pub const AnyWeakEntity = entity.AnyWeakEntity;
+pub const RefCounts = entity.RefCounts;
+
+// Entity map
+pub const entity_map = @import("core/entity_map.zig");
+pub const EntityMap = entity_map.EntityMap;
+
+// Context system (for reactive updates)
+pub const context = @import("core/context.zig");
+pub const Context = context.Context;
+
+// Render system (for views)
+pub const render = @import("core/render.zig");
+pub const Renderable = render.Renderable;
+pub const ViewContext = render.ViewContext;
+pub const AnyView = render.AnyView;
+pub const AnyWeakView = render.AnyWeakView;
+pub const RenderOutput = render.RenderOutput;
+pub const Listener = render.Listener;
+pub const WindowVTable = render.WindowVTable;
+
 // Event system
 pub const event = @import("core/event.zig");
 pub const Event = event.Event;
@@ -66,7 +93,6 @@ pub const BoundingBox = layout.BoundingBox;
 // View tree
 pub const view = @import("core/view.zig");
 pub const ViewTree = view.ViewTree;
-pub const ViewNode = view.ViewNode;
 
 test {
     std.testing.refAllDecls(@This());

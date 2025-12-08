@@ -152,7 +152,7 @@ pub const TextInput = struct {
     /// Set the text content
     pub fn setText(self: *Self, text: []const u8) !void {
         self.buffer.clearRetainingCapacity();
-        try self.buffer.appendSlice(text);
+        try self.buffer.appendSlice(self.allocator, text);
         self.cursor_byte = text.len;
         self.selection_anchor = null;
         self.notifyChange();

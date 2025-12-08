@@ -12,6 +12,16 @@ const input = @import("../../core/input.zig");
 const display_link = @import("display_link.zig");
 const appkit = @import("appkit.zig");
 
+const render_mod = @import("../../core/render.zig");
+const context_mod = @import("../../core/context.zig");
+const entity_map_mod = @import("../../core/entity_map.zig");
+
+const AnyView = render_mod.AnyView;
+const RenderOutput = render_mod.RenderOutput;
+const WindowVTable = render_mod.WindowVTable;
+const ContextVTable = context_mod.ContextVTable;
+const EntityMap = entity_map_mod.EntityMap;
+
 const NSRect = appkit.NSRect;
 const NSSize = appkit.NSSize;
 const DisplayLink = display_link.DisplayLink;
@@ -47,7 +57,35 @@ pub const Window = struct {
     inserted_text_buffer: [256]u8 = undefined,
     pending_key_event: ?objc.c.id = null,
     /// IME cursor rect in view coordinates (for candidate window positioning)
-    ime_cursor_rect: appkit.NSRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } }, // NEW
+    ime_cursor_rect: appkit.NSRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } },
+
+    // =========================================================================
+    // Reactive View System Fields
+    // =========================================================================
+
+    /// The root view for this window (type-erased)
+    root_view: ?AnyView = null,
+
+    /// Reference to App for entity access (type-erased)
+    app_ptr: ?*anyopaque = null,
+
+    /// App's context vtable for creating contexts
+    app_ctx_vtable: ?*const ContextVTable = null,
+
+    /// Callback to check if an entity is dirty
+    is_dirty_fn: ?*const fn (*anyopaque, render_mod.EntityId) bool = null,
+
+    /// Callback to clear dirty flag for an entity
+    clear_dirty_fn: ?*const fn (*anyopaque, render_mod.EntityId) void = null,
+
+    /// Callback to get the entity map
+    get_entities_fn: ?*const fn (*anyopaque) *EntityMap = null,
+
+    /// Our WindowVTable for ViewContext
+    window_vtable: WindowVTable,
+
+    /// Custom render callback (called when root view renders)
+    on_render: ?*const fn (*Window, RenderOutput) void = null,
 
     pub const InputCallback = *const fn (*Window, input.InputEvent) bool;
 
@@ -80,7 +118,20 @@ pub const Window = struct {
             .background_color = options.background_color,
             .needs_render = std.atomic.Value(bool).init(true),
             .scene = null,
+            .window_vtable = .{
+                .getSize = windowVTableGetSize,
+                .requestRender = windowVTableRequestRender,
+            },
         };
+
+        // Initialize reactive system fields
+        self.root_view = null;
+        self.app_ptr = null;
+        self.app_ctx_vtable = null;
+        self.is_dirty_fn = null;
+        self.clear_dirty_fn = null;
+        self.get_entities_fn = null;
+        self.on_render = null;
 
         // Create NSWindow
         const NSWindow = objc.getClass("NSWindow") orelse return error.ClassNotFound;
@@ -441,6 +492,120 @@ pub const Window = struct {
     pub fn getSize(self: *const Self) geometry.Size(f64) {
         return self.size;
     }
+
+    // =========================================================================
+    // Reactive View System Methods
+    // =========================================================================
+
+    /// Connect this window to an App for reactive rendering.
+    /// This must be called before setRootView().
+    pub fn connectApp(
+        self: *Self,
+        app_ptr: *anyopaque,
+        ctx_vtable: *const ContextVTable,
+        is_dirty_fn: *const fn (*anyopaque, render_mod.EntityId) bool,
+        clear_dirty_fn: *const fn (*anyopaque, render_mod.EntityId) void,
+        get_entities_fn: *const fn (*anyopaque) *EntityMap,
+    ) void {
+        self.app_ptr = app_ptr;
+        self.app_ctx_vtable = ctx_vtable;
+        self.is_dirty_fn = is_dirty_fn;
+        self.clear_dirty_fn = clear_dirty_fn;
+        self.get_entities_fn = get_entities_fn;
+    }
+
+    /// Set the root view for this window.
+    /// T must be Renderable (have a render method).
+    /// The window will automatically re-render when the view's entity is dirty.
+    pub fn setRootView(self: *Self, comptime T: type, view: render_mod.Entity(T)) void {
+        if (self.app_ptr == null) {
+            @panic("Window.connectApp() must be called before setRootView()");
+        }
+
+        // Create the type-erased view
+        self.root_view = AnyView.from(T, view);
+
+        // Request initial render
+        self.needs_render.store(true, .seq_cst);
+    }
+
+    /// Clear the root view
+    pub fn clearRootView(self: *Self) void {
+        self.root_view = null;
+    }
+
+    /// Check if the root view needs re-rendering
+    pub fn rootViewIsDirty(self: *Self) bool {
+        if (self.root_view) |view| {
+            if (self.app_ptr) |app| {
+                if (self.is_dirty_fn) |is_dirty| {
+                    return is_dirty(app, view.entity_id);
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Render the root view if it exists and is dirty
+    pub fn renderRootViewIfNeeded(self: *Self) void {
+        const view = self.root_view orelse return;
+        const app = self.app_ptr orelse return;
+        const ctx_vtable = self.app_ctx_vtable orelse return;
+        const get_entities = self.get_entities_fn orelse return;
+
+        // Check if dirty or forced render
+        const is_dirty = if (self.is_dirty_fn) |check| check(app, view.entity_id) else false;
+
+        if (!is_dirty and !self.needs_render.load(.seq_cst)) {
+            return;
+        }
+
+        // Get the entity map
+        const entities = get_entities(app);
+
+        // Render the view
+        var output = view.render(
+            entities,
+            app,
+            ctx_vtable,
+            @ptrCast(self),
+            &self.window_vtable,
+        );
+        defer output.deinit();
+
+        // Call custom render callback if set
+        if (self.on_render) |on_render| {
+            on_render(self, output);
+        }
+
+        // Clear dirty flag
+        if (self.clear_dirty_fn) |clear| {
+            clear(app, view.entity_id);
+        }
+    }
+
+    /// Set a callback to be invoked when the root view renders.
+    /// This is where you convert RenderOutput to Scene primitives.
+    pub fn setRenderCallback(self: *Self, callback: *const fn (*Window, RenderOutput) void) void {
+        self.on_render = callback;
+    }
+
+    // =========================================================================
+    // WindowVTable Implementation
+    // =========================================================================
+
+    fn windowVTableGetSize(ptr: *anyopaque) WindowVTable.Size {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        return .{
+            .width = @floatCast(self.size.width),
+            .height = @floatCast(self.size.height),
+        };
+    }
+
+    fn windowVTableRequestRender(ptr: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.needs_render.store(true, .seq_cst);
+    }
 };
 
 /// CVDisplayLink callback - runs on high-priority background thread
@@ -467,21 +632,38 @@ fn displayLinkCallback(
             return .success;
         }
 
+        // =====================================================================
+        // NEW: Check if root view is dirty and trigger re-render
+        // =====================================================================
+        var view_is_dirty = false;
+        if (window.root_view) |view| {
+            if (window.app_ptr) |app| {
+                if (window.is_dirty_fn) |is_dirty| {
+                    view_is_dirty = is_dirty(app, view.entity_id);
+                }
+            }
+        }
+
         // Benchmark mode: always render. Normal mode: only when dirty
-        const should_render = window.benchmark_mode or
-            window.needs_render.swap(false, .acq_rel);
+        const explicit_render = window.needs_render.swap(false, .acq_rel);
+        const should_render = window.benchmark_mode or explicit_render or view_is_dirty;
 
         // Only render if needed (dirty flag pattern)
         if (should_render) {
             // CRITICAL: Create autorelease pool for this background thread!
-            // Metal objects (command buffers, render pass descriptors, drawables)
-            // are autoreleased and will leak without a pool.
             const pool = createAutoreleasePool() orelse return .success;
             defer drainAutoreleasePool(pool);
 
             // Lock to prevent race with resize on main thread
             window.resize_mutex.lock();
             defer window.resize_mutex.unlock();
+
+            // =================================================================
+            // NEW: Render root view if we have one
+            // =================================================================
+            if (view_is_dirty) {
+                window.renderRootViewIfNeeded();
+            }
 
             // Auto-update text atlas if set (checks generation, no-op if unchanged)
             if (window.text_atlas) |atlas| {

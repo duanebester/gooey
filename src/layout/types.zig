@@ -497,7 +497,7 @@ pub const BoundingBox = struct {
 
 test "sizing constructors" {
     const sizing = Sizing.fixed(100, 200);
-    try std.testing.expectEqual(.fixed, sizing.width.value);
+    try std.testing.expectEqual(.fixed, std.meta.activeTag(sizing.width.value));
     try std.testing.expectEqual(@as(f32, 100), sizing.width.getMin());
 }
 
