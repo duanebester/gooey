@@ -43,6 +43,31 @@ pub const App = @import("core/app.zig").App;
 pub const elements = @import("elements.zig");
 pub const TextInput = elements.TextInput;
 
+// Element system
+pub const element = @import("core/element.zig");
+pub const Element = element.Element;
+pub const ElementId = element.ElementId;
+pub const asElement = element.asElement;
+
+// Event system
+pub const event = @import("core/event.zig");
+pub const Event = event.Event;
+pub const EventPhase = event.EventPhase;
+
+// Layout system
+pub const layout = @import("layout/layout.zig");
+pub const LayoutEngine = layout.LayoutEngine;
+pub const LayoutId = layout.LayoutId;
+pub const Sizing = layout.Sizing;
+pub const LayoutConfig = layout.LayoutConfig;
+pub const ElementDeclaration = layout.ElementDeclaration;
+pub const BoundingBox = layout.BoundingBox;
+
+// View tree
+pub const view = @import("core/view.zig");
+pub const ViewTree = view.ViewTree;
+pub const ViewNode = view.ViewNode;
+
 test {
     std.testing.refAllDecls(@This());
 }

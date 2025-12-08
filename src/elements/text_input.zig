@@ -24,6 +24,12 @@
 const std = @import("std");
 const gooey = @import("../root.zig");
 
+const element = @import("../core/element.zig");
+const event = @import("../core/event.zig");
+const ElementId = element.ElementId;
+const Event = event.Event;
+const EventResult = element.EventResult;
+
 const Scene = gooey.Scene;
 const Quad = gooey.scene.Quad;
 const Hsla = gooey.scene.Hsla;
@@ -76,6 +82,8 @@ pub const Style = struct {
 pub const TextInput = struct {
     allocator: std.mem.Allocator,
 
+    id: ElementId,
+
     // Geometry
     bounds: Bounds,
     style: Style,
@@ -127,6 +135,7 @@ pub const TextInput = struct {
             .style = .{},
             .buffer = .{},
             .preedit_buffer = .{},
+            .id = ElementId.generate(),
         };
     }
 
@@ -187,47 +196,79 @@ pub const TextInput = struct {
     // Input Handling
     // =========================================================================
 
-    /// Handle an input event. Returns true if the event was consumed.
-    pub fn handleInput(self: *Self, event: InputEvent) bool {
-        switch (event) {
+    pub fn handleEvent(self: *Self, ev: *Event) EventResult {
+        // Only handle events in target or bubble phase
+        if (ev.phase == .capture) return .ignored;
+
+        switch (ev.inner) {
             .mouse_down => |m| {
                 const px: f32 = @floatCast(m.position.x);
                 const py: f32 = @floatCast(m.position.y);
                 if (self.bounds.contains(px, py)) {
-                    self.focus();
-                    // TODO: Click-to-position cursor
-                    // For now, just move cursor to end
-                    if (!m.modifiers.shift) {
-                        self.selection_anchor = null;
-                    } else if (self.selection_anchor == null) {
-                        self.selection_anchor = self.cursor_byte;
-                    }
-                    return true;
-                } else {
-                    self.blur();
+                    // Request focus through event system
+                    ev.stopPropagation();
+                    return .stop;
                 }
             },
             .key_down => |k| {
                 if (self.focused) {
                     self.handleKey(k) catch {};
-                    return true;
+                    ev.stopPropagation();
+                    return .stop;
                 }
             },
             .text_input => |t| {
                 if (self.focused) {
                     self.insertText(t.text) catch {};
-                    return true;
+                    ev.stopPropagation();
+                    return .stop;
                 }
             },
             .composition => |c| {
                 if (self.focused) {
                     self.setComposition(c.text) catch {};
-                    return true;
+                    ev.stopPropagation();
+                    return .stop;
                 }
             },
             else => {},
         }
-        return false;
+        return .ignored;
+    }
+
+    /// Element interface: get bounds
+    pub fn getBounds(self: *Self) element.Bounds {
+        return element.Bounds.init(
+            self.bounds.x,
+            self.bounds.y,
+            self.bounds.width,
+            self.bounds.height,
+        );
+    }
+
+    /// Element interface: get ID
+    pub fn getId(self: *Self) ElementId {
+        return self.id;
+    }
+
+    /// Element interface: can this element receive focus?
+    pub fn canFocus(_: *Self) bool {
+        return true;
+    }
+
+    /// Element interface: called when gaining focus
+    pub fn onFocus(self: *Self) void {
+        self.focus();
+    }
+
+    /// Element interface: called when losing focus
+    pub fn onBlur(self: *Self) void {
+        self.blur();
+    }
+
+    /// Convert to type-erased Element
+    pub fn asElement(self: *Self) element.Element {
+        return element.asElement(Self, self);
     }
 
     /// Handle text_input event (committed text from IME)
@@ -363,11 +404,12 @@ pub const TextInput = struct {
     // Selection Helpers
     // =========================================================================
 
-    fn hasSelection(self: *const Self) bool {
-        if (self.selection_anchor) |anchor| {
-            return anchor != self.cursor_byte;
-        }
-        return false;
+    pub fn hasSelection(self: *const Self) bool {
+        // Debug: catch invalid state early
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
+        if (self.selection_anchor) |a| std.debug.assert(a <= self.buffer.items.len);
+
+        return self.selection_anchor != null and self.selection_anchor.? != self.cursor_byte;
     }
 
     fn selectionStart(self: *const Self) usize {
@@ -531,7 +573,7 @@ pub const TextInput = struct {
         if (!has_content and self.placeholder.len > 0) {
             // Render placeholder
             _ = try self.renderText(scene, text_system, self.placeholder, text_x, baseline_y, scale_factor, self.style.placeholder_color);
-        } else {
+        } else if (has_content) {
             // Render selection background first (if any)
             if (self.hasSelection()) {
                 try self.renderSelection(scene, text_system, text_x, text_y, self.bounds.height - self.style.padding * 2, scale_factor);
@@ -569,35 +611,35 @@ pub const TextInput = struct {
                 const after = text[self.cursor_byte..];
                 _ = try self.renderText(scene, text_system, after, pen_x, baseline_y, scale_factor, self.style.text_color);
             }
+        }
 
-            // Render cursor
-            if (self.focused and self.cursor_visible and preedit.len == 0) {
-                // Calculate cursor x position
-                var cursor_x = text_x - self.scroll_offset;
-                if (self.cursor_byte > 0) {
-                    cursor_x += try self.measureText(text_system, text[0..self.cursor_byte]);
-                }
-
-                const cursor_height = metrics.line_height;
-                const cursor_y = text_y + (self.bounds.height - self.style.padding * 2 - cursor_height) / 2;
-
-                const cursor = Quad.filled(
-                    cursor_x,
-                    cursor_y,
-                    1.5, // cursor width
-                    cursor_height,
-                    self.style.cursor_color,
-                );
-                try scene.insertQuad(cursor);
-
-                // Notify about cursor rect for IME positioning
-                if (self.on_cursor_rect_changed) |callback| {
-                    callback(cursor_x, cursor_y, 1.5, cursor_height);
-                }
-
-                // Ensure cursor is visible by adjusting scroll
-                self.ensureCursorVisible(cursor_x, text_x, text_width);
+        // Render cursor (moved OUTSIDE the if/else so it always draws when focused)
+        if (self.focused and self.cursor_visible and preedit.len == 0) {
+            // Calculate cursor x position
+            var cursor_x = text_x - self.scroll_offset;
+            if (self.cursor_byte > 0 and text.len > 0) {
+                cursor_x += try self.measureText(text_system, text[0..self.cursor_byte]);
             }
+
+            const cursor_height = metrics.line_height;
+            const cursor_y = text_y + (self.bounds.height - self.style.padding * 2 - cursor_height) / 2;
+
+            const cursor = Quad.filled(
+                cursor_x,
+                cursor_y,
+                1.5, // cursor width
+                cursor_height,
+                self.style.cursor_color,
+            );
+            try scene.insertQuad(cursor);
+
+            // Notify about cursor rect for IME positioning
+            if (self.on_cursor_rect_changed) |callback| {
+                callback(cursor_x, cursor_y, 1.5, cursor_height);
+            }
+
+            // Ensure cursor is visible by adjusting scroll
+            self.ensureCursorVisible(cursor_x, text_x, text_width);
         }
     }
 

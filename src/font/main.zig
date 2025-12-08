@@ -56,6 +56,93 @@ pub const TextSystem = struct {
         self.* = undefined;
     }
 
+    // =========================================================================
+    // Enhanced Text Measurement for Layout System
+    // =========================================================================
+
+    /// Text measurement result
+    pub const TextMeasurement = struct {
+        /// Total width of the text
+        width: f32,
+        /// Height (based on font metrics)
+        height: f32,
+        /// Number of lines (for wrapped text)
+        line_count: u32 = 1,
+    };
+
+    /// Measure text dimensions without rendering
+    /// This is the layout-friendly measurement API
+    pub fn measureTextEx(
+        self: *Self,
+        text: []const u8,
+        max_width: ?f32,
+    ) !TextMeasurement {
+        const face = self.current_face orelse return error.NoFontLoaded;
+        var run = try self.shaper.shapeSimple(&face, text);
+        defer run.deinit(self.allocator);
+
+        // If no max width or text fits, return simple measurement
+        if (max_width == null or run.width <= max_width.?) {
+            return .{
+                .width = run.width,
+                .height = face.metrics.line_height,
+                .line_count = 1,
+            };
+        }
+
+        // Text wrapping measurement
+        var current_width: f32 = 0;
+        var max_line_width: f32 = 0;
+        var line_count: u32 = 1;
+        var word_start: usize = 0;
+        var word_width: f32 = 0;
+
+        for (run.glyphs, 0..) |glyph, i| {
+            const char_idx = glyph.cluster;
+            const is_space = char_idx < text.len and text[char_idx] == ' ';
+            const is_newline = char_idx < text.len and text[char_idx] == '\n';
+
+            if (is_newline) {
+                max_line_width = @max(max_line_width, current_width);
+                current_width = 0;
+                line_count += 1;
+                word_start = i + 1;
+                word_width = 0;
+                continue;
+            }
+
+            word_width += glyph.x_advance;
+
+            if (is_space or i == run.glyphs.len - 1) {
+                if (current_width + word_width > max_width.? and current_width > 0) {
+                    max_line_width = @max(max_line_width, current_width);
+                    current_width = word_width;
+                    line_count += 1;
+                } else {
+                    current_width += word_width;
+                }
+                word_start = i + 1;
+                word_width = 0;
+            }
+        }
+
+        max_line_width = @max(max_line_width, current_width);
+
+        return .{
+            .width = max_line_width,
+            .height = face.metrics.line_height * @as(f32, @floatFromInt(line_count)),
+            .line_count = line_count,
+        };
+    }
+
+    /// Simple width measurement (existing, kept for compatibility)
+    pub fn measureText(self: *Self, text: []const u8) !f32 {
+        const face = self.current_face orelse return error.NoFontLoaded;
+        var run = try self.shaper.shapeSimple(&face, text);
+        defer run.deinit(self.allocator);
+        return run.width;
+    }
+
     /// Load a font by name
     pub fn loadFont(self: *Self, name: []const u8, size: f32) !void {
         if (self.current_face) |*f| f.deinit();
@@ -74,14 +161,6 @@ pub const TextSystem = struct {
     pub fn getMetrics(self: *const Self) ?Metrics {
         if (self.current_face) |f| return f.metrics;
         return null;
-    }
-
-    /// Measure text width
-    pub fn measureText(self: *Self, text: []const u8) !f32 {
-        const face = self.current_face orelse return error.NoFontLoaded;
-        var run = try self.shaper.shapeSimple(&face, text);
-        defer run.deinit(self.allocator);
-        return run.width;
     }
 
     /// Shape text and get glyph positions
