@@ -291,44 +291,39 @@ pub const FocusManager = struct {
 
     /// Cycle focus by delta (+1 for next, -1 for prev)
     fn cycleFocus(self: *Self, delta: i32) void {
-        // Filter to only tab stops
-        var tab_stops = std.ArrayListUnmanaged(usize){};
-        defer tab_stops.deinit(self.allocator);
+        // Count tab stops inline
+        var count: usize = 0;
+        for (self.focus_order.items) |handle| {
+            if (handle.tab_stop) count += 1;
+        }
+        if (count == 0) return;
 
+        // Find current position and next target in one pass
+        var current_pos: i32 = -1;
+        var pos: i32 = 0;
         for (self.focus_order.items, 0..) |handle, i| {
-            if (handle.tab_stop) {
-                tab_stops.append(self.allocator, i) catch return;
+            if (!handle.tab_stop) continue;
+            if (self.focus_index >= 0 and i == @as(usize, @intCast(self.focus_index))) {
+                current_pos = pos;
             }
+            pos += 1;
         }
 
-        if (tab_stops.items.len == 0) return;
+        // Calculate target and iterate again to find it
+        const target_pos: i32 = if (current_pos < 0)
+            if (delta > 0) 0 else @as(i32, @intCast(count)) - 1
+        else
+            @mod(current_pos + delta, @as(i32, @intCast(count)));
 
-        // Find current position in tab stops
-        var current_tab_index: i32 = -1;
-        if (self.focus_index >= 0) {
-            for (tab_stops.items, 0..) |order_index, i| {
-                if (order_index == @as(usize, @intCast(self.focus_index))) {
-                    current_tab_index = @intCast(i);
-                    break;
-                }
+        pos = 0;
+        for (self.focus_order.items) |handle| {
+            if (!handle.tab_stop) continue;
+            if (pos == target_pos) {
+                self.focus(handle.id);
+                return;
             }
+            pos += 1;
         }
-
-        // Calculate next index with wrapping
-        const count: i32 = @intCast(tab_stops.items.len);
-        var next_tab_index: i32 = undefined;
-
-        if (current_tab_index < 0) {
-            // Nothing focused, start at first (for next) or last (for prev)
-            next_tab_index = if (delta > 0) 0 else count - 1;
-        } else {
-            next_tab_index = @mod(current_tab_index + delta, count);
-        }
-
-        // Focus the element
-        const order_index = tab_stops.items[@intCast(next_tab_index)];
-        const handle = self.focus_order.items[order_index];
-        self.focus(handle.id);
     }
 
     // =========================================================================
