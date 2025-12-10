@@ -52,6 +52,11 @@ pub const measureSimple = shaper.measureSimple;
 pub const Atlas = @import("atlas.zig").Atlas;
 pub const Region = @import("atlas.zig").Region;
 pub const cache = @import("cache.zig");
+
+// Text rendering utility
+pub const render = @import("render.zig");
+pub const renderText = render.renderText;
+
 pub const GlyphCache = cache.GlyphCache;
 pub const CachedGlyph = cache.CachedGlyph;
 

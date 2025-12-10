@@ -132,7 +132,7 @@ var state = struct {
 pub fn main() !void {
     try gooey.run(.{
         .title = "Gooey Showcase",
-        .width = 600,
+        .width = 800,
         .height = 600,
         .render = render,
         .on_event = onEvent,

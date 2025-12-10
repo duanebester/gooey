@@ -451,7 +451,8 @@ fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         .text => {
             const text_data = cmd.data.text;
             const baseline_y = cmd.bounding_box.y + cmd.bounding_box.height * 0.75;
-            try renderText(
+            const use_clip = gooey_ctx.scene.hasActiveClip();
+            _ = try text_mod.renderText(
                 gooey_ctx.scene,
                 gooey_ctx.text_system,
                 text_data.text,
@@ -459,6 +460,7 @@ fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
                 baseline_y,
                 gooey_ctx.scale_factor,
                 render_bridge.colorToHsla(text_data.color),
+                .{ .clipped = use_clip },
             );
         },
         .scissor_start => {
@@ -474,42 +476,6 @@ fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
             gooey_ctx.scene.popClip();
         },
         else => {},
-    }
-}
-
-fn renderText(scene: *Scene, text_system: *TextSystem, text_content: []const u8, x: f32, baseline_y: f32, scale_factor: f32, color: Hsla) !void {
-    var shaped = try text_system.shapeText(text_content);
-    defer shaped.deinit(text_system.allocator);
-
-    const use_clip = scene.hasActiveClip();
-
-    var pen_x = x;
-    for (shaped.glyphs) |glyph_info| {
-        const cached = try text_system.getGlyph(glyph_info.glyph_id);
-        if (cached.region.width > 0 and cached.region.height > 0) {
-            const glyph_x = @floor(pen_x) + cached.bearing_x;
-            const glyph_y = @floor(baseline_y) - cached.bearing_y;
-
-            const atlas = text_system.getAtlas();
-            const uv_coords = cached.region.uv(atlas.size);
-            const glyph = scene_mod.GlyphInstance.init(
-                glyph_x,
-                glyph_y,
-                @as(f32, @floatFromInt(cached.region.width)) / scale_factor,
-                @as(f32, @floatFromInt(cached.region.height)) / scale_factor,
-                uv_coords.u0,
-                uv_coords.v0,
-                uv_coords.u1,
-                uv_coords.v1,
-                color,
-            );
-            if (use_clip) {
-                try scene.insertGlyphClipped(glyph);
-            } else {
-                try scene.insertGlyph(glyph);
-            }
-        }
-        pen_x += glyph_info.x_advance;
     }
 }
 

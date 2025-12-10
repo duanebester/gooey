@@ -10,6 +10,7 @@
 const std = @import("std");
 const scene_mod = @import("../core/scene.zig");
 const layout_types = @import("../layout/types.zig");
+const text_mod = @import("../text/mod.zig");
 
 const Scene = scene_mod.Scene;
 const Quad = scene_mod.Quad;
@@ -217,7 +218,16 @@ pub const Checkbox = struct {
                 const label_x = x + box_size + self.style.label_gap;
                 const label_y = y + box_size * 0.72;
                 const label_color = colorToHsla(self.style.label_color);
-                try renderText(scene, text_system, label_text, label_x, label_y, scale_factor, label_color);
+                _ = try text_mod.renderText(
+                    scene,
+                    text_system,
+                    label_text,
+                    label_x,
+                    label_y,
+                    scale_factor,
+                    label_color,
+                    .{ .clipped = false },
+                );
             }
         }
     }
@@ -275,39 +285,6 @@ fn colorToHsla(color: Color) Hsla {
     h /= 6.0;
 
     return Hsla{ .h = h, .s = s, .l = l, .a = color.a };
-}
-
-// =============================================================================
-// Text Rendering Helper
-// =============================================================================
-
-fn renderText(scene: *Scene, text_system: anytype, text_content: []const u8, x: f32, baseline_y: f32, scale_factor: f32, color: Hsla) !void {
-    var shaped = try text_system.shapeText(text_content);
-    defer shaped.deinit(text_system.allocator);
-
-    var pen_x = x;
-    for (shaped.glyphs) |glyph_info| {
-        const cached = try text_system.getGlyph(glyph_info.glyph_id);
-        if (cached.region.width > 0 and cached.region.height > 0) {
-            const glyph_x = @floor(pen_x) + cached.bearing_x;
-            const glyph_y = @floor(baseline_y) - cached.bearing_y;
-
-            const atlas = text_system.getAtlas();
-            const uv_coords = cached.region.uv(atlas.size);
-            try scene.insertGlyph(GlyphInstance.init(
-                glyph_x,
-                glyph_y,
-                @as(f32, @floatFromInt(cached.region.width)) / scale_factor,
-                @as(f32, @floatFromInt(cached.region.height)) / scale_factor,
-                uv_coords.u0,
-                uv_coords.v0,
-                uv_coords.u1,
-                uv_coords.v1,
-                color,
-            ));
-        }
-        pen_x += glyph_info.x_advance;
-    }
 }
 
 // =============================================================================

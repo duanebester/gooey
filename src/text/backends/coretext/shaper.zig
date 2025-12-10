@@ -73,8 +73,8 @@ pub const CoreTextShaper = struct {
 
         // Convert UTF-8 to UTF-16
         self.utf16_buffer.clearRetainingCapacity();
-        var cluster_map = std.ArrayList(u32).init(allocator);
-        defer cluster_map.deinit();
+        var cluster_map = std.ArrayList(u32){};
+        defer cluster_map.deinit(allocator);
 
         var byte_idx: u32 = 0;
         var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
@@ -136,8 +136,8 @@ pub const CoreTextShaper = struct {
         const runs = ct.CTLineGetGlyphRuns(line);
         const run_count = ct.CFArrayGetCount(runs);
 
-        var glyph_buffer = std.ArrayList(ShapedGlyph).init(allocator);
-        defer glyph_buffer.deinit();
+        var glyph_buffer = std.ArrayList(ShapedGlyph){};
+        defer glyph_buffer.deinit(allocator);
 
         var total_width: f32 = 0;
 
@@ -172,9 +172,16 @@ pub const CoreTextShaper = struct {
                 else
                     0;
 
-                try glyph_buffer.append(.{
+                // Don't use positions[i].x as offset - advances already include kerning!
+                // Or calculate relative offset from previous position
+                const x_offset: f32 = if (i == 0)
+                    @floatCast(positions[i].x) // First glyph: use as-is
+                else
+                    0; // Subsequent glyphs: just use advance
+
+                try glyph_buffer.append(allocator, .{
                     .glyph_id = glyphs[i],
-                    .x_offset = @floatCast(positions[i].x),
+                    .x_offset = x_offset,
                     .y_offset = @floatCast(positions[i].y),
                     .x_advance = @floatCast(advances[i].width),
                     .y_advance = @floatCast(advances[i].height),
@@ -185,7 +192,7 @@ pub const CoreTextShaper = struct {
             }
         }
 
-        const result = try glyph_buffer.toOwnedSlice();
+        const result = try glyph_buffer.toOwnedSlice(allocator);
 
         return ShapedRun{
             .glyphs = result,

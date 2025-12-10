@@ -91,10 +91,10 @@ pub const TextSystem = struct {
         return error.NoFontLoaded;
     }
 
-    /// Shape text using simple shaper (fast, no ligatures)
+    /// Shape text with proper kerning and ligature support
     pub fn shapeText(self: *Self, text: []const u8) !ShapedRun {
-        const face = try self.getFontFace();
-        return shaper_mod.shapeSimple(self.allocator, face, text);
+        // Use complex shaper for proper kerning
+        return self.shapeTextComplex(text);
     }
 
     /// Shape text using complex shaper (ligatures, kerning)
