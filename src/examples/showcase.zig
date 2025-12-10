@@ -199,6 +199,8 @@ const HomePage = struct {
         b.box(.{
             .padding = .{ .all = 32 },
             .gap = 24,
+            .fill_width = true,
+            .fill_height = true,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             ui.text("Welcome to Gooey", .{ .size = 32, .color = t.text }),
@@ -277,6 +279,8 @@ const FormsPage = struct {
         b.box(.{
             .padding = .{ .all = 32 },
             .gap = 16,
+            .fill_width = true,
+            .fill_height = true,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             ui.text("Contact Form", .{ .size = 24, .color = t.text }),
@@ -333,6 +337,8 @@ const AboutPage = struct {
         b.box(.{
             .padding = .{ .all = 32 },
             .gap = 16,
+            .fill_width = true,
+            .fill_height = true,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             ui.text("About Gooey", .{ .size = 24, .color = t.text }),
@@ -352,7 +358,7 @@ const FeatureCard = struct {
             .shadow = ShadowConfig.drop(6),
             .background = t.card,
             .corner_radius = 12,
-            .alignment = .{ .cross = .center },
+            .alignment = .{ .cross = .start },
         }, .{
             FeatureItem{ .text = "Metal GPU rendering" },
             FeatureItem{ .text = "Immediate-mode layout" },
