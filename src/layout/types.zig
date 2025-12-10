@@ -319,6 +319,53 @@ pub const BorderConfig = struct {
 };
 
 // ============================================================================
+// Shadow Configuration
+// ============================================================================
+
+/// Shadow configuration for drop shadows
+pub const ShadowConfig = struct {
+    /// Shadow blur radius (0 = no shadow)
+    blur_radius: f32 = 0,
+    /// Shadow color (RGBA)
+    color: Color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.15 },
+    /// Horizontal offset
+    offset_x: f32 = 0,
+    /// Vertical offset (positive = down)
+    offset_y: f32 = 4,
+
+    /// Create a simple drop shadow with default color
+    pub fn drop(blur: f32) ShadowConfig {
+        return .{
+            .blur_radius = blur,
+            .offset_y = blur * 0.4,
+        };
+    }
+
+    /// Create a shadow with custom blur and offset
+    pub fn offset(blur: f32, x: f32, y: f32) ShadowConfig {
+        return .{
+            .blur_radius = blur,
+            .offset_x = x,
+            .offset_y = y,
+        };
+    }
+
+    /// Create a shadow with custom color
+    pub fn colored(blur: f32, color: Color) ShadowConfig {
+        return .{
+            .blur_radius = blur,
+            .color = color,
+            .offset_y = blur * 0.4,
+        };
+    }
+
+    /// Check if shadow is visible
+    pub fn isVisible(self: ShadowConfig) bool {
+        return self.blur_radius > 0 and self.color.a > 0;
+    }
+};
+
+// ============================================================================
 // Color
 // ============================================================================
 

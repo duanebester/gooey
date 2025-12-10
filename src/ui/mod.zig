@@ -43,5 +43,6 @@ pub const TextStyle = ui_impl.TextStyle;
 pub const BoxStyle = ui_impl.BoxStyle;
 pub const StackStyle = ui_impl.StackStyle;
 pub const CenterStyle = ui_impl.CenterStyle;
+pub const ShadowConfig = ui_impl.ShadowConfig;
 pub const ButtonStyle = ui_impl.ButtonStyle;
 pub const InputStyle = ui_impl.InputStyle;

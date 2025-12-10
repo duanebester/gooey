@@ -10,6 +10,7 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
+const ShadowConfig = ui.ShadowConfig;
 
 // =============================================================================
 // Theme
@@ -218,6 +219,7 @@ const StatsRow = struct {
             .gap = 16,
             .padding = .{ .all = 24 },
             .background = t.card,
+            .shadow = ShadowConfig.drop(6),
             .corner_radius = 12,
         }, .{
             StatCard{ .label = "Clicks", .value = state.click_count },
@@ -293,6 +295,7 @@ const FormCard = struct {
         const t = state.theme;
 
         b.box(.{
+            .shadow = ShadowConfig.drop(6),
             .padding = .{ .all = 24 },
             .gap = 12,
             .background = t.card,
@@ -346,6 +349,7 @@ const FeatureCard = struct {
         b.box(.{
             .padding = .{ .all = 24 },
             .gap = 12,
+            .shadow = ShadowConfig.drop(6),
             .background = t.card,
             .corner_radius = 12,
             .alignment = .{ .cross = .center },

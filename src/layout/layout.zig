@@ -23,6 +23,7 @@ pub const Color = types.Color;
 pub const CornerRadius = types.CornerRadius;
 pub const BorderConfig = types.BorderConfig;
 pub const BorderWidth = types.BorderWidth;
+pub const ShadowConfig = types.ShadowConfig;
 pub const FloatingConfig = types.FloatingConfig;
 pub const ScrollConfig = types.ScrollConfig;
 pub const TextConfig = types.TextConfig;

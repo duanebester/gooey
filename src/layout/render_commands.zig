@@ -14,6 +14,7 @@ const TextConfig = types.TextConfig;
 /// Type of render command
 pub const RenderCommandType = enum {
     none,
+    shadow,
     rectangle,
     border,
     text,
@@ -40,6 +41,7 @@ pub const RenderCommand = struct {
 /// Command-specific render data
 pub const RenderData = union(RenderCommandType) {
     none: void,
+    shadow: ShadowData,
     rectangle: RectangleData,
     border: BorderData,
     text: TextData,
@@ -47,6 +49,15 @@ pub const RenderData = union(RenderCommandType) {
     scissor_start: ScissorData,
     scissor_end: void,
     custom: CustomData,
+};
+
+/// Data for shadow rendering
+pub const ShadowData = struct {
+    blur_radius: f32,
+    color: Color,
+    offset_x: f32,
+    offset_y: f32,
+    corner_radius: CornerRadius = .{},
 };
 
 /// Data for rectangle rendering
@@ -189,6 +200,20 @@ pub fn borderToQuad(cmd: RenderCommand) scene.Quad {
 pub fn renderCommandsToScene(commands: []const RenderCommand, s: *scene.Scene) !void {
     for (commands) |cmd| {
         switch (cmd.command_type) {
+            .shadow => {
+                const shadow_data = cmd.data.shadow;
+                try s.insertShadow(scene.Shadow{
+                    .content_origin_x = cmd.bounding_box.x,
+                    .content_origin_y = cmd.bounding_box.y,
+                    .content_size_width = cmd.bounding_box.width,
+                    .content_size_height = cmd.bounding_box.height,
+                    .blur_radius = shadow_data.blur_radius,
+                    .color = colorToHsla(shadow_data.color),
+                    .offset_x = shadow_data.offset_x,
+                    .offset_y = shadow_data.offset_y,
+                    .corner_radii = cornerRadiusToCorners(shadow_data.corner_radius),
+                });
+            },
             .rectangle => {
                 try s.insertQuad(rectangleToQuad(cmd));
             },

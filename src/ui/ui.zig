@@ -25,6 +25,7 @@ const Sizing = layout_mod.Sizing;
 const SizingAxis = layout_mod.SizingAxis;
 const Padding = layout_mod.Padding;
 const CornerRadius = layout_mod.CornerRadius;
+// const ShadowConfig = layout_mod.ShadowConfig;
 const ChildAlignment = layout_mod.ChildAlignment;
 const LayoutDirection = layout_mod.LayoutDirection;
 const LayoutConfig = layout_mod.LayoutConfig;
@@ -42,6 +43,7 @@ const Gooey = gooey_mod.Gooey;
 
 // Re-export for convenience
 pub const Color = @import("../layout/types.zig").Color;
+pub const ShadowConfig = @import("../layout/types.zig").ShadowConfig;
 
 // =============================================================================
 // Hit Region for Click Handling
@@ -95,6 +97,8 @@ pub const BoxStyle = struct {
     corner_radius: f32 = 0,
     border_color: Color = Color.transparent,
     border_width: f32 = 0,
+
+    shadow: ?ShadowConfig = null,
 
     // Layout
     direction: Direction = .column,
@@ -420,6 +424,7 @@ pub const Builder = struct {
             },
             .background_color = style.background,
             .corner_radius = CornerRadius.all(style.corner_radius),
+            .shadow = style.shadow,
         }) catch return;
 
         self.processChildren(children);

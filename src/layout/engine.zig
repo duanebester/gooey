@@ -19,6 +19,7 @@ const AlignmentX = types.AlignmentX;
 const AlignmentY = types.AlignmentY;
 const CornerRadius = types.CornerRadius;
 const BorderConfig = types.BorderConfig;
+const ShadowConfig = types.ShadowConfig;
 const TextConfig = types.TextConfig;
 
 const LayoutId = layout_id.LayoutId;
@@ -37,6 +38,7 @@ pub const ElementDeclaration = struct {
     background_color: ?Color = null,
     corner_radius: CornerRadius = .{},
     border: ?BorderConfig = null,
+    shadow: ?ShadowConfig = null,
     scroll: ?types.ScrollConfig = null,
     user_data: ?*anyopaque = null,
 };
@@ -583,6 +585,24 @@ pub const LayoutEngine = struct {
     fn generateRenderCommands(self: *Self, index: u32) !void {
         const elem = self.elements.getConst(index);
         const bbox = elem.computed.bounding_box;
+
+        // Shadow (renders BEFORE background rectangle)
+        if (elem.config.shadow) |shadow| {
+            if (shadow.isVisible()) {
+                try self.commands.append(.{
+                    .bounding_box = bbox,
+                    .command_type = .shadow,
+                    .id = elem.id,
+                    .data = .{ .shadow = .{
+                        .blur_radius = shadow.blur_radius,
+                        .color = shadow.color,
+                        .offset_x = shadow.offset_x,
+                        .offset_y = shadow.offset_y,
+                        .corner_radius = elem.config.corner_radius,
+                    } },
+                });
+            }
+        }
 
         // Background rectangle
         if (elem.config.background_color) |bg| {

@@ -157,15 +157,23 @@ pub const Renderer = struct {
             .{shadow_shader.shadow_shader_source.ptr},
         );
 
+        var compile_error: ?*anyopaque = null;
         const library_ptr = self.device.msgSend(
             ?*anyopaque,
             "newLibraryWithSource:options:error:",
-            .{ source_str.value, @as(?*anyopaque, null), @as(?*anyopaque, null) },
+            .{ source_str.value, @as(?*anyopaque, null), &compile_error },
         );
         if (library_ptr == null) {
+            if (compile_error) |err| {
+                const err_obj = objc.Object.fromId(err);
+                const desc = err_obj.msgSend(objc.Object, "localizedDescription", .{});
+                const cstr = desc.msgSend([*:0]const u8, "UTF8String", .{});
+                std.debug.print("Shadow shader compilation error: {s}\n", .{cstr});
+            }
             std.debug.print("Failed to compile shadow shader\n", .{});
             return error.ShaderCompilationFailed;
         }
+
         const library = objc.Object.fromId(library_ptr);
         defer library.msgSend(void, "release", .{});
 
@@ -173,8 +181,15 @@ pub const Renderer = struct {
         const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"shadow_vertex"});
         const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"shadow_fragment"});
 
-        const vertex_fn = library.msgSend(objc.Object, "newFunctionWithName:", .{vertex_name.value});
-        const fragment_fn = library.msgSend(objc.Object, "newFunctionWithName:", .{fragment_name.value});
+        const vertex_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{vertex_name.value});
+        const fragment_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{fragment_name.value});
+
+        if (vertex_fn_ptr == null or fragment_fn_ptr == null) {
+            std.debug.print("Failed to find shadow shader functions\n", .{});
+            return error.ShaderFunctionNotFound;
+        }
+        const vertex_fn = objc.Object.fromId(vertex_fn_ptr);
+        const fragment_fn = objc.Object.fromId(fragment_fn_ptr);
         defer vertex_fn.msgSend(void, "release", .{});
         defer fragment_fn.msgSend(void, "release", .{});
 
@@ -452,78 +467,98 @@ pub const Renderer = struct {
         };
 
         // =========================================================================
-        // DRAW SHADOWS (first - they render behind everything)
+        // DRAW SHADOWS AND QUADS INTERLEAVED BY ORDER (BATCHED)
         // =========================================================================
-        if (shadows.len > 0) {
-            if (self.shadow_pipeline_state) |pipeline| {
-                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
+        var shadow_idx: usize = 0;
+        var quad_idx: usize = 0;
 
-                // Buffer 0: unit vertices
-                encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                    unit_verts.value,
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 0),
-                });
+        while (shadow_idx < shadows.len or quad_idx < quads.len) {
+            // Determine which to draw next based on order
+            const draw_shadow = if (shadow_idx < shadows.len) blk: {
+                if (quad_idx >= quads.len) break :blk true;
+                break :blk shadows[shadow_idx].order < quads[quad_idx].order;
+            } else false;
 
-                // Buffer 1: shadow instances
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(shadows.ptr)),
-                    @as(c_ulong, shadows.len * @sizeOf(scene_mod.Shadow)),
-                    @as(c_ulong, 1),
-                });
+            if (draw_shadow) {
+                // Batch consecutive shadows
+                var batch_end = shadow_idx + 1;
+                while (batch_end < shadows.len) : (batch_end += 1) {
+                    // Stop if next quad should be drawn before this shadow
+                    if (quad_idx < quads.len and quads[quad_idx].order < shadows[batch_end].order) {
+                        break;
+                    }
+                }
+                const batch_count = batch_end - shadow_idx;
 
-                // Buffer 2: viewport size
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(&viewport_size)),
-                    @as(c_ulong, @sizeOf([2]f32)),
-                    @as(c_ulong, 2),
-                });
+                if (self.shadow_pipeline_state) |pipeline| {
+                    encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
 
-                // Draw instanced shadows (6 vertices per shadow)
-                encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 6),
-                    @as(c_ulong, shadows.len),
-                });
-            }
-        }
+                    encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                        unit_verts.value,
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 0),
+                    });
 
-        // =========================================================================
-        // DRAW QUADS (on top of shadows)
-        // =========================================================================
-        if (quads.len > 0) {
-            if (self.quad_pipeline_state) |pipeline| {
-                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&shadows[shadow_idx])),
+                        @as(c_ulong, batch_count * @sizeOf(scene_mod.Shadow)),
+                        @as(c_ulong, 1),
+                    });
 
-                // Buffer 0: unit vertices (same buffer, just re-bind after pipeline change)
-                encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                    unit_verts.value,
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 0),
-                });
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&viewport_size)),
+                        @as(c_ulong, @sizeOf([2]f32)),
+                        @as(c_ulong, 2),
+                    });
 
-                // Buffer 1: quad instances
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(quads.ptr)),
-                    @as(c_ulong, quads.len * @sizeOf(scene_mod.Quad)),
-                    @as(c_ulong, 1),
-                });
+                    encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+                        @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 6),
+                        @as(c_ulong, batch_count),
+                    });
+                }
+                shadow_idx = batch_end;
+            } else {
+                // Batch consecutive quads
+                var batch_end = quad_idx + 1;
+                while (batch_end < quads.len) : (batch_end += 1) {
+                    // Stop if next shadow should be drawn before this quad
+                    if (shadow_idx < shadows.len and shadows[shadow_idx].order < quads[batch_end].order) {
+                        break;
+                    }
+                }
+                const batch_count = batch_end - quad_idx;
 
-                // Buffer 2: viewport size
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(&viewport_size)),
-                    @as(c_ulong, @sizeOf([2]f32)),
-                    @as(c_ulong, 2),
-                });
+                if (self.quad_pipeline_state) |pipeline| {
+                    encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
 
-                // Draw instanced quads (6 vertices per quad)
-                encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 6),
-                    @as(c_ulong, quads.len),
-                });
+                    encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                        unit_verts.value,
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 0),
+                    });
+
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&quads[quad_idx])),
+                        @as(c_ulong, batch_count * @sizeOf(scene_mod.Quad)),
+                        @as(c_ulong, 1),
+                    });
+
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&viewport_size)),
+                        @as(c_ulong, @sizeOf([2]f32)),
+                        @as(c_ulong, 2),
+                    });
+
+                    encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+                        @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 6),
+                        @as(c_ulong, batch_count),
+                    });
+                }
+                quad_idx = batch_end;
             }
         }
 
@@ -691,70 +726,98 @@ pub const Renderer = struct {
         };
 
         // =========================================================================
-        // DRAW SHADOWS (first)
+        // DRAW SHADOWS AND QUADS INTERLEAVED BY ORDER (BATCHED)
         // =========================================================================
-        if (shadows.len > 0) {
-            if (self.shadow_pipeline_state) |pipeline| {
-                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
+        var shadow_idx: usize = 0;
+        var quad_idx: usize = 0;
 
-                encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                    unit_verts.value,
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 0),
-                });
+        while (shadow_idx < shadows.len or quad_idx < quads.len) {
+            // Determine which to draw next based on order
+            const draw_shadow = if (shadow_idx < shadows.len) blk: {
+                if (quad_idx >= quads.len) break :blk true;
+                break :blk shadows[shadow_idx].order < quads[quad_idx].order;
+            } else false;
 
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(shadows.ptr)),
-                    @as(c_ulong, shadows.len * @sizeOf(scene_mod.Shadow)),
-                    @as(c_ulong, 1),
-                });
+            if (draw_shadow) {
+                // Batch consecutive shadows
+                var batch_end = shadow_idx + 1;
+                while (batch_end < shadows.len) : (batch_end += 1) {
+                    // Stop if next quad should be drawn before this shadow
+                    if (quad_idx < quads.len and quads[quad_idx].order < shadows[batch_end].order) {
+                        break;
+                    }
+                }
+                const batch_count = batch_end - shadow_idx;
 
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(&viewport_size)),
-                    @as(c_ulong, @sizeOf([2]f32)),
-                    @as(c_ulong, 2),
-                });
+                if (self.shadow_pipeline_state) |pipeline| {
+                    encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
 
-                encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 6),
-                    @as(c_ulong, shadows.len),
-                });
-            }
-        }
+                    encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                        unit_verts.value,
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 0),
+                    });
 
-        // =========================================================================
-        // DRAW QUADS (on top)
-        // =========================================================================
-        if (quads.len > 0) {
-            if (self.quad_pipeline_state) |pipeline| {
-                encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&shadows[shadow_idx])),
+                        @as(c_ulong, batch_count * @sizeOf(scene_mod.Shadow)),
+                        @as(c_ulong, 1),
+                    });
 
-                encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                    unit_verts.value,
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 0),
-                });
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&viewport_size)),
+                        @as(c_ulong, @sizeOf([2]f32)),
+                        @as(c_ulong, 2),
+                    });
 
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(quads.ptr)),
-                    @as(c_ulong, quads.len * @sizeOf(scene_mod.Quad)),
-                    @as(c_ulong, 1),
-                });
+                    encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+                        @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 6),
+                        @as(c_ulong, batch_count),
+                    });
+                }
+                shadow_idx = batch_end;
+            } else {
+                // Batch consecutive quads
+                var batch_end = quad_idx + 1;
+                while (batch_end < quads.len) : (batch_end += 1) {
+                    // Stop if next shadow should be drawn before this quad
+                    if (shadow_idx < shadows.len and shadows[shadow_idx].order < quads[batch_end].order) {
+                        break;
+                    }
+                }
+                const batch_count = batch_end - quad_idx;
 
-                encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                    @as(*const anyopaque, @ptrCast(&viewport_size)),
-                    @as(c_ulong, @sizeOf([2]f32)),
-                    @as(c_ulong, 2),
-                });
+                if (self.quad_pipeline_state) |pipeline| {
+                    encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
 
-                encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
-                    @as(c_ulong, 0),
-                    @as(c_ulong, 6),
-                    @as(c_ulong, quads.len),
-                });
+                    encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                        unit_verts.value,
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 0),
+                    });
+
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&quads[quad_idx])),
+                        @as(c_ulong, batch_count * @sizeOf(scene_mod.Quad)),
+                        @as(c_ulong, 1),
+                    });
+
+                    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                        @as(*const anyopaque, @ptrCast(&viewport_size)),
+                        @as(c_ulong, @sizeOf([2]f32)),
+                        @as(c_ulong, 2),
+                    });
+
+                    encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+                        @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                        @as(c_ulong, 0),
+                        @as(c_ulong, 6),
+                        @as(c_ulong, batch_count),
+                    });
+                }
+                quad_idx = batch_end;
             }
         }
 

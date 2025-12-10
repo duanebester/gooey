@@ -323,6 +323,32 @@ fn renderFrame(ui: *UI, render_fn: *const fn (*UI) void) !void {
 
 fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
     switch (cmd.command_type) {
+        .shadow => {
+            const shadow_data = cmd.data.shadow;
+            std.debug.print("Shadow: pos=({d:.1},{d:.1}) size=({d:.1},{d:.1}) blur={d:.1} color=({d:.2},{d:.2},{d:.2},{d:.2})\n", .{
+                cmd.bounding_box.x,      cmd.bounding_box.y,
+                cmd.bounding_box.width,  cmd.bounding_box.height,
+                shadow_data.blur_radius, shadow_data.color.r,
+                shadow_data.color.g,     shadow_data.color.b,
+                shadow_data.color.a,
+            });
+            try gooey_ctx.scene.insertShadow(Shadow{
+                .content_origin_x = cmd.bounding_box.x,
+                .content_origin_y = cmd.bounding_box.y,
+                .content_size_width = cmd.bounding_box.width,
+                .content_size_height = cmd.bounding_box.height,
+                .blur_radius = shadow_data.blur_radius,
+                .color = layout_mod.colorToHsla(shadow_data.color),
+                .offset_x = shadow_data.offset_x,
+                .offset_y = shadow_data.offset_y,
+                .corner_radii = .{
+                    .top_left = shadow_data.corner_radius.top_left,
+                    .top_right = shadow_data.corner_radius.top_right,
+                    .bottom_left = shadow_data.corner_radius.bottom_left,
+                    .bottom_right = shadow_data.corner_radius.bottom_right,
+                },
+            });
+        },
         .rectangle => {
             const rect = cmd.data.rectangle;
             try gooey_ctx.scene.insertQuad(Quad{
