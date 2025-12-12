@@ -1,14 +1,14 @@
-//! Context Example - Demonstrates Level 2 typed state API with handlers
+//! Context Example (Pure State) - Demonstrates Option B pattern
 //!
-//! This example shows how to use cx.handler() for clean event handling
-//! without global variables.
+//! This example shows pure state methods with cx.update() for clean,
+//! testable code without UI coupling in state.
 
 const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
 
 // =============================================================================
-// Application State
+// Application State (PURE - no cx, no notify!)
 // =============================================================================
 
 const Theme = enum {
@@ -35,10 +35,6 @@ const Theme = enum {
             .dark => ui.Color.rgb(0.9, 0.9, 0.9),
         };
     }
-
-    fn accent(_: Theme) ui.Color {
-        return ui.Color.rgb(0.3, 0.5, 1.0);
-    }
 };
 
 const AppState = struct {
@@ -47,20 +43,21 @@ const AppState = struct {
     name: []const u8 = "",
     initialized: bool = false,
 
-    // Methods that receive typed context - no globals needed!
-    pub fn increment(self: *AppState, cx: *gooey.Context(AppState)) void {
+    // Pure methods - no cx parameter, no notify()!
+    pub fn increment(self: *AppState) void {
         self.count += 1;
-        cx.notify();
     }
 
-    pub fn decrement(self: *AppState, cx: *gooey.Context(AppState)) void {
+    pub fn decrement(self: *AppState) void {
         self.count -= 1;
-        cx.notify();
     }
 
-    pub fn toggleTheme(self: *AppState, cx: *gooey.Context(AppState)) void {
+    pub fn toggleTheme(self: *AppState) void {
         self.theme = if (self.theme == .light) .dark else .light;
-        cx.notify();
+    }
+
+    pub fn reset(self: *AppState) void {
+        self.count = 0;
     }
 };
 
@@ -74,7 +71,7 @@ const Greeting = struct {
         const s = cx.state();
         if (s.name.len > 0) {
             b.box(.{}, .{
-                ui.textFmt("Hello, {s}!", .{s.name}, .{ .size = 14, .color = s.theme.accent() }),
+                ui.textFmt("Hello, {s}!", .{s.name}, .{ .size = 14, .color = s.theme.text() }),
             });
         }
     }
@@ -87,9 +84,10 @@ const CounterRow = struct {
         const t = s.theme;
 
         b.hstack(.{ .gap = 12, .alignment = .center }, .{
-            ui.buttonHandler("-", cx.handler(AppState.decrement)),
+            // Pure handlers with cx.update()!
+            ui.buttonHandler("-", cx.update(AppState.decrement)),
             ui.textFmt("Count: {}", .{s.count}, .{ .size = 16, .color = t.text() }),
-            ui.buttonHandler("+", cx.handler(AppState.increment)),
+            ui.buttonHandler("+", cx.update(AppState.increment)),
         });
     }
 };
@@ -107,25 +105,13 @@ const Card = struct {
             .corner_radius = 12,
             .direction = .column,
         }, .{
-            ui.text("Context Demo", .{ .size = 20, .color = t.text() }),
-
-            // Counter with handler-based buttons
+            ui.text("Pure State Demo", .{ .size = 20, .color = t.text() }),
             CounterRow{},
-
-            // Name input
-            ui.input("name", .{
-                .placeholder = "Enter your name",
-                .width = 200,
-                .bind = &s.name,
-            }),
-
-            // Greeting (conditional)
+            ui.input("name", .{ .placeholder = "Enter your name", .width = 200, .bind = &s.name }),
             Greeting{},
-
-            // Theme toggle
             ui.buttonHandler(
                 if (s.theme == .light) "Dark Mode" else "Light Mode",
-                cx.handler(AppState.toggleTheme),
+                cx.update(AppState.toggleTheme), // Pure!
             ),
         });
     }
@@ -139,29 +125,19 @@ pub fn main() !void {
     var app_state = AppState{};
 
     try gooey.runWithState(AppState, .{
-        .title = "Context Demo",
+        .title = "Pure State Demo",
         .width = 500,
         .height = 400,
         .state = &app_state,
         .render = render,
-        .on_event = onEvent,
     });
 }
 
 fn render(cx: *gooey.Context(AppState)) void {
-    // REMOVE: g_cx = cx;  <-- No longer needed!
     const s = cx.state();
     const t = s.theme;
-
-    // Initialize focus on first render
-    if (!s.initialized) {
-        s.initialized = true;
-        cx.focusTextInput("name");
-    }
-
     const size = cx.windowSize();
 
-    // Root container with Card component
     cx.box(.{
         .width = size.width,
         .height = size.height,
@@ -171,15 +147,4 @@ fn render(cx: *gooey.Context(AppState)) void {
     }, .{
         Card{},
     });
-}
-
-fn onEvent(cx: *gooey.Context(AppState), event: gooey.InputEvent) bool {
-    if (event == .key_down) {
-        const k = event.key_down;
-        if (k.key == .escape) {
-            cx.blurAll();
-            return true;
-        }
-    }
-    return false;
 }

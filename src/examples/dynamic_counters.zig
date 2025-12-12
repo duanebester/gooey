@@ -1,10 +1,11 @@
 //! Dynamic Counters Example
 //!
 //! Demonstrates:
+//! - Pure state methods with cx.update() for simple mutations
+//! - Context methods with cx.handler() when entity ops needed
 //! - Dynamic entity creation and deletion
-//! - Auto-cleanup when entities are removed (Phase 4)
+//! - Auto-cleanup when entities are removed
 //! - Aggregate observer (total watches all counters)
-//! - b.entityContext() for clean component code (Phase 3)
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -18,28 +19,34 @@ const Counter = struct {
     count: i32 = 0,
     label: []const u8 = "Counter",
 
-    pub fn increment(self: *Counter, cx: *gooey.EntityContext(Counter)) void {
+    // Pure methods - no cx, no notify!
+    pub fn increment(self: *Counter) void {
         self.count += 1;
-        cx.notify();
     }
 
-    pub fn decrement(self: *Counter, cx: *gooey.EntityContext(Counter)) void {
+    pub fn decrement(self: *Counter) void {
         self.count -= 1;
-        cx.notify();
+    }
+
+    pub fn reset(self: *Counter) void {
+        self.count = 0;
     }
 };
 
 // =============================================================================
 // Application State
 // =============================================================================
+
 const MaxCounters = 10;
+
 const AppState = struct {
     counters: [MaxCounters]gooey.Entity(Counter) = [_]gooey.Entity(Counter){gooey.Entity(Counter).nil()} ** MaxCounters,
     counter_count: usize = 0,
     next_label: u8 = 'A',
 
+    // These need cx because they create/remove entities
     pub fn addCounter(self: *AppState, cx: *gooey.EntityContext(AppState)) void {
-        if (self.counter_count >= 10) return; // Max 10 counters
+        if (self.counter_count >= 10) return;
 
         const label: []const u8 = switch (self.next_label) {
             'A' => "Counter A",
@@ -67,7 +74,7 @@ const AppState = struct {
 
         self.counter_count -= 1;
         const entity = self.counters[self.counter_count];
-        cx.remove(entity.id); // Auto-cleanup of observers!
+        cx.remove(entity.id);
         self.next_label -= 1;
         cx.notify();
     }
@@ -84,7 +91,7 @@ var initialized = false;
 // Components
 // =============================================================================
 
-/// Individual counter card
+/// Individual counter card - uses pure methods!
 const CounterCard = struct {
     counter: gooey.Entity(Counter),
 
@@ -104,23 +111,24 @@ const CounterCard = struct {
             ui.text(data.label, .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
             ui.textFmt("{}", .{data.count}, .{ .size = 32 }),
             b.hstack(.{ .gap = 8 }, .{
-                ui.buttonHandler("-", cx.handler(Counter.decrement)),
-                ui.buttonHandler("+", cx.handler(Counter.increment)),
+                // Pure handlers - no cx.notify() needed!
+                ui.buttonHandler("-", cx.update(Counter.decrement)),
+                ui.buttonHandler("+", cx.update(Counter.increment)),
             }),
         });
     }
 };
 
-/// Shows total of all counters - demonstrates aggregate observation
+/// Shows total of all counters
 const TotalDisplay = struct {
     app: gooey.Entity(AppState),
 
     pub fn render(self: @This(), b: *ui.Builder) void {
         const g = b.getGooey() orelse return;
-        const state = g.readEntity(AppState, self.app) orelse return;
+        const s = g.readEntity(AppState, self.app) orelse return;
 
         var total: i32 = 0;
-        for (state.countersSlice()) |counter_entity| {
+        for (s.countersSlice()) |counter_entity| {
             if (g.readEntity(Counter, counter_entity)) |counter| {
                 total += counter.count;
             }
@@ -136,18 +144,19 @@ const TotalDisplay = struct {
     }
 };
 
-/// Control buttons for adding/removing counters
+/// Control buttons - uses handler() because addCounter needs cx.create()
 const ControlPanel = struct {
     app: gooey.Entity(AppState),
 
     pub fn render(self: @This(), b: *ui.Builder) void {
         var cx = b.entityContext(AppState, self.app) orelse return;
-        const state = b.readEntity(AppState, self.app) orelse return;
+        const s = b.readEntity(AppState, self.app) orelse return;
 
         b.hstack(.{ .gap = 12, .alignment = .center }, .{
+            // These need handler() because they use cx.create()/cx.remove()
             ui.buttonHandler("+ Add Counter", cx.handler(AppState.addCounter)),
             ui.buttonHandler("- Remove Counter", cx.handler(AppState.removeCounter)),
-            ui.textFmt("({}/10)", .{state.countersSlice().len}, .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
+            ui.textFmt("({}/10)", .{s.countersSlice().len}, .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
         });
     }
 };
@@ -168,7 +177,6 @@ pub fn main() !void {
 fn render(g: *gooey.UI) void {
     const gooey_ctx = g.gooey;
 
-    // Initialize on first frame
     if (!initialized) {
         initialized = true;
         app_state_entity = gooey_ctx.createEntity(AppState, .{}) catch return;
@@ -185,7 +193,7 @@ fn render(g: *gooey.UI) void {
         .direction = .column,
     }, .{
         ui.text("Dynamic Counters", .{ .size = 24 }),
-        ui.text("Add/remove counters - observers auto-cleanup!", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
+        ui.text("Pure state: Counter.increment/decrement use cx.update()", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
 
         ControlPanel{ .app = app_state_entity },
         CounterGrid{ .app = app_state_entity },
@@ -209,12 +217,29 @@ const CounterItems = struct {
 
     pub fn render(self: @This(), b: *ui.Builder) void {
         const g = b.getGooey() orelse return;
-        const state = g.readEntity(AppState, self.app) orelse return;
+        const s = g.readEntity(AppState, self.app) orelse return;
 
-        for (state.countersSlice()) |counter_entity| {
+        for (s.countersSlice()) |counter_entity| {
             b.box(.{}, .{
                 CounterCard{ .counter = counter_entity },
             });
         }
     }
 };
+
+// =============================================================================
+// Tests - Counter is pure and testable!
+// =============================================================================
+
+test "Counter increment/decrement" {
+    var c = Counter{};
+    c.increment();
+    c.increment();
+    try std.testing.expectEqual(@as(i32, 2), c.count);
+
+    c.decrement();
+    try std.testing.expectEqual(@as(i32, 1), c.count);
+
+    c.reset();
+    try std.testing.expectEqual(@as(i32, 0), c.count);
+}

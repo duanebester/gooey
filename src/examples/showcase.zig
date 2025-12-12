@@ -1,6 +1,7 @@
 //! Gooey Showcase
 //!
 //! A feature-rich demo showing off gooey's capabilities:
+//! - Pure state pattern with cx.update()
 //! - Tab navigation between pages
 //! - Form inputs with validation
 //! - Component composition
@@ -12,7 +13,7 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const ShadowConfig = ui.ShadowConfig;
 
-const custom_shader = gooey.platform.mac.metal.custom_shader;
+// const custom_shader = gooey.platform.mac.metal.custom_shader;
 
 // =============================================================================
 // Theme
@@ -46,12 +47,10 @@ const Theme = struct {
 };
 
 // =============================================================================
-// Application State
+// Application State - PURE, fully testable!
 // =============================================================================
 
-// Update state struct to add scroll demo data
-var state = struct {
-    const Self = @This();
+const AppState = struct {
     const Page = enum { home, forms, about, scroll_demo };
     const FormField = enum { name, email, message };
 
@@ -76,12 +75,16 @@ var state = struct {
     // Stats (for home page)
     click_count: u32 = 0,
 
-    pub fn toggleTheme(self: *Self) void {
+    // =========================================================================
+    // Pure methods - no cx, no notify!
+    // =========================================================================
+
+    pub fn toggleTheme(self: *AppState) void {
         self.is_dark = !self.is_dark;
         self.theme = if (self.is_dark) &Theme.dark else &Theme.light;
     }
 
-    pub fn nextPage(self: *Self) void {
+    pub fn nextPage(self: *AppState) void {
         self.page = switch (self.page) {
             .home => .forms,
             .forms => .scroll_demo,
@@ -90,7 +93,7 @@ var state = struct {
         };
     }
 
-    pub fn prevPage(self: *Self) void {
+    pub fn prevPage(self: *AppState) void {
         self.page = switch (self.page) {
             .home => .about,
             .forms => .home,
@@ -99,14 +102,32 @@ var state = struct {
         };
     }
 
-    pub fn goTo(self: *Self, page: Page) void {
-        self.page = page;
-        if (page == .forms) {
-            self.form_initialized = false;
-        }
+    pub fn goToHome(self: *AppState) void {
+        self.page = .home;
     }
 
-    pub fn focusNextField(self: *Self) void {
+    pub fn goToForms(self: *AppState) void {
+        self.page = .forms;
+        self.form_initialized = false;
+    }
+
+    pub fn goToScrollDemo(self: *AppState) void {
+        self.page = .scroll_demo;
+    }
+
+    pub fn goToAbout(self: *AppState) void {
+        self.page = .about;
+    }
+
+    pub fn increment(self: *AppState) void {
+        self.click_count += 1;
+    }
+
+    pub fn resetClicks(self: *AppState) void {
+        self.click_count = 0;
+    }
+
+    pub fn focusNextField(self: *AppState) void {
         self.focused_field = switch (self.focused_field) {
             .name => .email,
             .email => .message,
@@ -114,7 +135,7 @@ var state = struct {
         };
     }
 
-    pub fn submitForm(self: *Self) void {
+    pub fn submitForm(self: *AppState) void {
         if (self.name.len == 0) {
             self.form_status = "Please enter your name";
         } else if (self.email.len == 0) {
@@ -125,20 +146,23 @@ var state = struct {
             self.form_status = "Form submitted successfully!";
         }
     }
-}{};
+};
 
 // =============================================================================
 // Entry Point
 // =============================================================================
 
 pub fn main() !void {
-    try gooey.run(.{
+    var state = AppState{};
+
+    try gooey.runWithState(AppState, .{
         .title = "Gooey Showcase",
         .width = 800,
         .height = 600,
+        .state = &state,
         .render = render,
         .on_event = onEvent,
-        .custom_shaders = &.{custom_shader.crt_shader},
+        // .custom_shaders = &.{custom_shader.crt_shader},
     });
 }
 
@@ -148,7 +172,8 @@ pub fn main() !void {
 
 const ThemeToggle = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .padding = .{ .symmetric = .{ .x = 0, .y = 8 } },
@@ -161,7 +186,8 @@ const ThemeToggle = struct {
 /// Navigation bar with tabs
 const NavBar = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .direction = .row,
@@ -183,12 +209,14 @@ const NavBar = struct {
 
 const NavTab = struct {
     label: []const u8,
-    page: @TypeOf(state).Page,
+    page: AppState.Page,
     key: []const u8,
 
     pub fn render(self: @This(), b: *ui.Builder) void {
-        const t = state.theme;
-        const is_active = state.page == self.page;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const s = cx.state();
+        const t = s.theme;
+        const is_active = s.page == self.page;
 
         b.box(.{
             .padding = .{ .symmetric = .{ .x = 16, .y = 8 } },
@@ -206,7 +234,8 @@ const NavTab = struct {
 /// Home page content
 const HomePage = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .padding = .{ .all = 32 },
@@ -219,14 +248,16 @@ const HomePage = struct {
             ui.text("A GPU-accelerated UI framework for Zig", .{ .size = 16, .color = t.muted }),
             StatsRow{},
             ButtonRow{},
-            ui.text("Use arrow keys or [1-3] to navigate", .{ .size = 12, .color = t.muted }),
+            ui.text("Use arrow keys or [1-4] to navigate", .{ .size = 12, .color = t.muted }),
         });
     }
 };
 
 const StatsRow = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const s = cx.state();
+        const t = s.theme;
 
         b.box(.{
             .direction = .row,
@@ -236,26 +267,21 @@ const StatsRow = struct {
             .shadow = ShadowConfig.drop(6),
             .corner_radius = 12,
         }, .{
-            StatCard{ .label = "Clicks", .value = state.click_count },
-            StatCard{ .label = "Page", .value = @intFromEnum(state.page) + 1 },
+            StatCard{ .label = "Clicks", .value = s.click_count },
+            StatCard{ .label = "Page", .value = @intFromEnum(s.page) + 1 },
         });
     }
 };
 
 const ButtonRow = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+
         b.box(.{ .direction = .row, .gap = 12 }, .{
-            ui.button("Click Me!", increment),
-            ui.button("Reset", reset),
+            // Pure handlers with cx.update()!
+            ui.buttonHandler("Click Me!", cx.update(AppState.increment)),
+            ui.buttonHandler("Reset", cx.update(AppState.resetClicks)),
         });
-    }
-
-    fn increment() void {
-        state.click_count += 1;
-    }
-
-    fn reset() void {
-        state.click_count = 0;
     }
 };
 
@@ -263,11 +289,9 @@ const StatCard = struct {
     label: []const u8,
     value: u32,
 
-    var buf: [16]u8 = undefined;
-
     pub fn render(self: @This(), b: *ui.Builder) void {
-        const t = state.theme;
-        const value_str = std.fmt.bufPrint(&buf, "{d}", .{self.value}) catch "?";
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .padding = .{ .all = 16 },
@@ -277,7 +301,7 @@ const StatCard = struct {
             .corner_radius = 8,
             .min_width = 80,
         }, .{
-            ui.text(value_str, .{ .size = 28, .color = t.primary }),
+            ui.textFmt("{d}", .{self.value}, .{ .size = 28, .color = t.primary }),
             ui.text(self.label, .{ .size = 12, .color = t.muted }),
         });
     }
@@ -286,14 +310,15 @@ const StatCard = struct {
 /// Scroll Demo page
 const ScrollDemoPage = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .direction = .column,
             .fill_width = true,
             .grow = true,
         }, .{
-            // Nav-like header
+            // Header
             b.box(.{
                 .direction = .row,
                 .padding = .{ .symmetric = .{ .x = 24, .y = 16 } },
@@ -306,7 +331,7 @@ const ScrollDemoPage = struct {
                 ui.text("Scroll with mousewheel or trackpad", .{ .size = 14, .color = t.muted }),
             }),
 
-            // Scroll containers below
+            // Scroll containers
             b.box(.{
                 .direction = .row,
                 .gap = 24,
@@ -324,7 +349,8 @@ const ScrollDemoPage = struct {
 
 const ScrollableList = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .gap = 8,
@@ -339,11 +365,10 @@ const ScrollableList = struct {
                 .corner_radius = 8,
                 .padding = .{ .all = 8 },
                 .gap = 6,
-                .content_height = 500, // Content is taller than viewport
+                .content_height = 500,
                 .track_color = t.bg,
                 .thumb_color = t.muted,
             }, .{
-                // Generate list items
                 ListItem{ .index = 1 },
                 ListItem{ .index = 2 },
                 ListItem{ .index = 3 },
@@ -367,11 +392,9 @@ const ScrollableList = struct {
 const ListItem = struct {
     index: u32,
 
-    var buf: [32]u8 = undefined;
-
     pub fn render(self: @This(), b: *ui.Builder) void {
-        const t = state.theme;
-        const label = std.fmt.bufPrint(&buf, "List Item {d}", .{self.index}) catch "Item";
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
@@ -379,14 +402,15 @@ const ListItem = struct {
             .corner_radius = 4,
             .fill_width = true,
         }, .{
-            ui.text(label, .{ .size = 13, .color = t.text }),
+            ui.textFmt("List Item {d}", .{self.index}, .{ .size = 13, .color = t.text }),
         });
     }
 };
 
 const ScrollableCards = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .gap = 8,
@@ -421,7 +445,8 @@ const InfoCard = struct {
     desc: []const u8,
 
     pub fn render(self: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .padding = .{ .all = 12 },
@@ -439,7 +464,9 @@ const InfoCard = struct {
 /// Forms page content
 const FormsPage = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const s = cx.state();
+        const t = s.theme;
 
         b.box(.{
             .padding = .{ .all = 32 },
@@ -449,9 +476,9 @@ const FormsPage = struct {
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             ui.text("Contact Form", .{ .size = 24, .color = t.text }),
-            ui.text(if (state.form_status.len > 0) state.form_status else "Fill out the form below", .{
+            ui.text(if (s.form_status.len > 0) s.form_status else "Fill out the form below", .{
                 .size = 14,
-                .color = if (std.mem.indexOf(u8, state.form_status, "success") != null) t.accent else t.muted,
+                .color = if (std.mem.indexOf(u8, s.form_status, "success") != null) t.accent else t.muted,
             }),
             FormCard{},
             ui.text("[Tab] to move between fields", .{ .size = 12, .color = t.muted }),
@@ -461,7 +488,9 @@ const FormsPage = struct {
 
 const CheckboxSection = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const s = cx.state();
+        const t = s.theme;
 
         b.box(.{
             .padding = .{ .all = 20 },
@@ -475,8 +504,7 @@ const CheckboxSection = struct {
 
             ui.checkbox("agree_terms", .{
                 .label = "I agree to the terms and conditions",
-                .bind = &state.agree_terms,
-                // Theme colors
+                .bind = &s.agree_terms,
                 .background = t.card,
                 .background_checked = t.primary,
                 .border_color = t.muted,
@@ -486,7 +514,7 @@ const CheckboxSection = struct {
 
             ui.checkbox("subscribe", .{
                 .label = "Subscribe to newsletter",
-                .bind = &state.subscribe_newsletter,
+                .bind = &s.subscribe_newsletter,
                 .background = t.card,
                 .background_checked = t.primary,
                 .border_color = t.muted,
@@ -496,9 +524,9 @@ const CheckboxSection = struct {
 
             ui.checkbox("notifications", .{
                 .label = "Enable notifications",
-                .bind = &state.enable_notifications,
+                .bind = &s.enable_notifications,
                 .background = t.card,
-                .background_checked = t.accent, // Use accent for variety
+                .background_checked = t.accent,
                 .border_color = t.muted,
                 .checkmark_color = ui.Color.white,
                 .label_color = t.text,
@@ -509,7 +537,9 @@ const CheckboxSection = struct {
 
 const FormCard = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const s = cx.state();
+        const t = s.theme;
 
         b.box(.{
             .shadow = ShadowConfig.drop(6),
@@ -521,32 +551,30 @@ const FormCard = struct {
             ui.input("form_name", .{
                 .placeholder = "Your Name",
                 .width = 280,
-                .bind = &state.name,
+                .bind = &s.name,
             }),
             ui.input("form_email", .{
                 .placeholder = "Email Address",
                 .width = 280,
-                .bind = &state.email,
+                .bind = &s.email,
             }),
             ui.input("form_message", .{
                 .placeholder = "Message",
                 .width = 280,
-                .bind = &state.message,
+                .bind = &s.message,
             }),
             CheckboxSection{},
-            ui.button("Submit", submitForm),
+            // Pure handler!
+            ui.buttonHandler("Submit", cx.update(AppState.submitForm)),
         });
-    }
-
-    fn submitForm() void {
-        state.submitForm();
     }
 };
 
 /// About page content
 const AboutPage = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .padding = .{ .all = 32 },
@@ -564,7 +592,8 @@ const AboutPage = struct {
 
 const FeatureCard = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .padding = .{ .all = 24 },
@@ -575,7 +604,7 @@ const FeatureCard = struct {
             .alignment = .{ .cross = .start },
         }, .{
             FeatureItem{ .text = "Metal GPU rendering" },
-            FeatureItem{ .text = "Immediate-mode layout" },
+            FeatureItem{ .text = "Pure state pattern" },
             FeatureItem{ .text = "Retained text input widgets" },
             FeatureItem{ .text = "Checkbox components" },
             FeatureItem{ .text = "CoreText font shaping" },
@@ -588,14 +617,15 @@ const FeatureItem = struct {
     text: []const u8,
 
     pub fn render(self: @This(), b: *ui.Builder) void {
-        const t = state.theme;
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const t = cx.state().theme;
 
         b.box(.{
             .direction = .row,
             .gap = 12,
             .alignment = .{ .cross = .center },
         }, .{
-            ui.text("*", .{ .size = 14, .color = t.accent }),
+            ui.text("✓", .{ .size = 14, .color = t.accent }),
             ui.text(self.text, .{ .size = 14, .color = t.text }),
         });
     }
@@ -605,20 +635,20 @@ const FeatureItem = struct {
 // Render
 // =============================================================================
 
-fn render(g: *gooey.UI) void {
-    const size = g.windowSize();
-    const t = state.theme;
+fn render(cx: *gooey.Context(AppState)) void {
+    const s = cx.state();
+    const t = s.theme;
+    const size = cx.windowSize();
 
     // Initialize form focus on first render of forms page
-    if (state.page == .forms and !state.form_initialized) {
-        state.form_initialized = true;
-        syncFormFocus(g);
-    } else if (state.page != .forms) {
-        // Blur text inputs when not on forms page
-        g.gooey.widgets.blurAll();
+    if (s.page == .forms and !s.form_initialized) {
+        s.form_initialized = true;
+        syncFormFocus(cx);
+    } else if (s.page != .forms) {
+        cx.blurAll();
     }
 
-    g.box(.{
+    cx.box(.{
         .width = size.width,
         .height = size.height,
         .background = t.bg,
@@ -631,26 +661,30 @@ fn render(g: *gooey.UI) void {
 
 const PageContent = struct {
     pub fn render(_: @This(), b: *ui.Builder) void {
-        if (state.page == .home) {
+        const cx = b.getContext(gooey.Context(AppState)) orelse return;
+        const s = cx.state();
+
+        if (s.page == .home) {
             b.box(.{ .grow = true }, .{HomePage{}});
         }
-        if (state.page == .forms) {
+        if (s.page == .forms) {
             b.box(.{ .grow = true }, .{FormsPage{}});
         }
-        if (state.page == .scroll_demo) {
+        if (s.page == .scroll_demo) {
             b.box(.{ .grow = true }, .{ScrollDemoPage{}});
         }
-        if (state.page == .about) {
+        if (s.page == .about) {
             b.box(.{ .grow = true }, .{AboutPage{}});
         }
     }
 };
 
-fn syncFormFocus(g: *gooey.UI) void {
-    switch (state.focused_field) {
-        .name => g.focusTextInput("form_name"),
-        .email => g.focusTextInput("form_email"),
-        .message => g.focusTextInput("form_message"),
+fn syncFormFocus(cx: *gooey.Context(AppState)) void {
+    const s = cx.state();
+    switch (s.focused_field) {
+        .name => cx.focusTextInput("form_name"),
+        .email => cx.focusTextInput("form_email"),
+        .message => cx.focusTextInput("form_message"),
     }
 }
 
@@ -658,65 +692,142 @@ fn syncFormFocus(g: *gooey.UI) void {
 // Event Handling
 // =============================================================================
 
-fn onEvent(g: *gooey.UI, event: gooey.InputEvent) bool {
+fn onEvent(cx: *gooey.Context(AppState), event: gooey.InputEvent) bool {
+    const s = cx.state();
+
     if (event == .key_down) {
         const key = event.key_down;
 
-        // DEBUG: print what key we received
-        std.debug.print("Key pressed: {}\n", .{key.key});
-
         // Tab navigation (forms page)
-        if (key.key == .tab and state.page == .forms) {
-            state.focusNextField();
-            syncFormFocus(g);
+        if (key.key == .tab and s.page == .forms) {
+            s.focusNextField();
+            syncFormFocus(cx);
+            cx.notify();
             return true;
         }
 
         const no_mods = !key.modifiers.shift and !key.modifiers.cmd and
             !key.modifiers.alt and !key.modifiers.ctrl;
 
-        // Number keys for page navigation (only without modifiers)
+        // Number keys for page navigation
         if (no_mods) {
             if (key.key == .@"1") {
-                state.goTo(.home);
+                s.goToHome();
+                cx.notify();
                 return true;
             }
             if (key.key == .@"2") {
-                state.goTo(.forms);
+                s.goToForms();
+                cx.notify();
                 return true;
             }
             if (key.key == .@"3") {
-                state.goTo(.scroll_demo);
+                s.goToScrollDemo();
+                cx.notify();
                 return true;
             }
             if (key.key == .@"4") {
-                state.goTo(.about);
+                s.goToAbout();
+                cx.notify();
                 return true;
             }
         }
 
         // Arrow keys
         if (key.key == .left) {
-            state.prevPage();
+            s.prevPage();
+            cx.notify();
             return true;
         }
         if (key.key == .right) {
-            state.nextPage();
+            s.nextPage();
+            cx.notify();
             return true;
         }
 
         // Theme toggle
-        if (key.key == .t and state.page != .forms) {
-            state.toggleTheme();
+        if (key.key == .t and s.page != .forms) {
+            s.toggleTheme();
+            cx.notify();
             return true;
         }
 
         // Enter to submit form
-        if (key.key == .@"return" and state.page == .forms) {
-            state.submitForm();
+        if (key.key == .@"return" and s.page == .forms) {
+            s.submitForm();
+            cx.notify();
             return true;
         }
     }
 
     return false;
+}
+
+// =============================================================================
+// Tests - State is fully testable!
+// =============================================================================
+
+test "AppState navigation" {
+    var s = AppState{};
+
+    try std.testing.expectEqual(AppState.Page.home, s.page);
+
+    s.nextPage();
+    try std.testing.expectEqual(AppState.Page.forms, s.page);
+
+    s.nextPage();
+    try std.testing.expectEqual(AppState.Page.scroll_demo, s.page);
+
+    s.prevPage();
+    try std.testing.expectEqual(AppState.Page.forms, s.page);
+
+    s.goToAbout();
+    try std.testing.expectEqual(AppState.Page.about, s.page);
+}
+
+test "AppState theme toggle" {
+    var s = AppState{};
+
+    try std.testing.expect(!s.is_dark);
+    try std.testing.expectEqual(&Theme.light, s.theme);
+
+    s.toggleTheme();
+    try std.testing.expect(s.is_dark);
+    try std.testing.expectEqual(&Theme.dark, s.theme);
+
+    s.toggleTheme();
+    try std.testing.expect(!s.is_dark);
+}
+
+test "AppState form validation" {
+    var s = AppState{};
+
+    s.submitForm();
+    try std.testing.expectEqualStrings("Please enter your name", s.form_status);
+
+    s.name = "John";
+    s.submitForm();
+    try std.testing.expectEqualStrings("Please enter your email", s.form_status);
+
+    s.email = "invalid";
+    s.submitForm();
+    try std.testing.expectEqualStrings("Please enter a valid email", s.form_status);
+
+    s.email = "john@example.com";
+    s.submitForm();
+    try std.testing.expectEqualStrings("Form submitted successfully!", s.form_status);
+}
+
+test "AppState clicks" {
+    var s = AppState{};
+
+    try std.testing.expectEqual(@as(u32, 0), s.click_count);
+
+    s.increment();
+    s.increment();
+    s.increment();
+    try std.testing.expectEqual(@as(u32, 3), s.click_count);
+
+    s.resetClicks();
+    try std.testing.expectEqual(@as(u32, 0), s.click_count);
 }

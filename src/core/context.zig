@@ -11,27 +11,78 @@
 //! - Automatic re-render triggering via `notify()`
 //! - Access to allocator and window operations
 //!
-//! ## Usage
+//! ## Pure State Pattern (Recommended)
+//!
+//! Keep state pure (no UI knowledge) and use `update()` for mutations:
 //!
 //! ```zig
+//! // State is pure - no cx, no notify, just data + logic
 //! const AppState = struct {
 //!     count: i32 = 0,
-//!     theme: Theme = .light,
+//!
+//!     pub fn increment(self: *AppState) void {
+//!         self.count += 1;
+//!     }
+//!
+//!     pub fn decrement(self: *AppState) void {
+//!         self.count -= 1;
+//!     }
 //! };
 //!
-//! pub fn main() !void {
-//!     var app_state = AppState{};
-//!     try gooey.runWithState(AppState, .{
-//!         .state = &app_state,
-//!         .render = render,
+//! fn render(cx: *gooey.Context(AppState)) void {
+//!     cx.vstack(.{}, .{
+//!         gooey.ui.textFmt("{d}", .{cx.state().count}, .{}),
+//!         // cx.update() calls the method, then auto-notifies
+//!         gooey.ui.buttonHandler("+", cx.update(AppState.increment)),
+//!         gooey.ui.buttonHandler("-", cx.update(AppState.decrement)),
 //!     });
 //! }
 //!
+//! // Testing state is easy - no mocking cx!
+//! test "increment works" {
+//!     var state = AppState{};
+//!     state.increment();
+//!     try std.testing.expectEqual(1, state.count);
+//! }
+//! ```
+//!
+//! ## With Arguments
+//!
+//! For methods that need arguments (e.g., item index), use `updateWith()`:
+//!
+//! ```zig
+//! const AppState = struct {
+//!     counters: [10]i32 = [_]i32{0} ** 10,
+//!
+//!     pub fn incrementAt(self: *AppState, index: usize) void {
+//!         self.counters[index] += 1;
+//!     }
+//! };
+//!
 //! fn render(cx: *gooey.Context(AppState)) void {
-//!     cx.vstack(.{ .gap = 16 }, .{
-//!         gooey.ui.textFmt("Count: {}", .{cx.state().count}, .{}),
-//!         gooey.ui.button("+", increment),
-//!     });
+//!     for (0..10) |i| {
+//!         gooey.ui.buttonHandler("+", cx.updateWith(i, AppState.incrementAt)),
+//!     }
+//! }
+//! ```
+//!
+//! ## Legacy Pattern (Still Supported)
+//!
+//! Methods that need context access (e.g., for focus control) use `handler()`:
+//!
+//! ```zig
+//! const AppState = struct {
+//!     pub fn submit(self: *AppState, cx: *Context(AppState)) void {
+//!         // Do something with state
+//!         self.submitted = true;
+//!         // Need context for UI operations
+//!         cx.blurAll();
+//!         cx.notify();
+//!     }
+//! };
+//!
+//! fn render(cx: *gooey.Context(AppState)) void {
+//!     gooey.ui.buttonHandler("Submit", cx.handler(AppState.submit)),
 //! }
 //! ```
 
@@ -88,20 +139,24 @@ pub fn Context(comptime State: type) type {
         /// Trigger a UI re-render
         ///
         /// Call this after modifying state to ensure the UI updates.
-        /// Note: In simple cases where state is modified in event handlers
-        /// that already trigger re-renders, this may not be necessary.
+        /// Note: When using `update()` or `updateWith()`, notification is automatic.
         pub fn notify(self: *Self) void {
             self.gooey.requestRender();
         }
 
         // =====================================================================
-        // Handler Creation
+        // Pure State Handlers (Option B - Recommended)
         // =====================================================================
 
-        /// Create a handler from a method on State.
+        /// Create a handler from a pure state method.
         ///
-        /// This allows you to pass methods as event callbacks while maintaining
-        /// access to both the state and context. No more global variables!
+        /// The method should be `fn(*State) void` - no context parameter.
+        /// After the method is called, the UI automatically re-renders.
+        ///
+        /// This is the recommended pattern because:
+        /// - State stays pure and testable
+        /// - No UI coupling in state methods
+        /// - Framework handles the notification glue
         ///
         /// ## Example
         ///
@@ -109,16 +164,137 @@ pub fn Context(comptime State: type) type {
         /// const AppState = struct {
         ///     count: i32 = 0,
         ///
-        ///     pub fn increment(self: *AppState, cx: *Context(AppState)) void {
+        ///     pub fn increment(self: *AppState) void {
         ///         self.count += 1;
+        ///     }
+        /// };
+        ///
+        /// fn render(cx: *Context(AppState)) void {
+        ///     ui.buttonHandler("+", cx.update(AppState.increment));
+        /// }
+        /// ```
+        pub fn update(
+            self: *Self,
+            comptime method: fn (*State) void,
+        ) HandlerRef {
+            _ = self;
+
+            const Wrapper = struct {
+                fn invoke(gooey: *Gooey, _: EntityId) void {
+                    const state_ptr = handler_mod.getRootState(State) orelse {
+                        std.debug.print("Handler error: state not found\n", .{});
+                        return;
+                    };
+
+                    // Call the pure method
+                    method(state_ptr);
+
+                    // Auto-notify (re-render)
+                    gooey.requestRender();
+                }
+            };
+
+            return .{
+                .callback = Wrapper.invoke,
+                .entity_id = EntityId.invalid,
+            };
+        }
+
+        /// Create a handler from a pure state method that takes an argument.
+        ///
+        /// The method should be `fn(*State, ArgType) void`.
+        /// The argument is captured and passed when the handler is invoked.
+        /// After the method is called, the UI automatically re-renders.
+        ///
+        /// **Note:** The argument must fit in 8 bytes (u64). This covers:
+        /// - All integer types up to u64/i64
+        /// - usize (indices)
+        /// - Pointers
+        /// - Small structs/enums
+        ///
+        /// ## Example
+        ///
+        /// ```zig
+        /// const AppState = struct {
+        ///     counters: [10]i32 = [_]i32{0} ** 10,
+        ///
+        ///     pub fn incrementAt(self: *AppState, index: usize) void {
+        ///         self.counters[index] += 1;
+        ///     }
+        /// };
+        ///
+        /// fn render(cx: *Context(AppState)) void {
+        ///     for (0..10) |i| {
+        ///         ui.buttonHandler("+", cx.updateWith(i, AppState.incrementAt));
+        ///     }
+        /// }
+        /// ```
+        pub fn updateWith(
+            self: *Self,
+            arg: anytype,
+            comptime method: fn (*State, @TypeOf(arg)) void,
+        ) HandlerRef {
+            _ = self;
+            const Arg = @TypeOf(arg);
+
+            // Ensure arg fits in EntityId (8 bytes)
+            comptime {
+                if (@sizeOf(Arg) > @sizeOf(u64)) {
+                    @compileError("updateWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 8 bytes. Use a pointer or index instead.");
+                }
+            }
+
+            // Pack the argument into EntityId
+            const packed_entity_id = packArg(Arg, arg);
+
+            const Wrapper = struct {
+                fn invoke(gooey: *Gooey, packed_arg: EntityId) void {
+                    const state_ptr = handler_mod.getRootState(State) orelse {
+                        std.debug.print("Handler error: state not found\n", .{});
+                        return;
+                    };
+
+                    // Unpack the argument
+                    const unpacked = unpackArg(Arg, packed_arg);
+
+                    // Call the pure method with the argument
+                    method(state_ptr, unpacked);
+
+                    // Auto-notify (re-render)
+                    gooey.requestRender();
+                }
+            };
+
+            return .{
+                .callback = Wrapper.invoke,
+                .entity_id = packed_entity_id,
+            };
+        }
+
+        // =====================================================================
+        // Context-Aware Handlers (Legacy Pattern)
+        // =====================================================================
+
+        /// Create a handler from a method that receives the context.
+        ///
+        /// Use this when the handler needs to perform UI operations like
+        /// focus management, scrolling, or conditional notification.
+        ///
+        /// **Note:** Prefer `update()` when possible for cleaner, testable code.
+        ///
+        /// ## Example
+        ///
+        /// ```zig
+        /// const AppState = struct {
+        ///     pub fn submit(self: *AppState, cx: *Context(AppState)) void {
+        ///         self.submitted = true;
+        ///         cx.blurAll();  // Need context for UI operations
         ///         cx.notify();
         ///     }
         /// };
         ///
         /// fn render(cx: *Context(AppState)) void {
-        ///     cx.box(.{}, .{
-        ///         ui.buttonHandler("+", cx.handler(AppState.increment)),
-        ///     });
+        ///     ui.buttonHandler("Submit", cx.handler(AppState.submit));
         /// }
         /// ```
         pub fn handler(
@@ -267,6 +443,28 @@ pub fn Context(comptime State: type) type {
 }
 
 // =============================================================================
+// Helper Functions for Argument Packing
+// =============================================================================
+
+/// Pack an argument into an EntityId (up to 8 bytes)
+fn packArg(comptime T: type, arg: T) EntityId {
+    var result: u64 = 0;
+    const arg_bytes = std.mem.asBytes(&arg);
+    const result_bytes = std.mem.asBytes(&result);
+    @memcpy(result_bytes[0..@sizeOf(T)], arg_bytes);
+    return .{ .id = result };
+}
+
+/// Unpack an argument from an EntityId
+fn unpackArg(comptime T: type, packed_entity_id: EntityId) T {
+    var result: T = undefined;
+    const result_bytes = std.mem.asBytes(&result);
+    const packed_bytes = std.mem.asBytes(&packed_entity_id.id);
+    @memcpy(result_bytes, packed_bytes[0..@sizeOf(T)]);
+    return result;
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -284,4 +482,76 @@ test "Context creation and state access" {
 
     // Verify state is accessible
     try std.testing.expectEqual(@as(i32, 42), test_state.count);
+}
+
+test "packArg/unpackArg roundtrip" {
+    // Test with usize
+    {
+        const original: usize = 42;
+        const packed_entity_id = packArg(usize, original);
+        const unpacked = unpackArg(usize, packed_entity_id);
+        try std.testing.expectEqual(original, unpacked);
+    }
+
+    // Test with i32
+    {
+        const original: i32 = -123;
+        const packed_entity_id = packArg(i32, original);
+        const unpacked = unpackArg(i32, packed_entity_id);
+        try std.testing.expectEqual(original, unpacked);
+    }
+
+    // Test with small struct
+    {
+        const Point = struct { x: i16, y: i16 };
+        const original = Point{ .x = 100, .y = -50 };
+        const packed_entity_id = packArg(Point, original);
+        const unpacked = unpackArg(Point, packed_entity_id);
+        try std.testing.expectEqual(original.x, unpacked.x);
+        try std.testing.expectEqual(original.y, unpacked.y);
+    }
+
+    // Test with enum
+    {
+        const Color = enum(u8) { red, green, blue };
+        const original = Color.green;
+        const packed_entity_id = packArg(Color, original);
+        const unpacked = unpackArg(Color, packed_entity_id);
+        try std.testing.expectEqual(original, unpacked);
+    }
+}
+
+test "pure state methods are testable" {
+    // This demonstrates why Option B is valuable - state is testable!
+    const TestState = struct {
+        count: i32 = 0,
+        items: [4]i32 = [_]i32{0} ** 4,
+
+        pub fn increment(self: *@This()) void {
+            self.count += 1;
+        }
+
+        pub fn decrement(self: *@This()) void {
+            self.count -= 1;
+        }
+
+        pub fn incrementAt(self: *@This(), index: usize) void {
+            self.items[index] += 1;
+        }
+    };
+
+    var s = TestState{};
+
+    // Test increment
+    s.increment();
+    try std.testing.expectEqual(@as(i32, 1), s.count);
+
+    // Test decrement
+    s.decrement();
+    try std.testing.expectEqual(@as(i32, 0), s.count);
+
+    // Test incrementAt
+    s.incrementAt(2);
+    try std.testing.expectEqual(@as(i32, 1), s.items[2]);
+    try std.testing.expectEqual(@as(i32, 0), s.items[0]);
 }

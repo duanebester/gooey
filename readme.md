@@ -47,40 +47,63 @@ const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
 
-var state = struct { count: i32 = 0 }{};
+// State is pure - no UI knowledge, fully testable
+const AppState = struct {
+    count: i32 = 0,
 
-const Counter = struct {
-    var buf: [32]u8 = undefined;
+    pub fn increment(self: *AppState) void {
+        self.count += 1;
+    }
 
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        const str = std.fmt.bufPrint(&buf, "{d}", .{state.count}) catch "?";
-        b.vstack(.{ .gap = 12, .alignment = .center }, .{
-            ui.text(str, .{ .size = 48 }),
-            ui.button("+ Increment", increment),
-        });
+    pub fn decrement(self: *AppState) void {
+        self.count -= 1;
+    }
+
+    pub fn reset(self: *AppState) void {
+        self.count = 0;
     }
 };
 
-fn increment() void {
-    state.count += 1;
-}
-
 pub fn main() !void {
-    try gooey.run(.{
+    var state = AppState{};
+    try gooey.runWithState(AppState, .{
         .title = "Counter",
-        .width = 300,
-        .height = 200,
+        .width = 400,
+        .height = 300,
+        .state = &state,
         .render = render,
     });
 }
 
-fn render(g: *gooey.UI) void {
-    const size = g.windowSize();
-    g.box(.{
+fn render(cx: *gooey.Context(AppState)) void {
+    const s = cx.state();
+    const size = cx.windowSize();
+
+    cx.box(.{
         .width = size.width,
         .height = size.height,
         .alignment = .{ .main = .center, .cross = .center },
-    }, .{Counter{}});
+    }, .{
+        cx.vstack(.{ .gap = 16 }, .{
+            ui.textFmt("{d}", .{s.count}, .{ .size = 48 }),
+            cx.hstack(.{ .gap = 12 }, .{
+                // Pure handlers - framework auto-notifies!
+                ui.buttonHandler("-", cx.update(AppState.decrement)),
+                ui.buttonHandler("+", cx.update(AppState.increment)),
+            }),
+            ui.buttonHandler("Reset", cx.update(AppState.reset)),
+        }),
+    });
+}
+
+// State is testable without UI!
+test "counter logic" {
+    var s = AppState{};
+    s.increment();
+    s.increment();
+    try std.testing.expectEqual(2, s.count);
+    s.reset();
+    try std.testing.expectEqual(0, s.count);
 }
 ```
 

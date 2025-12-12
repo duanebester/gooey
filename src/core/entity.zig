@@ -507,8 +507,105 @@ pub fn EntityContext(comptime T: type) type {
                 @panic("EntityContext.read: entity not found");
         }
 
-        /// Update another entity by calling a method on it
+        // =====================================================================
+        // Pure State Handlers (Option B - Recommended)
+        // =====================================================================
+
+        /// Create a handler from a pure entity method.
+        ///
+        /// The method should be `fn(*T) void` - no context parameter.
+        /// After the method is called, the entity is marked dirty and UI re-renders.
+        ///
+        /// ## Example
+        ///
+        /// ```zig
+        /// const Counter = struct {
+        ///     count: i32 = 0,
+        ///
+        ///     pub fn increment(self: *Counter) void {
+        ///         self.count += 1;
+        ///     }
+        /// };
+        ///
+        /// // In render:
+        /// ui.buttonHandler("+", cx.update(Counter.increment));
+        /// ```
         pub fn update(
+            self: *Self,
+            comptime method: fn (*T) void,
+        ) HandlerRef {
+            const entity_id = self.entity_id;
+
+            const Wrapper = struct {
+                fn invoke(gooey: *Gooey, eid: EntityId) void {
+                    const ents = gooey.getEntities();
+                    const data = ents.write(T, .{ .id = eid }) orelse {
+                        std.debug.print("Handler error: entity {} not found\n", .{eid.id});
+                        return;
+                    };
+
+                    // Call the pure method
+                    method(data);
+
+                    // Mark dirty and request render
+                    ents.markDirty(eid);
+                    gooey.requestRender();
+                }
+            };
+
+            return .{
+                .callback = Wrapper.invoke,
+                .entity_id = entity_id,
+            };
+        }
+
+        /// Create a handler from a pure entity method that takes an argument.
+        ///
+        /// **Note:** For EntityContext, we need to pack both the entity_id AND the arg.
+        /// Since entity_id uses the HandlerRef's entity_id field, we store the arg
+        /// using a thread-local approach (limited to one arg value per method type).
+        ///
+        /// For most cases, prefer using the existing `handler()` method or restructure
+        /// to avoid needing both entity_id and an argument.
+        pub fn updateWith(
+            self: *Self,
+            arg: anytype,
+            comptime method: fn (*T, @TypeOf(arg)) void,
+        ) HandlerRef {
+            const Arg = @TypeOf(arg);
+            const entity_id = self.entity_id;
+
+            // For EntityContext, we use a comptime-generated closure with static storage.
+            // This works correctly when each (entity_id, arg) combination is unique per render,
+            // but has limitations if the same method is used with different args for the same entity.
+            const Closure = struct {
+                var captured_arg: Arg = undefined;
+
+                fn invoke(gooey: *Gooey, eid: EntityId) void {
+                    const ents = gooey.getEntities();
+                    const data = ents.write(T, .{ .id = eid }) orelse {
+                        std.debug.print("Handler error: entity {} not found\n", .{eid.id});
+                        return;
+                    };
+
+                    // Call the pure method with the captured argument
+                    method(data, captured_arg);
+
+                    // Mark dirty and request render
+                    ents.markDirty(eid);
+                    gooey.requestRender();
+                }
+            };
+            Closure.captured_arg = arg;
+
+            return .{
+                .callback = Closure.invoke,
+                .entity_id = entity_id,
+            };
+        }
+
+        /// Update another entity by calling a method on it
+        pub fn mutate(
             self: *Self,
             comptime U: type,
             entity: Entity(U),
