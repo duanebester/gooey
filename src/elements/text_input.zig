@@ -793,7 +793,7 @@ pub const TextInput = struct {
             text_height,
             self.style.selection_color,
         );
-        try scene.insertQuad(selection_quad);
+        try scene.insertQuadClipped(selection_quad);
     }
 
     /// Ensure cursor is visible by adjusting scroll offset.
