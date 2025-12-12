@@ -46,6 +46,7 @@ pub const ElementDeclaration = struct {
     border: ?BorderConfig = null,
     shadow: ?ShadowConfig = null,
     scroll: ?types.ScrollConfig = null,
+    floating: ?types.FloatingConfig = null,
     user_data: ?*anyopaque = null,
 };
 
@@ -59,6 +60,7 @@ pub const TextData = struct {
     config: TextConfig,
     measured_width: f32 = 0,
     measured_height: f32 = 0,
+    wrapped_lines: ?[]const types.WrappedLine = null,
 };
 
 pub const ComputedLayout = struct {
@@ -165,6 +167,8 @@ pub const LayoutEngine = struct {
     seen_ids: std.AutoHashMap(u32, ?[]const u8),
     /// Maps element ID -> element index for O(1) lookups
     id_to_index: std.AutoHashMap(u32, u32),
+    /// Floating elements to position after main layout
+    floating_roots: std.ArrayList(u32),
 
     const Self = @This();
 
@@ -175,6 +179,7 @@ pub const LayoutEngine = struct {
             .elements = ElementList.init(allocator),
             .commands = RenderCommandList.init(allocator),
             .open_element_stack = .{},
+            .floating_roots = .{},
             .seen_ids = std.AutoHashMap(u32, ?[]const u8).init(allocator),
             .id_to_index = std.AutoHashMap(u32, u32).init(allocator),
         };
@@ -184,6 +189,7 @@ pub const LayoutEngine = struct {
         self.id_to_index.deinit();
         self.seen_ids.deinit();
         self.open_element_stack.deinit(self.allocator);
+        self.floating_roots.deinit(self.allocator);
         self.commands.deinit();
         self.elements.deinit();
         self.arena.deinit();
@@ -219,7 +225,7 @@ pub const LayoutEngine = struct {
 
     /// Add a text element (leaf node)
     pub fn text(self: *Self, content: []const u8, config: types.TextConfig) !void {
-        std.debug.assert(self.open_element_stack.items.len > 0); // Text requires a parent
+        std.debug.assert(self.open_element_stack.items.len > 0);
 
         var decl = ElementDeclaration{};
         decl.layout.sizing = Sizing.fitContent();
@@ -285,13 +291,17 @@ pub const LayoutEngine = struct {
             self.id_to_index.put(decl.id.id, index) catch {};
         }
 
-        // Link to parent
+        // Track floating elements separately
+        if (decl.floating != null) {
+            try self.floating_roots.append(self.allocator, index);
+        }
+
+        // Link to parent (floating elements still have a parent for reference)
         if (parent_index) |pi| {
             const parent = self.elements.get(pi);
             if (parent.first_child_index == null) {
                 parent.first_child_index = index;
             } else {
-                // Find last sibling
                 var sibling_idx = parent.first_child_index.?;
                 while (self.elements.get(sibling_idx).next_sibling_index) |next| {
                     sibling_idx = next;
@@ -308,7 +318,7 @@ pub const LayoutEngine = struct {
 
     /// End frame and compute layout
     pub fn endFrame(self: *Self) ![]const RenderCommand {
-        if (self.root_index == null) return &.{};
+        if (self.root_index == null) return self.commands.items();
 
         // Phase 1: Compute minimum sizes (bottom-up)
         self.computeMinSizes(self.root_index.?);
@@ -316,13 +326,162 @@ pub const LayoutEngine = struct {
         // Phase 2: Compute final sizes (top-down)
         self.computeFinalSizes(self.root_index.?, self.viewport_width, self.viewport_height);
 
+        // Phase 2b: Wrap text now that we know container widths
+        try self.computeTextWrapping(self.root_index.?);
+
         // Phase 3: Compute positions (top-down)
         self.computePositions(self.root_index.?, 0, 0);
+
+        // Phase 3b: Position floating elements
+        self.computeFloatingPositions();
 
         // Phase 4: Generate render commands
         try self.generateRenderCommands(self.root_index.?);
 
+        // Sort by z-index to handle floating elements properly
+        self.commands.sortByZIndex();
+
         return self.commands.items();
+    }
+
+    /// Compute text wrapping now that container sizes are known
+    fn computeTextWrapping(self: *Self, index: u32) !void {
+        const elem = self.elements.get(index);
+
+        // Handle text wrapping for this element
+        if (elem.text_data) |*td| {
+            if (td.config.wrap_mode != .none) {
+                const max_width = if (elem.parent_index) |pi| blk: {
+                    const parent = self.elements.getConst(pi);
+                    break :blk parent.computed.sized_width - parent.config.layout.padding.totalX();
+                } else self.viewport_width;
+
+                if (max_width > 0) {
+                    const wrap_result = try self.wrapText(td.text, td.config, max_width);
+                    td.wrapped_lines = wrap_result.lines;
+
+                    if (wrap_result.lines.len > 0) {
+                        td.measured_width = wrap_result.max_line_width;
+                        td.measured_height = wrap_result.total_height;
+
+                        elem.computed.sized_width = wrap_result.max_line_width;
+                        elem.computed.sized_height = wrap_result.total_height;
+
+                        // Propagate height change up to fit-content parents
+                        self.propagateHeightChange(elem.parent_index);
+                    }
+                }
+            }
+        }
+
+        // Recurse to children
+        if (elem.first_child_index) |first_child| {
+            var child_idx: ?u32 = first_child;
+            while (child_idx) |ci| {
+                try self.computeTextWrapping(ci);
+                child_idx = self.elements.getConst(ci).next_sibling_index;
+            }
+        }
+    }
+
+    /// Propagate child height changes up to fit-content parents
+    fn propagateHeightChange(self: *Self, parent_idx: ?u32) void {
+        var idx = parent_idx;
+        while (idx) |pi| {
+            const parent = self.elements.get(pi);
+            const sizing = parent.config.layout.sizing.height;
+
+            // Only update fit-content parents (not fixed, grow, or percent)
+            if (sizing.value != .fit) break;
+
+            // Recalculate height based on children
+            const padding = parent.config.layout.padding;
+            var total_height: f32 = 0;
+            const gap: f32 = @floatFromInt(parent.config.layout.child_gap);
+            const is_vertical = !parent.config.layout.layout_direction.isHorizontal();
+
+            var child_idx = parent.first_child_index;
+            var child_count: u32 = 0;
+            while (child_idx) |ci| {
+                const child = self.elements.getConst(ci);
+                if (is_vertical) {
+                    total_height += child.computed.sized_height;
+                } else {
+                    total_height = @max(total_height, child.computed.sized_height);
+                }
+                child_idx = child.next_sibling_index;
+                child_count += 1;
+            }
+
+            if (is_vertical and child_count > 1) {
+                total_height += gap * @as(f32, @floatFromInt(child_count - 1));
+            }
+
+            const new_height = total_height + padding.totalY();
+            parent.computed.sized_height = @max(sizing.getMin(), @min(sizing.getMax(), new_height));
+
+            idx = parent.parent_index;
+        }
+    }
+
+    fn computeFloatingPositions(self: *Self) void {
+        for (self.floating_roots.items) |float_idx| {
+            const elem = self.elements.get(float_idx);
+            const floating = elem.config.floating orelse continue;
+
+            // Find parent bounding box
+            var parent_bbox: BoundingBox = .{
+                .width = self.viewport_width,
+                .height = self.viewport_height,
+            };
+
+            if (floating.attach_to_parent) {
+                if (elem.parent_index) |pi| {
+                    parent_bbox = self.elements.getConst(pi).computed.bounding_box;
+                }
+            } else if (floating.parent_id) |pid| {
+                if (self.id_to_index.get(pid)) |pi| {
+                    parent_bbox = self.elements.getConst(pi).computed.bounding_box;
+                }
+            }
+
+            // Calculate attach point on parent
+            const parent_x = parent_bbox.x + parent_bbox.width * floating.parent_attach.normalizedX();
+            const parent_y = parent_bbox.y + parent_bbox.height * floating.parent_attach.normalizedY();
+
+            // Calculate element anchor offset
+            const elem_offset_x = elem.computed.sized_width * floating.element_attach.normalizedX();
+            const elem_offset_y = elem.computed.sized_height * floating.element_attach.normalizedY();
+
+            // Final position
+            const final_x = parent_x - elem_offset_x + floating.offset.x;
+            const final_y = parent_y - elem_offset_y + floating.offset.y;
+
+            // Update bounding boxes
+            elem.computed.bounding_box = .{
+                .x = final_x,
+                .y = final_y,
+                .width = elem.computed.sized_width,
+                .height = elem.computed.sized_height,
+            };
+
+            const padding = elem.config.layout.padding;
+            elem.computed.content_box = .{
+                .x = final_x + @as(f32, @floatFromInt(padding.left)),
+                .y = final_y + @as(f32, @floatFromInt(padding.top)),
+                .width = elem.computed.sized_width - padding.totalX(),
+                .height = elem.computed.sized_height - padding.totalY(),
+            };
+
+            // Recursively position children of floating element
+            if (elem.first_child_index) |first_child| {
+                const scroll_offset: ?ScrollOffset = if (elem.config.scroll) |s|
+                    ScrollOffset{ .x = s.scroll_offset.x, .y = s.scroll_offset.y }
+                else
+                    null;
+                self.positionChildren(first_child, elem.config.layout, elem.computed.content_box, scroll_offset);
+            }
+        }
     }
 
     /// Get computed bounding box for an element by ID (O(1) lookup)
@@ -399,28 +558,37 @@ pub const LayoutEngine = struct {
         const layout = elem.config.layout;
         const sizing = layout.sizing;
 
-        // Compute this element's final size based on sizing type
-        elem.computed.sized_width = computeAxisSize(sizing.width, elem.computed.min_width, available_width);
-        elem.computed.sized_height = computeAxisSize(sizing.height, elem.computed.min_height, available_height);
+        // Compute base sizes
+        const final_width = computeAxisSize(sizing.width, elem.computed.min_width, available_width);
+        var final_height = computeAxisSize(sizing.height, elem.computed.min_height, available_height);
+
+        // ASPECT RATIO (Phase 1): Derive height from width
+        if (layout.aspect_ratio) |ratio| {
+            // aspect_ratio = width / height, so height = width / ratio
+            final_height = final_width / ratio;
+        }
+
+        elem.computed.sized_width = final_width;
+        elem.computed.sized_height = final_height;
 
         // Content area for children (after padding)
-        const content_width = elem.computed.sized_width - layout.padding.totalX();
-        const content_height = elem.computed.sized_height - layout.padding.totalY();
+        const content_width = final_width - layout.padding.totalX();
+        const content_height = final_height - layout.padding.totalY();
 
-        // Distribute space to children
         if (elem.first_child_index) |first_child| {
             self.distributeSpace(first_child, layout, content_width, content_height);
         }
     }
 
-    /// Distribute available space among children (handles grow elements)
+    /// Distribute available space among children (handles grow and shrink)
     fn distributeSpace(self: *Self, first_child: u32, layout: LayoutConfig, width: f32, height: f32) void {
         const is_horizontal = layout.layout_direction.isHorizontal();
         const gap: f32 = @floatFromInt(layout.child_gap);
+        const available = if (is_horizontal) width else height;
 
-        // First pass: count grow elements and calculate fixed size
+        // First pass: calculate totals using DESIRED sizes, not min sizes
         var grow_count: u32 = 0;
-        var fixed_size: f32 = 0;
+        var total_desired: f32 = 0;
         var child_count: u32 = 0;
 
         var child_idx: ?u32 = first_child;
@@ -431,23 +599,109 @@ pub const LayoutEngine = struct {
             else
                 child.config.layout.sizing.height;
 
-            if (child_sizing.value == .grow) {
-                grow_count += 1;
-            } else {
-                fixed_size += if (is_horizontal) child.computed.min_width else child.computed.min_height;
+            const child_min = if (is_horizontal) child.computed.min_width else child.computed.min_height;
+
+            // Calculate desired size based on sizing type
+            const child_desired: f32 = switch (child_sizing.value) {
+                .grow => blk: {
+                    grow_count += 1;
+                    break :blk child_min; // grow elements only contribute their min
+                },
+                .fit => |mm| blk: {
+                    // If max is unbounded (floatMax), use min_width as desired
+                    // Otherwise use the max constraint as desired size
+                    const effective_max = if (mm.max >= 1e10) child_min else mm.max;
+                    break :blk @max(child_min, effective_max);
+                },
+                .fixed => |mm| mm.min, // fixed wants exactly this size
+                .percent => |p| available * p.value, // percent of available
+            };
+
+            // Only non-grow elements contribute to total_desired for shrink calc
+            if (child_sizing.value != .grow) {
+                total_desired += child_desired;
             }
 
             child_idx = child.next_sibling_index;
             child_count += 1;
         }
 
-        // Calculate space available for grow elements
         const total_gap = if (child_count > 1) gap * @as(f32, @floatFromInt(child_count - 1)) else 0;
-        const available = if (is_horizontal) width else height;
-        const grow_space = @max(0, available - fixed_size - total_gap);
-        const per_grow = if (grow_count > 0) grow_space / @as(f32, @floatFromInt(grow_count)) else 0;
+        const size_to_distribute = available - total_desired - total_gap;
 
-        // Second pass: assign sizes and recurse
+        // SHRINK LOGIC: When content exceeds available space
+        if (size_to_distribute < 0 and total_desired > 0) {
+            const overflow = -size_to_distribute;
+            const shrink_ratio = @max(0, 1.0 - overflow / total_desired);
+
+            child_idx = first_child;
+            while (child_idx) |ci| {
+                const child = self.elements.get(ci);
+                const child_sizing = if (is_horizontal)
+                    child.config.layout.sizing.width
+                else
+                    child.config.layout.sizing.height;
+
+                const child_min_constraint = child_sizing.getMin();
+                const child_min_content = if (is_horizontal) child.computed.min_width else child.computed.min_height;
+
+                // Calculate desired size for this child
+                const child_desired: f32 = switch (child_sizing.value) {
+                    .grow => child_min_content,
+                    .fit => |mm| @max(child_min_content, if (mm.max >= 1e10) child_min_content else mm.max),
+                    .fixed => |mm| mm.min,
+                    .percent => |p| available * p.value,
+                };
+
+                var new_size: f32 = undefined;
+                if (child_sizing.value == .grow) {
+                    new_size = child_min_constraint;
+                } else {
+                    // Shrink proportionally but respect minimum constraint
+                    new_size = @max(child_min_constraint, child_desired * shrink_ratio);
+                }
+
+                if (is_horizontal) {
+                    child.computed.sized_width = new_size;
+                    child.computed.sized_height = computeAxisSize(
+                        child.config.layout.sizing.height,
+                        child.computed.min_height,
+                        height,
+                    );
+                } else {
+                    child.computed.sized_width = computeAxisSize(
+                        child.config.layout.sizing.width,
+                        child.computed.min_width,
+                        width,
+                    );
+                    child.computed.sized_height = new_size;
+                }
+
+                // Handle aspect ratio for shrunk elements
+                if (child.config.layout.aspect_ratio) |ratio| {
+                    if (is_horizontal) {
+                        child.computed.sized_height = child.computed.sized_width / ratio;
+                    } else {
+                        child.computed.sized_width = child.computed.sized_height * ratio;
+                    }
+                }
+
+                // Recurse for children of this child
+                const child_layout = child.config.layout;
+                const content_width = child.computed.sized_width - child_layout.padding.totalX();
+                const content_height = child.computed.sized_height - child_layout.padding.totalY();
+                if (child.first_child_index) |grandchild| {
+                    self.distributeSpace(grandchild, child_layout, content_width, content_height);
+                }
+
+                child_idx = child.next_sibling_index;
+            }
+            return;
+        }
+
+        // GROW LOGIC: distribute remaining space
+        const per_grow = if (grow_count > 0) @max(0, size_to_distribute) / @as(f32, @floatFromInt(grow_count)) else 0;
+
         child_idx = first_child;
         while (child_idx) |ci| {
             const child = self.elements.get(ci);
@@ -456,6 +710,14 @@ pub const LayoutEngine = struct {
             else
                 child.config.layout.sizing.height;
 
+            // Calculate desired size for non-grow elements
+            const child_desired: f32 = switch (child_sizing_main.value) {
+                .grow => 0, // handled separately
+                .fit => |mm| @max(if (is_horizontal) child.computed.min_width else child.computed.min_height, mm.max),
+                .fixed => |mm| mm.min,
+                .percent => |p| (if (is_horizontal) width else height) * p.value,
+            };
+
             var child_width: f32 = undefined;
             var child_height: f32 = undefined;
 
@@ -463,14 +725,14 @@ pub const LayoutEngine = struct {
                 child_width = if (child_sizing_main.value == .grow)
                     @max(child.computed.min_width, per_grow)
                 else
-                    child.computed.min_width;
+                    child_desired;
                 child_height = height;
             } else {
                 child_width = width;
                 child_height = if (child_sizing_main.value == .grow)
                     @max(child.computed.min_height, per_grow)
                 else
-                    child.computed.min_height;
+                    child_desired;
             }
 
             self.computeFinalSizes(ci, child_width, child_height);
@@ -647,18 +909,44 @@ pub const LayoutEngine = struct {
 
         // Text
         if (elem.text_data) |td| {
-            try self.commands.append(.{
-                .bounding_box = bbox,
-                .command_type = .text,
-                .id = elem.id,
-                .data = .{ .text = .{
-                    .text = td.text,
-                    .color = td.config.color,
-                    .font_id = td.config.font_id,
-                    .font_size = td.config.font_size,
-                    .letter_spacing = td.config.letter_spacing,
-                } },
-            });
+            if (td.wrapped_lines) |lines| {
+                // Render each wrapped line
+                const line_height = td.config.lineHeightPx();
+                for (lines, 0..) |line, i| {
+                    const line_y = bbox.y + @as(f32, @floatFromInt(i)) * line_height;
+                    try self.commands.append(.{
+                        .bounding_box = .{
+                            .x = bbox.x,
+                            .y = line_y,
+                            .width = line.width,
+                            .height = line_height,
+                        },
+                        .command_type = .text,
+                        .id = elem.id,
+                        .data = .{ .text = .{
+                            .text = td.text[line.start_offset..][0..line.length],
+                            .color = td.config.color,
+                            .font_id = td.config.font_id,
+                            .font_size = td.config.font_size,
+                            .letter_spacing = td.config.letter_spacing,
+                        } },
+                    });
+                }
+            } else {
+                // Single line (no wrapping)
+                try self.commands.append(.{
+                    .bounding_box = bbox,
+                    .command_type = .text,
+                    .id = elem.id,
+                    .data = .{ .text = .{
+                        .text = td.text,
+                        .color = td.config.color,
+                        .font_id = td.config.font_id,
+                        .font_size = td.config.font_size,
+                        .letter_spacing = td.config.letter_spacing,
+                    } },
+                });
+            }
         }
 
         // Scissor for scroll containers
@@ -690,6 +978,140 @@ pub const LayoutEngine = struct {
             });
         }
     }
+
+    /// Wrap text into lines based on available width
+    fn wrapText(
+        self: *Self,
+        text_str: []const u8,
+        config: TextConfig,
+        max_width: f32,
+    ) !struct { lines: []types.WrappedLine, total_height: f32, max_line_width: f32 } {
+        if (config.wrap_mode == .none or max_width <= 0) {
+            return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
+        }
+
+        const measure_fn = self.measure_text_fn orelse {
+            return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
+        };
+
+        var lines: std.ArrayListUnmanaged(types.WrappedLine) = .{};
+        defer lines.deinit(self.allocator);
+
+        const line_height = config.lineHeightPx();
+        var max_line_width: f32 = 0;
+
+        var line_start: u32 = 0;
+        var line_width: f32 = 0; // Width of text from line_start up to (but not including) current word
+        var word_start: u32 = 0;
+        var word_width: f32 = 0; // Width of current word being accumulated
+        var i: u32 = 0;
+
+        while (i < text_str.len) : (i += 1) {
+            const c = text_str[i];
+            const is_space = c == ' ' or c == '\t';
+            const is_newline = c == '\n';
+
+            if (is_newline) {
+                // Finalize current word and emit line
+                const total_width = line_width + word_width;
+                try lines.append(self.allocator, .{
+                    .start_offset = line_start,
+                    .length = i - line_start,
+                    .width = total_width,
+                });
+                max_line_width = @max(max_line_width, total_width);
+                line_start = i + 1;
+                word_start = i + 1;
+                line_width = 0;
+                word_width = 0;
+                continue;
+            }
+
+            // Measure character width
+            const char_width = measure_fn(
+                text_str[i .. i + 1],
+                config.font_id,
+                config.font_size,
+                null,
+                self.measure_text_user_data,
+            ).width;
+
+            if (is_space) {
+                // Space ends a word - add word to line width
+                line_width += word_width + char_width;
+                word_width = 0;
+                word_start = i + 1;
+                continue;
+            }
+
+            // Regular character - check if we need to wrap BEFORE adding it
+            if (config.wrap_mode == .words and line_width + word_width + char_width > max_width) {
+                // Need to wrap
+                if (word_start > line_start and line_width > 0) {
+                    // Wrap at last word boundary (emit line without current word)
+                    // Trim trailing space from line_width by re-measuring
+                    const line_text = text_str[line_start..word_start];
+                    const trimmed_len = std.mem.trimRight(u8, line_text, " \t").len;
+                    const trimmed_width = if (trimmed_len > 0)
+                        measure_fn(
+                            text_str[line_start..][0..trimmed_len],
+                            config.font_id,
+                            config.font_size,
+                            null,
+                            self.measure_text_user_data,
+                        ).width
+                    else
+                        0;
+
+                    try lines.append(self.allocator, .{
+                        .start_offset = line_start,
+                        .length = @intCast(word_start - line_start),
+                        .width = trimmed_width,
+                    });
+                    max_line_width = @max(max_line_width, trimmed_width);
+
+                    // New line starts at current word
+                    line_start = word_start;
+                    line_width = 0;
+                    // word_width already has accumulated chars, keep it
+                } else if (word_width > 0) {
+                    // No word break available but we have content - force break
+                    try lines.append(self.allocator, .{
+                        .start_offset = line_start,
+                        .length = i - line_start,
+                        .width = line_width + word_width,
+                    });
+                    max_line_width = @max(max_line_width, line_width + word_width);
+                    line_start = i;
+                    word_start = i;
+                    line_width = 0;
+                    word_width = 0;
+                }
+            }
+
+            word_width += char_width;
+        }
+
+        // Emit final line
+        if (line_start < text_str.len) {
+            const total_width = line_width + word_width;
+            try lines.append(self.allocator, .{
+                .start_offset = line_start,
+                .length = @intCast(text_str.len - line_start),
+                .width = total_width,
+            });
+            max_line_width = @max(max_line_width, total_width);
+        }
+
+        const result_lines = try self.arena.allocator().dupe(types.WrappedLine, lines.items);
+        const total_height = line_height * @as(f32, @floatFromInt(@max(1, result_lines.len)));
+
+        return .{
+            .lines = result_lines,
+            .total_height = total_height,
+            .max_line_width = max_line_width,
+        };
+    }
 };
 
 // ============================================================================
@@ -706,10 +1128,18 @@ fn applyMinMax(size: f32, axis: SizingAxis) f32 {
 /// Compute final size based on sizing type
 fn computeAxisSize(axis: SizingAxis, min_size: f32, available: f32) f32 {
     return switch (axis.value) {
-        .fit => applyMinMax(min_size, axis),
+        .fit => |mm| blk: {
+            // If max is bounded, use it as preferred size (allows shrinking from max to min)
+            // If max is unbounded, use content size
+            const preferred = if (mm.max < 1e10) mm.max else min_size;
+            break :blk @max(mm.min, @min(mm.max, preferred));
+        },
         .grow => applyMinMax(available, axis),
         .fixed => |mm| mm.min,
-        .percent => |p| applyMinMax(available * p, axis),
+        .percent => |p| blk: {
+            const computed = available * p.value;
+            break :blk @max(p.min, @min(p.max, computed));
+        },
     };
 }
 
@@ -759,4 +1189,339 @@ test "nested layout" {
     engine.closeElement();
 
     _ = try engine.endFrame();
+}
+
+test "shrink behavior" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(200, 100); // Small viewport
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fill(), .layout_direction = .left_to_right },
+    });
+    {
+        // Two children that WANT 150px but CAN shrink (min=0)
+        // Use fitMax(150) which means "fit content up to 150px, min is 0"
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fitMax(150), // min=0, max=150
+                    .height = SizingAxis.fixed(50),
+                },
+            },
+            .background_color = Color.red,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .layout = .{ .sizing = .{ .width = SizingAxis.fitMax(150), .height = SizingAxis.fixed(50) } },
+            .background_color = Color.blue,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Children should have shrunk to fit
+    const child1 = engine.elements.getConst(1);
+    const child2 = engine.elements.getConst(2);
+    try std.testing.expect(child1.computed.sized_width <= 100); // 200/2
+    try std.testing.expect(child2.computed.sized_width <= 100);
+}
+
+test "aspect ratio" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(160), .height = SizingAxis.fit() },
+            .aspect_ratio = 16.0 / 9.0, // 16:9 ratio
+        },
+        .background_color = Color.white,
+    });
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const elem = engine.elements.getConst(0);
+    // Width 160, aspect 16:9, so height should be 90
+    try std.testing.expectApproxEqAbs(@as(f32, 90), elem.computed.sized_height, 0.1);
+}
+
+test "percent with min/max" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{
+                .width = SizingAxis.percentMinMax(0.5, 100, 300), // 50% clamped to 100-300
+                .height = SizingAxis.fixed(50),
+            },
+        },
+        .background_color = Color.white,
+    });
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const elem = engine.elements.getConst(0);
+    // 50% of 800 = 400, but max is 300
+    try std.testing.expectEqual(@as(f32, 300), elem.computed.sized_width);
+}
+
+test "floating positioning" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    // Parent element
+    try engine.openElement(.{
+        .id = LayoutId.init("parent"),
+        .layout = .{ .sizing = Sizing.fixed(200, 100) },
+        .background_color = Color.white,
+    });
+    {
+        // Floating child (dropdown style)
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(150, 80) },
+            .floating = types.FloatingConfig.dropdown(),
+            .background_color = Color.blue,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Floating element should be positioned below parent
+    const parent = engine.elements.getConst(0);
+    const floating = engine.elements.getConst(1);
+
+    try std.testing.expectEqual(parent.computed.bounding_box.x, floating.computed.bounding_box.x);
+    try std.testing.expectEqual(parent.computed.bounding_box.y + parent.computed.bounding_box.height, floating.computed.bounding_box.y);
+}
+
+test "text wrapping creates multiple lines" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    // Mock text measurement: each character is 10px wide, height is font_size
+    const mockMeasure = struct {
+        fn measure(
+            text: []const u8,
+            _: u16,
+            font_size: u16,
+            _: ?f32,
+            _: ?*anyopaque,
+        ) TextMeasurement {
+            return .{
+                .width = @as(f32, @floatFromInt(text.len)) * 10.0,
+                .height = @floatFromInt(font_size),
+            };
+        }
+    }.measure;
+
+    engine.setMeasureTextFn(mockMeasure, null);
+    engine.beginFrame(800, 600);
+
+    // Container with 100px content width (120 - 20 padding)
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = Sizing.fixed(120, 200),
+            .padding = Padding.all(10),
+            .layout_direction = .top_to_bottom,
+        },
+    });
+    {
+        // Text that needs to wrap: "hello world" = 11 chars = 110px, but container is 100px
+        try engine.text("hello world", .{
+            .wrap_mode = .words,
+            .font_size = 14,
+        });
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Check that text element has wrapped lines
+    const text_elem = engine.elements.getConst(1);
+    try std.testing.expect(text_elem.text_data != null);
+
+    const td = text_elem.text_data.?;
+    try std.testing.expect(td.wrapped_lines != null);
+
+    const lines = td.wrapped_lines.?;
+    try std.testing.expect(lines.len >= 2); // Should have wrapped into at least 2 lines
+}
+
+test "text wrapping with newlines" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const mockMeasure = struct {
+        fn measure(
+            text: []const u8,
+            _: u16,
+            font_size: u16,
+            _: ?f32,
+            _: ?*anyopaque,
+        ) TextMeasurement {
+            return .{
+                .width = @as(f32, @floatFromInt(text.len)) * 10.0,
+                .height = @floatFromInt(font_size),
+            };
+        }
+    }.measure;
+
+    engine.setMeasureTextFn(mockMeasure, null);
+    engine.beginFrame(800, 600);
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(400, 200) },
+    });
+    {
+        try engine.text("line one\nline two\nline three", .{
+            .wrap_mode = .newlines,
+            .font_size = 14,
+        });
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const text_elem = engine.elements.getConst(1);
+    const td = text_elem.text_data.?;
+    try std.testing.expect(td.wrapped_lines != null);
+
+    const lines = td.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 3), lines.len); // 3 lines from newlines
+}
+
+test "propagateHeightChange updates fit-content parent" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const mockMeasure = struct {
+        fn measure(
+            text: []const u8,
+            _: u16,
+            font_size: u16,
+            _: ?f32,
+            _: ?*anyopaque,
+        ) TextMeasurement {
+            return .{
+                .width = @as(f32, @floatFromInt(text.len)) * 10.0,
+                .height = @floatFromInt(font_size),
+            };
+        }
+    }.measure;
+
+    engine.setMeasureTextFn(mockMeasure, null);
+    engine.beginFrame(800, 600);
+
+    // Parent with fit-content height
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{
+                .width = SizingAxis.fixed(100), // 100px wide content area
+                .height = SizingAxis.fit(), // Fit to content height
+            },
+            .layout_direction = .top_to_bottom,
+        },
+    });
+    {
+        // Long text that will wrap into multiple lines
+        // "abcdefghij abcdefghij" = 21 chars = 210px wide, needs to wrap at 100px
+        try engine.text("abcdefghij abcdefghij", .{
+            .wrap_mode = .words,
+            .font_size = 20,
+            .line_height = 100, // 100% = 20px per line
+        });
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Parent should have grown to fit wrapped text
+    const parent = engine.elements.getConst(0);
+    const text_elem = engine.elements.getConst(1);
+
+    // Text wraps to 2+ lines, each 20px tall
+    try std.testing.expect(text_elem.computed.sized_height >= 40.0);
+
+    // Parent height should match or exceed text height
+    try std.testing.expect(parent.computed.sized_height >= text_elem.computed.sized_height);
+}
+
+test "propagateHeightChange stops at fixed-height parent" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const mockMeasure = struct {
+        fn measure(
+            text: []const u8,
+            _: u16,
+            font_size: u16,
+            _: ?f32,
+            _: ?*anyopaque,
+        ) TextMeasurement {
+            return .{
+                .width = @as(f32, @floatFromInt(text.len)) * 10.0,
+                .height = @floatFromInt(font_size),
+            };
+        }
+    }.measure;
+
+    engine.setMeasureTextFn(mockMeasure, null);
+    engine.beginFrame(800, 600);
+
+    // Outer container with FIXED height - should NOT grow
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = Sizing.fixed(100, 50), // Fixed 50px height
+            .layout_direction = .top_to_bottom,
+        },
+    });
+    {
+        // Inner container with fit height
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(100),
+                    .height = SizingAxis.fit(),
+                },
+                .layout_direction = .top_to_bottom,
+            },
+        });
+        {
+            // Text that wraps to multiple lines
+            try engine.text("abcdefghij abcdefghij", .{
+                .wrap_mode = .words,
+                .font_size = 20,
+                .line_height = 100,
+            });
+        }
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const outer = engine.elements.getConst(0);
+    const inner = engine.elements.getConst(1);
+
+    // Outer should stay at fixed height
+    try std.testing.expectEqual(@as(f32, 50.0), outer.computed.sized_height);
+
+    // Inner (fit-content) should have grown
+    try std.testing.expect(inner.computed.sized_height >= 40.0);
 }

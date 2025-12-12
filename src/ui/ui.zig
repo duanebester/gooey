@@ -74,8 +74,10 @@ pub const TextStyle = struct {
     color: Color = Color.black,
     weight: Weight = .regular,
     italic: bool = false,
+    wrap: WrapMode = .none,
 
     pub const Weight = enum { thin, light, regular, medium, semibold, bold, black };
+    pub const WrapMode = enum { none, words, newlines };
 };
 
 /// Box styling options
@@ -87,7 +89,9 @@ pub const BoxStyle = struct {
     min_height: ?f32 = null,
     max_width: ?f32 = null,
     max_height: ?f32 = null,
-    grow: bool = false,
+    grow: bool = false, // Grow both axes
+    grow_width: bool = false, // Grow width only
+    grow_height: bool = false, // Grow height only
     fill_width: bool = false, // 100% of parent width
     fill_height: bool = false, // 100% of parent height
 
@@ -568,20 +572,48 @@ pub const Builder = struct {
 
         var sizing = Sizing.fitContent();
 
-        if (style.width) |w| {
-            sizing.width = SizingAxis.fixed(w);
+        // Width sizing - grow takes precedence when combined with min/max
+        const grow_w = style.grow or style.grow_width;
+        if (grow_w) {
+            const min_w = style.min_width orelse 0;
+            const max_w = style.max_width orelse std.math.floatMax(f32);
+            sizing.width = SizingAxis.growMinMax(min_w, max_w);
+        } else if (style.width) |w| {
+            if (style.min_width != null or style.max_width != null) {
+                const min_w = style.min_width orelse 0;
+                const max_w = style.max_width orelse w;
+                sizing.width = SizingAxis.fitMinMax(min_w, @min(w, max_w));
+            } else {
+                sizing.width = SizingAxis.fixed(w);
+            }
+        } else if (style.min_width != null or style.max_width != null) {
+            const min_w = style.min_width orelse 0;
+            const max_w = style.max_width orelse std.math.floatMax(f32);
+            sizing.width = SizingAxis.fitMinMax(min_w, max_w);
         } else if (style.fill_width) {
             sizing.width = SizingAxis.percent(1.0);
-        } else if (style.grow) {
-            sizing.width = SizingAxis.grow();
         }
 
-        if (style.height) |h| {
-            sizing.height = SizingAxis.fixed(h);
+        // Height sizing - grow takes precedence when combined with min/max
+        const grow_h = style.grow or style.grow_height;
+        if (grow_h) {
+            const min_h = style.min_height orelse 0;
+            const max_h = style.max_height orelse std.math.floatMax(f32);
+            sizing.height = SizingAxis.growMinMax(min_h, max_h);
+        } else if (style.height) |h| {
+            if (style.min_height != null or style.max_height != null) {
+                const min_h = style.min_height orelse 0;
+                const max_h = style.max_height orelse h;
+                sizing.height = SizingAxis.fitMinMax(min_h, @min(h, max_h));
+            } else {
+                sizing.height = SizingAxis.fixed(h);
+            }
+        } else if (style.min_height != null or style.max_height != null) {
+            const min_h = style.min_height orelse 0;
+            const max_h = style.max_height orelse std.math.floatMax(f32);
+            sizing.height = SizingAxis.fitMinMax(min_h, max_h);
         } else if (style.fill_height) {
             sizing.height = SizingAxis.percent(1.0);
-        } else if (style.grow) {
-            sizing.height = SizingAxis.grow();
         }
 
         const direction: LayoutDirection = switch (style.direction) {
@@ -908,6 +940,11 @@ pub const Builder = struct {
         self.layout.text(txt.content, .{
             .color = txt.style.color,
             .font_size = txt.style.size,
+            .wrap_mode = switch (txt.style.wrap) {
+                .none => .none,
+                .words => .words,
+                .newlines => .newlines,
+            },
         }) catch return;
     }
 

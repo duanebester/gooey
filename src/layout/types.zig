@@ -9,6 +9,25 @@ const std = @import("std");
 // Sizing Types
 // ============================================================================
 
+/// Percent sizing with min/max constraints (Phase 1 addition)
+pub const PercentSizing = struct {
+    value: f32,
+    min: f32 = 0,
+    max: f32 = std.math.floatMax(f32),
+
+    pub fn of(p: f32) PercentSizing {
+        return .{ .value = p };
+    }
+
+    pub fn withMin(self: PercentSizing, min_val: f32) PercentSizing {
+        return .{ .value = self.value, .min = min_val, .max = self.max };
+    }
+
+    pub fn withMax(self: PercentSizing, max_val: f32) PercentSizing {
+        return .{ .value = self.value, .min = self.min, .max = max_val };
+    }
+};
+
 /// How an element determines its size along an axis
 pub const SizingType = enum {
     /// Size to fit content (text, children)
@@ -51,7 +70,7 @@ pub const SizingAxis = struct {
         fit: SizingMinMax,
         grow: SizingMinMax,
         fixed: SizingMinMax,
-        percent: f32,
+        percent: PercentSizing,
     };
 
     /// Fit to content with optional min/max constraints
@@ -93,11 +112,6 @@ pub const SizingAxis = struct {
         return .{ .value = .{ .fixed = SizingMinMax.fixed(size) } };
     }
 
-    /// Percentage of parent (0.0 - 1.0)
-    pub fn percent(p: f32) SizingAxis {
-        return .{ .value = .{ .percent = p } };
-    }
-
     /// Get the sizing type
     pub fn getType(self: SizingAxis) SizingType {
         return self.value;
@@ -106,7 +120,7 @@ pub const SizingAxis = struct {
     /// Get min constraint
     pub fn getMin(self: SizingAxis) f32 {
         return switch (self.value) {
-            .percent => 0,
+            .percent => |p| p.min,
             inline else => |mm| mm.min,
         };
     }
@@ -114,9 +128,21 @@ pub const SizingAxis = struct {
     /// Get max constraint
     pub fn getMax(self: SizingAxis) f32 {
         return switch (self.value) {
-            .percent => std.math.floatMax(f32),
+            .percent => |p| p.max,
             inline else => |mm| mm.max,
         };
+    }
+
+    pub fn percent(p: f32) SizingAxis {
+        return .{ .value = .{ .percent = PercentSizing.of(p) } };
+    }
+
+    pub fn percentMin(p: f32, min_val: f32) SizingAxis {
+        return .{ .value = .{ .percent = PercentSizing.of(p).withMin(min_val) } };
+    }
+
+    pub fn percentMinMax(p: f32, min_val: f32, max_val: f32) SizingAxis {
+        return .{ .value = .{ .percent = .{ .value = p, .min = min_val, .max = max_val } } };
     }
 };
 
@@ -434,6 +460,8 @@ pub const LayoutConfig = struct {
     child_gap: u16 = 0,
     child_alignment: ChildAlignment = .{},
     layout_direction: LayoutDirection = .left_to_right,
+    /// Aspect ratio (width / height). When set, height is derived from width.
+    aspect_ratio: ?f32 = null,
 
     pub fn row(gap: u16) LayoutConfig {
         return .{ .layout_direction = .left_to_right, .child_gap = gap };
@@ -445,6 +473,12 @@ pub const LayoutConfig = struct {
 
     pub fn centered() LayoutConfig {
         return .{ .child_alignment = ChildAlignment.center() };
+    }
+
+    pub fn withAspectRatio(self: LayoutConfig, ratio: f32) LayoutConfig {
+        var result = self;
+        result.aspect_ratio = ratio;
+        return result;
     }
 };
 
@@ -462,6 +496,22 @@ pub const AttachPoint = enum {
     right_top,
     right_center,
     right_bottom,
+
+    pub fn normalizedX(self: AttachPoint) f32 {
+        return switch (self) {
+            .left_top, .left_center, .left_bottom => 0.0,
+            .center_top, .center_center, .center_bottom => 0.5,
+            .right_top, .right_center, .right_bottom => 1.0,
+        };
+    }
+
+    pub fn normalizedY(self: AttachPoint) f32 {
+        return switch (self) {
+            .left_top, .center_top, .right_top => 0.0,
+            .left_center, .center_center, .right_center => 0.5,
+            .left_bottom, .center_bottom, .right_bottom => 1.0,
+        };
+    }
 };
 
 pub const FloatingConfig = struct {
@@ -471,6 +521,23 @@ pub const FloatingConfig = struct {
     parent_id: ?u32 = null,
     element_attach: AttachPoint = .left_top,
     parent_attach: AttachPoint = .left_top,
+    /// Whether to expand to match parent dimensions
+    expand: struct {
+        width: bool = false,
+        height: bool = false,
+    } = .{},
+
+    pub fn dropdown() FloatingConfig {
+        return .{ .element_attach = .left_top, .parent_attach = .left_bottom };
+    }
+
+    pub fn tooltip() FloatingConfig {
+        return .{ .element_attach = .center_bottom, .parent_attach = .center_top, .offset = .{ .y = -4 } };
+    }
+
+    pub fn modal() FloatingConfig {
+        return .{ .attach_to_parent = false, .element_attach = .center_center, .parent_attach = .center_center };
+    }
 };
 
 // ============================================================================
@@ -486,6 +553,12 @@ pub const ScrollConfig = struct {
 // ============================================================================
 // Text Config
 // ============================================================================
+/// A single line of wrapped text
+pub const WrappedLine = struct {
+    start_offset: u32,
+    length: u32,
+    width: f32,
+};
 
 pub const TextConfig = struct {
     color: Color = Color.black,
@@ -496,6 +569,13 @@ pub const TextConfig = struct {
     wrap_mode: WrapMode = .none,
 
     pub const WrapMode = enum { none, words, newlines };
+
+    /// Calculate line height in pixels
+    pub fn lineHeightPx(self: TextConfig) f32 {
+        const font_size_f: f32 = @floatFromInt(self.font_size);
+        const line_height_pct: f32 = @as(f32, @floatFromInt(self.line_height)) / 100.0;
+        return font_size_f * line_height_pct;
+    }
 };
 
 // ============================================================================

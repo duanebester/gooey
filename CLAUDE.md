@@ -4,38 +4,37 @@ Engineering Notes
 2. We are using Zig 0.15.2. make sure to use latest API's
    e.g. Check how we do ArrayList inits.
 
-Each glyph carries its own clip bounds, and the fragment shader discards pixels outside. No extra draw calls, no scissor rect state changes, just a simple `discard_fragment()` in the shader.
+Each glyph carries its own clip bounds, and the fragment shader discards pixels outside. No extra draw calls, no scissor rect state changes, just a simple `discard_fragment()` in-shader.
 
-## Glyph Ink Bounds Detection
+## Text Rendering (GPUI-style)
 
-When rasterizing glyphs with CoreText, the actual ink (visible pixels) may not
-start exactly where we allocate padding. CoreText's anti-aliasing produces
-variable padding depending on glyph shape:
+Our text rendering follows GPUI's approach for sharp, pixel-perfect text:
 
-| Glyph | Expected padding | Actual ink row |
-| ----- | ---------------- | -------------- |
-| 'A'   | 2                | 1              |
-| 'o'   | 2                | 2              |
-| 'u'   | 2                | 1              |
+### Glyph Rasterization
 
-If we assume fixed padding, glyphs with different actual padding will be
-vertically misaligned (e.g., 'u' appears lower than 'o' in "About").
+1. **Get raster bounds from font metrics** - `CTFontGetBoundingRectsForGlyphs` gives exact pixel bounds _before_ rendering. No bitmap scanning needed.
 
-**Solution**: After `CTFontDrawGlyphs`, scan the bitmap to find where ink
-actually starts, then use that to compute `offset_x` and `offset_y`.
+2. **Translate context by raster origin** - Position the glyph correctly within the bitmap buffer by translating by `-raster_bounds.origin`.
 
-This matches how GPUI handles it - they use font-kit's `raster_bounds()` to
-get exact pixel bounds before rendering. Our approach is equivalent but done
-post-render via bitmap scanning.
+3. **Subpixel variants** - Cache 4 horizontal variants (0, 0.25, 0.5, 0.75 pixel offsets) for sharper text at fractional positions. The subpixel shift is applied during rasterization.
 
-**Performance**: The scan is O(width × height) but only runs once per glyph
-since results are cached. For a typical 20×25 glyph, this is ~500 byte
-comparisons - negligible compared to the CoreText rendering cost.
+### Screen Positioning
 
-**References**:
+The key to sharp text on retina displays:
+
+```
+device_pos = logical_pos * scale_factor
+subpixel_variant = floor(fract(device_pos.x) * 4)
+final_pos = (floor(device_pos) + raster_offset) / scale_factor
+```
+
+**Critical**: Floor the device pixel position _before_ adding the offset. This ensures glyphs land on pixel boundaries. The subpixel variant handles fractional positioning within the pre-rendered bitmap.
+
+### References
 
 - GPUI: `crates/gpui/src/platform/mac/text_system.rs` (raster_bounds + rasterize_glyph)
-- Our implementation: `src/text/backends/coretext/face.zig` (renderGlyphSubpixel)
+- GPUI: `crates/gpui/src/window.rs` (paint_glyph - floor + offset pattern)
+- Our implementation: `src/text/backends/coretext/face.zig`, `src/text/render.zig`
 
 When creating apps/examples:
 You can't nest `cx.box()` calls directly inside tuples\** because they return `void`. Use component structs (like `Card{}`, `CounterRow{}`) for nesting. The component's `render` method receives a `*Builder`and can call`b.box()` etc.

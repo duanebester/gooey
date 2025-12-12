@@ -86,6 +86,31 @@ pub fn build(b: *std.Build) void {
     run_simple_cmd.step.dependOn(b.getInstallStep());
 
     // =========================================================================
+    // Layout Example
+    // =========================================================================
+
+    const layout_exe = b.addExecutable(.{
+        .name = "layout",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/layout.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = mod },
+                .{ .name = "objc", .module = objc_dep.module("objc") },
+            },
+        }),
+    });
+
+    b.installArtifact(layout_exe);
+
+    // Run layout example
+    const run_layout_step = b.step("run-layout", "Run the layout example");
+    const run_layout_cmd = b.addRunArtifact(layout_exe);
+    run_layout_step.dependOn(&run_layout_cmd.step);
+    run_layout_cmd.step.dependOn(b.getInstallStep());
+
+    // =========================================================================
     // Todo Example
     // =========================================================================
 
