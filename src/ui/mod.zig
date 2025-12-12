@@ -30,6 +30,7 @@ pub const checkbox = ui_impl.checkbox;
 pub const empty = ui_impl.empty;
 pub const keyContext = ui_impl.keyContext;
 pub const onAction = ui_impl.onAction;
+pub const buttonHandler = ui_impl.buttonHandler;
 
 // Primitive types
 pub const Text = ui_impl.Text;

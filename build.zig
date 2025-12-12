@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
 
     // Enable Metal HUD for FPS/GPU stats
-    // run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
+    run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
 
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -184,6 +184,55 @@ pub fn build(b: *std.Build) void {
     const run_actions_cmd = b.addRunArtifact(actions_exe);
     run_actions_step.dependOn(&run_actions_cmd.step);
     run_actions_cmd.step.dependOn(b.getInstallStep());
+
+    // =========================================================================
+    // Context Demo Example
+    // =========================================================================
+
+    const context_exe = b.addExecutable(.{
+        .name = "context_demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/with_context.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = mod },
+                .{ .name = "objc", .module = objc_dep.module("objc") },
+            },
+        }),
+    });
+
+    b.installArtifact(context_exe);
+
+    // Run context demo
+    const run_context_step = b.step("run-context", "Run the context/state demo");
+    const run_context_cmd = b.addRunArtifact(context_exe);
+    run_context_step.dependOn(&run_context_cmd.step);
+    run_context_cmd.step.dependOn(b.getInstallStep());
+
+    // =========================================================================
+    // Entities Demo Example
+    // =========================================================================
+
+    const entities_exe = b.addExecutable(.{
+        .name = "entities_demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/entities.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = mod },
+                .{ .name = "objc", .module = objc_dep.module("objc") },
+            },
+        }),
+    });
+
+    b.installArtifact(entities_exe);
+
+    const run_entities_step = b.step("run-entities", "Run the entities demo");
+    const run_entities_cmd = b.addRunArtifact(entities_exe);
+    run_entities_step.dependOn(&run_entities_cmd.step);
+    run_entities_cmd.step.dependOn(b.getInstallStep());
 
     // =========================================================================
     // Tests

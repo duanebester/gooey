@@ -107,6 +107,28 @@ pub const KeyBinding = action.KeyBinding;
 pub const actionTypeId = action.actionTypeId;
 
 // =============================================================================
+// Context System
+// =============================================================================
+
+pub const context = @import("context.zig");
+pub const Context = context.Context;
+
+// Handler
+pub const handler = @import("handler.zig");
+pub const HandlerRef = handler.HandlerRef;
+
+// =============================================================================
+// Entity System
+// =============================================================================
+
+pub const entity = @import("entity.zig");
+pub const Entity = entity.Entity;
+pub const EntityId = entity.EntityId;
+pub const EntityMap = entity.EntityMap;
+pub const EntityContext = entity.EntityContext;
+pub const isView = entity.isView;
+
+// =============================================================================
 // Focus System
 // =============================================================================
 

@@ -22,9 +22,11 @@
 const std = @import("std");
 const layout_types = @import("../layout/types.zig");
 const focus_mod = @import("focus.zig");
+const gooey_mod = @import("gooey.zig");
 
 const BoundingBox = layout_types.BoundingBox;
 const FocusId = focus_mod.FocusId;
+const Gooey = gooey_mod.Gooey;
 
 // =============================================================================
 // Dispatch Node ID
@@ -105,6 +107,12 @@ pub const DispatchNode = struct {
     /// Action handlers
     action_listeners: std.ArrayListUnmanaged(ActionListener) = .{},
 
+    /// Click handlers with HandlerRef (new pattern)
+    click_listeners_handler: std.ArrayListUnmanaged(ClickListenerHandler) = .{},
+
+    /// Action handlers with HandlerRef (new pattern)
+    action_listeners_handler: std.ArrayListUnmanaged(ActionListenerHandler) = .{},
+
     const Self = @This();
 
     pub fn containsPoint(self: Self, x: f32, y: f32) bool {
@@ -123,16 +131,22 @@ pub const DispatchNode = struct {
         self.simple_key_listeners.deinit(allocator);
         self.mouse_down_listeners.deinit(allocator);
         self.action_listeners.deinit(allocator);
+        // New handler-based listeners
+        self.click_listeners_handler.deinit(allocator);
+        self.action_listeners_handler.deinit(allocator);
     }
 
     /// Reset listeners for reuse (keeps capacity)
     pub fn resetListeners(self: *Self) void {
         self.click_listeners.clearRetainingCapacity();
         self.click_listeners_ctx.clearRetainingCapacity();
+        self.mouse_down_listeners.clearRetainingCapacity();
         self.key_down_listeners.clearRetainingCapacity();
         self.simple_key_listeners.clearRetainingCapacity();
-        self.mouse_down_listeners.clearRetainingCapacity();
         self.action_listeners.clearRetainingCapacity();
+        // New handler-based listeners
+        self.click_listeners_handler.clearRetainingCapacity();
+        self.action_listeners_handler.clearRetainingCapacity();
     }
 };
 
@@ -185,10 +199,24 @@ const action_mod = @import("action.zig");
 pub const ActionTypeId = action_mod.ActionTypeId;
 pub const actionTypeId = action_mod.actionTypeId;
 
+const handler_mod = @import("handler.zig");
+pub const HandlerRef = handler_mod.HandlerRef;
+
 /// Action listener - handles a specific action type
 pub const ActionListener = struct {
     action_type: ActionTypeId,
     callback: *const fn () void,
+};
+
+/// Click listener using HandlerRef (new pattern with context)
+pub const ClickListenerHandler = struct {
+    handler: HandlerRef,
+};
+
+/// Action listener using HandlerRef (new pattern with context)
+pub const ActionListenerHandler = struct {
+    action_type: ActionTypeId,
+    handler: HandlerRef,
 };
 
 // =============================================================================
@@ -504,6 +532,16 @@ pub const DispatchTree = struct {
         }
     }
 
+    /// Register a click handler using HandlerRef (new pattern)
+    pub fn onClickHandler(self: *Self, ref: HandlerRef) void {
+        const node_id = self.currentNode();
+        if (self.getNode(node_id)) |node| {
+            node.click_listeners_handler.append(self.allocator, .{
+                .handler = ref,
+            }) catch {};
+        }
+    }
+
     /// Register a click handler with context on the current node
     pub fn onClickWithContext(self: *Self, callback: *const fn (ctx: *anyopaque) void, context: *anyopaque) void {
         const node_id = self.currentNode();
@@ -529,7 +567,7 @@ pub const DispatchTree = struct {
 
     /// Dispatch a click event to the target node and its ancestors (bubble only)
     /// Returns true if any handler consumed the event
-    pub fn dispatchClick(self: *Self, target: DispatchNodeId) bool {
+    pub fn dispatchClick(self: *Self, target: DispatchNodeId, gooey: *Gooey) bool {
         var path_buf: [MAX_PATH_DEPTH]DispatchNodeId = undefined;
         const path = self.dispatchPath(target, &path_buf);
 
@@ -539,16 +577,22 @@ pub const DispatchTree = struct {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
 
-            // Call simple click listeners
+            // Call simple click listeners (legacy)
             for (node.click_listeners.items) |listener| {
                 listener.callback();
-                return true; // Click handlers always consume
+                return true;
             }
 
-            // Call context click listeners
+            // Call context click listeners (legacy)
             for (node.click_listeners_ctx.items) |listener| {
                 listener.callback(listener.context);
-                return true; // Click handlers always consume
+                return true;
+            }
+
+            // Call handler-based click listeners (new pattern)
+            for (node.click_listeners_handler.items) |listener| {
+                listener.handler.invoke(gooey);
+                return true;
             }
         }
 
@@ -658,6 +702,17 @@ pub const DispatchTree = struct {
         }
     }
 
+    /// Register an action handler using HandlerRef (new pattern)
+    pub fn onActionHandler(self: *Self, comptime Action: type, ref: HandlerRef) void {
+        const node_id = self.currentNode();
+        if (self.getNode(node_id)) |node| {
+            node.action_listeners_handler.append(self.allocator, .{
+                .action_type = actionTypeId(Action),
+                .handler = ref,
+            }) catch {};
+        }
+    }
+
     /// Build the context stack from a dispatch path
     pub fn contextStack(
         self: *const Self,
@@ -679,16 +734,25 @@ pub const DispatchTree = struct {
 
     /// Dispatch an action through the focus path
     /// Returns true if a handler was found and called
-    pub fn dispatchAction(self: *Self, action_type: ActionTypeId, path: []const DispatchNodeId) bool {
+    pub fn dispatchAction(self: *Self, action_type: ActionTypeId, path: []const DispatchNodeId, gooey: *Gooey) bool {
         // Walk from target to root looking for a handler
         var i = path.len;
         while (i > 0) {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
 
+            // Check legacy action listeners
             for (node.action_listeners.items) |listener| {
                 if (listener.action_type == action_type) {
                     listener.callback();
+                    return true;
+                }
+            }
+
+            // Check handler-based action listeners (new pattern)
+            for (node.action_listeners_handler.items) |listener| {
+                if (listener.action_type == action_type) {
+                    listener.handler.invoke(gooey);
                     return true;
                 }
             }

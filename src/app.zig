@@ -178,6 +178,383 @@ pub const RunConfig = struct {
     custom_shaders: []const []const u8 = &.{},
 };
 
+// =============================================================================
+// Stateful App Configuration (Level 2)
+// =============================================================================
+
+/// Configuration for gooey.runWithState()
+/// Allows passing typed application state to the render function.
+pub fn RunWithStateConfig(comptime State: type) type {
+    const context_mod = @import("core/context.zig");
+    const ContextType = context_mod.Context(State);
+
+    return struct {
+        title: []const u8 = "Gooey App",
+        width: f64 = 800,
+        height: f64 = 600,
+        background_color: ?geometry_mod.Color = null,
+
+        /// User's application state
+        state: *State,
+
+        /// Called each frame to build the UI (receives typed Context)
+        render: *const fn (*ContextType) void,
+
+        /// Called for input events (optional). Return true if handled.
+        on_event: ?*const fn (*ContextType, InputEvent) bool = null,
+
+        // Custom shader sources (Shadertoy-compatible MSL)
+        custom_shaders: []const []const u8 = &.{},
+    };
+}
+
+/// Run a Gooey application with typed state
+///
+/// This is the "Level 2" API that provides typed context to the render function.
+/// Use this when you need to pass state through components without globals.
+///
+/// Example:
+/// ```zig
+/// const AppState = struct {
+///     count: i32 = 0,
+/// };
+///
+/// pub fn main() !void {
+///     var app_state = AppState{};
+///     try gooey.runWithState(AppState, .{
+///         .state = &app_state,
+///         .render = render,
+///     });
+/// }
+///
+/// fn render(cx: *gooey.Context(AppState)) void {
+///     cx.vstack(.{}, .{
+///         gooey.ui.textFmt("Count: {}", .{cx.state().count}, .{}),
+///     });
+/// }
+/// ```
+pub fn runWithState(comptime State: type, config: RunWithStateConfig(State)) !void {
+    const context_mod = @import("core/context.zig");
+    const ContextType = context_mod.Context(State);
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Initialize platform
+    var plat = try MacPlatform.init();
+    defer plat.deinit();
+
+    // Default background color
+    const bg_color = config.background_color orelse geometry_mod.Color.init(0.95, 0.95, 0.95, 1.0);
+
+    // Create window
+    var window = try Window.init(allocator, &plat, .{
+        .title = config.title,
+        .width = config.width,
+        .height = config.height,
+        .background_color = bg_color,
+        .custom_shaders = config.custom_shaders,
+    });
+    defer window.deinit();
+
+    // Initialize Gooey with owned resources
+    var gooey_ctx = try Gooey.initOwned(allocator, window);
+    defer gooey_ctx.deinit();
+
+    // Initialize UI Builder
+    var builder = Builder.init(
+        allocator,
+        gooey_ctx.layout,
+        gooey_ctx.scene,
+        gooey_ctx.dispatch,
+    );
+    defer builder.deinit();
+    builder.gooey = &gooey_ctx;
+
+    // Create typed Context
+    var ctx = ContextType{
+        .gooey = &gooey_ctx,
+        .builder = &builder,
+        .user_state = config.state,
+    };
+
+    // Set root state for handler callbacks
+    const handler_mod = @import("core/handler.zig");
+    handler_mod.setRootState(State, config.state);
+    defer handler_mod.clearRootState();
+
+    // Store references for callbacks using a closure-like pattern
+    const CallbackState = struct {
+        var g_ctx: *ContextType = undefined;
+        var g_config_render: *const fn (*ContextType) void = undefined;
+        var g_config_on_event: ?*const fn (*ContextType, InputEvent) bool = null;
+        var g_gooey: *Gooey = undefined;
+        var g_builder: *Builder = undefined;
+        var g_building: bool = false;
+
+        fn onRender(win: *Window) void {
+            _ = win;
+            if (g_building) return;
+            g_building = true;
+            defer g_building = false;
+
+            renderFrameWithContext(ContextType, g_ctx, g_config_render) catch |err| {
+                std.debug.print("Render error: {}\n", .{err});
+            };
+        }
+
+        fn onInput(win: *Window, event: InputEvent) bool {
+            _ = win;
+            return handleInputWithContext(ContextType, g_ctx, g_config_on_event, event);
+        }
+    };
+
+    CallbackState.g_ctx = &ctx;
+    CallbackState.g_config_render = config.render;
+    CallbackState.g_config_on_event = config.on_event;
+    CallbackState.g_gooey = &gooey_ctx;
+    CallbackState.g_builder = &builder;
+
+    // Set callbacks
+    window.setRenderCallback(CallbackState.onRender);
+    window.setInputCallback(CallbackState.onInput);
+    window.setTextAtlas(gooey_ctx.text_system.getAtlas());
+    window.setScene(gooey_ctx.scene);
+
+    std.debug.print("Gooey app started (with state): {s}\n", .{config.title});
+
+    // Run the event loop
+    plat.run();
+}
+
+/// Internal: render a single frame with typed context
+fn renderFrameWithContext(
+    comptime ContextType: type,
+    ctx: *ContextType,
+    render_fn: *const fn (*ContextType) void,
+) !void {
+    // Reset dispatch tree for new frame
+    ctx.gooey.dispatch.reset();
+
+    ctx.gooey.beginFrame();
+
+    // Reset builder state
+    ctx.builder.id_counter = 0;
+    ctx.builder.pending_inputs.clearRetainingCapacity();
+    ctx.builder.pending_checkboxes.clearRetainingCapacity();
+    ctx.builder.pending_scrolls.clearRetainingCapacity();
+
+    // Call user's render function with typed context
+    render_fn(ctx);
+
+    // End frame and get render commands
+    const commands = try ctx.gooey.endFrame();
+
+    // Sync bounds from layout to dispatch tree
+    for (ctx.gooey.dispatch.nodes.items) |*node| {
+        if (node.layout_id) |layout_id| {
+            node.bounds = ctx.gooey.layout.getBoundingBox(layout_id);
+        }
+    }
+
+    // Register hit regions
+    ctx.builder.registerPendingScrollRegions();
+
+    // Clear scene
+    ctx.gooey.scene.clear();
+
+    // Render all commands
+    for (commands) |cmd| {
+        try renderCommand(ctx.gooey, cmd);
+    }
+
+    // Render text inputs
+    for (ctx.builder.pending_inputs.items) |pending| {
+        const bounds = ctx.gooey.layout.getBoundingBox(pending.layout_id.id);
+        if (bounds) |b| {
+            if (ctx.gooey.textInput(pending.id)) |input_widget| {
+                input_widget.bounds = .{
+                    .x = b.x,
+                    .y = b.y,
+                    .width = b.width,
+                    .height = b.height,
+                };
+                input_widget.setPlaceholder(pending.style.placeholder);
+                try input_widget.render(ctx.gooey.scene, ctx.gooey.text_system, ctx.gooey.scale_factor);
+            }
+        }
+    }
+
+    // Render checkboxes
+    for (ctx.builder.pending_checkboxes.items) |pending| {
+        const bounds = ctx.gooey.layout.getBoundingBox(pending.layout_id.id);
+        if (bounds) |b| {
+            if (ctx.gooey.widgets.checkbox(pending.id)) |checkbox_widget| {
+                checkbox_widget.bounds = .{
+                    .x = b.x,
+                    .y = b.y,
+                    .width = b.width,
+                    .height = b.height,
+                };
+                try checkbox_widget.render(ctx.gooey.scene, ctx.gooey.text_system, ctx.gooey.scale_factor);
+            }
+        }
+    }
+
+    // Render scrollbars
+    for (ctx.builder.pending_scrolls.items) |pending| {
+        if (ctx.gooey.widgets.scrollContainer(pending.id)) |scroll_widget| {
+            try scroll_widget.renderScrollbars(ctx.gooey.scene);
+        }
+    }
+
+    ctx.gooey.scene.finish();
+}
+
+/// Internal: handle input with typed context
+fn handleInputWithContext(
+    comptime ContextType: type,
+    ctx: *ContextType,
+    on_event: ?*const fn (*ContextType, InputEvent) bool,
+    event: InputEvent,
+) bool {
+    // Handle scroll events
+    if (event == .scroll) {
+        const scroll_ev = event.scroll;
+        const x: f32 = @floatCast(scroll_ev.position.x);
+        const y: f32 = @floatCast(scroll_ev.position.y);
+
+        for (ctx.builder.pending_scrolls.items) |pending| {
+            const bounds = ctx.gooey.layout.getBoundingBox(pending.layout_id.id);
+            if (bounds) |b| {
+                if (x >= b.x and x < b.x + b.width and y >= b.y and y < b.y + b.height) {
+                    if (ctx.gooey.widgets.getScrollContainer(pending.id)) |sc| {
+                        if (sc.handleScroll(scroll_ev.delta.x, scroll_ev.delta.y)) {
+                            ctx.notify();
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle mouse down through dispatch tree
+    if (event == .mouse_down) {
+        const pos = event.mouse_down.position;
+        const x: f32 = @floatCast(pos.x);
+        const y: f32 = @floatCast(pos.y);
+
+        if (ctx.gooey.dispatch.hitTest(x, y)) |target| {
+            if (ctx.gooey.dispatch.getNodeConst(target)) |node| {
+                if (node.focus_id) |focus_id| {
+                    if (ctx.gooey.focus.getHandleById(focus_id)) |handle| {
+                        ctx.gooey.focusTextInput(handle.string_id);
+                    }
+                }
+            }
+
+            if (ctx.gooey.dispatch.dispatchClick(target, ctx.gooey)) {
+                ctx.notify();
+                return true;
+            }
+        }
+    }
+
+    // Let user's event handler run first
+    if (on_event) |handler| {
+        if (handler(ctx, event)) return true;
+    }
+
+    // Route keyboard/text events to focused TextInput
+    switch (event) {
+        .key_down => |k| {
+            if (k.key == .tab) {
+                if (k.modifiers.shift) {
+                    ctx.gooey.focusPrev();
+                } else {
+                    ctx.gooey.focusNext();
+                }
+                return true;
+            }
+
+            // Try action dispatch through focus path
+            if (ctx.gooey.focus.getFocused()) |focus_id| {
+                var path_buf: [64]DispatchNodeId = undefined;
+                if (ctx.gooey.dispatch.focusPath(focus_id, &path_buf)) |path| {
+                    var ctx_buf: [64][]const u8 = undefined;
+                    const contexts = ctx.gooey.dispatch.contextStack(path, &ctx_buf);
+
+                    if (ctx.gooey.keymap.match(k.key, k.modifiers, contexts)) |binding| {
+                        if (ctx.gooey.dispatch.dispatchAction(binding.action_type, path, ctx.gooey)) {
+                            ctx.notify();
+                            return true;
+                        }
+                    }
+
+                    if (ctx.gooey.dispatch.dispatchKeyDown(focus_id, k)) {
+                        ctx.notify();
+                        return true;
+                    }
+                }
+            } else {
+                var path_buf: [64]DispatchNodeId = undefined;
+                if (ctx.gooey.dispatch.rootPath(&path_buf)) |path| {
+                    if (ctx.gooey.keymap.match(k.key, k.modifiers, &.{})) |binding| {
+                        if (ctx.gooey.dispatch.dispatchAction(binding.action_type, path, ctx.gooey)) {
+                            ctx.notify();
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            if (ctx.gooey.getFocusedTextInput()) |input| {
+                if (isControlKey(k.key, k.modifiers)) {
+                    input.handleKey(k) catch {};
+                    syncBoundVariablesWithContext(ContextType, ctx);
+                    ctx.notify();
+                    return true;
+                }
+            }
+        },
+        .text_input => |t| {
+            if (ctx.gooey.getFocusedTextInput()) |input| {
+                input.insertText(t.text) catch {};
+                syncBoundVariablesWithContext(ContextType, ctx);
+                ctx.notify();
+                return true;
+            }
+        },
+        .composition => |c| {
+            if (ctx.gooey.getFocusedTextInput()) |input| {
+                input.setComposition(c.text) catch {};
+                ctx.notify();
+                return true;
+            }
+        },
+        else => {},
+    }
+
+    // Then delegate to user's event handler
+    if (on_event) |handler| {
+        return handler(ctx, event);
+    }
+    return false;
+}
+
+/// Sync bound variables for context-based rendering
+fn syncBoundVariablesWithContext(comptime ContextType: type, ctx: *ContextType) void {
+    for (ctx.builder.pending_inputs.items) |pending| {
+        if (pending.style.bind) |bind_ptr| {
+            if (ctx.gooey.textInput(pending.id)) |input| {
+                bind_ptr.* = input.getText();
+            }
+        }
+    }
+}
+
 /// Run a Gooey application with minimal boilerplate
 pub fn run(config: RunConfig) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -282,7 +659,7 @@ pub fn run(config: RunConfig) !void {
                     }
 
                     // Dispatch click handlers (buttons, checkboxes, etc.)
-                    if (g_ui.gooey.dispatch.dispatchClick(target)) {
+                    if (g_ui.gooey.dispatch.dispatchClick(target, g_ui.gooey)) {
                         g_ui.requestRender();
                         return true;
                     }
@@ -317,7 +694,7 @@ pub fn run(config: RunConfig) !void {
 
                             // Check if keystroke matches an action
                             if (g_ui.gooey.keymap.match(k.key, k.modifiers, contexts)) |binding| {
-                                if (g_ui.gooey.dispatch.dispatchAction(binding.action_type, path)) {
+                                if (g_ui.gooey.dispatch.dispatchAction(binding.action_type, path, g_ui.gooey)) {
                                     g_ui.requestRender();
                                     return true;
                                 }
@@ -335,7 +712,7 @@ pub fn run(config: RunConfig) !void {
                         if (g_ui.gooey.dispatch.rootPath(&path_buf)) |path| {
                             // No context when nothing is focused
                             if (g_ui.gooey.keymap.match(k.key, k.modifiers, &.{})) |binding| {
-                                if (g_ui.gooey.dispatch.dispatchAction(binding.action_type, path)) {
+                                if (g_ui.gooey.dispatch.dispatchAction(binding.action_type, path, g_ui.gooey)) {
                                     g_ui.requestRender();
                                     return true;
                                 }

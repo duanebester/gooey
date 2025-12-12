@@ -26,6 +26,8 @@ const FocusId = focus_mod.FocusId;
 const FocusHandle = focus_mod.FocusHandle;
 const action_mod = @import("../core/action.zig");
 const actionTypeId = action_mod.actionTypeId;
+const handler_mod = @import("../core/handler.zig");
+pub const HandlerRef = handler_mod.HandlerRef;
 const layout_mod = @import("../layout/layout.zig");
 const LayoutEngine = layout_mod.LayoutEngine;
 const LayoutId = layout_mod.LayoutId;
@@ -176,7 +178,7 @@ pub const ButtonStyle = struct {
 // Primitive Descriptors
 // =============================================================================
 
-pub const PrimitiveType = enum { text, input, spacer, button, empty, checkbox, key_context, action_handler };
+pub const PrimitiveType = enum { text, input, spacer, button, button_handler, empty, checkbox, key_context, action_handler, action_handler_ref };
 
 pub const CheckboxStyle = struct {
     label: []const u8 = "",
@@ -208,6 +210,12 @@ pub const ActionHandlerPrimitive = struct {
     action_type: usize, // ActionTypeId
     callback: *const fn () void,
     pub const primitive_type: PrimitiveType = .action_handler;
+};
+
+pub const ActionHandlerRefPrimitive = struct {
+    action_type: usize,
+    handler: HandlerRef,
+    pub const primitive_type: PrimitiveType = .action_handler_ref;
 };
 
 /// Text element descriptor
@@ -268,6 +276,15 @@ pub const Button = struct {
     pub const primitive_type: PrimitiveType = .button;
 };
 
+/// Button with HandlerRef (new pattern with context access)
+pub const ButtonHandler = struct {
+    label: []const u8,
+    style: ButtonStyle = .{},
+    handler: HandlerRef,
+
+    pub const primitive_type: PrimitiveType = .button_handler;
+};
+
 /// Empty element (renders nothing) - for conditionals
 pub const Empty = struct {
     pub const primitive_type: PrimitiveType = .empty;
@@ -276,6 +293,24 @@ pub const Empty = struct {
 // =============================================================================
 // Free Functions (return descriptors)
 // =============================================================================
+
+/// Create a button with HandlerRef (new pattern)
+pub fn buttonHandler(label: []const u8, ref: HandlerRef) ButtonHandler {
+    return .{ .label = label, .handler = ref };
+}
+
+/// Create a styled button with HandlerRef
+pub fn buttonHandlerStyled(label: []const u8, style: ButtonStyle, ref: HandlerRef) ButtonHandler {
+    return .{ .label = label, .style = style, .handler = ref };
+}
+
+/// Register an action handler using HandlerRef (new pattern)
+pub fn onActionHandler(comptime Action: type, ref: HandlerRef) ActionHandlerRefPrimitive {
+    return .{
+        .action_type = actionTypeId(Action),
+        .handler = ref,
+    };
+}
 
 /// Create a text element
 pub fn text(content: []const u8, style: TextStyle) Text {
@@ -731,7 +766,10 @@ pub const Builder = struct {
                 .checkbox => self.renderCheckbox(child),
                 .key_context => self.renderKeyContext(child),
                 .action_handler => self.renderActionHandler(child),
+                .button_handler => self.renderButtonHandler(child),
+                .action_handler_ref => self.renderActionHandlerRef(child),
                 .empty => {}, // Do nothing
+
             }
             return;
         }
@@ -871,6 +909,59 @@ pub const Builder = struct {
         self.dispatch.popNode();
     }
 
+    fn renderButtonHandler(self: *Self, btn: ButtonHandler) void {
+        const layout_id = self.generateId();
+
+        // Push dispatch node for this button
+        _ = self.dispatch.pushNode();
+        self.dispatch.setLayoutId(layout_id.id);
+
+        const bg = switch (btn.style.style) {
+            .primary => if (btn.style.enabled)
+                Color.rgb(0.2, 0.5, 1.0)
+            else
+                Color.rgb(0.5, 0.7, 1.0),
+            .secondary => Color.rgb(0.9, 0.9, 0.9),
+            .danger => Color.rgb(0.9, 0.3, 0.3),
+        };
+        const fg = switch (btn.style.style) {
+            .primary, .danger => Color.white,
+            .secondary => Color.rgb(0.3, 0.3, 0.3),
+        };
+
+        self.layout.openElement(.{
+            .id = layout_id,
+            .layout = .{
+                .sizing = Sizing.fitContent(),
+                .padding = Padding.symmetric(24, 10),
+                .child_alignment = .{ .x = .center, .y = .center },
+            },
+            .background_color = bg,
+            .corner_radius = CornerRadius.all(6),
+        }) catch {
+            self.dispatch.popNode();
+            return;
+        };
+
+        self.layout.text(btn.label, .{
+            .color = fg,
+            .font_size = 14,
+        }) catch {};
+
+        self.layout.closeElement();
+
+        // Register handler-based click handler
+        if (btn.style.enabled) {
+            self.dispatch.onClickHandler(btn.handler);
+        }
+
+        self.dispatch.popNode();
+    }
+
+    fn renderActionHandlerRef(self: *Self, ah: ActionHandlerRefPrimitive) void {
+        self.dispatch.onActionHandlerRaw(ah.action_type, ah.handler);
+    }
+
     fn renderCheckbox(self: *Self, cb: CheckboxPrimitive) void {
         const layout_id = LayoutId.fromString(cb.id);
         const box_size: f32 = 18;
@@ -969,19 +1060,6 @@ pub const Builder = struct {
             }) catch {};
         }
     }
-
-    /// Register input regions for focus handling (call after endFrame)
-    // pub fn registerPendingInputRegions(self: *Self) void {
-    //     for (self.pending_inputs.items) |pending| {
-    //         const bounds = self.layout.getBoundingBox(pending.layout_id.id);
-    //         if (bounds) |b| {
-    //             self.input_regions.append(self.allocator, .{
-    //                 .bounds = b,
-    //                 .id = pending.id,
-    //             }) catch {};
-    //         }
-    //     }
-    // }
 
     // =========================================================================
     // Internal: ID Generation

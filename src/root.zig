@@ -145,6 +145,21 @@ pub const FocusHandle = core.FocusHandle;
 pub const FocusManager = core.FocusManager;
 pub const FocusEvent = core.FocusEvent;
 
+// Context system
+pub const Context = core.Context;
+pub const RunWithStateConfig = app.RunWithStateConfig;
+pub const runWithState = app.runWithState;
+
+// Entity system
+pub const Entity = core.Entity;
+pub const EntityId = core.EntityId;
+pub const EntityMap = core.EntityMap;
+pub const EntityContext = core.EntityContext;
+pub const isView = core.isView;
+
+// Handler system
+pub const HandlerRef = core.HandlerRef;
+
 // Text system
 pub const TextSystem = text.TextSystem;
 pub const FontFace = text.FontFace;

@@ -35,6 +35,10 @@ const TextMeasurement = engine_mod.TextMeasurement;
 const dispatch_mod = @import("dispatch.zig");
 const DispatchTree = dispatch_mod.DispatchTree;
 
+const entity_mod = @import("entity.zig");
+const EntityMap = entity_mod.EntityMap;
+pub const EntityId = entity_mod.EntityId;
+
 const action_mod = @import("action.zig");
 const Keymap = action_mod.Keymap;
 
@@ -93,6 +97,9 @@ pub const Gooey = struct {
     /// Keymap for action bindings
     keymap: Keymap,
 
+    /// Entity storage for GPUI-style state management
+    entities: EntityMap,
+
     // Platform
     window: *Window,
 
@@ -124,6 +131,7 @@ pub const Gooey = struct {
             .layout = layout_engine,
             .scene = scene,
             .dispatch = dispatch,
+            .entities = EntityMap.init(allocator),
             .keymap = Keymap.init(allocator),
             .focus = FocusManager.init(allocator),
             .text_system = text_system,
@@ -178,6 +186,7 @@ pub const Gooey = struct {
             .scene = scene,
             .scene_owned = true,
             .dispatch = dispatch,
+            .entities = EntityMap.init(allocator),
             .keymap = Keymap.init(allocator),
             .focus = FocusManager.init(allocator),
             .text_system = text_system,
@@ -193,6 +202,7 @@ pub const Gooey = struct {
     pub fn deinit(self: *Self) void {
         self.widgets.deinit();
         self.focus.deinit();
+        self.entities.deinit();
 
         // Clean up dispatch tree
         self.dispatch.deinit();
@@ -360,6 +370,35 @@ pub const Gooey = struct {
         } else if (self.widgets.checkboxes.get(id)) |cb| {
             cb.focus();
         }
+    }
+
+    // =========================================================================
+    // Entity Operations
+    // =========================================================================
+
+    /// Create a new entity
+    pub fn createEntity(self: *Self, comptime T: type, value: T) !entity_mod.Entity(T) {
+        return self.entities.new(T, value);
+    }
+
+    /// Read an entity's data
+    pub fn readEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*const T {
+        return self.entities.read(T, entity);
+    }
+
+    /// Get mutable access to an entity
+    pub fn writeEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*T {
+        return self.entities.write(T, entity);
+    }
+
+    /// Process entity notifications (called during frame)
+    pub fn processEntityNotifications(self: *Self) bool {
+        return self.entities.processNotifications();
+    }
+
+    /// Get the entity map
+    pub fn getEntities(self: *Self) *EntityMap {
+        return &self.entities;
     }
 
     // =========================================================================
