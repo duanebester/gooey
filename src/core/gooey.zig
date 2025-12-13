@@ -161,6 +161,13 @@ pub const Gooey = struct {
             allocator.destroy(scene);
         }
 
+        // Enable viewport culling with initial window size
+        scene.setViewport(
+            @floatCast(window.size.width),
+            @floatCast(window.size.height),
+        );
+        scene.enableCulling();
+
         // Create text system
         const text_system = allocator.create(TextSystem) catch return error.OutOfMemory;
         text_system.* = try TextSystem.initWithScale(allocator, @floatCast(window.scale_factor));
@@ -244,6 +251,11 @@ pub const Gooey = struct {
 
         // Clear scene for new frame
         self.scene.clear();
+
+        // Update viewport only on resize
+        if (self.scene.viewport_width != self.width or self.scene.viewport_height != self.height) {
+            self.scene.setViewport(self.width, self.height);
+        }
 
         // Begin layout pass
         self.layout.beginFrame(self.width, self.height);
