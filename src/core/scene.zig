@@ -356,6 +356,14 @@ pub const Scene = struct {
     // Track if out-of-order inserts occurred (requiring sort)
     needs_sort: bool,
 
+    // Viewport culling
+    viewport_width: f32,
+    viewport_height: f32,
+    culling_enabled: bool,
+
+    // Stats tracking (optional)
+    stats: ?*@import("render_stats.zig").RenderStats,
+
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -367,6 +375,11 @@ pub const Scene = struct {
             .next_order = 0,
             .clip_stack = .{},
             .needs_sort = false,
+            // Viewport culling - disabled by default (0 = no culling)
+            .viewport_width = 0,
+            .viewport_height = 0,
+            .culling_enabled = false,
+            .stats = null,
         };
     }
 
@@ -437,6 +450,22 @@ pub const Scene = struct {
 
     /// Insert a shadow (call BEFORE the quad it shadows)
     pub fn insertShadow(self: *Self, shadow: Shadow) !void {
+        // Fast viewport cull - account for blur radius and offset
+        if (self.culling_enabled) {
+            const expand = shadow.blur_radius * 2; // Shadow extends beyond content
+            const left = shadow.content_origin_x + shadow.offset_x - expand;
+            const top = shadow.content_origin_y + shadow.offset_y - expand;
+            const right = left + shadow.content_size_width + expand * 2;
+            const bottom = top + shadow.content_size_height + expand * 2;
+
+            if (right < 0 or left > self.viewport_width or
+                bottom < 0 or top > self.viewport_height)
+            {
+                if (self.stats) |s| s.recordShadowsCulled(1);
+                return;
+            }
+        }
+
         var s = shadow;
         s.order = self.next_order;
         self.next_order += 1;
@@ -444,6 +473,20 @@ pub const Scene = struct {
     }
 
     pub fn insertQuad(self: *Self, quad: Quad) !void {
+        // Fast viewport cull - skip if completely outside viewport
+        if (self.culling_enabled) {
+            const right = quad.bounds_origin_x + quad.bounds_size_width;
+            const bottom = quad.bounds_origin_y + quad.bounds_size_height;
+
+            if (right < 0 or quad.bounds_origin_x > self.viewport_width or
+                bottom < 0 or quad.bounds_origin_y > self.viewport_height)
+            {
+                // Quad is fully outside viewport - skip it
+                if (self.stats) |s| s.recordQuadsCulled(1);
+                return;
+            }
+        }
+
         var q = quad;
         q.order = self.next_order;
         self.next_order += 1;
@@ -464,6 +507,29 @@ pub const Scene = struct {
     /// Insert a quad with the current clip mask applied
     pub fn insertQuadClipped(self: *Self, quad: Quad) !void {
         const clip = self.currentClip();
+
+        // Cull against clip bounds (even tighter than viewport)
+        const right = quad.bounds_origin_x + quad.bounds_size_width;
+        const bottom = quad.bounds_origin_y + quad.bounds_size_height;
+
+        if (right < clip.x or quad.bounds_origin_x > clip.x + clip.width or
+            bottom < clip.y or quad.bounds_origin_y > clip.y + clip.height)
+        {
+            // Quad is fully outside clip region - skip entirely
+            if (self.stats) |s| s.recordQuadsCulled(1);
+            return;
+        }
+
+        // Also check viewport if enabled
+        if (self.culling_enabled) {
+            if (right < 0 or quad.bounds_origin_x > self.viewport_width or
+                bottom < 0 or quad.bounds_origin_y > self.viewport_height)
+            {
+                if (self.stats) |s| s.recordQuadsCulled(1);
+                return;
+            }
+        }
+
         var q = quad.withClipBounds(clip);
         q.order = self.next_order;
         self.next_order += 1;
@@ -523,6 +589,29 @@ pub const Scene = struct {
             }
         }
         return null;
+    }
+
+    /// Set viewport for culling. Call this before inserting primitives.
+    /// Primitives fully outside the viewport will be skipped.
+    pub fn setViewport(self: *Self, width: f32, height: f32) void {
+        self.viewport_width = width;
+        self.viewport_height = height;
+        self.culling_enabled = true;
+    }
+
+    /// Disable viewport culling
+    pub fn disableCulling(self: *Self) void {
+        self.culling_enabled = false;
+    }
+
+    /// Enabled viewport culling
+    pub fn enableCulling(self: *Self) void {
+        self.culling_enabled = true;
+    }
+
+    /// Attach stats tracker (optional)
+    pub fn setStats(self: *Self, stats: *@import("render_stats.zig").RenderStats) void {
+        self.stats = stats;
     }
 };
 

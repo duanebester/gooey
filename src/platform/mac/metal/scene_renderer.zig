@@ -9,6 +9,7 @@ const mtl = @import("api.zig");
 const render_pass = @import("render_pass.zig");
 const scene_mod = @import("../../../core/scene.zig");
 const text_pipeline = @import("text.zig");
+const render_stats = @import("../../../core/render_stats.zig");
 
 /// Draw shadows and quads interleaved by order, batched for performance
 pub fn drawScenePrimitives(
@@ -19,14 +20,35 @@ pub fn drawScenePrimitives(
     shadow_pipeline: ?objc.Object,
     quad_pipeline: ?objc.Object,
 ) void {
+    drawScenePrimitivesWithStats(
+        encoder,
+        scene,
+        unit_vertex_buffer,
+        viewport_size,
+        shadow_pipeline,
+        quad_pipeline,
+        null,
+    );
+}
+
+/// Draw with optional stats recording
+pub fn drawScenePrimitivesWithStats(
+    encoder: objc.Object,
+    scene: *const scene_mod.Scene,
+    unit_vertex_buffer: objc.Object,
+    viewport_size: [2]f32,
+    shadow_pipeline: ?objc.Object,
+    quad_pipeline: ?objc.Object,
+    stats: ?*render_stats.RenderStats,
+) void {
     const shadows = scene.getShadows();
     const quads = scene.getQuads();
 
     var shadow_idx: usize = 0;
     var quad_idx: usize = 0;
+    var last_was_shadow: ?bool = null;
 
     while (shadow_idx < shadows.len or quad_idx < quads.len) {
-        // Determine which to draw next based on order
         const draw_shadow = if (shadow_idx < shadows.len) blk: {
             if (quad_idx >= quads.len) break :blk true;
             break :blk shadows[shadow_idx].order < quads[quad_idx].order;
@@ -37,17 +59,39 @@ pub fn drawScenePrimitives(
             const batch_count = batch_end - shadow_idx;
 
             if (shadow_pipeline) |pipeline| {
+                // Record pipeline switch if we switched from quads
+                if (stats) |s| {
+                    if (last_was_shadow != null and last_was_shadow.? == false) {
+                        s.recordPipelineSwitch();
+                    }
+                }
                 drawShadowBatch(encoder, pipeline, unit_vertex_buffer, shadows, shadow_idx, batch_count, viewport_size);
+                if (stats) |s| {
+                    s.recordDrawCall();
+                    s.recordShadows(@intCast(batch_count));
+                }
             }
             shadow_idx = batch_end;
+            last_was_shadow = true;
         } else {
             const batch_end = findQuadBatchEnd(shadows, quads, shadow_idx, quad_idx);
             const batch_count = batch_end - quad_idx;
 
             if (quad_pipeline) |pipeline| {
+                // Record pipeline switch if we switched from shadows
+                if (stats) |s| {
+                    if (last_was_shadow != null and last_was_shadow.? == true) {
+                        s.recordPipelineSwitch();
+                    }
+                }
                 drawQuadBatch(encoder, pipeline, unit_vertex_buffer, quads, quad_idx, batch_count, viewport_size);
+                if (stats) |s| {
+                    s.recordDrawCall();
+                    s.recordQuads(@intCast(batch_count));
+                }
             }
             quad_idx = batch_end;
+            last_was_shadow = false;
         }
     }
 }

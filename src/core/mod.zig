@@ -158,6 +158,13 @@ pub const widget_store = @import("widget_store.zig");
 pub const WidgetStore = widget_store.WidgetStore;
 
 // =============================================================================
+// Render Stats (performance monitoring)
+// =============================================================================
+
+pub const render_stats = @import("render_stats.zig");
+pub const RenderStats = render_stats.RenderStats;
+
+// =============================================================================
 // Tests
 // =============================================================================
 

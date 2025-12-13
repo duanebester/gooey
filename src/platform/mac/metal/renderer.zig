@@ -363,6 +363,10 @@ pub const Renderer = struct {
         clear_color: geometry.Color,
         synchronous: bool,
     ) !void {
+        // Optional: Print stats every N frames for debugging
+        // const stats = render_stats.getStats();
+        // stats.reset();
+
         const shadows = scene.getShadows();
         const quads = scene.getQuads();
 
@@ -399,14 +403,15 @@ pub const Renderer = struct {
             return;
         };
 
-        // Draw scene primitives
-        scene_renderer.drawScenePrimitives(
+        // Draw scene primitives (with stats if wanted)
+        scene_renderer.drawScenePrimitivesWithStats(
             encoder,
             scene,
             unit_verts,
             viewport_size,
             self.shadow_pipeline_state,
             self.quad_pipeline_state,
+            null, // or pass &stats for debugging
         );
 
         // Draw text
