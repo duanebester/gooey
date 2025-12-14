@@ -117,13 +117,19 @@ pub const unit_vertices = [_][2]f32{
     .{ 0.0, 1.0 },
 };
 
+const FRAME_COUNT = 3;
+
 /// Text rendering pipeline state
 pub const TextPipeline = struct {
     device: objc.Object,
     pipeline_state: objc.Object,
     unit_vertex_buffer: objc.Object,
-    instance_buffer: objc.Object,
-    instance_capacity: usize,
+
+    // Triple-buffered instance buffers
+    instance_buffers: [FRAME_COUNT]objc.Object,
+    instance_capacities: [FRAME_COUNT]usize,
+    frame_index: usize,
+
     atlas_texture: ?objc.Object,
     atlas_generation: u32,
     sampler_state: objc.Object,
@@ -222,15 +228,21 @@ pub const TextPipeline = struct {
         ) orelse return error.BufferCreationFailed;
         const unit_vertex_buffer = objc.Object.fromId(unit_vertex_buffer_ptr);
 
+        // Create triple instance buffers
+        var instance_buffers: [FRAME_COUNT]objc.Object = undefined;
+        var instance_capacities: [FRAME_COUNT]usize = undefined;
+
         // Create instance buffer
         const instance_size = INITIAL_CAPACITY * @sizeOf(scene.GlyphInstance);
-        const instance_buffer_ptr = device.msgSend(
-            ?*anyopaque,
-            "newBufferWithLength:options:",
-            .{ @as(c_ulong, instance_size), @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)) },
-        ) orelse return error.BufferCreationFailed;
-        const instance_buffer = objc.Object.fromId(instance_buffer_ptr);
-
+        for (0..FRAME_COUNT) |i| {
+            const buffer_ptr = device.msgSend(
+                ?*anyopaque,
+                "newBufferWithLength:options:",
+                .{ @as(c_ulong, instance_size), @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)) },
+            ) orelse return error.BufferCreationFailed;
+            instance_buffers[i] = objc.Object.fromId(buffer_ptr);
+            instance_capacities[i] = INITIAL_CAPACITY;
+        }
         // Create sampler state
         const MTLSamplerDescriptor = objc.getClass("MTLSamplerDescriptor") orelse
             return error.ClassNotFound;
@@ -249,8 +261,9 @@ pub const TextPipeline = struct {
             .device = device,
             .pipeline_state = pipeline_state,
             .unit_vertex_buffer = unit_vertex_buffer,
-            .instance_buffer = instance_buffer,
-            .instance_capacity = INITIAL_CAPACITY,
+            .instance_buffers = instance_buffers,
+            .instance_capacities = instance_capacities,
+            .frame_index = 0,
             .atlas_texture = null,
             .atlas_generation = 0,
             .sampler_state = sampler_state,
@@ -260,10 +273,17 @@ pub const TextPipeline = struct {
     pub fn deinit(self: *Self) void {
         self.pipeline_state.msgSend(void, "release", .{});
         self.unit_vertex_buffer.msgSend(void, "release", .{});
-        self.instance_buffer.msgSend(void, "release", .{});
+        for (self.instance_buffers) |buf| {
+            buf.msgSend(void, "release", .{});
+        }
         self.sampler_state.msgSend(void, "release", .{});
         if (self.atlas_texture) |tex| tex.msgSend(void, "release", .{});
         self.* = undefined;
+    }
+
+    /// Advance to next buffer (call at start of frame)
+    pub fn nextFrame(self: *Self) void {
+        self.frame_index = (self.frame_index + 1) % FRAME_COUNT;
     }
 
     /// Update atlas texture if generation changed
@@ -332,13 +352,15 @@ pub const TextPipeline = struct {
         if (glyphs.len == 0) return;
         if (self.atlas_texture == null) return;
 
-        // Ensure buffer capacity
-        if (glyphs.len > self.instance_capacity) {
-            try self.growInstanceBuffer(glyphs.len);
+        const idx = self.frame_index;
+
+        // Ensure buffer capacity for current frame's buffer
+        if (glyphs.len > self.instance_capacities[idx]) {
+            try self.growInstanceBuffer(idx, glyphs.len);
         }
 
-        // Upload instance data
-        const buffer_ptr = self.instance_buffer.msgSend(*anyopaque, "contents", .{});
+        // Upload to current frame's buffer (no stall - GPU using previous frames' buffers)
+        const buffer_ptr = self.instance_buffers[idx].msgSend(*anyopaque, "contents", .{});
         const dest: [*]scene.GlyphInstance = @ptrCast(@alignCast(buffer_ptr));
         @memcpy(dest[0..glyphs.len], glyphs);
 
@@ -352,7 +374,7 @@ pub const TextPipeline = struct {
             @as(c_ulong, 0),
         });
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            self.instance_buffer,
+            self.instance_buffers[idx], // Current frame's buffer
             @as(c_ulong, 0),
             @as(c_ulong, 1),
         });
@@ -381,18 +403,18 @@ pub const TextPipeline = struct {
         });
     }
 
-    fn growInstanceBuffer(self: *Self, min_capacity: usize) !void {
-        const new_capacity = @max(min_capacity, self.instance_capacity * 2);
+    fn growInstanceBuffer(self: *Self, idx: usize, min_capacity: usize) !void {
+        const new_capacity = @max(min_capacity, self.instance_capacities[idx] * 2);
         const new_size = new_capacity * @sizeOf(scene.GlyphInstance);
 
-        const new_buffer = self.device.msgSend(
-            ?objc.Object,
+        const new_buffer_ptr = self.device.msgSend(
+            ?*anyopaque,
             "newBufferWithLength:options:",
-            .{ @as(c_ulong, new_size), mtl.MTLResourceOptions.storage_shared },
+            .{ @as(c_ulong, new_size), @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)) },
         ) orelse return error.BufferCreationFailed;
 
-        self.instance_buffer.msgSend(void, "release", .{});
-        self.instance_buffer = new_buffer;
-        self.instance_capacity = new_capacity;
+        self.instance_buffers[idx].msgSend(void, "release", .{});
+        self.instance_buffers[idx] = objc.Object.fromId(new_buffer_ptr);
+        self.instance_capacities[idx] = new_capacity;
     }
 };

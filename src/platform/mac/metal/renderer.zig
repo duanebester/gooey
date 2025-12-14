@@ -367,6 +367,11 @@ pub const Renderer = struct {
         // const stats = render_stats.getStats();
         // stats.reset();
 
+        // Rotate to next instance buffer BEFORE rendering
+        if (self.text_pipeline_state) |*tp| {
+            tp.nextFrame();
+        }
+
         const shadows = scene.getShadows();
         const quads = scene.getQuads();
 
