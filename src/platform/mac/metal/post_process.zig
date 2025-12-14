@@ -1,6 +1,4 @@
 //! Post-Process Rendering - Custom shader post-processing support
-//!
-//! Handles rendering scenes to textures and applying custom shader effects.
 
 const std = @import("std");
 const objc = @import("objc");
@@ -20,8 +18,7 @@ pub fn renderSceneToTexture(
     target_texture: objc.Object,
     msaa_texture: objc.Object,
     unit_vertex_buffer: objc.Object,
-    shadow_pipeline: ?objc.Object,
-    quad_pipeline: ?objc.Object,
+    unified_pipeline: ?objc.Object,
     tp: ?*text_pipeline.TextPipeline,
     size: geometry.Size(f64),
     scale_factor: f64,
@@ -47,8 +44,7 @@ pub fn renderSceneToTexture(
         scene,
         unit_vertex_buffer,
         viewport_size,
-        shadow_pipeline,
-        quad_pipeline,
+        unified_pipeline,
     );
 
     if (tp) |text_pipe| {
@@ -78,7 +74,6 @@ pub fn runPostProcessPass(
 
     render_pass.setViewport(encoder, size.width, size.height, scale_factor);
 
-    // Set pipeline and resources
     encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.pipeline_state.value});
     encoder.msgSend(void, "setFragmentBuffer:offset:atIndex:", .{
         uniform_buffer.value,
@@ -94,7 +89,6 @@ pub fn runPostProcessPass(
         @as(c_ulong, 0),
     });
 
-    // Draw fullscreen triangle (3 vertices, no vertex buffer needed)
     encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
         @intFromEnum(mtl.MTLPrimitiveType.triangle),
         @as(c_ulong, 0),
@@ -113,9 +107,7 @@ pub fn blitToScreen(
     scale_factor: f64,
 ) !void {
     const drawable_info = render_pass.getNextDrawable(layer) orelse return;
-
     const command_buffer = command_queue.msgSend(objc.Object, "commandBuffer", .{});
-
     const blit_encoder_ptr = command_buffer.msgSend(?*anyopaque, "blitCommandEncoder", .{});
     if (blit_encoder_ptr == null) return;
     const blit_encoder = objc.Object.fromId(blit_encoder_ptr);

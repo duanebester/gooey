@@ -210,3 +210,73 @@ fn configureBlending(attachment: objc.Object) void {
     attachment.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
     attachment.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
 }
+
+/// Setup unified quad+shadow rendering pipeline
+pub fn setupUnifiedPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+    const unified_shader = @import("unified.zig");
+    const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+    const source_str = NSString.msgSend(
+        objc.Object,
+        "stringWithUTF8String:",
+        .{unified_shader.unified_shader_source.ptr},
+    );
+
+    var compile_error: ?*anyopaque = null;
+    const library_ptr = device.msgSend(
+        ?*anyopaque,
+        "newLibraryWithSource:options:error:",
+        .{ source_str.value, @as(?*anyopaque, null), &compile_error },
+    );
+    if (library_ptr == null) {
+        if (compile_error) |err| {
+            const err_obj = objc.Object.fromId(err);
+            const desc = err_obj.msgSend(objc.Object, "localizedDescription", .{});
+            const cstr = desc.msgSend([*:0]const u8, "UTF8String", .{});
+            std.debug.print("Unified shader compilation error: {s}\n", .{cstr});
+        }
+        return error.ShaderCompilationFailed;
+    }
+
+    const library = objc.Object.fromId(library_ptr);
+    defer library.msgSend(void, "release", .{});
+
+    const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"unified_vertex"});
+    const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"unified_fragment"});
+
+    const vertex_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{vertex_name.value});
+    const fragment_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{fragment_name.value});
+
+    if (vertex_fn_ptr == null or fragment_fn_ptr == null) {
+        return error.ShaderFunctionNotFound;
+    }
+    const vertex_fn = objc.Object.fromId(vertex_fn_ptr);
+    const fragment_fn = objc.Object.fromId(fragment_fn_ptr);
+    defer vertex_fn.msgSend(void, "release", .{});
+    defer fragment_fn.msgSend(void, "release", .{});
+
+    const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
+        return error.ClassNotFound;
+    const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "init", .{});
+    defer desc.msgSend(void, "release", .{});
+
+    desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
+    desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+
+    const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
+    const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
+    configureBlending(attachment0);
+
+    const pipeline_ptr = device.msgSend(
+        ?*anyopaque,
+        "newRenderPipelineStateWithDescriptor:error:",
+        .{ desc.value, @as(?*anyopaque, null) },
+    );
+    if (pipeline_ptr == null) {
+        return error.PipelineCreationFailed;
+    }
+
+    std.debug.print("Unified pipeline created successfully\n", .{});
+    return objc.Object.fromId(pipeline_ptr);
+}
