@@ -429,6 +429,24 @@ pub fn onAction(comptime Action: type, callback: *const fn () void) ActionHandle
     };
 }
 
+/// Conditional rendering - returns a struct that renders children only if condition is true
+pub fn when(condition: bool, children: anytype) When(@TypeOf(children)) {
+    return .{ .condition = condition, .children = children };
+}
+
+pub fn When(comptime ChildrenType: type) type {
+    return struct {
+        condition: bool,
+        children: ChildrenType,
+
+        pub fn render(self: @This(), b: *Builder) void {
+            if (self.condition) {
+                b.processChildren(self.children);
+            }
+        }
+    };
+}
+
 /// Create an empty element (for conditionals)
 pub fn empty() Empty {
     return .{};
@@ -470,6 +488,8 @@ pub const Builder = struct {
     context_ptr: ?*anyopaque = null,
     /// Type ID for runtime type checking
     context_type_id: usize = 0,
+    /// Cx pointer for new-style components (set by runCx)
+    cx_ptr: ?*anyopaque = null,
 
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
@@ -1019,8 +1039,29 @@ pub const Builder = struct {
         }
 
         // Check for components
+        // Check for components (structs with render method)
         if (@hasDecl(T, "render")) {
-            child.render(self);
+            const render_fn = @field(T, "render");
+            const RenderFnType = @TypeOf(render_fn);
+            const fn_info = @typeInfo(RenderFnType).@"fn";
+
+            // Check if render expects *Cx (new pattern) or *Builder (old pattern)
+            if (fn_info.params.len >= 2) {
+                const SecondParam = fn_info.params[1].type orelse *Self;
+
+                if (SecondParam == *Self) {
+                    // Old pattern: render(self, *Builder)
+                    child.render(self);
+                } else if (self.cx_ptr) |cx_raw| {
+                    // New pattern: render(self, *Cx) - cast and call
+                    const CxType = SecondParam;
+                    const cx: CxType = @ptrCast(@alignCast(cx_raw));
+                    child.render(cx);
+                } else {
+                    // Cx not available, skip
+                    std.debug.print("Warning: Component expects *Cx but cx_ptr is null\n", .{});
+                }
+            }
             return;
         }
 
@@ -1134,7 +1175,6 @@ pub const Builder = struct {
             if (g.textArea(ta.id)) |text_area| text_area.isFocused() else false
         else
             false;
-        std.debug.print("renderTextArea '{s}': gooey={}, is_focused={}\n", .{ ta.id, self.gooey != null, is_focused });
 
         // Calculate dimensions
         const textarea_width = ta.style.width orelse 300;

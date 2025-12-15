@@ -86,6 +86,31 @@ pub fn build(b: *std.Build) void {
     run_pomodoro_cmd.step.dependOn(b.getInstallStep());
 
     // =========================================================================
+    // Counter Example
+    // =========================================================================
+
+    const counter_exe = b.addExecutable(.{
+        .name = "counter",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/counter.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = mod },
+                .{ .name = "objc", .module = objc_dep.module("objc") },
+            },
+        }),
+    });
+
+    b.installArtifact(counter_exe);
+
+    // Run counter example
+    const run_counter_step = b.step("run-counter", "Run the counter example");
+    const run_counter_cmd = b.addRunArtifact(counter_exe);
+    run_counter_step.dependOn(&run_counter_cmd.step);
+    run_counter_cmd.step.dependOn(b.getInstallStep());
+
+    // =========================================================================
     // Layout Example
     // =========================================================================
 

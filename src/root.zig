@@ -66,9 +66,6 @@ pub const ui = @import("ui/mod.zig");
 /// Platform abstraction (macOS/Metal)
 pub const platform = @import("platform/mod.zig");
 
-/// Reusable widgets
-pub const elements = @import("elements.zig");
-
 // Components (preferred)
 pub const components = @import("components/mod.zig");
 pub const Button = components.Button;
@@ -82,14 +79,8 @@ pub const TextArea = components.TextArea;
 
 pub const app = @import("app.zig");
 
-/// Run a gooey application with minimal boilerplate
-pub const run = app.run;
-
 /// UI context passed to render callbacks
 pub const UI = app.UI;
-
-/// Configuration for gooey.run()
-pub const RunConfig = app.RunConfig;
 
 // =============================================================================
 // Convenience Exports (backward compatible, for quick prototyping)
@@ -152,10 +143,22 @@ pub const FocusHandle = core.FocusHandle;
 pub const FocusManager = core.FocusManager;
 pub const FocusEvent = core.FocusEvent;
 
-// Context system
-pub const Context = core.Context;
-pub const RunWithStateConfig = app.RunWithStateConfig;
-pub const runWithState = app.runWithState;
+// =============================================================================
+// Cx API (Unified Context - Recommended)
+// =============================================================================
+
+/// The unified rendering context
+pub const Cx = app.Cx;
+
+/// Run an app with the unified Cx context (recommended for stateful apps)
+pub const runCx = app.runCx;
+
+/// Configuration for runCx
+pub const CxConfig = app.CxConfig;
+
+/// Simple run API (for stateless apps)
+pub const run = app.run;
+pub const RunConfig = app.RunConfig;
 
 // Entity system
 pub const Entity = core.Entity;

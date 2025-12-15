@@ -110,8 +110,8 @@ pub const actionTypeId = action.actionTypeId;
 // Context System
 // =============================================================================
 
-pub const context = @import("context.zig");
-pub const Context = context.Context;
+// pub const context = @import("context.zig");
+// pub const Context = context.Context;
 
 // Handler
 pub const handler = @import("handler.zig");

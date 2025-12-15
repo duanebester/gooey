@@ -30,6 +30,7 @@ pub const spacerMin = ui_impl.spacerMin;
 pub const empty = ui_impl.empty;
 pub const keyContext = ui_impl.keyContext;
 pub const onAction = ui_impl.onAction;
+pub const when = ui_impl.when;
 
 // Primitive types
 pub const Text = ui_impl.Text;

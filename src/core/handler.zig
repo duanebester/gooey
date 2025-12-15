@@ -1,31 +1,28 @@
-//! Handler - Type-erased event handler with context
+//! Handler - Function pointer storage for UI callbacks
 //!
-//! HandlerRef allows event callbacks to access application state and context
-//! without requiring global variables. This is the key abstraction that enables
-//! component-local state handling.
+//! Handlers are created through Cx methods:
+//! - `cx.update(State, method)` - pure state mutation
+//! - `cx.updateWith(State, arg, method)` - mutation with argument
+//! - `cx.command(State, method)` - needs framework access
+//! - `cx.commandWith(State, arg, method)` - framework access with argument
 //!
-//! ## Usage
-//!
+//! Example:
 //! ```zig
 //! const AppState = struct {
 //!     count: i32 = 0,
 //!
-//!     pub fn increment(self: *AppState, cx: *Context(AppState)) void {
+//!     pub fn increment(self: *AppState) void {
 //!         self.count += 1;
-//!         cx.notify();
 //!     }
 //! };
 //!
-//! fn render(cx: *Context(AppState)) void {
+//! fn render(cx: *Cx) void {
+//!     const s = cx.state(AppState);
 //!     cx.box(.{}, .{
-//!         ui.buttonHandler("+ Increment", cx.handler(AppState.increment)),
+//!         Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
 //!     });
 //! }
 //! ```
-//! Handler - Type-erased event handler with context
-//!
-//! HandlerRef allows event callbacks to access application state and context
-//! without requiring global variables.
 
 const std = @import("std");
 const Gooey = @import("gooey.zig").Gooey;

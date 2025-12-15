@@ -23,7 +23,9 @@ Now with custom shader support!
 
 - **Metal Rendering** - Hardware-accelerated with MSAA anti-aliasing
 - **Declarative UI** - Component-based layout with flexbox-style system
-- **Retained Widgets** - TextInput, Checkbox, Scroll containers with state
+- **Unified Context** - Single `Cx` type for state, layout, handlers, and focus
+- **Pure State Pattern** - Testable state methods with automatic re-rendering
+- **Retained Widgets** - TextInput, TextArea, Checkbox, Scroll containers
 - **Text Rendering** - CoreText shaping with subpixel positioning
 - **Custom Shaders** - Drop in your own Metal shaders
 - **Theming** - Built-in light/dark mode support
@@ -34,8 +36,8 @@ Now with custom shader support!
 
 ```bash
 zig build run              # Showcase demo
-zig build run-simple       # Counter example
-zig build run-todo         # Todo app
+zig build run-counter      # Counter example
+zig build run-pomodoro     # Pomodoro timer
 zig build run-shader       # Custom shaders
 zig build test             # Run tests
 ```
@@ -46,8 +48,10 @@ zig build test             # Run tests
 const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Button = gooey.Button;
 
-// State is pure - no UI knowledge, fully testable
+// State is pure - no UI knowledge, fully testable!
 const AppState = struct {
     count: i32 = 0,
 
@@ -66,33 +70,31 @@ const AppState = struct {
 
 pub fn main() !void {
     var state = AppState{};
-    try gooey.runWithState(AppState, .{
+    try gooey.runCx(AppState, &state, render, .{
         .title = "Counter",
         .width = 400,
         .height = 300,
-        .state = &state,
-        .render = render,
     });
 }
 
-fn render(cx: *gooey.Context(AppState)) void {
-    const s = cx.state();
+fn render(cx: *Cx) void {
+    const s = cx.state(AppState);
     const size = cx.windowSize();
 
     cx.box(.{
         .width = size.width,
         .height = size.height,
         .alignment = .{ .main = .center, .cross = .center },
+        .gap = 16,
+        .direction = .column,
     }, .{
-        cx.vstack(.{ .gap = 16 }, .{
-            ui.textFmt("{d}", .{s.count}, .{ .size = 48 }),
-            cx.hstack(.{ .gap = 12 }, .{
-                // Pure handlers - framework auto-notifies!
-                ui.buttonHandler("-", cx.update(AppState.decrement)),
-                ui.buttonHandler("+", cx.update(AppState.increment)),
-            }),
-            ui.buttonHandler("Reset", cx.update(AppState.reset)),
+        ui.textFmt("{d}", .{s.count}, .{ .size = 48 }),
+        cx.hstack(.{ .gap = 12 }, .{
+            // Pure handlers - framework auto-renders after mutation!
+            Button{ .label = "-", .on_click_handler = cx.update(AppState, AppState.decrement) },
+            Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
         }),
+        Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.reset) },
     });
 }
 
@@ -107,16 +109,36 @@ test "counter logic" {
 }
 ```
 
+## Handler Types
+
+| Method             | Signature                      | Use Case                           |
+| ------------------ | ------------------------------ | ---------------------------------- |
+| `cx.update()`      | `fn(*State) void`              | Pure state mutations               |
+| `cx.updateWith()`  | `fn(*State, Arg) void`         | Mutations with arguments           |
+| `cx.command()`     | `fn(*State, *Gooey) void`      | Framework access (focus, entities) |
+| `cx.commandWith()` | `fn(*State, *Gooey, Arg) void` | Framework access with arguments    |
+
+> **Note:** The state type is passed explicitly: `cx.update(AppState, AppState.increment)`
+
+## Components
+
+Gooey includes ready-to-use components:
+
+- **Button** - Primary, secondary, danger variants with sizes
+- **Checkbox** - Toggle with customizable colors
+- **TextInput** - Single-line text entry with placeholder
+- **TextArea** - Multi-line text with scrolling
+
 ## More Examples
 
-| Example  | Command                  | Description                       |
-| -------- | ------------------------ | --------------------------------- |
-| Showcase | `zig build run`          | Full feature demo with navigation |
-| Todo App | `zig build run-todo`     | CRUD with entities and filters    |
-| Login    | `zig build run-login`    | Form inputs with validation       |
-| Layout   | `zig build run-layout`   | Flexbox, shrink, text wrapping    |
-| Pomodoro | `zig build run-pomodoro` | Timer with context/state          |
-| Shader   | `zig build run-shader`   | Custom Metal shaders              |
+| Example  | Command                  | Description                        |
+| -------- | ------------------------ | ---------------------------------- |
+| Showcase | `zig build run`          | Full feature demo with navigation  |
+| Counter  | `zig build run-counter`  | Simple state management            |
+| Pomodoro | `zig build run-pomodoro` | Timer with tasks and custom shader |
+| Dynamic  | `zig build run-dynamic`  | Entity creation and deletion       |
+| Layout   | `zig build run-layout`   | Flexbox, shrink, text wrapping     |
+| Shader   | `zig build run-shader`   | Custom Metal shaders               |
 
 ## Inspiration
 
