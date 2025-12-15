@@ -1,0 +1,1134 @@
+//! TextArea Widget - Multi-line text input with vertical scrolling
+//!
+//! Key differences from TextInput:
+//! - Handles newlines (\n) in text
+//! - Vertical scrolling (renders only visible lines)
+//! - Line index cache for O(log n) line lookup
+//! - Up/down cursor navigation with preferred column
+//! - Multi-line selection rendering
+
+const std = @import("std");
+const scene_mod = @import("../core/scene.zig");
+const input_mod = @import("../core/input.zig");
+const text_mod = @import("../text/mod.zig");
+const element_types = @import("../core/element_types.zig");
+const event = @import("../core/event.zig");
+const common = @import("text_common.zig");
+
+const ElementId = element_types.ElementId;
+const Event = event.Event;
+const EventResult = event.EventResult;
+const Scene = scene_mod.Scene;
+const Quad = scene_mod.Quad;
+const Hsla = scene_mod.Hsla;
+const GlyphInstance = scene_mod.GlyphInstance;
+const TextSystem = text_mod.TextSystem;
+const KeyCode = input_mod.KeyCode;
+const InputEvent = input_mod.InputEvent;
+const Modifiers = input_mod.Modifiers;
+
+// Re-export shared utilities
+pub const isCharBoundary = common.isCharBoundary;
+pub const Selection = common.Selection;
+pub const Position = common.Position;
+
+pub const Bounds = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+
+    pub fn contains(self: Bounds, px: f32, py: f32) bool {
+        return px >= self.x and px <= self.x + self.width and
+            py >= self.y and py <= self.y + self.height;
+    }
+};
+
+pub const Style = struct {
+    /// Text color (dark gray, near black)
+    text_color: Hsla = Hsla.init(0, 0, 0.1, 1),
+    /// Placeholder text color (medium gray)
+    placeholder_color: Hsla = Hsla.init(0, 0, 0.5, 1),
+    /// Selection highlight color (blue tint, semi-transparent)
+    selection_color: Hsla = Hsla.init(0.6, 0.8, 0.5, 0.35),
+    /// Cursor color (dark gray)
+    cursor_color: Hsla = Hsla.init(0, 0, 0.1, 1),
+    /// Preedit underline color (for IME)
+    preedit_underline_color: Hsla = Hsla.init(0, 0, 0.3, 1),
+};
+
+pub const ScrollbarStyle = struct {
+    /// Show vertical scrollbar when content exceeds viewport
+    show_vertical: bool = true,
+    /// Scrollbar width
+    scrollbar_size: f32 = 8,
+    /// Padding around scrollbar
+    scrollbar_padding: f32 = 2,
+    /// Minimum thumb size
+    min_thumb_size: f32 = 30,
+    /// Track color (subtle, semi-transparent)
+    track_color: Hsla = Hsla.init(0, 0, 0, 0.05),
+    /// Thumb color
+    thumb_color: Hsla = Hsla.init(0, 0, 0, 0.3),
+    /// Thumb corner radius
+    thumb_radius: f32 = 4,
+};
+
+pub const TextArea = struct {
+    allocator: std.mem.Allocator,
+
+    id: ElementId,
+
+    // Geometry
+    bounds: Bounds,
+    style: Style,
+    scrollbar_style: ScrollbarStyle = .{},
+
+    // Text state (UTF-8 encoded)
+    buffer: std.ArrayList(u8),
+
+    // Line index: byte offset of each line start (always has at least one element: 0)
+    line_starts: std.ArrayList(usize),
+
+    /// Cursor position as byte offset into buffer
+    cursor_byte: usize = 0,
+
+    /// Cached cursor row (line number, 0-based)
+    cursor_row: usize = 0,
+
+    /// Cached cursor column (byte offset within line)
+    cursor_col: usize = 0,
+
+    /// Selection anchor (byte offset), null if no selection
+    selection_anchor: ?usize = null,
+
+    /// Preferred column for up/down navigation (preserves horizontal position)
+    /// Stored as byte offset within line
+    preferred_column: ?usize = null,
+
+    // IME composition state
+    preedit_buffer: std.ArrayList(u8),
+    preedit_cursor: usize = 0,
+
+    // Visual state
+    focused: bool = false,
+    cursor_visible: bool = true,
+    last_blink_time: i64 = 0,
+
+    // Scroll state
+    scroll_offset_x: f32 = 0,
+    scroll_offset_y: f32 = 0,
+
+    // Layout info (set during render)
+    line_height: f32 = 0,
+    viewport_height: f32 = 0,
+
+    // Placeholder text
+    placeholder: []const u8 = "",
+
+    // Callbacks
+    on_change: ?*const fn (*TextArea) void = null,
+    on_cursor_rect_changed: ?*const fn (x: f32, y: f32, width: f32, height: f32) void = null,
+
+    const Self = @This();
+
+    const BLINK_INTERVAL_MS: i64 = 530;
+
+    pub fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
+        const unique_id = struct {
+            var next: u64 = 1;
+            fn get() u64 {
+                const id = next;
+                next += 1;
+                return id;
+            }
+        }.get();
+
+        var line_starts = std.ArrayList(usize){};
+        line_starts.append(allocator, 0) catch {};
+
+        return .{
+            .allocator = allocator,
+            .bounds = bounds,
+            .style = .{},
+            .buffer = .{},
+            .line_starts = line_starts,
+            .preedit_buffer = .{},
+            .id = ElementId.int(unique_id),
+        };
+    }
+
+    pub fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
+        var line_starts = std.ArrayList(usize){};
+        line_starts.append(allocator, 0) catch {};
+
+        return .{
+            .allocator = allocator,
+            .bounds = bounds,
+            .style = .{},
+            .buffer = .{},
+            .line_starts = line_starts,
+            .preedit_buffer = .{},
+            .id = ElementId.named(id),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.buffer.deinit(self.allocator);
+        self.line_starts.deinit(self.allocator);
+        self.preedit_buffer.deinit(self.allocator);
+    }
+
+    // =========================================================================
+    // Text Content
+    // =========================================================================
+
+    pub fn getText(self: *const Self) []const u8 {
+        return self.buffer.items;
+    }
+
+    pub fn setText(self: *Self, text: []const u8) !void {
+        // Handle aliasing (same as TextInput)
+        const buf_start = @intFromPtr(self.buffer.items.ptr);
+        const buf_end = buf_start + self.buffer.items.len;
+        const text_start = @intFromPtr(text.ptr);
+        const text_end = text_start + text.len;
+        const aliases = text_start < buf_end and text_end > buf_start;
+
+        if (aliases) {
+            var temp = std.ArrayList(u8){};
+            try temp.appendSlice(self.allocator, text);
+            self.buffer.clearRetainingCapacity();
+            try self.buffer.appendSlice(self.allocator, temp.items);
+            temp.deinit(self.allocator);
+        } else {
+            self.buffer.clearRetainingCapacity();
+            try self.buffer.appendSlice(self.allocator, text);
+        }
+
+        self.rebuildLineIndex();
+        self.cursor_byte = @min(self.cursor_byte, self.buffer.items.len);
+        self.updateCursorPosition();
+        self.selection_anchor = null;
+    }
+
+    pub fn clear(self: *Self) void {
+        self.buffer.clearRetainingCapacity();
+        self.line_starts.clearRetainingCapacity();
+        self.line_starts.append(self.allocator, 0) catch {};
+        self.cursor_byte = 0;
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.selection_anchor = null;
+        self.notifyChange();
+    }
+
+    pub fn setPlaceholder(self: *Self, placeholder: []const u8) void {
+        self.placeholder = placeholder;
+    }
+
+    // =========================================================================
+    // Line Index Management
+    // =========================================================================
+
+    /// Rebuild the entire line index from scratch
+    fn rebuildLineIndex(self: *Self) void {
+        self.line_starts.clearRetainingCapacity();
+        self.line_starts.append(self.allocator, 0) catch return;
+
+        for (self.buffer.items, 0..) |c, i| {
+            if (c == '\n') {
+                self.line_starts.append(self.allocator, i + 1) catch return;
+            }
+        }
+    }
+
+    /// Get the number of lines
+    pub fn lineCount(self: *const Self) usize {
+        return self.line_starts.items.len;
+    }
+
+    /// Find which line a byte offset is on (binary search)
+    pub fn lineForOffset(self: *const Self, offset: usize) usize {
+        const starts = self.line_starts.items;
+        if (starts.len == 0) return 0;
+
+        var low: usize = 0;
+        var high: usize = starts.len;
+
+        while (low < high) {
+            const mid = low + (high - low) / 2;
+            if (starts[mid] <= offset) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        return if (low > 0) low - 1 else 0;
+    }
+
+    /// Get the byte offset for the start of a line
+    pub fn lineStartOffset(self: *const Self, row: usize) usize {
+        if (row >= self.line_starts.items.len) {
+            return self.buffer.items.len;
+        }
+        return self.line_starts.items[row];
+    }
+
+    /// Get the byte offset for the end of a line (before \n or end of buffer)
+    pub fn lineEndOffset(self: *const Self, row: usize) usize {
+        if (row + 1 < self.line_starts.items.len) {
+            // End is one before the next line start (the \n)
+            return self.line_starts.items[row + 1] - 1;
+        }
+        return self.buffer.items.len;
+    }
+
+    /// Get the text content of a specific line (without trailing \n)
+    pub fn lineContent(self: *const Self, row: usize) []const u8 {
+        const start = self.lineStartOffset(row);
+        const end = self.lineEndOffset(row);
+        return self.buffer.items[start..end];
+    }
+
+    /// Update cursor row/col from cursor_byte
+    fn updateCursorPosition(self: *Self) void {
+        self.cursor_row = self.lineForOffset(self.cursor_byte);
+        const line_start = self.lineStartOffset(self.cursor_row);
+        self.cursor_col = self.cursor_byte - line_start;
+    }
+
+    /// Update line index incrementally after inserting text at position
+    fn updateLineIndexAfterInsert(self: *Self, insert_pos: usize, inserted_text: []const u8) void {
+        // Count newlines in inserted text and their positions
+        var new_line_offsets = std.ArrayList(usize){};
+        defer new_line_offsets.deinit(self.allocator);
+
+        for (inserted_text, 0..) |c, i| {
+            if (c == '\n') {
+                new_line_offsets.append(self.allocator, insert_pos + i + 1) catch return;
+            }
+        }
+
+        if (new_line_offsets.items.len == 0 and inserted_text.len > 0) {
+            // No newlines inserted, just shift subsequent line starts
+            for (self.line_starts.items) |*start| {
+                if (start.* > insert_pos) {
+                    start.* += inserted_text.len;
+                }
+            }
+            return;
+        }
+
+        // Rebuild is simpler for now - optimize later if needed
+        self.rebuildLineIndex();
+    }
+
+    /// Update line index after deleting a range
+    fn updateLineIndexAfterDelete(self: *Self, _: usize, _: usize) void {
+        // For simplicity, rebuild. Could be optimized for incremental updates.
+        self.rebuildLineIndex();
+    }
+
+    // =========================================================================
+    // Focus
+    // =========================================================================
+
+    pub fn focus(self: *Self) void {
+        self.focused = true;
+        self.cursor_visible = true;
+        self.last_blink_time = std.time.milliTimestamp();
+    }
+
+    pub fn blur(self: *Self) void {
+        self.focused = false;
+        self.preedit_buffer.clearRetainingCapacity();
+    }
+
+    pub fn isFocused(self: *const Self) bool {
+        return self.focused;
+    }
+
+    // =========================================================================
+    // Event Handling
+    // =========================================================================
+
+    pub fn handleEvent(self: *Self, evt: Event) EventResult {
+        switch (evt) {
+            .mouse_down => |e| {
+                if (self.bounds.contains(e.x, e.y)) {
+                    self.focus();
+                    // TODO: Calculate click position to cursor byte
+                    return .consumed;
+                }
+            },
+            .key_down => |key_event| {
+                if (self.focused) {
+                    self.handleKey(key_event) catch {};
+                    return .consumed;
+                }
+            },
+            .text_input => |txt| {
+                if (self.focused) {
+                    self.insertText(txt) catch {};
+                    return .consumed;
+                }
+            },
+            .composition => |comp| {
+                if (self.focused) {
+                    self.setComposition(comp.text) catch {};
+                    return .consumed;
+                }
+            },
+            .scroll => |scroll| {
+                if (self.bounds.contains(scroll.x, scroll.y)) {
+                    self.handleScroll(scroll.delta_y);
+                    return .consumed;
+                }
+            },
+            else => {},
+        }
+        return .ignored;
+    }
+
+    fn handleScroll(self: *Self, delta_y: f32) void {
+        const max_scroll = self.maxScrollY();
+        self.scroll_offset_y = std.math.clamp(
+            self.scroll_offset_y - delta_y * 20, // 20px per scroll unit
+            0,
+            max_scroll,
+        );
+    }
+
+    fn maxScrollY(self: *const Self) f32 {
+        const content_height = @as(f32, @floatFromInt(self.lineCount())) * self.line_height;
+        return @max(0, content_height - self.viewport_height);
+    }
+
+    pub fn getBounds(self: *const Self) struct { x: f32, y: f32, width: f32, height: f32 } {
+        return .{
+            .x = self.bounds.x,
+            .y = self.bounds.y,
+            .width = self.bounds.width,
+            .height = self.bounds.height,
+        };
+    }
+
+    pub fn getId(self: *const Self) ElementId {
+        return self.id;
+    }
+
+    pub fn canFocus(self: *const Self) bool {
+        _ = self;
+        return true;
+    }
+
+    pub fn onFocus(self: *Self) void {
+        self.focus();
+    }
+
+    pub fn onBlur(self: *Self) void {
+        self.blur();
+    }
+
+    // =========================================================================
+    // Text Editing
+    // =========================================================================
+
+    pub fn insertText(self: *Self, text: []const u8) !void {
+        self.deleteSelection();
+
+        try self.buffer.insertSlice(self.allocator, self.cursor_byte, text);
+        self.updateLineIndexAfterInsert(self.cursor_byte, text);
+
+        self.cursor_byte += text.len;
+        self.updateCursorPosition();
+        self.ensureCursorVisible();
+        self.preferred_column = null;
+
+        self.preedit_buffer.clearRetainingCapacity();
+        self.resetCursorBlink();
+        self.notifyChange();
+    }
+
+    pub fn setComposition(self: *Self, text: []const u8) !void {
+        self.preedit_buffer.clearRetainingCapacity();
+        try self.preedit_buffer.appendSlice(self.allocator, text);
+        self.preedit_cursor = text.len;
+        self.resetCursorBlink();
+    }
+
+    pub fn handleKey(self: *Self, key: input_mod.KeyEvent) !void {
+        const code = key.key;
+        const mods = key.modifiers;
+
+        switch (code) {
+            .delete => {
+                // Backspace
+                if (self.hasSelection()) {
+                    self.deleteSelection();
+                } else if (self.cursor_byte > 0) {
+                    const prev = common.prevCharBoundary(self.buffer.items, self.cursor_byte);
+                    const char_len = self.cursor_byte - prev;
+                    for (0..char_len) |_| {
+                        _ = self.buffer.orderedRemove(prev);
+                    }
+                    self.updateLineIndexAfterDelete(prev, self.cursor_byte);
+                    self.cursor_byte = prev;
+                    self.updateCursorPosition();
+                    self.preferred_column = null;
+                    self.notifyChange();
+                }
+            },
+            .forward_delete => {
+                if (self.hasSelection()) {
+                    self.deleteSelection();
+                } else if (self.cursor_byte < self.buffer.items.len) {
+                    const next = common.nextCharBoundary(self.buffer.items, self.cursor_byte);
+                    const char_len = next - self.cursor_byte;
+                    for (0..char_len) |_| {
+                        _ = self.buffer.orderedRemove(self.cursor_byte);
+                    }
+                    self.updateLineIndexAfterDelete(self.cursor_byte, next);
+                    self.updateCursorPosition();
+                    self.notifyChange();
+                }
+            },
+            .left => {
+                if (mods.shift) {
+                    if (self.selection_anchor == null) {
+                        self.selection_anchor = self.cursor_byte;
+                    }
+                } else {
+                    if (self.hasSelection()) {
+                        self.cursor_byte = self.selectionStart();
+                        self.selection_anchor = null;
+                        self.updateCursorPosition();
+                        self.preferred_column = null;
+                        return;
+                    }
+                    self.selection_anchor = null;
+                }
+                if (mods.cmd) {
+                    // Move to start of line
+                    self.cursor_byte = self.lineStartOffset(self.cursor_row);
+                } else if (mods.alt) {
+                    self.cursor_byte = common.prevWordBoundary(self.buffer.items, self.cursor_byte);
+                } else {
+                    if (self.cursor_byte > 0) {
+                        self.cursor_byte = common.prevCharBoundary(self.buffer.items, self.cursor_byte);
+                    }
+                }
+                self.updateCursorPosition();
+                self.preferred_column = null;
+            },
+            .right => {
+                if (mods.shift) {
+                    if (self.selection_anchor == null) {
+                        self.selection_anchor = self.cursor_byte;
+                    }
+                } else {
+                    if (self.hasSelection()) {
+                        self.cursor_byte = self.selectionEnd();
+                        self.selection_anchor = null;
+                        self.updateCursorPosition();
+                        self.preferred_column = null;
+                        return;
+                    }
+                    self.selection_anchor = null;
+                }
+                if (mods.cmd) {
+                    // Move to end of line
+                    self.cursor_byte = self.lineEndOffset(self.cursor_row);
+                } else if (mods.alt) {
+                    self.cursor_byte = common.nextWordBoundary(self.buffer.items, self.cursor_byte);
+                } else {
+                    if (self.cursor_byte < self.buffer.items.len) {
+                        self.cursor_byte = common.nextCharBoundary(self.buffer.items, self.cursor_byte);
+                    }
+                }
+                self.updateCursorPosition();
+                self.preferred_column = null;
+            },
+            .up => {
+                if (mods.shift) {
+                    if (self.selection_anchor == null) {
+                        self.selection_anchor = self.cursor_byte;
+                    }
+                } else {
+                    self.selection_anchor = null;
+                }
+
+                if (mods.cmd) {
+                    // Move to start of document
+                    self.cursor_byte = 0;
+                    self.cursor_row = 0;
+                    self.cursor_col = 0;
+                    self.preferred_column = null;
+                } else {
+                    self.moveUp();
+                }
+            },
+            .down => {
+                if (mods.shift) {
+                    if (self.selection_anchor == null) {
+                        self.selection_anchor = self.cursor_byte;
+                    }
+                } else {
+                    self.selection_anchor = null;
+                }
+
+                if (mods.cmd) {
+                    // Move to end of document
+                    self.cursor_byte = self.buffer.items.len;
+                    self.updateCursorPosition();
+                    self.preferred_column = null;
+                } else {
+                    self.moveDown();
+                }
+            },
+            .a => {
+                if (mods.cmd) {
+                    // Select all
+                    self.selection_anchor = 0;
+                    self.cursor_byte = self.buffer.items.len;
+                    self.updateCursorPosition();
+                }
+            },
+            .@"return" => {
+                // Insert newline (multi-line support!)
+                try self.insertText("\n");
+            },
+            else => {},
+        }
+        self.ensureCursorVisible();
+        self.resetCursorBlink();
+    }
+
+    /// Move cursor up one line, preserving preferred column
+    fn moveUp(self: *Self) void {
+        if (self.cursor_row == 0) return;
+
+        // Initialize preferred column if not set
+        if (self.preferred_column == null) {
+            self.preferred_column = self.cursor_col;
+        }
+
+        self.cursor_row -= 1;
+        self.cursor_byte = self.clampColumnToLine(self.cursor_row, self.preferred_column.?);
+        self.cursor_col = self.cursor_byte - self.lineStartOffset(self.cursor_row);
+    }
+
+    /// Move cursor down one line, preserving preferred column
+    fn moveDown(self: *Self) void {
+        if (self.cursor_row >= self.lineCount() - 1) return;
+
+        if (self.preferred_column == null) {
+            self.preferred_column = self.cursor_col;
+        }
+
+        self.cursor_row += 1;
+        self.cursor_byte = self.clampColumnToLine(self.cursor_row, self.preferred_column.?);
+        self.cursor_col = self.cursor_byte - self.lineStartOffset(self.cursor_row);
+    }
+
+    /// Convert a column offset to a valid byte position within a line
+    fn clampColumnToLine(self: *const Self, row: usize, target_col: usize) usize {
+        const line_start = self.lineStartOffset(row);
+        const line_end = self.lineEndOffset(row);
+        const line_len = line_end - line_start;
+
+        const actual_col = @min(target_col, line_len);
+        const byte_pos = line_start + actual_col;
+
+        // Snap to char boundary
+        return common.snapToCharBoundary(self.buffer.items, byte_pos);
+    }
+
+    // =========================================================================
+    // Selection Helpers
+    // =========================================================================
+
+    pub fn hasSelection(self: *const Self) bool {
+        return self.selection_anchor != null and self.selection_anchor.? != self.cursor_byte;
+    }
+
+    fn selectionStart(self: *const Self) usize {
+        if (self.selection_anchor) |anchor| {
+            return @min(anchor, self.cursor_byte);
+        }
+        return self.cursor_byte;
+    }
+
+    fn selectionEnd(self: *const Self) usize {
+        if (self.selection_anchor) |anchor| {
+            return @max(anchor, self.cursor_byte);
+        }
+        return self.cursor_byte;
+    }
+
+    fn deleteSelection(self: *Self) void {
+        if (!self.hasSelection()) return;
+
+        const start = self.selectionStart();
+        const end = self.selectionEnd();
+        const len = end - start;
+
+        for (0..len) |_| {
+            _ = self.buffer.orderedRemove(start);
+        }
+
+        self.updateLineIndexAfterDelete(start, end);
+        self.cursor_byte = start;
+        self.updateCursorPosition();
+        self.selection_anchor = null;
+        self.preferred_column = null;
+        self.notifyChange();
+    }
+
+    // =========================================================================
+    // Visual State
+    // =========================================================================
+
+    fn resetCursorBlink(self: *Self) void {
+        self.cursor_visible = true;
+        self.last_blink_time = std.time.milliTimestamp();
+    }
+
+    pub fn updateBlink(self: *Self) void {
+        if (!self.focused) return;
+
+        const now = std.time.milliTimestamp();
+        if (now - self.last_blink_time >= BLINK_INTERVAL_MS) {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_blink_time = now;
+        }
+    }
+
+    fn notifyChange(self: *Self) void {
+        if (self.on_change) |callback| {
+            callback(self);
+        }
+    }
+
+    // =========================================================================
+    // Rendering
+    // =========================================================================
+
+    pub fn render(self: *Self, scene: *Scene, text_system: *TextSystem, scale_factor: f32) !void {
+        self.updateBlink();
+
+        const text = self.buffer.items;
+        const preedit = self.preedit_buffer.items;
+
+        // Get font metrics
+        const metrics = text_system.getMetrics() orelse return;
+        self.line_height = metrics.line_height;
+        self.viewport_height = self.bounds.height;
+
+        // Calculate visible line range
+        const first_visible_f = @floor(self.scroll_offset_y / self.line_height);
+        const first_visible: usize = if (first_visible_f < 0) 0 else @intFromFloat(first_visible_f);
+
+        const visible_count_f = @ceil(self.viewport_height / self.line_height) + 1;
+        const visible_count: usize = @intFromFloat(visible_count_f);
+        const last_visible = @min(first_visible + visible_count, self.lineCount());
+
+        // Push clip for text content area
+        try scene.pushClip(.{
+            .x = self.bounds.x,
+            .y = self.bounds.y,
+            .width = self.bounds.width,
+            .height = self.bounds.height,
+        });
+        defer scene.popClip();
+
+        const has_content = text.len > 0 or preedit.len > 0;
+
+        if (!has_content and self.placeholder.len > 0) {
+            // Render placeholder (first line only)
+            const baseline_y = metrics.calcBaseline(self.bounds.y, self.line_height);
+            _ = try text_mod.renderText(
+                scene,
+                text_system,
+                self.placeholder,
+                self.bounds.x,
+                baseline_y,
+                scale_factor,
+                self.style.placeholder_color,
+                .{},
+            );
+        } else if (has_content) {
+            // Render selection background first
+            if (self.hasSelection()) {
+                try self.renderSelection(scene, text_system, scale_factor);
+            }
+
+            // Render visible lines
+            for (first_visible..last_visible) |row| {
+                try self.renderLine(scene, text_system, row, scale_factor);
+            }
+        }
+
+        // Render cursor
+        if (self.focused and self.cursor_visible and preedit.len == 0) {
+            try self.renderCursor(scene, text_system, scale_factor);
+        }
+
+        // Render scrollbar
+        try self.renderScrollbar(scene);
+    }
+
+    fn renderLine(
+        self: *Self,
+        scene: *Scene,
+        text_system: *TextSystem,
+        row: usize,
+        scale_factor: f32,
+    ) !void {
+        const metrics = text_system.getMetrics() orelse return;
+        const line_y = self.bounds.y + @as(f32, @floatFromInt(row)) * self.line_height - self.scroll_offset_y;
+        const baseline_y = metrics.calcBaseline(line_y, self.line_height);
+
+        const line_content = self.lineContent(row);
+
+        // Handle preedit if cursor is on this line
+        if (row == self.cursor_row and self.preedit_buffer.items.len > 0) {
+            const preedit = self.preedit_buffer.items;
+            const line_start = self.lineStartOffset(row);
+            const cursor_in_line = self.cursor_byte - line_start;
+
+            var pen_x = self.bounds.x - self.scroll_offset_x;
+
+            // Text before cursor
+            if (cursor_in_line > 0) {
+                const before = line_content[0..cursor_in_line];
+                const width = try text_mod.renderText(
+                    scene,
+                    text_system,
+                    before,
+                    pen_x,
+                    baseline_y,
+                    scale_factor,
+                    self.style.text_color,
+                    .{},
+                );
+                pen_x += width;
+            }
+
+            // Preedit with underline
+            const preedit_start_x = pen_x;
+            const preedit_width = try text_mod.renderText(
+                scene,
+                text_system,
+                preedit,
+                pen_x,
+                baseline_y,
+                scale_factor,
+                self.style.text_color,
+                .{},
+            );
+
+            // Draw underline
+            const underline_y = baseline_y + 2;
+            const underline = Quad.filled(
+                preedit_start_x,
+                underline_y,
+                preedit_width,
+                1,
+                self.style.preedit_underline_color,
+            );
+            try scene.insertQuad(underline);
+            pen_x += preedit_width;
+
+            // Text after cursor
+            if (cursor_in_line < line_content.len) {
+                const after = line_content[cursor_in_line..];
+                _ = try text_mod.renderText(
+                    scene,
+                    text_system,
+                    after,
+                    pen_x,
+                    baseline_y,
+                    scale_factor,
+                    self.style.text_color,
+                    .{},
+                );
+            }
+        } else {
+            // Normal line rendering
+            if (line_content.len > 0) {
+                _ = try text_mod.renderText(
+                    scene,
+                    text_system,
+                    line_content,
+                    self.bounds.x - self.scroll_offset_x,
+                    baseline_y,
+                    scale_factor,
+                    self.style.text_color,
+                    .{},
+                );
+            }
+        }
+    }
+
+    fn renderCursor(
+        self: *Self,
+        scene: *Scene,
+        text_system: *TextSystem,
+        scale_factor: f32,
+    ) !void {
+        _ = scale_factor;
+        const metrics = text_system.getMetrics() orelse return;
+
+        const line_y = self.bounds.y + @as(f32, @floatFromInt(self.cursor_row)) * self.line_height - self.scroll_offset_y;
+
+        // Calculate cursor x position
+        var cursor_x = self.bounds.x - self.scroll_offset_x;
+        if (self.cursor_col > 0) {
+            const line_content = self.lineContent(self.cursor_row);
+            if (self.cursor_col <= line_content.len) {
+                cursor_x += try self.measureText(text_system, line_content[0..self.cursor_col]);
+            }
+        }
+
+        const cursor_height = metrics.line_height;
+        const cursor_y = line_y + (self.line_height - cursor_height) / 2;
+
+        const cursor = Quad.filled(
+            cursor_x,
+            cursor_y,
+            1.5,
+            cursor_height,
+            self.style.cursor_color,
+        );
+        try scene.insertQuadClipped(cursor);
+
+        // Notify about cursor rect for IME positioning
+        if (self.on_cursor_rect_changed) |callback| {
+            callback(cursor_x, cursor_y, 1.5, cursor_height);
+        }
+    }
+
+    fn renderSelection(
+        self: *Self,
+        scene: *Scene,
+        text_system: *TextSystem,
+        scale_factor: f32,
+    ) !void {
+        _ = scale_factor;
+
+        const sel_start = self.selectionStart();
+        const sel_end = self.selectionEnd();
+
+        const start_row = self.lineForOffset(sel_start);
+        const end_row = self.lineForOffset(sel_end);
+
+        // Render selection highlight for each line
+        for (start_row..end_row + 1) |row| {
+            const line_start = self.lineStartOffset(row);
+            const line_end = self.lineEndOffset(row);
+
+            // Calculate selection range within this line
+            const sel_line_start = if (row == start_row) sel_start - line_start else 0;
+            const sel_line_end = if (row == end_row) sel_end - line_start else line_end - line_start;
+
+            if (sel_line_start >= sel_line_end and row != end_row) continue;
+
+            const line_content = self.lineContent(row);
+            const line_y = self.bounds.y + @as(f32, @floatFromInt(row)) * self.line_height - self.scroll_offset_y;
+
+            // Calculate x positions
+            var start_x = self.bounds.x - self.scroll_offset_x;
+            if (sel_line_start > 0 and sel_line_start <= line_content.len) {
+                start_x += try self.measureText(text_system, line_content[0..sel_line_start]);
+            }
+
+            var end_x = self.bounds.x - self.scroll_offset_x;
+            if (sel_line_end > 0 and sel_line_end <= line_content.len) {
+                end_x += try self.measureText(text_system, line_content[0..sel_line_end]);
+            } else if (sel_line_end > line_content.len) {
+                // Selection extends past line end (to newline)
+                end_x += try self.measureText(text_system, line_content);
+                end_x += 4; // Small extension to show selection includes newline
+            }
+
+            const selection_quad = Quad.filled(
+                start_x,
+                line_y,
+                @max(2, end_x - start_x), // Min width of 2 for visibility
+                self.line_height,
+                self.style.selection_color,
+            );
+            try scene.insertQuadClipped(selection_quad);
+        }
+    }
+
+    fn measureText(self: *Self, text_system: *TextSystem, text: []const u8) !f32 {
+        _ = self;
+        if (text.len == 0) return 0;
+        var shaped = try text_system.shapeText(text);
+        defer shaped.deinit(text_system.allocator);
+        return shaped.width;
+    }
+
+    fn ensureCursorVisible(self: *Self) void {
+        // Ensure cursor row is visible vertically
+        const cursor_y = @as(f32, @floatFromInt(self.cursor_row)) * self.line_height;
+
+        // Only scroll if cursor is completely outside visible area
+        // If cursor is above visible area, scroll up
+        if (cursor_y < self.scroll_offset_y) {
+            self.scroll_offset_y = cursor_y;
+        }
+
+        // If cursor is below visible area, scroll down
+        const cursor_bottom = cursor_y + self.line_height;
+        if (cursor_bottom > self.scroll_offset_y + self.viewport_height) {
+            self.scroll_offset_y = cursor_bottom - self.viewport_height;
+        }
+
+        // Clamp scroll
+        self.scroll_offset_y = std.math.clamp(self.scroll_offset_y, 0, self.maxScrollY());
+    }
+
+    // =========================================================================
+    // Scrollbar
+    // =========================================================================
+
+    /// Check if content can scroll (content taller than viewport)
+    pub fn canScrollY(self: *const Self) bool {
+        const content_height = @as(f32, @floatFromInt(self.lineCount())) * self.line_height;
+        return content_height > self.viewport_height;
+    }
+
+    /// Get scroll percentage (0.0 - 1.0)
+    fn scrollPercentY(self: *const Self) f32 {
+        const max = self.maxScrollY();
+        if (max <= 0) return 0;
+        return self.scroll_offset_y / max;
+    }
+
+    /// Get the thumb height based on content/viewport ratio
+    fn getThumbHeight(self: *const Self) f32 {
+        const content_height = @as(f32, @floatFromInt(self.lineCount())) * self.line_height;
+        if (content_height <= 0) return self.scrollbar_style.min_thumb_size;
+
+        const track_height = self.bounds.height - self.scrollbar_style.scrollbar_padding * 2;
+        const ratio = self.viewport_height / content_height;
+        return @max(self.scrollbar_style.min_thumb_size, track_height * ratio);
+    }
+
+    /// Render vertical scrollbar
+    fn renderScrollbar(self: *Self, scene: *Scene) !void {
+        if (!self.scrollbar_style.show_vertical or !self.canScrollY()) return;
+
+        const track_x = self.bounds.x + self.bounds.width - self.scrollbar_style.scrollbar_size - self.scrollbar_style.scrollbar_padding;
+        const track_y = self.bounds.y + self.scrollbar_style.scrollbar_padding;
+        const track_height = self.bounds.height - self.scrollbar_style.scrollbar_padding * 2;
+
+        // Track background
+        try scene.insertQuad(Quad{
+            .bounds_origin_x = track_x,
+            .bounds_origin_y = track_y,
+            .bounds_size_width = self.scrollbar_style.scrollbar_size,
+            .bounds_size_height = track_height,
+            .background = self.scrollbar_style.track_color,
+            .corner_radii = .{
+                .top_left = self.scrollbar_style.thumb_radius,
+                .top_right = self.scrollbar_style.thumb_radius,
+                .bottom_left = self.scrollbar_style.thumb_radius,
+                .bottom_right = self.scrollbar_style.thumb_radius,
+            },
+        });
+
+        // Thumb
+        const thumb_height = self.getThumbHeight();
+        const scroll_range = track_height - thumb_height;
+        const thumb_y = track_y + (scroll_range * self.scrollPercentY());
+
+        try scene.insertQuad(Quad{
+            .bounds_origin_x = track_x,
+            .bounds_origin_y = thumb_y,
+            .bounds_size_width = self.scrollbar_style.scrollbar_size,
+            .bounds_size_height = thumb_height,
+            .background = self.scrollbar_style.thumb_color,
+            .corner_radii = .{
+                .top_left = self.scrollbar_style.thumb_radius,
+                .top_right = self.scrollbar_style.thumb_radius,
+                .bottom_left = self.scrollbar_style.thumb_radius,
+                .bottom_right = self.scrollbar_style.thumb_radius,
+            },
+        });
+    }
+};
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "TextArea basic operations" {
+    const allocator = std.testing.allocator;
+    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    defer ta.deinit();
+
+    try ta.setText("Hello\nWorld");
+    try std.testing.expectEqualStrings("Hello\nWorld", ta.getText());
+    try std.testing.expectEqual(@as(usize, 2), ta.lineCount());
+}
+
+test "TextArea line index" {
+    const allocator = std.testing.allocator;
+    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    defer ta.deinit();
+
+    try ta.setText("Line 1\nLine 2\nLine 3");
+
+    try std.testing.expectEqual(@as(usize, 3), ta.lineCount());
+    try std.testing.expectEqual(@as(usize, 0), ta.lineStartOffset(0));
+    try std.testing.expectEqual(@as(usize, 7), ta.lineStartOffset(1));
+    try std.testing.expectEqual(@as(usize, 14), ta.lineStartOffset(2));
+
+    try std.testing.expectEqual(@as(usize, 0), ta.lineForOffset(0));
+    try std.testing.expectEqual(@as(usize, 0), ta.lineForOffset(5));
+    try std.testing.expectEqual(@as(usize, 1), ta.lineForOffset(7));
+    try std.testing.expectEqual(@as(usize, 2), ta.lineForOffset(14));
+}
+
+test "TextArea line content" {
+    const allocator = std.testing.allocator;
+    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    defer ta.deinit();
+
+    try ta.setText("First\nSecond\nThird");
+
+    try std.testing.expectEqualStrings("First", ta.lineContent(0));
+    try std.testing.expectEqualStrings("Second", ta.lineContent(1));
+    try std.testing.expectEqualStrings("Third", ta.lineContent(2));
+}
+
+test "TextArea cursor navigation" {
+    const allocator = std.testing.allocator;
+    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    defer ta.deinit();
+
+    try ta.setText("AB\nCD\nEF");
+
+    // Start at beginning
+    ta.cursor_byte = 0;
+    ta.updateCursorPosition();
+    try std.testing.expectEqual(@as(usize, 0), ta.cursor_row);
+    try std.testing.expectEqual(@as(usize, 0), ta.cursor_col);
+
+    // Move down
+    ta.moveDown();
+    try std.testing.expectEqual(@as(usize, 1), ta.cursor_row);
+
+    // Move down again
+    ta.moveDown();
+    try std.testing.expectEqual(@as(usize, 2), ta.cursor_row);
+
+    // Move up
+    ta.moveUp();
+    try std.testing.expectEqual(@as(usize, 1), ta.cursor_row);
+}

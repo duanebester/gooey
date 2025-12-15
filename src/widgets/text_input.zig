@@ -28,6 +28,7 @@ const std = @import("std");
 const scene_mod = @import("../core/scene.zig");
 const input_mod = @import("../core/input.zig");
 const text_mod = @import("../text/mod.zig");
+const common = @import("text_common.zig");
 
 const element_types = @import("../core/element_types.zig");
 const event = @import("../core/event.zig");
@@ -336,7 +337,7 @@ pub const TextInput = struct {
                 if (self.hasSelection()) {
                     self.deleteSelection();
                 } else if (self.cursor_byte > 0) {
-                    const prev = self.prevCharBoundary(self.cursor_byte);
+                    const prev = common.prevCharBoundary(self.buffer.items, self.cursor_byte);
                     _ = self.buffer.orderedRemove(prev);
                     // Remove remaining bytes of the character
                     const char_len = self.cursor_byte - prev;
@@ -351,7 +352,7 @@ pub const TextInput = struct {
                 if (self.hasSelection()) {
                     self.deleteSelection();
                 } else if (self.cursor_byte < self.buffer.items.len) {
-                    const next = self.nextCharBoundary(self.cursor_byte);
+                    const next = common.nextCharBoundary(self.buffer.items, self.cursor_byte);
                     const char_len = next - self.cursor_byte;
                     for (0..char_len) |_| {
                         _ = self.buffer.orderedRemove(self.cursor_byte);
@@ -379,11 +380,11 @@ pub const TextInput = struct {
                     self.cursor_byte = 0;
                 } else if (mods.alt) {
                     // Move by word
-                    self.cursor_byte = self.prevWordBoundary(self.cursor_byte);
+                    self.cursor_byte = common.prevWordBoundary(self.buffer.items, self.cursor_byte);
                 } else {
                     // Move by character
                     if (self.cursor_byte > 0) {
-                        self.cursor_byte = self.prevCharBoundary(self.cursor_byte);
+                        self.cursor_byte = common.prevCharBoundary(self.buffer.items, self.cursor_byte);
                     }
                 }
             },
@@ -405,11 +406,11 @@ pub const TextInput = struct {
                     self.cursor_byte = self.buffer.items.len;
                 } else if (mods.alt) {
                     // Move by word
-                    self.cursor_byte = self.nextWordBoundary(self.cursor_byte);
+                    self.cursor_byte = common.nextWordBoundary(self.buffer.items, self.cursor_byte);
                 } else {
                     // Move by character
                     if (self.cursor_byte < self.buffer.items.len) {
-                        self.cursor_byte = self.nextCharBoundary(self.cursor_byte);
+                        self.cursor_byte = common.nextCharBoundary(self.buffer.items, self.cursor_byte);
                     }
                 }
             },
@@ -474,105 +475,6 @@ pub const TextInput = struct {
     }
 
     // =========================================================================
-    // UTF-8 Navigation Helpers
-    // =========================================================================
-
-    /// Check if a byte position is on a valid UTF-8 character boundary.
-    /// A position is valid if it's at the start/end or doesn't point to a continuation byte.
-    fn isCharBoundary(self: *const Self, pos: usize) bool {
-        if (pos == 0) return true;
-        if (pos >= self.buffer.items.len) return true;
-        // Continuation bytes have the pattern 10xxxxxx (0x80-0xBF)
-        return (self.buffer.items[pos] & 0xC0) != 0x80;
-    }
-
-    /// Snap a byte position to a valid UTF-8 character boundary.
-    /// If already valid, returns the same position. Otherwise moves backward
-    /// to the start of the current character.
-    fn snapToCharBoundary(self: *const Self, pos: usize) usize {
-        if (pos == 0) return 0;
-        if (pos >= self.buffer.items.len) return self.buffer.items.len;
-        // If already on a boundary, return as-is
-        if ((self.buffer.items[pos] & 0xC0) != 0x80) return pos;
-        // Otherwise, find the start of this character
-        return self.prevCharBoundary(pos);
-    }
-
-    /// Snap a byte position to a valid UTF-8 character boundary for a given slice.
-    /// Static version that doesn't rely on self.buffer (for thread safety).
-    fn snapToCharBoundaryFor(_: *const Self, text: []const u8, pos: usize) usize {
-        if (pos == 0) return 0;
-        if (pos >= text.len) return text.len;
-        // If already on a boundary, return as-is
-        if ((text[pos] & 0xC0) != 0x80) return pos;
-        // Otherwise, find the start of this character
-        var i = pos - 1;
-        while (i > 0 and (text[i] & 0xC0) == 0x80) {
-            i -= 1;
-        }
-        return i;
-    }
-
-    /// Find the previous character boundary
-    fn prevCharBoundary(self: *const Self, pos: usize) usize {
-        if (pos == 0) return 0;
-        var i = pos - 1;
-        // Skip continuation bytes (10xxxxxx)
-        while (i > 0 and (self.buffer.items[i] & 0xC0) == 0x80) {
-            i -= 1;
-        }
-        return i;
-    }
-
-    /// Find the next character boundary
-    fn nextCharBoundary(self: *const Self, pos: usize) usize {
-        if (pos >= self.buffer.items.len) return self.buffer.items.len;
-        var i = pos + 1;
-        // Skip continuation bytes
-        while (i < self.buffer.items.len and (self.buffer.items[i] & 0xC0) == 0x80) {
-            i += 1;
-        }
-        return i;
-    }
-
-    /// Find the previous word boundary
-    fn prevWordBoundary(self: *const Self, pos: usize) usize {
-        if (pos == 0) return 0;
-        var i = self.prevCharBoundary(pos);
-        // Skip whitespace
-        while (i > 0 and self.isWhitespaceAt(i)) {
-            i = self.prevCharBoundary(i);
-        }
-        // Skip word characters
-        while (i > 0 and !self.isWhitespaceAt(self.prevCharBoundary(i))) {
-            i = self.prevCharBoundary(i);
-        }
-        return i;
-    }
-
-    /// Find the next word boundary
-    fn nextWordBoundary(self: *const Self, pos: usize) usize {
-        const len = self.buffer.items.len;
-        if (pos >= len) return len;
-        var i = pos;
-        // Skip current word characters
-        while (i < len and !self.isWhitespaceAt(i)) {
-            i = self.nextCharBoundary(i);
-        }
-        // Skip whitespace
-        while (i < len and self.isWhitespaceAt(i)) {
-            i = self.nextCharBoundary(i);
-        }
-        return i;
-    }
-
-    fn isWhitespaceAt(self: *const Self, pos: usize) bool {
-        if (pos >= self.buffer.items.len) return true;
-        const c = self.buffer.items[pos];
-        return c == ' ' or c == '\t' or c == '\n' or c == '\r';
-    }
-
-    // =========================================================================
     // Visual State
     // =========================================================================
 
@@ -617,7 +519,7 @@ pub const TextInput = struct {
         if (cursor_byte > text.len) {
             cursor_byte = text.len;
         } else if (text.len > 0 and cursor_byte > 0) {
-            cursor_byte = self.snapToCharBoundaryFor(text, cursor_byte);
+            cursor_byte = common.snapToCharBoundary(text, cursor_byte);
         }
 
         // Text area is now the full bounds (padding handled by component's box)
@@ -742,8 +644,8 @@ pub const TextInput = struct {
 
         // Ensure selection bounds are on valid UTF-8 boundaries
         if (self.selection_anchor) |anchor| {
-            if (anchor > text.len or !self.isCharBoundary(anchor)) {
-                self.selection_anchor = self.snapToCharBoundary(@min(anchor, text.len));
+            if (anchor > text.len or !common.isCharBoundary(text, anchor)) {
+                self.selection_anchor = common.snapToCharBoundary(text, @min(anchor, text.len));
             }
         }
 
@@ -827,10 +729,10 @@ test "TextInput UTF-8 navigation" {
     try std.testing.expectEqual(@as(usize, 6), input.cursor_byte); // 1 + 4 + 1
 
     // Move left should skip the whole emoji
-    const prev = input.prevCharBoundary(input.cursor_byte);
+    const prev = common.prevCharBoundary(input.buffer.items, input.cursor_byte);
     try std.testing.expectEqual(@as(usize, 5), prev); // position of 'b'
 
-    const prev2 = input.prevCharBoundary(prev);
+    const prev2 = common.prevCharBoundary(input.buffer.items, prev);
     try std.testing.expectEqual(@as(usize, 1), prev2); // position after 'a', before emoji
 }
 

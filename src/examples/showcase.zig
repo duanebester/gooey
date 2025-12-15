@@ -20,6 +20,7 @@ const Gooey = gooey.Gooey;
 const Button = gooey.Button;
 const Checkbox = gooey.Checkbox;
 const TextInput = gooey.TextInput;
+const TextArea = gooey.TextArea;
 
 // =============================================================================
 // Theme
@@ -74,6 +75,7 @@ const AppState = struct {
     name: []const u8 = "",
     email: []const u8 = "",
     message: []const u8 = "",
+    bio: []const u8 = "",
     form_status: []const u8 = "",
     focused_field: FormField = .name,
     form_initialized: bool = false,
@@ -483,6 +485,19 @@ const FormCard = struct {
                 .placeholder_color = t.muted,
                 .corner_radius = 8,
             },
+            TextArea{
+                .id = "form_bio",
+                .placeholder = "Tell us about yourself...",
+                .width = 280,
+                .height = 120,
+                .bind = &s.bio,
+                .background = t.bg,
+                .border_color = t.muted.withAlpha(0.3),
+                .border_color_focused = t.primary,
+                .text_color = t.text,
+                .placeholder_color = t.muted,
+                .corner_radius = 8,
+            },
             CheckboxSection{},
             Button{ .label = "Submit", .on_click_handler = cx.command(AppState.submitFormAndBlur) },
         });
@@ -761,6 +776,11 @@ fn syncFormFocus(cx: *gooey.Context(AppState)) void {
 
 fn onEvent(cx: *gooey.Context(AppState), event: gooey.InputEvent) bool {
     const s = cx.state();
+
+    // Let focused text widgets handle their own input
+    if (cx.gooey.getFocusedTextArea() != null) {
+        return false; // Let framework handle it
+    }
 
     if (event == .key_down) {
         const key = event.key_down;

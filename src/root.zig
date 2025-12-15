@@ -74,6 +74,7 @@ pub const components = @import("components/mod.zig");
 pub const Button = components.Button;
 pub const Checkbox = components.Checkbox;
 pub const TextInput = components.TextInput;
+pub const TextArea = components.TextArea;
 
 // =============================================================================
 // App Entry Point (most common usage)

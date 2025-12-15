@@ -54,6 +54,7 @@ const TextSystem = text_mod.TextSystem;
 const widget_store_mod = @import("widget_store.zig");
 const WidgetStore = widget_store_mod.WidgetStore;
 const TextInput = @import("../widgets/text_input.zig").TextInput;
+const TextArea = @import("../widgets/text_area.zig").TextArea;
 
 // Platform
 const Window = @import("../platform/mac/window.zig").Window;
@@ -373,6 +374,38 @@ pub const Gooey = struct {
         return self.widgets.getFocusedTextInput();
     }
 
+    pub fn textArea(self: *Self, id: []const u8) ?*TextArea {
+        return self.widgets.textArea(id);
+    }
+
+    pub fn textAreaOrPanic(self: *Self, id: []const u8) *TextArea {
+        return self.widgets.textAreaOrPanic(id);
+    }
+
+    pub fn focusTextArea(self: *Self, id: []const u8) void {
+        // Blur any currently focused TextInput
+        if (self.getFocusedTextInput()) |current| {
+            current.blur();
+        }
+        // Blur any currently focused TextArea
+        if (self.getFocusedTextArea()) |current| {
+            current.blur();
+        }
+        // Focus the new one
+        if (self.widgets.textArea(id)) |ta| {
+            ta.focus();
+        } else {
+            std.debug.print("  Widget NOT FOUND!\n", .{});
+        }
+        // Also update FocusManager so action dispatch works
+        self.focus.focusByName(id);
+        self.requestRender();
+    }
+
+    pub fn getFocusedTextArea(self: *Self) ?*TextArea {
+        return self.widgets.getFocusedTextArea();
+    }
+
     // =========================================================================
     // Hit Testing & Bounds
     // =========================================================================
@@ -439,9 +472,11 @@ pub const Gooey = struct {
     fn syncWidgetFocus(self: *Self, id: []const u8) void {
         // Blur all widgets first
         self.widgets.blurAll();
-        // Focus the specific widget if it exists
+        // Focus the specific widget if it exists (check both TextInput and TextArea)
         if (self.widgets.text_inputs.get(id)) |input| {
             input.focus();
+        } else if (self.widgets.text_areas.get(id)) |ta| {
+            ta.focus();
         }
     }
 

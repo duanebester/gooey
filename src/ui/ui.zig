@@ -186,6 +186,33 @@ pub const InputStyle = struct {
     cursor_color: Color = Color.black,
 };
 
+pub const TextAreaStyle = struct {
+    placeholder: []const u8 = "",
+    bind: ?*[]const u8 = null,
+
+    // Focus
+    tab_index: i32 = 0,
+    tab_stop: bool = true,
+
+    // Layout
+    width: ?f32 = null,
+    height: ?f32 = 150,
+    padding: f32 = 8,
+
+    // Visual
+    background: Color = Color.white,
+    border_color: Color = Color.rgb(0.8, 0.8, 0.8),
+    border_color_focused: Color = Color.rgb(0.3, 0.5, 1.0),
+    border_width: f32 = 1,
+    corner_radius: f32 = 4,
+
+    // Text
+    text_color: Color = Color.black,
+    placeholder_color: Color = Color.rgb(0.6, 0.6, 0.6),
+    selection_color: Color = Color.rgba(0.3, 0.5, 1.0, 0.3),
+    cursor_color: Color = Color.black,
+};
+
 /// Stack layout options
 pub const StackStyle = struct {
     gap: f32 = 0,
@@ -212,7 +239,18 @@ pub const ButtonStyle = struct {
 // Primitive Descriptors
 // =============================================================================
 
-pub const PrimitiveType = enum { text, input, spacer, button, button_handler, empty, checkbox, key_context, action_handler, action_handler_ref };
+pub const PrimitiveType = enum {
+    text,
+    text_area,
+    input,
+    spacer,
+    button,
+    button_handler,
+    empty,
+    key_context,
+    action_handler,
+    action_handler_ref,
+};
 
 pub const CheckboxStyle = struct {
     label: []const u8 = "",
@@ -225,12 +263,6 @@ pub const CheckboxStyle = struct {
     border_color: ?Color = null, // Border color (e.g. theme.muted)
     checkmark_color: ?Color = null, // Inner square color
     label_color: ?Color = null, // Label text color (e.g. theme.text)
-};
-
-pub const CheckboxPrimitive = struct {
-    id: []const u8,
-    style: CheckboxStyle,
-    pub const primitive_type: PrimitiveType = .checkbox;
 };
 
 /// Key context descriptor - sets dispatch context when rendered
@@ -268,6 +300,15 @@ pub const Input = struct {
     pub const primitive_type: PrimitiveType = .input;
 };
 
+// Add after Input struct
+
+pub const TextAreaPrimitive = struct {
+    id: []const u8,
+    style: TextAreaStyle,
+
+    pub const primitive_type: PrimitiveType = .text_area;
+};
+
 pub const ScrollStyle = struct {
     width: ?f32 = null,
     height: ?f32 = null,
@@ -285,13 +326,6 @@ pub const ScrollStyle = struct {
     /// Only vertical for now
     vertical: bool = true,
     horizontal: bool = false,
-};
-
-pub const PendingScroll = struct {
-    id: []const u8,
-    layout_id: LayoutId,
-    style: ScrollStyle,
-    content_layout_id: LayoutId,
 };
 
 /// Spacer element descriptor
@@ -368,6 +402,10 @@ pub fn input(id: []const u8, style: InputStyle) Input {
     return .{ .id = id, .style = style };
 }
 
+pub fn textArea(id: []const u8, style: TextAreaStyle) TextAreaPrimitive {
+    return .{ .id = id, .style = style };
+}
+
 /// Create a flexible spacer
 pub fn spacer() Spacer {
     return .{};
@@ -376,11 +414,6 @@ pub fn spacer() Spacer {
 /// Create a spacer with minimum size
 pub fn spacerMin(min_size: f32) Spacer {
     return .{ .min_size = min_size };
-}
-
-/// DEPRECATED: Use `gooey.Checkbox{ ... }` component instead
-pub fn checkbox(id: []const u8, style: CheckboxStyle) CheckboxPrimitive {
-    return .{ .id = id, .style = style };
 }
 
 /// Set key context for dispatch (use inside box children)
@@ -440,12 +473,7 @@ pub const Builder = struct {
 
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
-
-    /// Input hit regions for focus handling (populated after layout)
-    // input_regions: std.ArrayList(InputHitRegion),
-
-    pending_checkboxes: std.ArrayListUnmanaged(PendingCheckbox),
-
+    pending_text_areas: std.ArrayList(PendingTextArea),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
 
     const PendingInput = struct {
@@ -456,10 +484,19 @@ pub const Builder = struct {
         inner_height: f32,
     };
 
-    const PendingCheckbox = struct {
+    const PendingTextArea = struct {
         id: []const u8,
         layout_id: LayoutId,
-        style: CheckboxStyle,
+        style: TextAreaStyle,
+        inner_width: f32,
+        inner_height: f32,
+    };
+
+    const PendingScroll = struct {
+        id: []const u8,
+        layout_id: LayoutId,
+        style: ScrollStyle,
+        content_layout_id: LayoutId,
     };
 
     const Self = @This();
@@ -476,16 +513,14 @@ pub const Builder = struct {
             .scene = scene_ptr,
             .dispatch = dispatch_tree,
             .pending_inputs = .{},
-            .pending_checkboxes = .{},
             .pending_scrolls = .{},
-            // .input_regions = .{},
+            .pending_text_areas = .{},
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.pending_inputs.deinit(self.allocator);
-        self.pending_checkboxes.deinit(self.allocator);
-        // self.input_regions.deinit(self.allocator);
+        self.pending_text_areas.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
     }
 
@@ -970,9 +1005,9 @@ pub const Builder = struct {
             switch (prim_type) {
                 .text => self.renderText(child),
                 .input => self.renderInput(child),
+                .text_area => self.renderTextArea(child),
                 .spacer => self.renderSpacer(child),
                 .button => self.renderButton(child),
-                .checkbox => self.renderCheckbox(child),
                 .key_context => self.renderKeyContext(child),
                 .action_handler => self.renderActionHandler(child),
                 .button_handler => self.renderButtonHandler(child),
@@ -1076,6 +1111,73 @@ pub const Builder = struct {
             g.focus.register(FocusHandle.init(inp.id)
                 .tabIndex(inp.style.tab_index)
                 .tabStop(inp.style.tab_stop));
+        }
+
+        self.dispatch.popNode();
+    }
+
+    // Add renderTextArea function after renderInput
+
+    fn renderTextArea(self: *Self, ta: TextAreaPrimitive) void {
+        const layout_id = LayoutId.fromString(ta.id);
+
+        // Push dispatch node
+        _ = self.dispatch.pushNode();
+        self.dispatch.setLayoutId(layout_id.id);
+
+        // Register as focusable
+        const focus_id = FocusId.init(ta.id);
+        self.dispatch.setFocusable(focus_id);
+
+        // Check if this textarea is focused (for border color)
+        const is_focused = if (self.gooey) |g|
+            if (g.textArea(ta.id)) |text_area| text_area.isFocused() else false
+        else
+            false;
+        std.debug.print("renderTextArea '{s}': gooey={}, is_focused={}\n", .{ ta.id, self.gooey != null, is_focused });
+
+        // Calculate dimensions
+        const textarea_width = ta.style.width orelse 300;
+        const textarea_height = ta.style.height orelse 150;
+        const inner_width = textarea_width - (ta.style.padding * 2) - (ta.style.border_width * 2);
+        const inner_height = textarea_height - (ta.style.padding * 2) - (ta.style.border_width * 2);
+
+        // Create the outer box with chrome
+        self.layout.openElement(.{
+            .id = layout_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(textarea_width),
+                    .height = SizingAxis.fixed(textarea_height),
+                },
+                .padding = Padding.all(@intFromFloat(ta.style.padding + ta.style.border_width)),
+            },
+            .background_color = ta.style.background,
+            .corner_radius = CornerRadius.all(ta.style.corner_radius),
+            .border = BorderConfig.all(
+                if (is_focused) ta.style.border_color_focused else ta.style.border_color,
+                ta.style.border_width,
+            ),
+        }) catch {
+            self.dispatch.popNode();
+            return;
+        };
+        self.layout.closeElement();
+
+        // Store for later text rendering
+        self.pending_text_areas.append(self.allocator, .{
+            .id = ta.id,
+            .layout_id = layout_id,
+            .style = ta.style,
+            .inner_width = inner_width,
+            .inner_height = inner_height,
+        }) catch {};
+
+        // Register focus with FocusManager
+        if (self.gooey) |g| {
+            g.focus.register(FocusHandle.init(ta.id)
+                .tabIndex(ta.style.tab_index)
+                .tabStop(ta.style.tab_stop));
         }
 
         self.dispatch.popNode();
