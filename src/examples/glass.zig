@@ -25,7 +25,7 @@ const AppState = struct {
 
         pub fn name(self: GlassStyle) []const u8 {
             return switch (self) {
-                .none => "None (transparent only)",
+                .none => "None (opaque)",
                 .blur => "Traditional Blur",
                 .glass_regular => "Liquid Glass (Regular)",
                 .glass_clear => "Liquid Glass (Clear)",
@@ -42,8 +42,18 @@ const AppState = struct {
         }
     };
 
-    pub fn cycleStyle(self: *AppState) void {
+    /// Command method - needs Gooey access to change window glass
+    pub fn cycleStyleCmd(self: *AppState, g: *gooey.Gooey) void {
         self.glass_style = self.glass_style.next();
+
+        // g.window is already *Window, no cast needed!
+        const win_style: gooey.platform.Window.GlassStyle = switch (self.glass_style) {
+            .none => .none,
+            .blur => .blur,
+            .glass_regular => .glass_regular,
+            .glass_clear => .glass_clear,
+        };
+        g.window.setGlassStyle(win_style, self.opacity, self.corner_radius);
     }
 
     pub fn increaseOpacity(self: *AppState) void {
@@ -88,7 +98,6 @@ pub fn main() !void {
 }
 
 fn render(cx: *Cx) void {
-    const s = cx.state(AppState);
     const size = cx.windowSize();
 
     cx.box(.{
@@ -112,7 +121,25 @@ fn render(cx: *Cx) void {
 
         ui.spacer(),
 
-        // Current style display
+        // Use component structs for nested layouts!
+        StyleDisplay{},
+        StyleControls{},
+        RadiusControls{},
+
+        ui.spacer(),
+
+        // Info text
+        ui.text("Note: Liquid Glass requires macOS 26.0+ (Tahoe)", .{
+            .size = 11,
+            .color = text_muted,
+        }),
+    });
+}
+
+const StyleDisplay = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+
         cx.box(.{
             .padding = .{ .all = 16 },
             .corner_radius = 12,
@@ -132,13 +159,16 @@ fn render(cx: *Cx) void {
                 .size = 14,
                 .color = text_muted,
             }),
-        }),
+        });
+    }
+};
 
-        // Controls
+const StyleControls = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
         cx.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Cycle Style",
-                .on_click_handler = cx.update(AppState, AppState.cycleStyle),
+                .on_click_handler = cx.command(AppState, AppState.cycleStyleCmd),
             },
             Button{
                 .label = "- Opacity",
@@ -150,8 +180,12 @@ fn render(cx: *Cx) void {
                 .variant = .secondary,
                 .on_click_handler = cx.update(AppState, AppState.increaseOpacity),
             },
-        }),
+        });
+    }
+};
 
+const RadiusControls = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
         cx.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "- Radius",
@@ -163,18 +197,6 @@ fn render(cx: *Cx) void {
                 .variant = .secondary,
                 .on_click_handler = cx.update(AppState, AppState.increaseRadius),
             },
-        }),
-
-        ui.spacer(),
-
-        // Info text
-        ui.text("Note: Liquid Glass requires macOS 26.0+ (Tahoe)", .{
-            .size = 11,
-            .color = text_muted,
-        }),
-        ui.text("Older versions fall back to traditional blur", .{
-            .size = 11,
-            .color = text_muted,
-        }),
-    });
-}
+        });
+    }
+};

@@ -455,10 +455,14 @@ pub fn empty() Empty {
 /// Buffer for textFmt (thread-local static)
 var fmt_buffer: [1024]u8 = undefined;
 
-/// Create a text element with printf-style formatting
-/// Note: Uses a static buffer, so the result is only valid until the next call
+/// Rotating buffer pool for textFmt (allows multiple calls per frame)
+var fmt_buffers: [16][256]u8 = undefined;
+var fmt_buffer_index: usize = 0;
+
 pub fn textFmt(comptime fmt: []const u8, args: anytype, style: TextStyle) Text {
-    const result = std.fmt.bufPrint(&fmt_buffer, fmt, args) catch "...";
+    const buffer = &fmt_buffers[fmt_buffer_index];
+    fmt_buffer_index = (fmt_buffer_index + 1) % fmt_buffers.len;
+    const result = std.fmt.bufPrint(buffer, fmt, args) catch "...";
     return .{ .content = result, .style = style };
 }
 

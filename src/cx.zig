@@ -161,6 +161,19 @@ pub const Cx = struct {
         self.gooey.window.setTitle(title);
     }
 
+    /// Change the window's glass/transparency effect at runtime.
+    /// Only works on macOS.
+    pub fn setGlassStyle(
+        self: *Self,
+        style: @import("platform/mac/window.zig").Window.GlassStyle,
+        opacity: f64,
+        corner_radius: f64,
+    ) void {
+        // Access the concrete window type
+        const window = @as(*@import("platform/mac/window.zig").Window, @ptrCast(@alignCast(self.gooey.window.ptr)));
+        window.setGlassStyle(style, opacity, corner_radius);
+    }
+
     /// Close the window (and exit the application).
     pub fn close(self: *Self) void {
         self.gooey.window.performClose();

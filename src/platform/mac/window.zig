@@ -99,8 +99,8 @@ pub const Window = struct {
     /// Otherwise returns the configured background color.
     pub fn getClearColor(self: *const Self) geometry.Color {
         return switch (self.glass_style) {
-            .glass_regular, .glass_clear => geometry.Color.transparent,
-            .blur, .none => self.background_color,
+            .glass_regular, .glass_clear, .blur => geometry.Color.transparent,
+            .none => self.background_color,
         };
     }
 
@@ -565,6 +565,58 @@ pub const Window = struct {
 
     pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
         self.background_color = color;
+        self.requestRender();
+    }
+
+    /// Change the glass effect style at runtime
+    pub fn setGlassStyle(self: *Self, style: GlassStyle, opacity: f64, corner_radius: f64) void {
+        // Remove existing glass effect if any
+        if (self.glass_effect_view) |glass_view| {
+            glass_view.msgSend(void, "removeFromSuperview", .{});
+            self.glass_effect_view = null;
+        }
+
+        // Update stored values
+        self.glass_style = style;
+        self.background_opacity = opacity;
+
+        if (style == .none) {
+            // Restore opaque window
+            self.ns_window.msgSend(void, "setOpaque:", .{true});
+            const NSColor = objc.getClass("NSColor") orelse return;
+            const bg = NSColor.msgSend(objc.Object, "colorWithRed:green:blue:alpha:", .{
+                @as(f64, self.background_color.r),
+                @as(f64, self.background_color.g),
+                @as(f64, self.background_color.b),
+                @as(f64, 1.0),
+            });
+            self.ns_window.msgSend(void, "setBackgroundColor:", .{bg.value});
+        } else {
+            // Make window non-opaque
+            self.ns_window.msgSend(void, "setOpaque:", .{false});
+
+            // Set transparent background
+            const NSColor = objc.getClass("NSColor") orelse return;
+            const transparent_bg = NSColor.msgSend(objc.Object, "colorWithRed:green:blue:alpha:", .{
+                @as(f64, 1.0),
+                @as(f64, 1.0),
+                @as(f64, 1.0),
+                @as(f64, 0.001),
+            });
+            self.ns_window.msgSend(void, "setBackgroundColor:", .{transparent_bg.value});
+
+            // Apply new glass effect
+            switch (style) {
+                .glass_regular, .glass_clear => {
+                    if (!self.setupLiquidGlass(style, corner_radius)) {
+                        self.setupTraditionalBlur();
+                    }
+                },
+                .blur => self.setupTraditionalBlur(),
+                .none => {},
+            }
+        }
+
         self.requestRender();
     }
 
