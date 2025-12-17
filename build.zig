@@ -285,6 +285,44 @@ pub fn build(b: *std.Build) void {
     addWasmExample(b, gooey_wasm_module, wasm_target, "dynamic-counters", "src/examples/dynamic_counters.zig", "web/dynamic");
 
     // =========================================================================
+    // Hot Reload Watcher
+    // =========================================================================
+
+    const watcher_exe = b.addExecutable(.{
+        .name = "gooey-hot",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/hot/watcher.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+
+    b.installArtifact(watcher_exe);
+
+    // Default target to run (can be overridden with -- args)
+    const hot_step = b.step("hot", "Run with hot reload (watches src/ for changes)");
+
+    const watcher_cmd = b.addRunArtifact(watcher_exe);
+    watcher_cmd.addArg("src"); // Watch directory
+
+    // Check if user provided custom args like "run-counter"
+    if (b.args) |args| {
+        // User provided args: zig build hot -- run-counter
+        watcher_cmd.addArg("zig");
+        watcher_cmd.addArg("build");
+        for (args) |arg| {
+            watcher_cmd.addArg(arg);
+        }
+    } else {
+        // Default: zig build run
+        watcher_cmd.addArg("zig");
+        watcher_cmd.addArg("build");
+        watcher_cmd.addArg("run");
+    }
+
+    hot_step.dependOn(&watcher_cmd.step);
+
+    // =========================================================================
     // Tests
     // =========================================================================
 

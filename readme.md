@@ -131,14 +131,15 @@ Gooey includes ready-to-use components:
 
 ## More Examples
 
-| Example  | Command                  | Description                        |
-| -------- | ------------------------ | ---------------------------------- |
-| Showcase | `zig build run`          | Full feature demo with navigation  |
-| Counter  | `zig build run-counter`  | Simple state management            |
-| Pomodoro | `zig build run-pomodoro` | Timer with tasks and custom shader |
-| Dynamic  | `zig build run-dynamic`  | Entity creation and deletion       |
-| Layout   | `zig build run-layout`   | Flexbox, shrink, text wrapping     |
-| Shader   | `zig build run-shader`   | Custom Metal shaders               |
+| Example   | Command                   | Description                        |
+| --------- | ------------------------- | ---------------------------------- |
+| Showcase  | `zig build run`           | Full feature demo with navigation  |
+| Counter   | `zig build run-counter`   | Simple state management            |
+| Pomodoro  | `zig build run-pomodoro`  | Timer with tasks and custom shader |
+| Dynamic   | `zig build run-dynamic`   | Entity creation and deletion       |
+| Layout    | `zig build run-layout`    | Flexbox, shrink, text wrapping     |
+| Shader    | `zig build run-shader`    | Custom Metal shaders               |
+| Spaceship | `zig build run-spaceship` | Space dashboard                    |
 
 ## WASM
 
@@ -157,6 +158,20 @@ To then run the example(s):
 python3 -m http.server 8080 -d zig-out/web/counter
 python3 -m http.server 8080 -d zig-out/web/dynamic
 ```
+
+## Hot reloading - macOS
+
+It's a simple, brute-force hot reload, but works well enough for now.
+
+### Run showcase (default) with hot reload
+
+zig build hot
+
+### Run a specific example with hot reload
+
+zig build hot -- run-counter
+zig build hot -- run-pomodoro
+zig build hot -- run-glass
 
 ## Inspiration
 
