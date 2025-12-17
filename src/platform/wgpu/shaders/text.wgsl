@@ -92,12 +92,12 @@ fn vs_main(@builtin(vertex_index) vid: u32, @builtin(instance_index) iid: u32) -
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // let clip_min = in.clip_bounds.xy;
-    // let clip_max = clip_min + in.clip_bounds.zw;
-    // if in.screen_pos.x < clip_min.x || in.screen_pos.x > clip_max.x ||
-    //    in.screen_pos.y < clip_min.y || in.screen_pos.y > clip_max.y {
-    //     discard;
-    // }
+    let clip_min = in.clip_bounds.xy;
+    let clip_max = clip_min + in.clip_bounds.zw;
+    if in.screen_pos.x < clip_min.x || in.screen_pos.x > clip_max.x ||
+       in.screen_pos.y < clip_min.y || in.screen_pos.y > clip_max.y {
+        discard;
+    }
     let alpha = textureSample(atlas_texture, atlas_sampler, in.tex_coord).r;
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }

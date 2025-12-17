@@ -8,10 +8,6 @@
             .url = "git+https://github.com/mitchellh/zig-objc.git#49dae46e413647545cc5c1f3e7798e9c761976b0",
             .hash = "zig_objc-0.0.0-Ir_Sp5wTAQDuSB-PaIBSxNPhnQFT-H8UGd5kBAdnUaD4",
         },
-        .zgpu = .{
-            .url = "git+https://github.com/zig-gamedev/zgpu#b582a62c13af1a8228f72c47ea2eaa21259760eb",
-            .hash = "zgpu-0.12.0-dev-nqFT5IChCACWEis11EjrBQGaA0QXEqXfsi1e6cF3_AL3",
-        },
     },
     .paths = .{
         "build.zig",

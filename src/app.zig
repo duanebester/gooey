@@ -1151,22 +1151,6 @@ fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         },
         .text => {
             const text_data = cmd.data.text;
-
-            // DEBUG: Compare layout width vs rendered width
-            if (@import("builtin").cpu.arch == .wasm32) {
-                //const web_imports = @import("platform/wgpu/web/imports.zig");
-                var shaped = gooey_ctx.text_system.shapeText(text_data.text) catch null;
-                if (shaped) |*s| {
-                    defer s.deinit(gooey_ctx.text_system.allocator);
-                    // web_imports.log("TEXT: bbox.w={d} shaped.w={d} diff={d} \"{s}\"", .{
-                    //     cmd.bounding_box.width,
-                    //     s.width,
-                    //     cmd.bounding_box.width - s.width,
-                    //     text_data.text,
-                    // });
-                }
-            }
-
             const baseline_y = if (gooey_ctx.text_system.getMetrics()) |metrics|
                 metrics.calcBaseline(cmd.bounding_box.y, cmd.bounding_box.height)
             else
@@ -1241,7 +1225,7 @@ fn isControlKey(key: input_mod.KeyCode, mods: input_mod.Modifiers) bool {
 /// Example:
 /// ```zig
 /// var state = AppState{};
-/// pub usingnamespace gooey.App(AppState, &state, render, .{
+/// const App = gooey.App(AppState, &state, render, .{
 ///     .title = "My App",
 ///     .width = 800,
 ///     .height = 600,
