@@ -142,6 +142,8 @@ pub const Renderer = struct {
             return;
         }
 
+        if (self.text_pipeline_state) |*tp| tp.nextFrame();
+
         const width: u32 = @intFromFloat(self.size.width * self.scale_factor);
         const height: u32 = @intFromFloat(self.size.height * self.scale_factor);
         try pp.ensureSize(width, height);
@@ -149,37 +151,17 @@ pub const Renderer = struct {
         pp.updateTiming();
         pp.uploadUniforms();
 
-        try post_process.renderSceneToTexture(
+        // Use the new unified single-command-buffer pipeline
+        try post_process.renderFullPipeline(
             self.command_queue,
+            self.layer,
             scene,
             clear_color,
-            pp.front_texture.?,
             self.msaa_texture.?,
             self.quad_unit_vertex_buffer.?,
             self.unified_pipeline_state,
             if (self.text_pipeline_state) |*tp| tp else null,
-            self.size,
-            self.scale_factor,
-        );
-
-        for (pp.pipelines.items) |shader_pipeline| {
-            try post_process.runPostProcessPass(
-                self.command_queue,
-                shader_pipeline,
-                pp.front_texture.?,
-                pp.back_texture.?,
-                pp.uniform_buffer.?,
-                pp.sampler.?,
-                self.size,
-                self.scale_factor,
-            );
-            pp.swapTextures();
-        }
-
-        try post_process.blitToScreen(
-            self.command_queue,
-            self.layer,
-            pp.front_texture.?,
+            pp,
             self.size,
             self.scale_factor,
         );
