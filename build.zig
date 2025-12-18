@@ -105,6 +105,7 @@ pub fn build(b: *std.Build) void {
     // Run animation example
     const run_animation_step = b.step("run-animation", "Run the animation example");
     const run_animation_cmd = b.addRunArtifact(animation_exe);
+    run_animation_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
     run_animation_step.dependOn(&run_animation_cmd.step);
     run_animation_cmd.step.dependOn(b.getInstallStep());
 

@@ -272,7 +272,7 @@ const Header = struct {
         cx.box(.{
             .fill_width = true,
             .padding = .{ .each = .{ .top = 24, .bottom = 16, .left = 24, .right = 24 } },
-            .background = Colors.bg_panel.withAlpha(0.9 * fade.progress),
+            .background = Colors.bg_panel.withAlpha(0.9), // * fade.progress),
             .direction = .row,
             .alignment = .{ .cross = .center },
         }, .{
@@ -288,7 +288,6 @@ const ShipName = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         cx.hstack(.{ .gap = 12, .alignment = .center }, .{
-            ui.text("◆", .{ .size = 20, .color = Colors.cyan.withAlpha(self.opacity) }),
             ui.text("USS AURORA", .{ .size = 22, .color = Colors.text.withAlpha(self.opacity) }),
             ui.text("NCC-1701-G", .{ .size = 12, .color = Colors.text_dim.withAlpha(self.opacity) }),
         });
@@ -380,11 +379,11 @@ const LeftPanel = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            PanelHeader{ .title = "SHIP SYSTEMS", .icon = "◈" },
+            PanelHeader{ .title = "SHIP SYSTEMS", .icon = "x" },
             SystemGauge{ .label = "HULL", .value = cx.stateConst(AppState).hull_integrity, .color = Colors.cyan },
             SystemGauge{ .label = "SHIELDS", .value = cx.stateConst(AppState).shield_power, .color = Colors.magenta },
             SystemGauge{ .label = "FUEL", .value = cx.stateConst(AppState).fuel_level, .color = Colors.orange },
-            SystemGauge{ .label = "O₂", .value = cx.stateConst(AppState).oxygen_level, .color = Colors.green },
+            SystemGauge{ .label = "O2", .value = cx.stateConst(AppState).oxygen_level, .color = Colors.green },
             ReactorStatus{},
         });
     }
@@ -456,7 +455,7 @@ const JumpDrive = struct {
             .direction = .column,
             .alignment = .{ .cross = .center },
         }, .{
-            ui.text("◈ JUMP DRIVE ◈", .{ .size = 10, .color = Colors.magenta_dim }),
+            ui.text("JUMP DRIVE", .{ .size = 10, .color = Colors.magenta_dim }),
             JumpChargeRing{},
             ui.text(status_text, .{ .size = 11, .color = status_color }),
             JumpButtons{},
@@ -536,7 +535,7 @@ const JumpButtons = struct {
         if (s.jump_ready) {
             cx.box(.{ .fill_width = true }, .{
                 NeonButton{
-                    .label = "⚡ INITIATE JUMP",
+                    .label = "INITIATE JUMP",
                     .color = Colors.green,
                     .handler = cx.update(AppState, AppState.initiateJump),
                 },
@@ -544,7 +543,7 @@ const JumpButtons = struct {
         } else if (!s.destination_locked) {
             cx.box(.{ .fill_width = true }, .{
                 NeonButton{
-                    .label = "◎ LOCK DESTINATION",
+                    .label = "LOCK DESTINATION",
                     .color = Colors.magenta,
                     .handler = cx.update(AppState, AppState.lockDestination),
                 },
@@ -646,11 +645,11 @@ const ReactorStatus = struct {
             .alignment = .{ .cross = .center },
         }, .{
             ui.text("REACTOR CORE", .{ .size = 10, .color = Colors.text_dim }),
-            ui.textFmt("{}°K", .{s.reactor_temp}, .{
+            ui.textFmt("{}K", .{s.reactor_temp}, .{
                 .size = 28,
                 .color = temp_color.withAlpha(glow_intensity),
             }),
-            ui.text(if (is_hot) "⚠ ELEVATED" else "FUSION STABLE", .{
+            ui.text(if (is_hot) "ELEVATED" else "FUSION STABLE", .{
                 .size = 9,
                 .color = if (is_hot) Colors.orange.withAlpha(glow_intensity) else Colors.green_dim,
             }),
@@ -683,7 +682,7 @@ const CircleRow = struct {
         const s = cx.stateConst(AppState);
 
         cx.box(.{ .direction = .row, .gap = 24, .alignment = .{ .cross = .center } }, .{
-            CircleGauge{ .label = "HDG", .value = s.heading, .color = Colors.cyan, .unit = "°" },
+            CircleGauge{ .label = "HDG", .value = s.heading, .color = Colors.cyan, .unit = "deg" },
             CircleGauge{ .label = "VEL", .value = @as(u16, @intCast(s.velocity / 100)), .color = Colors.magenta, .unit = "x100" },
             CircleGauge{ .label = "FUEL", .value = s.fuel_level, .color = Colors.orange, .unit = "%" },
         });
@@ -695,7 +694,7 @@ const AutopilotStatus = struct {
         const s = cx.stateConst(AppState);
 
         cx.hstack(.{ .gap = 8, .alignment = .center }, .{
-            ui.text("●", .{
+            ui.text("-", .{
                 .size = 12,
                 .color = if (s.autopilot_engaged) Colors.green else Colors.red,
             }),
@@ -918,7 +917,7 @@ const ToggleStatus = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const status_color = if (self.active) Colors.green else Colors.red;
-        const status_text = if (self.active) "◉ ON" else "○ OFF";
+        const status_text = if (self.active) "ON" else "OFF";
 
         cx.box(.{}, .{
             ui.text(status_text, .{ .size = 11, .color = status_color }),
@@ -962,12 +961,12 @@ const QuickActions = struct {
             .direction = .row,
         }, .{
             NeonButton{
-                .label = "▲ BOOST SHIELDS",
+                .label = "BOOST SHIELDS",
                 .color = Colors.cyan,
                 .handler = cx.update(AppState, AppState.boostShields),
             },
             NeonButton{
-                .label = "◼ EMERGENCY STOP",
+                .label = "EMERGENCY STOP",
                 .color = Colors.red,
                 .handler = cx.update(AppState, AppState.emergencyStop),
             },
@@ -1029,7 +1028,7 @@ const App = gooey.App(AppState, &app_state, render, .{
     .title = "Spaceship Dashboard",
     .width = 900,
     .height = 650,
-    //.custom_shaders = &.{ hologram_shader, warp_shader },
+    .custom_shaders = &.{ hologram_shader, warp_shader },
 });
 
 comptime {

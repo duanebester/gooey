@@ -75,6 +75,8 @@ pub const Window = struct {
     pending_key_event: ?objc.c.id = null,
     /// IME cursor rect in view coordinates (for candidate window positioning)
     ime_cursor_rect: appkit.NSRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } },
+    /// NSProcessInfo activity token for preventing ProMotion throttling
+    activity_token: ?objc.Object = null,
 
     // =========================================================================
     // Simplified Callbacks
@@ -262,6 +264,7 @@ pub const Window = struct {
         }
 
         // Setup display link for vsync
+        // Setup display link for vsync
         if (options.use_display_link) {
             self.display_link = try DisplayLink.init();
             try self.display_link.?.setCallback(displayLinkCallback, @ptrCast(self));
@@ -269,6 +272,10 @@ pub const Window = struct {
 
             const refresh_rate = self.display_link.?.getRefreshRate();
             std.debug.print("DisplayLink started at {d:.1}Hz\n", .{refresh_rate});
+
+            // Request high-performance activity to prevent macOS from throttling
+            // ProMotion displays (120Hz -> 60Hz)
+            self.activity_token = beginHighPerformanceActivity();
         }
 
         // Make window key and visible
@@ -440,6 +447,12 @@ pub const Window = struct {
         if (self.glass_effect_view) |glass_view| {
             glass_view.msgSend(void, "removeFromSuperview", .{});
             self.glass_effect_view = null;
+        }
+
+        // End high-performance activity before stopping display link
+        if (self.activity_token) |token| {
+            endHighPerformanceActivity(token);
+            self.activity_token = null;
         }
 
         if (self.display_link) |*dl| {
@@ -942,7 +955,7 @@ fn displayLinkCallback(
     static.count += 1;
     const now = std.time.milliTimestamp();
     if (now - static.last_print > 1000) {
-        //std.debug.print("DisplayLink callbacks/sec: {}, should_render: {}, explicit: {}\n", .{ static.count, should_render, explicit_render });
+        std.debug.print("DisplayLink callbacks/sec: {}, should_render: {}, explicit: {}\n", .{ static.count, should_render, explicit_render });
         static.count = 0;
         static.last_print = now;
     }
@@ -1010,4 +1023,49 @@ fn createAutoreleasePool() ?objc.Object {
 
 fn drainAutoreleasePool(pool: objc.Object) void {
     pool.msgSend(void, "drain", .{});
+}
+
+// =============================================================================
+// High Performance Activity (prevents ProMotion throttling)
+// =============================================================================
+
+/// Begin a high-performance activity to prevent macOS from throttling
+/// the display refresh rate on ProMotion displays.
+fn beginHighPerformanceActivity() ?objc.Object {
+    const NSProcessInfo = objc.getClass("NSProcessInfo") orelse return null;
+    const process_info = NSProcessInfo.msgSend(objc.Object, "processInfo", .{});
+
+    // NSActivityLatencyCritical (0xFF00000000) | NSActivityUserInitiated (0x00FFFFFF)
+    // This combination tells macOS we need low-latency, high-priority rendering
+    const activity_options: u64 = 0xFF00000000 | 0x00FFFFFF;
+
+    const NSString = objc.getClass("NSString") orelse return null;
+    const reason = NSString.msgSend(
+        objc.Object,
+        "stringWithUTF8String:",
+        .{@as([*:0]const u8, "High frame rate rendering")},
+    );
+
+    const token = process_info.msgSend(
+        objc.Object,
+        "beginActivityWithOptions:reason:",
+        .{ activity_options, reason }, // Pass `reason` directly, not `reason.value`
+    );
+
+    if (token.value == null) {
+        std.debug.print("WARNING: Activity token is null - ProMotion throttle prevention failed!\n", .{});
+        return null;
+    }
+
+    // Retain the token since it's returned autoreleased
+    _ = token.msgSend(objc.Object, "retain", .{});
+    std.debug.print("High-performance activity started (ProMotion throttle prevention)\n", .{});
+    return token;
+}
+
+/// End a high-performance activity
+fn endHighPerformanceActivity(token: objc.Object) void {
+    const NSProcessInfo = objc.getClass("NSProcessInfo") orelse return;
+    const process_info = NSProcessInfo.msgSend(objc.Object, "processInfo", .{});
+    process_info.msgSend(void, "endActivity:", .{token.value});
 }
