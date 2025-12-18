@@ -218,7 +218,6 @@ pub const Cx = struct {
         const Wrapper = struct {
             fn invoke(gooey: *Gooey, _: EntityId) void {
                 const state_ptr = handler_mod.getRootState(State) orelse {
-                    //std.debug.print("Handler error: state not found\n", .{});
                     return;
                 };
                 method(state_ptr);
@@ -258,7 +257,6 @@ pub const Cx = struct {
         const Wrapper = struct {
             fn invoke(gooey: *Gooey, packed_arg: EntityId) void {
                 const state_ptr = handler_mod.getRootState(State) orelse {
-                    //std.debug.print("Handler error: state not found\n", .{});
                     return;
                 };
                 const unpacked = unpackArg(Arg, packed_arg);
@@ -294,7 +292,6 @@ pub const Cx = struct {
         const Wrapper = struct {
             fn invoke(gooey: *Gooey, _: EntityId) void {
                 const state_ptr = handler_mod.getRootState(State) orelse {
-                    //std.debug.print("Handler error: state not found\n", .{});
                     return;
                 };
                 method(state_ptr, gooey);
@@ -333,7 +330,6 @@ pub const Cx = struct {
         const Wrapper = struct {
             fn invoke(gooey: *Gooey, packed_arg: EntityId) void {
                 const state_ptr = handler_mod.getRootState(State) orelse {
-                    //std.debug.print("Handler error: state not found\n", .{});
                     return;
                 };
                 const unpacked = unpackArg(Arg, packed_arg);

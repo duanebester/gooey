@@ -17,7 +17,7 @@ pub const TextInput = struct {
 
     // Layout
     width: ?f32 = null,
-    height: f32 = 36,
+    height: ?f32 = null, // null = auto-size based on font metrics + padding
     padding: f32 = 8,
 
     // Visual styling

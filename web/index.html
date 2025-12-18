@@ -46,6 +46,28 @@
   <body>
     <div id="container">
       <canvas id="canvas" width="800" height="600"></canvas>
+      <div id="container">
+        <canvas id="canvas" width="800" height="600"></canvas>
+        <input
+          id="hiddenInput"
+          type="text"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          style="
+            position: absolute;
+            left: -9999px;
+            top: 0;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+          "
+        />
+        <div id="status">Initializing WebGPU...</div>
+      </div>
+
       <div id="status">Initializing WebGPU...</div>
     </div>
 
@@ -133,6 +155,303 @@
         mouseInCanvas = false;
         mouseButtons = 0;
       });
+
+      // =========================================================
+      // Keyboard Input System (Shared Memory Ring Buffers)
+      // =========================================================
+
+      // Map browser key codes to macOS virtual key codes
+      // Used by Gooey's KeyCode enum
+      const KEY_CODE_MAP = {
+        // Letters (QWERTY layout, macOS keycodes)
+        KeyA: 0x00,
+        KeyS: 0x01,
+        KeyD: 0x02,
+        KeyF: 0x03,
+        KeyH: 0x04,
+        KeyG: 0x05,
+        KeyZ: 0x06,
+        KeyX: 0x07,
+        KeyC: 0x08,
+        KeyV: 0x09,
+        KeyB: 0x0b,
+        KeyQ: 0x0c,
+        KeyW: 0x0d,
+        KeyE: 0x0e,
+        KeyR: 0x0f,
+        KeyY: 0x10,
+        KeyT: 0x11,
+        KeyO: 0x1f,
+        KeyU: 0x20,
+        KeyI: 0x22,
+        KeyP: 0x23,
+        KeyL: 0x25,
+        KeyJ: 0x26,
+        KeyK: 0x28,
+        KeyN: 0x2d,
+        KeyM: 0x2e,
+
+        // Numbers
+        Digit1: 0x12,
+        Digit2: 0x13,
+        Digit3: 0x14,
+        Digit4: 0x15,
+        Digit5: 0x17,
+        Digit6: 0x16,
+        Digit7: 0x1a,
+        Digit8: 0x1c,
+        Digit9: 0x19,
+        Digit0: 0x1d,
+
+        // Special keys
+        Enter: 0x24,
+        Tab: 0x30,
+        Space: 0x31,
+        Backspace: 0x33,
+        Escape: 0x35,
+        Delete: 0x75, // Forward delete
+
+        // Modifiers (for flagsChanged-style events)
+        MetaLeft: 0x37,
+        MetaRight: 0x36,
+        ShiftLeft: 0x38,
+        ShiftRight: 0x3c,
+        CapsLock: 0x39,
+        AltLeft: 0x3a,
+        AltRight: 0x3d,
+        ControlLeft: 0x3b,
+        ControlRight: 0x3e,
+
+        // Arrow keys
+        ArrowLeft: 0x7b,
+        ArrowRight: 0x7c,
+        ArrowDown: 0x7d,
+        ArrowUp: 0x7e,
+
+        // Navigation
+        Home: 0x73,
+        End: 0x77,
+        PageUp: 0x74,
+        PageDown: 0x79,
+
+        // Function keys
+        F1: 0x7a,
+        F2: 0x78,
+        F3: 0x63,
+        F4: 0x76,
+        F5: 0x60,
+        F6: 0x61,
+        F7: 0x62,
+        F8: 0x64,
+        F9: 0x65,
+        F10: 0x6d,
+        F11: 0x67,
+        F12: 0x6f,
+      };
+
+      const UNKNOWN_KEY = 0xffff;
+      const RING_SIZE = 32;
+      const TEXT_BUFFER_SIZE = 256;
+
+      let keyRingPtr = 0;
+      let textBufferPtr = 0;
+
+      function initKeyboard() {
+        // Get buffer pointers from WASM
+        keyRingPtr = wasmInstance.exports.getKeyRingPtr();
+        textBufferPtr = wasmInstance.exports.getTextBufferPtr();
+
+        const hiddenInput = document.getElementById("hiddenInput");
+
+        // Make canvas focusable for key events
+        canvas.tabIndex = 0;
+        canvas.style.outline = "none";
+
+        // Key events on canvas (physical keys for navigation/shortcuts)
+        canvas.addEventListener("keydown", (e) => {
+          // Forward focus to hidden input for text entry
+          if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
+            hiddenInput.focus();
+          }
+          handleKeyDown(e);
+        });
+        canvas.addEventListener("keyup", handleKeyUp);
+
+        // Text input via hidden input element
+        hiddenInput.addEventListener("input", (e) => {
+          if (hiddenInput.value) {
+            appendText(hiddenInput.value);
+            hiddenInput.value = ""; // Clear after capturing
+          }
+        });
+
+        // Handle composition (IME) on hidden input
+        hiddenInput.addEventListener("compositionend", (e) => {
+          if (e.data) {
+            appendText(e.data);
+            hiddenInput.value = "";
+          }
+        });
+
+        // Forward key events from hidden input to canvas logic
+        hiddenInput.addEventListener("keydown", (e) => {
+          handleKeyDown(e);
+          // Return focus to canvas for non-printable keys
+          if (shouldPreventDefault(e)) {
+            e.preventDefault();
+            canvas.focus();
+          }
+        });
+        hiddenInput.addEventListener("keyup", handleKeyUp);
+
+        // Keep hidden input in sync when canvas is focused
+        canvas.addEventListener("focus", () => {
+          // Small delay to let click processing complete
+          setTimeout(() => {
+            if (document.activeElement === canvas) {
+              hiddenInput.focus();
+            }
+          }, 10);
+        });
+
+        // Click on canvas focuses the hidden input
+        canvas.addEventListener("click", () => {
+          hiddenInput.focus();
+        });
+
+        // Initial focus
+        hiddenInput.focus();
+
+        console.log(
+          "[Gooey] Keyboard initialized, keyRingPtr:",
+          keyRingPtr,
+          "textBufferPtr:",
+          textBufferPtr,
+        );
+      }
+
+      function handleKeyDown(e) {
+        // Prevent browser defaults for keys we handle
+        if (shouldPreventDefault(e)) {
+          e.preventDefault();
+        }
+        pushKeyEvent(0, e); // 0 = key_down
+        console.log("[Gooey] keydown:", e.code, e.key); // Debug
+      }
+
+      function handleKeyUp(e) {
+        pushKeyEvent(1, e); // 1 = key_up
+      }
+
+      function handleBeforeInput(e) {
+        // Captures: typing, paste, emoji picker, autocorrect
+        if (e.data) {
+          e.preventDefault();
+          appendText(e.data);
+        }
+      }
+
+      function handleCompositionEnd(e) {
+        // Captures: IME completion (CJK, etc.)
+        if (e.data) {
+          appendText(e.data);
+        }
+      }
+
+      function shouldPreventDefault(e) {
+        // Prevent defaults for navigation and common shortcuts
+        const dominated = [
+          "Tab",
+          "Enter",
+          "Backspace",
+          "Delete",
+          "Escape",
+          "ArrowLeft",
+          "ArrowRight",
+          "ArrowUp",
+          "ArrowDown",
+          "Home",
+          "End",
+          "PageUp",
+          "PageDown",
+        ];
+
+        if (dominated.includes(e.code)) return true;
+        if (e.metaKey || e.ctrlKey) return true; // Shortcuts
+
+        return false;
+      }
+
+      function pushKeyEvent(eventType, e) {
+        if (!keyRingPtr) return;
+
+        const mem = wasmInstance.exports.memory.buffer;
+        const header = new Uint32Array(mem, keyRingPtr, 2);
+
+        const writeHead = header[0];
+        const readHead = header[1];
+
+        // Check if ring is full
+        if (
+          ((writeHead + 1) & (RING_SIZE - 1)) ===
+          (readHead & (RING_SIZE - 1))
+        ) {
+          console.warn("[Gooey] Key event buffer full, dropping event");
+          return;
+        }
+
+        // Calculate slot address
+        const slot = writeHead & (RING_SIZE - 1);
+        const eventOffset = keyRingPtr + 8 + slot * 8; // 8-byte header
+
+        const bytes = new Uint8Array(mem, eventOffset, 8);
+        const view = new DataView(mem, eventOffset, 8);
+
+        // Write event (8 bytes)
+        bytes[0] = eventType; // event_type
+        view.setUint16(1, KEY_CODE_MAP[e.code] ?? UNKNOWN_KEY, true); // key_code (little-endian)
+        bytes[3] = packModifiers(e); // modifiers
+        bytes[4] = (e.repeat ? 1 : 0) | (e.isComposing ? 2 : 0); // flags
+        bytes[5] = 0; // reserved
+        bytes[6] = 0; // reserved
+        bytes[7] = 0; // reserved
+
+        // Advance write head
+        header[0] = writeHead + 1;
+      }
+
+      function packModifiers(e) {
+        return (
+          (e.shiftKey ? 1 : 0) |
+          (e.ctrlKey ? 2 : 0) |
+          (e.altKey ? 4 : 0) |
+          (e.metaKey ? 8 : 0)
+        );
+      }
+
+      function appendText(text) {
+        if (!textBufferPtr) return;
+
+        const mem = wasmInstance.exports.memory.buffer;
+        const lenPtr = new Uint32Array(mem, textBufferPtr, 1);
+        const dataPtr = new Uint8Array(
+          mem,
+          textBufferPtr + 4,
+          TEXT_BUFFER_SIZE,
+        );
+
+        const encoded = new TextEncoder().encode(text);
+        const currentLen = lenPtr[0];
+        const available = TEXT_BUFFER_SIZE - currentLen;
+
+        if (encoded.length > available) {
+          console.warn("[Gooey] Text buffer full, truncating input");
+        }
+
+        const writeLen = Math.min(encoded.length, available);
+        dataPtr.set(encoded.subarray(0, writeLen), currentLen);
+        lenPtr[0] = currentLen + writeLen;
+      }
 
       // Text rendering helper
       const textCanvas = new OffscreenCanvas(256, 256);
@@ -538,6 +857,9 @@
         status.textContent = "Running!";
         status.className = "success";
         wasmInstance.exports.init();
+
+        // Initialize keyboard input after WASM is ready
+        initKeyboard();
       }
 
       init().catch((err) => {

@@ -169,7 +169,7 @@ pub const InputStyle = struct {
 
     // Layout
     width: ?f32 = null,
-    height: f32 = 36,
+    height: ?f32 = null,
     padding: f32 = 8,
 
     // Visual chrome (rendered by component)
@@ -196,7 +196,8 @@ pub const TextAreaStyle = struct {
 
     // Layout
     width: ?f32 = null,
-    height: ?f32 = 150,
+    height: ?f32 = null, // null = auto-size based on rows
+    rows: usize = 4, // Default visible rows (used when height is null)
     padding: f32 = 8,
 
     // Visual
@@ -1063,7 +1064,6 @@ pub const Builder = struct {
                     child.render(cx);
                 } else {
                     // Cx not available, skip
-                    //std.debug.print("Warning: Component expects *Cx but cx_ptr is null\n", .{});
                 }
             }
             return;
@@ -1115,10 +1115,21 @@ pub const Builder = struct {
         else
             false;
 
+        // Calculate height: use explicit height or auto-size from font metrics
+        const chrome = (inp.style.padding + inp.style.border_width) * 2;
+        const input_height = inp.style.height orelse blk: {
+            // Auto-size: get line height from font metrics
+            const line_height = if (self.gooey) |g|
+                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+            else
+                20.0; // Fallback
+            break :blk line_height + chrome;
+        };
+
         // Calculate inner content size (text area)
         const input_width = inp.style.width orelse 200;
-        const inner_width = input_width - (inp.style.padding * 2) - (inp.style.border_width * 2);
-        const inner_height = inp.style.height - (inp.style.padding * 2) - (inp.style.border_width * 2);
+        const inner_width = input_width - chrome;
+        const inner_height = input_height - chrome;
 
         // Create the outer box with chrome
         self.layout.openElement(.{
@@ -1126,7 +1137,7 @@ pub const Builder = struct {
             .layout = .{
                 .sizing = .{
                     .width = SizingAxis.fixed(input_width),
-                    .height = SizingAxis.fixed(inp.style.height),
+                    .height = SizingAxis.fixed(input_height),
                 },
                 .padding = Padding.all(@intFromFloat(inp.style.padding + inp.style.border_width)),
             },
@@ -1161,8 +1172,6 @@ pub const Builder = struct {
         self.dispatch.popNode();
     }
 
-    // Add renderTextArea function after renderInput
-
     fn renderTextArea(self: *Self, ta: TextAreaPrimitive) void {
         const layout_id = LayoutId.fromString(ta.id);
 
@@ -1180,11 +1189,21 @@ pub const Builder = struct {
         else
             false;
 
+        // Calculate height: use explicit height or auto-size from rows * line_height
+        const chrome = (ta.style.padding + ta.style.border_width) * 2;
+        const textarea_height = ta.style.height orelse blk: {
+            const line_height = if (self.gooey) |g|
+                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+            else
+                20.0;
+            const rows_f: f32 = @floatFromInt(ta.style.rows);
+            break :blk (line_height * rows_f) + chrome;
+        };
+
         // Calculate dimensions
         const textarea_width = ta.style.width orelse 300;
-        const textarea_height = ta.style.height orelse 150;
-        const inner_width = textarea_width - (ta.style.padding * 2) - (ta.style.border_width * 2);
-        const inner_height = textarea_height - (ta.style.padding * 2) - (ta.style.border_width * 2);
+        const inner_width = textarea_width - chrome;
+        const inner_height = textarea_height - chrome;
 
         // Create the outer box with chrome
         self.layout.openElement(.{

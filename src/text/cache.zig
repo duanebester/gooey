@@ -133,7 +133,6 @@ pub const GlyphCache = struct {
         self.grayscale_atlas.grow() catch |err| {
             if (err == error.AtlasFull) {
                 // Atlas is at max size and full - evict everything and retry
-                std.debug.print("Atlas full at max size, evicting cache ({} entries)\n", .{self.map.count()});
                 self.clear();
 
                 // After clearing, we should definitely have space

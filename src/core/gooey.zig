@@ -398,9 +398,7 @@ pub const Gooey = struct {
         // Focus the new one
         if (self.widgets.textArea(id)) |ta| {
             ta.focus();
-        } else {
-            //std.debug.print("  Widget NOT FOUND!\n", .{});
-        }
+        } else {}
         // Also update FocusManager so action dispatch works
         self.focus.focusByName(id);
         self.requestRender();

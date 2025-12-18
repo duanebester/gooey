@@ -421,8 +421,6 @@ pub fn runCx(
     window.setTextAtlas(gooey_ctx.text_system.getAtlas());
     window.setScene(gooey_ctx.scene);
 
-    //std.debug.print("Gooey app started (Cx): {s}\n", .{config.title});
-
     // Run the event loop
     plat.run();
 }
@@ -1390,7 +1388,29 @@ pub fn WebApp(
             g_gooey.?.height = @floatCast(w.size.height);
             g_gooey.?.scale_factor = @floatCast(w.scale_factor);
 
-            // Poll mouse state (coordinates should be in logical pixels from JS)
+            // =========================================================
+            // INPUT PROCESSING (zero JS calls)
+            // =========================================================
+
+            // Import keyboard modules
+            const key_events_mod = @import("platform/wgpu/web/key_events.zig");
+            const text_buffer_mod = @import("platform/wgpu/web/text_buffer.zig");
+
+            // 1. Process key events (navigation, shortcuts, modifiers)
+            _ = key_events_mod.processEvents(struct {
+                fn handler(event: input_mod.InputEvent) bool {
+                    return handleInputCx(&g_cx.?, on_event, event);
+                }
+            }.handler);
+
+            // 2. Process text input (typing, emoji, IME)
+            _ = text_buffer_mod.processTextInput(struct {
+                fn handler(event: input_mod.InputEvent) bool {
+                    return handleInputCx(&g_cx.?, on_event, event);
+                }
+            }.handler);
+
+            // 3. Process mouse input (existing polling code)
             const mouse_x = web_imports.getMouseX();
             const mouse_y = web_imports.getMouseY();
             const mouse_buttons = web_imports.getMouseButtons();
@@ -1434,6 +1454,10 @@ pub fn WebApp(
                 _ = handleInputCx(cx, on_event, down_event);
             }
             g_prev_mouse_down = mouse_down;
+
+            // =========================================================
+            // RENDER
+            // =========================================================
 
             // Render frame using existing gooey infrastructure
             renderFrameCx(cx, render) catch |err| {

@@ -356,7 +356,6 @@ const TaskInput = struct {
                 .text_color = ui.Color.rgb(0.2, 0.2, 0.2),
                 .placeholder_color = ui.Color.rgb(0.5, 0.5, 0.5),
                 .corner_radius = 8,
-                .padding = 12,
             },
             Button{ .label = "Add", .on_click_handler = cx.command(AppState, AppState.addTask) },
         });

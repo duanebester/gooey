@@ -16,8 +16,8 @@ pub const TextArea = struct {
 
     // Layout
     width: ?f32 = null,
-    height: ?f32 = 150,
-    rows: usize = 4, // Default visible rows (used if height not specified)
+    height: ?f32 = null, // null = auto-size based on rows
+    rows: usize = 4, // Default visible rows (used when height is null)
     padding: f32 = 8,
 
     // Visual styling
@@ -43,14 +43,13 @@ pub const TextArea = struct {
     tab_stop: bool = true,
 
     pub fn render(self: TextArea, b: *ui.Builder) void {
-        // For now, render using the existing box primitive
-        // The actual textarea rendering will be done in ui.zig
         b.box(.{}, .{
             ui.textArea(self.id, .{
                 .placeholder = self.placeholder,
                 .bind = self.bind,
                 .width = self.width,
                 .height = self.height,
+                .rows = self.rows,
                 .padding = self.padding,
                 .background = self.background,
                 .border_color = self.border_color,
