@@ -2,7 +2,7 @@
 
 A GPU-accelerated UI framework for Zig, targeting macOS with Metal rendering and Browser via WASM.
 
-> ⚠️ **Early Development**: macOS-only (wasm half-baked). API is evolving.
+> ⚠️ **Early Development**: macOS-only (WASM half-baked). API is evolving.
 
 <table>
   <tr>
@@ -23,11 +23,15 @@ WASM support imminent
 
 - **Metal Rendering** - Hardware-accelerated with MSAA anti-aliasing
 - **Declarative UI** - Component-based layout with flexbox-style system
-- **Unified Context** - Single `Cx` type for state, layout, handlers, and focus
+- **Unified Cx Context** - Single `Cx` type for state, layout, handlers, and focus
 - **Pure State Pattern** - Testable state methods with automatic re-rendering
+- **Animation System** - Built-in animations with easing, `animateOn` triggers
+- **Entity System** - Dynamic entity creation/deletion with auto-cleanup
 - **Retained Widgets** - TextInput, TextArea, Checkbox, Scroll containers
 - **Text Rendering** - CoreText shaping with subpixel positioning
 - **Custom Shaders** - Drop in your own Metal shaders
+- **Liquid Glass** - macOS 26.0+ Tahoe transparent window effects
+- **Actions & Keybindings** - Contextual action system with keymap
 - **Theming** - Built-in light/dark mode support
 
 ## Quick Start
@@ -37,8 +41,13 @@ WASM support imminent
 ```bash
 zig build run              # Showcase demo
 zig build run-counter      # Counter example
+zig build run-animation    # Animation demo
 zig build run-pomodoro     # Pomodoro timer
-zig build run-shader       # Custom shaders
+zig build run-glass        # Liquid glass effect
+zig build run-spaceship    # Space dashboard with shader
+zig build run-dynamic-counters  # Entity system demo
+zig build run-layout       # Flexbox, shrink, text wrapping
+zig build run-actions      # Keybindings demo
 zig build test             # Run tests
 ```
 
@@ -68,8 +77,9 @@ const AppState = struct {
     }
 };
 
+var state = AppState{};
+
 pub fn main() !void {
-    var state = AppState{};
     try gooey.runCx(AppState, &state, render, .{
         .title = "Counter",
         .width = 400,
@@ -124,58 +134,241 @@ test "counter logic" {
 
 Gooey includes ready-to-use components:
 
-- **Button** - Primary, secondary, danger variants with sizes
+- **Button** - Primary, secondary, danger variants with sizes (small, medium, large)
 - **Checkbox** - Toggle with customizable colors
-- **TextInput** - Single-line text entry with placeholder
+- **TextInput** - Single-line text entry with placeholder, bindable
 - **TextArea** - Multi-line text with scrolling
+
+```zig
+// Button variants
+Button{ .label = "Save", .variant = .primary, .on_click_handler = cx.update(State, State.save) }
+Button{ .label = "Cancel", .variant = .secondary, .size = .small, .on_click_handler = ... }
+Button{ .label = "Delete", .variant = .danger, .on_click_handler = ... }
+
+// TextInput with binding
+TextInput{
+    .id = "email",
+    .placeholder = "Enter email...",
+    .bind = &s.email,
+    .width = 250,
+}
+
+// Checkbox
+Checkbox{
+    .id = "terms",
+    .checked = s.agreed_to_terms,
+    .on_click_handler = cx.update(State, State.toggleTerms),
+}
+```
+
+## Animation System
+
+Built-in animation support with easing functions:
+
+```zig
+// Simple animation (runs once on mount)
+const fade = cx.animate("fade-in", .{ .duration_ms = 500 });
+// fade.progress goes 0.0 -> 1.0
+
+// Animation that restarts when a value changes
+const pulse = cx.animateOn("counter-pulse", s.count, .{
+    .duration_ms = 200,
+    .easing = Easing.easeOutBack,
+});
+
+// Continuous animation
+const spin = cx.animate("spinner", .{
+    .duration_ms = 1000,
+    .mode = .ping_pong,  // or .loop
+});
+
+// Use animation values
+cx.box(.{
+    .background = Color.white.withAlpha(fade.progress),
+    .width = gooey.lerp(100.0, 150.0, pulse.progress),
+}, .{...});
+```
+
+**Available Easings:** `linear`, `easeIn`, `easeOut`, `easeInOut`, `easeOutBack`, `easeOutCubic`, `easeInOutCubic`
+
+## Entity System
+
+Dynamic creation and deletion with automatic cleanup:
+
+```zig
+const Counter = struct {
+    count: i32 = 0,
+    pub fn increment(self: *Counter) void { self.count += 1; }
+};
+
+const AppState = struct {
+    counters: [10]gooey.Entity(Counter) = ...,
+
+    // Command method - needs Gooey access for entity operations
+    pub fn addCounter(self: *AppState, g: *gooey.Gooey) void {
+        const entity = g.createEntity(Counter, .{ .count = 0 }) catch return;
+        self.counters[self.counter_count] = entity;
+        self.counter_count += 1;
+    }
+};
+
+// In render - use entityCx for entity-scoped handlers
+var entity_cx = cx.entityCx(Counter, counter_entity) orelse return;
+Button{ .label = "+", .on_click_handler = entity_cx.update(Counter.increment) }
+
+// Read entity data
+if (cx.gooey().readEntity(Counter, entity)) |data| {
+    ui.textFmt("{d}", .{data.count}, .{});
+}
+```
+
+## Layout System
+
+Flexbox-inspired layout with shrink behavior and text wrapping:
+
+```zig
+cx.box(.{
+    .direction = .row,           // or .column
+    .gap = 16,
+    .padding = .{ .all = 24 },   // or .symmetric, .each
+    .alignment = .{ .main = .space_between, .cross = .center },
+    .fill_width = true,
+    .grow = true,
+}, .{...});
+
+// Shrink behavior - elements shrink when container is too small
+cx.box(.{ .width = 150, .min_width = 60 }, .{...});
+
+// Text wrapping
+ui.text("Long text...", .{ .wrap = .words });  // .none, .words, .newlines
+```
+
+## Custom Shaders
+
+Add custom Metal shaders for visual effects:
+
+```zig
+pub const plasma_shader =
+    \\void mainImage(thread float4& fragColor, float2 fragCoord,
+    \\               constant ShaderUniforms& uniforms,
+    \\               texture2d<float> iChannel0,
+    \\               sampler iChannel0Sampler) {
+    \\    float2 uv = fragCoord / uniforms.iResolution.xy;
+    \\    float time = uniforms.iTime;
+    \\    // ... shader code
+    \\    fragColor = float4(color, 1.0);
+    \\}
+;
+
+try gooey.runCx(AppState, &state, render, .{
+    .custom_shaders = &.{plasma_shader},
+});
+```
+
+## Glass Effect (macOS 26.0+)
+
+Transparent window with liquid glass effect:
+
+```zig
+try gooey.runCx(AppState, &state, render, .{
+    .title = "Glass Demo",
+    .background_color = gooey.Color.init(0.1, 0.1, 0.15, 1.0),
+    .background_opacity = 0.2,
+    .glass_style = .glass_regular,  // .glass_clear, .blur, .none
+    .glass_corner_radius = 10.0,
+    .titlebar_transparent = true,
+});
+
+// Change glass style at runtime
+pub fn cycleStyle(self: *AppState, g: *gooey.Gooey) void {
+    g.window.setGlassStyle(.glass_clear, 0.7, 10.0);
+}
+```
+
+## Actions & Keybindings
+
+Contextual action system with keyboard shortcuts:
+
+```zig
+const Undo = struct {};
+const Save = struct {};
+
+fn setupKeymap(cx: *Cx) void {
+    const g = cx.gooey();
+    g.keymap.bind(Undo, "cmd-z", null);        // Global
+    g.keymap.bind(Save, "cmd-s", "Editor");    // Context-specific
+}
+
+fn render(cx: *Cx) void {
+    cx.box(.{}, .{
+        ui.onAction(Undo, doUndo),  // Handle action
+
+        // Scoped context
+        ui.keyContext("Editor"),
+        ui.onAction(Save, doSave),
+    });
+}
+```
 
 ## More Examples
 
-| Example   | Command                   | Description                        |
-| --------- | ------------------------- | ---------------------------------- |
-| Showcase  | `zig build run`           | Full feature demo with navigation  |
-| Counter   | `zig build run-counter`   | Simple state management            |
-| Pomodoro  | `zig build run-pomodoro`  | Timer with tasks and custom shader |
-| Dynamic   | `zig build run-dynamic`   | Entity creation and deletion       |
-| Layout    | `zig build run-layout`    | Flexbox, shrink, text wrapping     |
-| Shader    | `zig build run-shader`    | Custom Metal shaders               |
-| Spaceship | `zig build run-spaceship` | Space dashboard                    |
+| Example          | Command                          | Description                           |
+| ---------------- | -------------------------------- | ------------------------------------- |
+| Showcase         | `zig build run`                  | Full feature demo with navigation     |
+| Counter          | `zig build run-counter`          | Simple state management               |
+| Animation        | `zig build run-animation`        | Animation system with animateOn       |
+| Pomodoro         | `zig build run-pomodoro`         | Timer with tasks and custom shader    |
+| Dynamic Counters | `zig build run-dynamic-counters` | Entity creation and deletion          |
+| Layout           | `zig build run-layout`           | Flexbox, shrink, text wrapping        |
+| Glass            | `zig build run-glass`            | Liquid glass transparency effect      |
+| Spaceship        | `zig build run-spaceship`        | Sci-fi dashboard with hologram shader |
+| Actions          | `zig build run-actions`          | Keybindings and action system         |
 
 ## WASM
 
-:warning: Currently supports subset of the API. :warning:
-
-To build the browser version of the counter/dynamic counters examples:
+⚠️ Currently supports a subset of the API. ⚠️
 
 ```bash
-zig build wasm # showcase
+# Build WASM examples
+zig build wasm                    # showcase
 zig build wasm-counter
 zig build wasm-dynamic-counters
 zig build wasm-pomodoro
-```
 
-To then run the example(s):
-
-```bash
-python3 -m http.server 8080 -d zig-out/web # showcase
+# Run with a local server
+python3 -m http.server 8080 -d zig-out/web  # showcase
 python3 -m http.server 8080 -d zig-out/web/counter
 python3 -m http.server 8080 -d zig-out/web/dynamic
 python3 -m http.server 8080 -d zig-out/web/pomodoro
 ```
 
-## Hot reloading - macOS
+## Hot Reloading (macOS)
 
-It's a simple, brute-force hot reload, but works well enough for now.
+Simple brute-force hot reload for development:
 
-### Run showcase (default) with hot reload
-
-zig build hot
-
-### Run a specific example with hot reload
-
-zig build hot -- run-counter
+```bash
+zig build hot                    # Showcase (default)
+zig build hot -- run-counter     # Specific example
 zig build hot -- run-pomodoro
 zig build hot -- run-glass
+```
+
+## Architecture
+
+```
+src/
+├── app.zig          # App entry points (runCx, App, WebApp)
+├── cx.zig           # Unified context (Cx)
+├── root.zig         # Public API exports
+├── core/            # Geometry, input, scene, entities, animations
+├── layout/          # Flexbox-style layout engine
+├── text/            # CoreText text rendering
+├── ui/              # Declarative builder (box, vstack, hstack, etc.)
+├── components/      # Button, Checkbox, TextInput, TextArea
+├── widgets/         # Lower-level retained widgets
+├── platform/        # macOS/Metal, WASM/WebGPU
+└── examples/        # Demo applications
+```
 
 ## Inspiration
 
