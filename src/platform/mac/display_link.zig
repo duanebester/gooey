@@ -110,6 +110,18 @@ pub const CVTime = extern struct {
     flags: i32,
 };
 
+/// Set the current display for the display link.
+/// This ensures consistent frame rate on ProMotion displays by binding
+/// the display link to a specific display rather than letting macOS
+/// adaptively change the refresh rate based on content.
+pub extern "c" fn CVDisplayLinkSetCurrentCGDisplay(
+    display_link: CVDisplayLinkRef,
+    display_id: u32,
+) CVReturn;
+
+/// Get the main display ID (from CoreGraphics)
+pub extern "c" fn CGMainDisplayID() u32;
+
 // ============================================================================
 // DisplayLink Wrapper
 // ============================================================================
@@ -133,6 +145,12 @@ pub const DisplayLink = struct {
         if (!create_result.isSuccess() or link == null) {
             return error.DisplayLinkCreationFailed;
         }
+
+        // Bind to main display for consistent frame rate on ProMotion displays.
+        // Without this, macOS may adaptively lower the refresh rate (e.g., 120Hz -> 60Hz)
+        // after user interaction when it thinks the app doesn't need high frame rate.
+        const main_display = CGMainDisplayID();
+        _ = CVDisplayLinkSetCurrentCGDisplay(link.?, main_display);
 
         return Self{
             .link = link.?,

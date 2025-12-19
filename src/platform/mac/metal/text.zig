@@ -292,8 +292,6 @@ pub const TextPipeline = struct {
             return; // Already up to date
         }
 
-        std.debug.print("Updating atlas texture: {}x{}, gen {}\n", .{ atlas.size, atlas.size, atlas.generation });
-
         // Release old texture
         if (self.atlas_texture) |tex| {
             tex.msgSend(void, "release", .{});
@@ -338,8 +336,6 @@ pub const TextPipeline = struct {
 
         self.atlas_texture = texture;
         self.atlas_generation = atlas.generation;
-
-        std.debug.print("Atlas texture created successfully\n", .{});
     }
 
     /// Render glyphs

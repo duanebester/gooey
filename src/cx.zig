@@ -77,6 +77,16 @@ const text_field_mod = @import("widgets/text_input.zig");
 const text_area_mod = @import("widgets/text_area.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
 
+// Animation imports
+const animation_mod = @import("core/animation.zig");
+pub const Animation = animation_mod.AnimationConfig;
+pub const AnimationHandle = animation_mod.AnimationHandle;
+pub const Easing = animation_mod.Easing;
+pub const Duration = animation_mod.Duration;
+pub const lerp = animation_mod.lerp;
+pub const lerpInt = animation_mod.lerpInt;
+pub const lerpColor = animation_mod.lerpColor;
+
 // Re-export handler types
 pub const HandlerRef = handler_mod.HandlerRef;
 pub const EntityId = entity_mod.EntityId;
@@ -508,11 +518,70 @@ pub const Cx = struct {
     pub fn getAllocator(self: *Self) std.mem.Allocator {
         return self.allocator;
     }
+
+    // =========================================================================
+    // Animation API (with comptime optimization)
+    // =========================================================================
+
+    /// Animate with compile-time string hashing (most efficient for literals)
+    pub fn animateComptime(self: *Self, comptime id: []const u8, config: Animation) AnimationHandle {
+        const anim_id = comptime animation_mod.hashString(id);
+        return self.gooey.widgets.animateById(anim_id, config);
+    }
+
+    /// Runtime string API (for dynamic IDs)
+    pub fn animate(self: *Self, id: []const u8, config: Animation) AnimationHandle {
+        return self.gooey.widgets.animate(id, config);
+    }
+
+    /// Restart with comptime hashing
+    pub fn restartAnimationComptime(self: *Self, comptime id: []const u8, config: Animation) AnimationHandle {
+        const anim_id = comptime animation_mod.hashString(id);
+        return self.gooey.widgets.restartAnimationById(anim_id, config);
+    }
+
+    /// Runtime restart API
+    pub fn restartAnimation(self: *Self, id: []const u8, config: Animation) AnimationHandle {
+        return self.gooey.widgets.restartAnimation(id, config);
+    }
+
+    /// animateOn with comptime ID hashing
+    pub fn animateOnComptime(
+        self: *Self,
+        comptime id: []const u8,
+        trigger: anytype,
+        config: Animation,
+    ) AnimationHandle {
+        const anim_id = comptime animation_mod.hashString(id);
+        const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
+        return self.gooey.widgets.animateOnById(anim_id, trigger_hash, config);
+    }
+
+    /// Runtime animateOn API
+    pub fn animateOn(
+        self: *Self,
+        id: []const u8,
+        trigger: anytype,
+        config: Animation,
+    ) AnimationHandle {
+        const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
+        return self.gooey.widgets.animateOn(id, trigger_hash, config);
+    }
 };
 
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// Compute a hash for any trigger value for use with animateOn.
+/// Uses Wyhash for types with unique representation, otherwise
+/// attempts direct bit casting for primitives.
+fn computeTriggerHash(comptime T: type, value: T) u64 {
+    const info = @typeInfo(T);
+    if (info == .bool) return if (value) 1 else 0;
+    if (info == .@"enum") return @intFromEnum(value);
+    return std.hash.Wyhash.hash(0, std.mem.asBytes(&value));
+}
 
 /// Get a unique type ID for a type (used for runtime type checking).
 pub fn typeId(comptime T: type) usize {

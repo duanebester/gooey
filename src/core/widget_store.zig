@@ -1,4 +1,6 @@
 //! WidgetStore - Simple retained storage for stateful widgets
+//!
+//! Now includes animation state management.
 
 const std = @import("std");
 const TextInput = @import("../widgets/text_input.zig").TextInput;
@@ -6,6 +8,11 @@ const Bounds = @import("../widgets/text_input.zig").Bounds;
 const ScrollContainer = @import("../widgets/scroll_container.zig").ScrollContainer;
 const TextArea = @import("../widgets/text_area.zig").TextArea;
 const TextAreaBounds = @import("../widgets/text_area.zig").Bounds;
+const animation = @import("animation.zig");
+const AnimationState = animation.AnimationState;
+const AnimationConfig = animation.AnimationConfig;
+const AnimationHandle = animation.AnimationHandle;
+const AnimationId = animation.AnimationId;
 
 pub const WidgetStore = struct {
     allocator: std.mem.Allocator,
@@ -13,6 +20,11 @@ pub const WidgetStore = struct {
     text_areas: std.StringHashMap(*TextArea),
     scroll_containers: std.StringHashMap(*ScrollContainer),
     accessed_this_frame: std.StringHashMap(void),
+
+    // u32-keyed animation storage
+    animations: std.AutoArrayHashMap(u32, AnimationState),
+    active_animation_count: u32 = 0,
+
     default_text_input_bounds: Bounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 },
     default_text_area_bounds: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 },
 
@@ -25,6 +37,7 @@ pub const WidgetStore = struct {
             .text_areas = std.StringHashMap(*TextArea).init(allocator),
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
             .accessed_this_frame = std.StringHashMap(void).init(allocator),
+            .animations = std.AutoArrayHashMap(u32, AnimationState).init(allocator),
         };
     }
 
@@ -56,8 +69,151 @@ pub const WidgetStore = struct {
         }
         self.scroll_containers.deinit();
 
+        // Clean up animation keys
+        self.animations.deinit();
+
         self.accessed_this_frame.deinit();
     }
+
+    // =========================================================================
+    // Animation Methods (OPTIMIZED with u32 keys)
+    // =========================================================================
+
+    /// Get or create animation by hashed ID (no string allocation)
+    pub fn animateById(self: *Self, anim_id: u32, config: AnimationConfig) AnimationHandle {
+        const gop = self.animations.getOrPut(anim_id) catch {
+            return AnimationHandle.complete;
+        };
+
+        if (!gop.found_existing) {
+            gop.value_ptr.* = AnimationState.init(config);
+        }
+
+        const handle = animation.calculateProgress(gop.value_ptr);
+        if (handle.running) {
+            self.active_animation_count += 1;
+        }
+        return handle;
+    }
+
+    /// String-based API (hashes at call site)
+    pub fn animate(self: *Self, id: []const u8, config: AnimationConfig) AnimationHandle {
+        return self.animateById(animation.hashString(id), config);
+    }
+
+    /// Restart animation by hashed ID
+    /// Restart animation by hashed ID
+    pub fn restartAnimationById(self: *Self, anim_id: u32, config: AnimationConfig) AnimationHandle {
+        const gop = self.animations.getOrPut(anim_id) catch {
+            return AnimationHandle.complete;
+        };
+
+        // Always reset the animation state (whether existing or new)
+        gop.value_ptr.* = AnimationState.init(config);
+
+        // If it was existing, preserve generation continuity
+        if (gop.found_existing) {
+            gop.value_ptr.generation +%= 1;
+        }
+
+        self.active_animation_count += 1;
+        return animation.calculateProgress(gop.value_ptr);
+    }
+
+    /// String-based restart API
+    pub fn restartAnimation(self: *Self, id: []const u8, config: AnimationConfig) AnimationHandle {
+        return self.restartAnimationById(animation.hashString(id), config);
+    }
+
+    /// OPTIMIZED animateOn - single HashMap lookup!
+    /// Trigger hash is now stored IN the AnimationState
+    pub fn animateOnById(self: *Self, anim_id: u32, trigger_hash: u64, config: AnimationConfig) AnimationHandle {
+        const platform_time = @import("../platform/mod.zig");
+
+        const gop = self.animations.getOrPut(anim_id) catch {
+            return AnimationHandle.complete;
+        };
+
+        if (gop.found_existing) {
+            // Check if trigger changed
+            if (gop.value_ptr.trigger_hash != trigger_hash) {
+                // Trigger changed - restart animation and update hash
+                gop.value_ptr.start_time = platform_time.time.milliTimestamp();
+                gop.value_ptr.duration_ms = config.duration_ms;
+                gop.value_ptr.delay_ms = config.delay_ms;
+                gop.value_ptr.easing = config.easing;
+                gop.value_ptr.mode = config.mode;
+                gop.value_ptr.running = true;
+                gop.value_ptr.forward = true;
+                gop.value_ptr.generation +%= 1;
+                gop.value_ptr.trigger_hash = trigger_hash;
+            }
+        } else {
+            // New animation with trigger
+            gop.value_ptr.* = AnimationState.initWithTrigger(config, trigger_hash);
+        }
+
+        const handle = animation.calculateProgress(gop.value_ptr);
+        if (handle.running) {
+            self.active_animation_count += 1;
+        }
+        return handle;
+    }
+
+    /// String-based animateOn API
+    pub fn animateOn(self: *Self, id: []const u8, trigger_hash: u64, config: AnimationConfig) AnimationHandle {
+        return self.animateOnById(animation.hashString(id), trigger_hash, config);
+    }
+
+    pub fn isAnimatingById(self: *Self, anim_id: u32) bool {
+        if (self.animations.getPtr(anim_id)) |state| {
+            return state.running;
+        }
+        return false;
+    }
+
+    pub fn isAnimating(self: *Self, id: []const u8) bool {
+        return self.isAnimatingById(animation.hashString(id));
+    }
+
+    pub fn getAnimationById(self: *Self, anim_id: u32) ?AnimationHandle {
+        if (self.animations.getPtr(anim_id)) |state| {
+            const handle = animation.calculateProgress(state);
+            if (handle.running) {
+                self.active_animation_count += 1;
+            }
+            return handle;
+        }
+        return null;
+    }
+
+    pub fn getAnimation(self: *Self, id: []const u8) ?AnimationHandle {
+        return self.getAnimationById(animation.hashString(id));
+    }
+
+    pub fn removeAnimationById(self: *Self, anim_id: u32) void {
+        _ = self.animations.swapRemove(anim_id);
+    }
+
+    pub fn removeAnimation(self: *Self, id: []const u8) void {
+        self.removeAnimationById(animation.hashString(id));
+    }
+
+    /// Check if any animations are active this frame
+    pub fn hasActiveAnimations(self: *const Self) bool {
+        return self.active_animation_count > 0;
+    }
+
+    // =========================================================================
+    // Frame Lifecycle
+    // =========================================================================
+
+    pub fn beginFrame(self: *Self) void {
+        self.accessed_this_frame.clearRetainingCapacity();
+        self.active_animation_count = 0; // Reset - will be incremented as animations are queried
+    }
+
+    pub fn endFrame(_: *Self) void {}
 
     // =========================================================================
     // TextInput (existing code)
@@ -177,7 +333,6 @@ pub const WidgetStore = struct {
         errdefer self.allocator.destroy(sc);
 
         const owned_key = self.allocator.dupe(u8, id) catch {
-            sc.deinit();
             self.allocator.destroy(sc);
             return null;
         };
@@ -199,16 +354,6 @@ pub const WidgetStore = struct {
     pub fn getScrollContainer(self: *Self, id: []const u8) ?*ScrollContainer {
         return self.scroll_containers.get(id);
     }
-
-    // =========================================================================
-    // Frame Lifecycle
-    // =========================================================================
-
-    pub fn beginFrame(self: *Self) void {
-        self.accessed_this_frame.clearRetainingCapacity();
-    }
-
-    pub fn endFrame(_: *Self) void {}
 
     // =========================================================================
     // TextInput helpers (existing)

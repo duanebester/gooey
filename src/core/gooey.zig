@@ -285,8 +285,18 @@ pub const Gooey = struct {
         // Finalize frame observations
         self.entities.endFrame();
 
+        // Request another frame if animations are running
+        if (self.hasActiveAnimations()) {
+            self.requestRender();
+        }
+
         // End layout and get render commands
         return try self.layout.endFrame();
+    }
+
+    /// Check if any animations are running (call after endFrame)
+    pub fn hasActiveAnimations(self: *const Self) bool {
+        return self.widgets.hasActiveAnimations();
     }
 
     // =========================================================================

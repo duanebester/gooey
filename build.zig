@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "gooey",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/showcase.zig"), // Changed!
+            .root_source_file = b.path("src/examples/showcase.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -52,182 +52,24 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
 
     // Enable Metal HUD for FPS/GPU stats
-    //run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
+    run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
 
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
 
     // =========================================================================
-    // Pomodoro Example
+    // Native Mac Examples
     // =========================================================================
 
-    const pomodoro_exe = b.addExecutable(.{
-        .name = "pomodoro",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/pomodoro.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = mod },
-                .{ .name = "objc", .module = objc_dep.module("objc") },
-            },
-        }),
-    });
-
-    b.installArtifact(pomodoro_exe);
-
-    // Run pomodoro example
-    const run_pomodoro_step = b.step("run-pomodoro", "Run the pomodoro example");
-    const run_pomodoro_cmd = b.addRunArtifact(pomodoro_exe);
-    run_pomodoro_step.dependOn(&run_pomodoro_cmd.step);
-    run_pomodoro_cmd.step.dependOn(b.getInstallStep());
-
-    // =========================================================================
-    // Spaceship Example
-    // =========================================================================
-
-    const spaceship_exe = b.addExecutable(.{
-        .name = "spaceship",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/spaceship.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = mod },
-                .{ .name = "objc", .module = objc_dep.module("objc") },
-            },
-        }),
-    });
-
-    b.installArtifact(spaceship_exe);
-
-    // Run spaceship example
-    const run_spaceship_step = b.step("run-spaceship", "Run the spaceship example");
-    const run_spaceship_cmd = b.addRunArtifact(spaceship_exe);
-    run_spaceship_step.dependOn(&run_spaceship_cmd.step);
-    run_spaceship_cmd.step.dependOn(b.getInstallStep());
-
-    // =========================================================================
-    // Liquid Glass Example
-    // =========================================================================
-
-    const glass_exe = b.addExecutable(.{
-        .name = "glass",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/glass.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = mod },
-                .{ .name = "objc", .module = objc_dep.module("objc") },
-            },
-        }),
-    });
-
-    b.installArtifact(glass_exe);
-
-    // Run glass example
-    const run_glass_step = b.step("run-glass", "Run the glass example");
-    const run_glass_cmd = b.addRunArtifact(glass_exe);
-    run_glass_step.dependOn(&run_glass_cmd.step);
-    run_glass_cmd.step.dependOn(b.getInstallStep());
-
-    // =========================================================================
-    // Counter Example
-    // =========================================================================
-
-    const counter_exe = b.addExecutable(.{
-        .name = "counter",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/counter.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = mod },
-                .{ .name = "objc", .module = objc_dep.module("objc") },
-            },
-        }),
-    });
-
-    b.installArtifact(counter_exe);
-
-    // Run counter example
-    const run_counter_step = b.step("run-counter", "Run the counter example");
-    const run_counter_cmd = b.addRunArtifact(counter_exe);
-    run_counter_step.dependOn(&run_counter_cmd.step);
-    run_counter_cmd.step.dependOn(b.getInstallStep());
-
-    // =========================================================================
-    // Layout Example
-    // =========================================================================
-
-    const layout_exe = b.addExecutable(.{
-        .name = "layout",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/layout.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = mod },
-                .{ .name = "objc", .module = objc_dep.module("objc") },
-            },
-        }),
-    });
-
-    b.installArtifact(layout_exe);
-
-    // Run layout example
-    const run_layout_step = b.step("run-layout", "Run the layout example");
-    const run_layout_cmd = b.addRunArtifact(layout_exe);
-    run_layout_step.dependOn(&run_layout_cmd.step);
-    run_layout_cmd.step.dependOn(b.getInstallStep());
-
-    // =========================================================================
-    // Dynamic Counters Example
-    // =========================================================================
-
-    const dynamic_counters_exe = b.addExecutable(.{
-        .name = "dynamic_counters",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/dynamic_counters.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = mod },
-                .{ .name = "objc", .module = objc_dep.module("objc") },
-            },
-        }),
-    });
-
-    b.installArtifact(dynamic_counters_exe);
-
-    // Run dynamic_counters example
-    const run_dynamic_counters_step = b.step("run-dynamic-counters", "Run the dynamic_counters example");
-    const run_dynamic_counters_cmd = b.addRunArtifact(dynamic_counters_exe);
-    run_dynamic_counters_step.dependOn(&run_dynamic_counters_cmd.step);
-    run_dynamic_counters_cmd.step.dependOn(b.getInstallStep());
-
-    const actions_exe = b.addExecutable(.{
-        .name = "actions_demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/actions.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = mod },
-                .{ .name = "objc", .module = objc_dep.module("objc") },
-            },
-        }),
-    });
-
-    b.installArtifact(actions_exe);
-
-    // Run focus demo
-    const run_actions_step = b.step("run-actions", "Run the actions demo");
-    const run_actions_cmd = b.addRunArtifact(actions_exe);
-    run_actions_step.dependOn(&run_actions_cmd.step);
-    run_actions_cmd.step.dependOn(b.getInstallStep());
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "pomodoro", "src/examples/pomodoro.zig", false);
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "animation", "src/examples/animation.zig", true);
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "spaceship", "src/examples/spaceship.zig", true);
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "glass", "src/examples/glass.zig", false);
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "counter", "src/examples/counter.zig", false);
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "layout", "src/examples/layout.zig", false);
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "dynamic-counters", "src/examples/dynamic_counters.zig", false);
+    addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "actions", "src/examples/actions.zig", false);
 
     // =============================================================================
     // WebAssembly Builds
@@ -284,6 +126,7 @@ pub fn build(b: *std.Build) void {
     addWasmExample(b, gooey_wasm_module, wasm_target, "counter", "src/examples/counter.zig", "web/counter");
     addWasmExample(b, gooey_wasm_module, wasm_target, "dynamic-counters", "src/examples/dynamic_counters.zig", "web/dynamic");
     addWasmExample(b, gooey_wasm_module, wasm_target, "pomodoro", "src/examples/pomodoro.zig", "web/pomodoro");
+    addWasmExample(b, gooey_wasm_module, wasm_target, "spaceship", "src/examples/spaceship.zig", "web/spaceship");
 
     // =========================================================================
     // Hot Reload Watcher
@@ -340,6 +183,44 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+}
+
+/// Helper to add a native macOS example with minimal boilerplate.
+fn addNativeExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    objc_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    source: []const u8,
+    metal_hud: bool,
+) void {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "objc", .module = objc_module },
+            },
+        }),
+    });
+
+    b.installArtifact(exe);
+
+    const step_name = b.fmt("run-{s}", .{name});
+    const step_desc = b.fmt("Run the {s} example", .{name});
+    const step = b.step(step_name, step_desc);
+
+    const run_cmd = b.addRunArtifact(exe);
+    if (metal_hud) {
+        run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
+    }
+    step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
 }
 
 /// Helper to add a WASM example with minimal boilerplate.

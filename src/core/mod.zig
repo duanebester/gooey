@@ -165,6 +165,21 @@ pub const render_stats = @import("render_stats.zig");
 pub const RenderStats = render_stats.RenderStats;
 
 // =============================================================================
+// Animation System
+// =============================================================================
+
+pub const animation = @import("animation.zig");
+
+pub const Animation = animation.AnimationConfig;
+pub const AnimationHandle = animation.AnimationHandle;
+pub const AnimationState = animation.AnimationState;
+pub const Easing = animation.Easing;
+pub const Duration = animation.Duration;
+pub const lerp = animation.lerp;
+pub const lerpInt = animation.lerpInt;
+pub const lerpColor = animation.lerpColor;
+
+// =============================================================================
 // Tests
 // =============================================================================
 

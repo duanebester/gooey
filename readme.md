@@ -148,6 +148,7 @@ Gooey includes ready-to-use components:
 To build the browser version of the counter/dynamic counters examples:
 
 ```bash
+zig build wasm # showcase
 zig build wasm-counter
 zig build wasm-dynamic-counters
 zig build wasm-pomodoro
@@ -156,6 +157,7 @@ zig build wasm-pomodoro
 To then run the example(s):
 
 ```bash
+python3 -m http.server 8080 -d zig-out/web # showcase
 python3 -m http.server 8080 -d zig-out/web/counter
 python3 -m http.server 8080 -d zig-out/web/dynamic
 python3 -m http.server 8080 -d zig-out/web/pomodoro

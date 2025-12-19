@@ -6,6 +6,17 @@
 //! - Dashboard layout with stats, gauges, alerts
 //! - Form controls styled for sci-fi interface
 //! - Component composition with Cx API
+//!
+//! Animations:
+//! 1. Header fade-in** (600ms on load)
+//! 2. **Status indicator pulse** (intensity varies by alert level)
+//! 3. **Alert badge pulse** (800ms urgent pulse when alerts active)
+//! 4. **Jump charge ring** - charging pulse + ready glow pop with `animateOn`
+//! 5. **Reactor core pulse** (faster when hot, subtle when normal)
+//! 6. **Circle gauges breathing** (3s subtle background pulse)
+//! 7. **Gauge bars settle** (300ms ease on value change)
+//! 8. **Toggle buttons transition** (200ms on state change)
+//! 9. **Neon buttons idle pulse** (2s subtle glow)
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -15,6 +26,7 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = gooey.Button;
 const TextInput = gooey.TextInput;
+const Easing = gooey.Easing;
 
 /// Holographic scanline + chromatic aberration shader
 pub const hologram_shader =
@@ -254,14 +266,17 @@ const AppState = struct {
 
 const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
+        // Fade in header on load
+        const fade = cx.animateComptime("header-fade", .{ .duration_ms = 600 });
+
         cx.box(.{
             .fill_width = true,
             .padding = .{ .each = .{ .top = 24, .bottom = 16, .left = 24, .right = 24 } },
-            .background = Colors.bg_panel,
+            .background = Colors.bg_panel.withAlpha(0.9), // * fade.progress),
             .direction = .row,
             .alignment = .{ .cross = .center },
         }, .{
-            ShipName{},
+            ShipName{ .opacity = fade.progress },
             ui.spacer(),
             StatusIndicator{},
         });
@@ -269,24 +284,41 @@ const Header = struct {
 };
 
 const ShipName = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
+    opacity: f32 = 1.0,
+
+    pub fn render(self: @This(), cx: *Cx) void {
         cx.hstack(.{ .gap = 12, .alignment = .center }, .{
-            ui.text("◆", .{ .size = 20, .color = Colors.cyan }),
-            ui.text("USS AURORA", .{ .size = 22, .color = Colors.text }),
-            ui.text("NCC-1701-G", .{ .size = 12, .color = Colors.text_dim }),
+            ui.text("USS AURORA", .{ .size = 22, .color = Colors.text.withAlpha(self.opacity) }),
+            ui.text("NCC-1701-G", .{ .size = 12, .color = Colors.text_dim.withAlpha(self.opacity) }),
         });
     }
 };
-
 const StatusIndicator = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
+
+        // Pulse effect for non-nominal status
+        const pulse = cx.animateComptime("status-pulse", .{
+            .duration_ms = 1500,
+            .easing = Easing.easeInOut,
+            .mode = .ping_pong,
+        });
+
+        // More intense pulse for worse alert levels
+        const pulse_intensity: f32 = switch (s.alert_level) {
+            .nominal => 0.0,
+            .caution => 0.15,
+            .warning => 0.25,
+            .critical => 0.4,
+        };
+
+        const status_alpha = 1.0 - (pulse_intensity * (1.0 - pulse.progress));
 
         cx.hstack(.{ .gap = 16, .alignment = .center }, .{
             ui.text("STATUS:", .{ .size = 12, .color = Colors.text_dim }),
             ui.text(s.alert_level.label(), .{
                 .size = 14,
-                .color = s.alert_level.color(),
+                .color = s.alert_level.color().withAlpha(status_alpha),
             }),
             AlertBadge{},
         });
@@ -298,9 +330,19 @@ const AlertBadge = struct {
         const s = cx.stateConst(AppState);
 
         if (s.active_alerts > 0) {
+            // Urgent pulse for alerts
+            const pulse = cx.animateComptime("alert-pulse", .{
+                .duration_ms = 800,
+                .easing = Easing.easeInOut,
+                .mode = .ping_pong,
+            });
+
+            const scale = 1.0 + pulse.progress * 0.08;
+            const glow_alpha = gooey.lerp(0.8, 1.0, pulse.progress);
+
             cx.box(.{
-                .padding = .{ .symmetric = .{ .x = 8, .y = 4 } },
-                .background = Colors.red,
+                .padding = .{ .symmetric = .{ .x = 8 * scale, .y = 4 * scale } },
+                .background = Colors.red.withAlpha(glow_alpha),
                 .corner_radius = 10,
             }, .{
                 ui.textFmt("{} ALERT", .{s.active_alerts}, .{
@@ -337,11 +379,11 @@ const LeftPanel = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            PanelHeader{ .title = "SHIP SYSTEMS", .icon = "◈" },
+            PanelHeader{ .title = "SHIP SYSTEMS", .icon = "x" },
             SystemGauge{ .label = "HULL", .value = cx.stateConst(AppState).hull_integrity, .color = Colors.cyan },
             SystemGauge{ .label = "SHIELDS", .value = cx.stateConst(AppState).shield_power, .color = Colors.magenta },
             SystemGauge{ .label = "FUEL", .value = cx.stateConst(AppState).fuel_level, .color = Colors.orange },
-            SystemGauge{ .label = "O₂", .value = cx.stateConst(AppState).oxygen_level, .color = Colors.green },
+            SystemGauge{ .label = "O2", .value = cx.stateConst(AppState).oxygen_level, .color = Colors.green },
             ReactorStatus{},
         });
     }
@@ -413,7 +455,7 @@ const JumpDrive = struct {
             .direction = .column,
             .alignment = .{ .cross = .center },
         }, .{
-            ui.text("◈ JUMP DRIVE ◈", .{ .size = 10, .color = Colors.magenta_dim }),
+            ui.text("JUMP DRIVE", .{ .size = 10, .color = Colors.magenta_dim }),
             JumpChargeRing{},
             ui.text(status_text, .{ .size = 11, .color = status_color }),
             JumpButtons{},
@@ -425,18 +467,46 @@ const JumpChargeRing = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        const ring_color = if (s.jump_ready) Colors.green else if (s.destination_locked) Colors.magenta else Colors.magenta_dim;
+        // Determine ring state and animation
+        const is_charging = s.destination_locked and !s.jump_ready;
+        const is_ready = s.jump_ready;
+
+        // Charging animation - faster rotation effect via opacity
+        const charge_pulse = cx.animateComptime("jump-charge-pulse", .{
+            .duration_ms = if (is_charging) 600 else 2000,
+            .easing = Easing.easeInOut,
+            .mode = .ping_pong,
+        });
+
+        // Ready glow - strong pulse when jump is ready
+        const ready_glow = cx.animateOnComptime("jump-ready-glow", is_ready, .{
+            .duration_ms = 400,
+            .easing = Easing.easeOutBack,
+        });
+
+        const base_color = if (is_ready) Colors.green else if (is_charging) Colors.magenta else Colors.magenta_dim;
+
+        // Intensity varies with state
+        const intensity: f32 = if (is_ready)
+            gooey.lerp(0.2, 0.4, ready_glow.progress)
+        else if (is_charging)
+            gooey.lerp(0.1, 0.25, charge_pulse.progress)
+        else
+            0.1;
+
+        // Scale pop when ready
+        const scale: f32 = if (is_ready) 1.0 + (1.0 - ready_glow.progress) * 0.1 else 1.0;
 
         cx.box(.{
-            .width = 80,
-            .height = 80,
-            .background = ring_color.withAlpha(0.1),
-            .corner_radius = 40,
+            .width = 80 * scale,
+            .height = 80 * scale,
+            .background = base_color.withAlpha(intensity),
+            .corner_radius = 40 * scale,
             .alignment = .{ .main = .center, .cross = .center },
             .direction = .column,
             .gap = 2,
         }, .{
-            ui.textFmt("{}%", .{s.jump_charge}, .{ .size = 22, .color = ring_color }),
+            ui.textFmt("{}%", .{s.jump_charge}, .{ .size = 22, .color = base_color }),
             JumpDestLabel{},
         });
     }
@@ -465,7 +535,7 @@ const JumpButtons = struct {
         if (s.jump_ready) {
             cx.box(.{ .fill_width = true }, .{
                 NeonButton{
-                    .label = "⚡ INITIATE JUMP",
+                    .label = "INITIATE JUMP",
                     .color = Colors.green,
                     .handler = cx.update(AppState, AppState.initiateJump),
                 },
@@ -473,7 +543,7 @@ const JumpButtons = struct {
         } else if (!s.destination_locked) {
             cx.box(.{ .fill_width = true }, .{
                 NeonButton{
-                    .label = "◎ LOCK DESTINATION",
+                    .label = "LOCK DESTINATION",
                     .color = Colors.magenta,
                     .handler = cx.update(AppState, AppState.lockDestination),
                 },
@@ -510,7 +580,7 @@ const SystemGauge = struct {
                     .color = if (self.value > 30) self.color else Colors.red,
                 }),
             }),
-            GaugeBar{ .value = self.value, .color = self.color },
+            GaugeBar{ .value = self.value, .color = self.color, .id = self.label },
         });
     }
 };
@@ -518,13 +588,24 @@ const SystemGauge = struct {
 const GaugeBar = struct {
     value: u8,
     color: ui.Color,
+    id: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const bar_width: f32 = 180;
-        const fill_width = bar_width * @as(f32, @floatFromInt(self.value)) / 100.0;
+        // Animate the gauge fill on value changes
+        const fill_anim = cx.animateOn(self.id, self.value, .{
+            .duration_ms = 300,
+            .easing = Easing.easeOutCubic,
+        });
+
+        // Smooth transition (though we'd need previous value for true lerp)
+        // For now, just add a nice settle effect
+        const fill_scale = 0.97 + fill_anim.progress * 0.03;
+
+        const bar_color = if (self.value > 30) self.color else Colors.red;
+        const fill_width = @as(f32, @floatFromInt(self.value)) / 100.0 * fill_scale;
 
         cx.box(.{
-            .width = bar_width,
+            .fill_width = true,
             .height = 6,
             .background = ui.Color.rgba(1, 1, 1, 0.1),
             .corner_radius = 3,
@@ -532,7 +613,7 @@ const GaugeBar = struct {
             cx.box(.{
                 .width = fill_width,
                 .height = 6,
-                .background = self.color,
+                .background = bar_color,
                 .corner_radius = 3,
             }, .{}),
         });
@@ -542,7 +623,17 @@ const GaugeBar = struct {
 const ReactorStatus = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
-        const temp_color = if (s.reactor_temp > 850) Colors.orange else Colors.green;
+
+        // Pulse intensity based on temperature
+        const is_hot = s.reactor_temp > 850;
+        const pulse = cx.animateComptime("reactor-pulse", .{
+            .duration_ms = if (is_hot) 1000 else 2500,
+            .easing = Easing.easeInOut,
+            .mode = .ping_pong,
+        });
+
+        const temp_color = if (is_hot) Colors.orange else Colors.green;
+        const glow_intensity: f32 = if (is_hot) gooey.lerp(0.8, 1.0, pulse.progress) else 1.0;
 
         cx.box(.{
             .fill_width = true,
@@ -554,8 +645,14 @@ const ReactorStatus = struct {
             .alignment = .{ .cross = .center },
         }, .{
             ui.text("REACTOR CORE", .{ .size = 10, .color = Colors.text_dim }),
-            ui.textFmt("{}°K", .{s.reactor_temp}, .{ .size = 28, .color = temp_color }),
-            ui.text("FUSION STABLE", .{ .size = 9, .color = Colors.green_dim }),
+            ui.textFmt("{}K", .{s.reactor_temp}, .{
+                .size = 28,
+                .color = temp_color.withAlpha(glow_intensity),
+            }),
+            ui.text(if (is_hot) "ELEVATED" else "FUSION STABLE", .{
+                .size = 9,
+                .color = if (is_hot) Colors.orange.withAlpha(glow_intensity) else Colors.green_dim,
+            }),
         });
     }
 };
@@ -585,7 +682,7 @@ const CircleRow = struct {
         const s = cx.stateConst(AppState);
 
         cx.box(.{ .direction = .row, .gap = 24, .alignment = .{ .cross = .center } }, .{
-            CircleGauge{ .label = "HDG", .value = s.heading, .color = Colors.cyan, .unit = "°" },
+            CircleGauge{ .label = "HDG", .value = s.heading, .color = Colors.cyan, .unit = "deg" },
             CircleGauge{ .label = "VEL", .value = @as(u16, @intCast(s.velocity / 100)), .color = Colors.magenta, .unit = "x100" },
             CircleGauge{ .label = "FUEL", .value = s.fuel_level, .color = Colors.orange, .unit = "%" },
         });
@@ -597,7 +694,7 @@ const AutopilotStatus = struct {
         const s = cx.stateConst(AppState);
 
         cx.hstack(.{ .gap = 8, .alignment = .center }, .{
-            ui.text("●", .{
+            ui.text("-", .{
                 .size = 12,
                 .color = if (s.autopilot_engaged) Colors.green else Colors.red,
             }),
@@ -616,10 +713,19 @@ const CircleGauge = struct {
     unit: ?[]const u8 = null,
 
     pub fn render(self: @This(), cx: *Cx) void {
+        // All gauges share the same breathing animation - that's fine!
+        const breathe = cx.animateComptime("gauge-breathe", .{
+            .duration_ms = 3000,
+            .easing = Easing.easeInOut,
+            .mode = .ping_pong,
+        });
+
+        const bg_alpha = gooey.lerp(0.06, 0.12, breathe.progress);
+
         cx.box(.{
             .width = 100,
             .height = 100,
-            .background = self.color.withAlpha(0.08),
+            .background = self.color.withAlpha(bg_alpha),
             .corner_radius = 50,
             .alignment = .{ .main = .center, .cross = .center },
             .direction = .column,
@@ -751,18 +857,26 @@ const AutopilotToggle = struct {
     active: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const status_color = if (self.active) Colors.green else Colors.red;
+        // Animate toggle state changes
+        const toggle_anim = cx.animateOnComptime("autopilot-toggle", self.active, .{
+            .duration_ms = 200,
+            .easing = Easing.easeOut,
+        });
+
+        const target_color = if (self.active) Colors.green else Colors.red;
+        // Blend from previous state
+        const current_alpha = gooey.lerp(0.1, 0.15, toggle_anim.progress);
 
         cx.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 16, .y = 10 } },
-            .background = status_color.withAlpha(0.15),
+            .background = target_color.withAlpha(current_alpha),
             .corner_radius = 4,
             .direction = .row,
             .alignment = .{ .cross = .center },
             .on_click_handler = cx.update(AppState, AppState.toggleAutopilot),
         }, .{
-            ui.text("AUTOPILOT", .{ .size = 11, .color = status_color }),
+            ui.text("AUTOPILOT", .{ .size = 11, .color = target_color }),
             ui.spacer(),
             ToggleStatus{ .active = self.active },
         });
@@ -773,18 +887,25 @@ const ShieldsToggle = struct {
     active: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const status_color = if (self.active) Colors.green else Colors.red;
+        // Animate toggle state changes
+        const toggle_anim = cx.animateOnComptime("shields-toggle", self.active, .{
+            .duration_ms = 200,
+            .easing = Easing.easeOut,
+        });
+
+        const target_color = if (self.active) Colors.green else Colors.red;
+        const current_alpha = gooey.lerp(0.1, 0.15, toggle_anim.progress);
 
         cx.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 16, .y = 10 } },
-            .background = status_color.withAlpha(0.15),
+            .background = target_color.withAlpha(current_alpha),
             .corner_radius = 4,
             .direction = .row,
             .alignment = .{ .cross = .center },
             .on_click_handler = cx.update(AppState, AppState.toggleShields),
         }, .{
-            ui.text("SHIELDS", .{ .size = 11, .color = status_color }),
+            ui.text("SHIELDS", .{ .size = 11, .color = target_color }),
             ui.spacer(),
             ToggleStatus{ .active = self.active },
         });
@@ -796,7 +917,7 @@ const ToggleStatus = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const status_color = if (self.active) Colors.green else Colors.red;
-        const status_text = if (self.active) "◉ ON" else "○ OFF";
+        const status_text = if (self.active) "ON" else "OFF";
 
         cx.box(.{}, .{
             ui.text(status_text, .{ .size = 11, .color = status_color }),
@@ -810,10 +931,19 @@ const NeonButton = struct {
     handler: ?gooey.core.handler.HandlerRef = null,
 
     pub fn render(self: @This(), cx: *Cx) void {
+        // Subtle idle pulse for interactive buttons
+        const pulse = cx.animateComptime("btn-pulse", .{
+            .duration_ms = 2000,
+            .easing = Easing.easeInOut,
+            .mode = .ping_pong,
+        });
+
+        const bg_alpha = gooey.lerp(0.12, 0.18, pulse.progress);
+
         cx.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 16, .y = 10 } },
-            .background = self.color.withAlpha(0.15),
+            .background = self.color.withAlpha(bg_alpha),
             .corner_radius = 4,
             .alignment = .{ .main = .center, .cross = .center },
             .on_click_handler = self.handler,
@@ -831,12 +961,12 @@ const QuickActions = struct {
             .direction = .row,
         }, .{
             NeonButton{
-                .label = "▲ BOOST SHIELDS",
+                .label = "BOOST SHIELDS",
                 .color = Colors.cyan,
                 .handler = cx.update(AppState, AppState.boostShields),
             },
             NeonButton{
-                .label = "◼ EMERGENCY STOP",
+                .label = "EMERGENCY STOP",
                 .color = Colors.red,
                 .handler = cx.update(AppState, AppState.emergencyStop),
             },

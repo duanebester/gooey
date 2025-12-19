@@ -208,13 +208,21 @@ const AppState = struct {
 
 var app_state = AppState{};
 
+const App = gooey.App(AppState, &app_state, render, .{
+    .title = "Gooey Showcase",
+    .width = 900,
+    .height = 650,
+    .on_event = onEvent,
+});
+
+comptime {
+    _ = App;
+}
+
+const platform = gooey.platform;
 pub fn main() !void {
-    try gooey.runCx(AppState, &app_state, render, .{
-        .title = "Gooey Showcase",
-        .width = 900,
-        .height = 650,
-        .on_event = onEvent,
-    });
+    if (platform.is_wasm) unreachable;
+    return App.main();
 }
 
 // =============================================================================

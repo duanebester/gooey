@@ -175,6 +175,16 @@ pub const isView = core.isView;
 // Handler system
 pub const HandlerRef = core.HandlerRef;
 
+// Animation system
+pub const Animation = core.Animation;
+pub const AnimationHandle = core.AnimationHandle;
+pub const Easing = core.Easing;
+pub const Duration = core.Duration;
+pub const animation = core.animation;
+pub const lerp = core.lerp;
+pub const lerpInt = core.lerpInt;
+pub const lerpColor = core.lerpColor;
+
 // Text system
 pub const TextSystem = text.TextSystem;
 pub const FontFace = text.FontFace;
