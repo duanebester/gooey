@@ -40,6 +40,7 @@ const engine_mod = @import("layout/engine.zig");
 const text_mod = @import("text/mod.zig");
 const input_mod = @import("core/input.zig");
 const geometry_mod = @import("core/geometry.zig");
+const shader_mod = @import("core/shader.zig");
 const ui_mod = @import("ui/ui.zig");
 const dispatch_mod = @import("core/dispatch.zig");
 const scroll_mod = @import("widgets/scroll_container.zig");
@@ -81,8 +82,8 @@ pub fn CxConfig(comptime State: type) type {
         /// Called for input events (optional). Return true if handled.
         on_event: ?*const fn (*Cx, input_mod.InputEvent) bool = null,
 
-        /// Custom shader sources (Shadertoy-compatible MSL)
-        custom_shaders: []const []const u8 = &.{},
+        /// Custom shader sources (cross-platform - MSL for macOS, WGSL for web)
+        custom_shaders: []const shader_mod.CustomShader = &.{},
 
         // === Glass/Transparency Options ===
 
@@ -1025,6 +1026,24 @@ fn isControlKey(key: input_mod.KeyCode, mods: input_mod.Modifiers) bool {
 ///     .height = 600,
 /// });
 /// ```
+fn coerceShaders(comptime shaders: anytype) []const shader_mod.CustomShader {
+    const len = shaders.len;
+    if (len == 0) return &.{};
+
+    const result = comptime blk: {
+        var r: [len]shader_mod.CustomShader = undefined;
+        for (0..len) |i| {
+            const s = shaders[i];
+            r[i] = .{
+                .msl = if (@hasField(@TypeOf(s), "msl")) s.msl else null,
+                .wgsl = if (@hasField(@TypeOf(s), "wgsl")) s.wgsl else null,
+            };
+        }
+        break :blk r;
+    };
+    return &result;
+}
+
 pub fn App(
     comptime State: type,
     state: *State,
@@ -1042,8 +1061,8 @@ pub fn App(
                     .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
                     .background_color = if (@hasField(@TypeOf(config), "background_color")) config.background_color else null,
                     .on_event = if (@hasField(@TypeOf(config), "on_event")) config.on_event else null,
-                    // Custom shaders (native only - Shadertoy-compatible MSL)
-                    .custom_shaders = if (@hasField(@TypeOf(config), "custom_shaders")) config.custom_shaders else &.{},
+                    // Custom shaders (cross-platform - MSL for macOS, WGSL for web)
+                    .custom_shaders = if (@hasField(@TypeOf(config), "custom_shaders")) coerceShaders(config.custom_shaders) else &.{},
                     // Glass/transparency options
                     .background_opacity = if (@hasField(@TypeOf(config), "background_opacity")) config.background_opacity else 1.0,
                     .glass_style = if (@hasField(@TypeOf(config), "glass_style")) config.glass_style else .none,
@@ -1165,7 +1184,23 @@ pub fn WebApp(
             handler_mod.setRootState(State, state);
 
             // Initialize GPU renderer
-            g_renderer = try WebRenderer.init();
+            g_renderer = try WebRenderer.init(allocator);
+
+            // Load custom shaders (WGSL for web)
+            const custom_shaders = if (@hasField(@TypeOf(config), "custom_shaders"))
+                coerceShaders(config.custom_shaders)
+            else
+                &[_]shader_mod.CustomShader{};
+
+            for (custom_shaders, 0..) |shader, i| {
+                if (shader.wgsl) |wgsl_source| {
+                    var name_buf: [32]u8 = undefined;
+                    const name = std.fmt.bufPrint(&name_buf, "custom_{d}", .{i}) catch "custom";
+                    g_renderer.?.addCustomShader(wgsl_source, name) catch |err| {
+                        web_imports.err("Failed to load custom shader {d}: {}", .{ i, err });
+                    };
+                }
+            }
 
             // Upload initial atlas
             g_renderer.?.uploadAtlas(g_gooey.?.text_system);

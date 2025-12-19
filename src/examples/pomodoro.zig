@@ -20,10 +20,8 @@ const Button = gooey.Button;
 const Checkbox = gooey.Checkbox;
 const TextInput = gooey.TextInput;
 
-const custom_shader = gooey.platform.mac.metal.custom_shader;
-
-/// Colorful flowing plasma effect
-pub const plasma_shader =
+/// Colorful flowing plasma effect (MSL - macOS)
+pub const plasma_shader_msl =
     \\void mainImage(thread float4& fragColor, float2 fragCoord,
     \\               constant ShaderUniforms& uniforms,
     \\               texture2d<float> iChannel0,
@@ -62,6 +60,51 @@ pub const plasma_shader =
     \\    float3 final = mix(scene.rgb, plasma, edge * 0.7 * (1.0 - sceneBrightness * 0.5));
     \\
     \\    fragColor = float4(final, 1.0);
+    \\}
+;
+
+/// Colorful flowing plasma effect (WGSL - Web)
+pub const plasma_shader_wgsl =
+    \\fn mainImage(
+    \\    fragCoord: vec2<f32>,
+    \\    u: ShaderUniforms,
+    \\    tex: texture_2d<f32>,
+    \\    samp: sampler
+    \\) -> vec4<f32> {
+    \\    let uv = fragCoord / u.iResolution.xy;
+    \\    let scene = textureSample(tex, samp, uv);
+    \\    let time = u.iTime * 0.5;
+    \\
+    \\    // Plasma calculation
+    \\    let p = uv * 4.0 - 2.0;
+    \\
+    \\    let v1 = sin(p.x + time);
+    \\    let v2 = sin(p.y + time);
+    \\    let v3 = sin(p.x + p.y + time);
+    \\    let v4 = sin(length(p) + time * 1.5);
+    \\
+    \\    var v = v1 + v2 + v3 + v4;
+    \\    v = v * 0.5 + 0.5;
+    \\
+    \\    // Color palette - cycle through vibrant colors
+    \\    var plasma: vec3<f32>;
+    \\    plasma.x = sin(v * 3.14159 + time) * 0.5 + 0.5;
+    \\    plasma.y = sin(v * 3.14159 + time + 2.094) * 0.5 + 0.5;
+    \\    plasma.z = sin(v * 3.14159 + time + 4.188) * 0.5 + 0.5;
+    \\
+    \\    // Make it more vibrant
+    \\    plasma = pow(plasma, vec3<f32>(0.8));
+    \\
+    \\    // Edge mask - stronger effect at edges
+    \\    let center = abs(uv - 0.5) * 2.0;
+    \\    var edge = max(center.x, center.y);
+    \\    edge = smoothstep(0.3, 1.0, edge);
+    \\
+    \\    // Blend: plasma at edges, scene in center
+    \\    let sceneBrightness = dot(scene.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    \\    let final_color = mix(scene.rgb, plasma, edge * 0.7 * (1.0 - sceneBrightness * 0.5));
+    \\
+    \\    return vec4<f32>(final_color, 1.0);
     \\}
 ;
 
@@ -456,7 +499,7 @@ const App = gooey.App(AppState, &app_state, render, .{
     .title = "Focus Timer",
     .width = 500,
     .height = 700,
-    .custom_shaders = &.{plasma_shader},
+    .custom_shaders = &.{.{ .msl = plasma_shader_msl, .wgsl = plasma_shader_wgsl }},
 });
 
 // Force type analysis - triggers @export on WASM

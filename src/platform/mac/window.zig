@@ -7,6 +7,7 @@ const std = @import("std");
 const objc = @import("objc");
 const geometry = @import("../../core/geometry.zig");
 const scene_mod = @import("../../core/scene.zig");
+const shader_mod = @import("../../core/shader.zig");
 const text_mod = @import("../../text/mod.zig");
 const Atlas = text_mod.Atlas;
 const platform = @import("platform.zig");
@@ -144,7 +145,7 @@ pub const Window = struct {
         height: f64 = 600,
         background_color: geometry.Color = geometry.Color.transparent,
         use_display_link: bool = true,
-        custom_shaders: []const []const u8 = &.{},
+        custom_shaders: []const shader_mod.CustomShader = &.{},
         /// Background opacity (0.0 = fully transparent, 1.0 = opaque)
         /// Values < 1.0 enable transparency effects
         background_opacity: f64 = 1.0,
@@ -252,10 +253,15 @@ pub const Window = struct {
 
         // Load custom shaders
         if (options.custom_shaders.len > 0) {
-            for (options.custom_shaders, 0..) |shader_source, i| {
+            for (options.custom_shaders, 0..) |shader, i| {
+                // Extract MSL source for macOS
+                const msl_source = shader.msl orelse {
+                    std.debug.print("Custom shader {d} has no MSL source, skipping\n", .{i});
+                    continue;
+                };
                 var name_buf: [32]u8 = undefined;
                 const name = std.fmt.bufPrint(&name_buf, "custom_{d}", .{i}) catch "custom";
-                self.renderer.addCustomShader(shader_source, name) catch |err| {
+                self.renderer.addCustomShader(msl_source, name) catch |err| {
                     std.debug.print("Failed to load custom shader {d}: {}\n", .{ i, err });
                 };
             }

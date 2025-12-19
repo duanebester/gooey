@@ -158,6 +158,9 @@ pub const App = app.App;
 /// Configuration for runCx
 pub const CxConfig = app.CxConfig;
 
+// Custom shaders
+pub const CustomShader = core.CustomShader;
+
 // Entity system
 pub const Entity = core.Entity;
 pub const EntityId = core.EntityId;

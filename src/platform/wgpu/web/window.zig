@@ -4,6 +4,7 @@ const std = @import("std");
 const imports = @import("imports.zig");
 const geometry = @import("../../../core/geometry.zig");
 const scene_mod = @import("../../../core/scene.zig");
+const shader_mod = @import("../../../core/shader.zig");
 const text_mod = @import("../../../text/mod.zig");
 
 pub const WebWindow = struct {
@@ -35,7 +36,7 @@ pub const WebWindow = struct {
         width: f64 = 800,
         height: f64 = 600,
         background_color: geometry.Color = geometry.Color.init(0.95, 0.95, 0.95, 1.0),
-        custom_shaders: []const []const u8 = &.{},
+        custom_shaders: []const shader_mod.CustomShader = &.{},
         background_opacity: f64 = 1.0,
         glass_style: GlassStyle = .none,
         glass_corner_radius: f64 = 16.0,

@@ -43,6 +43,37 @@ pub extern "env" fn getCurrentTextureView() u32;
 /// Release a texture view handle
 pub extern "env" fn releaseTextureView(handle: u32) void;
 
+// =============================================================================
+// WebGPU - Post-Processing Support
+// =============================================================================
+
+/// Create a render texture (can be rendered to and sampled from)
+pub extern "env" fn createRenderTexture(width: u32, height: u32) u32;
+
+/// Create a texture view from a texture handle
+pub extern "env" fn createTextureView(texture_handle: u32) u32;
+
+/// Create a post-process render pipeline (fullscreen shader)
+pub extern "env" fn createPostProcessPipeline(shader_handle: u32) u32;
+
+/// Create a bind group for post-process shader
+pub extern "env" fn createPostProcessBindGroup(
+    pipeline_handle: u32,
+    uniform_buffer: u32,
+    texture_handle: u32,
+    sampler_handle: u32,
+) u32;
+
+/// Begin a render pass to a texture (not the screen)
+pub extern "env" fn beginTextureRenderPass(texture_view: u32, r: f32, g: f32, b: f32, a: f32) void;
+
+/// Copy the current screen to a texture for post-processing
+pub extern "env" fn copyToTexture(src_view: u32, dst_texture: u32, width: u32, height: u32) void;
+
+// =============================================================================
+// WebGPU - Shader Creation
+// =============================================================================
+
 /// Create a shader module from WGSL source
 pub extern "env" fn createShaderModule(code_ptr: [*]const u8, code_len: u32) u32;
 

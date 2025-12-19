@@ -8,9 +8,11 @@ const imports = @import("imports.zig");
 const unified = @import("../unified.zig");
 const scene_mod = @import("../../../core/scene.zig");
 const text_mod = @import("../../../text/mod.zig");
+const custom_shader = @import("custom_shader.zig");
 
 const Scene = scene_mod.Scene;
 const TextSystem = text_mod.TextSystem;
+const PostProcessState = custom_shader.PostProcessState;
 
 // =============================================================================
 // Constants
@@ -73,6 +75,7 @@ pub const GpuGlyph = extern struct {
 // =============================================================================
 
 pub const WebRenderer = struct {
+    allocator: std.mem.Allocator,
     pipeline: u32 = 0,
     text_pipeline: u32 = 0,
     primitive_buffer: u32 = 0,
@@ -87,13 +90,18 @@ pub const WebRenderer = struct {
     gpu_glyphs: [MAX_GLYPHS]GpuGlyph = undefined,
     initialized: bool = false,
 
+    // Post-processing state for custom shaders
+    post_process_state: ?PostProcessState = null,
+
     const Self = @This();
 
     const unified_shader = @embedFile("unified_wgsl");
     const text_shader = @embedFile("text_wgsl");
 
-    pub fn init() !Self {
-        var self = Self{};
+    pub fn init(allocator: std.mem.Allocator) !Self {
+        var self = Self{
+            .allocator = allocator,
+        };
 
         const unified_module = imports.createShaderModule(unified_shader.ptr, unified_shader.len);
         const text_module = imports.createShaderModule(text_shader.ptr, text_shader.len);
@@ -114,6 +122,35 @@ pub const WebRenderer = struct {
 
         self.initialized = true;
         return self;
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.post_process_state) |*state| {
+            state.deinit();
+        }
+    }
+
+    /// Initialize post-processing state (lazy initialization)
+    fn initPostProcess(self: *Self) !void {
+        if (self.post_process_state != null) return;
+        self.post_process_state = PostProcessState.init(self.allocator);
+    }
+
+    /// Add a custom WGSL shader for post-processing
+    pub fn addCustomShader(self: *Self, shader_source: []const u8, name: []const u8) !void {
+        try self.initPostProcess();
+        if (self.post_process_state) |*state| {
+            try state.addShader(shader_source, name);
+            imports.log("Added shader, pipeline count: {}", .{state.pipelines.items.len});
+        }
+    }
+
+    /// Check if we have custom shaders enabled
+    pub fn hasCustomShaders(self: *const Self) bool {
+        if (self.post_process_state) |*state| {
+            return state.hasShaders();
+        }
+        return false;
     }
 
     pub fn uploadAtlas(self: *Self, text_system: *TextSystem) void {
@@ -191,6 +228,36 @@ pub const WebRenderer = struct {
             );
         }
 
+        // Check if we need post-processing
+        const has_post_process = if (self.post_process_state) |*state| state.hasShaders() else false;
+        if (has_post_process) {
+            // Render to offscreen texture first
+            self.renderWithPostProcess(
+                prim_count,
+                glyph_count,
+                viewport_width,
+                viewport_height,
+                clear_r,
+                clear_g,
+                clear_b,
+                clear_a,
+            );
+        } else {
+            // Render directly to screen
+            self.renderDirect(prim_count, glyph_count, clear_r, clear_g, clear_b, clear_a);
+        }
+    }
+
+    /// Render directly to the screen (no post-processing)
+    fn renderDirect(
+        self: *Self,
+        prim_count: u32,
+        glyph_count: u32,
+        clear_r: f32,
+        clear_g: f32,
+        clear_b: f32,
+        clear_a: f32,
+    ) void {
         const texture_view = imports.getCurrentTextureView();
         imports.beginRenderPass(texture_view, clear_r, clear_g, clear_b, clear_a);
 
@@ -208,5 +275,81 @@ pub const WebRenderer = struct {
 
         imports.endRenderPass();
         imports.releaseTextureView(texture_view);
+    }
+
+    /// Render with post-processing shaders
+    fn renderWithPostProcess(
+        self: *Self,
+        prim_count: u32,
+        glyph_count: u32,
+        viewport_width: f32,
+        viewport_height: f32,
+        clear_r: f32,
+        clear_g: f32,
+        clear_b: f32,
+        clear_a: f32,
+    ) void {
+        const state: *PostProcessState = blk: {
+            if (self.post_process_state) |*s| break :blk s;
+            return; // shouldn't happen if hasCustomShaders was true
+        };
+
+        // Ensure textures are the right size
+        state.ensureSize(@intFromFloat(viewport_width), @intFromFloat(viewport_height)) catch return;
+
+        // Update timing uniforms
+        state.updateTiming();
+        state.uploadUniforms();
+
+        // Step 1: Render scene to front texture
+        const front_view = state.getFrontTextureView();
+        imports.beginTextureRenderPass(front_view, clear_r, clear_g, clear_b, clear_a);
+
+        if (prim_count > 0) {
+            imports.setPipeline(self.pipeline);
+            imports.setBindGroup(0, self.bind_group);
+            imports.drawInstanced(6, prim_count);
+        }
+
+        if (glyph_count > 0 and self.text_bind_group != 0) {
+            imports.setPipeline(self.text_pipeline);
+            imports.setBindGroup(0, self.text_bind_group);
+            imports.drawInstanced(6, glyph_count);
+        }
+
+        imports.endRenderPass();
+
+        // Step 2: Apply each post-process shader in sequence
+        const num_shaders = state.pipelines.items.len;
+        for (0..num_shaders) |i| {
+            const is_last = (i == num_shaders - 1);
+            const pipeline = state.pipelines.items[i];
+
+            // Update bind group to use current front texture
+            state.updateBindGroup(i);
+            const bind_group = state.bind_groups.items[i];
+
+            if (is_last) {
+                // Final pass: render to screen
+                const screen_view = imports.getCurrentTextureView();
+                imports.beginRenderPass(screen_view, 0, 0, 0, 1);
+                imports.setPipeline(pipeline.pipeline);
+                imports.setBindGroup(0, bind_group);
+                imports.drawInstanced(3, 1); // Fullscreen triangle
+                imports.endRenderPass();
+                imports.releaseTextureView(screen_view);
+            } else {
+                // Intermediate pass: render to back texture
+                const back_view = state.getBackTextureView();
+                imports.beginTextureRenderPass(back_view, 0, 0, 0, 1);
+                imports.setPipeline(pipeline.pipeline);
+                imports.setBindGroup(0, bind_group);
+                imports.drawInstanced(3, 1); // Fullscreen triangle
+                imports.endRenderPass();
+
+                // Swap textures for next pass
+                state.swapTextures();
+            }
+        }
     }
 };

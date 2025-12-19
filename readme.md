@@ -245,10 +245,11 @@ ui.text("Long text...", .{ .wrap = .words });  // .none, .words, .newlines
 
 ## Custom Shaders
 
-Add custom Metal shaders for visual effects:
+Add custom post-processing shaders for visual effects. Shaders are cross-platform with MSL for macOS and WGSL for web:
 
 ```zig
-pub const plasma_shader =
+// MSL shader (macOS)
+pub const plasma_msl =
     \\void mainImage(thread float4& fragColor, float2 fragCoord,
     \\               constant ShaderUniforms& uniforms,
     \\               texture2d<float> iChannel0,
@@ -260,9 +261,34 @@ pub const plasma_shader =
     \\}
 ;
 
+// WGSL shader (Web)
+pub const plasma_wgsl =
+    \\fn mainImage(
+    \\    fragCoord: vec2<f32>,
+    \\    u: ShaderUniforms,
+    \\    tex: texture_2d<f32>,
+    \\    samp: sampler
+    \\) -> vec4<f32> {
+    \\    let uv = fragCoord / u.iResolution.xy;
+    \\    let time = u.iTime;
+    \\    // ... shader code
+    \\    return vec4<f32>(color, 1.0);
+    \\}
+;
+
 try gooey.runCx(AppState, &state, render, .{
-    .custom_shaders = &.{plasma_shader},
+    .custom_shaders = &.{.{ .msl = plasma_msl, .wgsl = plasma_wgsl }},
 });
+```
+
+You can also provide only one platform's shader:
+
+```zig
+// macOS only
+.custom_shaders = &.{.{ .msl = plasma_msl }},
+
+// Web only
+.custom_shaders = &.{.{ .wgsl = plasma_wgsl }},
 ```
 
 ## Glass Effect (macOS 26.0+)

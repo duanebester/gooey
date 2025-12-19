@@ -1053,6 +1053,158 @@
           });
           return allocHandle(handles.bindGroups, bindGroup);
         },
+
+        // =====================================================================
+        // Post-Processing Support
+        // =====================================================================
+
+        // Create a render texture (can be rendered to and sampled from)
+        createRenderTexture: (width, height) => {
+          const texture = device.createTexture({
+            size: { width, height },
+            format: format, // Use the same format as the canvas
+            usage:
+              GPUTextureUsage.TEXTURE_BINDING |
+              GPUTextureUsage.RENDER_ATTACHMENT |
+              GPUTextureUsage.COPY_SRC |
+              GPUTextureUsage.COPY_DST,
+          });
+          return allocHandle(handles.textures, texture);
+        },
+
+        // Create a texture view from a texture handle
+        createTextureView: (textureHandle) => {
+          const texture = handles.textures.get(textureHandle);
+          if (!texture) {
+            console.error(
+              "createTextureView: invalid texture handle",
+              textureHandle,
+            );
+            return 0;
+          }
+          const view = texture.createView();
+          return allocHandle(handles.textureViews, view);
+        },
+
+        // Create a post-process render pipeline (fullscreen shader)
+        createPostProcessPipeline: (shaderHandle) => {
+          const module = handles.shaderModules.get(shaderHandle);
+          if (!module) {
+            console.error(
+              "createPostProcessPipeline: invalid shader handle",
+              shaderHandle,
+            );
+            return 0;
+          }
+
+          const pipeline = device.createRenderPipeline({
+            layout: "auto",
+            vertex: {
+              module,
+              entryPoint: "vs_main",
+            },
+            fragment: {
+              module,
+              entryPoint: "fs_main",
+              targets: [
+                {
+                  format: format,
+                  blend: {
+                    color: {
+                      srcFactor: "src-alpha",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                  },
+                },
+              ],
+            },
+            primitive: {
+              topology: "triangle-list",
+            },
+          });
+          return allocHandle(handles.pipelines, pipeline);
+        },
+
+        // Create a bind group for post-process shader
+        createPostProcessBindGroup: (
+          pipelineHandle,
+          uniformBuffer,
+          textureHandle,
+          samplerHandle,
+        ) => {
+          const pipeline = handles.pipelines.get(pipelineHandle);
+          const texture = handles.textures.get(textureHandle);
+          const sampler = handles.samplers.get(samplerHandle);
+
+          if (!pipeline || !texture || !sampler) {
+            console.error("createPostProcessBindGroup: invalid handles", {
+              pipeline: !!pipeline,
+              texture: !!texture,
+              sampler: !!sampler,
+            });
+            return 0;
+          }
+
+          const bindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+              {
+                binding: 0,
+                resource: { buffer: handles.buffers.get(uniformBuffer) },
+              },
+              {
+                binding: 1,
+                resource: texture.createView(),
+              },
+              {
+                binding: 2,
+                resource: sampler,
+              },
+            ],
+          });
+          return allocHandle(handles.bindGroups, bindGroup);
+        },
+
+        // Begin a render pass to a texture (not the screen)
+        beginTextureRenderPass: (textureViewHandle, r, g, b, a) => {
+          const view = handles.textureViews.get(textureViewHandle);
+          if (!view) {
+            console.error(
+              "beginTextureRenderPass: invalid texture view handle",
+              textureViewHandle,
+            );
+            return;
+          }
+          env.currentEncoder = device.createCommandEncoder();
+          env.currentPass = env.currentEncoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view,
+                clearValue: { r, g, b, a },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+          });
+        },
+
+        // Copy the current screen to a texture for post-processing
+        copyToTexture: (srcViewHandle, dstTextureHandle, width, height) => {
+          const srcView = handles.textureViews.get(srcViewHandle);
+          const dstTexture = handles.textures.get(dstTextureHandle);
+          if (!srcView || !dstTexture) {
+            console.error("copyToTexture: invalid handles");
+            return;
+          }
+          // Note: This would need a blit operation or render pass
+          // For now, we use render-to-texture approach instead
+        },
       };
 
       async function init() {

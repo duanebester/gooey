@@ -28,8 +28,8 @@ const Button = gooey.Button;
 const TextInput = gooey.TextInput;
 const Easing = gooey.Easing;
 
-/// Holographic scanline + chromatic aberration shader
-pub const hologram_shader =
+/// Holographic scanline + chromatic aberration shader (MSL - macOS)
+pub const hologram_shader_msl =
     \\void mainImage(thread float4& fragColor, float2 fragCoord,
     \\               constant ShaderUniforms& uniforms,
     \\               texture2d<float> iChannel0,
@@ -69,8 +69,8 @@ pub const hologram_shader =
     \\}
 ;
 
-/// Subtle warp speed distortion at edges
-pub const warp_shader =
+/// Subtle warp speed distortion at edges (MSL - macOS)
+pub const warp_shader_msl =
     \\void mainImage(thread float4& fragColor, float2 fragCoord,
     \\               constant ShaderUniforms& uniforms,
     \\               texture2d<float> iChannel0,
@@ -107,6 +107,92 @@ pub const warp_shader =
     \\    scene += float3(0.0, 0.5, 1.0) * edgeGlow * (sin(time * 2.0) * 0.3 + 0.7);
     \\
     \\    fragColor = float4(scene, 1.0);
+    \\}
+;
+
+/// Holographic scanline + chromatic aberration shader (WGSL - Web)
+pub const hologram_shader_wgsl =
+    \\fn mainImage(
+    \\    fragCoord: vec2<f32>,
+    \\    u: ShaderUniforms,
+    \\    tex: texture_2d<f32>,
+    \\    samp: sampler
+    \\) -> vec4<f32> {
+    \\    let uv = fragCoord / u.iResolution.xy;
+    \\    let time = u.iTime;
+    \\
+    \\    // Subtle chromatic aberration
+    \\    let aberration = 0.002 * sin(time * 2.0);
+    \\    let r = textureSample(tex, samp, uv + vec2<f32>(aberration, 0.0)).r;
+    \\    let g = textureSample(tex, samp, uv).g;
+    \\    let b = textureSample(tex, samp, uv - vec2<f32>(aberration, 0.0)).b;
+    \\    var scene = vec3<f32>(r, g, b);
+    \\
+    \\    // Scanlines
+    \\    let scanline = sin(fragCoord.y * 1.5 + time * 3.0) * 0.03 + 0.97;
+    \\    scene = scene * scanline;
+    \\
+    \\    // Subtle vignette
+    \\    let center = uv - 0.5;
+    \\    let vignette = 1.0 - dot(center, center) * 0.5;
+    \\    scene = scene * vignette;
+    \\
+    \\    // Occasional glitch line
+    \\    let glitch = step(0.998, fract(sin(floor(time * 10.0) * 12.9898) * 43758.5453));
+    \\    let glitchY = fract(sin(floor(time * 10.0) * 78.233) * 43758.5453);
+    \\    if (glitch > 0.5 && abs(uv.y - glitchY) < 0.01) {
+    \\        scene = scene.bgr * 1.5;
+    \\    }
+    \\
+    \\    // Cyan/magenta tint at edges
+    \\    let edgeDist = max(abs(center.x), abs(center.y)) * 2.0;
+    \\    let edgeTint = mix(vec3<f32>(0.0, 1.0, 1.0), vec3<f32>(1.0, 0.0, 1.0), uv.x);
+    \\    scene = mix(scene, scene + edgeTint * 0.1, smoothstep(0.7, 1.0, edgeDist));
+    \\
+    \\    return vec4<f32>(scene, 1.0);
+    \\}
+;
+
+/// Subtle warp speed distortion at edges (WGSL - Web)
+pub const warp_shader_wgsl =
+    \\fn mainImage(
+    \\    fragCoord: vec2<f32>,
+    \\    u: ShaderUniforms,
+    \\    tex: texture_2d<f32>,
+    \\    samp: sampler
+    \\) -> vec4<f32> {
+    \\    let uv = fragCoord / u.iResolution.xy;
+    \\    let time = u.iTime * 0.3;
+    \\
+    \\    // Distance from center
+    \\    let center = uv - 0.5;
+    \\    let dist = length(center);
+    \\    let angle = atan2(center.y, center.x);
+    \\
+    \\    // Warp intensity increases toward edges
+    \\    let warpStrength = smoothstep(0.3, 0.8, dist) * 0.02;
+    \\
+    \\    // Spiral warp motion
+    \\    let spiral = sin(angle * 3.0 + time * 2.0 + dist * 10.0);
+    \\    let radialPulse = sin(dist * 20.0 - time * 4.0) * 0.5 + 0.5;
+    \\
+    \\    // Apply distortion
+    \\    let warpOffset = center * warpStrength * spiral * radialPulse;
+    \\    let distortedUV = uv + warpOffset;
+    \\
+    \\    // Sample with distortion
+    \\    var scene = textureSample(tex, samp, distortedUV).rgb;
+    \\
+    \\    // Add streaking light at edges (warp stars effect)
+    \\    let streak = pow(radialPulse, 3.0) * smoothstep(0.5, 0.9, dist);
+    \\    let streakColor = mix(vec3<f32>(0.0, 0.8, 1.0), vec3<f32>(1.0, 0.0, 0.8), angle * 0.3 + 0.5);
+    \\    scene = scene + streakColor * streak * 0.15;
+    \\
+    \\    // Subtle edge glow
+    \\    let edgeGlow = smoothstep(0.6, 1.0, dist) * 0.3;
+    \\    scene = scene + vec3<f32>(0.0, 0.5, 1.0) * edgeGlow * (sin(time * 2.0) * 0.3 + 0.7);
+    \\
+    \\    return vec4<f32>(scene, 1.0);
     \\}
 ;
 
@@ -1028,7 +1114,10 @@ const App = gooey.App(AppState, &app_state, render, .{
     .title = "Spaceship Dashboard",
     .width = 900,
     .height = 650,
-    .custom_shaders = &.{ hologram_shader, warp_shader },
+    .custom_shaders = &.{
+        .{ .msl = hologram_shader_msl, .wgsl = hologram_shader_wgsl },
+        .{ .msl = warp_shader_msl, .wgsl = warp_shader_wgsl },
+    },
 });
 
 comptime {
