@@ -23,6 +23,8 @@
 
 const std = @import("std");
 const geometry = @import("geometry.zig");
+const svg_mesh = @import("svg_mesh.zig");
+pub const SvgInstance = svg_mesh.SvgInstance;
 
 pub const DrawOrder = u32;
 
@@ -350,6 +352,7 @@ pub const Scene = struct {
     shadows: std.ArrayList(Shadow),
     quads: std.ArrayList(Quad),
     glyphs: std.ArrayList(GlyphInstance),
+    svg_instances: std.ArrayList(SvgInstance),
     next_order: DrawOrder,
     // Clip mask stack for nested clipping regions
     clip_stack: std.ArrayList(ContentMask.ClipBounds),
@@ -372,6 +375,7 @@ pub const Scene = struct {
             .shadows = .{},
             .quads = .{},
             .glyphs = .{},
+            .svg_instances = .{},
             .next_order = 0,
             .clip_stack = .{},
             .needs_sort = false,
@@ -387,6 +391,7 @@ pub const Scene = struct {
         self.shadows.deinit(self.allocator);
         self.quads.deinit(self.allocator);
         self.glyphs.deinit(self.allocator);
+        self.svg_instances.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
     }
 
@@ -394,6 +399,7 @@ pub const Scene = struct {
         self.shadows.clearRetainingCapacity();
         self.quads.clearRetainingCapacity();
         self.glyphs.clearRetainingCapacity();
+        self.svg_instances.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
         self.next_order = 0;
         self.needs_sort = false;
@@ -423,6 +429,35 @@ pub const Scene = struct {
             return self.clip_stack.items[self.clip_stack.items.len - 1];
         }
         return ContentMask.none.bounds;
+    }
+
+    // ========================================================================
+    // SVG Insertion
+    // ========================================================================
+
+    /// Insert an SVG instance without clipping
+    pub fn insertSvg(self: *Self, instance: SvgInstance) !void {
+        var inst = instance;
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.svg_instances.append(self.allocator, inst);
+    }
+
+    /// Insert an SVG instance with the current clip mask applied
+    pub fn insertSvgClipped(self: *Self, instance: SvgInstance) !void {
+        const clip = self.currentClip();
+        var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.svg_instances.append(self.allocator, inst);
+    }
+
+    pub fn svgCount(self: *const Self) usize {
+        return self.svg_instances.items.len;
+    }
+
+    pub fn getSvgInstances(self: *const Self) []const SvgInstance {
+        return self.svg_instances.items;
     }
 
     // ========================================================================

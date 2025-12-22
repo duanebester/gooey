@@ -253,6 +253,7 @@ pub const PrimitiveType = enum {
     key_context,
     action_handler,
     action_handler_ref,
+    svg,
 };
 
 pub const CheckboxStyle = struct {
@@ -363,6 +364,18 @@ pub const Empty = struct {
     pub const primitive_type: PrimitiveType = .empty;
 };
 
+/// SVG element descriptor - renders a pre-loaded SVG mesh
+pub const SvgPrimitive = struct {
+    /// Width of the SVG element (determines layout size)
+    width: f32 = 24,
+    /// Height of the SVG element (determines layout size)
+    height: f32 = 24,
+    /// Fill color for the SVG
+    color: Color = Color.black,
+
+    pub const primitive_type: PrimitiveType = .svg;
+};
+
 // =============================================================================
 // Free Functions (return descriptors)
 // =============================================================================
@@ -397,6 +410,11 @@ pub fn spacer() Spacer {
 /// Create a spacer with minimum size
 pub fn spacerMin(min_size: f32) Spacer {
     return .{ .min_size = min_size };
+}
+
+/// Create an SVG element with the given size and color
+pub fn svg(width: f32, height: f32, color: Color) SvgPrimitive {
+    return .{ .width = width, .height = height, .color = color };
 }
 
 /// Set key context for dispatch (use inside box children)
@@ -479,6 +497,7 @@ pub const Builder = struct {
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
+    pending_svgs: std.ArrayListUnmanaged(PendingSvg),
 
     const PendingInput = struct {
         id: []const u8,
@@ -503,6 +522,11 @@ pub const Builder = struct {
         content_layout_id: LayoutId,
     };
 
+    const PendingSvg = struct {
+        layout_id: LayoutId,
+        color: Hsla,
+    };
+
     const Self = @This();
 
     pub fn init(
@@ -519,6 +543,7 @@ pub const Builder = struct {
             .pending_inputs = .{},
             .pending_scrolls = .{},
             .pending_text_areas = .{},
+            .pending_svgs = .{},
         };
     }
 
@@ -526,6 +551,7 @@ pub const Builder = struct {
         self.pending_inputs.deinit(self.allocator);
         self.pending_text_areas.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
+        self.pending_svgs.deinit(self.allocator);
     }
 
     // =========================================================================
@@ -969,6 +995,10 @@ pub const Builder = struct {
         }
     }
 
+    pub fn getPendingSvgs(self: *const Self) []const PendingSvg {
+        return self.pending_svgs.items;
+    }
+
     // =========================================================================
     // Internal: Child Processing
     // =========================================================================
@@ -1020,6 +1050,7 @@ pub const Builder = struct {
                 .action_handler => self.renderActionHandler(child),
                 .button_handler => self.renderButtonHandler(child),
                 .action_handler_ref => self.renderActionHandlerRef(child),
+                .svg => self.renderSvg(child),
                 .empty => {}, // Do nothing
 
             }
@@ -1367,6 +1398,32 @@ pub const Builder = struct {
         }
 
         self.dispatch.popNode();
+    }
+
+    fn renderSvg(self: *Self, prim: SvgPrimitive) void {
+        // Generate a unique layout ID for this SVG instance
+        const layout_id = self.generateId();
+
+        // Create a fixed-size element for layout
+        self.layout.openElement(.{
+            .id = layout_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(prim.width),
+                    .height = SizingAxis.fixed(prim.height),
+                },
+            },
+        }) catch return;
+        self.layout.closeElement();
+
+        // Convert Color to Hsla
+        const hsla = Hsla.fromRgba(prim.color.r, prim.color.g, prim.color.b, prim.color.a);
+
+        // Store for later rendering (after layout is computed)
+        self.pending_svgs.append(self.allocator, .{
+            .layout_id = layout_id,
+            .color = hsla,
+        }) catch {};
     }
 
     fn renderActionHandlerRef(self: *Self, ah: ActionHandlerRefPrimitive) void {

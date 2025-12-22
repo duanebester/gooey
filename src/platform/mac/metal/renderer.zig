@@ -5,6 +5,7 @@ const objc = @import("objc");
 
 const geometry = @import("../../../core/geometry.zig");
 const scene_mod = @import("../../../core/scene.zig");
+const svg_mesh = @import("../../../core/svg_mesh.zig");
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
 const render_pass = @import("render_pass.zig");
@@ -13,6 +14,7 @@ const post_process = @import("post_process.zig");
 const scissor = @import("scissor.zig");
 const text_pipeline = @import("text.zig");
 const custom_shader = @import("custom_shader.zig");
+const svg_pipeline = @import("svg_pipeline.zig");
 const Atlas = @import("../../../text/mod.zig").Atlas;
 
 pub const Vertex = extern struct {
@@ -31,6 +33,7 @@ pub const Renderer = struct {
     // Single unified pipeline for quads + shadows
     unified_pipeline_state: ?objc.Object,
     text_pipeline_state: ?text_pipeline.TextPipeline,
+    svg_pipeline_state: ?svg_pipeline.SvgPipeline,
 
     quad_unit_vertex_buffer: ?objc.Object,
     msaa_texture: ?objc.Object,
@@ -67,6 +70,7 @@ pub const Renderer = struct {
             .unified_memory = unified_memory,
             .unified_pipeline_state = null,
             .text_pipeline_state = null,
+            .svg_pipeline_state = null,
             .quad_unit_vertex_buffer = null,
             .msaa_texture = null,
             .sample_count = sample_count,
@@ -94,6 +98,9 @@ pub const Renderer = struct {
             sample_count,
         ) catch null;
 
+        // Initialize SVG pipeline
+        self.svg_pipeline_state = svg_pipeline.SvgPipeline.init(device, sample_count) catch null;
+
         return self;
     }
 
@@ -102,6 +109,7 @@ pub const Renderer = struct {
         if (self.unified_pipeline_state) |ps| ps.msgSend(void, "release", .{});
         if (self.quad_unit_vertex_buffer) |vb| vb.msgSend(void, "release", .{});
         if (self.text_pipeline_state) |*tp| tp.deinit();
+        if (self.svg_pipeline_state) |*sp| sp.deinit();
         if (self.post_process_state) |*pp| pp.deinit();
         self.command_queue.msgSend(void, "release", .{});
         self.device.msgSend(void, "release", .{});
@@ -161,6 +169,7 @@ pub const Renderer = struct {
             self.quad_unit_vertex_buffer.?,
             self.unified_pipeline_state,
             if (self.text_pipeline_state) |*tp| tp else null,
+            if (self.svg_pipeline_state) |*sp| sp else null,
             pp,
             self.size,
             self.scale_factor,
@@ -170,6 +179,13 @@ pub const Renderer = struct {
     pub fn initPostProcess(self: *Self) !void {
         if (self.post_process_state != null) return;
         self.post_process_state = custom_shader.PostProcessState.init(self.allocator, self.device);
+    }
+
+    /// Upload an SVG mesh to GPU for rendering
+    pub fn uploadSvgMesh(self: *Self, mesh: *const svg_mesh.SvgMesh) !void {
+        if (self.svg_pipeline_state) |*sp| {
+            try sp.uploadMesh(mesh);
+        }
     }
 
     pub fn addCustomShader(self: *Self, shader_source: []const u8, name: []const u8) !void {
@@ -253,8 +269,9 @@ pub const Renderer = struct {
 
         const shadows = scene.getShadows();
         const quads = scene.getQuads();
+        const svg_instances = scene.getSvgInstances();
 
-        if (shadows.len == 0 and quads.len == 0) {
+        if (shadows.len == 0 and quads.len == 0 and svg_instances.len == 0) {
             self.renderInternal(clear_color, synchronous);
             return;
         }
@@ -283,6 +300,12 @@ pub const Renderer = struct {
         };
 
         scene_renderer.drawScenePrimitives(encoder, scene, unit_verts, viewport_size, self.unified_pipeline_state);
+
+        if (self.svg_pipeline_state) |*sp| {
+            if (svg_instances.len > 0) {
+                sp.render(encoder, svg_instances, viewport_size);
+            }
+        }
 
         if (self.text_pipeline_state) |*tp| {
             scene_renderer.drawText(tp, encoder, scene, viewport_size);

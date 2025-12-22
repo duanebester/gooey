@@ -116,6 +116,13 @@ pub const Shadow = core.Shadow;
 pub const Hsla = core.Hsla;
 pub const GlyphInstance = core.GlyphInstance;
 
+// SVG support
+pub const svg = core.svg;
+pub const tessellator = core.tessellator;
+pub const svg_mesh = core.svg_mesh;
+pub const SvgMesh = core.SvgMesh;
+pub const SvgInstance = core.SvgInstance;
+
 // Render bridge
 pub const render_bridge = core.render_bridge;
 

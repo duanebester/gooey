@@ -569,6 +569,15 @@ pub const Window = struct {
         self.renderer.clear(self.getClearColor());
     }
 
+    /// Upload an SVG mesh to GPU for rendering
+    pub fn uploadSvgMesh(self: *Self, mesh: *const @import("../../core/svg_mesh.zig").SvgMesh) !void {
+        if (self.renderer.svg_pipeline_state) |*sp| {
+            try sp.uploadMesh(mesh);
+        } else {
+            return error.SvgPipelineNotInitialized;
+        }
+    }
+
     pub fn setTitle(self: *Self, new_title: []const u8) void {
         self.title = new_title;
 

@@ -299,6 +299,11 @@ pub const Gooey = struct {
         return self.widgets.hasActiveAnimations();
     }
 
+    /// Upload an SVG mesh to the GPU for rendering
+    pub fn uploadSvgMesh(self: *Self, mesh: *const @import("svg_mesh.zig").SvgMesh) !void {
+        try self.getWindow().uploadSvgMesh(mesh);
+    }
+
     // =========================================================================
     // Hover State
     // =========================================================================

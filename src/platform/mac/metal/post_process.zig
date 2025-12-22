@@ -13,6 +13,7 @@ const scene_mod = @import("../../../core/scene.zig");
 const geometry = @import("../../../core/geometry.zig");
 const custom_shader = @import("custom_shader.zig");
 const text_pipeline = @import("text.zig");
+const svg_pipeline = @import("svg_pipeline.zig");
 
 /// Render the complete post-process pipeline in a single command buffer.
 /// This is the main entry point - replaces the old multi-buffer approach.
@@ -25,6 +26,7 @@ pub fn renderFullPipeline(
     unit_vertex_buffer: objc.Object,
     unified_pipeline: ?objc.Object,
     tp: ?*text_pipeline.TextPipeline,
+    sp: ?*svg_pipeline.SvgPipeline,
     pp: *custom_shader.PostProcessState,
     size: geometry.Size(f64),
     scale_factor: f64,
@@ -58,6 +60,13 @@ pub fn renderFullPipeline(
             viewport_size,
             unified_pipeline,
         );
+
+        if (sp) |svg_pipe| {
+            const svg_instances = scene.getSvgInstances();
+            if (svg_instances.len > 0) {
+                svg_pipe.render(encoder, svg_instances, viewport_size);
+            }
+        }
 
         if (tp) |text_pipe| {
             scene_renderer.drawText(text_pipe, encoder, scene, viewport_size);

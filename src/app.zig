@@ -245,6 +245,7 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     cx.builder().pending_inputs.clearRetainingCapacity();
     cx.builder().pending_text_areas.clearRetainingCapacity();
     cx.builder().pending_scrolls.clearRetainingCapacity();
+    cx.builder().pending_svgs.clearRetainingCapacity();
 
     // Call user's render function with Cx
     render_fn(cx);
@@ -268,6 +269,22 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     // Render all commands
     for (commands) |cmd| {
         try renderCommand(cx.gooey(), cmd);
+    }
+
+    // Render pending SVGs (after scene is built)
+    const pending_svgs = cx.builder().getPendingSvgs();
+    for (pending_svgs) |pending| {
+        const bounds = cx.gooey().layout.getBoundingBox(pending.layout_id.id);
+        if (bounds) |b| {
+            const svg_mesh_mod = @import("core/svg_mesh.zig");
+            try cx.gooey().scene.insertSvgClipped(svg_mesh_mod.SvgInstance{
+                .offset_x = b.x,
+                .offset_y = b.y,
+                .scale_x = b.width / 24.0, // Assuming 24x24 viewbox - TODO: get from mesh
+                .scale_y = b.height / 24.0,
+                .color = pending.color,
+            });
+        }
     }
 
     // Render text inputs
@@ -572,6 +589,7 @@ fn renderFrameWithContext(
     ctx.builder.pending_inputs.clearRetainingCapacity();
     ctx.builder.pending_text_areas.clearRetainingCapacity();
     ctx.builder.pending_scrolls.clearRetainingCapacity();
+    ctx.builder.pending_svgs.clearRetainingCapacity();
 
     // Call user's render function with typed context
     render_fn(ctx);
