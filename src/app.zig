@@ -1261,8 +1261,9 @@ pub fn WebApp(
                 }
             }
 
-            // Upload initial atlas
+            // Upload initial atlases
             g_renderer.?.uploadAtlas(g_gooey.?.text_system);
+            g_renderer.?.uploadSvgAtlas(&g_gooey.?.svg_atlas);
 
             g_initialized = true;
             web_imports.log("Gooey app ready!", .{});
@@ -1336,8 +1337,9 @@ pub fn WebApp(
             const vw: f32 = @floatCast(w.size.width);
             const vh: f32 = @floatCast(w.size.height);
 
-            // Sync atlas texture if glyphs were added
+            // Sync atlas textures if glyphs/icons were added
             g_renderer.?.syncAtlas(g_gooey.?.text_system);
+            g_renderer.?.syncSvgAtlas(&g_gooey.?.svg_atlas);
 
             // Render to GPU
             const bg = w.background_color;

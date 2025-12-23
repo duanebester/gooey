@@ -151,6 +151,9 @@ pub fn build(b: *std.Build) void {
     gooey_wasm_module.addAnonymousImport("text_wgsl", .{
         .root_source_file = b.path("src/platform/wgpu/shaders/text.wgsl"),
     });
+    gooey_wasm_module.addAnonymousImport("svg_wgsl", .{
+        .root_source_file = b.path("src/platform/wgpu/shaders/svg.wgsl"),
+    });
 
     // -------------------------------------------------------------------------
     // WASM Examples

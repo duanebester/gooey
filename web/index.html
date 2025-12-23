@@ -703,6 +703,88 @@
       const textCanvas = new OffscreenCanvas(256, 256);
       const textCtx = textCanvas.getContext("2d", { willReadFrequently: true });
 
+      // SVG rasterization helper
+      const svgCanvas = new OffscreenCanvas(256, 256);
+      const svgCtx = svgCanvas.getContext("2d", { willReadFrequently: true });
+
+      /**
+       * Rasterize an SVG path to an RGBA buffer with two-channel encoding:
+       * R = fill alpha, G = stroke alpha
+       */
+      function rasterizeSvgPathJS(
+        pathData,
+        deviceSize,
+        viewbox,
+        hasFill,
+        strokeWidth,
+      ) {
+        // Calculate scale from viewbox to device pixels
+        const scale = deviceSize / viewbox;
+
+        // Add padding for stroke
+        const padding = Math.ceil(strokeWidth / 2) + 1;
+        const canvasSize = deviceSize + padding * 2;
+
+        // Resize canvas if needed
+        if (svgCanvas.width < canvasSize || svgCanvas.height < canvasSize) {
+          svgCanvas.width = canvasSize;
+          svgCanvas.height = canvasSize;
+        }
+
+        // Parse the SVG path
+        const path = new Path2D(pathData);
+
+        // Clear canvas
+        svgCtx.clearRect(0, 0, canvasSize, canvasSize);
+
+        // Render fill (if enabled)
+        let fillData = null;
+        if (hasFill) {
+          svgCtx.save();
+          svgCtx.translate(padding, padding);
+          svgCtx.scale(scale, scale);
+          svgCtx.fillStyle = "white";
+          svgCtx.fill(path);
+          svgCtx.restore();
+          fillData = svgCtx.getImageData(0, 0, canvasSize, canvasSize);
+        }
+
+        // Render stroke (if enabled)
+        let strokeData = null;
+        if (strokeWidth > 0) {
+          svgCtx.clearRect(0, 0, canvasSize, canvasSize);
+          svgCtx.save();
+          svgCtx.translate(padding, padding);
+          svgCtx.scale(scale, scale);
+          svgCtx.strokeStyle = "white";
+          svgCtx.lineWidth = strokeWidth / scale; // Convert back to viewbox units
+          svgCtx.lineCap = "round";
+          svgCtx.lineJoin = "round";
+          svgCtx.stroke(path);
+          svgCtx.restore();
+          strokeData = svgCtx.getImageData(0, 0, canvasSize, canvasSize);
+        }
+
+        // Combine into RG channels (matching CoreGraphics output format)
+        // R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke)
+        const output = new Uint8Array(canvasSize * canvasSize * 4);
+        for (let i = 0; i < canvasSize * canvasSize; i++) {
+          const fillAlpha = fillData ? fillData.data[i * 4 + 3] : 0;
+          const strokeAlpha = strokeData ? strokeData.data[i * 4 + 3] : 0;
+          output[i * 4 + 0] = fillAlpha; // R = fill alpha
+          output[i * 4 + 1] = strokeAlpha; // G = stroke alpha
+          output[i * 4 + 2] = 0; // B = unused
+          output[i * 4 + 3] = Math.max(fillAlpha, strokeAlpha); // A = combined
+        }
+
+        return {
+          pixels: output,
+          width: canvasSize,
+          height: canvasSize,
+          offset: padding,
+        };
+      }
+
       function getFont(fontPtr, fontLen, size) {
         const fontName = getString(fontPtr, fontLen);
         return `${size}px ${fontName}`;
@@ -1042,6 +1124,133 @@
               {
                 binding: 0,
                 resource: { buffer: handles.buffers.get(glyphBuffer) },
+              },
+              {
+                binding: 1,
+                resource: { buffer: handles.buffers.get(uniformBuffer) },
+              },
+              { binding: 2, resource: texture.createView() },
+              { binding: 3, resource: sampler },
+            ],
+          });
+          return allocHandle(handles.bindGroups, bindGroup);
+        },
+
+        // =====================================================================
+        // SVG Rasterization Support
+        // =====================================================================
+
+        // Rasterize an SVG path to RGBA buffer using Path2D/Canvas2D
+        rasterizeSvgPath: (
+          pathPtr,
+          pathLen,
+          deviceSize,
+          viewbox,
+          hasFill,
+          strokeWidth,
+          outBuffer,
+          bufferSize,
+          outWidth,
+          outHeight,
+          outOffsetX,
+          outOffsetY,
+        ) => {
+          try {
+            const pathData = getString(pathPtr, pathLen);
+            const result = rasterizeSvgPathJS(
+              pathData,
+              deviceSize,
+              viewbox,
+              hasFill,
+              strokeWidth,
+            );
+
+            // Copy pixels to WASM memory
+            const mem = new Uint8Array(
+              wasmInstance.exports.memory.buffer,
+              outBuffer,
+              bufferSize,
+            );
+            const copyLen = Math.min(result.pixels.length, bufferSize);
+            mem.set(result.pixels.subarray(0, copyLen));
+
+            // Write output dimensions
+            const view = new DataView(wasmInstance.exports.memory.buffer);
+            view.setUint32(outWidth, result.width, true);
+            view.setUint32(outHeight, result.height, true);
+            view.setInt16(outOffsetX, result.offset, true);
+            view.setInt16(outOffsetY, result.offset, true);
+
+            return true; // success
+          } catch (e) {
+            console.error("rasterizeSvgPath failed:", e);
+            return false;
+          }
+        },
+
+        // Create an RGBA texture (for SVG atlas)
+        createRgbaTexture: (width, height, dataPtr, dataLen) => {
+          const data = new Uint8Array(
+            wasmInstance.exports.memory.buffer,
+            dataPtr,
+            dataLen,
+          );
+          const texture = device.createTexture({
+            size: { width, height },
+            format: "rgba8unorm", // RGBA format for SVG atlas
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+          });
+          queue.writeTexture(
+            { texture },
+            data,
+            { bytesPerRow: width * 4 }, // 4 bytes per pixel (RGBA)
+            { width, height },
+          );
+          return allocHandle(handles.textures, texture);
+        },
+
+        // Update an existing RGBA texture
+        updateRgbaTexture: (textureHandle, width, height, dataPtr, dataLen) => {
+          const texture = handles.textures.get(textureHandle);
+          if (!texture) {
+            console.error(
+              "updateRgbaTexture: invalid texture handle",
+              textureHandle,
+            );
+            return;
+          }
+          const data = new Uint8Array(
+            wasmInstance.exports.memory.buffer,
+            dataPtr,
+            dataLen,
+          );
+          queue.writeTexture(
+            { texture },
+            data,
+            { bytesPerRow: width * 4 }, // 4 bytes per pixel (RGBA)
+            { width, height },
+          );
+        },
+
+        // Create bind group for SVG pipeline (same layout as text)
+        createSvgBindGroup: (
+          pipelineHandle,
+          groupIndex,
+          svgBuffer,
+          uniformBuffer,
+          textureHandle,
+          samplerHandle,
+        ) => {
+          const pipeline = handles.pipelines.get(pipelineHandle);
+          const texture = handles.textures.get(textureHandle);
+          const sampler = handles.samplers.get(samplerHandle);
+
+          const bindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(groupIndex),
+            entries: [
+              {
+                binding: 0,
+                resource: { buffer: handles.buffers.get(svgBuffer) },
               },
               {
                 binding: 1,
