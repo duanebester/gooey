@@ -401,6 +401,14 @@ pub const Color = struct {
     pub const red = Color{ .r = 1, .g = 0, .b = 0, .a = 1 };
     pub const green = Color{ .r = 0, .g = 1, .b = 0, .a = 1 };
     pub const blue = Color{ .r = 0, .g = 0, .b = 1, .a = 1 };
+    pub const yellow = Color{ .r = 1, .g = 1, .b = 0, .a = 1 };
+    pub const cyan = Color{ .r = 0, .g = 1, .b = 1, .a = 1 };
+    pub const magenta = Color{ .r = 1, .g = 0, .b = 1, .a = 1 };
+    pub const orange = Color{ .r = 1, .g = 0.65, .b = 0, .a = 1 };
+    pub const gold = Color{ .r = 1, .g = 0.84, .b = 0, .a = 1 };
+    pub const purple = Color{ .r = 0.5, .g = 0, .b = 0.5, .a = 1 };
+    pub const pink = Color{ .r = 1, .g = 0.75, .b = 0.8, .a = 1 };
+    pub const gray = Color{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1 };
 };
 
 // =============================================================================

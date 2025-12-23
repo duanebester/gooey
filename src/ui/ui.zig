@@ -375,6 +375,12 @@ pub const SvgPrimitive = struct {
     height: f32 = 24,
     /// Fill color
     color: Color = Color.black,
+    /// Stroke color (null = no stroke)
+    stroke_color: ?Color = null,
+    /// Stroke width in logical pixels
+    stroke_width: f32 = 1.0,
+    /// Whether to fill the path
+    has_fill: bool = true,
     /// Source viewbox size (for proper scaling)
     viewbox: f32 = 24,
 
@@ -541,6 +547,9 @@ pub const Builder = struct {
         layout_id: LayoutId,
         path: []const u8,
         color: Hsla,
+        stroke_color: ?Hsla,
+        stroke_width: f32,
+        has_fill: bool,
         viewbox: f32,
     };
 
@@ -1433,14 +1442,21 @@ pub const Builder = struct {
         }) catch return;
         self.layout.closeElement();
 
-        // Convert Color to Hsla
-        const hsla = Hsla.fromRgba(prim.color.r, prim.color.g, prim.color.b, prim.color.a);
+        // Convert Colors to Hsla
+        const fill_hsla = Hsla.fromRgba(prim.color.r, prim.color.g, prim.color.b, prim.color.a);
+        const stroke_hsla: ?Hsla = if (prim.stroke_color) |sc|
+            Hsla.fromRgba(sc.r, sc.g, sc.b, sc.a)
+        else
+            null;
 
         // Store for later rendering (after layout is computed)
         self.pending_svgs.append(self.allocator, .{
             .layout_id = layout_id,
             .path = prim.path,
-            .color = hsla,
+            .color = fill_hsla,
+            .stroke_color = stroke_hsla,
+            .stroke_width = prim.stroke_width,
+            .has_fill = prim.has_fill,
             .viewbox = prim.viewbox,
         }) catch {};
     }

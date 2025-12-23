@@ -13,11 +13,22 @@ pub const SvgKey = struct {
     path_hash: u64,
     /// Device pixel size (width = height for square icons)
     device_size: u16,
+    /// Whether fill is enabled
+    has_fill: bool,
+    /// Whether stroke is enabled
+    has_stroke: bool,
+    /// Stroke width (quantized to 0.25 increments)
+    stroke_width_q: u8,
 
-    pub fn init(path_data: []const u8, logical_size: f32, scale_factor: f64) SvgKey {
+    pub fn init(path_data: []const u8, logical_size: f32, scale_factor: f64, has_fill: bool, stroke_width: ?f32) SvgKey {
+        const has_stroke = stroke_width != null and stroke_width.? > 0;
         return .{
             .path_hash = std.hash.Wyhash.hash(0, path_data),
             .device_size = @intFromFloat(@ceil(logical_size * scale_factor)),
+            .has_fill = has_fill,
+            .has_stroke = has_stroke,
+            // Quantize stroke width to reduce cache variations
+            .stroke_width_q = if (has_stroke) @intFromFloat(@min(255, (stroke_width.? * 4))) else 0,
         };
     }
 };
@@ -81,8 +92,10 @@ pub const SvgAtlas = struct {
         path_data: []const u8,
         viewbox: f32,
         logical_size: f32,
+        has_fill: bool,
+        stroke_width: ?f32,
     ) !CachedSvg {
-        const key = SvgKey.init(path_data, logical_size, self.scale_factor);
+        const key = SvgKey.init(path_data, logical_size, self.scale_factor, has_fill, stroke_width);
 
         if (self.cache.get(key)) |cached| {
             return cached;
@@ -96,12 +109,23 @@ pub const SvgAtlas = struct {
 
         @memset(self.render_buffer, 0);
 
-        const rasterized = try rasterizer.rasterize(
+        // Scale stroke width to device pixels
+        const device_stroke_width: f32 = if (stroke_width) |sw|
+            sw * @as(f32, @floatCast(self.scale_factor))
+        else
+            0;
+
+        const rasterized = try rasterizer.rasterizeWithOptions(
             self.allocator,
             path_data,
             viewbox,
             device_size,
             self.render_buffer,
+            has_fill,
+            .{
+                .enabled = stroke_width != null and stroke_width.? > 0,
+                .width = device_stroke_width,
+            },
         );
 
         // Reserve atlas space

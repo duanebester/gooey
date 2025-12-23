@@ -24,6 +24,12 @@ pub const RasterizeError = error{
     OutOfMemory,
 };
 
+/// Stroke options for SVG rendering
+pub const StrokeOptions = struct {
+    enabled: bool = false,
+    width: f32 = 1.0,
+};
+
 /// Rasterize SVG path data to RGBA buffer
 pub fn rasterize(
     allocator: std.mem.Allocator,
@@ -31,6 +37,19 @@ pub fn rasterize(
     viewbox: f32,
     device_size: u32,
     buffer: []u8,
+) RasterizeError!RasterizedSvg {
+    return rasterizeWithOptions(allocator, path_data, viewbox, device_size, buffer, true, .{});
+}
+
+/// Rasterize SVG path data with fill and stroke options
+pub fn rasterizeWithOptions(
+    allocator: std.mem.Allocator,
+    path_data: []const u8,
+    viewbox: f32,
+    device_size: u32,
+    buffer: []u8,
+    fill: bool,
+    stroke: StrokeOptions,
 ) RasterizeError!RasterizedSvg {
     if (path_data.len == 0) return error.EmptyPath;
 
@@ -56,7 +75,9 @@ pub fn rasterize(
 
     svg_mod.flattenPath(allocator, &path, 0.5, &points, &polygons) catch return error.OutOfMemory;
 
-    if (points.items.len < 3 or polygons.items.len == 0) return error.EmptyPath;
+    if (points.items.len < 2) return error.EmptyPath;
+    // For stroke-only, we need at least 2 points (a line)
+    if (fill and (points.items.len < 3 or polygons.items.len == 0)) return error.EmptyPath;
 
     // Create CoreGraphics context
     const color_space = cg.CGColorSpaceCreateDeviceRGB();
@@ -84,13 +105,10 @@ pub fn rasterize(
     cg.CGContextTranslateCTM(context, 0, @floatFromInt(device_size));
     cg.CGContextScaleCTM(context, scale, -scale);
 
-    // Set fill color to white (alpha mask)
-    cg.CGContextSetRGBFillColor(context, 1.0, 1.0, 1.0, 1.0);
-
-    // Draw each polygon
+    // Build the path
     for (polygons.items) |poly| {
         const pts = points.items[poly.start..poly.end];
-        if (pts.len < 3) continue;
+        if (pts.len < 2) continue;
 
         cg.CGContextBeginPath(context);
         cg.CGContextMoveToPoint(context, pts[0].x, pts[0].y);
@@ -99,10 +117,29 @@ pub fn rasterize(
             cg.CGContextAddLineToPoint(context, pt.x, pt.y);
         }
 
-        cg.CGContextClosePath(context);
+        if (fill) {
+            cg.CGContextClosePath(context);
+        }
     }
 
-    cg.CGContextFillPath(context);
+    // Set colors to white (alpha mask - tint applied in shader)
+    cg.CGContextSetRGBFillColor(context, 1.0, 1.0, 1.0, 1.0);
+    cg.CGContextSetRGBStrokeColor(context, 1.0, 1.0, 1.0, 1.0);
+
+    // Draw based on options
+    if (fill and stroke.enabled) {
+        cg.CGContextSetLineWidth(context, stroke.width);
+        cg.CGContextSetLineCap(context, cg.kCGLineCapRound);
+        cg.CGContextSetLineJoin(context, cg.kCGLineJoinRound);
+        cg.CGContextDrawPath(context, cg.kCGPathFillStroke);
+    } else if (fill) {
+        cg.CGContextFillPath(context);
+    } else if (stroke.enabled) {
+        cg.CGContextSetLineWidth(context, stroke.width);
+        cg.CGContextSetLineCap(context, cg.kCGLineCapRound);
+        cg.CGContextSetLineJoin(context, cg.kCGLineJoinRound);
+        cg.CGContextStrokePath(context);
+    }
 
     return RasterizedSvg{
         .width = device_size,

@@ -50,6 +50,14 @@ pub const PathCommand = enum(u8) {
     curve_to_rel,
     smooth_curve_to,
     smooth_curve_to_rel,
+    // Quadratic Bezier curves
+    quad_to,
+    quad_to_rel,
+    smooth_quad_to,
+    smooth_quad_to_rel,
+    // Arc commands
+    arc_to,
+    arc_to_rel,
     close_path,
 };
 
@@ -132,6 +140,153 @@ pub const CubicBez = struct {
     }
 };
 
+/// Quadratic Bezier curve for path flattening
+pub const QuadraticBez = struct {
+    x0: f32,
+    y0: f32,
+    cx: f32,
+    cy: f32,
+    x1: f32,
+    y1: f32,
+
+    /// Flatten quadratic bezier to line segments using de Casteljau subdivision
+    pub fn flatten(self: QuadraticBez, tolerance: f32, allocator: std.mem.Allocator, output: *std.ArrayList(Vec2)) !void {
+        try self.flattenRecursive(tolerance, allocator, output, 0);
+    }
+
+    fn flattenRecursive(self: QuadraticBez, tolerance: f32, allocator: std.mem.Allocator, output: *std.ArrayList(Vec2), depth: u32) !void {
+        if (depth > 16) {
+            try output.append(allocator, Vec2.init(self.x1, self.y1));
+            return;
+        }
+
+        // Check flatness: distance from control point to line
+        const dx = self.x1 - self.x0;
+        const dy = self.y1 - self.y0;
+        const d = @abs((self.cx - self.x1) * dy - (self.cy - self.y1) * dx);
+        const len_sq = dx * dx + dy * dy;
+
+        if (d * d <= tolerance * tolerance * len_sq) {
+            try output.append(allocator, Vec2.init(self.x1, self.y1));
+            return;
+        }
+
+        // Subdivide at t=0.5
+        const mid_x01 = (self.x0 + self.cx) * 0.5;
+        const mid_y01 = (self.y0 + self.cy) * 0.5;
+        const mid_x12 = (self.cx + self.x1) * 0.5;
+        const mid_y12 = (self.cy + self.y1) * 0.5;
+        const mid_x = (mid_x01 + mid_x12) * 0.5;
+        const mid_y = (mid_y01 + mid_y12) * 0.5;
+
+        const left = QuadraticBez{ .x0 = self.x0, .y0 = self.y0, .cx = mid_x01, .cy = mid_y01, .x1 = mid_x, .y1 = mid_y };
+        const right = QuadraticBez{ .x0 = mid_x, .y0 = mid_y, .cx = mid_x12, .cy = mid_y12, .x1 = self.x1, .y1 = self.y1 };
+
+        try left.flattenRecursive(tolerance, allocator, output, depth + 1);
+        try right.flattenRecursive(tolerance, allocator, output, depth + 1);
+    }
+};
+
+/// Flatten an elliptical arc to line segments
+/// SVG arc parameters: rx, ry, x_rotation (degrees), large_arc, sweep, end_x, end_y
+pub fn flattenArc(
+    allocator: std.mem.Allocator,
+    start: Vec2,
+    rx_in: f32,
+    ry_in: f32,
+    x_rotation_deg: f32,
+    large_arc: bool,
+    sweep: bool,
+    end: Vec2,
+    tolerance: f32,
+    output: *std.ArrayList(Vec2),
+) !void {
+    // Handle degenerate cases
+    var rx = @abs(rx_in);
+    var ry = @abs(ry_in);
+
+    if (rx < 0.001 or ry < 0.001) {
+        try output.append(allocator, end);
+        return;
+    }
+
+    const dx = (start.x - end.x) / 2.0;
+    const dy = (start.y - end.y) / 2.0;
+
+    if (@abs(dx) < 0.001 and @abs(dy) < 0.001) {
+        return;
+    }
+
+    // Convert rotation to radians
+    const phi = x_rotation_deg * std.math.pi / 180.0;
+    const cos_phi = @cos(phi);
+    const sin_phi = @sin(phi);
+
+    // Transform to unit circle space
+    const x1p = cos_phi * dx + sin_phi * dy;
+    const y1p = -sin_phi * dx + cos_phi * dy;
+
+    // Correct radii if necessary (SVG spec F.6.6)
+    const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    if (lambda > 1.0) {
+        const sqrt_lambda = @sqrt(lambda);
+        rx *= sqrt_lambda;
+        ry *= sqrt_lambda;
+    }
+
+    // Compute center point (SVG spec F.6.5)
+    const rx_sq = rx * rx;
+    const ry_sq = ry * ry;
+    const x1p_sq = x1p * x1p;
+    const y1p_sq = y1p * y1p;
+
+    var sq = (rx_sq * ry_sq - rx_sq * y1p_sq - ry_sq * x1p_sq) / (rx_sq * y1p_sq + ry_sq * x1p_sq);
+    if (sq < 0) sq = 0;
+    var coef = @sqrt(sq);
+    if (large_arc == sweep) coef = -coef;
+
+    const cxp = coef * rx * y1p / ry;
+    const cyp = -coef * ry * x1p / rx;
+
+    const cx = cos_phi * cxp - sin_phi * cyp + (start.x + end.x) / 2.0;
+    const cy = sin_phi * cxp + cos_phi * cyp + (start.y + end.y) / 2.0;
+
+    // Compute start and end angles
+    const ux = (x1p - cxp) / rx;
+    const uy = (y1p - cyp) / ry;
+    const vx = (-x1p - cxp) / rx;
+    const vy = (-y1p - cyp) / ry;
+
+    const n = @sqrt(ux * ux + uy * uy);
+    var theta1 = std.math.acos(std.math.clamp(ux / n, -1.0, 1.0));
+    if (uy < 0) theta1 = -theta1;
+
+    const dot = ux * vx + uy * vy;
+    const det = ux * vy - uy * vx;
+    const n2 = @sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
+    var dtheta = std.math.acos(std.math.clamp(dot / n2, -1.0, 1.0));
+    if (det < 0) dtheta = -dtheta;
+
+    if (sweep and dtheta < 0) dtheta += 2.0 * std.math.pi;
+    if (!sweep and dtheta > 0) dtheta -= 2.0 * std.math.pi;
+
+    // Flatten arc to line segments
+    const num_segments: u32 = @max(4, @as(u32, @intFromFloat(@ceil(@abs(dtheta) / (std.math.pi / 8.0) * @max(rx, ry) / tolerance))));
+    const step = dtheta / @as(f32, @floatFromInt(num_segments));
+
+    var i: u32 = 1;
+    while (i <= num_segments) : (i += 1) {
+        const theta = theta1 + step * @as(f32, @floatFromInt(i));
+        const cos_t = @cos(theta);
+        const sin_t = @sin(theta);
+
+        const px = cos_phi * rx * cos_t - sin_phi * ry * sin_t + cx;
+        const py = sin_phi * rx * cos_t + cos_phi * ry * sin_t + cy;
+
+        try output.append(allocator, Vec2.init(px, py));
+    }
+}
+
 /// Polygon slice for tessellation
 pub const IndexSlice = struct {
     start: u32,
@@ -203,6 +358,14 @@ pub const PathParser = struct {
                 'c' => try self.parseCurveTo(path, true),
                 'S' => try self.parseSmoothCurveTo(path, false),
                 's' => try self.parseSmoothCurveTo(path, true),
+                // Quadratic Bezier
+                'Q' => try self.parseQuadTo(path, false),
+                'q' => try self.parseQuadTo(path, true),
+                'T' => try self.parseSmoothQuadTo(path, false),
+                't' => try self.parseSmoothQuadTo(path, true),
+                // Arc
+                'A' => try self.parseArcTo(path, false),
+                'a' => try self.parseArcTo(path, true),
                 'Z', 'z' => try path.commands.append(self.allocator, .close_path),
                 else => return error.UnsupportedPathCommand,
             }
@@ -272,6 +435,57 @@ pub const PathParser = struct {
         }
     }
 
+    fn parseQuadTo(self: *PathParser, path: *SvgPath, relative: bool) !void {
+        while (self.hasMoreNumbers()) {
+            const cx = try self.parseFloat();
+            const cy = try self.parseFloat();
+            const x = try self.parseFloat();
+            const y = try self.parseFloat();
+            try path.commands.append(self.allocator, if (relative) .quad_to_rel else .quad_to);
+            try path.data.appendSlice(self.allocator, &.{ cx, cy, x, y });
+        }
+    }
+
+    fn parseSmoothQuadTo(self: *PathParser, path: *SvgPath, relative: bool) !void {
+        while (self.hasMoreNumbers()) {
+            const x = try self.parseFloat();
+            const y = try self.parseFloat();
+            try path.commands.append(self.allocator, if (relative) .smooth_quad_to_rel else .smooth_quad_to);
+            try path.data.appendSlice(self.allocator, &.{ x, y });
+        }
+    }
+
+    fn parseArcTo(self: *PathParser, path: *SvgPath, relative: bool) !void {
+        while (self.hasMoreNumbers()) {
+            const rx = try self.parseFloat();
+            const ry = try self.parseFloat();
+            const x_rotation = try self.parseFloat();
+            const large_arc = try self.parseFlag();
+            const sweep = try self.parseFlag();
+            const x = try self.parseFloat();
+            const y = try self.parseFloat();
+            try path.commands.append(self.allocator, if (relative) .arc_to_rel else .arc_to);
+            // Pack flags as 0/1 floats for uniform data storage
+            try path.data.appendSlice(self.allocator, &.{
+                rx,
+                ry,
+                x_rotation,
+                if (large_arc) @as(f32, 1.0) else @as(f32, 0.0),
+                if (sweep) @as(f32, 1.0) else @as(f32, 0.0),
+                x,
+                y,
+            });
+        }
+    }
+
+    fn parseFlag(self: *PathParser) !bool {
+        self.skipDelimiters();
+        if (self.atEnd()) return error.UnexpectedEndOfPath;
+        const c = self.peek();
+        self.advance();
+        return c == '1';
+    }
+
     fn parseFloat(self: *PathParser) !f32 {
         self.skipDelimiters();
         if (self.atEnd()) return error.UnexpectedEndOfPath;
@@ -339,9 +553,11 @@ pub fn flattenPath(
     var data_idx: usize = 0;
     var last_control_pt = Vec2.init(0, 0);
     var last_was_curve = false;
+    var last_was_quad = false;
 
     for (path.commands.items) |cmd| {
         var is_curve = false;
+        var is_quad = false;
 
         switch (cmd) {
             .move_to => {
@@ -497,11 +713,126 @@ pub fn flattenPath(
                 cur_pt = Vec2.init(x, y);
                 is_curve = true;
             },
+            .quad_to => {
+                const cx = path.data.items[data_idx];
+                const cy = path.data.items[data_idx + 1];
+                const x = path.data.items[data_idx + 2];
+                const y = path.data.items[data_idx + 3];
+                data_idx += 4;
+
+                const quad = QuadraticBez{
+                    .x0 = cur_pt.x,
+                    .y0 = cur_pt.y,
+                    .cx = cx,
+                    .cy = cy,
+                    .x1 = x,
+                    .y1 = y,
+                };
+                try quad.flatten(tolerance, allocator, points);
+                last_control_pt = Vec2.init(cx, cy);
+                cur_pt = Vec2.init(x, y);
+                is_quad = true;
+            },
+            .quad_to_rel => {
+                const cx = cur_pt.x + path.data.items[data_idx];
+                const cy = cur_pt.y + path.data.items[data_idx + 1];
+                const x = cur_pt.x + path.data.items[data_idx + 2];
+                const y = cur_pt.y + path.data.items[data_idx + 3];
+                data_idx += 4;
+
+                const quad = QuadraticBez{
+                    .x0 = cur_pt.x,
+                    .y0 = cur_pt.y,
+                    .cx = cx,
+                    .cy = cy,
+                    .x1 = x,
+                    .y1 = y,
+                };
+                try quad.flatten(tolerance, allocator, points);
+                last_control_pt = Vec2.init(cx, cy);
+                cur_pt = Vec2.init(x, y);
+                is_quad = true;
+            },
+            .smooth_quad_to => {
+                var cx = cur_pt.x;
+                var cy = cur_pt.y;
+                if (last_was_quad) {
+                    cx = cur_pt.x + (cur_pt.x - last_control_pt.x);
+                    cy = cur_pt.y + (cur_pt.y - last_control_pt.y);
+                }
+                const x = path.data.items[data_idx];
+                const y = path.data.items[data_idx + 1];
+                data_idx += 2;
+
+                const quad = QuadraticBez{
+                    .x0 = cur_pt.x,
+                    .y0 = cur_pt.y,
+                    .cx = cx,
+                    .cy = cy,
+                    .x1 = x,
+                    .y1 = y,
+                };
+                try quad.flatten(tolerance, allocator, points);
+                last_control_pt = Vec2.init(cx, cy);
+                cur_pt = Vec2.init(x, y);
+                is_quad = true;
+            },
+            .smooth_quad_to_rel => {
+                var cx = cur_pt.x;
+                var cy = cur_pt.y;
+                if (last_was_quad) {
+                    cx = cur_pt.x + (cur_pt.x - last_control_pt.x);
+                    cy = cur_pt.y + (cur_pt.y - last_control_pt.y);
+                }
+                const x = cur_pt.x + path.data.items[data_idx];
+                const y = cur_pt.y + path.data.items[data_idx + 1];
+                data_idx += 2;
+
+                const quad = QuadraticBez{
+                    .x0 = cur_pt.x,
+                    .y0 = cur_pt.y,
+                    .cx = cx,
+                    .cy = cy,
+                    .x1 = x,
+                    .y1 = y,
+                };
+                try quad.flatten(tolerance, allocator, points);
+                last_control_pt = Vec2.init(cx, cy);
+                cur_pt = Vec2.init(x, y);
+                is_quad = true;
+            },
+            .arc_to => {
+                const rx = path.data.items[data_idx];
+                const ry = path.data.items[data_idx + 1];
+                const x_rot = path.data.items[data_idx + 2];
+                const large_arc = path.data.items[data_idx + 3] > 0.5;
+                const sweep = path.data.items[data_idx + 4] > 0.5;
+                const x = path.data.items[data_idx + 5];
+                const y = path.data.items[data_idx + 6];
+                data_idx += 7;
+
+                try flattenArc(allocator, cur_pt, rx, ry, x_rot, large_arc, sweep, Vec2.init(x, y), tolerance, points);
+                cur_pt = Vec2.init(x, y);
+            },
+            .arc_to_rel => {
+                const rx = path.data.items[data_idx];
+                const ry = path.data.items[data_idx + 1];
+                const x_rot = path.data.items[data_idx + 2];
+                const large_arc = path.data.items[data_idx + 3] > 0.5;
+                const sweep = path.data.items[data_idx + 4] > 0.5;
+                const x = cur_pt.x + path.data.items[data_idx + 5];
+                const y = cur_pt.y + path.data.items[data_idx + 6];
+                data_idx += 7;
+
+                try flattenArc(allocator, cur_pt, rx, ry, x_rot, large_arc, sweep, Vec2.init(x, y), tolerance, points);
+                cur_pt = Vec2.init(x, y);
+            },
             .close_path => {
                 // Close path is implicit for fill operations
             },
         }
         last_was_curve = is_curve;
+        last_was_quad = is_quad;
     }
 
     // Final polygon
@@ -545,4 +876,61 @@ test "flatten simple triangle" {
 
     try std.testing.expectEqual(@as(usize, 1), polygons.items.len);
     try std.testing.expectEqual(@as(usize, 3), points.items.len);
+}
+
+test "parse quadratic bezier" {
+    const allocator = std.testing.allocator;
+    var parser = PathParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "M0 0 Q50 100 100 0");
+
+    try std.testing.expectEqual(@as(usize, 2), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.quad_to, path.commands.items[1]);
+}
+
+test "parse smooth quadratic" {
+    const allocator = std.testing.allocator;
+    var parser = PathParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "M0 0 Q25 50 50 0 T100 0");
+
+    try std.testing.expectEqual(@as(usize, 3), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.smooth_quad_to, path.commands.items[2]);
+}
+
+test "parse arc command" {
+    const allocator = std.testing.allocator;
+    var parser = PathParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "M10 10 A5 5 0 0 1 20 20");
+
+    try std.testing.expectEqual(@as(usize, 2), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[1]);
+    // Check arc data: rx, ry, rotation, large_arc, sweep, x, y
+    try std.testing.expectEqual(@as(f32, 5), path.data.items[2]); // rx
+    try std.testing.expectEqual(@as(f32, 5), path.data.items[3]); // ry
+}
+
+test "flatten arc" {
+    const allocator = std.testing.allocator;
+    var points = std.ArrayList(Vec2).init(allocator);
+    defer points.deinit();
+
+    // Semi-circle arc
+    try flattenArc(allocator, Vec2.init(0, 0), 50, 50, 0, false, true, Vec2.init(100, 0), 1.0, &points);
+
+    // Should have generated multiple points
+    try std.testing.expect(points.items.len >= 4);
+    // End point should be close to target
+    const last = points.items[points.items.len - 1];
+    try std.testing.expect(@abs(last.x - 100) < 0.1);
+    try std.testing.expect(@abs(last.y - 0) < 0.1);
 }

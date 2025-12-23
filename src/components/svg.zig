@@ -7,11 +7,14 @@
 //! ```zig
 //! const star_path = "M12 2l3.09 6.26L22 9.27l-5 4.87...";
 //!
-//! // Simple usage
+//! // Simple filled icon
 //! gooey.Svg{ .path = star_path, .size = 24, .color = .gold }
 //!
-//! // With explicit width/height
-//! gooey.Svg{ .path = star_path, .width = 48, .height = 48 }
+//! // Stroked icon (outline only)
+//! gooey.Svg{ .path = star_path, .size = 24, .stroke_color = .white, .stroke_width = 2 }
+//!
+//! // Both fill and stroke
+//! gooey.Svg{ .path = star_path, .size = 24, .color = .red, .stroke_color = .black, .stroke_width = 1 }
 //! ```
 
 const std = @import("std");
@@ -31,8 +34,14 @@ pub const Svg = struct {
     /// Explicit height (overrides size)
     height: ?f32 = null,
 
-    /// Fill color
-    color: Color = Color.black,
+    /// Fill color (null = no fill)
+    color: ?Color = Color.black,
+
+    /// Stroke color (null = no stroke)
+    stroke_color: ?Color = null,
+
+    /// Stroke width in logical pixels
+    stroke_width: f32 = 1.0,
 
     /// Viewbox size of the source SVG (default 24x24 for Material icons)
     viewbox: f32 = 24,
@@ -48,8 +57,11 @@ pub const Svg = struct {
                 .path = self.path,
                 .width = w,
                 .height = h,
-                .color = self.color,
+                .color = self.color orelse Color.transparent,
+                .stroke_color = self.stroke_color,
+                .stroke_width = self.stroke_width,
                 .viewbox = self.viewbox,
+                .has_fill = self.color != null,
             },
         });
     }

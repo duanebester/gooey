@@ -280,11 +280,19 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
         if (bounds) |b| {
             const scale_factor = cx.gooey().scale_factor;
 
+            // Determine stroke width for caching
+            const stroke_w: ?f32 = if (pending.stroke_color != null)
+                pending.stroke_width
+            else
+                null;
+
             // Get from atlas (rasterizes if not cached)
             const cached = try cx.gooey().svg_atlas.getOrRasterize(
                 pending.path,
                 pending.viewbox,
                 @max(b.width, b.height), // Use larger dimension for size
+                pending.has_fill,
+                stroke_w,
             );
 
             if (cached.region.width == 0) continue;
@@ -299,6 +307,14 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
             const snapped_x = @floor(device_x) / scale_factor;
             const snapped_y = @floor(device_y) / scale_factor;
 
+            // Blend fill and stroke colors if both present
+            const final_color = if (pending.has_fill)
+                pending.color
+            else if (pending.stroke_color) |sc|
+                sc
+            else
+                pending.color;
+
             const instance = svg_instance_mod.SvgInstance.init(
                 snapped_x,
                 snapped_y,
@@ -308,7 +324,7 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
                 uv.v0,
                 uv.u1,
                 uv.v1,
-                pending.color,
+                final_color,
             );
 
             try cx.gooey().scene.insertSvgClipped(instance);
