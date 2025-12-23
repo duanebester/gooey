@@ -118,7 +118,10 @@ pub const TextInput = struct {
     // Callbacks
     on_change: ?*const fn (*TextInput) void = null,
     on_submit: ?*const fn (*TextInput) void = null,
-    on_cursor_rect_changed: ?*const fn (x: f32, y: f32, width: f32, height: f32) void = null, // NEW
+    on_cursor_rect_changed: ?*const fn (x: f32, y: f32, width: f32, height: f32) void = null,
+
+    /// Cursor rect for IME candidate window positioning (set during render)
+    cursor_rect: struct { x: f32 = 0, y: f32 = 0, width: f32 = 1.5, height: f32 = 20 } = .{},
 
     const Self = @This();
 
@@ -614,7 +617,10 @@ pub const TextInput = struct {
             );
             try scene.insertQuad(cursor);
 
-            // Notify about cursor rect for IME positioning
+            // Store cursor rect for IME positioning
+            self.cursor_rect = .{ .x = cursor_x, .y = cursor_y, .width = 1.5, .height = cursor_height };
+
+            // Notify about cursor rect for IME positioning (legacy callback)
             if (self.on_cursor_rect_changed) |callback| {
                 callback(cursor_x, cursor_y, 1.5, cursor_height);
             }

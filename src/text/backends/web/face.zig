@@ -45,6 +45,22 @@ extern "env" fn rasterizeGlyph(
     out_advance: *f32,
 ) void;
 
+extern "env" fn rasterizeGlyphSubpixel(
+    font_ptr: [*]const u8,
+    font_len: u32,
+    size: f32,
+    codepoint: u32,
+    subpixel_x: f32,
+    subpixel_y: f32,
+    out_buffer: [*]u8,
+    buffer_size: u32,
+    out_width: *u32,
+    out_height: *u32,
+    out_bearing_x: *f32,
+    out_bearing_y: *f32,
+    out_advance: *f32,
+) void;
+
 /// Web-backed font face (matches CoreTextFace API)
 pub const WebFontFace = struct {
     /// Font name stored inline (no allocation needed)
@@ -156,7 +172,7 @@ pub const WebFontFace = struct {
     }
 
     /// Render a glyph with subpixel positioning
-    pub fn renderGlyphSubpixel(self: *const Self, glyph_id: u16, scale: f32, _: f32, _: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
+    pub fn renderGlyphSubpixel(self: *const Self, glyph_id: u16, scale: f32, subpixel_x: f32, subpixel_y: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
         var width: u32 = 0;
         var height: u32 = 0;
         var bearing_x: f32 = 0;
@@ -166,13 +182,28 @@ pub const WebFontFace = struct {
         const size = self.metrics.point_size * scale;
         const name = self.fontName();
 
-        rasterizeGlyph(name.ptr, @intCast(name.len), size, glyph_id, buffer.ptr, buffer_size, &width, &height, &bearing_x, &bearing_y, &advance);
+        // Use subpixel-aware rasterization
+        rasterizeGlyphSubpixel(
+            name.ptr,
+            @intCast(name.len),
+            size,
+            glyph_id,
+            subpixel_x,
+            subpixel_y,
+            buffer.ptr,
+            buffer_size,
+            &width,
+            &height,
+            &bearing_x,
+            &bearing_y,
+            &advance,
+        );
 
         return .{
             .width = width,
             .height = height,
             .offset_x = @intFromFloat(bearing_x),
-            .offset_y = @intFromFloat(-bearing_y), // Negate for render.zig convention
+            .offset_y = @intFromFloat(-bearing_y),
             .advance_x = advance,
             .is_color = false,
         };

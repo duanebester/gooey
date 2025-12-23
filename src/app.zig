@@ -371,6 +371,15 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
         }
     }
 
+    // Update IME cursor position for focused text input
+    if (cx.gooey().getFocusedTextInput()) |input| {
+        const rect = input.cursor_rect;
+        cx.gooey().getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+    } else if (cx.gooey().getFocusedTextArea()) |ta| {
+        const rect = ta.cursor_rect;
+        cx.gooey().getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+    }
+
     // Render scrollbars
     for (cx.builder().pending_scrolls.items) |pending| {
         if (cx.gooey().widgets.scrollContainer(pending.id)) |scroll_widget| {
@@ -1302,6 +1311,14 @@ pub fn WebApp(
 
             // 2. Process text input (typing, emoji, IME)
             _ = text_buffer_mod.processTextInput(struct {
+                fn handler(event: input_mod.InputEvent) bool {
+                    return handleInputCx(&g_cx.?, on_event, event);
+                }
+            }.handler);
+
+            // 2b. Process IME composition events (preedit text)
+            const composition_buffer_mod = @import("platform/wgpu/web/composition_buffer.zig");
+            _ = composition_buffer_mod.processComposition(struct {
                 fn handler(event: input_mod.InputEvent) bool {
                     return handleInputCx(&g_cx.?, on_event, event);
                 }

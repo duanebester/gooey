@@ -174,6 +174,12 @@ pub const WebRenderer = struct {
 
     initialized: bool = false,
 
+    // MSAA state
+    msaa_texture: u32 = 0,
+    msaa_width: u32 = 0,
+    msaa_height: u32 = 0,
+    sample_count: u32 = 4,
+
     // Post-processing state for custom shaders
     post_process_state: ?PostProcessState = null,
 
@@ -188,15 +194,25 @@ pub const WebRenderer = struct {
             .allocator = allocator,
         };
 
+        // Get MSAA sample count from JS (usually 4)
+        self.sample_count = imports.getMSAASampleCount();
+
         // Create shader modules
         const unified_module = imports.createShaderModule(unified_shader.ptr, unified_shader.len);
         const text_module = imports.createShaderModule(text_shader.ptr, text_shader.len);
         const svg_module = imports.createShaderModule(svg_shader.ptr, svg_shader.len);
 
-        // Create pipelines
-        self.pipeline = imports.createRenderPipeline(unified_module, "vs_main", 7, "fs_main", 7);
-        self.text_pipeline = imports.createRenderPipeline(text_module, "vs_main", 7, "fs_main", 7);
-        self.svg_pipeline = imports.createRenderPipeline(svg_module, "vs_main", 7, "fs_main", 7);
+        // Create MSAA-enabled pipelines
+        if (self.sample_count > 1) {
+            self.pipeline = imports.createMSAARenderPipeline(unified_module, "vs_main", 7, "fs_main", 7, self.sample_count);
+            self.text_pipeline = imports.createMSAARenderPipeline(text_module, "vs_main", 7, "fs_main", 7, self.sample_count);
+            self.svg_pipeline = imports.createMSAARenderPipeline(svg_module, "vs_main", 7, "fs_main", 7, self.sample_count);
+        } else {
+            // Fallback to non-MSAA pipelines
+            self.pipeline = imports.createRenderPipeline(unified_module, "vs_main", 7, "fs_main", 7);
+            self.text_pipeline = imports.createRenderPipeline(text_module, "vs_main", 7, "fs_main", 7);
+            self.svg_pipeline = imports.createRenderPipeline(svg_module, "vs_main", 7, "fs_main", 7);
+        }
 
         const storage_copy = 0x0080 | 0x0008; // STORAGE | COPY_DST
         const uniform_copy = 0x0040 | 0x0008; // UNIFORM | COPY_DST
@@ -219,6 +235,24 @@ pub const WebRenderer = struct {
     pub fn deinit(self: *Self) void {
         if (self.post_process_state) |*state| {
             state.deinit();
+        }
+    }
+
+    /// Ensure MSAA texture is the right size
+    fn ensureMSAATexture(self: *Self, width: u32, height: u32) void {
+        if (self.sample_count <= 1) return;
+
+        // Recreate if size changed
+        if (self.msaa_texture != 0 and (self.msaa_width != width or self.msaa_height != height)) {
+            imports.destroyTexture(self.msaa_texture);
+            self.msaa_texture = 0;
+        }
+
+        // Create if needed
+        if (self.msaa_texture == 0) {
+            self.msaa_texture = imports.createMSAATexture(width, height, self.sample_count);
+            self.msaa_width = width;
+            self.msaa_height = height;
         }
     }
 
@@ -393,6 +427,13 @@ pub const WebRenderer = struct {
             );
         }
 
+        // Ensure MSAA texture is sized correctly (use actual canvas pixel dimensions)
+        if (self.sample_count > 1) {
+            const device_width = imports.getCanvasPixelWidth();
+            const device_height = imports.getCanvasPixelHeight();
+            self.ensureMSAATexture(device_width, device_height);
+        }
+
         // Check if we need post-processing
         const has_post_process = if (self.post_process_state) |*state| state.hasShaders() else false;
         if (has_post_process) {
@@ -426,7 +467,13 @@ pub const WebRenderer = struct {
         clear_a: f32,
     ) void {
         const texture_view = imports.getCurrentTextureView();
-        imports.beginRenderPass(texture_view, clear_r, clear_g, clear_b, clear_a);
+
+        // Use MSAA if available and texture was created successfully
+        if (self.sample_count > 1 and self.msaa_texture != 0) {
+            imports.beginMSAARenderPass(self.msaa_texture, texture_view, clear_r, clear_g, clear_b, clear_a);
+        } else {
+            imports.beginRenderPass(texture_view, clear_r, clear_g, clear_b, clear_a);
+        }
 
         // Render primitives (quads, shadows)
         if (prim_count > 0) {

@@ -31,7 +31,14 @@ pub fn err(comptime fmt: []const u8, args: anytype) void {
 pub extern "env" fn getCanvasWidth() u32;
 pub extern "env" fn getCanvasHeight() u32;
 pub extern "env" fn getDevicePixelRatio() f32;
+/// Get canvas actual pixel width (canvas.width, not clientWidth)
+pub extern "env" fn getCanvasPixelWidth() u32;
+pub extern "env" fn getCanvasPixelHeight() u32;
 pub extern "env" fn setCanvasSize(width: u32, height: u32) void;
+pub extern "env" fn setDocumentTitle(ptr: [*]const u8, len: u32) void;
+
+/// Position the hidden input element for IME candidate window placement
+pub extern "env" fn setImeCursorPosition(x: f32, y: f32, width: f32, height: f32) void;
 
 // =============================================================================
 // WebGPU - Device/Queue handles are managed by JS
@@ -170,6 +177,23 @@ pub extern "env" fn rasterizeGlyph(
     out_advance: *f32,
 ) void;
 
+/// Rasterize a glyph with subpixel positioning
+pub extern "env" fn rasterizeGlyphSubpixel(
+    font_ptr: [*]const u8,
+    font_len: u32,
+    size: f32,
+    codepoint: u32,
+    subpixel_x: f32,
+    subpixel_y: f32,
+    out_buffer: [*]u8,
+    buffer_size: u32,
+    out_width: *u32,
+    out_height: *u32,
+    out_bearing_x: *f32,
+    out_bearing_y: *f32,
+    out_advance: *f32,
+) void;
+
 /// Create a texture from pixel data
 pub extern "env" fn createTexture(width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) u32;
 
@@ -225,3 +249,36 @@ pub extern "env" fn createSvgBindGroup(
     texture_handle: u32,
     sampler_handle: u32,
 ) u32;
+
+// =============================================================================
+// MSAA (Multisampling Anti-Aliasing) Support
+// =============================================================================
+
+/// Create an MSAA texture for multisampled rendering
+pub extern "env" fn createMSAATexture(width: u32, height: u32, sample_count: u32) u32;
+
+/// Destroy an MSAA texture (call on resize)
+pub extern "env" fn destroyTexture(texture_handle: u32) void;
+
+/// Create a render pipeline with MSAA support
+pub extern "env" fn createMSAARenderPipeline(
+    shader_handle: u32,
+    vertex_entry: [*]const u8,
+    vertex_entry_len: u32,
+    fragment_entry: [*]const u8,
+    fragment_entry_len: u32,
+    sample_count: u32,
+) u32;
+
+/// Begin an MSAA render pass (renders to MSAA texture, resolves to target)
+pub extern "env" fn beginMSAARenderPass(
+    msaa_texture_handle: u32,
+    resolve_view_handle: u32,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+) void;
+
+/// Get the current MSAA sample count (4 if supported, 1 otherwise)
+pub extern "env" fn getMSAASampleCount() u32;

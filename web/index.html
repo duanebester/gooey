@@ -55,7 +55,7 @@
         spellcheck="false"
         style="
           position: absolute;
-          left: -9999px;
+          left: 0;
           top: 0;
           width: 1px;
           height: 1px;
@@ -531,8 +531,21 @@
           }
         });
 
-        // Handle composition (IME) on hidden input
+        // Handle composition start
+        hiddenInput.addEventListener("compositionstart", (e) => {
+          setCompositionActive(true);
+        });
+
+        // Handle composition updates (preedit text)
+        hiddenInput.addEventListener("compositionupdate", (e) => {
+          if (e.data) {
+            updateCompositionText(e.data);
+          }
+        });
+
+        // Handle composition end
         hiddenInput.addEventListener("compositionend", (e) => {
+          setCompositionActive(false);
           if (e.data) {
             appendText(e.data);
             hiddenInput.value = "";
@@ -699,6 +712,38 @@
         lenPtr[0] = currentLen + writeLen;
       }
 
+      let compositionBufferPtr = null;
+
+      function initComposition() {
+        compositionBufferPtr = wasmInstance.exports.getCompositionBufferPtr();
+      }
+
+      function setCompositionActive(active) {
+        if (!compositionBufferPtr) return;
+        const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
+        mem[compositionBufferPtr + 4] = active ? 1 : 0; // active flag at offset 4
+      }
+
+      function updateCompositionText(text) {
+        if (!compositionBufferPtr) return;
+        const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
+        const view = new DataView(wasmInstance.exports.memory.buffer);
+        const dataPtr = compositionBufferPtr + 8; // data starts at offset 8
+
+        const encoded = new TextEncoder().encode(text);
+        const writeLen = Math.min(encoded.length, 256);
+
+        // Write text
+        for (let i = 0; i < writeLen; i++) {
+          mem[dataPtr + i] = encoded[i];
+        }
+
+        // Write length
+        view.setUint32(compositionBufferPtr, writeLen, true);
+        // Mark as active
+        mem[compositionBufferPtr + 4] = 1;
+      }
+
       // Text rendering helper
       const textCanvas = new OffscreenCanvas(256, 256);
       const textCtx = textCanvas.getContext("2d", { willReadFrequently: true });
@@ -800,12 +845,25 @@
 
         getCanvasWidth: () => canvas.clientWidth,
         getCanvasHeight: () => canvas.clientHeight,
+        getCanvasPixelWidth: () => canvas.width,
+        getCanvasPixelHeight: () => canvas.height,
         getDevicePixelRatio: () => dpr,
         setCanvasSize: (w, h) => {
           canvas.width = w;
           canvas.height = h;
         },
-
+        setDocumentTitle: (ptr, len) => {
+          document.title = getString(ptr, len);
+        },
+        setImeCursorPosition(x, y, width, height) {
+          const hiddenInput = document.getElementById("hiddenInput");
+          const dpr = window.devicePixelRatio || 1;
+          // Convert from logical to CSS pixels and position near cursor
+          hiddenInput.style.left = `${x}px`;
+          hiddenInput.style.top = `${y + height}px`; // Below the cursor line
+          hiddenInput.style.width = `${Math.max(width, 1)}px`;
+          hiddenInput.style.height = `${height}px`;
+        },
         getCurrentTextureView: () => {
           const texture = context.getCurrentTexture();
           const view = texture.createView();
@@ -1055,7 +1113,66 @@
           //   `Rasterized '${char}': ${width}x${height}, bearing=(${-(left + 1)}, ${-(ascent + 1)}), advance=${advance}`,
           // );
         },
+        rasterizeGlyphSubpixel: (
+          fontPtr,
+          fontLen,
+          size,
+          codepoint,
+          subpixelX,
+          subpixelY,
+          outBuffer,
+          bufferSize,
+          outWidth,
+          outHeight,
+          outBearingX,
+          outBearingY,
+          outAdvance,
+        ) => {
+          const font = getFont(fontPtr, fontLen, size);
+          const char = String.fromCodePoint(codepoint);
 
+          textCtx.font = font;
+          textCtx.textBaseline = "alphabetic";
+          const metrics = textCtx.measureText(char);
+
+          const left = Math.ceil(metrics.actualBoundingBoxLeft);
+          const right = Math.ceil(metrics.actualBoundingBoxRight);
+          const ascent = Math.ceil(metrics.actualBoundingBoxAscent);
+          const descent = Math.ceil(metrics.actualBoundingBoxDescent);
+
+          const padding = 2;
+          const width = left + right + padding;
+          const height = ascent + descent + padding;
+          const advance = metrics.width;
+
+          if (textCanvas.width < width) textCanvas.width = Math.max(256, width);
+          if (textCanvas.height < height)
+            textCanvas.height = Math.max(256, height);
+
+          // Apply subpixel offset when drawing
+          textCtx.clearRect(0, 0, width, height);
+          textCtx.font = font;
+          textCtx.fillStyle = "white";
+          textCtx.textBaseline = "alphabetic";
+          textCtx.fillText(char, left + 1 + subpixelX, ascent + 1 + subpixelY);
+
+          const imageData = textCtx.getImageData(0, 0, width, height);
+          const mem = new Uint8Array(
+            wasmInstance.exports.memory.buffer,
+            outBuffer,
+            bufferSize,
+          );
+          for (let i = 0; i < width * height && i < bufferSize; i++) {
+            mem[i] = imageData.data[i * 4 + 3];
+          }
+
+          const view = new DataView(wasmInstance.exports.memory.buffer);
+          view.setUint32(outWidth, width, true);
+          view.setUint32(outHeight, height, true);
+          view.setFloat32(outBearingX, -(left + 1), true);
+          view.setFloat32(outBearingY, -(ascent - 1), true);
+          view.setFloat32(outAdvance, advance, true);
+        },
         createTexture: (width, height, dataPtr, dataLen) => {
           const data = new Uint8Array(
             wasmInstance.exports.memory.buffer,
@@ -1403,6 +1520,144 @@
           });
         },
 
+        // =================================================================
+        // MSAA (Multisampling Anti-Aliasing) Support
+        // =================================================================
+
+        // Cache the supported sample count (determined at init)
+        _msaaSampleCount: null,
+
+        getMSAASampleCount: () => {
+          // Return cached value if already determined
+          if (env._msaaSampleCount !== null) {
+            return env._msaaSampleCount;
+          }
+
+          // WebGPU spec: sample counts 1 and 4 are always supported for
+          // render targets. However, some devices may have issues.
+          // Try to create a test texture to verify support.
+          try {
+            const testTexture = device.createTexture({
+              size: { width: 4, height: 4 },
+              format,
+              sampleCount: 4,
+              usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            });
+            testTexture.destroy();
+            env._msaaSampleCount = 4;
+            console.log("MSAA 4x supported");
+          } catch (e) {
+            console.warn("MSAA 4x not supported, falling back to no MSAA:", e);
+            env._msaaSampleCount = 1;
+          }
+          return env._msaaSampleCount;
+        },
+
+        createMSAATexture: (width, height, sampleCount) => {
+          if (sampleCount <= 1) return 0;
+
+          try {
+            const texture = device.createTexture({
+              size: { width, height },
+              format,
+              sampleCount,
+              usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            });
+            return allocHandle(handles.textures, texture);
+          } catch (e) {
+            console.error("Failed to create MSAA texture:", e);
+            return 0;
+          }
+        },
+
+        destroyTexture: (textureHandle) => {
+          const texture = handles.textures.get(textureHandle);
+          if (texture) {
+            texture.destroy();
+            handles.textures.delete(textureHandle);
+          }
+        },
+
+        createMSAARenderPipeline: (
+          shaderHandle,
+          vsPtr,
+          vsLen,
+          fsPtr,
+          fsLen,
+          sampleCount,
+        ) => {
+          const module = handles.shaderModules.get(shaderHandle);
+          const vsEntry = getString(vsPtr, vsLen);
+          const fsEntry = getString(fsPtr, fsLen);
+
+          const pipeline = device.createRenderPipeline({
+            layout: "auto",
+            vertex: {
+              module,
+              entryPoint: vsEntry,
+            },
+            fragment: {
+              module,
+              entryPoint: fsEntry,
+              targets: [
+                {
+                  format,
+                  blend: {
+                    color: {
+                      srcFactor: "src-alpha",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                  },
+                },
+              ],
+            },
+            primitive: {
+              topology: "triangle-list",
+            },
+            multisample: {
+              count: sampleCount,
+            },
+          });
+          return allocHandle(handles.pipelines, pipeline);
+        },
+
+        beginMSAARenderPass: (
+          msaaTextureHandle,
+          resolveViewHandle,
+          r,
+          g,
+          b,
+          a,
+        ) => {
+          const msaaTexture = handles.textures.get(msaaTextureHandle);
+          const resolveView = handles.textureViews.get(resolveViewHandle);
+
+          if (!msaaTexture || !resolveView) {
+            console.error("beginMSAARenderPass: invalid handles");
+            return;
+          }
+
+          const msaaView = msaaTexture.createView();
+          env.currentEncoder = device.createCommandEncoder();
+          env.currentPass = env.currentEncoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: msaaView,
+                resolveTarget: resolveView,
+                clearValue: { r, g, b, a },
+                loadOp: "clear",
+                storeOp: "discard",
+              },
+            ],
+          });
+        },
+
         // Copy the current screen to a texture for post-processing
         copyToTexture: (srcViewHandle, dstTextureHandle, width, height) => {
           const srcView = handles.textureViews.get(srcViewHandle);
@@ -1464,6 +1719,7 @@
         initKeyboard();
         initScroll();
         initMouse();
+        initComposition();
       }
 
       init().catch((err) => {

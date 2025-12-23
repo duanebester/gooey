@@ -111,11 +111,18 @@ pub const WebWindow = struct {
         // On web, rendering is driven by requestAnimationFrame
     }
 
+    pub fn setTitle(_: *Self, title: []const u8) void {
+        imports.setDocumentTitle(title.ptr, @intCast(title.len));
+    }
+
+    pub fn setImeCursorRect(_: *Self, x: f32, y: f32, w: f32, h: f32) void {
+        imports.setImeCursorPosition(x, y, w, h);
+    }
+
     // =========================================================================
     // Stubs for API compatibility (no-ops on web)
     // =========================================================================
 
-    pub fn setTitle(_: *Self, _: []const u8) void {}
     pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
         self.background_color = color;
     }
@@ -137,7 +144,6 @@ pub const WebWindow = struct {
     // IME (not yet supported on web)
     pub fn setMarkedText(_: *Self, _: []const u8) void {}
     pub fn setInsertedText(_: *Self, _: []const u8) void {}
-    pub fn setImeCursorRect(_: *Self, _: f32, _: f32, _: f32, _: f32) void {}
 
     // Hover (managed differently on web)
     pub fn getHoveredQuad(_: *const Self) ?*const scene_mod.Quad {
