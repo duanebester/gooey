@@ -4,7 +4,7 @@ A GPU-accelerated UI framework for Zig, targeting macOS with Metal rendering and
 
 Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
-> ⚠️ **Early Development**: macOS-only (WASM half-baked). API is evolving.
+> ⚠️ **Early Development**: API is evolving.
 
 <table>
   <tr>
@@ -17,7 +17,7 @@ Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
   </tr>
 </table>
 
-WASM support imminent
+WASM support!
 
 <img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/gooey-wasm.png" height="300px" />
 
@@ -403,17 +403,15 @@ fn render(cx: *Cx) void {
 
 ## WASM
 
-⚠️ Currently supports a subset of the API. ⚠️
-
 ```bash
 # Build WASM examples
-zig build wasm                    # showcase
+zig build wasm # showcase
 zig build wasm-counter
 zig build wasm-dynamic-counters
 zig build wasm-pomodoro
 
 # Run with a local server
-python3 -m http.server 8080 -d zig-out/web  # showcase
+python3 -m http.server 8080 -d zig-out/web # showcase
 python3 -m http.server 8080 -d zig-out/web/counter
 python3 -m http.server 8080 -d zig-out/web/dynamic
 python3 -m http.server 8080 -d zig-out/web/pomodoro
