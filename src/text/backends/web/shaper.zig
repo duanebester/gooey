@@ -113,9 +113,8 @@ pub const WebShaper = struct {
                 @intCast(char_len),
             );
 
-            var x_offset: f32 = 0;
-
             // Detect kerning by comparing pair width vs sum of individuals
+            // Apply kerning to previous glyph's advance (like CoreText does)
             if (i > 0) {
                 const prev_cp = codepoints.items[i - 1];
                 const prev_len = std.unicode.utf8Encode(prev_cp, &pair_buf) catch 0;
@@ -130,13 +129,16 @@ pub const WebShaper = struct {
                         @intCast(prev_len + curr_len),
                     );
                     const kerning = pair_width - (prev_width + char_width);
-                    if (@abs(kerning) > 0.1) x_offset = kerning;
+                    if (@abs(kerning) > 0.1) {
+                        // Adjust previous glyph's advance to include kerning
+                        glyph_buffer.items[i - 1].x_advance += kerning;
+                    }
                 }
             }
 
             try glyph_buffer.append(allocator, .{
                 .glyph_id = @truncate(cp),
-                .x_offset = x_offset,
+                .x_offset = 0,
                 .y_offset = 0,
                 .x_advance = char_width,
                 .y_advance = 0,

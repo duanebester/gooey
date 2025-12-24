@@ -75,6 +75,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "select", "src/examples/select.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "dynamic-counters", "src/examples/dynamic_counters.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "actions", "src/examples/actions.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "text-debug", "src/examples/text_debug_example.zig", false);
 
         // =====================================================================
         // Tests
@@ -190,6 +191,7 @@ pub fn build(b: *std.Build) void {
     addWasmExample(b, gooey_wasm_module, wasm_target, "spaceship", "src/examples/spaceship.zig", "web/spaceship");
     addWasmExample(b, gooey_wasm_module, wasm_target, "layout", "src/examples/layout.zig", "web/layout");
     addWasmExample(b, gooey_wasm_module, wasm_target, "select", "src/examples/select.zig", "web/select");
+    addWasmExample(b, gooey_wasm_module, wasm_target, "text", "src/examples/text_debug_example.zig", "web/text");
 }
 
 /// Helper to add a native macOS example with minimal boilerplate.

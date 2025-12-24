@@ -1162,8 +1162,11 @@
           const descent = Math.ceil(metrics.actualBoundingBoxDescent);
 
           const padding = 2;
-          const width = left + right + padding;
-          const height = ascent + descent + padding;
+          // Add extra pixel when subpixel variant is non-zero (matches native CoreText)
+          let width = left + right + padding;
+          let height = ascent + descent + padding;
+          if (subpixelX > 0) width += 1;
+          if (subpixelY > 0) height += 1;
           const advance = metrics.width;
 
           if (textCanvas.width < width) textCanvas.width = Math.max(256, width);

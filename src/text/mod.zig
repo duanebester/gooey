@@ -65,6 +65,9 @@ pub const CachedGlyph = cache.CachedGlyph;
 // High-level API
 pub const TextSystem = @import("text_system.zig").TextSystem;
 
+// Debug utilities (for diagnosing native vs web differences)
+pub const text_debug = @import("text_debug.zig");
+
 // Platform backends
 const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;
