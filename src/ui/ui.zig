@@ -58,6 +58,7 @@ const Hsla = scene_mod.Hsla;
 pub const Color = @import("../core/geometry.zig").Color;
 pub const ShadowConfig = @import("../layout/types.zig").ShadowConfig;
 pub const AttachPoint = layout_types.AttachPoint;
+pub const ObjectFit = @import("../image/atlas.zig").ObjectFit;
 
 // =============================================================================
 // Floating Configuration
@@ -328,6 +329,7 @@ pub const PrimitiveType = enum {
     action_handler,
     action_handler_ref,
     svg,
+    image,
 };
 
 pub const CheckboxStyle = struct {
@@ -459,6 +461,34 @@ pub const SvgPrimitive = struct {
     viewbox: f32 = 24,
 
     pub const primitive_type: PrimitiveType = .svg;
+};
+
+/// Image element descriptor - renders an image from atlas
+pub const ImagePrimitive = struct {
+    /// Image source path (file path or embedded asset)
+    source: []const u8,
+
+    /// Explicit width (null = intrinsic)
+    width: ?f32 = null,
+    /// Explicit height (null = intrinsic)
+    height: ?f32 = null,
+
+    /// Object fit mode (imported from image/atlas.zig)
+    fit: ObjectFit = .contain,
+
+    /// Corner radius for rounded images
+    corner_radius: ?CornerRadius = null,
+
+    /// Tint color (multiplied with image)
+    tint: ?Color = null,
+
+    /// Grayscale effect (0-1)
+    grayscale: f32 = 0,
+
+    /// Opacity (0-1)
+    opacity: f32 = 1,
+
+    pub const primitive_type: PrimitiveType = .image;
 };
 
 // =============================================================================
@@ -593,6 +623,7 @@ pub const Builder = struct {
     pending_text_areas: std.ArrayList(PendingTextArea),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
     pending_svgs: std.ArrayListUnmanaged(PendingSvg),
+    pending_images: std.ArrayListUnmanaged(PendingImage),
 
     const PendingInput = struct {
         id: []const u8,
@@ -627,6 +658,18 @@ pub const Builder = struct {
         viewbox: f32,
     };
 
+    const PendingImage = struct {
+        layout_id: LayoutId,
+        source: []const u8,
+        width: ?f32,
+        height: ?f32,
+        fit: ObjectFit,
+        corner_radius: ?CornerRadius,
+        tint: ?Hsla,
+        grayscale: f32,
+        opacity: f32,
+    };
+
     const Self = @This();
 
     pub fn init(
@@ -644,6 +687,7 @@ pub const Builder = struct {
             .pending_scrolls = .{},
             .pending_text_areas = .{},
             .pending_svgs = .{},
+            .pending_images = .{},
         };
     }
 
@@ -652,6 +696,7 @@ pub const Builder = struct {
         self.pending_text_areas.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
         self.pending_svgs.deinit(self.allocator);
+        self.pending_images.deinit(self.allocator);
     }
 
     // =========================================================================
@@ -1119,6 +1164,10 @@ pub const Builder = struct {
         return self.pending_svgs.items;
     }
 
+    pub fn getPendingImages(self: *const Self) []const PendingImage {
+        return self.pending_images.items;
+    }
+
     // =========================================================================
     // Internal: Child Processing
     // =========================================================================
@@ -1171,6 +1220,7 @@ pub const Builder = struct {
                 .button_handler => self.renderButtonHandler(child),
                 .action_handler_ref => self.renderActionHandlerRef(child),
                 .svg => self.renderSvg(child),
+                .image => self.renderImage(child),
                 .empty => {}, // Do nothing
 
             }
@@ -1552,6 +1602,53 @@ pub const Builder = struct {
             .stroke_width = prim.stroke_width,
             .has_fill = prim.has_fill,
             .viewbox = prim.viewbox,
+        }) catch {};
+    }
+
+    fn renderImage(self: *Self, prim: ImagePrimitive) void {
+        // Generate a unique layout ID for this image instance
+        const layout_id = self.generateId();
+
+        // Determine sizing
+        const width_sizing: SizingAxis = if (prim.width) |w|
+            SizingAxis.fixed(w)
+        else
+            SizingAxis.grow();
+
+        const height_sizing: SizingAxis = if (prim.height) |h|
+            SizingAxis.fixed(h)
+        else
+            SizingAxis.grow();
+
+        // Create layout element
+        self.layout.openElement(.{
+            .id = layout_id,
+            .layout = .{
+                .sizing = .{
+                    .width = width_sizing,
+                    .height = height_sizing,
+                },
+            },
+        }) catch return;
+        self.layout.closeElement();
+
+        // Convert tint color to Hsla if present
+        const tint_hsla: ?Hsla = if (prim.tint) |t|
+            Hsla.fromRgba(t.r, t.g, t.b, t.a)
+        else
+            null;
+
+        // Store for later rendering (after layout is computed)
+        self.pending_images.append(self.allocator, .{
+            .layout_id = layout_id,
+            .source = prim.source,
+            .width = prim.width,
+            .height = prim.height,
+            .fit = prim.fit,
+            .corner_radius = prim.corner_radius,
+            .tint = tint_hsla,
+            .grayscale = prim.grayscale,
+            .opacity = prim.opacity,
         }) catch {};
     }
 

@@ -58,6 +58,7 @@ pub fn renderFullPipeline(
             .unified = unified_pipeline,
             .text = tp,
             .svg = sp,
+            .image = null,
             .unit_vertex_buffer = unit_vertex_buffer,
         }, viewport_size);
 

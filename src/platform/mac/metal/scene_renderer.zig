@@ -16,12 +16,14 @@ const text_pipeline = @import("text.zig");
 const render_stats = @import("../../../core/render_stats.zig");
 const unified = @import("unified.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
+const image_pipeline = @import("image_pipeline.zig");
 
 /// Pipeline references for batch rendering
 pub const Pipelines = struct {
     unified: ?objc.Object,
     text: ?*text_pipeline.TextPipeline,
     svg: ?*svg_pipeline.SvgPipeline,
+    image: ?*image_pipeline.ImagePipeline,
     unit_vertex_buffer: objc.Object,
 };
 
@@ -47,11 +49,12 @@ pub fn drawSceneWithStats(
 
     if (DEBUG_BATCHES) {
         std.debug.print("\n=== BATCH RENDER START ===\n", .{});
-        std.debug.print("  Total shadows: {d}, quads: {d}, glyphs: {d}, svgs: {d}\n", .{
+        std.debug.print("  Total shadows: {d}, quads: {d}, glyphs: {d}, svgs: {d}, images: {d}\n", .{
             scene.getShadows().len,
             scene.getQuads().len,
             scene.getGlyphs().len,
             scene.getSvgInstances().len,
+            scene.getImages().len,
         });
     }
 
@@ -76,6 +79,10 @@ pub fn drawSceneWithStats(
             .svg => |svgs| {
                 if (DEBUG_BATCHES) std.debug.print("SVG x{d}\n", .{svgs.len});
                 drawSvgBatch(encoder, svgs, pipelines, viewport_size, stats);
+            },
+            .image => |images| {
+                if (DEBUG_BATCHES) std.debug.print("IMAGE x{d}\n", .{images.len});
+                drawImageBatch(encoder, images, pipelines, viewport_size, stats);
             },
         }
         batch_num += 1;
@@ -205,6 +212,31 @@ fn drawSvgBatch(
     if (stats) |s| {
         s.recordDrawCall();
         s.recordSvgs(@intCast(svgs.len));
+    }
+}
+
+/// Draw a batch of image instances using the image pipeline
+fn drawImageBatch(
+    encoder: objc.Object,
+    images: []const @import("../../../core/image_instance.zig").ImageInstance,
+    pipelines: Pipelines,
+    viewport_size: [2]f32,
+    stats: ?*render_stats.RenderStats,
+) void {
+    if (images.len == 0) return;
+    const ip = pipelines.image orelse return;
+
+    // Use renderBatch which copies data inline via setVertexBytes,
+    // safe for multiple calls per frame (unlike render which uses shared buffer)
+    ip.renderBatch(encoder, images, viewport_size) catch |err| {
+        if (builtin.mode == .Debug) {
+            std.debug.print("drawImageBatch failed: {}\n", .{err});
+        }
+    };
+
+    if (stats) |s| {
+        s.recordDrawCall();
+        // TODO: Add recordImages to stats if needed
     }
 }
 

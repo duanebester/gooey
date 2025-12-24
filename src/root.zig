@@ -66,6 +66,9 @@ pub const ui = @import("ui/mod.zig");
 /// Platform abstraction (macOS/Metal)
 pub const platform = @import("platform/mod.zig");
 
+/// Image loading and caching
+pub const image = @import("image/mod.zig");
+
 // Components (preferred)
 pub const components = @import("components/mod.zig");
 pub const Button = components.Button;
@@ -80,6 +83,8 @@ pub const TabBar = components.TabBar;
 pub const Svg = components.Svg;
 pub const Icons = components.Icons;
 pub const Select = components.Select;
+pub const Image = components.Image;
+pub const AspectRatio = components.AspectRatio;
 
 // =============================================================================
 // App Entry Point (most common usage)
@@ -122,6 +127,12 @@ pub const GlyphInstance = core.GlyphInstance;
 // SVG support
 pub const svg = core.svg;
 
+// Image support
+pub const ImageAtlas = image.ImageAtlas;
+pub const ImageSource = image.ImageSource;
+pub const ImageData = image.ImageData;
+pub const ObjectFit = image.ObjectFit;
+
 // Render bridge
 pub const render_bridge = core.render_bridge;
 
@@ -142,6 +153,7 @@ pub const LayoutEngine = layout.LayoutEngine;
 pub const LayoutId = layout.LayoutId;
 pub const Sizing = layout.Sizing;
 pub const Padding = layout.Padding;
+pub const CornerRadius = layout.CornerRadius;
 pub const LayoutConfig = layout.LayoutConfig;
 pub const BoundingBox = layout.BoundingBox;
 

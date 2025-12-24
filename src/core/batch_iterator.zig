@@ -24,12 +24,14 @@
 const std = @import("std");
 const scene_mod = @import("scene.zig");
 const SvgInstance = @import("svg_instance.zig").SvgInstance;
+const ImageInstance = @import("image_instance.zig").ImageInstance;
 
 pub const PrimitiveKind = enum(u8) {
     shadow,
     quad,
     glyph,
     svg,
+    image,
 };
 
 pub const PrimitiveBatch = union(PrimitiveKind) {
@@ -37,6 +39,7 @@ pub const PrimitiveBatch = union(PrimitiveKind) {
     quad: []const scene_mod.Quad,
     glyph: []const scene_mod.GlyphInstance,
     svg: []const SvgInstance,
+    image: []const ImageInstance,
 
     pub fn len(self: PrimitiveBatch) usize {
         return switch (self) {
@@ -44,6 +47,7 @@ pub const PrimitiveBatch = union(PrimitiveKind) {
             .quad => |q| q.len,
             .glyph => |g| g.len,
             .svg => |sv| sv.len,
+            .image => |img| img.len,
         };
     }
 };
@@ -53,11 +57,13 @@ pub const BatchIterator = struct {
     quads: []const scene_mod.Quad,
     glyphs: []const scene_mod.GlyphInstance,
     svgs: []const SvgInstance,
+    images: []const ImageInstance,
 
     shadow_idx: usize = 0,
     quad_idx: usize = 0,
     glyph_idx: usize = 0,
     svg_idx: usize = 0,
+    image_idx: usize = 0,
 
     const Self = @This();
 
@@ -67,6 +73,7 @@ pub const BatchIterator = struct {
             .quads = scene.getQuads(),
             .glyphs = scene.getGlyphs(),
             .svgs = scene.getSvgInstances(),
+            .images = scene.getImages(),
         };
     }
 
@@ -77,8 +84,9 @@ pub const BatchIterator = struct {
         const quad_order = self.peekOrder(.quad);
         const glyph_order = self.peekOrder(.glyph);
         const svg_order = self.peekOrder(.svg);
+        const image_order = self.peekOrder(.image);
 
-        // Find minimum order (with tie-breaking by kind priority: shadow < quad < glyph < svg)
+        // Find minimum order (with tie-breaking by kind priority: shadow < quad < glyph < svg < image)
         var min_kind: ?PrimitiveKind = null;
         var min_order: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
 
@@ -106,16 +114,23 @@ pub const BatchIterator = struct {
                 min_kind = .svg;
             }
         }
+        if (image_order) |order| {
+            if (order < min_order) {
+                min_order = order;
+                min_kind = .image;
+            }
+        }
 
         const kind = min_kind orelse return null;
 
         // Consume all consecutive primitives of this type until we hit
         // a primitive of another type with a lower order
         return switch (kind) {
-            .shadow => self.consumeShadows(quad_order, glyph_order, svg_order),
-            .quad => self.consumeQuads(shadow_order, glyph_order, svg_order),
-            .glyph => self.consumeGlyphs(shadow_order, quad_order, svg_order),
-            .svg => self.consumeSvgs(shadow_order, quad_order, glyph_order),
+            .shadow => self.consumeShadows(quad_order, glyph_order, svg_order, image_order),
+            .quad => self.consumeQuads(shadow_order, glyph_order, svg_order, image_order),
+            .glyph => self.consumeGlyphs(shadow_order, quad_order, svg_order, image_order),
+            .svg => self.consumeSvgs(shadow_order, quad_order, glyph_order, image_order),
+            .image => self.consumeImages(shadow_order, quad_order, glyph_order, svg_order),
         };
     }
 
@@ -126,6 +141,7 @@ pub const BatchIterator = struct {
             .quad => if (self.quad_idx < self.quads.len) self.quads[self.quad_idx].order else null,
             .glyph => if (self.glyph_idx < self.glyphs.len) self.glyphs[self.glyph_idx].order else null,
             .svg => if (self.svg_idx < self.svgs.len) self.svgs[self.svg_idx].order else null,
+            .image => if (self.image_idx < self.images.len) self.images[self.image_idx].order else null,
         };
     }
 
@@ -135,6 +151,7 @@ pub const BatchIterator = struct {
         quad_order: ?scene_mod.DrawOrder,
         glyph_order: ?scene_mod.DrawOrder,
         svg_order: ?scene_mod.DrawOrder,
+        image_order: ?scene_mod.DrawOrder,
     ) PrimitiveBatch {
         const start = self.shadow_idx;
 
@@ -143,6 +160,7 @@ pub const BatchIterator = struct {
         if (quad_order) |o| other_min = @min(other_min, o);
         if (glyph_order) |o| other_min = @min(other_min, o);
         if (svg_order) |o| other_min = @min(other_min, o);
+        if (image_order) |o| other_min = @min(other_min, o);
 
         // Consume shadows while their order < other_min
         while (self.shadow_idx < self.shadows.len and
@@ -163,6 +181,7 @@ pub const BatchIterator = struct {
         shadow_order: ?scene_mod.DrawOrder,
         glyph_order: ?scene_mod.DrawOrder,
         svg_order: ?scene_mod.DrawOrder,
+        image_order: ?scene_mod.DrawOrder,
     ) PrimitiveBatch {
         const start = self.quad_idx;
 
@@ -170,6 +189,7 @@ pub const BatchIterator = struct {
         if (shadow_order) |o| other_min = @min(other_min, o);
         if (glyph_order) |o| other_min = @min(other_min, o);
         if (svg_order) |o| other_min = @min(other_min, o);
+        if (image_order) |o| other_min = @min(other_min, o);
 
         while (self.quad_idx < self.quads.len and
             self.quads[self.quad_idx].order < other_min)
@@ -188,6 +208,7 @@ pub const BatchIterator = struct {
         shadow_order: ?scene_mod.DrawOrder,
         quad_order: ?scene_mod.DrawOrder,
         svg_order: ?scene_mod.DrawOrder,
+        image_order: ?scene_mod.DrawOrder,
     ) PrimitiveBatch {
         const start = self.glyph_idx;
 
@@ -195,6 +216,7 @@ pub const BatchIterator = struct {
         if (shadow_order) |o| other_min = @min(other_min, o);
         if (quad_order) |o| other_min = @min(other_min, o);
         if (svg_order) |o| other_min = @min(other_min, o);
+        if (image_order) |o| other_min = @min(other_min, o);
 
         while (self.glyph_idx < self.glyphs.len and
             self.glyphs[self.glyph_idx].order < other_min)
@@ -213,6 +235,7 @@ pub const BatchIterator = struct {
         shadow_order: ?scene_mod.DrawOrder,
         quad_order: ?scene_mod.DrawOrder,
         glyph_order: ?scene_mod.DrawOrder,
+        image_order: ?scene_mod.DrawOrder,
     ) PrimitiveBatch {
         const start = self.svg_idx;
 
@@ -220,6 +243,7 @@ pub const BatchIterator = struct {
         if (shadow_order) |o| other_min = @min(other_min, o);
         if (quad_order) |o| other_min = @min(other_min, o);
         if (glyph_order) |o| other_min = @min(other_min, o);
+        if (image_order) |o| other_min = @min(other_min, o);
 
         while (self.svg_idx < self.svgs.len and
             self.svgs[self.svg_idx].order < other_min)
@@ -232,12 +256,40 @@ pub const BatchIterator = struct {
         return .{ .svg = self.svgs[start..self.svg_idx] };
     }
 
+    /// Consume images until another type has a lower order
+    fn consumeImages(
+        self: *Self,
+        shadow_order: ?scene_mod.DrawOrder,
+        quad_order: ?scene_mod.DrawOrder,
+        glyph_order: ?scene_mod.DrawOrder,
+        svg_order: ?scene_mod.DrawOrder,
+    ) PrimitiveBatch {
+        const start = self.image_idx;
+
+        var other_min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
+        if (shadow_order) |o| other_min = @min(other_min, o);
+        if (quad_order) |o| other_min = @min(other_min, o);
+        if (glyph_order) |o| other_min = @min(other_min, o);
+        if (svg_order) |o| other_min = @min(other_min, o);
+
+        while (self.image_idx < self.images.len and
+            self.images[self.image_idx].order < other_min)
+        {
+            self.image_idx += 1;
+        }
+
+        if (self.image_idx == start) self.image_idx += 1;
+
+        return .{ .image = self.images[start..self.image_idx] };
+    }
+
     /// Check if iteration is complete
     pub fn done(self: *const Self) bool {
         return self.shadow_idx >= self.shadows.len and
             self.quad_idx >= self.quads.len and
             self.glyph_idx >= self.glyphs.len and
-            self.svg_idx >= self.svgs.len;
+            self.svg_idx >= self.svgs.len and
+            self.image_idx >= self.images.len;
     }
 
     /// Reset iterator to beginning
@@ -246,6 +298,7 @@ pub const BatchIterator = struct {
         self.quad_idx = 0;
         self.glyph_idx = 0;
         self.svg_idx = 0;
+        self.image_idx = 0;
     }
 };
 

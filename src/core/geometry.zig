@@ -390,6 +390,80 @@ pub const Color = struct {
         }
     }
 
+    /// Parse a hex color string like "#1a1a2e", "#RGB", "#RGBA", "#RRGGBB", or "#RRGGBBAA"
+    pub fn fromHex(str: []const u8) Color {
+        if (str.len == 0) return black;
+
+        const s = if (str[0] == '#') str[1..] else str;
+
+        return switch (s.len) {
+            // #RGB -> #RRGGBB
+            3 => blk: {
+                const r = parseHexDigit(s[0]);
+                const g = parseHexDigit(s[1]);
+                const b = parseHexDigit(s[2]);
+                break :blk .{
+                    .r = @as(f32, @floatFromInt(r * 17)) / 255.0,
+                    .g = @as(f32, @floatFromInt(g * 17)) / 255.0,
+                    .b = @as(f32, @floatFromInt(b * 17)) / 255.0,
+                    .a = 1.0,
+                };
+            },
+            // #RGBA -> #RRGGBBAA
+            4 => blk: {
+                const r = parseHexDigit(s[0]);
+                const g = parseHexDigit(s[1]);
+                const b = parseHexDigit(s[2]);
+                const a = parseHexDigit(s[3]);
+                break :blk .{
+                    .r = @as(f32, @floatFromInt(r * 17)) / 255.0,
+                    .g = @as(f32, @floatFromInt(g * 17)) / 255.0,
+                    .b = @as(f32, @floatFromInt(b * 17)) / 255.0,
+                    .a = @as(f32, @floatFromInt(a * 17)) / 255.0,
+                };
+            },
+            // #RRGGBB
+            6 => blk: {
+                const r = parseHexByte(s[0..2]);
+                const g = parseHexByte(s[2..4]);
+                const b = parseHexByte(s[4..6]);
+                break :blk .{
+                    .r = @as(f32, @floatFromInt(r)) / 255.0,
+                    .g = @as(f32, @floatFromInt(g)) / 255.0,
+                    .b = @as(f32, @floatFromInt(b)) / 255.0,
+                    .a = 1.0,
+                };
+            },
+            // #RRGGBBAA
+            8 => blk: {
+                const r = parseHexByte(s[0..2]);
+                const g = parseHexByte(s[2..4]);
+                const b = parseHexByte(s[4..6]);
+                const a = parseHexByte(s[6..8]);
+                break :blk .{
+                    .r = @as(f32, @floatFromInt(r)) / 255.0,
+                    .g = @as(f32, @floatFromInt(g)) / 255.0,
+                    .b = @as(f32, @floatFromInt(b)) / 255.0,
+                    .a = @as(f32, @floatFromInt(a)) / 255.0,
+                };
+            },
+            else => black,
+        };
+    }
+
+    fn parseHexDigit(c: u8) u8 {
+        return switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => 0,
+        };
+    }
+
+    fn parseHexByte(s: *const [2]u8) u8 {
+        return parseHexDigit(s[0]) * 16 + parseHexDigit(s[1]);
+    }
+
     pub fn withAlpha(self: Color, a: f32) Color {
         return .{ .r = self.r, .g = self.g, .b = self.b, .a = a };
     }

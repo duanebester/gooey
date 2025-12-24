@@ -75,6 +75,8 @@ pub const Quad = scene.Quad;
 pub const Shadow = scene.Shadow;
 pub const Hsla = scene.Hsla;
 pub const GlyphInstance = scene.GlyphInstance;
+pub const SvgInstance = scene.SvgInstance;
+pub const ImageInstance = scene.ImageInstance;
 pub const DrawOrder = scene.DrawOrder;
 
 // =============================================================================

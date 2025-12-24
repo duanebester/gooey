@@ -25,6 +25,8 @@ const std = @import("std");
 const geometry = @import("geometry.zig");
 const svg_instance_mod = @import("svg_instance.zig");
 pub const SvgInstance = svg_instance_mod.SvgInstance;
+const image_instance_mod = @import("image_instance.zig");
+pub const ImageInstance = image_instance_mod.ImageInstance;
 
 pub const DrawOrder = u32;
 
@@ -376,6 +378,7 @@ pub const Scene = struct {
     quads: std.ArrayList(Quad),
     glyphs: std.ArrayList(GlyphInstance),
     svg_instances: std.ArrayList(SvgInstance),
+    images: std.ArrayList(ImageInstance),
     next_order: DrawOrder,
     // Clip mask stack for nested clipping regions
     clip_stack: std.ArrayList(ContentMask.ClipBounds),
@@ -399,6 +402,7 @@ pub const Scene = struct {
             .quads = .{},
             .glyphs = .{},
             .svg_instances = .{},
+            .images = .{},
             .next_order = 0,
             .clip_stack = .{},
             .needs_sort = false,
@@ -415,6 +419,7 @@ pub const Scene = struct {
         self.quads.deinit(self.allocator);
         self.glyphs.deinit(self.allocator);
         self.svg_instances.deinit(self.allocator);
+        self.images.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
     }
 
@@ -423,6 +428,7 @@ pub const Scene = struct {
         self.quads.clearRetainingCapacity();
         self.glyphs.clearRetainingCapacity();
         self.svg_instances.clearRetainingCapacity();
+        self.images.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
         self.next_order = 0;
         self.needs_sort = false;
@@ -481,6 +487,35 @@ pub const Scene = struct {
 
     pub fn getSvgInstances(self: *const Self) []const SvgInstance {
         return self.svg_instances.items;
+    }
+
+    // ========================================================================
+    // Image Insertion
+    // ========================================================================
+
+    /// Insert an image instance without clipping
+    pub fn insertImage(self: *Self, instance: ImageInstance) !void {
+        var inst = instance;
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.images.append(self.allocator, inst);
+    }
+
+    /// Insert an image instance with the current clip mask applied
+    pub fn insertImageClipped(self: *Self, instance: ImageInstance) !void {
+        const clip = self.currentClip();
+        var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.images.append(self.allocator, inst);
+    }
+
+    pub fn imageCount(self: *const Self) usize {
+        return self.images.items.len;
+    }
+
+    pub fn getImages(self: *const Self) []const ImageInstance {
+        return self.images.items;
     }
 
     // ========================================================================
@@ -624,6 +659,11 @@ pub const Scene = struct {
         }.lessThan);
         std.sort.pdq(SvgInstance, self.svg_instances.items, {}, struct {
             fn lessThan(_: void, a: SvgInstance, b: SvgInstance) bool {
+                return a.order < b.order;
+            }
+        }.lessThan);
+        std.sort.pdq(ImageInstance, self.images.items, {}, struct {
+            fn lessThan(_: void, a: ImageInstance, b: ImageInstance) bool {
                 return a.order < b.order;
             }
         }.lessThan);

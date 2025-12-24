@@ -37,6 +37,7 @@ pub const Window = struct {
     scene: ?*const scene_mod.Scene,
     text_atlas: ?*const Atlas = null,
     svg_atlas: ?*const Atlas = null,
+    image_atlas: ?*const Atlas = null,
     delegate: ?objc.Object = null,
     // Custom shader animation flag
     custom_shader_animation: bool,
@@ -114,6 +115,14 @@ pub const Window = struct {
             defer self.render_mutex.unlock();
         }
         self.svg_atlas = atlas;
+    }
+
+    pub fn setImageAtlas(self: *Self, atlas: *const Atlas) void {
+        if (!self.render_in_progress.load(.acquire)) {
+            self.render_mutex.lock();
+            defer self.render_mutex.unlock();
+        }
+        self.image_atlas = atlas;
     }
 
     /// Window width in logical pixels
@@ -531,6 +540,9 @@ pub const Window = struct {
             }
             if (self.svg_atlas) |atlas| {
                 self.renderer.prepareSvgAtlas(atlas);
+            }
+            if (self.image_atlas) |atlas| {
+                self.renderer.prepareImageAtlas(atlas);
             }
 
             if (self.scene) |s| {
@@ -1008,6 +1020,11 @@ fn displayLinkCallback(
     // Update SVG atlas if set
     if (window.svg_atlas) |atlas| {
         window.renderer.prepareSvgAtlas(atlas);
+    }
+
+    // Update image atlas if set
+    if (window.image_atlas) |atlas| {
+        window.renderer.prepareImageAtlas(atlas);
     }
 
     // Use post-process rendering if shaders are active

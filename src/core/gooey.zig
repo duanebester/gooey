@@ -25,6 +25,7 @@ const std = @import("std");
 const layout_mod = @import("../layout/layout.zig");
 const engine_mod = @import("../layout/engine.zig");
 const svg_mod = @import("../svg/mod.zig");
+const image_mod = @import("../image/mod.zig");
 const LayoutEngine = layout_mod.LayoutEngine;
 const LayoutId = layout_mod.LayoutId;
 const ElementDeclaration = layout_mod.ElementDeclaration;
@@ -89,6 +90,7 @@ pub const Gooey = struct {
     text_system_owned: bool = false,
 
     svg_atlas: svg_mod.SvgAtlas,
+    image_atlas: image_mod.ImageAtlas,
 
     // Widgets (retained across frames)
     widgets: WidgetStore,
@@ -182,6 +184,7 @@ pub const Gooey = struct {
             .text_system = text_system,
             .text_system_owned = true,
             .svg_atlas = try svg_mod.SvgAtlas.init(allocator, window.scale_factor),
+            .image_atlas = try image_mod.ImageAtlas.init(allocator, window.scale_factor),
             .widgets = WidgetStore.init(allocator),
             .window = window,
             .width = @floatCast(window.size.width),
@@ -196,6 +199,7 @@ pub const Gooey = struct {
         self.entities.deinit();
 
         self.svg_atlas.deinit();
+        self.image_atlas.deinit();
 
         // Clean up dispatch tree
         self.dispatch.deinit();
@@ -226,6 +230,7 @@ pub const Gooey = struct {
         self.frame_count += 1;
         self.widgets.beginFrame();
         self.focus.beginFrame();
+        self.image_atlas.beginFrame();
 
         // Clear stale entity observations from last frame
         self.entities.beginFrame();
