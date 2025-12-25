@@ -70,8 +70,8 @@ pub const Image = struct {
 
         // Calculate corner radius value
         const radius_value: f32 = if (self.rounded) blk: {
-            // For rounded, use half the smaller dimension (or a large value if size unknown)
-            break :blk if (w) |width| width / 2 else if (h) |height| height / 2 else 9999;
+            // For rounded, use half the smaller dimension (or infinity if size unknown - will be clamped by renderer)
+            break :blk if (w) |width| width / 2 else if (h) |height| height / 2 else std.math.inf(f32);
         } else if (self.corner_radius) |r| r else 0;
 
         // Create CornerRadius struct for ImagePrimitive (which needs per-corner values)

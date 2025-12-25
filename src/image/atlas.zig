@@ -165,7 +165,7 @@ pub const ImageAtlas = struct {
     const Self = @This();
 
     /// Maximum dimension for atlased images (larger images get standalone textures)
-    pub const MAX_ATLAS_DIMENSION: u32 = 512;
+    pub const MAX_ATLAS_DIMENSION: u32 = 2048;
 
     /// Initial atlas size
     const INITIAL_ATLAS_SIZE: u32 = 1024;

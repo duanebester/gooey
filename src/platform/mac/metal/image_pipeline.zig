@@ -108,12 +108,12 @@ pub const image_shader_source =
     \\// Signed distance function for rounded rectangle
     \\float roundedRectSDF(float2 pos, float2 half_size, float4 radii) {
     \\    // Select correct corner radius based on quadrant
-    \\    float2 r = pos.x > 0.0
-    \\        ? (pos.y > 0.0 ? float2(radii.z, radii.z) : float2(radii.y, radii.y))  // BR : TR
-    \\        : (pos.y > 0.0 ? float2(radii.w, radii.w) : float2(radii.x, radii.x)); // BL : TL
+    \\    float r = pos.x > 0.0
+    \\        ? (pos.y > 0.0 ? radii.z : radii.y)  // BR : TR
+    \\        : (pos.y > 0.0 ? radii.w : radii.x); // BL : TL
     \\
-    \\    float2 q = abs(pos) - half_size + r.x;
-    \\    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x;
+    \\    float2 q = abs(pos) - half_size + r;
+    \\    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
     \\}
     \\
     \\fragment float4 image_fragment(
