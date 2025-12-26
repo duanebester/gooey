@@ -78,6 +78,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "text-debug", "src/examples/text_debug_example.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "images", "src/examples/images.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "tooltip", "src/examples/tooltip.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "file-dialog", "src/examples/file_dialog.zig", false);
 
         // =====================================================================
         // Tests
@@ -199,6 +200,7 @@ pub fn build(b: *std.Build) void {
     addWasmExample(b, gooey_wasm_module, wasm_target, "text", "src/examples/text_debug_example.zig", "web/text");
     addWasmExample(b, gooey_wasm_module, wasm_target, "images", "src/examples/images_wasm.zig", "web/images");
     addWasmExample(b, gooey_wasm_module, wasm_target, "tooltip", "src/examples/tooltip.zig", "web/tooltip");
+    addWasmExample(b, gooey_wasm_module, wasm_target, "file-dialog", "src/examples/web_file_dialog.zig", "web/file-dialog");
 }
 
 /// Helper to add a native macOS example with minimal boilerplate.

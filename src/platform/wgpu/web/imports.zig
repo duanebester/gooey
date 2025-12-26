@@ -304,6 +304,31 @@ pub extern "env" fn getMSAASampleCount() u32;
 pub extern "env" fn clipboardWriteText(ptr: [*]const u8, len: u32) void;
 
 // =============================================================================
+// File Dialog (Async)
+// =============================================================================
+
+/// Request file open dialog - async, JS calls back with results.
+/// accept_ptr/len: file type filter (e.g., ".txt,.md" or "image/*")
+/// multiple: allow selecting multiple files
+/// directories: allow directory selection (Chrome only)
+pub extern "env" fn requestFileDialog(
+    request_id: u32,
+    accept_ptr: [*]const u8,
+    accept_len: u32,
+    multiple: bool,
+    directories: bool,
+) void;
+
+/// Trigger a file download (web "save" dialog).
+/// Creates a Blob and triggers download - fire-and-forget.
+pub extern "env" fn promptSaveFile(
+    name_ptr: [*]const u8,
+    name_len: u32,
+    data_ptr: [*]const u8,
+    data_len: u32,
+) void;
+
+// =============================================================================
 // Image Loading (Async)
 // =============================================================================
 

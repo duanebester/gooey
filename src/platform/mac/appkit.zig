@@ -93,3 +93,13 @@ pub const NSRange = extern struct {
         return self.length == 0;
     }
 };
+
+// ============================================================================
+// NSPanel / Modal Response
+// ============================================================================
+
+/// https://developer.apple.com/documentation/appkit/nsapplication/modalresponse
+pub const NSModalResponse = enum(isize) {
+    OK = 1, // NSModalResponseOK
+    Cancel = 0, // NSModalResponseCancel
+};

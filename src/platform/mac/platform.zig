@@ -8,6 +8,7 @@
 const std = @import("std");
 const objc = @import("objc");
 const interface_mod = @import("../interface.zig");
+const file_dialog = @import("file_dialog.zig");
 
 // External Foundation constants - linked at runtime
 extern "c" var NSDefaultRunLoopMode: *anyopaque;
@@ -34,7 +35,7 @@ pub const MacPlatform = struct {
         .can_close_window = true,
         .glass_effects = true,
         .clipboard = true,
-        .file_dialogs = false,
+        .file_dialogs = true,
         .ime = true,
         .custom_cursors = true,
         .window_drag_by_content = true,
@@ -122,5 +123,23 @@ pub const MacPlatform = struct {
     /// Get platform capabilities
     pub fn getCapabilities(_: *const Self) interface_mod.PlatformCapabilities {
         return capabilities;
+    }
+
+    // =========================================================================
+    // File Dialogs
+    // =========================================================================
+
+    /// Show a file/directory open dialog (blocking/modal).
+    /// Returns null if user cancels or on error.
+    /// Caller owns returned PathPromptResult and must call deinit().
+    pub fn promptForPaths(_: *Self, allocator: std.mem.Allocator, options: file_dialog.PathPromptOptions) ?file_dialog.PathPromptResult {
+        return file_dialog.promptForPaths(allocator, options);
+    }
+
+    /// Show a file save dialog (blocking/modal).
+    /// Returns null if user cancels or on error.
+    /// Caller owns returned path and must free with allocator.
+    pub fn promptForNewPath(_: *Self, allocator: std.mem.Allocator, options: file_dialog.SavePromptOptions) ?[]const u8 {
+        return file_dialog.promptForNewPath(allocator, options);
     }
 };

@@ -16,45 +16,78 @@
 //! gooey.ui.spacer()
 //! ```
 
-const ui_impl = @import("ui.zig");
+// =============================================================================
+// Internal modules
+// =============================================================================
 
-// Re-export types
-pub const Builder = ui_impl.Builder;
+const builder_mod = @import("builder.zig");
+const primitives = @import("primitives.zig");
+const styles = @import("styles.zig");
 
-// Primitives
-pub const text = ui_impl.text;
-pub const textFmt = ui_impl.textFmt;
-pub const input = ui_impl.input;
-pub const spacer = ui_impl.spacer;
-pub const spacerMin = ui_impl.spacerMin;
-pub const svg = ui_impl.svg;
-pub const empty = ui_impl.empty;
-pub const keyContext = ui_impl.keyContext;
-pub const onAction = ui_impl.onAction;
-pub const when = ui_impl.when;
+// =============================================================================
+// Builder
+// =============================================================================
 
-// Primitive types
-pub const Text = ui_impl.Text;
-pub const Input = ui_impl.Input;
-pub const Spacer = ui_impl.Spacer;
-pub const Empty = ui_impl.Empty;
-pub const SvgPrimitive = ui_impl.SvgPrimitive;
-pub const ImagePrimitive = ui_impl.ImagePrimitive;
-pub const KeyContextPrimitive = ui_impl.KeyContextPrimitive;
-pub const ActionHandlerPrimitive = ui_impl.ActionHandlerPrimitive;
-pub const PrimitiveType = ui_impl.PrimitiveType;
-pub const CornerRadius = ui_impl.CornerRadius;
+pub const Builder = builder_mod.Builder;
 
+// =============================================================================
+// Primitive Functions
+// =============================================================================
+
+pub const text = primitives.text;
+pub const textFmt = primitives.textFmt;
+pub const input = primitives.input;
+pub const textArea = primitives.textArea;
+pub const spacer = primitives.spacer;
+pub const spacerMin = primitives.spacerMin;
+pub const svg = primitives.svg;
+pub const svgIcon = primitives.svgIcon;
+pub const empty = primitives.empty;
+pub const keyContext = primitives.keyContext;
+pub const onAction = primitives.onAction;
+pub const onActionHandler = primitives.onActionHandler;
+pub const when = primitives.when;
+
+// =============================================================================
+// Primitive Types
+// =============================================================================
+
+pub const Text = primitives.Text;
+pub const Input = primitives.Input;
+pub const TextAreaPrimitive = primitives.TextAreaPrimitive;
+pub const Spacer = primitives.Spacer;
+pub const Button = primitives.Button;
+pub const ButtonHandler = primitives.ButtonHandler;
+pub const Empty = primitives.Empty;
+pub const SvgPrimitive = primitives.SvgPrimitive;
+pub const ImagePrimitive = primitives.ImagePrimitive;
+pub const KeyContextPrimitive = primitives.KeyContextPrimitive;
+pub const ActionHandlerPrimitive = primitives.ActionHandlerPrimitive;
+pub const ActionHandlerRefPrimitive = primitives.ActionHandlerRefPrimitive;
+pub const PrimitiveType = primitives.PrimitiveType;
+pub const HandlerRef = primitives.HandlerRef;
+pub const ObjectFit = primitives.ObjectFit;
+
+// =============================================================================
 // Styles
-pub const Color = ui_impl.Color;
-pub const TextStyle = ui_impl.TextStyle;
-pub const Box = ui_impl.Box;
-pub const StackStyle = ui_impl.StackStyle;
-pub const CenterStyle = ui_impl.CenterStyle;
-pub const ShadowConfig = ui_impl.ShadowConfig;
-pub const InputStyle = ui_impl.InputStyle;
-pub const ScrollStyle = ui_impl.ScrollStyle;
+// =============================================================================
 
-// Floating positioning
-pub const Floating = ui_impl.Floating;
-pub const AttachPoint = ui_impl.AttachPoint;
+pub const Color = styles.Color;
+pub const TextStyle = styles.TextStyle;
+pub const Box = styles.Box;
+pub const InputStyle = styles.InputStyle;
+pub const TextAreaStyle = styles.TextAreaStyle;
+pub const StackStyle = styles.StackStyle;
+pub const CenterStyle = styles.CenterStyle;
+pub const ScrollStyle = styles.ScrollStyle;
+pub const ButtonStyle = styles.ButtonStyle;
+pub const CheckboxStyle = styles.CheckboxStyle;
+pub const ShadowConfig = styles.ShadowConfig;
+pub const CornerRadius = styles.CornerRadius;
+
+// =============================================================================
+// Floating Positioning
+// =============================================================================
+
+pub const Floating = styles.Floating;
+pub const AttachPoint = styles.AttachPoint;

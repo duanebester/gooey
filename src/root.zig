@@ -245,6 +245,11 @@ pub const PlatformCapabilities = platform.PlatformCapabilities;
 pub const WindowOptions = platform.WindowOptions;
 pub const RendererCapabilities = platform.RendererCapabilities;
 
+// File dialogs
+pub const PathPromptOptions = platform.PathPromptOptions;
+pub const PathPromptResult = platform.PathPromptResult;
+pub const SavePromptOptions = platform.SavePromptOptions;
+
 // =============================================================================
 // Tests
 // =============================================================================

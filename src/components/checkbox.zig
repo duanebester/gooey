@@ -2,7 +2,7 @@
 //!
 //! A toggleable checkbox built on Box.
 
-const ui = @import("../ui/ui.zig");
+const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;

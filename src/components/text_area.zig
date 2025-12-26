@@ -3,7 +3,7 @@
 //! A styled multi-line text input field. The component handles visual chrome
 //! (background, border, padding) while the underlying widget handles text editing.
 
-const ui = @import("../ui/ui.zig");
+const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 
 pub const TextArea = struct {

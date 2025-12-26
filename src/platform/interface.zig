@@ -1,6 +1,7 @@
 //! Platform Interface Definitions
 //!
 //! This module defines the interfaces for platform abstraction in gooey.
+//! Includes file dialog support via PathPromptOptions/PathPromptResult.
 //! These interfaces enable:
 //!
 //! 1. **Compile-time selection** - Use `Platform` and `Window` type aliases
@@ -127,6 +128,59 @@ pub const PlatformCapabilities = struct {
 
     /// Graphics backend name
     graphics_backend: []const u8 = "unknown",
+};
+
+// =============================================================================
+// File Dialog Types
+// =============================================================================
+
+/// Options for file open dialogs
+pub const PathPromptOptions = struct {
+    /// Allow selecting directories
+    directories: bool = false,
+    /// Allow selecting files
+    files: bool = true,
+    /// Allow multiple selection
+    multiple: bool = false,
+    /// Button text (e.g., "Open", "Select")
+    prompt: ?[]const u8 = null,
+    /// Window title/message
+    message: ?[]const u8 = null,
+    /// Starting directory path
+    starting_directory: ?[]const u8 = null,
+    /// Allowed file extensions (e.g., &.{"txt", "md"})
+    allowed_extensions: ?[]const []const u8 = null,
+};
+
+/// Options for file save dialogs
+pub const SavePromptOptions = struct {
+    /// Starting directory path
+    directory: ?[]const u8 = null,
+    /// Suggested filename
+    suggested_name: ?[]const u8 = null,
+    /// Button text (e.g., "Save")
+    prompt: ?[]const u8 = null,
+    /// Window title/message
+    message: ?[]const u8 = null,
+    /// Allowed file extensions (e.g., &.{"txt", "md"})
+    allowed_extensions: ?[]const []const u8 = null,
+    /// Allow creating directories
+    can_create_directories: bool = true,
+};
+
+/// Result from a file dialog
+pub const PathPromptResult = struct {
+    /// Selected paths (empty if cancelled)
+    paths: [][]const u8,
+    /// Allocator used - caller must free paths
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: PathPromptResult) void {
+        for (self.paths) |path| {
+            self.allocator.free(path);
+        }
+        self.allocator.free(self.paths);
+    }
 };
 
 // =============================================================================

@@ -13,6 +13,7 @@ pub const text_buffer = @import("text_buffer.zig");
 pub const composition_buffer = @import("composition_buffer.zig");
 pub const custom_shader = @import("custom_shader.zig");
 pub const image_loader = @import("image_loader.zig");
+pub const file_dialog = @import("file_dialog.zig");
 
 pub const WebPlatform = platform.WebPlatform;
 pub const WebWindow = window.WebWindow;

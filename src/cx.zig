@@ -69,7 +69,7 @@ const std = @import("std");
 // Core imports
 const gooey_mod = @import("core/gooey.zig");
 const Gooey = gooey_mod.Gooey;
-const ui_mod = @import("ui/ui.zig");
+const ui_mod = @import("ui/mod.zig");
 const Builder = ui_mod.Builder;
 const handler_mod = @import("core/handler.zig");
 const entity_mod = @import("core/entity.zig");

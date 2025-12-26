@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-const ui = @import("../ui/ui.zig");
+const ui = @import("../ui/mod.zig");
 const layout_mod = @import("../layout/layout.zig");
 const Color = ui.Color;
 const LayoutId = layout_mod.LayoutId;

@@ -2,7 +2,7 @@
 //!
 //! A visual progress indicator with customizable styling.
 
-const ui = @import("../ui/ui.zig");
+const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 
 pub const ProgressBar = struct {

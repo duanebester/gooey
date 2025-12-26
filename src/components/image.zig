@@ -24,7 +24,7 @@
 //! ```
 
 const std = @import("std");
-const ui = @import("../ui/ui.zig");
+const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const CornerRadius = @import("../layout/layout.zig").CornerRadius;
 

@@ -1,23 +1,12 @@
-//! UI Builder - Component-based declarative UI
+//! UI Builder
 //!
-//! This module provides a clean, composable API for building UIs.
-//! Components are structs with a `render` method. Children are tuples.
-//!
-//! Example:
-//! ```zig
-//! const ui = @import("ui");
-//!
-//! fn build(b: *ui.Builder) void {
-//!     b.vstack(.{ .gap = 16 }, .{
-//!         ui.text("Hello", .{ .size = 24 }),
-//!         MyButton{ .label = "Click me", .on_click = doSomething },
-//!     });
-//! }
-//! ```
+//! The Builder struct is the core of the declarative UI system.
+//! It provides methods for creating layouts, rendering primitives,
+//! and managing component context.
 
 const std = @import("std");
 
-// Import from gooey core
+// Core imports
 const dispatch_mod = @import("../core/dispatch.zig");
 const DispatchTree = dispatch_mod.DispatchTree;
 const DispatchNodeId = dispatch_mod.DispatchNodeId;
@@ -32,6 +21,8 @@ const gooey_mod = @import("../core/gooey.zig");
 pub const HandlerRef = handler_mod.HandlerRef;
 pub const EntityId = entity_mod.EntityId;
 pub const Gooey = gooey_mod.Gooey;
+
+// Layout imports
 const layout_types = @import("../layout/types.zig");
 const BorderConfig = layout_types.BorderConfig;
 const FloatingConfig = layout_types.FloatingConfig;
@@ -50,554 +41,63 @@ const TextConfig = layout_mod.TextConfig;
 const RenderCommand = layout_mod.RenderCommand;
 const BoundingBox = layout_mod.BoundingBox;
 
+// Scene imports
 const scene_mod = @import("../core/scene.zig");
 const Scene = scene_mod.Scene;
 const Hsla = scene_mod.Hsla;
 
-// Re-export for convenience
-pub const Color = @import("../core/geometry.zig").Color;
-pub const ShadowConfig = @import("../layout/types.zig").ShadowConfig;
-pub const AttachPoint = layout_types.AttachPoint;
-pub const ObjectFit = @import("../image/atlas.zig").ObjectFit;
-
-// =============================================================================
-// Floating Configuration
-// =============================================================================
-
-/// User-friendly floating configuration for dropdowns, tooltips, modals, etc.
-/// Floating elements are positioned relative to their parent (or viewport)
-/// and render with a higher z-index for proper layering.
-pub const Floating = struct {
-    /// Where on the floating element to attach
-    element_anchor: AttachPoint = .left_top,
-    /// Where on the parent to attach
-    parent_anchor: AttachPoint = .left_top,
-    /// Offset from the anchor point
-    offset_x: f32 = 0,
-    offset_y: f32 = 0,
-    /// Z-index for layering (higher = on top). Default 100 for floating elements.
-    z_index: i16 = 100,
-    /// If false, positions relative to viewport instead of parent
-    attach_to_parent: bool = true,
-
-    /// Preset for dropdown menus (below parent, aligned left)
-    pub fn dropdown() Floating {
-        return .{
-            .element_anchor = .left_top,
-            .parent_anchor = .left_bottom,
-            .offset_y = 4, // Small gap
-        };
-    }
-
-    /// Preset for tooltips (above parent, centered)
-    pub fn tooltip() Floating {
-        return .{
-            .element_anchor = .center_bottom,
-            .parent_anchor = .center_top,
-            .offset_y = -4,
-        };
-    }
-
-    /// Preset for modals (centered on viewport)
-    pub fn modal() Floating {
-        return .{
-            .attach_to_parent = false,
-            .element_anchor = .center_center,
-            .parent_anchor = .center_center,
-        };
-    }
-
-    /// Preset for context menus (positioned at cursor, typically)
-    pub fn contextMenu() Floating {
-        return .{
-            .element_anchor = .left_top,
-            .parent_anchor = .left_top,
-        };
-    }
-
-    /// Convert to internal FloatingConfig
-    fn toFloatingConfig(self: Floating) FloatingConfig {
-        return .{
-            .offset = .{ .x = self.offset_x, .y = self.offset_y },
-            .z_index = self.z_index,
-            .attach_to_parent = self.attach_to_parent,
-            .element_attach = self.element_anchor,
-            .parent_attach = self.parent_anchor,
-        };
-    }
-};
-
-// =============================================================================
-// Hit Region for Click Handling
-// =============================================================================
-/// Hit region for input focus handling
-pub const InputHitRegion = struct {
-    bounds: BoundingBox,
-    id: []const u8,
-};
-
-// =============================================================================
-// Style Types
-// =============================================================================
-
-/// Text styling options
-pub const TextStyle = struct {
-    size: u16 = 14,
-    color: Color = Color.black,
-    weight: Weight = .regular,
-    italic: bool = false,
-    wrap: WrapMode = .none,
-    underline: bool = false,
-    strikethrough: bool = false,
-
-    pub const Weight = enum { thin, light, regular, medium, semibold, bold, black };
-    pub const WrapMode = enum { none, words, newlines };
-};
-
-/// Box is the fundamental UI primitive. All interactive elements are built on Box.
-pub const Box = struct {
-    // Sizing
-    width: ?f32 = null,
-    height: ?f32 = null,
-    min_width: ?f32 = null,
-    min_height: ?f32 = null,
-    max_width: ?f32 = null,
-    max_height: ?f32 = null,
-    grow: bool = false, // Grow both axes
-    grow_width: bool = false, // Grow width only
-    grow_height: bool = false, // Grow height only
-    fill_width: bool = false, // 100% of parent width
-    fill_height: bool = false, // 100% of parent height
-    width_percent: ?f32 = null, // Percentage of parent width (0.0-1.0)
-    height_percent: ?f32 = null, // Percentage of parent height (0.0-1.0)
-
-    // Spacing
-    padding: PaddingValue = .{ .all = 0 },
-    gap: f32 = 0,
-
-    // Appearance
-    background: Color = Color.transparent,
-    corner_radius: f32 = 0,
-    border_color: Color = Color.transparent,
-    border_width: f32 = 0,
-
-    shadow: ?ShadowConfig = null,
-
-    // Floating positioning (for dropdowns, tooltips, modals)
-    floating: ?Floating = null,
-
-    // Hover styles (applied when element is hovered)
-    hover_background: ?Color = null,
-    hover_border_color: ?Color = null,
-
-    // Layout
-    direction: Direction = .column,
-    alignment: Alignment = .{ .main = .start, .cross = .start },
-
-    // Interaction
-    on_click: ?*const fn () void = null,
-    on_click_handler: ?HandlerRef = null,
-    on_click_outside: ?*const fn () void = null,
-    on_click_outside_handler: ?HandlerRef = null,
-
-    pub const Direction = enum { row, column };
-
-    pub const Alignment = struct {
-        main: MainAxis = .start,
-        cross: CrossAxis = .start,
-
-        pub const MainAxis = enum { start, center, end, space_between, space_around };
-        pub const CrossAxis = enum { start, center, end, stretch };
-    };
-
-    pub const PaddingValue = union(enum) {
-        all: f32,
-        symmetric: struct { x: f32, y: f32 },
-        each: struct { top: f32, right: f32, bottom: f32, left: f32 },
-    };
-
-    /// Convert to layout Padding
-    pub fn toPadding(self: Box) Padding {
-        return switch (self.padding) {
-            .all => |v| Padding.all(@intFromFloat(v)),
-            .symmetric => |s| Padding.symmetric(@intFromFloat(s.x), @intFromFloat(s.y)),
-            .each => |e| .{
-                .top = @intFromFloat(e.top),
-                .right = @intFromFloat(e.right),
-                .bottom = @intFromFloat(e.bottom),
-                .left = @intFromFloat(e.left),
-            },
-        };
-    }
-};
-
-/// Input field options
-pub const InputStyle = struct {
-    // Content
-    placeholder: []const u8 = "",
-    secure: bool = false,
-
-    // Binding
-    bind: ?*[]const u8 = null,
-
-    // Focus navigation
-    tab_index: i32 = 0,
-    tab_stop: bool = true,
-
-    // Layout
-    width: ?f32 = null,
-    height: ?f32 = null,
-    padding: f32 = 8,
-
-    // Visual chrome (rendered by component)
-    background: Color = Color.white,
-    border_color: Color = Color.rgb(0.8, 0.8, 0.8),
-    border_color_focused: Color = Color.rgb(0.3, 0.5, 1.0),
-    border_width: f32 = 1,
-    corner_radius: f32 = 4,
-
-    // Text colors (passed to widget)
-    text_color: Color = Color.black,
-    placeholder_color: Color = Color.rgb(0.6, 0.6, 0.6),
-    selection_color: Color = Color.rgba(0.3, 0.5, 1.0, 0.3),
-    cursor_color: Color = Color.black,
-};
-
-pub const TextAreaStyle = struct {
-    placeholder: []const u8 = "",
-    bind: ?*[]const u8 = null,
-
-    // Focus
-    tab_index: i32 = 0,
-    tab_stop: bool = true,
-
-    // Layout
-    width: ?f32 = null,
-    height: ?f32 = null, // null = auto-size based on rows
-    rows: usize = 4, // Default visible rows (used when height is null)
-    padding: f32 = 8,
-
-    // Visual
-    background: Color = Color.white,
-    border_color: Color = Color.rgb(0.8, 0.8, 0.8),
-    border_color_focused: Color = Color.rgb(0.3, 0.5, 1.0),
-    border_width: f32 = 1,
-    corner_radius: f32 = 4,
-
-    // Text
-    text_color: Color = Color.black,
-    placeholder_color: Color = Color.rgb(0.6, 0.6, 0.6),
-    selection_color: Color = Color.rgba(0.3, 0.5, 1.0, 0.3),
-    cursor_color: Color = Color.black,
-};
-
-/// Stack layout options
-pub const StackStyle = struct {
-    gap: f32 = 0,
-    alignment: Alignment = .start,
-    padding: f32 = 0,
-
-    pub const Alignment = enum { start, center, end, stretch };
-};
-
-/// Center container options
-pub const CenterStyle = struct {
-    padding: f32 = 0,
-};
-
-/// Button styling options
-pub const ButtonStyle = struct {
-    style: Style = .primary,
-    enabled: bool = true,
-
-    pub const Style = enum { primary, secondary, danger };
-};
-
-// =============================================================================
-// Primitive Descriptors
-// =============================================================================
-
-pub const PrimitiveType = enum {
-    text,
-    text_area,
-    input,
-    spacer,
-    button,
-    button_handler,
-    empty,
-    key_context,
-    action_handler,
-    action_handler_ref,
-    svg,
-    image,
-};
-
-pub const CheckboxStyle = struct {
-    label: []const u8 = "",
-    bind: ?*bool = null,
-    on_change: ?*const fn (bool) void = null,
-
-    // Theme-aware colors (optional - uses defaults if not set)
-    background: ?Color = null, // Unchecked background
-    background_checked: ?Color = null, // Checked background (e.g. theme.primary)
-    border_color: ?Color = null, // Border color (e.g. theme.muted)
-    checkmark_color: ?Color = null, // Inner square color
-    label_color: ?Color = null, // Label text color (e.g. theme.text)
-};
-
-/// Key context descriptor - sets dispatch context when rendered
-pub const KeyContextPrimitive = struct {
-    context: []const u8,
-    pub const primitive_type: PrimitiveType = .key_context;
-};
-
-/// Action handler descriptor - registers action handler when rendered
-pub const ActionHandlerPrimitive = struct {
-    action_type: usize, // ActionTypeId
-    callback: *const fn () void,
-    pub const primitive_type: PrimitiveType = .action_handler;
-};
-
-pub const ActionHandlerRefPrimitive = struct {
-    action_type: usize,
-    handler: HandlerRef,
-    pub const primitive_type: PrimitiveType = .action_handler_ref;
-};
-
-/// Text element descriptor
-pub const Text = struct {
-    content: []const u8,
-    style: TextStyle,
-
-    pub const primitive_type: PrimitiveType = .text;
-};
-
-/// Input field descriptor
-pub const Input = struct {
-    id: []const u8,
-    style: InputStyle,
-
-    pub const primitive_type: PrimitiveType = .input;
-};
-
-// Add after Input struct
-
-pub const TextAreaPrimitive = struct {
-    id: []const u8,
-    style: TextAreaStyle,
-
-    pub const primitive_type: PrimitiveType = .text_area;
-};
-
-pub const ScrollStyle = struct {
-    width: ?f32 = null,
-    height: ?f32 = null,
-    /// Content height (if known ahead of time)
-    content_height: ?f32 = null,
-    /// Padding inside the scroll area
-    padding: Box.PaddingValue = .{ .all = 0 },
-    gap: u16 = 0,
-    background: ?Color = null,
-    corner_radius: f32 = 0,
-    /// Scrollbar styling
-    scrollbar_size: f32 = 8,
-    track_color: ?Color = null,
-    thumb_color: ?Color = null,
-    /// Only vertical for now
-    vertical: bool = true,
-    horizontal: bool = false,
-};
-
-/// Spacer element descriptor
-pub const Spacer = struct {
-    min_size: f32 = 0,
-
-    pub const primitive_type: PrimitiveType = .spacer;
-};
-
-/// Button element descriptor
-pub const Button = struct {
-    id: ?[]const u8 = null, // Override ID (defaults to label hash)
-    label: []const u8,
-    style: ButtonStyle = .{},
-    on_click: ?*const fn () void = null,
-
-    pub const primitive_type: PrimitiveType = .button;
-};
-
-/// Button with HandlerRef (new pattern with context access)
-pub const ButtonHandler = struct {
-    id: ?[]const u8 = null, // Override ID (defaults to label hash)
-    label: []const u8,
-    style: ButtonStyle = .{},
-    handler: HandlerRef,
-
-    pub const primitive_type: PrimitiveType = .button_handler;
-};
-
-/// Empty element (renders nothing) - for conditionals
-pub const Empty = struct {
-    pub const primitive_type: PrimitiveType = .empty;
-};
-
-/// SVG element descriptor - renders a pre-loaded SVG mesh
-pub const SvgPrimitive = struct {
-    path: []const u8,
-    /// Mesh ID (from svg_mesh.meshId())
-    mesh_id: u64 = 0,
-    /// Width of the SVG element
-    width: f32 = 24,
-    /// Height of the SVG element
-    height: f32 = 24,
-    /// Fill color
-    color: Color = Color.black,
-    /// Stroke color (null = no stroke)
-    stroke_color: ?Color = null,
-    /// Stroke width in logical pixels
-    stroke_width: f32 = 1.0,
-    /// Whether to fill the path
-    has_fill: bool = true,
-    /// Source viewbox size (for proper scaling)
-    viewbox: f32 = 24,
-
-    pub const primitive_type: PrimitiveType = .svg;
-};
-
-/// Image element descriptor - renders an image from atlas
-pub const ImagePrimitive = struct {
-    /// Image source path (file path or embedded asset)
-    source: []const u8,
-
-    /// Explicit width (null = intrinsic)
-    width: ?f32 = null,
-    /// Explicit height (null = intrinsic)
-    height: ?f32 = null,
-
-    /// Object fit mode (imported from image/atlas.zig)
-    fit: ObjectFit = .contain,
-
-    /// Corner radius for rounded images
-    corner_radius: ?CornerRadius = null,
-
-    /// Tint color (multiplied with image)
-    tint: ?Color = null,
-
-    /// Grayscale effect (0-1)
-    grayscale: f32 = 0,
-
-    /// Opacity (0-1)
-    opacity: f32 = 1,
-
-    pub const primitive_type: PrimitiveType = .image;
-};
-
-// =============================================================================
-// Free Functions (return descriptors)
-// =============================================================================
-
-/// Register an action handler using HandlerRef (new pattern)
-pub fn onActionHandler(comptime Action: type, ref: HandlerRef) ActionHandlerRefPrimitive {
-    return .{
-        .action_type = actionTypeId(Action),
-        .handler = ref,
-    };
-}
-
-/// Create a text element
-pub fn text(content: []const u8, style: TextStyle) Text {
-    return .{ .content = content, .style = style };
-}
-
-/// Create a text input element
-pub fn input(id: []const u8, style: InputStyle) Input {
-    return .{ .id = id, .style = style };
-}
-
-pub fn textArea(id: []const u8, style: TextAreaStyle) TextAreaPrimitive {
-    return .{ .id = id, .style = style };
-}
-
-/// Create a flexible spacer
-pub fn spacer() Spacer {
-    return .{};
-}
-
-/// Create a spacer with minimum size
-pub fn spacerMin(min_size: f32) Spacer {
-    return .{ .min_size = min_size };
-}
-
-/// Create an SVG element with the given size and color
-pub fn svg(mesh_id: u64, width: f32, height: f32, color: Color) SvgPrimitive {
-    return .{ .mesh_id = mesh_id, .width = width, .height = height, .color = color };
-}
-
-pub fn svgIcon(mesh_id: u64, width: f32, height: f32, color: Color, viewbox: f32) SvgPrimitive {
-    return .{
-        .mesh_id = mesh_id,
-        .width = width,
-        .height = height,
-        .color = color,
-        .viewbox = viewbox,
-    };
-}
-
-/// Set key context for dispatch (use inside box children)
-pub fn keyContext(context: []const u8) KeyContextPrimitive {
-    return .{ .context = context };
-}
-
-/// Register an action handler (use inside box children)
-pub fn onAction(comptime Action: type, callback: *const fn () void) ActionHandlerPrimitive {
-    return .{
-        .action_type = actionTypeId(Action),
-        .callback = callback,
-    };
-}
-
-/// Conditional rendering - returns a struct that renders children only if condition is true
-pub fn when(condition: bool, children: anytype) When(@TypeOf(children)) {
-    return .{ .condition = condition, .children = children };
-}
-
-pub fn When(comptime ChildrenType: type) type {
-    return struct {
-        condition: bool,
-        children: ChildrenType,
-
-        pub fn render(self: @This(), b: *Builder) void {
-            if (self.condition) {
-                b.processChildren(self.children);
-            }
-        }
-    };
-}
-
-/// Create an empty element (for conditionals)
-pub fn empty() Empty {
-    return .{};
-}
-
-/// Rotating buffer pool for textFmt (allows multiple calls per frame)
-var fmt_buffers: [16][256]u8 = undefined;
-var fmt_buffer_index: usize = 0;
-
-pub fn textFmt(comptime fmt: []const u8, args: anytype, style: TextStyle) Text {
-    const buffer = &fmt_buffers[fmt_buffer_index];
-    fmt_buffer_index = (fmt_buffer_index + 1) % fmt_buffers.len;
-    const result = std.fmt.bufPrint(buffer, fmt, args) catch "...";
-    return .{ .content = result, .style = style };
-}
+// Element imports
+const styles = @import("styles.zig");
+const primitives = @import("primitives.zig");
+
+pub const Color = styles.Color;
+pub const ShadowConfig = styles.ShadowConfig;
+pub const AttachPoint = styles.AttachPoint;
+pub const ObjectFit = styles.ObjectFit;
+pub const Floating = styles.Floating;
+pub const Box = styles.Box;
+pub const TextStyle = styles.TextStyle;
+pub const InputStyle = styles.InputStyle;
+pub const TextAreaStyle = styles.TextAreaStyle;
+pub const StackStyle = styles.StackStyle;
+pub const CenterStyle = styles.CenterStyle;
+pub const ScrollStyle = styles.ScrollStyle;
+pub const ButtonStyle = styles.ButtonStyle;
+
+pub const PrimitiveType = primitives.PrimitiveType;
+pub const Text = primitives.Text;
+pub const Input = primitives.Input;
+pub const TextAreaPrimitive = primitives.TextAreaPrimitive;
+pub const Spacer = primitives.Spacer;
+pub const Button = primitives.Button;
+pub const ButtonHandler = primitives.ButtonHandler;
+pub const Empty = primitives.Empty;
+pub const SvgPrimitive = primitives.SvgPrimitive;
+pub const ImagePrimitive = primitives.ImagePrimitive;
+pub const KeyContextPrimitive = primitives.KeyContextPrimitive;
+pub const ActionHandlerPrimitive = primitives.ActionHandlerPrimitive;
+pub const ActionHandlerRefPrimitive = primitives.ActionHandlerRefPrimitive;
+
+// Primitive functions
+pub const text = primitives.text;
+pub const textFmt = primitives.textFmt;
+pub const input = primitives.input;
+pub const textArea = primitives.textArea;
+pub const spacer = primitives.spacer;
+pub const spacerMin = primitives.spacerMin;
+pub const svg = primitives.svg;
+pub const svgIcon = primitives.svgIcon;
+pub const empty = primitives.empty;
+pub const keyContext = primitives.keyContext;
+pub const onAction = primitives.onAction;
+pub const onActionHandler = primitives.onActionHandler;
+pub const when = primitives.when;
 
 /// Get a unique type ID for context type checking
 fn contextTypeId(comptime T: type) usize {
     const name_ptr: [*]const u8 = @typeName(T).ptr;
     return @intFromPtr(name_ptr);
 }
-
-// =============================================================================
-// UI Builder
-// =============================================================================
 
 /// The UI builder context passed to component render() methods
 pub const Builder = struct {
@@ -1136,7 +636,7 @@ pub const Builder = struct {
     // Internal: Child Processing
     // =========================================================================
 
-    fn processChildren(self: *Self, children: anytype) void {
+    pub fn processChildren(self: *Self, children: anytype) void {
         const T = @TypeOf(children);
         const type_info = @typeInfo(T);
 
@@ -1612,26 +1112,3 @@ pub const Builder = struct {
         return LayoutId.fromInt(self.id_counter);
     }
 };
-
-// =============================================================================
-// Tests
-// =============================================================================
-
-test "text primitive" {
-    const t = text("Hello", .{ .size = 20 });
-    try std.testing.expectEqualStrings("Hello", t.content);
-    try std.testing.expectEqual(@as(u16, 20), t.style.size);
-}
-
-test "spacer primitive" {
-    const s = spacer();
-    try std.testing.expectEqual(@as(f32, 0), s.min_size);
-
-    const s2 = spacerMin(50);
-    try std.testing.expectEqual(@as(f32, 50), s2.min_size);
-}
-
-test "empty primitive" {
-    const e = empty();
-    try std.testing.expectEqual(PrimitiveType.empty, @TypeOf(e).primitive_type);
-}

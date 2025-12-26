@@ -3,7 +3,7 @@
 //! A clickable button built on Box. Supports variants, sizes, and both
 //! simple callbacks and HandlerRef for entity methods.
 
-const ui = @import("../ui/ui.zig");
+const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;

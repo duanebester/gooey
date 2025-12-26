@@ -4,6 +4,8 @@ A GPU-accelerated UI framework for Zig, targeting macOS with Metal rendering and
 
 Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
+<img src="https://github.com/duanebester/gooey/blob/main/assets/gooey.png" height="200px" />
+
 > ⚠️ **Early Development**: API is evolving.
 
 <table>

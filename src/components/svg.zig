@@ -18,7 +18,7 @@
 //! ```
 
 const std = @import("std");
-const ui = @import("../ui/ui.zig");
+const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 
 pub const Svg = struct {

@@ -1876,6 +1876,140 @@
             console.warn("[Gooey] Clipboard write failed:", err);
           });
         },
+
+        // =====================================================================
+        // File Dialog
+        // =====================================================================
+
+        // Hidden file input element (created on first use)
+        _fileInput: null,
+        _getFileInput() {
+          if (!this._fileInput) {
+            this._fileInput = document.createElement("input");
+            this._fileInput.type = "file";
+            this._fileInput.style.display = "none";
+            document.body.appendChild(this._fileInput);
+          }
+          return this._fileInput;
+        },
+
+        // Request file open dialog
+        requestFileDialog: (
+          requestId,
+          acceptPtr,
+          acceptLen,
+          multiple,
+          directories,
+        ) => {
+          const fileInput = env._getFileInput();
+
+          // Configure the input
+          const accept = acceptLen > 0 ? getString(acceptPtr, acceptLen) : "";
+          fileInput.accept = accept;
+          fileInput.multiple = multiple;
+
+          // Directory selection (Chrome/Edge only)
+          if (directories) {
+            fileInput.webkitdirectory = true;
+          } else {
+            fileInput.webkitdirectory = false;
+          }
+
+          // Handle file selection
+          fileInput.onchange = async () => {
+            const files = Array.from(fileInput.files);
+
+            if (files.length === 0) {
+              // User cancelled or selected nothing
+              wasmInstance.exports.onFileDialogCancelled(requestId);
+              fileInput.value = ""; // Reset for next use
+              return;
+            }
+
+            // Tell WASM how many files to expect
+            wasmInstance.exports.onFileDialogStart(requestId, files.length);
+
+            // Read each file and send to WASM
+            for (const file of files) {
+              try {
+                const arrayBuffer = await file.arrayBuffer();
+                const content = new Uint8Array(arrayBuffer);
+
+                // Allocate WASM memory for filename
+                const nameBytes = new TextEncoder().encode(file.name);
+                const namePtr = wasmInstance.exports.wasmFileAlloc(
+                  nameBytes.length,
+                );
+                if (namePtr === 0) {
+                  console.error(
+                    "[Gooey] Failed to allocate memory for filename",
+                  );
+                  continue;
+                }
+
+                // Allocate WASM memory for content
+                const contentPtr = wasmInstance.exports.wasmFileAlloc(
+                  content.length,
+                );
+                if (contentPtr === 0) {
+                  console.error(
+                    "[Gooey] Failed to allocate memory for file content",
+                  );
+                  continue;
+                }
+
+                // Copy data to WASM memory
+                const memory = new Uint8Array(
+                  wasmInstance.exports.memory.buffer,
+                );
+                memory.set(nameBytes, namePtr);
+                memory.set(content, contentPtr);
+
+                // Send file to WASM
+                wasmInstance.exports.onFileDialogFile(
+                  requestId,
+                  namePtr,
+                  nameBytes.length,
+                  contentPtr,
+                  content.length,
+                );
+              } catch (err) {
+                console.error("[Gooey] Error reading file:", file.name, err);
+              }
+            }
+
+            fileInput.value = ""; // Reset for next use
+          };
+
+          // Handle cancel (user closes dialog without selecting)
+          fileInput.oncancel = () => {
+            wasmInstance.exports.onFileDialogCancelled(requestId);
+            fileInput.value = "";
+          };
+
+          // Trigger the dialog
+          fileInput.click();
+        },
+
+        // Trigger file download (web "save" dialog)
+        promptSaveFile: (namePtr, nameLen, dataPtr, dataLen) => {
+          const filename = getString(namePtr, nameLen);
+          const memory = new Uint8Array(wasmInstance.exports.memory.buffer);
+          const data = memory.slice(dataPtr, dataPtr + dataLen);
+
+          const blob = new Blob([data], { type: "application/octet-stream" });
+          const url = URL.createObjectURL(blob);
+
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          a.style.display = "none";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+
+          URL.revokeObjectURL(url);
+        },
       };
 
       async function init() {
