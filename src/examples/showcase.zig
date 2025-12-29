@@ -1,23 +1,23 @@
-//! Gooey Showcase (Cx API)
+//! Gooey Showcase
 //!
-//! A comprehensive demo showing gooey's capabilities:
-//! - Component pattern (Button, Checkbox, TextInput)
-//! - Pure state pattern with cx.update() / cx.updateWith()
-//! - Tab navigation between pages
-//! - Form inputs with validation
-//! - Text styles (underline, strikethrough, wrap modes)
-//! - Layout features (shrink, grow, aspect ratio)
-//! - Scroll containers
-//! - Theming
-//! - Keyboard shortcuts
+//! A comprehensive component showcase demonstrating gooey's capabilities.
+//! Organized as a storybook with sections for each component type.
+//!
+//! Navigation:
+//!   - [1-7] Jump to section
+//!   - [←/→] Previous/Next section
+//!   - [T] Toggle theme
+//!   - [Esc] Close modals/dropdowns
 
 const std = @import("std");
 const gooey = @import("gooey");
+const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-
-const ShadowConfig = ui.ShadowConfig;
 const Gooey = gooey.Gooey;
+const Theme = gooey.Theme;
+
+// Components
 const Button = gooey.Button;
 const Checkbox = gooey.Checkbox;
 const TextInput = gooey.TextInput;
@@ -28,87 +28,95 @@ const RadioGroup = gooey.RadioGroup;
 const ProgressBar = gooey.ProgressBar;
 const Svg = gooey.Svg;
 const Icons = gooey.Icons;
+const Select = gooey.Select;
+const Tooltip = gooey.Tooltip;
+const Modal = gooey.Modal;
 
 // =============================================================================
-// Theme
+// Section Navigation
 // =============================================================================
 
-const Theme = struct {
-    bg: ui.Color,
-    card: ui.Color,
-    primary: ui.Color,
-    text: ui.Color,
-    muted: ui.Color,
-    accent: ui.Color,
-    danger: ui.Color,
+const Section = enum(u8) {
+    overview,
+    buttons,
+    inputs,
+    selection,
+    feedback,
+    overlays,
+    icons,
 
-    // Catppuccin Latte (light theme)
-    const light = Theme{
-        .bg = ui.Color.rgb(0.937, 0.945, 0.961),
-        .card = ui.Color.rgb(0.902, 0.914, 0.933),
-        .primary = ui.Color.rgb(0.118, 0.400, 0.961),
-        .text = ui.Color.rgb(0.298, 0.310, 0.412),
-        .muted = ui.Color.rgb(0.424, 0.435, 0.522),
-        .accent = ui.Color.rgb(0.251, 0.627, 0.169),
-        .danger = ui.Color.rgb(0.82, 0.24, 0.24),
-    };
+    const count = 7;
 
-    // Catppuccin Macchiato (dark theme)
-    const dark = Theme{
-        .bg = ui.Color.rgb(0.141, 0.153, 0.227),
-        .card = ui.Color.rgb(0.212, 0.227, 0.310),
-        .primary = ui.Color.rgb(0.541, 0.678, 0.957),
-        .text = ui.Color.rgb(0.792, 0.827, 0.961),
-        .muted = ui.Color.rgb(0.647, 0.678, 0.796),
-        .accent = ui.Color.rgb(0.651, 0.855, 0.584),
-        .danger = ui.Color.rgb(0.93, 0.49, 0.49),
-    };
+    fn title(self: Section) []const u8 {
+        return switch (self) {
+            .overview => "Overview",
+            .buttons => "Buttons",
+            .inputs => "Inputs",
+            .selection => "Selection",
+            .feedback => "Feedback",
+            .overlays => "Overlays",
+            .icons => "Icons",
+        };
+    }
+
+    fn next(self: Section) Section {
+        const idx = @intFromEnum(self);
+        return @enumFromInt((idx + 1) % count);
+    }
+
+    fn prev(self: Section) Section {
+        const idx = @intFromEnum(self);
+        return @enumFromInt((idx + count - 1) % count);
+    }
 };
 
 // =============================================================================
-// Application State
+// App State
 // =============================================================================
 
 const AppState = struct {
-    const Page = enum { home, forms, scroll_demo, about };
-    const FormField = enum { name, email, message };
-
     // Navigation
-    page: Page = .home,
-    theme: *const Theme = &Theme.light,
-    is_dark: bool = false,
+    section: Section = .overview,
+    theme: *const Theme = &Theme.dark,
+    is_dark: bool = true,
 
-    // Form state
+    // Button demos
+    button_clicks: u32 = 0,
+    loading: bool = false,
+
+    // Input demos
     name: []const u8 = "",
     email: []const u8 = "",
-    message: []const u8 = "",
     bio: []const u8 = "",
-    form_status: []const u8 = "",
-    focused_field: FormField = .name,
-    form_initialized: bool = false,
 
-    // Checkbox state
+    // Checkbox demos
+    option_a: bool = true,
+    option_b: bool = false,
+    option_c: bool = false,
     agree_terms: bool = false,
-    subscribe_newsletter: bool = false,
-    enable_notifications: bool = true,
 
-    // Radio button state
-    contact_method: u8 = 0, // 0=Email, 1=Phone, 2=Mail
-    priority: u8 = 1, // 0=Low, 1=Medium, 2=High
+    // Radio demos
+    color_choice: u8 = 0,
+    size_choice: u8 = 1,
 
-    // Progress bar state
-    form_progress: f32 = 0.0,
+    // Select demos
+    fruit_selected: ?usize = null,
+    fruit_open: bool = false,
+    priority_selected: ?usize = 1,
+    priority_open: bool = false,
 
-    // Stats (for home page)
-    click_count: u32 = 0,
+    // Progress demos
+    progress: f32 = 0.65,
+    animated_progress: f32 = 0.0,
+    progress_direction: bool = true,
 
-    // Layout demo state
-    completed_tasks: [3]bool = .{ false, true, false },
+    // Modal demos
+    show_modal: bool = false,
+    show_confirm: bool = false,
+    confirmed_count: u32 = 0,
 
     // =========================================================================
-    // PURE methods - fn(*State) or fn(*State, Arg)
-    // Use with cx.update() / cx.updateWith()
-    // Fully testable without framework!
+    // State Methods
     // =========================================================================
 
     pub fn toggleTheme(self: *AppState) void {
@@ -116,916 +124,149 @@ const AppState = struct {
         self.theme = if (self.is_dark) &Theme.dark else &Theme.light;
     }
 
-    pub fn nextPage(self: *AppState) void {
-        self.page = switch (self.page) {
-            .home => .forms,
-            .forms => .scroll_demo,
-            .scroll_demo => .about,
-            .about => .home,
-        };
-    }
-
-    pub fn prevPage(self: *AppState) void {
-        self.page = switch (self.page) {
-            .home => .about,
-            .forms => .home,
-            .scroll_demo => .forms,
-            .about => .scroll_demo,
-        };
-    }
-
-    pub fn goToPage(self: *AppState, page: Page) void {
-        self.page = page;
-        if (page == .forms) {
-            self.form_initialized = false;
+    pub fn goToSection(self: *AppState, idx: u8) void {
+        if (idx < Section.count) {
+            self.section = @enumFromInt(idx);
         }
     }
 
-    pub fn goToPageByIndex(self: *AppState, index: u8) void {
-        self.page = @enumFromInt(index);
-        if (self.page == .forms) {
-            self.form_initialized = false;
-        }
+    pub fn nextSection(self: *AppState) void {
+        self.section = self.section.next();
     }
 
-    pub fn increment(self: *AppState) void {
-        self.click_count +|= 1;
+    pub fn prevSection(self: *AppState) void {
+        self.section = self.section.prev();
+    }
+
+    // Button handlers
+    pub fn incrementClicks(self: *AppState) void {
+        self.button_clicks += 1;
     }
 
     pub fn resetClicks(self: *AppState) void {
-        self.click_count = 0;
+        self.button_clicks = 0;
     }
 
-    pub fn toggleAgreeTerms(self: *AppState) void {
+    pub fn toggleLoading(self: *AppState) void {
+        self.loading = !self.loading;
+    }
+
+    // Checkbox handlers
+    pub fn toggleOptionA(self: *AppState) void {
+        self.option_a = !self.option_a;
+    }
+    pub fn toggleOptionB(self: *AppState) void {
+        self.option_b = !self.option_b;
+    }
+    pub fn toggleOptionC(self: *AppState) void {
+        self.option_c = !self.option_c;
+    }
+    pub fn toggleTerms(self: *AppState) void {
         self.agree_terms = !self.agree_terms;
     }
 
-    pub fn toggleSubscribe(self: *AppState) void {
-        self.subscribe_newsletter = !self.subscribe_newsletter;
+    // Radio handlers
+    pub fn setColor(self: *AppState, c: u8) void {
+        self.color_choice = c;
+    }
+    pub fn setSize(self: *AppState, s: u8) void {
+        self.size_choice = s;
     }
 
-    pub fn toggleNotifications(self: *AppState) void {
-        self.enable_notifications = !self.enable_notifications;
+    // Select handlers
+    pub fn toggleFruit(self: *AppState) void {
+        self.fruit_open = !self.fruit_open;
+        self.priority_open = false;
+    }
+    pub fn closeFruit(self: *AppState) void {
+        self.fruit_open = false;
+    }
+    pub fn selectFruit(self: *AppState, idx: usize) void {
+        self.fruit_selected = idx;
+        self.fruit_open = false;
     }
 
-    pub fn setContactMethod(self: *AppState, index: u8) void {
-        self.contact_method = index;
-        self.updateFormProgress();
+    pub fn togglePriority(self: *AppState) void {
+        self.priority_open = !self.priority_open;
+        self.fruit_open = false;
+    }
+    pub fn closePriority(self: *AppState) void {
+        self.priority_open = false;
+    }
+    pub fn selectPriority(self: *AppState, idx: usize) void {
+        self.priority_selected = idx;
+        self.priority_open = false;
     }
 
-    pub fn setPriority(self: *AppState, index: u8) void {
-        self.priority = index;
-        self.updateFormProgress();
+    pub fn closeAllDropdowns(self: *AppState) void {
+        self.fruit_open = false;
+        self.priority_open = false;
     }
 
-    fn updateFormProgress(self: *AppState) void {
-        var filled: f32 = 0;
-        const total: f32 = 5;
-
-        if (self.name.len > 0) filled += 1;
-        if (self.email.len > 0) filled += 1;
-        if (self.message.len > 0) filled += 1;
-        if (self.agree_terms) filled += 1;
-        filled += 1; // contact_method and priority always have a value
-
-        self.form_progress = filled / total;
-    }
-
-    pub fn toggleTask(self: *AppState, index: usize) void {
-        if (index < self.completed_tasks.len) {
-            self.completed_tasks[index] = !self.completed_tasks[index];
-        }
-    }
-
-    pub fn focusNextField(self: *AppState) void {
-        self.focused_field = switch (self.focused_field) {
-            .name => .email,
-            .email => .message,
-            .message => .name,
-        };
-    }
-
-    pub fn submitForm(self: *AppState) void {
-        if (self.name.len == 0) {
-            self.form_status = "Please enter your name";
-        } else if (self.email.len == 0) {
-            self.form_status = "Please enter your email";
-        } else if (!self.agree_terms) {
-            self.form_status = "Please agree to terms";
+    // Progress handlers
+    pub fn stepProgress(self: *AppState) void {
+        if (self.progress_direction) {
+            self.animated_progress += 0.1;
+            if (self.animated_progress >= 1.0) {
+                self.animated_progress = 1.0;
+                self.progress_direction = false;
+            }
         } else {
-            self.form_status = "Form submitted successfully!";
+            self.animated_progress -= 0.1;
+            if (self.animated_progress <= 0.0) {
+                self.animated_progress = 0.0;
+                self.progress_direction = true;
+            }
         }
     }
 
-    // =========================================================================
-    // Command methods - fn(*State, *Gooey) or fn(*State, *Gooey, Arg)
-    // Use with cx.command() / cx.commandWith()
-    // =========================================================================
-
-    pub fn goToFormsWithFocus(self: *AppState, g: *Gooey) void {
-        self.page = .forms;
-        self.form_initialized = true;
-        self.focused_field = .name;
-        g.focusTextInput("form_name");
+    // Modal handlers
+    pub fn openModal(self: *AppState) void {
+        self.show_modal = true;
     }
-
-    pub fn focusField(self: *AppState, g: *Gooey) void {
-        switch (self.focused_field) {
-            .name => g.focusTextInput("form_name"),
-            .email => g.focusTextInput("form_email"),
-            .message => g.focusTextInput("form_message"),
-        }
+    pub fn closeModal(self: *AppState) void {
+        self.show_modal = false;
     }
-
-    pub fn submitFormAndBlur(self: *AppState, g: *Gooey) void {
-        self.submitForm();
-        if (std.mem.indexOf(u8, self.form_status, "success") != null) {
-            g.blurAll();
-        }
+    pub fn openConfirm(self: *AppState) void {
+        self.show_confirm = true;
+    }
+    pub fn closeConfirm(self: *AppState) void {
+        self.show_confirm = false;
+    }
+    pub fn doConfirm(self: *AppState) void {
+        self.confirmed_count += 1;
+        self.show_confirm = false;
     }
 };
 
+var state = AppState{};
+
 // =============================================================================
-// Entry Point
+// App Definition
 // =============================================================================
 
-var app_state = AppState{};
-
-const App = gooey.App(AppState, &app_state, render, .{
+const App = gooey.App(AppState, &state, render, .{
     .title = "Gooey Showcase",
-    .width = 900,
-    .height = 650,
+    .width = 1200,
+    .height = 800,
     .on_event = onEvent,
 });
 
-comptime {
-    _ = App;
-}
-
-const platform = gooey.platform;
 pub fn main() !void {
-    if (platform.is_wasm) unreachable;
-    return App.main();
+    try App.main();
 }
 
 // =============================================================================
-// Components - Now receive *Cx directly!
+// Main Render
 // =============================================================================
-
-const ThemeToggle = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .padding = .{ .symmetric = .{ .x = 0, .y = 8 } },
-        }, .{
-            ui.text("[T] Theme", .{ .size = 12, .color = t.muted }),
-        });
-    }
-};
-
-/// Navigation bar with tabs
-const NavBar = struct {
-    const tab_labels = [_][]const u8{ "Home", "Forms", "Scroll", "About" };
-
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .direction = .row,
-            .padding = .{ .symmetric = .{ .x = 16, .y = 8 } },
-            .gap = 8,
-            .background = t.card,
-            .fill_width = true,
-            .alignment = .{ .cross = .center },
-        }, .{
-            NavTabs{},
-            ui.spacer(),
-            ThemeToggle{},
-        });
-    }
-};
-
-const NavTabs = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.hstack(.{ .gap = 4 }, .{
-            Tab{
-                .label = "Home",
-                .is_active = s.page == .home,
-                .on_click_handler = cx.updateWith(AppState, @as(u8, 0), AppState.goToPageByIndex),
-                .active_background = t.primary,
-                .inactive_background = ui.Color.transparent,
-                .active_text_color = ui.Color.white,
-                .inactive_text_color = t.text,
-                .hover_background = t.primary.withAlpha(0.2),
-            },
-            Tab{
-                .label = "Forms",
-                .is_active = s.page == .forms,
-                .on_click_handler = cx.updateWith(AppState, @as(u8, 1), AppState.goToPageByIndex),
-                .active_background = t.primary,
-                .inactive_background = ui.Color.transparent,
-                .active_text_color = ui.Color.white,
-                .inactive_text_color = t.text,
-                .hover_background = t.primary.withAlpha(0.2),
-            },
-            Tab{
-                .label = "Scroll",
-                .is_active = s.page == .scroll_demo,
-                .on_click_handler = cx.updateWith(AppState, @as(u8, 2), AppState.goToPageByIndex),
-                .active_background = t.primary,
-                .inactive_background = ui.Color.transparent,
-                .active_text_color = ui.Color.white,
-                .inactive_text_color = t.text,
-                .hover_background = t.primary.withAlpha(0.2),
-            },
-            Tab{
-                .label = "About",
-                .is_active = s.page == .about,
-                .on_click_handler = cx.updateWith(AppState, @as(u8, 3), AppState.goToPageByIndex),
-                .active_background = t.primary,
-                .inactive_background = ui.Color.transparent,
-                .active_text_color = ui.Color.white,
-                .inactive_text_color = t.text,
-                .hover_background = t.primary.withAlpha(0.2),
-            },
-        });
-    }
-};
-
-// =============================================================================
-// Home Page
-// =============================================================================
-
-const HomePage = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .padding = .{ .all = 32 },
-            .gap = 24,
-            .fill_width = true,
-            .fill_height = true,
-            .alignment = .{ .main = .center, .cross = .center },
-        }, .{
-            ui.text("Welcome to Gooey", .{ .size = 32, .color = t.text }),
-            ui.text("A GPU-accelerated UI framework for Zig", .{ .size = 16, .color = t.muted }),
-            SvgRow{},
-            StatsRow{},
-            ButtonRow{},
-            ui.text("Use arrow keys or [1-4] to navigate", .{ .size = 12, .color = t.muted }),
-        });
-    }
-};
-
-const SvgRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .gap = 24,
-            .padding = .{ .all = 16 },
-            .background = t.card,
-            .corner_radius = 12,
-            .alignment = .{ .main = .center, .cross = .center },
-        }, .{
-            ui.text("SVG Icons", .{ .size = 14, .color = t.muted }),
-
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
-                // Filled icons (original behavior)
-                Svg{
-                    .path = Icons.arrow_back,
-                    .size = 24,
-                    .color = null, // no fill (Lucide uses fill="none")
-                    .stroke_color = t.text,
-                    .stroke_width = 1.5,
-                },
-                Svg{ .path = Icons.favorite, .size = 32, .color = ui.Color.red },
-                Svg{ .path = Icons.check, .size = 32, .color = t.accent },
-                // Stroke-only icons (new!)
-                Svg{
-                    .path = Icons.star_outline,
-                    .size = 32,
-                    .color = null,
-                    .stroke_color = t.primary,
-                    .stroke_width = 1.5,
-                },
-                Svg{
-                    .path = Icons.search,
-                    .size = 32,
-                    .color = null,
-                    .stroke_color = t.text,
-                    .stroke_width = 2,
-                },
-                // Fill + stroke combined
-                Svg{
-                    .path = Icons.folder,
-                    .size = 32,
-                    .color = ui.Color.rgb(1.0, 0.85, 0.4),
-                    .stroke_color = ui.Color.rgb(0.8, 0.6, 0.0),
-                    .stroke_width = 1,
-                },
-            }),
-
-            SvgAdvancedRow{},
-        });
-    }
-};
-
-const SvgAdvancedRow = struct {
-    // Circle using arc commands (A)
-    const circle_path = "M12 2 A10 10 0 1 1 12 22 A10 10 0 1 1 12 2";
-
-    // Smooth wave using quadratic beziers (Q/T)
-    const wave_path = "M2 12 Q6 6 12 12 T22 12";
-
-    // Rounded rectangle using arcs
-    const rounded_rect_path = "M6 2 L18 2 A4 4 0 0 1 22 6 L22 18 A4 4 0 0 1 18 22 L6 22 A4 4 0 0 1 2 18 L2 6 A4 4 0 0 1 6 2 Z";
-
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{ .gap = 8, .alignment = .{ .main = .center, .cross = .center } }, .{
-            ui.text("Arcs & Beziers", .{ .size = 12, .color = t.muted }),
-
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
-                // Circle (arc command)
-                Svg{
-                    .path = circle_path,
-                    .size = 28,
-                    .color = null,
-                    .stroke_color = t.primary,
-                    .stroke_width = 2,
-                },
-                // Heart with fill
-                Svg{
-                    .path = Icons.favorite,
-                    .size = 28,
-                    .color = ui.Color.rgb(1.0, 0.4, 0.5),
-                },
-                // Wave (quadratic bezier)
-                Svg{
-                    .path = wave_path,
-                    .size = 28,
-                    .color = null,
-                    .stroke_color = t.accent,
-                    .stroke_width = 2,
-                },
-                // Rounded rect (arcs for corners)
-                Svg{
-                    .path = rounded_rect_path,
-                    .size = 28,
-                    .color = t.card,
-                    .stroke_color = t.text,
-                    .stroke_width = 1.5,
-                },
-            }),
-        });
-    }
-};
-
-const StatsRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .direction = .row,
-            .gap = 16,
-            .padding = .{ .all = 24 },
-            .background = t.card,
-            .shadow = ShadowConfig.drop(6),
-            .corner_radius = 12,
-        }, .{
-            StatCard{ .label = "Clicks", .value = s.click_count },
-            StatCard{ .label = "Page", .value = @intFromEnum(s.page) + 1 },
-        });
-    }
-};
-
-const ButtonRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .direction = .row, .gap = 12 }, .{
-            Button{ .label = "Click Me!", .on_click_handler = cx.update(AppState, AppState.increment) },
-            Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.resetClicks) },
-        });
-    }
-};
-
-const StatCard = struct {
-    label: []const u8,
-    value: u32,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .padding = .{ .all = 16 },
-            .gap = 4,
-            .alignment = .{ .main = .center, .cross = .center },
-            .background = t.bg,
-            .corner_radius = 8,
-            .min_width = 80,
-        }, .{
-            ui.textFmt("{d}", .{self.value}, .{ .size = 28, .color = t.primary }),
-            ui.text(self.label, .{ .size = 12, .color = t.muted }),
-        });
-    }
-};
-
-// =============================================================================
-// Forms Page
-// =============================================================================
-
-const FormsPage = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .padding = .{ .all = 32 },
-            .gap = 16,
-            .fill_width = true,
-            .fill_height = true,
-            .alignment = .{ .main = .center, .cross = .center },
-        }, .{
-            ui.text("Contact Form", .{ .size = 24, .color = t.text }),
-            ui.text(if (s.form_status.len > 0) s.form_status else "Fill out the form below", .{
-                .size = 14,
-                .color = if (std.mem.indexOf(u8, s.form_status, "success") != null) t.accent else t.muted,
-            }),
-            FormProgressSection{},
-            FormCard{},
-            ui.text("[Tab] to move between fields", .{ .size = 12, .color = t.muted }),
-        });
-    }
-};
-
-const FormProgressSection = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .direction = .column,
-            .gap = 6,
-            .alignment = .{ .cross = .center },
-        }, .{
-            ProgressBar{
-                .progress = s.form_progress,
-                .width = 280,
-                .height = 8,
-                .background = t.card,
-                .fill = t.primary,
-                .corner_radius = 4,
-            },
-            ui.textFmt("Form completion: {d}%", .{@as(u32, @intFromFloat(s.form_progress * 100))}, .{
-                .size = 12,
-                .color = t.muted,
-            }),
-        });
-    }
-};
-
-const CheckboxSection = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .padding = .{ .all = 20 },
-            .gap = 14,
-            .background = t.card,
-            .corner_radius = 8,
-            .direction = .column,
-            .alignment = .{ .cross = .start },
-        }, .{
-            ui.text("Preferences", .{ .size = 14, .color = t.muted }),
-
-            Checkbox{
-                .id = "agree_terms",
-                .checked = s.agree_terms,
-                .label = "I agree to the terms and conditions",
-                .on_click_handler = cx.update(AppState, AppState.toggleAgreeTerms),
-                .unchecked_background = t.bg,
-                .checked_background = t.primary,
-                .border_color = t.muted,
-                .checkmark_color = ui.Color.white,
-                .label_color = t.text,
-            },
-
-            Checkbox{
-                .id = "subscribe",
-                .checked = s.subscribe_newsletter,
-                .label = "Subscribe to newsletter",
-                .on_click_handler = cx.update(AppState, AppState.toggleSubscribe),
-                .unchecked_background = t.bg,
-                .checked_background = t.primary,
-                .border_color = t.muted,
-                .checkmark_color = ui.Color.white,
-                .label_color = t.text,
-            },
-
-            Checkbox{
-                .id = "notifications",
-                .checked = s.enable_notifications,
-                .label = "Enable notifications",
-                .on_click_handler = cx.update(AppState, AppState.toggleNotifications),
-                .unchecked_background = t.bg,
-                .checked_background = t.accent,
-                .border_color = t.muted,
-                .checkmark_color = ui.Color.white,
-                .label_color = t.text,
-            },
-        });
-    }
-};
-
-const RadioSection = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .direction = .row,
-            .gap = 24,
-            .alignment = .{ .cross = .start },
-        }, .{
-            // Contact Method card - vertical layout
-            cx.box(.{
-                .padding = .{ .all = 16 },
-                .gap = 10,
-                .background = t.card,
-                .corner_radius = 8,
-                .direction = .column,
-                .alignment = .{ .cross = .start },
-            }, .{
-                ui.text("Contact Method", .{ .size = 14, .color = t.muted }),
-                RadioButton{
-                    .label = "Email",
-                    .is_selected = s.contact_method == 0,
-                    .on_click_handler = cx.updateWith(AppState, @as(u8, 0), AppState.setContactMethod),
-                    .selected_color = t.primary,
-                    .unselected_color = t.bg,
-                    .border_color = t.muted,
-                    .label_color = t.text,
-                },
-                RadioButton{
-                    .label = "Phone",
-                    .is_selected = s.contact_method == 1,
-                    .on_click_handler = cx.updateWith(AppState, @as(u8, 1), AppState.setContactMethod),
-                    .selected_color = t.primary,
-                    .unselected_color = t.bg,
-                    .border_color = t.muted,
-                    .label_color = t.text,
-                },
-                RadioButton{
-                    .label = "Mail",
-                    .is_selected = s.contact_method == 2,
-                    .on_click_handler = cx.updateWith(AppState, @as(u8, 2), AppState.setContactMethod),
-                    .selected_color = t.primary,
-                    .unselected_color = t.bg,
-                    .border_color = t.muted,
-                    .label_color = t.text,
-                },
-            }),
-            // Priority card - using RadioGroup component
-            cx.box(.{
-                .padding = .{ .all = 16 },
-                .gap = 10,
-                .background = t.card,
-                .corner_radius = 8,
-                .direction = .column,
-                .alignment = .{ .cross = .start },
-            }, .{
-                ui.text("Priority", .{ .size = 14, .color = t.muted }),
-                RadioGroup{
-                    .id = "priority",
-                    .options = &.{ "Low", "Medium", "High" },
-                    .selected = s.priority,
-                    .handlers = &.{
-                        cx.updateWith(AppState, @as(u8, 0), AppState.setPriority),
-                        cx.updateWith(AppState, @as(u8, 1), AppState.setPriority),
-                        cx.updateWith(AppState, @as(u8, 2), AppState.setPriority),
-                    },
-                    .direction = .row,
-                    .gap = 16,
-                    .selected_color = t.accent,
-                    .unselected_color = t.bg,
-                    .border_color = t.muted,
-                    .label_color = t.text,
-                },
-            }),
-        });
-    }
-};
-
-const FormCard = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = s.theme;
-
-        cx.box(.{
-            .shadow = ShadowConfig.drop(6),
-            .padding = .{ .all = 24 },
-            .gap = 12,
-            .background = t.card,
-            .corner_radius = 12,
-        }, .{
-            TextInput{
-                .id = "form_name",
-                .placeholder = "Your Name",
-                .width = 280,
-                .bind = &s.name,
-                // Theme-aware styling
-                .background = t.bg,
-                .border_color = t.muted.withAlpha(0.3),
-                .border_color_focused = t.primary,
-                .text_color = t.text,
-                .placeholder_color = t.muted,
-                .corner_radius = 8,
-            },
-            TextInput{
-                .id = "form_email",
-                .placeholder = "Email Address",
-                .width = 280,
-                .bind = &s.email,
-                .background = t.bg,
-                .border_color = t.muted.withAlpha(0.3),
-                .border_color_focused = t.primary,
-                .text_color = t.text,
-                .placeholder_color = t.muted,
-                .corner_radius = 8,
-            },
-            TextInput{
-                .id = "form_message",
-                .placeholder = "Message",
-                .width = 280,
-                .bind = &s.message,
-                .background = t.bg,
-                .border_color = t.muted.withAlpha(0.3),
-                .border_color_focused = t.primary,
-                .text_color = t.text,
-                .placeholder_color = t.muted,
-                .corner_radius = 8,
-            },
-            TextArea{
-                .id = "form_bio",
-                .placeholder = "Tell us about yourself...",
-                .width = 280,
-                .height = 120,
-                .bind = &s.bio,
-                .background = t.bg,
-                .border_color = t.muted.withAlpha(0.3),
-                .border_color_focused = t.primary,
-                .text_color = t.text,
-                .placeholder_color = t.muted,
-                .corner_radius = 8,
-            },
-            RadioSection{},
-            CheckboxSection{},
-            Button{ .label = "Submit", .on_click_handler = cx.command(AppState, AppState.submitFormAndBlur) },
-        });
-    }
-};
-
-// =============================================================================
-// Scroll Demo Page
-// =============================================================================
-
-const ScrollDemoPage = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .direction = .column,
-            .fill_width = true,
-            .grow = true,
-        }, .{
-            cx.box(.{
-                .direction = .row,
-                .padding = .{ .symmetric = .{ .x = 24, .y = 16 } },
-                .gap = 16,
-                .background = t.card,
-                .fill_width = true,
-                .alignment = .{ .cross = .center },
-            }, .{
-                ui.text("Scroll Container Demo", .{ .size = 20, .color = t.text }),
-                ui.text("Scroll with mousewheel or trackpad", .{ .size = 14, .color = t.muted }),
-            }),
-
-            cx.box(.{
-                .direction = .row,
-                .gap = 24,
-                .padding = .{ .all = 32 },
-                .grow = true,
-                .fill_width = true,
-                .alignment = .{ .main = .center, .cross = .start },
-            }, .{
-                ScrollableList{},
-                ScrollableCards{},
-            }),
-        });
-    }
-};
-
-const ScrollableList = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .gap = 8,
-            .alignment = .{ .cross = .start },
-        }, .{
-            ui.text("Item List", .{ .size = 14, .color = t.muted }),
-
-            cx.scroll("list_scroll", .{
-                .width = 200,
-                .height = 250,
-                .background = t.card,
-                .corner_radius = 8,
-                .padding = .{ .all = 8 },
-                .gap = 6,
-                .content_height = 500,
-                .track_color = t.bg,
-                .thumb_color = t.muted,
-            }, .{
-                ListItem{ .index = 1 },
-                ListItem{ .index = 2 },
-                ListItem{ .index = 3 },
-                ListItem{ .index = 4 },
-                ListItem{ .index = 5 },
-                ListItem{ .index = 6 },
-                ListItem{ .index = 7 },
-                ListItem{ .index = 8 },
-                ListItem{ .index = 9 },
-                ListItem{ .index = 10 },
-                ListItem{ .index = 11 },
-                ListItem{ .index = 12 },
-                ListItem{ .index = 13 },
-                ListItem{ .index = 14 },
-                ListItem{ .index = 15 },
-            }),
-        });
-    }
-};
-
-const ListItem = struct {
-    index: u32,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
-            .background = t.bg,
-            .corner_radius = 4,
-            .fill_width = true,
-        }, .{
-            ui.textFmt("List Item {d}", .{self.index}, .{ .size = 13, .color = t.text }),
-        });
-    }
-};
-
-const ScrollableCards = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .gap = 8,
-            .alignment = .{ .cross = .start },
-        }, .{
-            ui.text("Card Stack", .{ .size = 14, .color = t.muted }),
-
-            cx.scroll("cards_scroll", .{
-                .width = 220,
-                .height = 250,
-                .background = t.bg,
-                .corner_radius = 8,
-                .padding = .{ .all = 12 },
-                .gap = 12,
-                .content_height = 600,
-                .track_color = t.card,
-                .thumb_color = t.primary,
-            }, .{
-                InfoCard{ .title = "Performance", .desc = "GPU-accelerated rendering" },
-                InfoCard{ .title = "Layout", .desc = "Flexbox-style system" },
-                InfoCard{ .title = "Text", .desc = "CoreText shaping" },
-                InfoCard{ .title = "Widgets", .desc = "Retained state" },
-                InfoCard{ .title = "Clipping", .desc = "Nested scroll areas" },
-                InfoCard{ .title = "Themes", .desc = "Dark mode support" },
-            }),
-        });
-    }
-};
-
-const InfoCard = struct {
-    title: []const u8,
-    desc: []const u8,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .padding = .{ .all = 12 },
-            .gap = 4,
-            .background = t.card,
-            .corner_radius = 6,
-            .fill_width = true,
-        }, .{
-            ui.text(self.title, .{ .size = 14, .color = t.primary }),
-            ui.text(self.desc, .{ .size = 12, .color = t.muted }),
-        });
-    }
-};
-
-// =============================================================================
-// About Page
-// =============================================================================
-
-const AboutPage = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .padding = .{ .all = 32 },
-            .gap = 16,
-            .fill_width = true,
-            .fill_height = true,
-            .alignment = .{ .main = .center, .cross = .center },
-        }, .{
-            ui.text("About Gooey", .{ .size = 24, .color = t.text }),
-            FeatureCard{},
-            ui.text("Built with Zig + Metal", .{ .size = 14, .color = t.muted }),
-        });
-    }
-};
-
-const FeatureCard = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .padding = .{ .all = 24 },
-            .gap = 12,
-            .shadow = ShadowConfig.drop(6),
-            .background = t.card,
-            .corner_radius = 12,
-            .alignment = .{ .cross = .start },
-        }, .{
-            FeatureItem{ .text = "Metal GPU rendering" },
-            FeatureItem{ .text = "Pure state pattern" },
-            FeatureItem{ .text = "Component system (Button, Checkbox, TextInput)" },
-            FeatureItem{ .text = "SVG icons with fill & stroke" },
-            FeatureItem{ .text = "SVG arcs & quadratic beziers" },
-            FeatureItem{ .text = "Text styles (underline, strikethrough)" },
-            FeatureItem{ .text = "CoreText font shaping" },
-            FeatureItem{ .text = "Scroll containers" },
-        });
-    }
-};
-
-const FeatureItem = struct {
-    text: []const u8,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        const t = cx.state(AppState).theme;
-
-        cx.box(.{
-            .direction = .row,
-            .gap = 12,
-            .alignment = .{ .cross = .center },
-        }, .{
-            ui.text("✓", .{ .size = 14, .color = t.accent }),
-            ui.text(self.text, .{ .size = 14, .color = t.text }),
-        });
-    }
-};
-
-// =============================================================================
-// Render & Events
-// =============================================================================
-
-const star_path = "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z";
 
 fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const t = s.theme;
     const size = cx.windowSize();
-    const g = cx.gooey();
 
-    // Initialize form focus on first render of forms page
-    if (s.page == .forms and !s.form_initialized) {
-        s.form_initialized = true;
-        syncFormFocus(s, g);
-    } else if (s.page != .forms) {
-        g.blurAll();
-    }
+    // Set theme for all child components
+    cx.setTheme(t);
 
     cx.box(.{
         .width = size.width,
@@ -1033,107 +274,1082 @@ fn render(cx: *Cx) void {
         .background = t.bg,
         .direction = .column,
     }, .{
-        NavBar{},
-        PageContent{},
+        TopNavBar{},
+        MainContent{},
+
+        // Modal overlays (rendered last)
+        Modal(InfoModalContent){
+            .id = "info-modal",
+            .is_open = s.show_modal,
+            .on_close = cx.update(AppState, AppState.closeModal),
+            .child = InfoModalContent{},
+        },
+
+        Modal(ConfirmModalContent){
+            .id = "confirm-modal",
+            .is_open = s.show_confirm,
+            .on_close = cx.update(AppState, AppState.closeConfirm),
+            .child = ConfirmModalContent{},
+        },
     });
 }
 
-const PageContent = struct {
+// =============================================================================
+// Top Navigation Bar
+// =============================================================================
+
+const TopNavBar = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .fill_width = true,
+            .height = 60,
+            .background = t.surface,
+            .direction = .row,
+            .padding = .{ .symmetric = .{ .x = 20, .y = 0 } },
+            .gap = 8,
+            .alignment = .{ .cross = .center, .main = .center },
+        }, .{
+            // Logo / Title
+            NavLogo{},
+
+            ui.spacer(),
+
+            // Navigation items (horizontal)
+            NavItem{ .section = .overview },
+            NavItem{ .section = .buttons },
+            NavItem{ .section = .inputs },
+            NavItem{ .section = .selection },
+            NavItem{ .section = .feedback },
+            NavItem{ .section = .overlays },
+            NavItem{ .section = .icons },
+
+            ui.spacer(),
+
+            // Theme toggle
+            ThemeToggle{},
+        });
+    }
+};
+
+const NavLogo = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .gap = 8,
+            .direction = .row,
+            .alignment = .{ .cross = .center, .main = .center },
+        }, .{
+            gooey.Image{ .src = "assets/gooey.png", .size = 28, .fit = .cover },
+            ui.text("Gooey", .{ .size = 24, .color = t.text }),
+        });
+    }
+};
+
+const NavItem = struct {
+    section: Section,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const is_active = s.section == self.section;
+        const idx = @intFromEnum(self.section);
+
+        cx.box(.{
+            .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
+            .corner_radius = 6,
+            .direction = .row,
+            .alignment = .{ .cross = .center },
+            .background = if (is_active) t.primary.withAlpha(0.15) else ui.Color.transparent,
+            .hover_background = if (is_active) t.primary.withAlpha(0.2) else t.overlay.withAlpha(0.5),
+            .on_click_handler = cx.updateWith(AppState, idx, AppState.goToSection),
+        }, .{
+            ui.text(self.section.title(), .{
+                .size = 14,
+                .color = if (is_active) t.primary else t.text,
+            }),
+        });
+    }
+};
+
+const ThemeToggle = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+
+        cx.box(.{
+            .padding = .{ .all = 8 },
+            .corner_radius = 6,
+            .alignment = .{ .cross = .center },
+            .hover_background = t.overlay.withAlpha(0.5),
+            .on_click_handler = cx.update(AppState, AppState.toggleTheme),
+        }, .{
+            Svg{
+                .path = if (s.is_dark) Icons.visibility else Icons.visibility_off,
+                .size = 20,
+                .color = null,
+                .stroke_color = t.muted,
+                .stroke_width = 1,
+            },
+        });
+    }
+};
+
+// =============================================================================
+// Main Content Area
+// =============================================================================
+
+const MainContent = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.box(.{
+            .grow = true,
+            .fill_height = true,
+            .direction = .column,
+        }, .{
+            SectionContent{},
+        });
+    }
+
+    fn getContentHeight(section: Section) f32 {
+        return switch (section) {
+            .overview => 800,
+            .buttons => 600,
+            .inputs => 500,
+            .selection => 700,
+            .feedback => 550,
+            .overlays => 350,
+            .icons => 650,
+        };
+    }
+};
+
+const SectionContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        switch (s.page) {
-            .home => cx.box(.{ .grow = true }, .{HomePage{}}),
-            .forms => cx.box(.{ .grow = true }, .{FormsPage{}}),
-            .scroll_demo => cx.box(.{ .grow = true }, .{ScrollDemoPage{}}),
-            .about => cx.box(.{ .grow = true }, .{AboutPage{}}),
+        switch (s.section) {
+            .overview => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{OverviewSection{}}),
+            .buttons => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{ButtonsSection{}}),
+            .inputs => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{InputsSection{}}),
+            .selection => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{SelectionSection{}}),
+            .feedback => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{FeedbackSection{}}),
+            .overlays => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{OverlaysSection{}}),
+            .icons => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{IconsSection{}}),
         }
     }
 };
 
-fn syncFormFocus(s: *AppState, g: *Gooey) void {
-    switch (s.focused_field) {
-        .name => g.focusTextInput("form_name"),
-        .email => g.focusTextInput("form_email"),
-        .message => g.focusTextInput("form_message"),
+// =============================================================================
+// Reusable Card Component
+// =============================================================================
+
+const Card = struct {
+    title: []const u8,
+    description: ?[]const u8 = null,
+
+    pub fn render(self: @This(), cx: *Cx, children: anytype) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .fill_width = true,
+            .padding = .{ .all = 24 },
+            .background = t.surface,
+            .corner_radius = t.radius_lg,
+            .direction = .column,
+            .gap = 16,
+            .shadow = ui.ShadowConfig.drop(4),
+        }, .{
+            // Card header
+            CardHeader{ .title = self.title, .description = self.description },
+            // Card content
+            children,
+        });
     }
-}
+};
+
+const CardHeader = struct {
+    title: []const u8,
+    description: ?[]const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        if (self.description) |desc| {
+            cx.box(.{ .gap = 4 }, .{
+                ui.text(self.title, .{ .size = 18, .color = t.text }),
+                ui.text(desc, .{ .size = 13, .color = t.muted, .wrap = .words }),
+            });
+        } else {
+            cx.box(.{ .gap = 4 }, .{
+                ui.text(self.title, .{ .size = 18, .color = t.text }),
+            });
+        }
+    }
+};
+
+// =============================================================================
+// Overview Section
+// =============================================================================
+
+const OverviewSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+            // Hero
+            cx.box(.{
+                .fill_width = true,
+                .padding = .{ .all = 32 },
+                .background = t.primary.withAlpha(0.1),
+                .corner_radius = t.radius_lg,
+                .gap = 16,
+                .alignment = .{ .cross = .center },
+            }, .{
+                ui.text("Welcome to Gooey", .{ .size = 36, .color = t.text }),
+                ui.text("A GPU-accelerated UI framework for Zig", .{ .size = 18, .color = t.subtext }),
+                cx.hstack(.{ .gap = 12 }, .{
+                    FeatureBadge{ .icon = Icons.star, .label = "Fast" },
+                    FeatureBadge{ .icon = Icons.folder, .label = "Composable" },
+                    FeatureBadge{ .icon = Icons.menu, .label = "Flexible" },
+                }),
+            }),
+
+            // Feature cards grid
+            cx.hstack(.{ .gap = 16 }, .{
+                FeatureCard{
+                    .icon = Icons.play,
+                    .title = "GPU Rendering",
+                    .description = "Metal/WebGPU accelerated rendering for smooth 60fps UI",
+                },
+                FeatureCard{
+                    .icon = Icons.file,
+                    .title = "Pure Zig",
+                    .description = "No runtime, no garbage collector, just fast native code",
+                },
+            }),
+
+            cx.hstack(.{ .gap = 16 }, .{
+                FeatureCard{
+                    .icon = Icons.visibility,
+                    .title = "Cross Platform",
+                    .description = "macOS native + WebAssembly for browsers",
+                },
+                FeatureCard{
+                    .icon = Icons.folder,
+                    .title = "Component System",
+                    .description = "Build UIs with composable, reusable components",
+                },
+            }),
+
+            // Quick stats
+            QuickStats{},
+        });
+    }
+};
+
+const FeatureBadge = struct {
+    icon: []const u8,
+    label: []const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .padding = .{ .symmetric = .{ .x = 12, .y = 6 } },
+            .background = t.surface,
+            .corner_radius = 16,
+            .direction = .row,
+            .gap = 6,
+            .alignment = .{ .cross = .center },
+        }, .{
+            Svg{
+                .path = self.icon,
+                .size = 14,
+                .color = null,
+                .stroke_color = t.primary,
+                .stroke_width = 2,
+            },
+            ui.text(self.label, .{ .size = 12, .color = t.text }),
+        });
+    }
+};
+
+const FeatureCard = struct {
+    icon: []const u8,
+    title: []const u8,
+    description: []const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .grow = true,
+            .padding = .{ .all = 20 },
+            .background = t.surface,
+            .corner_radius = t.radius_md,
+            .gap = 8,
+        }, .{
+            Svg{
+                .path = self.icon,
+                .size = 28,
+                .color = null,
+                .stroke_color = t.primary,
+                .stroke_width = 2,
+            },
+            ui.text(self.title, .{ .size = 16, .color = t.text }),
+            ui.text(self.description, .{ .size = 13, .color = t.muted, .wrap = .words }),
+        });
+    }
+};
+
+const QuickStats = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .fill_width = true,
+            .padding = .{ .all = 20 },
+            .background = t.surface,
+            .corner_radius = t.radius_md,
+            .direction = .row,
+            .gap = 32,
+            .alignment = .{ .cross = .center, .main = .center },
+        }, .{
+            StatItem{ .value = "7", .label = "Components" },
+            StatItem{ .value = "60", .label = "FPS Target" },
+            StatItem{ .value = "0", .label = "Dependencies" },
+        });
+    }
+};
+
+const StatItem = struct {
+    value: []const u8,
+    label: []const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+            ui.text(self.value, .{ .size = 28, .color = t.primary }),
+            ui.text(self.label, .{ .size = 12, .color = t.muted }),
+        });
+    }
+};
+
+// =============================================================================
+// Buttons Section
+// =============================================================================
+
+const ButtonsSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+            ButtonVariantsCard{},
+            ButtonSizesCard{},
+            ButtonInteractiveCard{},
+        });
+    }
+};
+
+const ButtonVariantsCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+        const card = Card{ .title = "Button Variants", .description = "Different button styles for various contexts" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+                Button{ .label = "Primary", .variant = .primary },
+                Button{ .label = "Secondary", .variant = .secondary },
+                Button{ .label = "Danger", .variant = .danger },
+            }),
+
+            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+                Button{ .label = "Disabled", .variant = .primary, .enabled = false },
+                Tooltip(Button){
+                    .text = "This button has a tooltip!",
+                    .position = .top,
+                    .background = t.overlay,
+                    .child = Button{ .label = "With Tooltip", .variant = .secondary },
+                },
+            }),
+        });
+    }
+};
+
+const ButtonSizesCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const card = Card{ .title = "Button Sizes", .description = "Small, medium, and large variants" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+                Button{ .label = "Small", .size = .small },
+                Button{ .label = "Medium", .size = .medium },
+                Button{ .label = "Large", .size = .large },
+            }),
+        });
+    }
+};
+
+const ButtonInteractiveCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const card = Card{ .title = "Interactive Demo", .description = "Click to see state updates" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                Button{
+                    .label = "Click Me!",
+                    .variant = .primary,
+                    .on_click_handler = cx.update(AppState, AppState.incrementClicks),
+                },
+                Button{
+                    .label = "Reset",
+                    .variant = .secondary,
+                    .on_click_handler = cx.update(AppState, AppState.resetClicks),
+                },
+                cx.box(.{
+                    .padding = .{ .symmetric = .{ .x = 16, .y = 8 } },
+                    .background = t.overlay,
+                    .corner_radius = t.radius_md,
+                }, .{
+                    ui.textFmt("Clicks: {d}", .{s.button_clicks}, .{ .size = 14, .color = t.text }),
+                }),
+            }),
+        });
+    }
+};
+
+// =============================================================================
+// Inputs Section
+// =============================================================================
+
+const InputsSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+            TextInputCard{},
+            TextAreaCard{},
+        });
+    }
+};
+
+const TextInputCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const card = Card{ .title = "Text Input", .description = "Single-line text entry with placeholder and binding" };
+
+        card.render(cx, .{
+            cx.box(.{ .gap = 16 }, .{
+                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                    TextInput{
+                        .id = "name-input",
+                        .placeholder = "Your name",
+                        .width = 200,
+                        .bind = &s.name,
+                        // Uses theme defaults: background=bg, border=border, etc.
+                    },
+                    TextInput{
+                        .id = "email-input",
+                        .placeholder = "Email address",
+                        .width = 200,
+                        .bind = &s.email,
+                    },
+                }),
+                cx.hstack(.{ .gap = 8 }, .{
+                    ui.text("Name:", .{ .size = 13, .color = t.muted }),
+                    ui.text(if (s.name.len > 0) s.name else "(empty)", .{ .size = 13, .color = t.text }),
+                    ui.text("  Email:", .{ .size = 13, .color = t.muted }),
+                    ui.text(if (s.email.len > 0) s.email else "(empty)", .{ .size = 13, .color = t.text }),
+                }),
+            }),
+        });
+    }
+};
+
+const TextAreaCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const card = Card{ .title = "Text Area", .description = "Multi-line text entry for longer content" };
+
+        card.render(cx, .{
+            TextArea{
+                .id = "bio-input",
+                .placeholder = "Tell us about yourself...",
+                .width = 400,
+                .height = 120,
+                .bind = &cx.state(AppState).bio,
+                // Uses theme defaults for all colors
+            },
+        });
+    }
+};
+
+// =============================================================================
+// Selection Section
+// =============================================================================
+
+const SelectionSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+            CheckboxCard{},
+            RadioCard{},
+            SelectCard{},
+        });
+    }
+};
+
+const CheckboxCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const card = Card{ .title = "Checkbox", .description = "Toggle options on or off" };
+
+        card.render(cx, .{
+            cx.box(.{ .gap = 12 }, .{
+                Checkbox{
+                    .id = "opt-a",
+                    .checked = s.option_a,
+                    .label = "Option A (checked by default)",
+                    .on_click_handler = cx.update(AppState, AppState.toggleOptionA),
+                    // Uses theme defaults
+                },
+                Checkbox{
+                    .id = "opt-b",
+                    .checked = s.option_b,
+                    .label = "Option B",
+                    .on_click_handler = cx.update(AppState, AppState.toggleOptionB),
+                },
+                Checkbox{
+                    .id = "opt-c",
+                    .checked = s.option_c,
+                    .label = "Option C (success color)",
+                    .on_click_handler = cx.update(AppState, AppState.toggleOptionC),
+                    // Override just the checked color
+                    .checked_background = t.success,
+                },
+            }),
+        });
+    }
+};
+
+const RadioCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const card = Card{ .title = "Radio Buttons", .description = "Select one option from a group" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 32, .alignment = .start }, .{
+                // Color selection - vertical
+                cx.box(.{ .gap = 8 }, .{
+                    ui.text("Color", .{ .size = 13, .color = t.muted }),
+                    RadioButton{
+                        .label = "Red",
+                        .is_selected = s.color_choice == 0,
+                        .on_click_handler = cx.updateWith(AppState, @as(u8, 0), AppState.setColor),
+                        .selected_color = t.danger,
+                    },
+                    RadioButton{
+                        .label = "Green",
+                        .is_selected = s.color_choice == 1,
+                        .on_click_handler = cx.updateWith(AppState, @as(u8, 1), AppState.setColor),
+                        .selected_color = t.success,
+                    },
+                    RadioButton{
+                        .label = "Blue",
+                        .is_selected = s.color_choice == 2,
+                        .on_click_handler = cx.updateWith(AppState, @as(u8, 2), AppState.setColor),
+                        .selected_color = t.primary,
+                    },
+                }),
+                // Size selection - horizontal using RadioGroup
+                cx.box(.{ .gap = 8 }, .{
+                    ui.text("Size", .{ .size = 13, .color = t.muted }),
+                    RadioGroup{
+                        .id = "size-group",
+                        .options = &.{ "S", "M", "L", "XL" },
+                        .selected = s.size_choice,
+                        .handlers = &.{
+                            cx.updateWith(AppState, @as(u8, 0), AppState.setSize),
+                            cx.updateWith(AppState, @as(u8, 1), AppState.setSize),
+                            cx.updateWith(AppState, @as(u8, 2), AppState.setSize),
+                            cx.updateWith(AppState, @as(u8, 3), AppState.setSize),
+                        },
+                        .direction = .row,
+                        .gap = 16,
+                        // Uses theme defaults
+                    },
+                }),
+            }),
+        });
+    }
+};
+
+const fruit_options = [_][]const u8{ "Apple", "Banana", "Cherry", "Dragon Fruit", "Elderberry" };
+const priority_options = [_][]const u8{ "Low", "Medium", "High", "Critical" };
+
+const SelectCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const card = Card{ .title = "Select / Dropdown", .description = "Choose from a list of options" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 24, .alignment = .start }, .{
+                cx.box(.{ .gap = 8 }, .{
+                    ui.text("Fruit", .{ .size = 13, .color = t.muted }),
+                    Select{
+                        .id = "fruit-select",
+                        .options = &fruit_options,
+                        .selected = s.fruit_selected,
+                        .placeholder = "Choose a fruit...",
+                        .is_open = s.fruit_open,
+                        .width = 180,
+                        .on_toggle_handler = cx.update(AppState, AppState.toggleFruit),
+                        .on_close_handler = cx.update(AppState, AppState.closeFruit),
+                        .handlers = &.{
+                            cx.updateWith(AppState, @as(usize, 0), AppState.selectFruit),
+                            cx.updateWith(AppState, @as(usize, 1), AppState.selectFruit),
+                            cx.updateWith(AppState, @as(usize, 2), AppState.selectFruit),
+                            cx.updateWith(AppState, @as(usize, 3), AppState.selectFruit),
+                            cx.updateWith(AppState, @as(usize, 4), AppState.selectFruit),
+                        },
+                        // Uses theme defaults
+                    },
+                }),
+                cx.box(.{ .gap = 8 }, .{
+                    ui.text("Priority", .{ .size = 13, .color = t.muted }),
+                    Select{
+                        .id = "priority-select",
+                        .options = &priority_options,
+                        .selected = s.priority_selected,
+                        .is_open = s.priority_open,
+                        .width = 150,
+                        .on_toggle_handler = cx.update(AppState, AppState.togglePriority),
+                        .on_close_handler = cx.update(AppState, AppState.closePriority),
+                        .handlers = &.{
+                            cx.updateWith(AppState, @as(usize, 0), AppState.selectPriority),
+                            cx.updateWith(AppState, @as(usize, 1), AppState.selectPriority),
+                            cx.updateWith(AppState, @as(usize, 2), AppState.selectPriority),
+                            cx.updateWith(AppState, @as(usize, 3), AppState.selectPriority),
+                        },
+                        // Override focus border color
+                        .focus_border_color = t.warning,
+                    },
+                }),
+            }),
+        });
+    }
+};
+
+// =============================================================================
+// Feedback Section
+// =============================================================================
+
+const FeedbackSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+            ProgressCard{},
+            TooltipCard{},
+        });
+    }
+};
+
+const ProgressCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const card = Card{ .title = "Progress Bar", .description = "Show completion status" };
+
+        card.render(cx, .{
+            cx.box(.{ .gap = 16 }, .{
+                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                    ui.text("65%", .{ .size = 13, .color = t.muted }),
+                    ProgressBar{
+                        .progress = 0.65,
+                        .width = 200,
+                        .height = 8,
+                        // Uses theme defaults (overlay bg, primary fill)
+                    },
+                }),
+                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                    ui.text("25%", .{ .size = 13, .color = t.muted }),
+                    ProgressBar{
+                        .progress = 0.25,
+                        .width = 200,
+                        .height = 8,
+                        .fill = t.warning,
+                    },
+                }),
+                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                    ui.text("100%", .{ .size = 13, .color = t.muted }),
+                    ProgressBar{
+                        .progress = 1.0,
+                        .width = 200,
+                        .height = 8,
+                        .fill = t.success,
+                    },
+                }),
+                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                    Button{
+                        .label = "Step Progress",
+                        .variant = .secondary,
+                        .size = .small,
+                        .on_click_handler = cx.update(AppState, AppState.stepProgress),
+                    },
+                    ProgressBar{
+                        .progress = s.animated_progress,
+                        .width = 150,
+                        .height = 10,
+                        .fill = t.accent,
+                    },
+                    ui.textFmt("{d}%", .{@as(u32, @intFromFloat(s.animated_progress * 100))}, .{
+                        .size = 13,
+                        .color = t.text,
+                    }),
+                }),
+            }),
+        });
+    }
+};
+
+const TooltipCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const card = Card{ .title = "Tooltips", .description = "Hover to see contextual information" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                Tooltip(Button){
+                    .text = "Appears above",
+                    .position = .top,
+                    .child = Button{ .label = "Top", .variant = .secondary, .size = .small },
+                },
+                Tooltip(Button){
+                    .text = "Appears below",
+                    .position = .bottom,
+                    .child = Button{ .label = "Bottom", .variant = .secondary, .size = .small },
+                },
+                Tooltip(Button){
+                    .text = "Appears left",
+                    .position = .left,
+                    .child = Button{ .label = "Left", .variant = .secondary, .size = .small },
+                },
+                Tooltip(Button){
+                    .text = "Appears right",
+                    .position = .right,
+                    .child = Button{ .label = "Right", .variant = .secondary, .size = .small },
+                },
+            }),
+        });
+    }
+};
+
+// =============================================================================
+// Overlays Section
+// =============================================================================
+
+const OverlaysSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+            ModalCard{},
+        });
+    }
+};
+
+const ModalCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const t = cx.theme();
+        const card = Card{ .title = "Modal Dialogs", .description = "Overlay dialogs for important interactions" };
+
+        card.render(cx, .{
+            cx.box(.{ .gap = 16 }, .{
+                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                    Button{
+                        .label = "Info Modal",
+                        .variant = .primary,
+                        .on_click_handler = cx.update(AppState, AppState.openModal),
+                    },
+                    Button{
+                        .label = "Confirm Action",
+                        .variant = .danger,
+                        .on_click_handler = cx.update(AppState, AppState.openConfirm),
+                    },
+                }),
+                cx.hstack(.{ .gap = 8 }, .{
+                    ui.text("Confirmed actions:", .{ .size = 13, .color = t.muted }),
+                    ui.textFmt("{d}", .{s.confirmed_count}, .{ .size = 13, .color = t.text }),
+                }),
+            }),
+        });
+    }
+};
+
+const InfoModalContent = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{ .gap = 16, .fill_width = true }, .{
+            ui.text("Information", .{ .size = 20, .color = t.text }),
+            ui.text("This is a modal dialog. Click outside or press Escape to close.", .{
+                .size = 14,
+                .color = t.subtext,
+                .wrap = .words,
+            }),
+            Button{
+                .label = "Got it",
+                .variant = .primary,
+                .on_click_handler = cx.update(AppState, AppState.closeModal),
+            },
+        });
+    }
+};
+
+const ConfirmModalContent = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{ .gap = 20, .fill_width = true }, .{
+            ui.text("Confirm Action", .{ .size = 20, .color = t.text }),
+            ui.text("Are you sure you want to proceed? This action will be counted.", .{
+                .size = 14,
+                .color = t.subtext,
+                .wrap = .words,
+            }),
+            cx.hstack(.{ .gap = 12, .alignment = .end }, .{
+                ui.spacer(),
+                Button{
+                    .label = "Cancel",
+                    .variant = .secondary,
+                    .on_click_handler = cx.update(AppState, AppState.closeConfirm),
+                },
+                Button{
+                    .label = "Confirm",
+                    .variant = .danger,
+                    .on_click_handler = cx.update(AppState, AppState.doConfirm),
+                },
+            }),
+        });
+    }
+};
+
+// =============================================================================
+// Icons Section
+// =============================================================================
+
+const IconsSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+            BasicIconsCard{},
+            StyledIconsCard{},
+            CustomPathsCard{},
+        });
+    }
+};
+
+const BasicIconsCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+        const card = Card{ .title = "Basic Icons", .description = "Built-in icon set with stroke rendering" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 20, .alignment = .center }, .{
+                IconWithLabel{ .icon = Icons.folder, .label = "Folder" },
+                IconWithLabel{ .icon = Icons.search, .label = "Search" },
+                IconWithLabel{ .icon = Icons.edit, .label = "Edit" },
+                IconWithLabel{ .icon = Icons.favorite, .label = "Heart" },
+                IconWithLabel{ .icon = Icons.file, .label = "File" },
+                IconWithLabel{ .icon = Icons.warning, .label = "Alert" },
+                IconWithLabel{ .icon = Icons.menu, .label = "Menu" },
+                IconWithLabel{ .icon = Icons.download, .label = "Download" },
+            }),
+            cx.hstack(.{ .gap = 20, .alignment = .center }, .{
+                IconWithLabel{ .icon = Icons.check, .label = "Check", .color = t.success },
+                IconWithLabel{ .icon = Icons.close, .label = "Close", .color = t.danger },
+                IconWithLabel{ .icon = Icons.warning, .label = "Warning", .color = t.warning },
+                IconWithLabel{ .icon = Icons.info, .label = "Info", .color = t.primary },
+                IconWithLabel{ .icon = Icons.star, .label = "Star", .color = t.accent },
+                IconWithLabel{ .icon = Icons.favorite, .label = "Heart", .color = t.danger },
+            }),
+        });
+    }
+};
+
+const IconWithLabel = struct {
+    icon: []const u8,
+    label: []const u8,
+    color: ?ui.Color = null,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+        const icon_color = self.color orelse t.text;
+
+        cx.box(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
+            Svg{
+                .path = self.icon,
+                .size = 24,
+                .color = null,
+                .stroke_color = icon_color,
+                .stroke_width = 2,
+            },
+            ui.text(self.label, .{ .size = 11, .color = t.muted }),
+        });
+    }
+};
+
+const StyledIconsCard = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+        const card = Card{ .title = "Icon Styles", .description = "Different sizes and stroke widths" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 24, .alignment = .end }, .{
+                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                    Svg{ .path = Icons.star_outline, .size = 16, .color = null, .stroke_color = t.primary, .stroke_width = 1.5 },
+                    ui.text("16px", .{ .size = 11, .color = t.muted }),
+                }),
+                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                    Svg{ .path = Icons.star_outline, .size = 24, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
+                    ui.text("24px", .{ .size = 11, .color = t.muted }),
+                }),
+                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                    Svg{ .path = Icons.star_outline, .size = 32, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
+                    ui.text("32px", .{ .size = 11, .color = t.muted }),
+                }),
+                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                    Svg{ .path = Icons.star_outline, .size = 48, .color = null, .stroke_color = t.primary, .stroke_width = 2.5 },
+                    ui.text("48px", .{ .size = 11, .color = t.muted }),
+                }),
+            }),
+            cx.hstack(.{ .gap = 24, .alignment = .center }, .{
+                // Filled star
+                Svg{ .path = Icons.star, .size = 32, .color = t.warning },
+                // Stroke only
+                Svg{ .path = Icons.star_outline, .size = 32, .color = null, .stroke_color = t.warning, .stroke_width = 2 },
+                // Fill + stroke
+                Svg{ .path = Icons.favorite, .size = 32, .color = t.danger.withAlpha(0.3), .stroke_color = t.danger, .stroke_width = 2 },
+            }),
+        });
+    }
+};
+
+const CustomPathsCard = struct {
+    // Custom SVG paths
+    const circle_path = "M12 2 A10 10 0 1 1 12 22 A10 10 0 1 1 12 2";
+    const wave_path = "M2 12 Q6 6 12 12 T22 12";
+    const rounded_rect = "M6 2 L18 2 A4 4 0 0 1 22 6 L22 18 A4 4 0 0 1 18 22 L6 22 A4 4 0 0 1 2 18 L2 6 A4 4 0 0 1 6 2 Z";
+
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+        const card = Card{ .title = "Custom SVG Paths", .description = "Arcs, beziers, and custom shapes" };
+
+        card.render(cx, .{
+            cx.hstack(.{ .gap = 24, .alignment = .center }, .{
+                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                    Svg{ .path = circle_path, .size = 32, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
+                    ui.text("Circle (Arc)", .{ .size = 11, .color = t.muted }),
+                }),
+                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                    Svg{ .path = wave_path, .size = 32, .color = null, .stroke_color = t.accent, .stroke_width = 2 },
+                    ui.text("Wave (Bezier)", .{ .size = 11, .color = t.muted }),
+                }),
+                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                    Svg{ .path = rounded_rect, .size = 32, .color = t.surface, .stroke_color = t.text, .stroke_width = 1.5 },
+                    ui.text("Rounded Rect", .{ .size = 11, .color = t.muted }),
+                }),
+            }),
+        });
+    }
+};
+
+// =============================================================================
+// Event Handling
+// =============================================================================
 
 fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
     const s = cx.state(AppState);
     const g = cx.gooey();
 
-    // Let focused text widgets handle their own input
-    if (g.getFocusedTextArea() != null) {
-        return false; // Let framework handle it
+    // Let text widgets handle their input first
+    if (g.getFocusedTextInput() != null or g.getFocusedTextArea() != null) {
+        return false;
     }
 
     if (event == .key_down) {
         const key = event.key_down;
 
-        // Tab navigation (forms page)
-        if (key.key == .tab and s.page == .forms) {
-            s.focusNextField();
-            syncFormFocus(s, g);
-            cx.notify();
-            return true;
-        }
-
-        const no_mods = !key.modifiers.shift and !key.modifiers.cmd and
-            !key.modifiers.alt and !key.modifiers.ctrl;
-
-        // Number keys for page navigation
-        if (no_mods) {
-            if (key.key == .@"1") {
-                s.goToPage(.home);
+        // Escape closes modals/dropdowns
+        if (key.key == .escape) {
+            if (s.show_modal) {
+                s.closeModal();
                 cx.notify();
                 return true;
             }
-            if (key.key == .@"2") {
-                s.page = .forms;
-                s.form_initialized = true;
-                s.focused_field = .name;
-                g.focusTextInput("form_name");
+            if (s.show_confirm) {
+                s.closeConfirm();
                 cx.notify();
                 return true;
             }
-            if (key.key == .@"3") {
-                s.goToPage(.scroll_demo);
-                cx.notify();
-                return true;
-            }
-            if (key.key == .@"4") {
-                s.goToPage(.about);
+            if (s.fruit_open or s.priority_open) {
+                s.closeAllDropdowns();
                 cx.notify();
                 return true;
             }
         }
 
-        // Arrow keys
-        if (key.key == .left) {
-            s.prevPage();
-            cx.notify();
-            return true;
-        }
-        if (key.key == .right) {
-            s.nextPage();
-            cx.notify();
-            return true;
-        }
-
-        // Theme toggle
-        if (key.key == .t and s.page != .forms) {
+        // T toggles theme
+        if (key.key == .t) {
             s.toggleTheme();
             cx.notify();
             return true;
         }
 
-        // Enter to submit form
-        if (key.key == .@"return" and s.page == .forms) {
-            s.submitForm();
-            if (std.mem.indexOf(u8, s.form_status, "success") != null) {
-                g.blurAll();
-            }
+        // Arrow keys for navigation
+        if (key.key == .left) {
+            s.prevSection();
+            cx.notify();
+            return true;
+        }
+        if (key.key == .right) {
+            s.nextSection();
+            cx.notify();
+            return true;
+        }
+
+        // Number keys for direct section access
+        if (key.key == .@"1") {
+            s.goToSection(0);
+            cx.notify();
+            return true;
+        }
+        if (key.key == .@"2") {
+            s.goToSection(1);
+            cx.notify();
+            return true;
+        }
+        if (key.key == .@"3") {
+            s.goToSection(2);
+            cx.notify();
+            return true;
+        }
+        if (key.key == .@"4") {
+            s.goToSection(3);
+            cx.notify();
+            return true;
+        }
+        if (key.key == .@"5") {
+            s.goToSection(4);
+            cx.notify();
+            return true;
+        }
+        if (key.key == .@"6") {
+            s.goToSection(5);
+            cx.notify();
+            return true;
+        }
+        if (key.key == .@"7") {
+            s.goToSection(6);
             cx.notify();
             return true;
         }
@@ -1148,77 +1364,80 @@ fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
 
 test "AppState navigation" {
     var s = AppState{};
-    try std.testing.expectEqual(AppState.Page.home, s.page);
+    try std.testing.expectEqual(Section.overview, s.section);
 
-    s.nextPage();
-    try std.testing.expectEqual(AppState.Page.forms, s.page);
+    s.nextSection();
+    try std.testing.expectEqual(Section.buttons, s.section);
 
-    s.nextPage();
-    try std.testing.expectEqual(AppState.Page.scroll_demo, s.page);
+    s.nextSection();
+    try std.testing.expectEqual(Section.inputs, s.section);
 
-    s.nextPage();
-    try std.testing.expectEqual(AppState.Page.about, s.page);
+    s.prevSection();
+    try std.testing.expectEqual(Section.buttons, s.section);
 
-    s.nextPage();
-    try std.testing.expectEqual(AppState.Page.home, s.page);
-
-    s.prevPage();
-    try std.testing.expectEqual(AppState.Page.about, s.page);
+    s.goToSection(5);
+    try std.testing.expectEqual(Section.overlays, s.section);
 }
 
 test "AppState theme toggle" {
     var s = AppState{};
-    try std.testing.expect(!s.is_dark);
-    try std.testing.expectEqual(&Theme.light, s.theme);
-
-    s.toggleTheme();
     try std.testing.expect(s.is_dark);
     try std.testing.expectEqual(&Theme.dark, s.theme);
 
     s.toggleTheme();
     try std.testing.expect(!s.is_dark);
-}
+    try std.testing.expectEqual(&Theme.light, s.theme);
 
-test "AppState form validation" {
-    var s = AppState{};
-
-    s.submitForm();
-    try std.testing.expect(std.mem.indexOf(u8, s.form_status, "name") != null);
-
-    s.name = "Test";
-    s.submitForm();
-    try std.testing.expect(std.mem.indexOf(u8, s.form_status, "email") != null);
-
-    s.email = "test@example.com";
-    s.submitForm();
-    try std.testing.expect(std.mem.indexOf(u8, s.form_status, "terms") != null);
-
-    s.agree_terms = true;
-    s.submitForm();
-    try std.testing.expect(std.mem.indexOf(u8, s.form_status, "success") != null);
+    s.toggleTheme();
+    try std.testing.expect(s.is_dark);
 }
 
 test "AppState clicks" {
     var s = AppState{};
-    try std.testing.expectEqual(@as(u32, 0), s.click_count);
+    try std.testing.expectEqual(@as(u32, 0), s.button_clicks);
 
-    s.increment();
-    s.increment();
-    try std.testing.expectEqual(@as(u32, 2), s.click_count);
+    s.incrementClicks();
+    s.incrementClicks();
+    try std.testing.expectEqual(@as(u32, 2), s.button_clicks);
 
     s.resetClicks();
-    try std.testing.expectEqual(@as(u32, 0), s.click_count);
+    try std.testing.expectEqual(@as(u32, 0), s.button_clicks);
 }
 
-test "AppState tasks" {
+test "AppState checkboxes" {
     var s = AppState{};
-    try std.testing.expect(!s.completed_tasks[0]);
-    try std.testing.expect(s.completed_tasks[1]);
-    try std.testing.expect(!s.completed_tasks[2]);
+    try std.testing.expect(s.option_a);
+    try std.testing.expect(!s.option_b);
 
-    s.toggleTask(0);
-    try std.testing.expect(s.completed_tasks[0]);
+    s.toggleOptionA();
+    try std.testing.expect(!s.option_a);
 
-    s.toggleTask(1);
-    try std.testing.expect(!s.completed_tasks[1]);
+    s.toggleOptionB();
+    try std.testing.expect(s.option_b);
+}
+
+test "AppState select" {
+    var s = AppState{};
+    try std.testing.expect(s.fruit_selected == null);
+    try std.testing.expect(!s.fruit_open);
+
+    s.toggleFruit();
+    try std.testing.expect(s.fruit_open);
+
+    s.selectFruit(2);
+    try std.testing.expectEqual(@as(?usize, 2), s.fruit_selected);
+    try std.testing.expect(!s.fruit_open);
+}
+
+test "AppState modals" {
+    var s = AppState{};
+    try std.testing.expect(!s.show_modal);
+    try std.testing.expectEqual(@as(u32, 0), s.confirmed_count);
+
+    s.openConfirm();
+    try std.testing.expect(s.show_confirm);
+
+    s.doConfirm();
+    try std.testing.expect(!s.show_confirm);
+    try std.testing.expectEqual(@as(u32, 1), s.confirmed_count);
 }

@@ -2,6 +2,9 @@
 //!
 //! A tabbed navigation component for switching between views.
 //!
+//! Colors default to null, which means "use the current theme".
+//! Set explicit colors to override theme defaults.
+//!
 //! Usage with Cx (recommended):
 //! ```zig
 //! const tabs = [_][]const u8{ "Home", "Settings", "About" };
@@ -23,6 +26,7 @@
 
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
+const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
 
 /// A single tab button. Can be used standalone or composed into a tab bar.
@@ -33,14 +37,14 @@ pub const Tab = struct {
     // Click handler - use with cx.updateWith() for index-based navigation
     on_click_handler: ?HandlerRef = null,
 
-    // Styling
+    // Styling (null = use theme)
     style: Style = .pills,
-    active_background: Color = Color.rgb(0.2, 0.5, 1.0),
-    inactive_background: Color = Color.transparent,
-    active_text_color: Color = Color.white,
-    inactive_text_color: Color = Color.rgb(0.3, 0.3, 0.3),
+    active_background: ?Color = null,
+    inactive_background: ?Color = null,
+    active_text_color: ?Color = null,
+    inactive_text_color: ?Color = null,
     hover_background: ?Color = null,
-    corner_radius: f32 = 6,
+    corner_radius: ?f32 = null,
     padding_x: f32 = 16,
     padding_y: f32 = 8,
     font_size: u16 = 14,
@@ -56,18 +60,27 @@ pub const Tab = struct {
     };
 
     pub fn render(self: Tab, b: *ui.Builder) void {
-        const bg = if (self.is_active) self.active_background else self.inactive_background;
-        const text_color = if (self.is_active) self.active_text_color else self.inactive_text_color;
+        const t = b.theme();
+
+        // Resolve colors: explicit value OR theme default
+        const active_bg = self.active_background orelse t.primary;
+        const inactive_bg = self.inactive_background orelse Color.transparent;
+        const active_text = self.active_text_color orelse Color.white;
+        const inactive_text = self.inactive_text_color orelse t.text;
+        const radius = self.corner_radius orelse t.radius_md;
+
+        const bg = if (self.is_active) active_bg else inactive_bg;
+        const text_color = if (self.is_active) active_text else inactive_text;
 
         const hover_bg: ?Color = if (!self.is_active)
-            self.hover_background orelse blendColors(self.inactive_background, self.active_background, 0.15)
+            self.hover_background orelse blendColors(inactive_bg, active_bg, 0.15)
         else
             null;
 
         // Style-specific adjustments
-        const radius: f32 = switch (self.style) {
+        const style_radius: f32 = switch (self.style) {
             .underline => 0,
-            else => self.corner_radius,
+            else => radius,
         };
 
         const border_width: f32 = switch (self.style) {
@@ -84,9 +97,9 @@ pub const Tab = struct {
             .padding = .{ .symmetric = .{ .x = self.padding_x, .y = self.padding_y } },
             .background = actual_bg,
             .hover_background = hover_bg,
-            .corner_radius = radius,
+            .corner_radius = style_radius,
             .border_width = border_width,
-            .border_color = if (self.style == .underline and self.is_active) self.active_background else Color.transparent,
+            .border_color = if (self.style == .underline and self.is_active) active_bg else Color.transparent,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
             .on_click_handler = self.on_click_handler,
@@ -120,27 +133,37 @@ pub const TabBar = struct {
     gap: f32 = 0,
     fill_width: bool = false,
 
-    // Styling
+    // Styling (null = use theme)
     style: Tab.Style = .pills,
-    background: Color = Color.transparent,
-    active_background: Color = Color.rgb(0.2, 0.5, 1.0),
-    inactive_background: Color = Color.transparent,
-    active_text_color: Color = Color.white,
-    inactive_text_color: Color = Color.rgb(0.3, 0.3, 0.3),
+    background: ?Color = null,
+    active_background: ?Color = null,
+    inactive_background: ?Color = null,
+    active_text_color: ?Color = null,
+    inactive_text_color: ?Color = null,
     hover_background: ?Color = null,
-    corner_radius: f32 = 6,
+    corner_radius: ?f32 = null,
     padding_x: f32 = 16,
     padding_y: f32 = 8,
     font_size: u16 = 14,
 
     pub fn render(self: TabBar, b: *ui.Builder) void {
+        const t = b.theme();
+
+        // Resolve colors: explicit value OR theme default
+        const active_bg = self.active_background orelse t.primary;
+        const inactive_bg = self.inactive_background orelse Color.transparent;
+        const active_text = self.active_text_color orelse Color.white;
+        const inactive_text = self.inactive_text_color orelse t.text;
+        const radius = self.corner_radius orelse t.radius_md;
+        const bg = self.background orelse Color.transparent;
+
         const container_bg = switch (self.style) {
-            .segmented => Color.rgb(0.9, 0.9, 0.9),
-            else => self.background,
+            .segmented => t.muted.withAlpha(0.2),
+            else => bg,
         };
 
         const container_radius: f32 = switch (self.style) {
-            .segmented => self.corner_radius + 2,
+            .segmented => radius + 2,
             else => 0,
         };
 
@@ -163,12 +186,12 @@ pub const TabBar = struct {
                 .active = self.active,
                 .on_change = self.on_change,
                 .style = self.style,
-                .active_background = self.active_background,
-                .inactive_background = self.inactive_background,
-                .active_text_color = self.active_text_color,
-                .inactive_text_color = self.inactive_text_color,
+                .active_background = active_bg,
+                .inactive_background = inactive_bg,
+                .active_text_color = active_text,
+                .inactive_text_color = inactive_text,
                 .hover_background = self.hover_background,
-                .corner_radius = self.corner_radius,
+                .corner_radius = radius,
                 .padding_x = self.padding_x,
                 .padding_y = self.padding_y,
                 .font_size = self.font_size,

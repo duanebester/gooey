@@ -163,8 +163,6 @@ pub const image_shader_source =
     \\
     \\    if (color.a < 0.001) discard_fragment();
     \\
-    \\    // Premultiply alpha for correct blending
-    \\    color.rgb *= color.a;
     \\    return color;
     \\}
 ;

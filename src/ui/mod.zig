@@ -23,6 +23,7 @@
 const builder_mod = @import("builder.zig");
 const primitives = @import("primitives.zig");
 const styles = @import("styles.zig");
+const theme_mod = @import("theme.zig");
 
 // =============================================================================
 // Builder
@@ -91,3 +92,9 @@ pub const CornerRadius = styles.CornerRadius;
 
 pub const Floating = styles.Floating;
 pub const AttachPoint = styles.AttachPoint;
+
+// =============================================================================
+// Theme
+// =============================================================================
+
+pub const Theme = theme_mod.Theme;

@@ -1,54 +1,108 @@
 Engineering Notes
 
-1. Always prefer performance as number 1 priority!
-2. We are using Zig 0.15.2. make sure to use latest API's
-   e.g. Check how we do ArrayList inits.
+### 1. **Zero Technical Debt Policy**
 
-Each glyph carries its own clip bounds, and the fragment shader discards pixels outside. No extra draw calls, no scissor rect state changes, just a simple `discard_fragment()` in-shader.
+_solve problems correctly the first time_. When you encounter a potential latency spike or algorithmic issue, fix it now—don't defer. The second pass may never come.
 
-## Text Rendering (GPUI-style)
+### 2. **Static Memory Allocation**
 
-Our text rendering follows GPUI's approach for sharp, pixel-perfect text:
+This is huge for a UI framework:
 
-### Glyph Rasterization
+- **No dynamic allocation after initialization**
+- Pre-allocate pools for glyphs, render commands, widgets at startup
+- Use fixed-capacity arrays/pools instead of growing `ArrayList`s during rendering
 
-1. **Get raster bounds from font metrics** - `CTFontGetBoundingRectsForGlyphs` gives exact pixel bounds _before_ rendering. No bitmap scanning needed.
+For Gooey, this means: glyph caches, command buffers, and clip stacks should have fixed upper bounds allocated at init time. This eliminates allocation jitter during frame rendering.
 
-2. **Translate context by raster origin** - Position the glyph correctly within the bitmap buffer by translating by `-raster_bounds.origin`.
+### 3. **Assertion Density**
 
-3. **Subpixel variants** - Cache 4 horizontal variants (0, 0.25, 0.5, 0.75 pixel offsets) for sharper text at fractional positions. The subpixel shift is applied during rasterization.
+**minimum 2 assertions per function**. For Gooey:
 
-### Screen Positioning
+- Assert glyph bounds before atlas insertion
+- Assert clip rect validity before pushing to stack
+- **Pair assertions**: assert data validity when writing to GPU buffer AND when reading back
+- Assert compile-time constants (e.g., `comptime { assert(@sizeOf(Vertex) == 32); }`)
 
-The key to sharp text on retina displays:
+### 4. **Put a Limit on Everything**
 
+Every loop, every queue, every buffer needs a hard cap:
+
+```example.zig
+const MAX_GLYPHS_PER_FRAME = 65536;
+const MAX_CLIP_STACK_DEPTH = 32;
+const MAX_NESTED_COMPONENTS = 64;
 ```
-device_pos = logical_pos * scale_factor
-subpixel_variant = floor(fract(device_pos.x) * 4)
-final_pos = (floor(device_pos) + raster_offset) / scale_factor
+
+This prevents infinite loops and tail latency spikes. If you hit a limit, **fail fast**.
+
+### 5. **70-Line Function Limit**
+
+Hard limit. Split large render functions by:
+
+- Keeping control flow (switches, ifs) in parent functions
+- Moving pure computation to helpers
+- "Push ifs up, fors down"
+
+### 6. **Explicit Control Flow**
+
+- No recursion (important for component trees—use explicit stacks)
+- Minimize abstractions (you already mention "abstractions are never zero cost")
+- Avoid `async`/suspend patterns that hide control flow
+
+### 7. **Back-of-Envelope Performance Sketches**
+
+Before implementing, sketch resource usage:
+
+- How many vertices per frame? (GPU bandwidth)
+- How many texture uploads per frame? (memory bandwidth)
+- How many glyph cache lookups? (CPU/cache locality)
+
+Optimize for **network → disk → memory → CPU** (slowest first), adjusted for frequency.
+
+### 8. **Batching as Religion**
+
+We're already doing this with GPU commands, but:
+
+- Don't react to events directly—batch them
+- Amortize costs across frames
+- Let the CPU sprint on large chunks, not zig-zag on tiny tasks
+
+### 9. **Naming Discipline**
+
+- Units/qualifiers last: `offset_pixels_x`, `latency_ms_max`
+- Same-length related names for visual alignment: `source`/`target` not `src`/`dest`
+- Callbacks go last in parameter lists
+
+### 10. **Shrink Scope Aggressively**
+
+- Declare variables at smallest possible scope
+- Calculate/check values close to use (avoid POCPOU bugs)
+- Don't leave variables around after they're needed
+
+### 11. **Handle the Negative Space**
+
+For every valid state you handle, assert the invalid states too:
+
+```example.zig
+if (glyph_index < glyph_count) {
+    // Valid - render the glyph
+} else {
+    unreachable; // Assert we never get here
+}
 ```
 
-**Critical**: Floor the device pixel position _before_ adding the offset. This ensures glyphs land on pixel boundaries. The subpixel variant handles fractional positioning within the pre-rendered bitmap.
+### 12. **Zero Dependencies (Spirit Of)**
 
-### References
+We're using Zig and system APIs (CoreText, Metal)—that's fine. But avoid pulling in external Zig packages when you can implement cleanly yourself. Each dependency is a supply chain risk.
 
-- GPUI: `crates/gpui/src/platform/mac/text_system.rs` (raster_bounds + rasterize_glyph)
-- GPUI: `crates/gpui/src/window.rs` (paint_glyph - floor + offset pattern)
-- Our implementation: `src/text/backends/coretext/face.zig`, `src/text/render.zig`
+### 13. **In-Place Initialization**
 
-When creating apps/examples:
-You can't nest `cx.box()` calls directly inside tuples\** because they return `void`. Use component structs (like `Card{}`, `CounterRow{}`) for nesting. The component's `render` method receives a `*Builder`and can call`b.box()` etc.
+For large structs (like render state), use out-pointers:
 
-So we have a foundation for:
+```example.zig
+pub fn init(self: *RenderState) void {
+    self.* = .{ ... };  // No stack copy
+}
+```
 
-1. **Scroll containers** - push clip to viewport, render children, pop
-2. **`overflow: hidden`** on any element - same pattern
-3. **Nested clips** - the stack automatically intersects them
-4. **Tooltips/dropdowns** that can overflow their parent - just don't push a clip
-
-Design Philosophy
-
-1. **Plain structs by default** - no wrappers needed for simple state
-2. **Context when you need it** - opt-in to reactivity
-3. **Components are just structs with `render`** - like GPUI Views
-4. **Progressive complexity** - start simple, add power as needed
+This avoids stack growth and copy-move allocations.

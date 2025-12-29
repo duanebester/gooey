@@ -3,6 +3,9 @@
 //! A dropdown select menu for choosing from a list of options.
 //! Supports keyboard navigation, configurable styling, and proper floating behavior.
 //!
+//! Colors default to null, which means "use the current theme".
+//! Set explicit colors to override theme defaults.
+//!
 //! Usage with Cx (recommended):
 //! ```zig
 //! const State = struct {
@@ -41,6 +44,7 @@
 
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
+const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
 
 /// A dropdown select component for single-option selection.
@@ -77,37 +81,37 @@ pub const Select = struct {
     /// Minimum width for the dropdown menu
     min_dropdown_width: ?f32 = null,
 
-    // === Styling ===
+    // === Styling (null = use theme) ===
 
     /// Background color for the trigger button
-    background: Color = Color.white,
+    background: ?Color = null,
 
     /// Background color when hovering the trigger
-    hover_background: Color = Color.rgb(0.98, 0.98, 0.98),
+    hover_background: ?Color = null,
 
     /// Background color for selected/highlighted option
-    selected_background: Color = Color.rgb(0.93, 0.95, 1.0),
+    selected_background: ?Color = null,
 
     /// Background color for option on hover
-    option_hover_background: Color = Color.rgb(0.95, 0.95, 0.95),
+    option_hover_background: ?Color = null,
 
     /// Border color
-    border_color: Color = Color.rgb(0.8, 0.8, 0.8),
+    border_color: ?Color = null,
 
     /// Border color when open/focused
-    focus_border_color: Color = Color.rgb(0.2, 0.5, 1.0),
+    focus_border_color: ?Color = null,
 
     /// Text color
-    text_color: Color = Color.rgb(0.2, 0.2, 0.2),
+    text_color: ?Color = null,
 
     /// Placeholder text color
-    placeholder_color: Color = Color.rgb(0.6, 0.6, 0.6),
+    placeholder_color: ?Color = null,
 
     /// Font size
     font_size: u16 = 14,
 
-    /// Corner radius
-    corner_radius: f32 = 6,
+    /// Corner radius (null = use theme)
+    corner_radius: ?f32 = null,
 
     /// Padding inside the trigger
     padding: f32 = 10,
@@ -116,7 +120,20 @@ pub const Select = struct {
     disabled: bool = false,
 
     pub fn render(self: Select, b: *ui.Builder) void {
-        const current_border = if (self.is_open) self.focus_border_color else self.border_color;
+        const t = b.theme();
+
+        // Resolve colors: explicit value OR theme default
+        const background = self.background orelse t.surface;
+        const hover_bg = self.hover_background orelse t.overlay;
+        const selected_bg = self.selected_background orelse t.primary.withAlpha(0.15);
+        const option_hover_bg = self.option_hover_background orelse t.overlay;
+        const border = self.border_color orelse t.border;
+        const focus_border = self.focus_border_color orelse t.border_focus;
+        const text_col = self.text_color orelse t.text;
+        const placeholder_col = self.placeholder_color orelse t.muted;
+        const radius = self.corner_radius orelse t.radius_md;
+
+        const current_border = if (self.is_open) focus_border else border;
 
         // Container that holds both trigger and dropdown
         b.boxWithId(self.id, .{
@@ -128,12 +145,12 @@ pub const Select = struct {
                 .is_placeholder = self.selected == null,
                 .is_open = self.is_open,
                 .on_click_handler = if (!self.disabled) self.on_toggle_handler else null,
-                .background = self.background,
-                .hover_background = if (!self.disabled) self.hover_background else self.background,
+                .background = background,
+                .hover_background = if (!self.disabled) hover_bg else background,
                 .border_color = current_border,
-                .text_color = if (self.selected == null) self.placeholder_color else self.text_color,
+                .text_color = if (self.selected == null) placeholder_col else text_col,
                 .font_size = self.font_size,
-                .corner_radius = self.corner_radius,
+                .corner_radius = radius,
                 .padding = self.padding,
                 .disabled = self.disabled,
             },
@@ -145,12 +162,14 @@ pub const Select = struct {
                 .handlers = self.handlers,
                 .on_close_handler = self.on_close_handler,
                 .min_width = self.min_dropdown_width orelse self.width,
-                .background = self.background,
-                .selected_background = self.selected_background,
-                .hover_background = self.option_hover_background,
-                .text_color = self.text_color,
+                .background = background,
+                .selected_background = selected_bg,
+                .hover_background = option_hover_bg,
+                .text_color = text_col,
+                .checkmark_color = t.primary,
+                .border_color = border,
                 .font_size = self.font_size,
-                .corner_radius = self.corner_radius,
+                .corner_radius = radius,
                 .padding = self.padding,
             },
         });
@@ -242,6 +261,8 @@ const SelectDropdown = struct {
     selected_background: Color,
     hover_background: Color,
     text_color: Color,
+    checkmark_color: Color,
+    border_color: Color,
     font_size: u16,
     corner_radius: f32,
     padding: f32,
@@ -253,7 +274,7 @@ const SelectDropdown = struct {
             .width = self.min_width,
             .padding = .{ .all = 4 },
             .background = self.background,
-            .border_color = Color.rgb(0.85, 0.85, 0.85),
+            .border_color = self.border_color,
             .border_width = 1,
             .corner_radius = self.corner_radius,
             .direction = .column,
@@ -273,6 +294,7 @@ const SelectDropdown = struct {
                 .selected_background = self.selected_background,
                 .hover_background = self.hover_background,
                 .text_color = self.text_color,
+                .checkmark_color = self.checkmark_color,
                 .font_size = self.font_size,
                 .corner_radius = self.corner_radius - 2,
                 .padding = self.padding,
@@ -289,6 +311,7 @@ const SelectOptions = struct {
     selected_background: Color,
     hover_background: Color,
     text_color: Color,
+    checkmark_color: Color,
     font_size: u16,
     corner_radius: f32,
     padding: f32,
@@ -309,6 +332,7 @@ const SelectOptions = struct {
                 .selected_background = self.selected_background,
                 .hover_background = self.hover_background,
                 .text_color = self.text_color,
+                .checkmark_color = self.checkmark_color,
                 .font_size = self.font_size,
                 .corner_radius = self.corner_radius,
                 .padding = self.padding,
@@ -325,6 +349,7 @@ const SelectOption = struct {
     selected_background: Color,
     hover_background: Color,
     text_color: Color,
+    checkmark_color: Color,
     font_size: u16,
     corner_radius: f32,
     padding: f32,
@@ -346,7 +371,7 @@ const SelectOption = struct {
             // Checkmark for selected item
             SelectCheckmark{
                 .visible = self.is_selected,
-                .color = Color.rgb(0.2, 0.5, 1.0),
+                .color = self.checkmark_color,
             },
             // Option text
             ui.text(self.label, .{

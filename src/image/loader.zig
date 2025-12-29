@@ -133,6 +133,7 @@ fn loadFromMemoryMacOS(allocator: std.mem.Allocator, data: []const u8) LoadError
             colorspace: *anyopaque,
             bitmapInfo: u32,
         ) ?*anyopaque;
+        extern "c" fn CGContextClearRect(context: *anyopaque, rect: extern struct { x: f64, y: f64, w: f64, h: f64 }) void;
         extern "c" fn CGContextDrawImage(context: *anyopaque, rect: extern struct { x: f64, y: f64, w: f64, h: f64 }, image: *anyopaque) void;
         extern "c" fn CGContextRelease(context: *anyopaque) void;
     };
@@ -183,6 +184,14 @@ fn loadFromMemoryMacOS(allocator: std.mem.Allocator, data: []const u8) LoadError
         bitmap_info,
     ) orelse return LoadError.DecodeFailed;
     defer cf.CGContextRelease(context);
+
+    // Clear context to transparent before drawing (prevents default grey/white background)
+    cf.CGContextClearRect(context, .{
+        .x = 0,
+        .y = 0,
+        .w = @floatFromInt(width),
+        .h = @floatFromInt(height),
+    });
 
     // Draw image into context
     cf.CGContextDrawImage(context, .{

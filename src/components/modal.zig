@@ -2,6 +2,9 @@
 //!
 //! A dialog overlay with backdrop, focus trapping, and keyboard dismissal.
 //!
+//! Colors default to null, which means "use the current theme".
+//! Set explicit colors to override theme defaults.
+//!
 //! The modal renders a full-viewport overlay with a centered content container.
 //! Features include:
 //! - Click-outside to dismiss (optional)
@@ -24,6 +27,7 @@
 
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
+const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
 const ShadowConfig = ui.ShadowConfig;
 const animation_mod = @import("../core/animation.zig");
@@ -59,10 +63,10 @@ pub fn Modal(comptime ChildType: type) type {
         /// Animation duration in milliseconds
         animation_duration_ms: u32 = 200,
 
-        // === Styling ===
+        // === Styling (null = use theme) ===
 
         /// Backdrop overlay color (semi-transparent black by default)
-        backdrop_color: Color = Color.rgba(0, 0, 0, 0.5),
+        backdrop_color: ?Color = null,
 
         /// Maximum width of the content container (null = no limit)
         content_max_width: ?f32 = 500,
@@ -71,10 +75,10 @@ pub fn Modal(comptime ChildType: type) type {
         content_padding: f32 = 24,
 
         /// Background color of the content container
-        content_background: Color = Color.white,
+        content_background: ?Color = null,
 
-        /// Corner radius of the content container
-        content_corner_radius: f32 = 12,
+        /// Corner radius of the content container (null = use theme)
+        content_corner_radius: ?f32 = null,
 
         /// Shadow around the content container
         content_shadow: ?ShadowConfig = ShadowConfig{
@@ -87,6 +91,13 @@ pub fn Modal(comptime ChildType: type) type {
         const Self = @This();
 
         pub fn render(self: Self, b: *ui.Builder) void {
+            const t = b.theme();
+
+            // Resolve colors: explicit value OR theme default
+            const backdrop = self.backdrop_color orelse Color.rgba(0, 0, 0, 0.5);
+            const background = self.content_background orelse t.surface;
+            const radius = self.content_corner_radius orelse t.radius_lg;
+
             // Get animation state through Builder's Gooey reference
             const anim: AnimationHandle = blk: {
                 if (!self.animate) {
@@ -117,13 +128,13 @@ pub fn Modal(comptime ChildType: type) type {
             b.with(ModalOverlay(ChildType){
                 .id = self.id,
                 .progress = progress,
-                .backdrop_color = self.backdrop_color,
+                .backdrop_color = backdrop,
                 .on_backdrop_click = if (self.close_on_backdrop) self.on_close else null,
                 .child = self.child,
                 .max_width = self.content_max_width,
                 .padding = self.content_padding,
-                .background = self.content_background,
-                .corner_radius = self.content_corner_radius,
+                .background = background,
+                .corner_radius = radius,
                 .shadow = self.content_shadow,
             });
         }
@@ -198,14 +209,15 @@ fn ModalContent(comptime ChildType: type) type {
             b.box(.{
                 .max_width = scaled_max_width,
                 .padding = .{ .all = self.padding },
-                .background = self.background.withAlpha(self.progress),
+                .background = self.background,
                 .corner_radius = self.corner_radius,
                 .shadow = if (self.shadow) |s| ShadowConfig{
                     .offset_x = s.offset_x,
-                    .offset_y = s.offset_y * self.progress,
+                    .offset_y = s.offset_y * self.progress, // Rise effect
                     .blur_radius = s.blur_radius,
-                    .color = s.color.withAlpha(s.color.a * self.progress),
+                    .color = s.color, // Opacity handles alpha
                 } else null,
+                .opacity = self.progress, // Fades entire subtree including text/buttons
                 .direction = .column,
             }, .{
                 self.child,

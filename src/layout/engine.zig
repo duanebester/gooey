@@ -48,6 +48,8 @@ pub const ElementDeclaration = struct {
     scroll: ?types.ScrollConfig = null,
     floating: ?types.FloatingConfig = null,
     user_data: ?*anyopaque = null,
+    /// Opacity for the entire element subtree (0.0 = transparent, 1.0 = opaque)
+    opacity: f32 = 1.0,
 };
 
 pub const ElementType = enum {
@@ -421,7 +423,7 @@ pub const LayoutEngine = struct {
         try self.computeFloatingPositions();
 
         // Phase 4: Generate render commands
-        try self.generateRenderCommands(self.root_index.?, 0);
+        try self.generateRenderCommands(self.root_index.?, 0, 1.0);
 
         // Sort by z-index to handle floating elements properly
         self.commands.sortByZIndex();
@@ -1009,12 +1011,15 @@ pub const LayoutEngine = struct {
     // Phase 4: Generate render commands
     // =========================================================================
 
-    fn generateRenderCommands(self: *Self, index: u32, inherited_z_index: i16) !void {
+    fn generateRenderCommands(self: *Self, index: u32, inherited_z_index: i16, inherited_opacity: f32) !void {
         const elem = self.elements.get(index);
         const bbox = elem.computed.bounding_box;
 
         // Floating elements override z_index for themselves and their children
         const z_index: i16 = if (elem.config.floating) |f| f.z_index else inherited_z_index;
+
+        // Combine element opacity with inherited opacity (multiplicative)
+        const opacity = elem.config.opacity * inherited_opacity;
 
         // Cache z_index for O(1) lookup via getZIndex()
         elem.cached_z_index = z_index;
@@ -1029,7 +1034,7 @@ pub const LayoutEngine = struct {
                     .id = elem.id,
                     .data = .{ .shadow = .{
                         .blur_radius = shadow.blur_radius,
-                        .color = shadow.color,
+                        .color = shadow.color.withAlpha(shadow.color.a * opacity),
                         .offset_x = shadow.offset_x,
                         .offset_y = shadow.offset_y,
                         .corner_radius = elem.config.corner_radius,
@@ -1046,7 +1051,7 @@ pub const LayoutEngine = struct {
                 .z_index = z_index,
                 .id = elem.id,
                 .data = .{ .rectangle = .{
-                    .background_color = bg,
+                    .background_color = bg.withAlpha(bg.a * opacity),
                     .corner_radius = elem.config.corner_radius,
                 } },
             });
@@ -1060,7 +1065,7 @@ pub const LayoutEngine = struct {
                 .z_index = z_index,
                 .id = elem.id,
                 .data = .{ .border = .{
-                    .color = border.color,
+                    .color = border.color.withAlpha(border.color.a * opacity),
                     .width = border.width,
                     .corner_radius = elem.config.corner_radius,
                 } },
@@ -1069,6 +1074,7 @@ pub const LayoutEngine = struct {
 
         // Text
         if (elem.text_data) |td| {
+            const text_color = td.config.color.withAlpha(td.config.color.a * opacity);
             if (td.wrapped_lines) |lines| {
                 // Render each wrapped line
                 const line_height = td.config.lineHeightPx();
@@ -1086,7 +1092,7 @@ pub const LayoutEngine = struct {
                         .id = elem.id,
                         .data = .{ .text = .{
                             .text = td.text[line.start_offset..][0..line.length],
-                            .color = td.config.color,
+                            .color = text_color,
                             .font_id = td.config.font_id,
                             .font_size = td.config.font_size,
                             .letter_spacing = td.config.letter_spacing,
@@ -1104,7 +1110,7 @@ pub const LayoutEngine = struct {
                     .id = elem.id,
                     .data = .{ .text = .{
                         .text = td.text,
-                        .color = td.config.color,
+                        .color = text_color,
                         .font_id = td.config.font_id,
                         .font_size = td.config.font_size,
                         .letter_spacing = td.config.letter_spacing,
@@ -1124,8 +1130,8 @@ pub const LayoutEngine = struct {
                 .id = elem.id,
                 .data = .{ .svg = .{
                     .path = sd.path,
-                    .color = sd.color,
-                    .stroke_color = sd.stroke_color,
+                    .color = sd.color.withAlpha(sd.color.a * opacity),
+                    .stroke_color = if (sd.stroke_color) |sc| sc.withAlpha(sc.a * opacity) else null,
                     .stroke_width = sd.stroke_width,
                     .has_fill = sd.has_fill,
                     .viewbox = sd.viewbox,
@@ -1148,7 +1154,7 @@ pub const LayoutEngine = struct {
                     .corner_radius = id.corner_radius,
                     .tint = id.tint,
                     .grayscale = id.grayscale,
-                    .opacity = id.opacity,
+                    .opacity = id.opacity * opacity,
                 } },
             });
         }
@@ -1164,11 +1170,11 @@ pub const LayoutEngine = struct {
             });
         }
 
-        // Recurse to children
+        // Recurse to children (passing inherited opacity)
         if (elem.first_child_index) |first_child| {
             var child_idx: ?u32 = first_child;
             while (child_idx) |ci| {
-                try self.generateRenderCommands(ci, z_index);
+                try self.generateRenderCommands(ci, z_index, opacity);
                 child_idx = self.elements.getConst(ci).next_sibling_index;
             }
         }

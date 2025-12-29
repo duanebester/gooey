@@ -2,6 +2,9 @@
 //!
 //! A tooltip that appears on hover over a trigger element.
 //!
+//! Colors default to null, which means "use the current theme".
+//! Set explicit colors to override theme defaults.
+//!
 //! Usage:
 //! ```zig
 //! Tooltip(Button){
@@ -22,6 +25,7 @@
 const ui = @import("../ui/mod.zig");
 const layout_mod = @import("../layout/layout.zig");
 const Color = ui.Color;
+const Theme = ui.Theme;
 const LayoutId = layout_mod.LayoutId;
 
 /// Creates a Tooltip component that wraps a child element.
@@ -43,13 +47,13 @@ pub fn Tooltip(comptime ChildType: type) type {
         /// Maximum width before text wraps
         max_width: ?f32 = 250,
 
-        // === Styling ===
+        // === Styling (null = use theme) ===
 
         /// Background color of the tooltip
-        background: Color = Color.rgb(0.12, 0.12, 0.14),
+        background: ?Color = null,
 
         /// Text color
-        text_color: Color = Color.white,
+        text_color: ?Color = null,
 
         /// Font size
         font_size: u16 = 13,
@@ -57,8 +61,8 @@ pub fn Tooltip(comptime ChildType: type) type {
         /// Padding inside the tooltip
         padding: f32 = 8,
 
-        /// Corner radius
-        corner_radius: f32 = 6,
+        /// Corner radius (null = use theme)
+        corner_radius: ?f32 = null,
 
         /// Gap between trigger and tooltip
         gap: f32 = 6,
@@ -73,6 +77,14 @@ pub fn Tooltip(comptime ChildType: type) type {
         const Self = @This();
 
         pub fn render(self: Self, b: *ui.Builder) void {
+            const t = b.theme();
+
+            // Resolve colors: explicit value OR theme default
+            // Tooltips typically use overlay/inverted colors
+            const background = self.background orelse t.overlay;
+            const text_col = self.text_color orelse t.text;
+            const radius = self.corner_radius orelse t.radius_md;
+
             // Use provided ID or derive from text
             const id = self.id orelse self.text;
             const layout_id = LayoutId.fromString(id);
@@ -94,11 +106,11 @@ pub fn Tooltip(comptime ChildType: type) type {
                     .visible = is_hovered,
                     .position = self.position,
                     .max_width = self.max_width,
-                    .background = self.background,
-                    .text_color = self.text_color,
+                    .background = background,
+                    .text_color = text_col,
                     .font_size = self.font_size,
                     .padding = self.padding,
-                    .corner_radius = self.corner_radius,
+                    .corner_radius = radius,
                     .gap = self.gap,
                 },
             });

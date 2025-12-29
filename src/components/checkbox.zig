@@ -1,9 +1,13 @@
 //! Checkbox Component
 //!
 //! A toggleable checkbox built on Box.
+//!
+//! Colors default to null, which means "use the current theme".
+//! Set explicit colors to override theme defaults.
 
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
+const Theme = ui.Theme;
 const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;
 
@@ -16,15 +20,26 @@ pub const Checkbox = struct {
     on_click: ?*const fn () void = null,
     on_click_handler: ?HandlerRef = null,
 
-    // Styling
+    // Styling (null = use theme)
     size: f32 = 18,
-    checked_background: Color = Color.rgb(0.2, 0.5, 1.0),
-    unchecked_background: Color = Color.white,
-    border_color: Color = Color.rgb(0.7, 0.7, 0.7),
-    checkmark_color: Color = Color.white,
-    label_color: Color = Color.rgb(0.2, 0.2, 0.2),
+    checked_background: ?Color = null,
+    unchecked_background: ?Color = null,
+    border_color: ?Color = null,
+    checkmark_color: ?Color = null,
+    label_color: ?Color = null,
+    corner_radius: ?f32 = null,
 
     pub fn render(self: Checkbox, b: *ui.Builder) void {
+        const t = b.theme();
+
+        // Resolve colors: explicit value OR theme default
+        const checked_bg = self.checked_background orelse t.primary;
+        const unchecked_bg = self.unchecked_background orelse t.surface;
+        const border = self.border_color orelse t.border;
+        const checkmark = self.checkmark_color orelse Color.white;
+        const label_col = self.label_color orelse t.text;
+        const radius = self.corner_radius orelse t.radius_sm;
+
         // Outer container - clickable row
         b.boxWithId(self.id, .{
             .direction = .row,
@@ -36,14 +51,15 @@ pub const Checkbox = struct {
             CheckboxBox{
                 .checked = self.checked,
                 .size = self.size,
-                .checked_background = self.checked_background,
-                .unchecked_background = self.unchecked_background,
-                .border_color = self.border_color,
-                .checkmark_color = self.checkmark_color,
+                .checked_background = checked_bg,
+                .unchecked_background = unchecked_bg,
+                .border_color = border,
+                .checkmark_color = checkmark,
+                .corner_radius = radius,
             },
             CheckboxLabel{
                 .label = self.label,
-                .color = self.label_color,
+                .color = label_col,
             },
         });
     }
@@ -56,6 +72,7 @@ const CheckboxBox = struct {
     unchecked_background: Color,
     border_color: Color,
     checkmark_color: Color,
+    corner_radius: f32,
 
     pub fn render(self: CheckboxBox, b: *ui.Builder) void {
         b.box(.{
@@ -64,7 +81,7 @@ const CheckboxBox = struct {
             .background = if (self.checked) self.checked_background else self.unchecked_background,
             .border_color = self.border_color,
             .border_width = 1,
-            .corner_radius = 4,
+            .corner_radius = self.corner_radius,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             Checkmark{ .visible = self.checked, .color = self.checkmark_color },

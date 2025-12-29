@@ -2,6 +2,9 @@
 //!
 //! Mutually exclusive selection buttons with circular indicators.
 //!
+//! Colors default to null, which means "use the current theme".
+//! Set explicit colors to override theme defaults.
+//!
 //! Usage with Cx (recommended):
 //! ```zig
 //! cx.box(.{ .direction = .column, .gap = 10 }, .{
@@ -34,6 +37,7 @@
 
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
+const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
 
 /// A single radio button. Can be used standalone or composed into groups.
@@ -44,16 +48,24 @@ pub const RadioButton = struct {
     // Click handler - use with cx.updateWith() for index-based selection
     on_click_handler: ?HandlerRef = null,
 
-    // Styling
+    // Styling (null = use theme)
     size: f32 = 18,
-    selected_color: Color = Color.rgb(0.2, 0.5, 1.0),
-    unselected_color: Color = Color.white,
-    border_color: Color = Color.rgb(0.7, 0.7, 0.7),
-    label_color: Color = Color.rgb(0.2, 0.2, 0.2),
+    selected_color: ?Color = null,
+    unselected_color: ?Color = null,
+    border_color: ?Color = null,
+    label_color: ?Color = null,
     font_size: u16 = 14,
     gap: f32 = 8,
 
     pub fn render(self: RadioButton, b: *ui.Builder) void {
+        const t = b.theme();
+
+        // Resolve colors: explicit value OR theme default
+        const selected = self.selected_color orelse t.primary;
+        const unselected = self.unselected_color orelse t.surface;
+        const border = self.border_color orelse t.border;
+        const label_col = self.label_color orelse t.text;
+
         b.box(.{
             .direction = .row,
             .gap = self.gap,
@@ -63,11 +75,11 @@ pub const RadioButton = struct {
             RadioCircle{
                 .is_selected = self.is_selected,
                 .size = self.size,
-                .selected_color = self.selected_color,
-                .unselected_color = self.unselected_color,
-                .border_color = self.border_color,
+                .selected_color = selected,
+                .unselected_color = unselected,
+                .border_color = border,
             },
-            ui.text(self.label, .{ .color = self.label_color, .size = self.font_size }),
+            ui.text(self.label, .{ .color = label_col, .size = self.font_size }),
         });
     }
 };
@@ -130,17 +142,25 @@ pub const RadioGroup = struct {
     direction: Direction = .column,
     gap: f32 = 10,
 
-    // Styling
+    // Styling (null = use theme)
     size: f32 = 18,
-    selected_color: Color = Color.rgb(0.2, 0.5, 1.0),
-    unselected_color: Color = Color.white,
-    border_color: Color = Color.rgb(0.7, 0.7, 0.7),
-    label_color: Color = Color.rgb(0.2, 0.2, 0.2),
+    selected_color: ?Color = null,
+    unselected_color: ?Color = null,
+    border_color: ?Color = null,
+    label_color: ?Color = null,
     font_size: u16 = 14,
 
     pub const Direction = enum { row, column };
 
     pub fn render(self: RadioGroup, b: *ui.Builder) void {
+        const t = b.theme();
+
+        // Resolve colors: explicit value OR theme default
+        const selected = self.selected_color orelse t.primary;
+        const unselected = self.unselected_color orelse t.surface;
+        const border = self.border_color orelse t.border;
+        const label_col = self.label_color orelse t.text;
+
         b.boxWithId(self.id, .{
             .direction = if (self.direction == .row) .row else .column,
             .gap = self.gap,
@@ -151,10 +171,10 @@ pub const RadioGroup = struct {
                 .selected = self.selected,
                 .handlers = self.handlers,
                 .size = self.size,
-                .selected_color = self.selected_color,
-                .unselected_color = self.unselected_color,
-                .border_color = self.border_color,
-                .label_color = self.label_color,
+                .selected_color = selected,
+                .unselected_color = unselected,
+                .border_color = border,
+                .label_color = label_col,
                 .font_size = self.font_size,
             },
         });

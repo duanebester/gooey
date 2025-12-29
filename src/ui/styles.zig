@@ -132,6 +132,7 @@ pub const Box = struct {
     // Appearance
     background: Color = Color.transparent,
     corner_radius: f32 = 0,
+    opacity: f32 = 1.0,
     border_color: Color = Color.transparent,
     border_width: f32 = 0,
 
@@ -248,6 +249,11 @@ pub const TextAreaStyle = struct {
     placeholder_color: Color = Color.rgb(0.6, 0.6, 0.6),
     selection_color: Color = Color.rgba(0.3, 0.5, 1.0, 0.3),
     cursor_color: Color = Color.black,
+
+    // Scrollbar
+    scrollbar_width: f32 = 8,
+    scrollbar_track_color: Color = Color.rgba(0.5, 0.5, 0.5, 0.1),
+    scrollbar_thumb_color: Color = Color.rgba(0.5, 0.5, 0.5, 0.4),
 };
 
 // =============================================================================

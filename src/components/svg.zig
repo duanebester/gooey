@@ -3,11 +3,17 @@
 //! Renders an SVG icon from path data. Handles mesh tessellation and GPU
 //! upload automatically - just pass the path data and style.
 //!
+//! Colors default to null, which means "use the current theme".
+//! Set explicit colors to override theme defaults.
+//!
 //! ## Usage
 //! ```zig
 //! const star_path = "M12 2l3.09 6.26L22 9.27l-5 4.87...";
 //!
-//! // Simple filled icon
+//! // Simple filled icon (uses theme text color)
+//! gooey.Svg{ .path = star_path, .size = 24 }
+//!
+//! // Explicit fill color
 //! gooey.Svg{ .path = star_path, .size = 24, .color = .gold }
 //!
 //! // Stroked icon (outline only)
@@ -20,6 +26,7 @@
 const std = @import("std");
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
+const Theme = ui.Theme;
 
 pub const Svg = struct {
     /// SVG path data (the `d` attribute from an SVG path element)
@@ -34,8 +41,11 @@ pub const Svg = struct {
     /// Explicit height (overrides size)
     height: ?f32 = null,
 
-    /// Fill color (null = no fill)
-    color: ?Color = Color.black,
+    /// Fill color (null = use theme text color, explicit null via .no_fill = true means no fill)
+    color: ?Color = null,
+
+    /// Set to true to explicitly have no fill (even with theme)
+    no_fill: bool = false,
 
     /// Stroke color (null = no stroke)
     stroke_color: ?Color = null,
@@ -47,9 +57,22 @@ pub const Svg = struct {
     viewbox: f32 = 24,
 
     pub fn render(self: Svg, b: *ui.Builder) void {
+        const t = b.theme();
+
         // Determine final dimensions
         const w = self.width orelse self.size orelse 24;
         const h = self.height orelse self.size orelse 24;
+
+        // Resolve fill color: explicit value OR theme default (unless no_fill)
+        const fill_color: ?Color = if (self.no_fill)
+            null
+        else if (self.color) |c|
+            c
+        else
+            t.text;
+
+        const has_fill = fill_color != null;
+        const final_color = fill_color orelse Color.transparent;
 
         // Emit the SVG primitive (atlas handles caching internally)
         b.box(.{}, .{
@@ -57,11 +80,11 @@ pub const Svg = struct {
                 .path = self.path,
                 .width = w,
                 .height = h,
-                .color = self.color orelse Color.transparent,
+                .color = final_color,
                 .stroke_color = self.stroke_color,
                 .stroke_width = self.stroke_width,
                 .viewbox = self.viewbox,
-                .has_fill = self.color != null,
+                .has_fill = has_fill,
             },
         });
     }

@@ -49,6 +49,8 @@ const Hsla = scene_mod.Hsla;
 // Element imports
 const styles = @import("styles.zig");
 const primitives = @import("primitives.zig");
+const theme_mod = @import("theme.zig");
+pub const Theme = theme_mod.Theme;
 
 pub const Color = styles.Color;
 pub const ShadowConfig = styles.ShadowConfig;
@@ -118,6 +120,9 @@ pub const Builder = struct {
     /// Cx pointer for new-style components (set by runCx)
     cx_ptr: ?*anyopaque = null,
 
+    /// Theme pointer for context-aware theming
+    theme_ptr: ?*const Theme = null,
+
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
@@ -186,6 +191,22 @@ pub const Builder = struct {
     pub fn clearContext(self: *Self) void {
         self.context_ptr = null;
         self.context_type_id = 0;
+    }
+
+    // =========================================================================
+    // Theme Access
+    // =========================================================================
+
+    /// Set the theme for this builder and all child components.
+    /// Called at the start of render to establish theme context.
+    pub fn setTheme(self: *Self, t: *const Theme) void {
+        self.theme_ptr = t;
+    }
+
+    /// Get the current theme, falling back to light theme if none set.
+    /// Components use this to resolve null color fields.
+    pub fn theme(self: *Self) *const Theme {
+        return self.theme_ptr orelse &Theme.light;
     }
 
     /// Get the typed context from within a component's render method.
@@ -398,6 +419,7 @@ pub const Builder = struct {
             .border = border_config,
             .shadow = props.shadow,
             .floating = floating_config,
+            .opacity = props.opacity,
         }) catch return;
 
         // Mark floating elements for hit testing optimization

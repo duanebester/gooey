@@ -37,6 +37,8 @@ WASM support!
 - **Liquid Glass** - macOS 26.0+ Tahoe transparent window effects
 - **Actions & Keybindings** - Contextual action system with keymap
 - **Theming** - Built-in light/dark mode support
+- **Images & SVG** - Load images and render SVG icons with styling
+- **File Dialogs** - Native file open/save dialogs (macOS & WASM)
 
 ## Quick Start
 
@@ -52,6 +54,11 @@ zig build run-spaceship    # Space dashboard with shader
 zig build run-dynamic-counters  # Entity system demo
 zig build run-layout       # Flexbox, shrink, text wrapping
 zig build run-actions      # Keybindings demo
+zig build run-select       # Dropdown select component
+zig build run-tooltip      # Tooltip component
+zig build run-modal        # Modal dialogs
+zig build run-images       # Image loading and styling
+zig build run-file-dialog  # Native file dialogs
 zig build test             # Run tests
 ```
 
@@ -138,23 +145,19 @@ test "counter logic" {
 
 Gooey includes ready-to-use components:
 
-- **Button** - Primary, secondary, danger variants with sizes (small, medium, large)
-- **Checkbox** - Toggle with customizable colors
-- **TextInput** - Single-line text entry with placeholder, bindable
-- **TextArea** - Multi-line text with scrolling
-- **RadioButton** - Single radio button for custom layouts
-- **RadioGroup** - Grouped radio buttons with row/column layout
-- **ProgressBar** - Horizontal progress indicator
-- **Tab** - Individual tab button for navigation
-- **TabBar** - Horizontal tab bar container
+### Button
 
 ```zig
 // Button variants
 Button{ .label = "Save", .variant = .primary, .on_click_handler = cx.update(State, State.save) }
 Button{ .label = "Cancel", .variant = .secondary, .size = .small, .on_click_handler = ... }
 Button{ .label = "Delete", .variant = .danger, .on_click_handler = ... }
+```
 
-// TextInput with binding
+### TextInput & TextArea
+
+```zig
+// Single-line text input with binding
 TextInput{
     .id = "email",
     .placeholder = "Enter email...",
@@ -162,13 +165,29 @@ TextInput{
     .width = 250,
 }
 
-// Checkbox
+// Multi-line text area
+TextArea{
+    .id = "notes",
+    .placeholder = "Enter notes...",
+    .bind = &s.notes,
+    .width = 400,
+    .height = 200,
+}
+```
+
+### Checkbox
+
+```zig
 Checkbox{
     .id = "terms",
     .checked = s.agreed_to_terms,
     .on_click_handler = cx.update(State, State.toggleTerms),
 }
+```
 
+### RadioButton & RadioGroup
+
+```zig
 // RadioButton - individual buttons for custom layouts
 RadioButton{
     .label = "Email",
@@ -189,16 +208,166 @@ RadioGroup{
     .direction = .row,  // or .column
     .gap = 16,
 }
+```
 
-// ProgressBar
+### Select (Dropdown)
+
+```zig
+const State = struct {
+    selected_option: ?usize = null,
+    select_open: bool = false,
+
+    pub fn toggleSelect(self: *State) void {
+        self.select_open = !self.select_open;
+    }
+
+    pub fn closeSelect(self: *State) void {
+        self.select_open = false;
+    }
+
+    pub fn selectOption(self: *State, index: usize) void {
+        self.selected_option = index;
+        self.select_open = false;
+    }
+};
+
+// In render:
+Select{
+    .id = "fruit-select",
+    .options = &.{ "Apple", "Banana", "Cherry", "Date" },
+    .selected = s.selected_option,
+    .is_open = s.select_open,
+    .placeholder = "Choose a fruit...",
+    .on_toggle_handler = cx.update(State, State.toggleSelect),
+    .on_close_handler = cx.update(State, State.closeSelect),
+    .handlers = &.{
+        cx.updateWith(State, @as(usize, 0), State.selectOption),
+        cx.updateWith(State, @as(usize, 1), State.selectOption),
+        cx.updateWith(State, @as(usize, 2), State.selectOption),
+        cx.updateWith(State, @as(usize, 3), State.selectOption),
+    },
+    .width = 200,
+}
+```
+
+### Modal
+
+```zig
+const State = struct {
+    show_confirm: bool = false,
+
+    pub fn openConfirm(self: *State) void {
+        self.show_confirm = true;
+    }
+
+    pub fn closeConfirm(self: *State) void {
+        self.show_confirm = false;
+    }
+};
+
+// Trigger button
+Button{ .label = "Delete Item", .variant = .danger, .on_click_handler = cx.update(State, State.openConfirm) }
+
+// Modal with custom content
+Modal(ConfirmContent){
+    .id = "confirm-dialog",
+    .is_open = s.show_confirm,
+    .on_close = cx.update(State, State.closeConfirm),
+    .child = ConfirmContent{
+        .message = "Are you sure you want to delete?",
+        .on_confirm = cx.update(State, State.doDelete),
+        .on_cancel = cx.update(State, State.closeConfirm),
+    },
+    .animate = true,
+    .close_on_backdrop = true,
+}
+```
+
+### Tooltip
+
+```zig
+// Wrap any component with a tooltip
+Tooltip(Button){
+    .text = "Click to save your changes",
+    .child = Button{ .label = "Save", .on_click_handler = ... },
+    .position = .top,  // .top, .bottom, .left, .right
+}
+
+// With custom styling
+Tooltip(IconButton){
+    .text = "This field is required",
+    .child = HelpIcon{},
+    .position = .right,
+    .max_width = 200,
+    .background = Color.rgb(0.2, 0.2, 0.25),
+}
+```
+
+### Image
+
+```zig
+// Simple image from path
+gooey.Image{ .src = "assets/logo.png" }
+
+// With explicit sizing
+gooey.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
+
+// Rounded avatar
+gooey.Image{ .src = "avatar.png", .size = 48, .rounded = true }
+
+// Cover image (fills container, may crop)
+gooey.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
+
+// With effects
+gooey.Image{
+    .src = "icon.png",
+    .size = 64,
+    .grayscale = 1.0,           // 0.0 = color, 1.0 = grayscale
+    .tint = gooey.Color.blue,   // Color overlay
+    .opacity = 0.8,
+    .corner_radius = 8,
+}
+```
+
+### SVG Icons
+
+```zig
+const gooey = @import("gooey");
+const Svg = gooey.Svg;
+const Icons = gooey.Icons;
+
+// Using built-in icon paths
+Svg{ .path = Icons.star, .size = 24, .color = Color.gold }
+Svg{ .path = Icons.check, .size = 20, .color = Color.green }
+Svg{ .path = Icons.close, .size = 16, .color = Color.red }
+
+// Stroked icon (outline only)
+Svg{ .path = Icons.star_outline, .size = 24, .stroke_color = Color.white, .stroke_width = 2 }
+
+// Both fill and stroke
+Svg{ .path = Icons.favorite, .size = 24, .color = Color.red, .stroke_color = Color.black, .stroke_width = 1 }
+
+// Available icons: arrow_back, arrow_forward, menu, close, more_vert,
+// check, add, remove, edit, delete, search, star, star_outline, favorite,
+// info, warning, error_icon, play, pause, skip_next, skip_prev, volume_up,
+// visibility, visibility_off, folder, file, download, upload
+```
+
+### ProgressBar
+
+```zig
 ProgressBar{
     .progress = s.completion,  // 0.0 to 1.0
     .width = 200,
     .height = 8,
     .corner_radius = 4,
 }
+```
 
-// Tab - individual tabs for custom navigation
+### Tabs
+
+```zig
+// Individual tabs for custom navigation
 cx.hstack(.{ .gap = 4 }, .{
     Tab{
         .label = "Home",
@@ -402,21 +571,36 @@ fn render(cx: *Cx) void {
 | Glass            | `zig build run-glass`            | Liquid glass transparency effect      |
 | Spaceship        | `zig build run-spaceship`        | Sci-fi dashboard with hologram shader |
 | Actions          | `zig build run-actions`          | Keybindings and action system         |
+| Select           | `zig build run-select`           | Dropdown select component             |
+| Tooltip          | `zig build run-tooltip`          | Tooltip positioning and styling       |
+| Modal            | `zig build run-modal`            | Modal dialogs with animation          |
+| Images           | `zig build run-images`           | Image loading and effects             |
+| File Dialog      | `zig build run-file-dialog`      | Native file open/save dialogs         |
 
 ## WASM
 
 ```bash
 # Build WASM examples
-zig build wasm # showcase
+zig build wasm                 # showcase
 zig build wasm-counter
 zig build wasm-dynamic-counters
 zig build wasm-pomodoro
+zig build wasm-spaceship
+zig build wasm-layout
+zig build wasm-select
+zig build wasm-tooltip
+zig build wasm-modal
+zig build wasm-images
+zig build wasm-file-dialog
 
 # Run with a local server
-python3 -m http.server 8080 -d zig-out/web # showcase
+python3 -m http.server 8080 -d zig-out/web            # showcase
 python3 -m http.server 8080 -d zig-out/web/counter
 python3 -m http.server 8080 -d zig-out/web/dynamic
 python3 -m http.server 8080 -d zig-out/web/pomodoro
+python3 -m http.server 8080 -d zig-out/web/select
+python3 -m http.server 8080 -d zig-out/web/tooltip
+python3 -m http.server 8080 -d zig-out/web/modal
 ```
 
 ## Hot Reloading (macOS)
@@ -441,7 +625,7 @@ src/
 ├── layout/          # Flexbox-style layout engine
 ├── text/            # CoreText text rendering
 ├── ui/              # Declarative builder (box, vstack, hstack, etc.)
-├── components/      # Button, Checkbox, TextInput, TextArea
+├── components/      # Button, Checkbox, TextInput, TextArea, Modal, Tooltip, Select, Image, Svg
 ├── widgets/         # Lower-level retained widgets
 ├── platform/        # macOS/Metal, WASM/WebGPU
 └── examples/        # Demo applications

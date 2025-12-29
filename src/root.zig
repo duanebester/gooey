@@ -236,6 +236,9 @@ pub const TextMeasurement = text.TextMeasurement;
 // UI builder
 pub const Builder = ui.Builder;
 
+// Theme system
+pub const Theme = ui.Theme;
+
 // Platform (for direct access)
 pub const MacPlatform = platform.Platform;
 pub const Window = platform.Window;
