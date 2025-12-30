@@ -1,6 +1,6 @@
 # Gooey
 
-A GPU-accelerated UI framework for Zig, targeting macOS with Metal rendering and Browser via WASM.
+A GPU-accelerated UI framework for Zig, targeting macOS (Metal), Linux (Vulkan/Wayland), and Browser (WASM/WebGPU).
 
 Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
@@ -25,24 +25,30 @@ WASM support!
 
 ## Features
 
-- **Metal Rendering** - Hardware-accelerated with MSAA anti-aliasing
+- **GPU Rendering** - Metal (macOS), Vulkan (Linux), WebGPU (WASM) with MSAA anti-aliasing
 - **Declarative UI** - Component-based layout with flexbox-style system
 - **Unified Cx Context** - Single `Cx` type for state, layout, handlers, and focus
 - **Pure State Pattern** - Testable state methods with automatic re-rendering
 - **Animation System** - Built-in animations with easing, `animateOn` triggers
 - **Entity System** - Dynamic entity creation/deletion with auto-cleanup
 - **Retained Widgets** - TextInput, TextArea, Checkbox, Scroll containers
-- **Text Rendering** - CoreText shaping with subpixel positioning
-- **Custom Shaders** - Drop in your own Metal shaders
+- **Text Rendering** - CoreText (macOS), FreeType/HarfBuzz (Linux), Canvas (WASM)
+- **Custom Shaders** - Drop in your own Metal/GLSL shaders
 - **Liquid Glass** - macOS 26.0+ Tahoe transparent window effects
 - **Actions & Keybindings** - Contextual action system with keymap
 - **Theming** - Built-in light/dark mode support
 - **Images & SVG** - Load images and render SVG icons with styling
-- **File Dialogs** - Native file open/save dialogs (macOS & WASM)
+- **File Dialogs** - Native file open/save dialogs (macOS, Linux, WASM)
+- **Clipboard** - Native clipboard support on all platforms
+- **IME Support** - Input method editor for international text input
 
 ## Quick Start
 
-**Requirements:** Zig 0.15.2+, macOS 12.0+
+**Requirements:** Zig 0.15.2+
+
+**macOS:** macOS 12.0+
+
+**Linux:** Wayland compositor, Vulkan drivers, FreeType, HarfBuzz, Fontconfig, libpng, D-Bus
 
 ```bash
 zig build run              # Showcase demo
@@ -616,52 +622,28 @@ zig build hot -- run-glass
 
 ## Architecture
 
-```
+```architecture.txt
 src/
 ├── app.zig          # App entry points (runCx, App, WebApp)
 ├── cx.zig           # Unified context (Cx)
 ├── root.zig         # Public API exports
 ├── core/            # Geometry, input, scene, entities, animations
 ├── layout/          # Flexbox-style layout engine
-├── text/            # CoreText text rendering
+├── text/            # Text rendering (CoreText, FreeType/HarfBuzz, Canvas backends)
 ├── ui/              # Declarative builder (box, vstack, hstack, etc.)
 ├── components/      # Button, Checkbox, TextInput, TextArea, Modal, Tooltip, Select, Image, Svg
 ├── widgets/         # Lower-level retained widgets
-├── platform/        # macOS/Metal, WASM/WebGPU
+├── platform/        # macOS/Metal, Linux/Vulkan/Wayland, WASM/WebGPU
 └── examples/        # Demo applications
 ```
 
-## Inspiration
+## Linux Platform
 
-- [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) - Zed's GPU UI framework
-- [Clay](https://github.com/nicbarker/clay) - Immediate mode layout
-- [Ghostty](https://github.com/ghostty-org/ghostty) - Zig + Metal terminal
-
-Linux Platform Implementation Summary
-
-### New Files Created
-
-| File                              | Purpose                                                   |
-| --------------------------------- | --------------------------------------------------------- |
-| `src/platform/linux/mod.zig`      | Module entry point, exports all Linux-specific types      |
-| `src/platform/linux/platform.zig` | `LinuxPlatform` - Wayland display connection & event loop |
-| `src/platform/linux/window.zig`   | `Window` - XDG shell window with frame callbacks          |
-| `src/platform/linux/renderer.zig` | `LinuxRenderer` - wgpu-native GPU rendering               |
-| `src/platform/linux/wgpu.zig`     | wgpu-native C API bindings (~1000 lines)                  |
-| `src/platform/linux/wayland.zig`  | Wayland client C bindings (~900 lines)                    |
-| `src/examples/linux_demo.zig`     | Simple demo rendering colored quads                       |
-
-### Modified Files
-
-| File                    | Changes                         |
-| ----------------------- | ------------------------------- |
-| `src/platform/mod.zig`  | Added Linux backend selection   |
-| `src/core/geometry.zig` | Added `Color.toRgba()` method   |
-| `build.zig`             | Added Linux build configuration |
+Gooey has full Linux support using Wayland and Vulkan. The showcase and all demos run on Linux.
 
 ### Architecture
 
-```/dev/null/architecture.txt#L1-12
+```linux-architecture.txt
 Linux Platform Stack:
 ┌─────────────────────────────────────┐
 │         gooey Application           │
@@ -669,50 +651,92 @@ Linux Platform Stack:
 │  LinuxPlatform  │  Window           │
 │  (event loop)   │  (XDG shell)      │
 ├─────────────────────────────────────┤
-│       LinuxRenderer (wgpu-native)   │
-│       (reuses unified.zig + WGSL)   │
+│  VulkanRenderer │  SceneRenderer    │
+│  (direct Vulkan, GLSL shaders)      │
 ├─────────────────────────────────────┤
-│  Wayland Client  │  Vulkan (wgpu)   │
+│  Wayland Client  │  Vulkan Driver   │
 └─────────────────────────────────────┘
 ```
 
+### What's Implemented ✓
+
+| Feature                | Implementation                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| **Windowing**          | Wayland via XDG shell (xdg-toplevel, xdg-decoration)                            |
+| **GPU Rendering**      | Direct Vulkan with GLSL shaders (unified, text, svg, image pipelines)           |
+| **Text Rendering**     | FreeType for rasterization, HarfBuzz for shaping, Fontconfig for font discovery |
+| **Input Handling**     | Full keyboard (evdev keycodes), mouse, scroll with modifier support             |
+| **Clipboard**          | Wayland data-device protocol (copy/paste text)                                  |
+| **File Dialogs**       | XDG Desktop Portal via D-Bus (open, save, directory selection)                  |
+| **IME Support**        | zwp_text_input_v3 protocol for international text input                         |
+| **HiDPI**              | wp_viewporter protocol with scale factor support                                |
+| **Server Decorations** | zxdg-decoration-manager-v1 protocol                                             |
+
 ### Key Design Decisions
 
-1. **Wayland-first** - No X11 fallback (modern approach like Ghostty)
-2. **wgpu-native** - Reuses your existing WGSL shaders (`unified.wgsl`, `text.wgsl`)
-3. **Server-side decorations** - Requests via xdg-decoration protocol
-4. **Frame callbacks** - VSync via Wayland's frame callback mechanism
+1. **Wayland-only** - No X11 fallback (modern approach like Ghostty)
+2. **Direct Vulkan** - No wgpu-native dependency, full control over rendering
+3. **Native text stack** - FreeType/HarfBuzz/Fontconfig (same as most Linux apps)
+4. **XDG Portal integration** - Native file dialogs that respect user's desktop environment
 
 ### Dependencies Required
 
-To build on Linux, you'll need:
-
-```/dev/null/deps.sh#L1-8
+```deps.sh
 # System packages (Debian/Ubuntu)
-sudo apt install libwayland-dev
+sudo apt install \
+    libwayland-dev \
+    libvulkan-dev \
+    libfreetype-dev \
+    libharfbuzz-dev \
+    libfontconfig-dev \
+    libpng-dev \
+    libdbus-1-dev
 
-# wgpu-native library
-# Either build from source: https://github.com/gfx-rs/wgpu-native
-# Or download prebuilt binaries
-# Place libwgpu_native.so in your library path
+# Fedora/RHEL
+sudo dnf install \
+    wayland-devel \
+    vulkan-loader-devel \
+    freetype-devel \
+    harfbuzz-devel \
+    fontconfig-devel \
+    libpng-devel \
+    dbus-devel
+
+# Arch Linux
+sudo pacman -S \
+    wayland \
+    vulkan-icd-loader \
+    freetype2 \
+    harfbuzz \
+    fontconfig \
+    libpng \
+    dbus
 ```
 
 ### Building & Running
 
-```/dev/null/build.sh#L1-5
-# On Linux
-zig build run  # Runs the linux_demo
+```build.sh
+# Build and run the showcase
+zig build run
 
-# The demo renders:
-# - 4 colored quads (red, green, blue, purple)
-# - A shadow under a central cyan quad
+# Run specific demos
+zig build run-basic        # Simple Wayland + Vulkan test
+zig build run-text         # Text rendering demo
+zig build run-file-dialog  # XDG portal file dialogs
+
+# Compile shaders (only needed if you modify GLSL sources)
+zig build compile-shaders
 ```
 
-### What's Left for Full Linux Support
+### What's Left / Known Limitations
 
-1. **Text rendering** - Need FreeType/HarfBuzz backend in `src/text/backends/freetype/`
-2. **Input handling** - Convert Linux keycodes to gooey `KeyCode`
-3. **Keyboard repeat** - Handle repeat_info from Wayland
-4. **Clipboard** - Wayland data-device protocol
-5. **Cursor theming** - wl_cursor library integration
-6. **Testing** - Actually test on a real Linux machine!
+1. **Custom cursors** - Cursor theming via wl_cursor not yet implemented
+2. **Hot reloading** - macOS-only currently (uses FSEvents)
+3. **Glass effects** - macOS-specific (compositor-dependent on Linux)
+4. **Multi-window** - Supported in platform but not fully tested
+
+## Inspiration
+
+- [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) - Zed's GPU UI framework
+- [Clay](https://github.com/nicbarker/clay) - Immediate mode layout
+- [Ghostty](https://github.com/ghostty-org/ghostty) - Zig + Metal terminal
