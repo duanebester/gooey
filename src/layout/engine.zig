@@ -668,6 +668,12 @@ pub const LayoutEngine = struct {
         return self.elements.getConst(index).computed.bounding_box;
     }
 
+    /// Get computed content box (inside padding) for an element by ID (O(1) lookup)
+    pub fn getContentBox(self: *const Self, id: u32) ?BoundingBox {
+        const index = self.id_to_index.get(id) orelse return null;
+        return self.elements.getConst(index).computed.content_box;
+    }
+
     /// Get z-index for an element by ID (O(1) lookup using cached value)
     /// Returns the z_index from the nearest floating ancestor, or 0 for non-floating subtrees.
     /// The z_index is cached during generateRenderCommands.
@@ -685,6 +691,11 @@ pub const LayoutEngine = struct {
         const layout = elem.config.layout;
         const padding = layout.padding;
 
+        // Check if this is a scroll container - scroll containers don't use
+        // children's sizes for min_height/min_width in the scrollable direction
+        const is_vertical_scroll = if (elem.config.scroll) |s| s.vertical else false;
+        const is_horizontal_scroll = if (elem.config.scroll) |s| s.horizontal else false;
+
         var content_width: f32 = 0;
         var content_height: f32 = 0;
 
@@ -700,11 +711,23 @@ pub const LayoutEngine = struct {
                 // Skip floating elements - they don't affect parent's min size
                 if (child.config.floating == null) {
                     if (layout.layout_direction.isHorizontal()) {
-                        content_width += child.computed.min_width;
-                        content_height = @max(content_height, child.computed.min_height);
+                        // For horizontal scroll, don't accumulate children widths
+                        if (!is_horizontal_scroll) {
+                            content_width += child.computed.min_width;
+                        }
+                        // For vertical scroll, don't include children heights at all
+                        if (!is_vertical_scroll) {
+                            content_height = @max(content_height, child.computed.min_height);
+                        }
                     } else {
-                        content_width = @max(content_width, child.computed.min_width);
-                        content_height += child.computed.min_height;
+                        // For horizontal scroll, don't include children widths at all
+                        if (!is_horizontal_scroll) {
+                            content_width = @max(content_width, child.computed.min_width);
+                        }
+                        // For vertical scroll, don't accumulate children heights
+                        if (!is_vertical_scroll) {
+                            content_height += child.computed.min_height;
+                        }
                     }
                     child_count += 1;
                 }
@@ -712,13 +735,17 @@ pub const LayoutEngine = struct {
                 child_idx = child.next_sibling_index;
             }
 
-            // Add gaps between children
+            // Add gaps between children (but not for scroll containers in scrollable direction)
             if (child_count > 1) {
                 const gap: f32 = @floatFromInt(layout.child_gap);
                 if (layout.layout_direction.isHorizontal()) {
-                    content_width += gap * @as(f32, @floatFromInt(child_count - 1));
+                    if (!is_horizontal_scroll) {
+                        content_width += gap * @as(f32, @floatFromInt(child_count - 1));
+                    }
                 } else {
-                    content_height += gap * @as(f32, @floatFromInt(child_count - 1));
+                    if (!is_vertical_scroll) {
+                        content_height += gap * @as(f32, @floatFromInt(child_count - 1));
+                    }
                 }
             }
         }

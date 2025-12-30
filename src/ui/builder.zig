@@ -625,17 +625,39 @@ pub const Builder = struct {
             },
         };
 
-        // Outer container (the viewport)
-        const viewport_width = style.width orelse 300;
-        const viewport_height = style.height orelse 200;
+        // Compute viewport sizing (same pattern as boxWithIdTracked)
+        var sizing = Sizing.fitContent();
+
+        // Width sizing
+        const grow_w = style.grow or style.grow_width;
+        if (grow_w) {
+            sizing.width = SizingAxis.grow();
+        } else if (style.width) |w| {
+            sizing.width = SizingAxis.fixed(w);
+        } else if (style.fill_width) {
+            sizing.width = SizingAxis.percent(1.0);
+        } else {
+            // Default fallback for scroll containers
+            sizing.width = SizingAxis.fixed(300);
+        }
+
+        // Height sizing
+        const grow_h = style.grow or style.grow_height;
+        if (grow_h) {
+            sizing.height = SizingAxis.grow();
+        } else if (style.height) |h| {
+            sizing.height = SizingAxis.fixed(h);
+        } else if (style.fill_height) {
+            sizing.height = SizingAxis.percent(1.0);
+        } else {
+            // Default fallback for scroll containers
+            sizing.height = SizingAxis.fixed(200);
+        }
 
         self.layout.openElement(.{
             .id = layout_id,
             .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.fixed(viewport_width),
-                    .height = SizingAxis.fixed(viewport_height),
-                },
+                .sizing = sizing,
                 .padding = padding,
             },
             .background_color = style.background,
@@ -683,15 +705,17 @@ pub const Builder = struct {
     pub fn registerPendingScrollRegions(self: *Self) void {
         for (self.pending_scrolls.items) |pending| {
             const viewport_bounds = self.layout.getBoundingBox(pending.layout_id.id);
+            const viewport_content = self.layout.getContentBox(pending.layout_id.id);
             const content_bounds = self.layout.getBoundingBox(pending.content_layout_id.id);
 
-            if (viewport_bounds != null and content_bounds != null) {
+            if (viewport_bounds != null and viewport_content != null and content_bounds != null) {
                 const vp = viewport_bounds.?;
+                const vp_content = viewport_content.?;
                 const ct = content_bounds.?;
 
                 if (self.gooey) |g| {
                     if (g.widgets.scrollContainer(pending.id)) |sc| {
-                        // Update bounds
+                        // Update bounds (full bounding box for hit testing)
                         sc.bounds = .{
                             .x = vp.x,
                             .y = vp.y,
@@ -699,8 +723,9 @@ pub const Builder = struct {
                             .height = vp.height,
                         };
 
-                        // Update viewport and content sizes
-                        sc.setViewport(vp.width, vp.height);
+                        // Update viewport size using content box (inside padding)
+                        // This ensures scroll range accounts for padding correctly
+                        sc.setViewport(vp_content.width, vp_content.height);
                         sc.setContentSize(ct.width, ct.height);
 
                         // Apply theme colors if provided

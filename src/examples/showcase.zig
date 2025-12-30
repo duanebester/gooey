@@ -404,40 +404,42 @@ const ThemeToggle = struct {
 
 const MainContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
+        // Main content area fills remaining space after nav bar
         cx.box(.{
             .grow = true,
-            .fill_height = true,
+            .fill_width = true,
             .direction = .column,
         }, .{
             SectionContent{},
         });
-    }
-
-    fn getContentHeight(section: Section) f32 {
-        return switch (section) {
-            .overview => 800,
-            .buttons => 600,
-            .inputs => 500,
-            .selection => 700,
-            .feedback => 550,
-            .overlays => 350,
-            .icons => 650,
-        };
     }
 };
 
 const SectionContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
+        const t = cx.theme();
 
+        // Common scroll style for all sections
+        const scroll_style = ui.ScrollStyle{
+            .grow = true,
+            .fill_width = true,
+            .padding = .{ .all = 32 },
+            .gap = 24,
+            .scrollbar_size = 8,
+            .track_color = t.overlay,
+            .thumb_color = t.muted,
+        };
+
+        // Each section gets its own scroll container (preserves scroll position per section)
         switch (s.section) {
-            .overview => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{OverviewSection{}}),
-            .buttons => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{ButtonsSection{}}),
-            .inputs => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{InputsSection{}}),
-            .selection => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{SelectionSection{}}),
-            .feedback => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{FeedbackSection{}}),
-            .overlays => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{OverlaysSection{}}),
-            .icons => cx.box(.{ .fill_width = true, .grow = true, .fill_height = true, .padding = .{ .all = 32 } }, .{IconsSection{}}),
+            .overview => cx.scroll("scroll-overview", scroll_style, .{OverviewSection{}}),
+            .buttons => cx.scroll("scroll-buttons", scroll_style, .{ButtonsSection{}}),
+            .inputs => cx.scroll("scroll-inputs", scroll_style, .{InputsSection{}}),
+            .selection => cx.scroll("scroll-selection", scroll_style, .{SelectionSection{}}),
+            .feedback => cx.scroll("scroll-feedback", scroll_style, .{FeedbackSection{}}),
+            .overlays => cx.scroll("scroll-overlays", scroll_style, .{OverlaysSection{}}),
+            .icons => cx.scroll("scroll-icons", scroll_style, .{IconsSection{}}),
         }
     }
 };

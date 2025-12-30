@@ -282,6 +282,14 @@ pub const ScrollStyle = struct {
     height: ?f32 = null,
     /// Content height (if known ahead of time)
     content_height: ?f32 = null,
+
+    // Flexible sizing (like Box)
+    grow: bool = false, // Grow both axes
+    grow_width: bool = false, // Grow width only
+    grow_height: bool = false, // Grow height only
+    fill_width: bool = false, // 100% of parent width
+    fill_height: bool = false, // 100% of parent height
+
     /// Padding inside the scroll area
     padding: Box.PaddingValue = .{ .all = 0 },
     gap: u16 = 0,
