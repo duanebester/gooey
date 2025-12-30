@@ -29,6 +29,7 @@ const FloatingConfig = layout_types.FloatingConfig;
 const layout_mod = @import("../layout/layout.zig");
 const LayoutEngine = layout_mod.LayoutEngine;
 const LayoutId = layout_mod.LayoutId;
+const SourceLoc = layout_mod.SourceLoc;
 const Sizing = layout_mod.Sizing;
 const SizingAxis = layout_mod.SizingAxis;
 const Padding = layout_mod.Padding;
@@ -296,11 +297,23 @@ pub const Builder = struct {
 
     /// Generic box container with children
     pub fn box(self: *Self, props: Box, children: anytype) void {
-        self.boxWithId(null, props, children);
+        self.boxWithIdTracked(null, props, children, SourceLoc.none);
+    }
+
+    /// Box with source location tracking (Phase 5)
+    /// Call as: b.boxTracked(props, children, @src())
+    pub fn boxTracked(self: *Self, props: Box, children: anytype, src: std.builtin.SourceLocation) void {
+        self.boxWithIdTracked(null, props, children, SourceLoc.from(src));
     }
 
     /// Box with explicit ID
     pub fn boxWithId(self: *Self, id: ?[]const u8, props: Box, children: anytype) void {
+        self.boxWithIdTracked(id, props, children, SourceLoc.none);
+    }
+
+    /// Box with explicit ID and source location tracking (Phase 5)
+    /// Call as: b.boxWithIdTracked("my-id", props, children, @src())
+    pub fn boxWithIdTracked(self: *Self, id: ?[]const u8, props: Box, children: anytype, source_loc: SourceLoc) void {
         const layout_id = if (id) |i| LayoutId.fromString(i) else self.generateId();
 
         // Push dispatch node at element open
@@ -386,7 +399,7 @@ pub const Builder = struct {
                 .start => .left,
                 .center => .center,
                 .end => .right,
-                .space_between, .space_around => .left,
+                .space_between, .space_around, .space_evenly => .left,
             },
             .y = switch (props.alignment.cross) {
                 .start => .top,
@@ -401,11 +414,11 @@ pub const Builder = struct {
                 .end => .right,
                 .stretch => .left,
             },
-            .y = switch (props.alignment.cross) {
+            .y = switch (props.alignment.main) {
                 .start => .top,
                 .center => .center,
                 .end => .bottom,
-                .stretch => .top,
+                .space_between, .space_around, .space_evenly => .top,
             },
         };
 
@@ -447,6 +460,7 @@ pub const Builder = struct {
             .shadow = props.shadow,
             .floating = floating_config,
             .opacity = props.opacity,
+            .source_location = source_loc,
         }) catch return;
 
         // Mark floating elements for hit testing optimization
@@ -480,7 +494,17 @@ pub const Builder = struct {
 
     /// Vertical stack (column)
     pub fn vstack(self: *Self, style: StackStyle, children: anytype) void {
-        self.box(.{
+        self.vstackImpl(style, children, SourceLoc.none);
+    }
+
+    /// Vertical stack with source location tracking (Phase 5)
+    /// Call as: b.vstackTracked(style, children, @src())
+    pub fn vstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
+        self.vstackImpl(style, children, SourceLoc.from(src));
+    }
+
+    fn vstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
+        self.boxWithIdTracked(null, .{
             .direction = .column,
             .gap = style.gap,
             .padding = .{ .all = style.padding },
@@ -491,14 +515,23 @@ pub const Builder = struct {
                     .end => .end,
                     .stretch => .stretch,
                 },
-                .main = .start,
             },
-        }, children);
+        }, children, loc);
     }
 
     /// Horizontal stack (row)
     pub fn hstack(self: *Self, style: StackStyle, children: anytype) void {
-        self.box(.{
+        self.hstackImpl(style, children, SourceLoc.none);
+    }
+
+    /// Horizontal stack with source location tracking (Phase 5)
+    /// Call as: b.hstackTracked(style, children, @src())
+    pub fn hstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
+        self.hstackImpl(style, children, SourceLoc.from(src));
+    }
+
+    fn hstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
+        self.boxWithIdTracked(null, .{
             .direction = .row,
             .gap = style.gap,
             .padding = .{ .all = style.padding },
@@ -509,9 +542,8 @@ pub const Builder = struct {
                     .end => .end,
                     .stretch => .stretch,
                 },
-                .main = .start,
             },
-        }, children);
+        }, children, loc);
     }
 
     /// Center children in available space

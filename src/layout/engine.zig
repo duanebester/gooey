@@ -38,6 +38,65 @@ pub const ScrollOffset = struct {
     y: f32 = 0,
 };
 
+/// Source location for debugging - captures where an element was created
+/// Uses fixed-size storage to avoid allocations (zero allocation after init)
+pub const SourceLoc = struct {
+    /// File name (pointer to compile-time string, no allocation needed)
+    file: ?[*:0]const u8 = null,
+    /// Line number
+    line: u32 = 0,
+    /// Column number
+    column: u32 = 0,
+    /// Function name (pointer to compile-time string)
+    fn_name: ?[*:0]const u8 = null,
+
+    pub const none: SourceLoc = .{};
+
+    /// Create from Zig's builtin SourceLocation
+    pub fn from(src: std.builtin.SourceLocation) SourceLoc {
+        return .{
+            .file = src.file.ptr,
+            .line = src.line,
+            .column = src.column,
+            .fn_name = src.fn_name.ptr,
+        };
+    }
+
+    /// Check if this has valid source information
+    pub fn isValid(self: SourceLoc) bool {
+        return self.file != null and self.line > 0;
+    }
+
+    /// Get file name as a slice (for display)
+    pub fn getFile(self: SourceLoc) ?[]const u8 {
+        if (self.file) |f| {
+            return std.mem.span(f);
+        }
+        return null;
+    }
+
+    /// Get function name as a slice (for display)
+    pub fn getFnName(self: SourceLoc) ?[]const u8 {
+        if (self.fn_name) |f| {
+            return std.mem.span(f);
+        }
+        return null;
+    }
+
+    /// Get just the filename without path (for compact display)
+    pub fn getBasename(self: SourceLoc) ?[]const u8 {
+        const file = self.getFile() orelse return null;
+        // Find last '/' or '\\'
+        var last_sep: usize = 0;
+        for (file, 0..) |c, i| {
+            if (c == '/' or c == '\\') {
+                last_sep = i + 1;
+            }
+        }
+        return file[last_sep..];
+    }
+};
+
 pub const ElementDeclaration = struct {
     id: LayoutId = LayoutId.none,
     layout: LayoutConfig = .{},
@@ -50,6 +109,8 @@ pub const ElementDeclaration = struct {
     user_data: ?*anyopaque = null,
     /// Opacity for the entire element subtree (0.0 = transparent, 1.0 = opaque)
     opacity: f32 = 1.0,
+    /// Source location where this element was created (for debugging)
+    source_location: SourceLoc = .{},
 };
 
 pub const ElementType = enum {
@@ -2321,4 +2382,89 @@ test "space_between with single child stays at start" {
 
     // Single child should be at start (x=0)
     try std.testing.expectEqual(@as(f32, 0.0), child.computed.bounding_box.x);
+}
+
+// =============================================================================
+// SourceLoc Tests (Phase 5)
+// =============================================================================
+
+test "SourceLoc.none is invalid" {
+    const loc = SourceLoc.none;
+    try std.testing.expect(!loc.isValid());
+    try std.testing.expectEqual(@as(?[*:0]const u8, null), loc.file);
+    try std.testing.expectEqual(@as(u32, 0), loc.line);
+}
+
+test "SourceLoc.from captures builtin source location" {
+    const src = @src();
+    const loc = SourceLoc.from(src);
+
+    try std.testing.expect(loc.isValid());
+    try std.testing.expect(loc.line > 0);
+    try std.testing.expect(loc.file != null);
+}
+
+test "SourceLoc.getFile returns file name" {
+    const src = @src();
+    const loc = SourceLoc.from(src);
+
+    const file = loc.getFile();
+    try std.testing.expect(file != null);
+    try std.testing.expect(file.?.len > 0);
+}
+
+test "SourceLoc.getBasename extracts filename" {
+    const src = @src();
+    const loc = SourceLoc.from(src);
+
+    const basename = loc.getBasename();
+    try std.testing.expect(basename != null);
+    // Should be "engine.zig"
+    try std.testing.expectEqualStrings("engine.zig", basename.?);
+}
+
+test "SourceLoc.getFnName returns function name" {
+    const src = @src();
+    const loc = SourceLoc.from(src);
+
+    const fn_name = loc.getFnName();
+    try std.testing.expect(fn_name != null);
+    // Function name should contain "test" since this is a test block
+    try std.testing.expect(std.mem.indexOf(u8, fn_name.?, "test") != null);
+}
+
+test "SourceLoc stored in ElementDeclaration" {
+    const src = @src();
+    const loc = SourceLoc.from(src);
+
+    const decl = ElementDeclaration{
+        .source_location = loc,
+    };
+
+    try std.testing.expect(decl.source_location.isValid());
+    try std.testing.expectEqual(loc.line, decl.source_location.line);
+}
+
+test "SourceLoc propagates through createElement" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    const src = @src();
+    const loc = SourceLoc.from(src);
+
+    try engine.openElement(.{
+        .id = LayoutId.init("test-element"),
+        .layout = .{ .sizing = Sizing.fixed(100, 100) },
+        .source_location = loc,
+    });
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Verify the element stored the source location
+    const elem = engine.elements.getConst(0);
+    try std.testing.expect(elem.config.source_location.isValid());
+    try std.testing.expectEqual(loc.line, elem.config.source_location.line);
 }

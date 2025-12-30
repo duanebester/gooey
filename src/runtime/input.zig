@@ -9,6 +9,7 @@ const std = @import("std");
 const gooey_mod = @import("../core/gooey.zig");
 const input_mod = @import("../core/input.zig");
 const dispatch_mod = @import("../core/dispatch.zig");
+const debugger_mod = @import("../core/debugger.zig");
 const cx_mod = @import("../cx.zig");
 const ui_mod = @import("../ui/mod.zig");
 
@@ -128,6 +129,12 @@ pub fn handleInputCx(
                 return true;
             }
         }
+
+        // Debugger: handle click to select element for inspection
+        if (cx.gooey().debugger.isActive()) {
+            cx.gooey().debugger.handleClick(cx.gooey().hovered_layout_id);
+            cx.notify();
+        }
     }
 
     // Let user's event handler run first
@@ -138,6 +145,13 @@ pub fn handleInputCx(
     // Route keyboard/text events to focused widgets
     switch (event) {
         .key_down => |k| {
+            // Debugger toggle: Cmd+Shift+I (macOS) or Ctrl+Shift+I
+            if (debugger_mod.Debugger.isToggleShortcut(k.key, k.modifiers)) {
+                cx.gooey().debugger.toggle();
+                cx.notify();
+                return true;
+            }
+
             if (k.key == .tab) {
                 if (k.modifiers.shift) {
                     cx.gooey().focusPrev();
@@ -347,6 +361,12 @@ pub fn handleInputWithContext(
                 return true;
             }
         }
+
+        // Debugger: handle click to select element for inspection
+        if (ctx.gooey.debugger.isActive()) {
+            ctx.gooey.debugger.handleClick(ctx.gooey.hovered_layout_id);
+            ctx.notify();
+        }
     }
 
     // Let user's event handler run first
@@ -357,6 +377,13 @@ pub fn handleInputWithContext(
     // Route keyboard/text events to focused widgets
     switch (event) {
         .key_down => |k| {
+            // Debugger toggle: Cmd+Shift+I (macOS) or Ctrl+Shift+I
+            if (debugger_mod.Debugger.isToggleShortcut(k.key, k.modifiers)) {
+                ctx.gooey.debugger.toggle();
+                ctx.notify();
+                return true;
+            }
+
             if (k.key == .tab) {
                 if (k.modifiers.shift) {
                     ctx.gooey.focusPrev();

@@ -20,6 +20,8 @@
 //! ```
 
 const std = @import("std");
+const debugger_mod = @import("debugger.zig");
+const render_stats = @import("render_stats.zig");
 
 // Layout
 const layout_mod = @import("../layout/layout.zig");
@@ -102,6 +104,10 @@ pub const Gooey = struct {
     // This is the layout_id (hash) of the hovered element, persists across frames
     hovered_layout_id: ?u32 = null,
 
+    // Last known mouse position (for re-hit-testing after bounds sync)
+    last_mouse_x: f32 = 0,
+    last_mouse_y: f32 = 0,
+
     // Cached ancestor layout_ids of the hovered element (for isHoveredOrDescendant)
     // This is populated in updateHover before dispatch tree is reset
     hovered_ancestors: [32]u32 = [_]u32{0} ** 32,
@@ -109,6 +115,9 @@ pub const Gooey = struct {
 
     // Track if hover changed to trigger re-render
     hover_changed: bool = false,
+
+    /// UI Debugger/Inspector (toggle with Cmd+Shift+I)
+    debugger: debugger_mod.Debugger = .{},
 
     /// Dispatch tree for event routing
     dispatch: *DispatchTree,
@@ -232,6 +241,9 @@ pub const Gooey = struct {
 
     /// Call at the start of each frame before building UI
     pub fn beginFrame(self: *Self) void {
+        // Start profiler frame timing
+        self.debugger.beginFrame();
+
         self.frame_count += 1;
         self.widgets.beginFrame();
         self.focus.beginFrame();
@@ -251,12 +263,17 @@ pub const Gooey = struct {
         // Clear scene for new frame
         self.scene.clear();
 
+        // Connect render stats to scene for profiler tracking
+        render_stats.beginFrame();
+        self.scene.setStats(&render_stats.frame_stats);
+
         // Update viewport only on resize
         if (self.scene.viewport_width != self.width or self.scene.viewport_height != self.height) {
             self.scene.setViewport(self.width, self.height);
         }
 
         // Begin layout pass
+        self.debugger.beginLayout();
         self.layout.beginFrame(self.width, self.height);
 
         // Clear hover_changed flag at frame start
@@ -278,7 +295,15 @@ pub const Gooey = struct {
         }
 
         // End layout and get render commands
-        return try self.layout.endFrame();
+        const commands = try self.layout.endFrame();
+        self.debugger.endLayout();
+
+        return commands;
+    }
+
+    /// Finalize frame timing (call after all rendering is complete)
+    pub fn finalizeFrame(self: *Self) void {
+        self.debugger.endFrame(&render_stats.frame_stats);
     }
 
     /// Check if any animations are running (call after endFrame)
@@ -294,6 +319,10 @@ pub const Gooey = struct {
     /// Call this on mouse_moved events AFTER bounds have been synced.
     /// Returns true if hover state changed (requires re-render).
     pub fn updateHover(self: *Self, x: f32, y: f32) bool {
+        // Store mouse position for re-hit-testing after bounds sync
+        self.last_mouse_x = x;
+        self.last_mouse_y = y;
+
         const old_hovered = self.hovered_layout_id;
 
         // Reset ancestor cache
@@ -331,6 +360,12 @@ pub const Gooey = struct {
             self.hover_changed = true;
         }
         return changed;
+    }
+
+    /// Refresh hover state using last known mouse position.
+    /// Call this after bounds have been synced to fix frame delay issues.
+    pub fn refreshHover(self: *Self) void {
+        _ = self.updateHover(self.last_mouse_x, self.last_mouse_y);
     }
 
     /// Check if a specific layout element is currently hovered.

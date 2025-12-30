@@ -184,6 +184,14 @@ pub const render_stats = @import("render_stats.zig");
 pub const RenderStats = render_stats.RenderStats;
 
 // =============================================================================
+// Debugger/Inspector
+// =============================================================================
+
+pub const debugger = @import("debugger.zig");
+pub const Debugger = debugger.Debugger;
+pub const DebugMode = debugger.DebugMode;
+
+// =============================================================================
 // Animation System
 // =============================================================================
 

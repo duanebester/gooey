@@ -60,7 +60,7 @@ pub fn runCx(
         .custom_shaders = config.custom_shaders,
         // Glass/transparency options
         .background_opacity = config.background_opacity,
-        .glass_style = config.glass_style,
+        .glass_style = @enumFromInt(@intFromEnum(config.glass_style)),
         .glass_corner_radius = config.glass_corner_radius,
         .titlebar_transparent = config.titlebar_transparent,
         .full_size_content = config.full_size_content,

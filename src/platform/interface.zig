@@ -237,23 +237,14 @@ pub const WindowOptions = struct {
 
     /// Platform-agnostic glass style (for cross-platform code)
     pub const GlassStyleCompat = enum(u8) {
+        /// No glass effect
         none = 0,
-        titlebar = 1,
-        header_view = 2,
-        sidebar = 3,
-        content = 4,
-        full_screen_ui = 5,
-        tooltip = 6,
-        menu = 7,
-        popover = 8,
-        selection = 9,
-        window_background = 10,
-        hudWindow = 11,
-        ultra_thin = 12,
-        thin = 13,
-        medium = 14,
-        thick = 15,
-        ultra_thick = 16,
+        /// macOS 26+ liquid glass (regular density)
+        glass_regular = 1,
+        /// macOS 26+ liquid glass (clear/lighter)
+        glass_clear = 2,
+        /// Traditional background blur (works on older macOS)
+        blur = 3,
     };
 };
 

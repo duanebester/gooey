@@ -561,6 +561,9 @@ pub const Scene = struct {
         g.order = self.next_order;
         self.next_order += 1;
         try self.glyphs.append(self.allocator, g);
+
+        // Track inserted glyphs for profiler
+        if (self.stats) |s| s.recordGlyphs(1);
     }
 
     /// Insert a glyph with the current clip mask applied
@@ -570,6 +573,9 @@ pub const Scene = struct {
         g.order = self.next_order;
         self.next_order += 1;
         try self.glyphs.append(self.allocator, g);
+
+        // Track inserted glyphs for profiler
+        if (self.stats) |s| s.recordGlyphs(1);
     }
 
     pub fn glyphCount(self: *const Self) usize {
@@ -623,6 +629,34 @@ pub const Scene = struct {
         q.order = self.next_order;
         self.next_order += 1;
         try self.quads.append(self.allocator, q);
+
+        // Track inserted quads for profiler
+        if (self.stats) |s| s.recordQuads(1);
+    }
+
+    /// Insert a quad with a caller-specified draw order (for overlays, debug UI, etc.)
+    /// This preserves the quad's order field and triggers sorting in finish().
+    pub fn insertQuadWithOrder(self: *Self, quad: Quad) !void {
+        // Fast viewport cull - skip if completely outside viewport
+        if (self.culling_enabled) {
+            const right = quad.bounds_origin_x + quad.bounds_size_width;
+            const bottom = quad.bounds_origin_y + quad.bounds_size_height;
+
+            if (right < 0 or quad.bounds_origin_x > self.viewport_width or
+                bottom < 0 or quad.bounds_origin_y > self.viewport_height)
+            {
+                // Quad is fully outside viewport - skip it
+                if (self.stats) |s| s.recordQuadsCulled(1);
+                return;
+            }
+        }
+
+        // Preserve caller's order - this will require sorting
+        self.needs_sort = true;
+        try self.quads.append(self.allocator, quad);
+
+        // Track inserted quads for profiler
+        if (self.stats) |s| s.recordQuads(1);
     }
 
     /// Insert a quad with its shadow in one call
@@ -666,6 +700,9 @@ pub const Scene = struct {
         q.order = self.next_order;
         self.next_order += 1;
         try self.quads.append(self.allocator, q);
+
+        // Track inserted quads for profiler
+        if (self.stats) |s| s.recordQuads(1);
     }
 
     /// Finalize the scene for rendering.
@@ -781,4 +818,82 @@ test "Scene finish skips sort when elements are in order" {
     try testing.expectEqual(@as(DrawOrder, 0), scene.quads.items[0].order);
     try testing.expectEqual(@as(DrawOrder, 1), scene.quads.items[1].order);
     try testing.expectEqual(@as(DrawOrder, 2), scene.quads.items[2].order);
+}
+
+test "insertQuadWithOrder preserves draw order and triggers sort" {
+    const testing = std.testing;
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+
+    // Insert regular quads first (orders 0, 1, 2)
+    try scene.insertQuad(.{ .bounds_origin_x = 0, .bounds_origin_y = 0, .bounds_size_width = 10, .bounds_size_height = 10 });
+    try scene.insertQuad(.{ .bounds_origin_x = 10, .bounds_origin_y = 10, .bounds_size_width = 10, .bounds_size_height = 10 });
+    try scene.insertQuad(.{ .bounds_origin_x = 20, .bounds_origin_y = 20, .bounds_size_width = 10, .bounds_size_height = 10 });
+
+    // needs_sort should be false after regular inserts
+    try testing.expect(!scene.needs_sort);
+
+    // Insert a quad with a high explicit order (like debug overlay)
+    const DEBUG_ORDER: DrawOrder = 0xFFFF_FF00;
+    var overlay_quad = Quad.filled(50, 50, 100, 100, Hsla.red);
+    overlay_quad.order = DEBUG_ORDER;
+    try scene.insertQuadWithOrder(overlay_quad);
+
+    // needs_sort should now be true
+    try testing.expect(scene.needs_sort);
+
+    // The overlay quad should have its order preserved
+    try testing.expectEqual(DEBUG_ORDER, scene.quads.items[3].order);
+
+    // After finish(), quads should be sorted by order
+    scene.finish();
+
+    // Regular quads (0, 1, 2) should come before overlay (DEBUG_ORDER)
+    try testing.expectEqual(@as(DrawOrder, 0), scene.quads.items[0].order);
+    try testing.expectEqual(@as(DrawOrder, 1), scene.quads.items[1].order);
+    try testing.expectEqual(@as(DrawOrder, 2), scene.quads.items[2].order);
+    try testing.expectEqual(DEBUG_ORDER, scene.quads.items[3].order);
+}
+
+test "insertQuadWithOrder interleaves correctly with BatchIterator" {
+    const testing = std.testing;
+    const batch_iter = @import("batch_iterator.zig");
+
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+
+    // Insert: quad(0), glyph(1), quad(2), then overlay quad with high order
+    try scene.insertQuad(Quad.filled(0, 0, 100, 100, Hsla.red));
+    try scene.insertGlyph(GlyphInstance.init(0, 0, 10, 10, 0, 0, 1, 1, Hsla.black));
+    try scene.insertQuad(Quad.filled(10, 10, 100, 100, Hsla.green));
+
+    // Insert debug overlay with explicit high order
+    var overlay = Quad.filled(50, 50, 200, 200, Hsla.blue);
+    overlay.order = 1000;
+    try scene.insertQuadWithOrder(overlay);
+
+    // Finish to sort
+    scene.finish();
+
+    // Verify batch iterator yields in correct order
+    var iter = batch_iter.BatchIterator.init(&scene);
+
+    // First batch: quad at order 0
+    const batch1 = iter.next().?;
+    try testing.expect(batch1 == .quad);
+    try testing.expectEqual(@as(usize, 1), batch1.quad.len);
+
+    // Second batch: glyph at order 1
+    const batch2 = iter.next().?;
+    try testing.expect(batch2 == .glyph);
+
+    // Third batch: quads at orders 2 and 1000 (coalesced - no other type between them)
+    const batch3 = iter.next().?;
+    try testing.expect(batch3 == .quad);
+    try testing.expectEqual(@as(usize, 2), batch3.quad.len);
+    try testing.expectEqual(@as(DrawOrder, 2), batch3.quad[0].order);
+    try testing.expectEqual(@as(DrawOrder, 1000), batch3.quad[1].order);
+
+    // No more batches
+    try testing.expect(iter.next() == null);
 }

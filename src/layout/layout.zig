@@ -39,6 +39,7 @@ pub const ElementDeclaration = engine.ElementDeclaration;
 pub const LayoutElement = engine.LayoutElement;
 pub const ElementType = engine.ElementType;
 pub const TextData = engine.TextData;
+pub const SourceLoc = engine.SourceLoc;
 
 pub const RenderCommand = render_commands.RenderCommand;
 pub const RenderCommandType = render_commands.RenderCommandType;

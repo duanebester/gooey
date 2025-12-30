@@ -45,11 +45,18 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
         }
     }
 
+    // Re-run hit testing with updated bounds to fix frame delay
+    // (hover was computed with previous frame's bounds during input handling)
+    cx.gooey().refreshHover();
+
     // Register hit regions
     cx.builder().registerPendingScrollRegions();
 
     // Clear scene
     cx.gooey().scene.clear();
+
+    // Start render timing for profiler
+    cx.gooey().debugger.beginRender();
 
     // Render all commands (includes SVGs and images inline for correct z-ordering)
     for (commands) |cmd| {
@@ -115,7 +122,44 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
         }
     }
 
+    // End render timing for profiler
+    cx.gooey().debugger.endRender();
+
+    // Render debug overlays (if enabled via Cmd+Shift+I)
+    if (cx.gooey().debugger.isActive()) {
+        cx.gooey().debugger.generateOverlays(
+            cx.gooey().hovered_layout_id,
+            cx.gooey().hovered_ancestors[0..cx.gooey().hovered_ancestor_count],
+            cx.gooey().layout,
+        );
+        try cx.gooey().debugger.renderOverlays(cx.gooey().scene);
+
+        // Render inspector panel (Phase 2)
+        if (cx.gooey().debugger.showInspector()) {
+            try cx.gooey().debugger.renderInspectorPanel(
+                cx.gooey().scene,
+                cx.gooey().text_system,
+                cx.gooey().width,
+                cx.gooey().height,
+                cx.gooey().scale_factor,
+            );
+        }
+
+        // Render profiler panel
+        if (cx.gooey().debugger.showProfiler()) {
+            try cx.gooey().debugger.renderProfilerPanel(
+                cx.gooey().scene,
+                cx.gooey().text_system,
+                cx.gooey().width,
+                cx.gooey().scale_factor,
+            );
+        }
+    }
+
     cx.gooey().scene.finish();
+
+    // Finalize frame timing for profiler
+    cx.gooey().finalizeFrame();
 }
 
 /// Render a single frame with typed context (legacy API support)
@@ -150,11 +194,18 @@ pub fn renderFrameWithContext(
         }
     }
 
+    // Re-run hit testing with updated bounds to fix frame delay
+    // (hover was computed with previous frame's bounds during input handling)
+    ctx.gooey.refreshHover();
+
     // Register hit regions
     ctx.builder.registerPendingScrollRegions();
 
     // Clear scene
     ctx.gooey.scene.clear();
+
+    // Start render timing for profiler
+    ctx.gooey.debugger.beginRender();
 
     // Render all commands
     for (commands) |cmd| {
@@ -228,5 +279,42 @@ pub fn renderFrameWithContext(
         }
     }
 
+    // End render timing for profiler
+    ctx.gooey.debugger.endRender();
+
+    // Render debug overlays (if enabled via Cmd+Shift+I)
+    if (ctx.gooey.debugger.isActive()) {
+        ctx.gooey.debugger.generateOverlays(
+            ctx.gooey.hovered_layout_id,
+            ctx.gooey.hovered_ancestors[0..ctx.gooey.hovered_ancestor_count],
+            ctx.gooey.layout,
+        );
+        try ctx.gooey.debugger.renderOverlays(ctx.gooey.scene);
+
+        // Render inspector panel (Phase 2)
+        if (ctx.gooey.debugger.showInspector()) {
+            try ctx.gooey.debugger.renderInspectorPanel(
+                ctx.gooey.scene,
+                ctx.gooey.text_system,
+                ctx.gooey.width,
+                ctx.gooey.height,
+                ctx.gooey.scale_factor,
+            );
+        }
+
+        // Render profiler panel
+        if (ctx.gooey.debugger.showProfiler()) {
+            try ctx.gooey.debugger.renderProfilerPanel(
+                ctx.gooey.scene,
+                ctx.gooey.text_system,
+                ctx.gooey.width,
+                ctx.gooey.scale_factor,
+            );
+        }
+    }
+
     ctx.gooey.scene.finish();
+
+    // Finalize frame timing for profiler
+    ctx.gooey.finalizeFrame();
 }

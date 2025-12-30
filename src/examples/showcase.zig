@@ -268,7 +268,8 @@ fn render(cx: *Cx) void {
     // Set theme for all child components
     cx.setTheme(t);
 
-    cx.box(.{
+    // Using boxTracked to demonstrate source location in debugger (Cmd+Shift+I)
+    cx.boxTracked(.{
         .width = size.width,
         .height = size.height,
         .background = t.bg,
@@ -291,7 +292,7 @@ fn render(cx: *Cx) void {
             .on_close = cx.update(AppState, AppState.closeConfirm),
             .child = ConfirmModalContent{},
         },
-    });
+    }, @src());
 }
 
 // =============================================================================
@@ -452,7 +453,8 @@ const Card = struct {
     pub fn render(self: @This(), cx: *Cx, children: anytype) void {
         const t = cx.theme();
 
-        cx.box(.{
+        // Using boxTracked for source location debugging
+        cx.boxTracked(.{
             .fill_width = true,
             .padding = .{ .all = 24 },
             .background = t.surface,
@@ -465,7 +467,7 @@ const Card = struct {
             CardHeader{ .title = self.title, .description = self.description },
             // Card content
             children,
-        });
+        }, @src());
     }
 };
 
@@ -807,11 +809,11 @@ const StatItem = struct {
 
 const ButtonsSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+        cx.boxTracked(.{ .fill_width = true, .gap = 24 }, .{
             ButtonVariantsCard{},
             ButtonSizesCard{},
             ButtonInteractiveCard{},
-        });
+        }, @src());
     }
 };
 

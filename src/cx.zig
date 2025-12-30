@@ -457,6 +457,12 @@ pub const Cx = struct {
         self._builder.box(style, children);
     }
 
+    /// Create a box container with source location tracking (Phase 5).
+    /// Usage: cx.boxTracked(.{ ... }, .{ ... }, @src())
+    pub fn boxTracked(self: *Self, style: Box, children: anytype, src: std.builtin.SourceLocation) void {
+        self._builder.boxTracked(style, children, src);
+    }
+
     /// Create a box container with an explicit ID.
     pub fn boxWithId(self: *Self, id: []const u8, style: Box, children: anytype) void {
         self._builder.boxWithId(id, style, children);
@@ -467,9 +473,21 @@ pub const Cx = struct {
         self._builder.vstack(style, children);
     }
 
+    /// Create a vertical stack with source location tracking (Phase 5).
+    /// Usage: cx.vstackTracked(.{ ... }, .{ ... }, @src())
+    pub fn vstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
+        self._builder.vstackTracked(style, children, src);
+    }
+
     /// Create a horizontal stack (row).
     pub fn hstack(self: *Self, style: StackStyle, children: anytype) void {
         self._builder.hstack(style, children);
+    }
+
+    /// Create a horizontal stack with source location tracking (Phase 5).
+    /// Usage: cx.hstackTracked(.{ ... }, .{ ... }, @src())
+    pub fn hstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
+        self._builder.hstackTracked(style, children, src);
     }
 
     /// Center children in available space.
