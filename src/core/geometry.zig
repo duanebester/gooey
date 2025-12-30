@@ -468,6 +468,11 @@ pub const Color = struct {
         return .{ .r = self.r, .g = self.g, .b = self.b, .a = a };
     }
 
+    /// Return color components as an array [r, g, b, a]
+    pub fn toRgba(self: Color) [4]f32 {
+        return .{ self.r, self.g, self.b, self.a };
+    }
+
     pub const transparent = Color{ .r = 0, .g = 0, .b = 0, .a = 0 };
     pub const clear = transparent;
     pub const white = Color{ .r = 1, .g = 1, .b = 1, .a = 1 };

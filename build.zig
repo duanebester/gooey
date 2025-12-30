@@ -4,8 +4,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Only load zig-objc dependency and setup native module on macOS
+    // Platform detection
     const is_native_macos = target.result.os.tag == .macos;
+    const is_native_linux = target.result.os.tag == .linux;
 
     if (is_native_macos) {
         // Get the zig-objc dependency
@@ -132,6 +133,224 @@ pub fn build(b: *std.Build) void {
         }
 
         hot_step.dependOn(&watcher_cmd.step);
+    }
+
+    // =============================================================================
+    // Linux Native Builds (Vulkan + Wayland)
+    // =============================================================================
+
+    if (is_native_linux) {
+        // =========================================================================
+        // Shader Compilation (GLSL -> SPIR-V)
+        // =========================================================================
+        // Compiles shaders to source tree so @embedFile can find them.
+        // Pre-committed .spv files mean this only needs to run when shaders change.
+
+        const compile_shaders_step = b.step("compile-shaders", "Compile GLSL shaders to SPIR-V (requires glslc)");
+
+        const shader_dir = "src/platform/linux/shaders";
+        const shaders = [_]struct { source: []const u8, output: []const u8, stage: []const u8 }{
+            .{ .source = "unified.vert", .output = "unified.vert.spv", .stage = "vertex" },
+            .{ .source = "unified.frag", .output = "unified.frag.spv", .stage = "fragment" },
+            .{ .source = "text.vert", .output = "text.vert.spv", .stage = "vertex" },
+            .{ .source = "text.frag", .output = "text.frag.spv", .stage = "fragment" },
+            .{ .source = "svg.vert", .output = "svg.vert.spv", .stage = "vertex" },
+            .{ .source = "svg.frag", .output = "svg.frag.spv", .stage = "fragment" },
+            .{ .source = "image.vert", .output = "image.vert.spv", .stage = "vertex" },
+            .{ .source = "image.frag", .output = "image.frag.spv", .stage = "fragment" },
+        };
+
+        inline for (shaders) |shader| {
+            const compile_cmd = b.addSystemCommand(&.{
+                "glslc",
+                "-fshader-stage=" ++ shader.stage,
+                "-O", // Optimize for release
+                "-o",
+                shader_dir ++ "/" ++ shader.output,
+                shader_dir ++ "/" ++ shader.source,
+            });
+            compile_shaders_step.dependOn(&compile_cmd.step);
+        }
+
+        // Create the gooey module for Linux
+        const mod = b.addModule("gooey", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        // Link Vulkan
+        mod.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+        mod.linkSystemLibrary("vulkan", .{});
+
+        // Link text rendering libraries (FreeType, HarfBuzz, Fontconfig)
+        mod.linkSystemLibrary("freetype", .{});
+        mod.linkSystemLibrary("harfbuzz", .{});
+        mod.linkSystemLibrary("fontconfig", .{});
+        // Link image loading library (libpng)
+        mod.linkSystemLibrary("png", .{});
+        // Link D-Bus for XDG portal file dialogs
+        mod.linkSystemLibrary("dbus-1", .{});
+        mod.link_libc = true;
+
+        // =========================================================================
+        // Linux Showcase (Main Demo)
+        // =========================================================================
+
+        const exe = b.addExecutable(.{
+            .name = "gooey",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/showcase.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        // Link system libraries (Vulkan + Wayland + text rendering)
+        exe.linkSystemLibrary("vulkan");
+        exe.linkSystemLibrary("wayland-client");
+        exe.linkSystemLibrary("freetype");
+        exe.linkSystemLibrary("harfbuzz");
+        exe.linkSystemLibrary("fontconfig");
+        exe.linkSystemLibrary("png");
+        exe.linkSystemLibrary("dbus-1");
+        exe.linkLibC();
+
+        b.installArtifact(exe);
+
+        // Run step
+        const run_step = b.step("run", "Run the showcase demo");
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+        run_step.dependOn(&run_cmd.step);
+        run_cmd.step.dependOn(b.getInstallStep());
+
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        // =========================================================================
+        // Linux Basic Demo (Simple Wayland + Vulkan test)
+        // =========================================================================
+
+        const basic_exe = b.addExecutable(.{
+            .name = "gooey-basic",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/linux_demo.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        basic_exe.linkSystemLibrary("vulkan");
+        basic_exe.linkSystemLibrary("wayland-client");
+        basic_exe.linkSystemLibrary("freetype");
+        basic_exe.linkSystemLibrary("harfbuzz");
+        basic_exe.linkSystemLibrary("fontconfig");
+        basic_exe.linkSystemLibrary("png");
+        basic_exe.linkSystemLibrary("dbus-1");
+        basic_exe.linkLibC();
+
+        b.installArtifact(basic_exe);
+
+        const run_basic_step = b.step("run-basic", "Run the basic Linux demo (simple Wayland + Vulkan test)");
+        const run_basic_cmd = b.addRunArtifact(basic_exe);
+        run_basic_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+        run_basic_step.dependOn(&run_basic_cmd.step);
+        run_basic_cmd.step.dependOn(b.getInstallStep());
+
+        // =========================================================================
+        // Linux Text Demo (uses full UI framework with text rendering)
+        // =========================================================================
+
+        const text_exe = b.addExecutable(.{
+            .name = "gooey-text",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/linux_text_demo.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        text_exe.linkSystemLibrary("vulkan");
+        text_exe.linkSystemLibrary("wayland-client");
+        text_exe.linkSystemLibrary("freetype");
+        text_exe.linkSystemLibrary("harfbuzz");
+        text_exe.linkSystemLibrary("fontconfig");
+        text_exe.linkSystemLibrary("png");
+        text_exe.linkSystemLibrary("dbus-1");
+        text_exe.linkLibC();
+
+        b.installArtifact(text_exe);
+
+        const run_text_step = b.step("run-text", "Run the Linux text demo");
+        const run_text_cmd = b.addRunArtifact(text_exe);
+        run_text_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+        run_text_step.dependOn(&run_text_cmd.step);
+        run_text_cmd.step.dependOn(b.getInstallStep());
+
+        // =========================================================================
+        // Linux File Dialog Demo
+        // =========================================================================
+
+        const file_dialog_exe = b.addExecutable(.{
+            .name = "gooey-file-dialog",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/linux_file_dialog.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        file_dialog_exe.linkSystemLibrary("vulkan");
+        file_dialog_exe.linkSystemLibrary("wayland-client");
+        file_dialog_exe.linkSystemLibrary("freetype");
+        file_dialog_exe.linkSystemLibrary("harfbuzz");
+        file_dialog_exe.linkSystemLibrary("fontconfig");
+        file_dialog_exe.linkSystemLibrary("png");
+        file_dialog_exe.linkSystemLibrary("dbus-1");
+        file_dialog_exe.linkLibC();
+
+        b.installArtifact(file_dialog_exe);
+
+        const run_file_dialog_step = b.step("run-file-dialog", "Run the Linux file dialog demo");
+        const run_file_dialog_cmd = b.addRunArtifact(file_dialog_exe);
+        run_file_dialog_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+        run_file_dialog_step.dependOn(&run_file_dialog_cmd.step);
+        run_file_dialog_cmd.step.dependOn(b.getInstallStep());
+
+        // =====================================================================
+        // Tests
+        // =====================================================================
+
+        const mod_tests = b.addTest(.{
+            .root_module = mod,
+        });
+        mod_tests.linkSystemLibrary("vulkan");
+        mod_tests.linkSystemLibrary("wayland-client");
+        mod_tests.linkSystemLibrary("freetype");
+        mod_tests.linkSystemLibrary("harfbuzz");
+        mod_tests.linkSystemLibrary("fontconfig");
+        mod_tests.linkSystemLibrary("png");
+        mod_tests.linkSystemLibrary("dbus-1");
+        mod_tests.linkLibC();
+
+        const run_mod_tests = b.addRunArtifact(mod_tests);
+
+        const test_step = b.step("test", "Run tests");
+        test_step.dependOn(&run_mod_tests.step);
     }
 
     // =============================================================================

@@ -22,16 +22,30 @@ const Atlas = @import("atlas.zig").Atlas;
 // =============================================================================
 
 const is_wasm = platform.is_wasm;
+const is_linux = platform.is_linux;
+
 const backend = if (is_wasm)
     @import("backends/web/mod.zig")
+else if (is_linux)
+    @import("backends/freetype/mod.zig")
 else
     @import("backends/coretext/mod.zig");
 
 /// Platform-specific font face type
-const PlatformFace = if (is_wasm) backend.WebFontFace else backend.CoreTextFace;
+const PlatformFace = if (is_wasm)
+    backend.WebFontFace
+else if (is_linux)
+    backend.FreeTypeFace
+else
+    backend.CoreTextFace;
 
 /// Platform-specific shaper type
-const PlatformShaper = if (is_wasm) backend.WebShaper else backend.CoreTextShaper;
+const PlatformShaper = if (is_wasm)
+    backend.WebShaper
+else if (is_linux)
+    backend.HarfBuzzShaper
+else
+    backend.CoreTextShaper;
 
 // =============================================================================
 // Public Types

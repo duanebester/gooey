@@ -636,3 +636,83 @@ src/
 - [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) - Zed's GPU UI framework
 - [Clay](https://github.com/nicbarker/clay) - Immediate mode layout
 - [Ghostty](https://github.com/ghostty-org/ghostty) - Zig + Metal terminal
+
+Linux Platform Implementation Summary
+
+### New Files Created
+
+| File                              | Purpose                                                   |
+| --------------------------------- | --------------------------------------------------------- |
+| `src/platform/linux/mod.zig`      | Module entry point, exports all Linux-specific types      |
+| `src/platform/linux/platform.zig` | `LinuxPlatform` - Wayland display connection & event loop |
+| `src/platform/linux/window.zig`   | `Window` - XDG shell window with frame callbacks          |
+| `src/platform/linux/renderer.zig` | `LinuxRenderer` - wgpu-native GPU rendering               |
+| `src/platform/linux/wgpu.zig`     | wgpu-native C API bindings (~1000 lines)                  |
+| `src/platform/linux/wayland.zig`  | Wayland client C bindings (~900 lines)                    |
+| `src/examples/linux_demo.zig`     | Simple demo rendering colored quads                       |
+
+### Modified Files
+
+| File                    | Changes                         |
+| ----------------------- | ------------------------------- |
+| `src/platform/mod.zig`  | Added Linux backend selection   |
+| `src/core/geometry.zig` | Added `Color.toRgba()` method   |
+| `build.zig`             | Added Linux build configuration |
+
+### Architecture
+
+```/dev/null/architecture.txt#L1-12
+Linux Platform Stack:
+┌─────────────────────────────────────┐
+│         gooey Application           │
+├─────────────────────────────────────┤
+│  LinuxPlatform  │  Window           │
+│  (event loop)   │  (XDG shell)      │
+├─────────────────────────────────────┤
+│       LinuxRenderer (wgpu-native)   │
+│       (reuses unified.zig + WGSL)   │
+├─────────────────────────────────────┤
+│  Wayland Client  │  Vulkan (wgpu)   │
+└─────────────────────────────────────┘
+```
+
+### Key Design Decisions
+
+1. **Wayland-first** - No X11 fallback (modern approach like Ghostty)
+2. **wgpu-native** - Reuses your existing WGSL shaders (`unified.wgsl`, `text.wgsl`)
+3. **Server-side decorations** - Requests via xdg-decoration protocol
+4. **Frame callbacks** - VSync via Wayland's frame callback mechanism
+
+### Dependencies Required
+
+To build on Linux, you'll need:
+
+```/dev/null/deps.sh#L1-8
+# System packages (Debian/Ubuntu)
+sudo apt install libwayland-dev
+
+# wgpu-native library
+# Either build from source: https://github.com/gfx-rs/wgpu-native
+# Or download prebuilt binaries
+# Place libwgpu_native.so in your library path
+```
+
+### Building & Running
+
+```/dev/null/build.sh#L1-5
+# On Linux
+zig build run  # Runs the linux_demo
+
+# The demo renders:
+# - 4 colored quads (red, green, blue, purple)
+# - A shadow under a central cyan quad
+```
+
+### What's Left for Full Linux Support
+
+1. **Text rendering** - Need FreeType/HarfBuzz backend in `src/text/backends/freetype/`
+2. **Input handling** - Convert Linux keycodes to gooey `KeyCode`
+3. **Keyboard repeat** - Handle repeat_info from Wayland
+4. **Clipboard** - Wayland data-device protocol
+5. **Cursor theming** - wl_cursor library integration
+6. **Testing** - Actually test on a real Linux machine!

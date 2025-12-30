@@ -112,6 +112,7 @@ pub const Corners = core.Corners;
 pub const Pixels = core.Pixels;
 
 // Input events
+pub const input = core.input;
 pub const InputEvent = core.InputEvent;
 pub const KeyEvent = core.KeyEvent;
 pub const KeyCode = core.KeyCode;

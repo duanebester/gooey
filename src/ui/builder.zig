@@ -378,8 +378,23 @@ pub const Builder = struct {
             .column => .top_to_bottom,
         };
 
-        // Map cross-axis alignment
-        const child_alignment = ChildAlignment{
+        // Alignment mapping depends on direction:
+        // - row: main=X, cross=Y
+        // - column: main=Y, cross=X
+        const child_alignment = if (props.direction == .row) ChildAlignment{
+            .x = switch (props.alignment.main) {
+                .start => .left,
+                .center => .center,
+                .end => .right,
+                .space_between, .space_around => .left,
+            },
+            .y = switch (props.alignment.cross) {
+                .start => .top,
+                .center => .center,
+                .end => .bottom,
+                .stretch => .top,
+            },
+        } else ChildAlignment{
             .x = switch (props.alignment.cross) {
                 .start => .left,
                 .center => .center,

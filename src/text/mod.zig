@@ -72,9 +72,15 @@ pub const text_debug = @import("text_debug.zig");
 const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;
 
+const is_linux = platform.is_linux;
+
 pub const backends = if (is_wasm)
     struct {
         pub const web = @import("backends/web/mod.zig");
+    }
+else if (is_linux)
+    struct {
+        pub const freetype = @import("backends/freetype/mod.zig");
     }
 else
     struct {

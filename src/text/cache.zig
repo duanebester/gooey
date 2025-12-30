@@ -18,6 +18,7 @@ const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
 const SUBPIXEL_VARIANTS_Y = types.SUBPIXEL_VARIANTS_Y;
 
 const is_wasm = platform.is_wasm;
+const is_linux = platform.is_linux;
 
 /// Key for glyph lookup - includes subpixel variant
 pub const GlyphKey = struct {
@@ -267,17 +268,30 @@ pub const GlyphCache = struct {
         const subpixel_shift_x = @as(f32, @floatFromInt(subpixel_x)) / @as(f32, @floatFromInt(SUBPIXEL_VARIANTS_X));
         const subpixel_shift_y = @as(f32, @floatFromInt(subpixel_y)) / @as(f32, @floatFromInt(SUBPIXEL_VARIANTS_Y));
 
-        // Import and use the static rendering function
-        const CoreTextFace = @import("backends/coretext/face.zig").CoreTextFace;
-        const rasterized = try CoreTextFace.renderGlyphFromFont(
-            font_ptr,
-            glyph_id,
-            self.scale_factor,
-            subpixel_shift_x,
-            subpixel_shift_y,
-            self.render_buffer,
-            self.render_buffer_size,
-        );
+        // Platform-specific fallback rendering
+        const rasterized = if (is_linux) blk: {
+            const FreeTypeFace = @import("backends/freetype/face.zig").FreeTypeFace;
+            break :blk try FreeTypeFace.renderGlyphFromFont(
+                @ptrCast(@alignCast(font_ptr)),
+                glyph_id,
+                self.scale_factor,
+                subpixel_shift_x,
+                subpixel_shift_y,
+                self.render_buffer,
+                self.render_buffer_size,
+            );
+        } else blk: {
+            const CoreTextFace = @import("backends/coretext/face.zig").CoreTextFace;
+            break :blk try CoreTextFace.renderGlyphFromFont(
+                font_ptr,
+                glyph_id,
+                self.scale_factor,
+                subpixel_shift_x,
+                subpixel_shift_y,
+                self.render_buffer,
+                self.render_buffer_size,
+            );
+        };
 
         if (rasterized.width == 0 or rasterized.height == 0) {
             return CachedGlyph{

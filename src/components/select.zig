@@ -46,6 +46,8 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
+const Svg = @import("svg.zig").Svg;
+const Icons = @import("svg.zig").Icons;
 
 /// A dropdown select component for single-option selection.
 pub const Select = struct {
@@ -238,13 +240,13 @@ const ChevronIcon = struct {
     size: f32,
 
     pub fn render(self: ChevronIcon, b: *ui.Builder) void {
-        // Simple text-based chevron (could be replaced with SVG)
-        const arrow = if (self.is_open) "▲" else "▼";
-        b.box(.{}, .{
-            ui.text(arrow, .{
-                .color = self.color,
-                .size = @intFromFloat(self.size),
-            }),
+        const icon_path = if (self.is_open) Icons.chevron_up else Icons.chevron_down;
+        b.box(.{
+            .width = self.size,
+            .height = self.size,
+            .alignment = .{ .main = .center, .cross = .center },
+        }, .{
+            Svg{ .path = icon_path, .size = self.size, .color = self.color },
         });
     }
 };
@@ -391,16 +393,16 @@ const SelectCheckmark = struct {
         if (self.visible) {
             b.box(.{
                 .width = 16,
+                .height = 16,
+                .alignment = .{ .main = .center, .cross = .center },
             }, .{
-                ui.text("✓", .{
-                    .color = self.color,
-                    .size = 14,
-                }),
+                Svg{ .path = Icons.check, .size = 14, .color = self.color },
             });
         } else {
             // Empty space to maintain alignment
             b.box(.{
                 .width = 16,
+                .height = 16,
             }, .{});
         }
     }

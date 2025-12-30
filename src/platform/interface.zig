@@ -212,6 +212,49 @@ pub const WindowOptions = struct {
 
     /// Start window centered on screen
     centered: bool = true,
+
+    // Cross-platform fields (some may be no-ops on certain platforms)
+
+    /// Custom shaders (MSL for macOS, WGSL for web, ignored on Linux)
+    custom_shaders: []const @import("../core/shader.zig").CustomShader = &.{},
+
+    /// Background opacity (0.0 = fully transparent, 1.0 = opaque)
+    /// Only effective on macOS; other platforms ignore this
+    background_opacity: f32 = 1.0,
+
+    /// Glass/blur style for transparent windows (macOS only)
+    /// Use platform.Window.GlassStyle for the enum values
+    glass_style: GlassStyleCompat = .none,
+
+    /// Corner radius for glass effect (macOS only)
+    glass_corner_radius: f32 = 16.0,
+
+    /// Make titlebar transparent (macOS only)
+    titlebar_transparent: bool = false,
+
+    /// Extend content under titlebar (macOS only)
+    full_size_content: bool = false,
+
+    /// Platform-agnostic glass style (for cross-platform code)
+    pub const GlassStyleCompat = enum(u8) {
+        none = 0,
+        titlebar = 1,
+        header_view = 2,
+        sidebar = 3,
+        content = 4,
+        full_screen_ui = 5,
+        tooltip = 6,
+        menu = 7,
+        popover = 8,
+        selection = 9,
+        window_background = 10,
+        hudWindow = 11,
+        ultra_thin = 12,
+        thin = 13,
+        medium = 14,
+        thick = 15,
+        ultra_thick = 16,
+    };
 };
 
 /// Window interface for runtime polymorphism.

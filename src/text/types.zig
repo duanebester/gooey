@@ -3,8 +3,10 @@
 //! These types are platform-agnostic and used by all text backends.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;
+const is_macos = builtin.os.tag == .macos;
 
 /// Subpixel variants for sharper text rendering at fractional pixel positions.
 /// Each glyph can be cached at up to VARIANTS_X * VARIANTS_Y different sub-pixel offsets.
@@ -126,8 +128,8 @@ pub const ShapedRun = struct {
     /// Total advance width
     width: f32,
 
-    // CoreFoundation release function (for fallback fonts) - native only
-    const CFRelease = if (!is_wasm)
+    // CoreFoundation release function (for fallback fonts) - macOS only
+    const CFRelease = if (is_macos)
         struct {
             extern "c" fn CFRelease(cf: *anyopaque) void;
         }.CFRelease
@@ -139,8 +141,8 @@ pub const ShapedRun = struct {
     pub fn deinit(self: *ShapedRun, allocator: std.mem.Allocator) void {
         if (self.glyphs.len > 0) {
             // Release any retained fallback fonts (avoid double-release)
-            // Only needed on native where we use CoreFoundation
-            if (!is_wasm) {
+            // Only needed on macOS where we use CoreFoundation
+            if (is_macos) {
                 var released: [16]usize = [_]usize{0} ** 16;
                 var released_count: usize = 0;
 

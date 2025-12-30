@@ -265,6 +265,23 @@ pub const AnimationState = struct {
         state.trigger_hash = trigger_hash;
         return state;
     }
+
+    /// Initialize in a settled/idle state (not running).
+    /// Use this when creating animations for components that start in their
+    /// "default" state (e.g., modals that start closed).
+    pub fn initSettled(config: AnimationConfig, trigger_hash: u64) @This() {
+        return .{
+            .start_time = 0,
+            .duration_ms = config.duration_ms,
+            .delay_ms = config.delay_ms,
+            .easing = config.easing,
+            .mode = config.mode,
+            .running = false,
+            .forward = true,
+            .generation = 0,
+            .trigger_hash = trigger_hash,
+        };
+    }
 };
 
 // =============================================================================

@@ -68,28 +68,37 @@ pub const time = @import("time.zig");
 // Backend Selection
 // =============================================================================
 
+pub const is_linux = builtin.os.tag == .linux;
+
 pub const backend = if (is_wasm)
     @import("wgpu/web/mod.zig")
 else switch (builtin.os.tag) {
     .macos => @import("mac/platform.zig"),
+    .linux => @import("linux/mod.zig"),
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
 /// Platform type for the current OS (compile-time selected)
 pub const Platform = if (is_wasm)
     backend.WebPlatform
+else if (is_linux)
+    backend.LinuxPlatform
 else
     backend.MacPlatform;
 
 /// Window type for the current OS (compile-time selected)
 pub const Window = if (is_wasm)
     backend.WebWindow
+else if (is_linux)
+    backend.Window
 else
     @import("mac/window.zig").Window;
 
-/// DisplayLink for vsync (native only)
+/// DisplayLink for vsync (native only, not available on Linux)
 pub const DisplayLink = if (is_wasm)
     void // Not applicable on web
+else if (is_linux)
+    void // Linux uses Wayland frame callbacks
 else
     @import("mac/display_link.zig").DisplayLink;
 
@@ -97,7 +106,7 @@ else
 // Platform-specific modules (for advanced usage)
 // =============================================================================
 
-pub const mac = if (!is_wasm) struct {
+pub const mac = if (!is_wasm and !is_linux) struct {
     pub const platform = @import("mac/platform.zig");
     pub const window = @import("mac/window.zig");
     pub const display_link = @import("mac/display_link.zig");
@@ -105,6 +114,23 @@ pub const mac = if (!is_wasm) struct {
     pub const metal = @import("mac/metal/metal.zig");
     pub const clipboard = @import("mac/clipboard.zig");
     pub const file_dialog = @import("mac/file_dialog.zig");
+} else struct {};
+
+pub const linux = if (is_linux) struct {
+    pub const platform = @import("linux/platform.zig");
+    pub const window = @import("linux/window.zig");
+    pub const wayland = @import("linux/wayland.zig");
+    pub const vulkan = @import("linux/vulkan.zig");
+    pub const vk_renderer = @import("linux/vk_renderer.zig");
+    pub const unified = @import("wgpu/unified.zig");
+    pub const clipboard = @import("linux/clipboard.zig");
+    pub const dbus = @import("linux/dbus.zig");
+    pub const file_dialog = @import("linux/file_dialog.zig");
+
+    // Type aliases
+    pub const LinuxPlatform = platform.LinuxPlatform;
+    pub const Window = window.Window;
+    pub const VulkanRenderer = vk_renderer.VulkanRenderer;
 } else struct {};
 
 pub const web = if (is_wasm) struct {

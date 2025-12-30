@@ -75,7 +75,10 @@ pub const Svg = struct {
         const final_color = fill_color orelse Color.transparent;
 
         // Emit the SVG primitive (atlas handles caching internally)
-        b.box(.{}, .{
+        b.box(.{
+            .width = w,
+            .height = h,
+        }, .{
             ui.SvgPrimitive{
                 .path = self.path,
                 .width = w,
@@ -95,6 +98,8 @@ pub const Icons = struct {
     // Navigation
     pub const arrow_back = "m12 19-7-7 7-7 M19 12H5";
     pub const arrow_forward = "M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z";
+    pub const chevron_up = "M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z";
+    pub const chevron_down = "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z";
     pub const menu = "M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z";
     pub const close = "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z";
     pub const more_vert = "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z";

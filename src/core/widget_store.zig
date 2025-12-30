@@ -149,8 +149,10 @@ pub const WidgetStore = struct {
                 gop.value_ptr.trigger_hash = trigger_hash;
             }
         } else {
-            // New animation with trigger
-            gop.value_ptr.* = AnimationState.initWithTrigger(config, trigger_hash);
+            // New animation - start in settled/idle state (not running).
+            // This prevents components like modals from briefly appearing
+            // on the first frame before any state change has occurred.
+            gop.value_ptr.* = AnimationState.initSettled(config, trigger_hash);
         }
 
         const handle = animation.calculateProgress(gop.value_ptr);

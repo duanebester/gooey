@@ -10,6 +10,8 @@ const Color = ui.Color;
 const Theme = ui.Theme;
 const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;
+const Svg = @import("svg.zig").Svg;
+const Icons = @import("svg.zig").Icons;
 
 pub const Checkbox = struct {
     id: []const u8,
@@ -84,7 +86,7 @@ const CheckboxBox = struct {
             .corner_radius = self.corner_radius,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
-            Checkmark{ .visible = self.checked, .color = self.checkmark_color },
+            Checkmark{ .visible = self.checked, .color = self.checkmark_color, .size = self.size },
         });
     }
 };
@@ -92,11 +94,14 @@ const CheckboxBox = struct {
 const Checkmark = struct {
     visible: bool,
     color: Color,
+    size: f32,
 
     pub fn render(self: Checkmark, b: *ui.Builder) void {
         if (self.visible) {
-            b.box(.{}, .{
-                ui.text("✓", .{ .color = self.color, .size = 12 }),
+            b.box(.{
+                .alignment = .{ .main = .center, .cross = .center },
+            }, .{
+                Svg{ .path = Icons.check, .size = self.size * 0.7, .color = self.color },
             });
         }
     }

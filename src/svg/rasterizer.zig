@@ -2,6 +2,7 @@
 //!
 //! Routes to platform-specific SVG rasterization backends:
 //! - CoreGraphics (macOS) - rasterizer_cg.zig
+//! - Software renderer (Linux) - rasterizer_linux.zig
 //! - Canvas2D (Web/WASM) - rasterizer_web.zig
 
 const builtin = @import("builtin");
@@ -12,7 +13,8 @@ const backend = if (is_wasm)
     @import("rasterizer_web.zig")
 else switch (builtin.os.tag) {
     .macos => @import("rasterizer_cg.zig"),
-    else => @compileError("SVG rasterization not supported on this platform"),
+    .linux => @import("rasterizer_linux.zig"),
+    else => @import("rasterizer_stub.zig"),
 };
 
 // Re-export types

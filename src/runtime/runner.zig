@@ -7,6 +7,7 @@ const std = @import("std");
 
 // Platform abstraction
 const platform = @import("../platform/mod.zig");
+const interface_mod = @import("../platform/interface.zig");
 
 // Core imports
 const gooey_mod = @import("../core/gooey.zig");
@@ -42,6 +43,11 @@ pub fn runCx(
     var plat = try Platform.init();
     defer plat.deinit();
 
+    // Linux-specific: set up Wayland listeners to get compositor/globals
+    if (platform.is_linux) {
+        try plat.setupListeners();
+    }
+
     // Default background color
     const bg_color = config.background_color orelse geometry_mod.Color.init(0.95, 0.95, 0.95, 1.0);
 
@@ -60,6 +66,11 @@ pub fn runCx(
         .full_size_content = config.full_size_content,
     });
     defer window.deinit();
+
+    // Linux-specific: register window with platform for pointer/input handling
+    if (platform.is_linux) {
+        plat.setActiveWindow(window);
+    }
 
     // Initialize Gooey with owned resources
     var gooey_ctx = try Gooey.initOwned(allocator, window);
@@ -152,7 +163,7 @@ pub fn CxConfig(comptime State: type) type {
         background_opacity: f32 = 1.0,
 
         /// Glass blur style
-        glass_style: Window.GlassStyle = .none,
+        glass_style: interface_mod.WindowOptions.GlassStyleCompat = .none,
 
         /// Corner radius for glass effect
         glass_corner_radius: f32 = 16.0,
