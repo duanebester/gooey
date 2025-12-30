@@ -890,17 +890,29 @@ pub const VulkanRenderer = struct {
         var fmt_count: u32 = @min(format_count, 16);
         _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &fmt_count, &formats);
 
-        // Choose format (prefer BGRA8 SRGB)
+        // Choose format - prefer UNORM since our colors are already in sRGB space
+        // Using SRGB format would double-gamma-correct (GPU applies linear→sRGB on output)
         var chosen_format = formats[0];
+        var found_unorm = false;
         for (formats[0..fmt_count]) |format| {
-            if (format.format == vk.VK_FORMAT_B8G8R8A8_SRGB and
+            // Prefer UNORM - we write sRGB values directly, no conversion needed
+            if (format.format == vk.VK_FORMAT_B8G8R8A8_UNORM and
                 format.colorSpace == vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             {
                 chosen_format = format;
+                found_unorm = true;
                 break;
             }
-            if (format.format == vk.VK_FORMAT_B8G8R8A8_UNORM) {
-                chosen_format = format;
+        }
+        // Fallback: accept any UNORM or SRGB format
+        if (!found_unorm) {
+            for (formats[0..fmt_count]) |format| {
+                if (format.format == vk.VK_FORMAT_B8G8R8A8_UNORM or
+                    format.format == vk.VK_FORMAT_B8G8R8A8_SRGB)
+                {
+                    chosen_format = format;
+                    break;
+                }
             }
         }
         self.swapchain_format = chosen_format.format;
