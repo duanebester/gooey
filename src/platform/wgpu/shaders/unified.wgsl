@@ -214,7 +214,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let inner_half_size = half_size - vec2<f32>(border);
             let inner_dist = rounded_rect_sdf(centered, inner_half_size, inner_radius);
             let border_blend = smoothstep(-0.5, 0.5, inner_dist);
-            color = mix(in.border_color, in.color, border_blend);
+            color = mix(in.color, in.border_color, border_blend);
         }
 
         let alpha = 1.0 - smoothstep(-0.5, 0.5, outer_dist);

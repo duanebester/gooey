@@ -84,7 +84,7 @@ const AnimationHandle = animation_mod.AnimationHandle;
 
 // Handler types (re-exported from root.zig for users)
 const HandlerRef = handler_mod.HandlerRef;
-const typeId = handler_mod.typeId;
+pub const typeId = handler_mod.typeId;
 const packArg = handler_mod.packArg;
 const unpackArg = handler_mod.unpackArg;
 

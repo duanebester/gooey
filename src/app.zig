@@ -344,6 +344,14 @@ pub fn WebApp(
             if (g_window) |w| w.updateSize();
         }
 
+        /// No-op main for API compatibility with native App.
+        /// On WASM, JavaScript calls init() directly via the exported function.
+        /// This exists so `App.main()` compiles on both native and web targets.
+        pub fn main() !void {
+            // WASM initialization is driven by JavaScript calling the exported init().
+            // This function exists only for API compatibility.
+        }
+
         // Export functions for WASM - this comptime block runs when the type is analyzed
         comptime {
             @export(&Self.init, .{ .name = "init" });

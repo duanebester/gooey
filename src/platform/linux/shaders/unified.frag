@@ -75,7 +75,7 @@ void main() {
             vec2 inner_half_size = half_size - vec2(border);
             float inner_dist = rounded_rect_sdf(centered, inner_half_size, inner_radius);
             float border_blend = smoothstep(-0.5, 0.5, inner_dist);
-            color = mix(in_border_color, in_color, border_blend);
+            color = mix(in_color, in_border_color, border_blend);
         }
 
         float alpha = 1.0 - smoothstep(-0.5, 0.5, outer_dist);

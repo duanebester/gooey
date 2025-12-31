@@ -11,6 +11,7 @@
 //! use pre-allocated fixed-capacity arrays. No dynamic allocation after initialization.
 
 const std = @import("std");
+const platform_time = @import("../platform/time.zig");
 const scene_mod = @import("../scene/scene.zig");
 const input_mod = @import("../input/events.zig");
 const layout_mod = @import("../layout/layout.zig");
@@ -164,29 +165,29 @@ pub const Debugger = struct {
     }
 
     pub fn beginFrame(self: *Self) void {
-        self.frame_start_ns = @intCast(std.time.nanoTimestamp());
+        self.frame_start_ns = @intCast(platform_time.nanoTimestamp());
     }
 
     pub fn beginLayout(self: *Self) void {
-        self.layout_start_ns = @intCast(std.time.nanoTimestamp());
+        self.layout_start_ns = @intCast(platform_time.nanoTimestamp());
     }
 
     pub fn endLayout(self: *Self) void {
-        const now: u64 = @intCast(std.time.nanoTimestamp());
+        const now: u64 = @intCast(platform_time.nanoTimestamp());
         self.layout_time_ns = now - self.layout_start_ns;
     }
 
     pub fn beginRender(self: *Self) void {
-        self.render_start_ns = @intCast(std.time.nanoTimestamp());
+        self.render_start_ns = @intCast(platform_time.nanoTimestamp());
     }
 
     pub fn endRender(self: *Self) void {
-        const now: u64 = @intCast(std.time.nanoTimestamp());
+        const now: u64 = @intCast(platform_time.nanoTimestamp());
         self.render_time_ns = now - self.render_start_ns;
     }
 
     pub fn endFrame(self: *Self, stats: ?*const render_stats.RenderStats) void {
-        const now: u64 = @intCast(std.time.nanoTimestamp());
+        const now: u64 = @intCast(platform_time.nanoTimestamp());
         if (self.frame_start_ns > 0) {
             self.frame_time_ns = now - self.frame_start_ns;
         }
