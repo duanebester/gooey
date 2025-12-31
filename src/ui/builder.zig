@@ -145,7 +145,7 @@ pub const Builder = struct {
         inner_height: f32,
     };
 
-    const PendingScroll = struct {
+    pub const PendingScroll = struct {
         id: []const u8,
         layout_id: LayoutId,
         style: ScrollStyle,
@@ -606,9 +606,11 @@ pub const Builder = struct {
         const layout_id = LayoutId.fromString(id);
 
         // Get scroll offset from retained widget
+        var scroll_offset_x: f32 = 0;
         var scroll_offset_y: f32 = 0;
         if (self.gooey) |g| {
             if (g.widgets.scrollContainer(id)) |sc| {
+                scroll_offset_x = sc.state.offset_x;
                 scroll_offset_y = sc.state.offset_y;
             }
         }
@@ -665,18 +667,34 @@ pub const Builder = struct {
             .scroll = .{
                 .vertical = style.vertical,
                 .horizontal = style.horizontal,
-                .scroll_offset = .{ .x = 0, .y = scroll_offset_y },
+                .scroll_offset = .{ .x = scroll_offset_x, .y = scroll_offset_y },
             },
         }) catch return;
 
         // Inner content container (can be taller than viewport)
         const content_id = self.generateId();
+        // Content sizing: use fit() for scrollable directions (allows overflow),
+        // grow() for non-scrollable directions (fills viewport)
+        const content_width_sizing = if (style.content_width) |w|
+            SizingAxis.fixed(w)
+        else if (style.horizontal)
+            SizingAxis.fit() // fit to children, allows horizontal overflow
+        else
+            SizingAxis.grow(); // fill viewport width
+
+        const content_height_sizing = if (style.content_height) |h|
+            SizingAxis.fixed(h)
+        else if (style.vertical)
+            SizingAxis.fit() // fit to children, allows vertical overflow
+        else
+            SizingAxis.grow(); // fill viewport height
+
         self.layout.openElement(.{
             .id = content_id,
             .layout = .{
                 .sizing = .{
-                    .width = SizingAxis.grow(),
-                    .height = if (style.content_height) |h| SizingAxis.fixed(h) else SizingAxis.fit(),
+                    .width = content_width_sizing,
+                    .height = content_height_sizing,
                 },
                 .layout_direction = .top_to_bottom,
                 .child_gap = style.gap,
@@ -699,6 +717,16 @@ pub const Builder = struct {
             .style = style,
             .content_layout_id = content_id,
         }) catch {};
+    }
+
+    /// Find a pending scroll by its layout ID (for rendering scrollbars inline with commands)
+    pub fn findPendingScrollByLayoutId(self: *const Self, layout_id_value: u32) ?*const PendingScroll {
+        for (self.pending_scrolls.items) |*pending| {
+            if (pending.layout_id.id == layout_id_value) {
+                return pending;
+            }
+        }
+        return null;
     }
 
     /// Register scroll container regions and update state
@@ -727,6 +755,10 @@ pub const Builder = struct {
                         // This ensures scroll range accounts for padding correctly
                         sc.setViewport(vp_content.width, vp_content.height);
                         sc.setContentSize(ct.width, ct.height);
+
+                        // Apply scroll directions
+                        sc.style.horizontal = pending.style.horizontal;
+                        sc.style.vertical = pending.style.vertical;
 
                         // Apply theme colors if provided
                         if (pending.style.track_color) |c| sc.style.track_color = c;

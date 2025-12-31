@@ -792,7 +792,21 @@ pub const LayoutEngine = struct {
         const content_height = final_height - layout.padding.totalY();
 
         if (elem.first_child_index) |first_child| {
-            self.distributeSpace(first_child, layout, content_width, content_height);
+            // For scroll containers, allow children to overflow in scrollable directions
+            // by passing a very large available size (prevents shrinking)
+            var child_available_width = content_width;
+            var child_available_height = content_height;
+
+            if (elem.config.scroll) |scroll| {
+                if (scroll.horizontal) {
+                    child_available_width = std.math.floatMax(f32);
+                }
+                if (scroll.vertical) {
+                    child_available_height = std.math.floatMax(f32);
+                }
+            }
+
+            self.distributeSpace(first_child, layout, child_available_width, child_available_height);
         }
     }
 
@@ -918,8 +932,19 @@ pub const LayoutEngine = struct {
 
                 // Recurse for children of this child
                 const child_layout = child.config.layout;
-                const content_width = child.computed.sized_width - child_layout.padding.totalX();
-                const content_height = child.computed.sized_height - child_layout.padding.totalY();
+                var content_width = child.computed.sized_width - child_layout.padding.totalX();
+                var content_height = child.computed.sized_height - child_layout.padding.totalY();
+
+                // For scroll containers, allow children to overflow in scrollable directions
+                if (child.config.scroll) |scroll| {
+                    if (scroll.horizontal) {
+                        content_width = std.math.floatMax(f32);
+                    }
+                    if (scroll.vertical) {
+                        content_height = std.math.floatMax(f32);
+                    }
+                }
+
                 if (child.first_child_index) |grandchild| {
                     self.distributeSpace(grandchild, child_layout, content_width, content_height);
                 }

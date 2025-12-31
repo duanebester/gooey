@@ -183,6 +183,9 @@ pub const ScrollContainer = struct {
     pub fn setContentSize(self: *Self, width: f32, height: f32) void {
         self.state.content_width = width;
         self.state.content_height = height;
+        // Clamp scroll to new bounds (content may have shrunk)
+        self.state.offset_x = std.math.clamp(self.state.offset_x, 0, self.state.maxScrollX());
+        self.state.offset_y = std.math.clamp(self.state.offset_y, 0, self.state.maxScrollY());
     }
 
     /// Get the current scroll offset
@@ -383,8 +386,8 @@ pub const ScrollContainer = struct {
         const track_y = self.bounds.y + self.style.scrollbar_padding;
         const track_height = self.bounds.height - self.style.scrollbar_padding * 2;
 
-        // Track background
-        try scene.insertQuad(Quad{
+        // Track background (use clipped insert to respect parent scroll container clips)
+        try scene.insertQuadClipped(Quad{
             .bounds_origin_x = track_x,
             .bounds_origin_y = track_y,
             .bounds_size_width = self.style.scrollbar_size,
@@ -405,7 +408,7 @@ pub const ScrollContainer = struct {
         else
             self.style.thumb_color;
 
-        try scene.insertQuad(Quad{
+        try scene.insertQuadClipped(Quad{
             .bounds_origin_x = thumb.x,
             .bounds_origin_y = thumb.y,
             .bounds_size_width = thumb.width,
@@ -425,8 +428,8 @@ pub const ScrollContainer = struct {
         const track_y = self.bounds.y + self.bounds.height - self.style.scrollbar_size - self.style.scrollbar_padding;
         const track_width = self.bounds.width - self.style.scrollbar_padding * 2;
 
-        // Track background
-        try scene.insertQuad(Quad{
+        // Track background (use clipped insert to respect parent scroll container clips)
+        try scene.insertQuadClipped(Quad{
             .bounds_origin_x = track_x,
             .bounds_origin_y = track_y,
             .bounds_size_width = track_width,
@@ -447,7 +450,7 @@ pub const ScrollContainer = struct {
         else
             self.style.thumb_color;
 
-        try scene.insertQuad(Quad{
+        try scene.insertQuadClipped(Quad{
             .bounds_origin_x = thumb.x,
             .bounds_origin_y = thumb.y,
             .bounds_size_width = thumb.width,

@@ -62,6 +62,80 @@ pub fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
                 try gooey_ctx.scene.insertQuad(quad);
             }
         },
+        .border => {
+            // Render border as 4 edge rectangles (top, right, bottom, left)
+            const border_data = cmd.data.border;
+            const b = cmd.bounding_box;
+            const color = render_bridge.colorToHsla(border_data.color);
+            const top_w = border_data.width.top;
+            const right_w = border_data.width.right;
+            const bottom_w = border_data.width.bottom;
+            const left_w = border_data.width.left;
+
+            // Top edge
+            if (top_w > 0) {
+                const quad = Quad{
+                    .bounds_origin_x = b.x,
+                    .bounds_origin_y = b.y,
+                    .bounds_size_width = b.width,
+                    .bounds_size_height = top_w,
+                    .background = color,
+                };
+                if (gooey_ctx.scene.hasActiveClip()) {
+                    try gooey_ctx.scene.insertQuadClipped(quad);
+                } else {
+                    try gooey_ctx.scene.insertQuad(quad);
+                }
+            }
+
+            // Bottom edge
+            if (bottom_w > 0) {
+                const quad = Quad{
+                    .bounds_origin_x = b.x,
+                    .bounds_origin_y = b.y + b.height - bottom_w,
+                    .bounds_size_width = b.width,
+                    .bounds_size_height = bottom_w,
+                    .background = color,
+                };
+                if (gooey_ctx.scene.hasActiveClip()) {
+                    try gooey_ctx.scene.insertQuadClipped(quad);
+                } else {
+                    try gooey_ctx.scene.insertQuad(quad);
+                }
+            }
+
+            // Left edge (between top and bottom)
+            if (left_w > 0) {
+                const quad = Quad{
+                    .bounds_origin_x = b.x,
+                    .bounds_origin_y = b.y + top_w,
+                    .bounds_size_width = left_w,
+                    .bounds_size_height = b.height - top_w - bottom_w,
+                    .background = color,
+                };
+                if (gooey_ctx.scene.hasActiveClip()) {
+                    try gooey_ctx.scene.insertQuadClipped(quad);
+                } else {
+                    try gooey_ctx.scene.insertQuad(quad);
+                }
+            }
+
+            // Right edge (between top and bottom)
+            if (right_w > 0) {
+                const quad = Quad{
+                    .bounds_origin_x = b.x + b.width - right_w,
+                    .bounds_origin_y = b.y + top_w,
+                    .bounds_size_width = right_w,
+                    .bounds_size_height = b.height - top_w - bottom_w,
+                    .background = color,
+                };
+                if (gooey_ctx.scene.hasActiveClip()) {
+                    try gooey_ctx.scene.insertQuadClipped(quad);
+                } else {
+                    try gooey_ctx.scene.insertQuad(quad);
+                }
+            }
+        },
         .text => {
             const text_data = cmd.data.text;
             const baseline_y = if (gooey_ctx.text_system.getMetrics()) |metrics|

@@ -59,8 +59,19 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     cx.gooey().debugger.beginRender();
 
     // Render all commands (includes SVGs and images inline for correct z-ordering)
+    // Scrollbars are rendered inline when their scissor_end is encountered
     for (commands) |cmd| {
         try render_cmd.renderCommand(cx.gooey(), cmd);
+
+        // When a scissor region ends, check if it's a scroll container and render its scrollbars
+        // This ensures scrollbars appear after scroll content but before sibling elements
+        if (cmd.command_type == .scissor_end) {
+            if (cx.builder().findPendingScrollByLayoutId(cmd.id)) |pending| {
+                if (cx.gooey().widgets.scrollContainer(pending.id)) |scroll_widget| {
+                    try scroll_widget.renderScrollbars(cx.gooey().scene);
+                }
+            }
+        }
     }
 
     // Render text inputs
@@ -115,12 +126,8 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
         cx.gooey().getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
 
-    // Render scrollbars
-    for (cx.builder().pending_scrolls.items) |pending| {
-        if (cx.gooey().widgets.scrollContainer(pending.id)) |scroll_widget| {
-            try scroll_widget.renderScrollbars(cx.gooey().scene);
-        }
-    }
+    // Note: Scrollbars are now rendered inline with commands (see above)
+    // This ensures correct z-ordering with sibling elements
 
     // End render timing for profiler
     cx.gooey().debugger.endRender();
@@ -208,8 +215,19 @@ pub fn renderFrameWithContext(
     ctx.gooey.debugger.beginRender();
 
     // Render all commands
+    // Scrollbars are rendered inline when their scissor_end is encountered
     for (commands) |cmd| {
         try render_cmd.renderCommand(ctx.gooey, cmd);
+
+        // When a scissor region ends, check if it's a scroll container and render its scrollbars
+        // This ensures scrollbars appear after scroll content but before sibling elements
+        if (cmd.command_type == .scissor_end) {
+            if (ctx.builder.findPendingScrollByLayoutId(cmd.id)) |pending| {
+                if (ctx.gooey.widgets.scrollContainer(pending.id)) |scroll_widget| {
+                    try scroll_widget.renderScrollbars(ctx.gooey.scene);
+                }
+            }
+        }
     }
 
     // Render text inputs
@@ -272,12 +290,8 @@ pub fn renderFrameWithContext(
         ctx.gooey.getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
 
-    // Render scrollbars
-    for (ctx.builder.pending_scrolls.items) |pending| {
-        if (ctx.gooey.widgets.scrollContainer(pending.id)) |scroll_widget| {
-            try scroll_widget.renderScrollbars(ctx.gooey.scene);
-        }
-    }
+    // Note: Scrollbars are now rendered inline with commands (see above)
+    // This ensures correct z-ordering with sibling elements
 
     // End render timing for profiler
     ctx.gooey.debugger.endRender();

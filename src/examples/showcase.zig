@@ -429,6 +429,8 @@ const SectionContent = struct {
             .scrollbar_size = 8,
             .track_color = t.overlay,
             .thumb_color = t.muted,
+            .horizontal = true,
+            .vertical = true,
         };
 
         // Each section gets its own scroll container (preserves scroll position per section)
@@ -512,7 +514,7 @@ const OverviewSection = struct {
                 .alignment = .{ .cross = .center },
             }, .{
                 ui.text("Welcome to Gooey", .{ .size = 36, .color = t.text }),
-                ui.text("A GPU-accelerated UI framework for Zig", .{ .size = 18, .color = t.subtext }),
+                ui.text("A GPU-accelerated UI framework for Zig with a powerful layout system", .{ .size = 18, .color = t.subtext }),
                 cx.hstack(.{ .gap = 12 }, .{
                     FeatureBadge{ .icon = Icons.star, .label = "Fast" },
                     FeatureBadge{ .icon = Icons.folder, .label = "Composable" },
@@ -520,38 +522,20 @@ const OverviewSection = struct {
                 }),
             }),
 
-            // Feature cards grid
-            cx.hstack(.{ .gap = 16 }, .{
-                FeatureCard{
-                    .icon = Icons.play,
-                    .title = "GPU Rendering",
-                    .description = "Metal/WebGPU accelerated rendering for smooth 60fps UI",
-                },
-                FeatureCard{
-                    .icon = Icons.file,
-                    .title = "Pure Zig",
-                    .description = "No runtime, no garbage collector, just fast native code",
-                },
-            }),
+            // Layout API Reference
+            LayoutApiSection{},
 
-            cx.hstack(.{ .gap = 16 }, .{
-                FeatureCard{
-                    .icon = Icons.visibility,
-                    .title = "Cross Platform",
-                    .description = "macOS native + WebAssembly for browsers",
-                },
-                FeatureCard{
-                    .icon = Icons.folder,
-                    .title = "Component System",
-                    .description = "Build UIs with composable, reusable components",
-                },
-            }),
+            // Sizing demo
+            SizingDemo{},
 
-            // Text alignment demo
-            TextAlignmentDemo{},
+            // Scroll demo
+            ScrollDemo{},
 
-            // Space distribution demo
-            SpaceDistributionDemo{},
+            // Main axis distribution demo
+            MainAxisDemo{},
+
+            // Cross axis alignment demo
+            CrossAxisDemo{},
 
             // Quick stats
             QuickStats{},
@@ -586,35 +570,99 @@ const FeatureBadge = struct {
     }
 };
 
-const FeatureCard = struct {
-    icon: []const u8,
+// =============================================================================
+// Layout API Section
+// =============================================================================
+
+const LayoutApiSection = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .fill_width = true,
+            .padding = .{ .all = 20 },
+            .background = t.surface,
+            .corner_radius = t.radius_md,
+            .gap = 16,
+        }, .{
+            ui.text("Layout API Overview", .{ .size = 18, .color = t.text }),
+            ui.text("The box primitive supports flexible sizing, alignment, and distribution", .{ .size = 13, .color = t.muted }),
+
+            // API cards in a grid
+            cx.hstack(.{ .gap = 12 }, .{
+                ApiCard{
+                    .title = "Sizing",
+                    .items = &[_][]const u8{
+                        "width / height",
+                        "grow / grow_width / grow_height",
+                        "fill_width / fill_height",
+                        "width_percent / height_percent",
+                        "min_width / max_width",
+                    },
+                },
+                ApiCard{
+                    .title = "Spacing",
+                    .items = &[_][]const u8{
+                        "padding: .all, .symmetric, .each",
+                        "gap: space between children",
+                    },
+                },
+                ApiCard{
+                    .title = "Alignment",
+                    .items = &[_][]const u8{
+                        "main: start, center, end",
+                        "main: space_between/around/evenly",
+                        "cross: start, center, end, stretch",
+                    },
+                },
+            }),
+        });
+    }
+};
+
+const ApiCard = struct {
     title: []const u8,
-    description: []const u8,
+    items: []const []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
         cx.box(.{
             .grow = true,
-            .padding = .{ .all = 20 },
-            .background = t.surface,
-            .corner_radius = t.radius_md,
+            .padding = .{ .all = 16 },
+            .background = t.bg,
+            .corner_radius = t.radius_sm,
             .gap = 8,
         }, .{
-            Svg{
-                .path = self.icon,
-                .size = 28,
-                .color = null,
-                .stroke_color = t.primary,
-                .stroke_width = 2,
-            },
-            ui.text(self.title, .{ .size = 16, .color = t.text }),
-            ui.text(self.description, .{ .size = 13, .color = t.muted, .wrap = .words }),
+            ui.text(self.title, .{ .size = 14, .color = t.primary }),
+            cx.box(.{ .gap = 4 }, ApiItems{ .items = self.items }),
         });
     }
 };
 
-const TextAlignmentDemo = struct {
+const ApiItems = struct {
+    items: []const []const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+        for (self.items) |item| {
+            cx.box(.{ .direction = .row, .gap = 6 }, .{
+                ui.text("•", .{ .size = 11, .color = t.muted }),
+                ui.text(item, .{ .size = 11, .color = t.subtext }),
+            });
+        }
+    }
+};
+
+// =============================================================================
+// Sizing Demo
+// =============================================================================
+
+// =============================================================================
+// Scroll Demo Section
+// =============================================================================
+
+const ScrollDemo = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
@@ -625,64 +673,113 @@ const TextAlignmentDemo = struct {
             .corner_radius = t.radius_md,
             .gap = 16,
         }, .{
-            ui.text("Text Alignment", .{ .size = 18, .color = t.text }),
+            ui.text("Scroll Containers", .{ .size = 18, .color = t.text }),
+            ui.text("Scrollable areas with content overflow - supports vertical, horizontal, or both", .{ .size = 13, .color = t.muted }),
 
-            // Three columns showing left, center, right alignment
-            cx.hstack(.{ .gap = 16 }, .{
-                // Left aligned
-                cx.box(.{
-                    .grow = true,
-                    .padding = .{ .all = 16 },
+            // Horizontal scroll demo
+            cx.box(.{ .gap = 8 }, .{
+                ui.text("Horizontal scroll (content_width > viewport)", .{ .size = 12, .color = t.subtext }),
+                cx.scroll("demo-h-scroll", .{
+                    .width = 400,
+                    .height = 80,
+                    .horizontal = true,
+                    .vertical = false,
+                    .content_width = 800,
+                    .content_height = 64,
                     .background = t.bg,
                     .corner_radius = t.radius_sm,
+                    .padding = .{ .all = 8 },
                     .gap = 8,
+                    .track_color = t.overlay,
+                    .thumb_color = t.muted,
                 }, .{
-                    ui.text("Left Aligned", .{ .size = 12, .color = t.muted }),
-                    ui.text("This text wraps and aligns to the left edge of its container.", .{
-                        .size = 14,
-                        .color = t.text,
-                        .wrap = .words,
-                        .alignment = .left,
+                    cx.hstack(.{ .gap = 8 }, .{
+                        ScrollDemoBox{ .label = "Item 1", .width = 120 },
+                        ScrollDemoBox{ .label = "Item 2", .width = 120 },
+                        ScrollDemoBox{ .label = "Item 3", .width = 120 },
+                        ScrollDemoBox{ .label = "Item 4", .width = 120 },
+                        ScrollDemoBox{ .label = "Item 5", .width = 120 },
+                        ScrollDemoBox{ .label = "Item 6", .width = 120 },
                     }),
                 }),
-                // Center aligned
-                cx.box(.{
-                    .grow = true,
-                    .padding = .{ .all = 16 },
+            }),
+
+            // Vertical scroll demo
+            cx.box(.{ .gap = 8 }, .{
+                ui.text("Vertical scroll (content_height > viewport)", .{ .size = 12, .color = t.subtext }),
+                cx.scroll("demo-v-scroll", .{
+                    .fill_width = true,
+                    .height = 120,
+                    .horizontal = false,
+                    .vertical = true,
+                    .content_height = 300,
                     .background = t.bg,
                     .corner_radius = t.radius_sm,
+                    .padding = .{ .all = 8 },
                     .gap = 8,
+                    .track_color = t.overlay,
+                    .thumb_color = t.muted,
                 }, .{
-                    ui.text("Center Aligned", .{ .size = 12, .color = t.muted }),
-                    ui.text("This text wraps and aligns to the center of its container.", .{
-                        .size = 14,
-                        .color = t.text,
-                        .wrap = .words,
-                        .alignment = .center,
-                    }),
+                    ScrollDemoBox{ .label = "Row 1", .width = null },
+                    ScrollDemoBox{ .label = "Row 2", .width = null },
+                    ScrollDemoBox{ .label = "Row 3", .width = null },
+                    ScrollDemoBox{ .label = "Row 4", .width = null },
+                    ScrollDemoBox{ .label = "Row 5", .width = null },
+                    ScrollDemoBox{ .label = "Row 6", .width = null },
                 }),
-                // Right aligned
-                cx.box(.{
-                    .grow = true,
-                    .padding = .{ .all = 16 },
+            }),
+
+            // Both directions demo
+            cx.box(.{ .gap = 8 }, .{
+                ui.text("Both directions (horizontal + vertical)", .{ .size = 12, .color = t.subtext }),
+                cx.scroll("demo-both-scroll", .{
+                    .width = 400,
+                    .height = 150,
+                    .horizontal = true,
+                    .vertical = true,
+                    .content_width = 800,
+                    .content_height = 400,
                     .background = t.bg,
                     .corner_radius = t.radius_sm,
+                    .padding = .{ .all = 8 },
                     .gap = 8,
+                    .track_color = t.overlay,
+                    .thumb_color = t.muted,
                 }, .{
-                    ui.text("Right Aligned", .{ .size = 12, .color = t.muted }),
-                    ui.text("This text wraps and aligns to the right edge of its container.", .{
-                        .size = 14,
-                        .color = t.text,
-                        .wrap = .words,
-                        .alignment = .right,
-                    }),
+                    ScrollDemoBox{ .label = "Wide & Tall 1", .width = 550 },
+                    ScrollDemoBox{ .label = "Wide & Tall 2", .width = 550 },
+                    ScrollDemoBox{ .label = "Wide & Tall 3", .width = 550 },
+                    ScrollDemoBox{ .label = "Wide & Tall 4", .width = 550 },
+                    ScrollDemoBox{ .label = "Wide & Tall 5", .width = 550 },
+                    ScrollDemoBox{ .label = "Wide & Tall 6", .width = 550 },
                 }),
             }),
         });
     }
 };
 
-const SpaceDistributionDemo = struct {
+const ScrollDemoBox = struct {
+    label: []const u8,
+    width: ?f32 = 100,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .width = self.width,
+            .fill_width = self.width == null,
+            .height = 40,
+            .padding = .{ .all = 8 },
+            .background = t.primary.withAlpha(0.2),
+            .corner_radius = t.radius_sm,
+            .alignment = .{ .main = .center, .cross = .center },
+        }, .{
+            ui.text(self.label, .{ .size = 12, .color = t.text }),
+        });
+    }
+};
+
+const SizingDemo = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
@@ -693,61 +790,161 @@ const SpaceDistributionDemo = struct {
             .corner_radius = t.radius_md,
             .gap = 16,
         }, .{
-            ui.text("Space Distribution", .{ .size = 18, .color = t.text }),
-            ui.text("Control how children are distributed along the main axis", .{ .size = 13, .color = t.muted }),
+            ui.text("Sizing Modes", .{ .size = 18, .color = t.text }),
+            ui.text("Control how elements size themselves within their container", .{ .size = 13, .color = t.muted }),
 
-            // space-between demo
+            // Fixed vs Grow demo
             cx.box(.{ .gap = 8 }, .{
-                ui.text("space_between", .{ .size = 12, .color = t.subtext }),
+                ui.text("Fixed width (100px) + Grow (fills remaining)", .{ .size = 12, .color = t.subtext }),
                 cx.box(.{
                     .fill_width = true,
-                    .height = 50,
-                    .padding = .{ .all = 8 },
+                    .height = 40,
+                    .padding = .{ .all = 4 },
                     .background = t.bg,
                     .corner_radius = t.radius_sm,
                     .direction = .row,
-                    .alignment = .{ .main = .space_between, .cross = .center },
+                    .gap = 4,
                 }, .{
-                    DistributionBox{ .label = "A" },
-                    DistributionBox{ .label = "B" },
-                    DistributionBox{ .label = "C" },
+                    SizeBox{ .label = "fixed", .fixed_width = 100 },
+                    SizeBox{ .label = "grow", .grow = true },
                 }),
             }),
 
-            // space-around demo
+            // Percent sizing demo
             cx.box(.{ .gap = 8 }, .{
-                ui.text("space_around", .{ .size = 12, .color = t.subtext }),
+                ui.text("Percentage sizing: 25% + 50% + 25%", .{ .size = 12, .color = t.subtext }),
                 cx.box(.{
                     .fill_width = true,
-                    .height = 50,
-                    .padding = .{ .all = 8 },
+                    .height = 40,
+                    .padding = .{ .all = 4 },
                     .background = t.bg,
                     .corner_radius = t.radius_sm,
                     .direction = .row,
-                    .alignment = .{ .main = .space_around, .cross = .center },
+                    .gap = 4,
                 }, .{
-                    DistributionBox{ .label = "A" },
-                    DistributionBox{ .label = "B" },
-                    DistributionBox{ .label = "C" },
+                    SizeBox{ .label = "25%", .width_percent = 0.25 },
+                    SizeBox{ .label = "50%", .width_percent = 0.50 },
+                    SizeBox{ .label = "25%", .width_percent = 0.25 },
                 }),
             }),
 
-            // space-evenly demo
+            // Multiple grow demo
             cx.box(.{ .gap = 8 }, .{
-                ui.text("space_evenly", .{ .size = 12, .color = t.subtext }),
+                ui.text("Multiple grow elements share space equally", .{ .size = 12, .color = t.subtext }),
                 cx.box(.{
                     .fill_width = true,
-                    .height = 50,
-                    .padding = .{ .all = 8 },
+                    .height = 40,
+                    .padding = .{ .all = 4 },
                     .background = t.bg,
                     .corner_radius = t.radius_sm,
                     .direction = .row,
-                    .alignment = .{ .main = .space_evenly, .cross = .center },
+                    .gap = 4,
                 }, .{
-                    DistributionBox{ .label = "A" },
-                    DistributionBox{ .label = "B" },
-                    DistributionBox{ .label = "C" },
+                    SizeBox{ .label = "grow", .grow = true },
+                    SizeBox{ .label = "grow", .grow = true },
+                    SizeBox{ .label = "grow", .grow = true },
                 }),
+            }),
+
+            // Fill width/height demo
+            cx.box(.{ .gap = 8 }, .{
+                ui.text("fill_width = 100% of parent (same as width_percent: 1.0)", .{ .size = 12, .color = t.subtext }),
+                cx.box(.{
+                    .fill_width = true,
+                    .height = 40,
+                    .padding = .{ .all = 4 },
+                    .background = t.bg,
+                    .corner_radius = t.radius_sm,
+                    .direction = .row,
+                }, .{
+                    SizeBox{ .label = "fill_width = true", .fill_width = true },
+                }),
+            }),
+        });
+    }
+};
+
+const SizeBox = struct {
+    label: []const u8,
+    fixed_width: ?f32 = null,
+    grow: bool = false,
+    fill_width: bool = false,
+    width_percent: ?f32 = null,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .width = self.fixed_width,
+            .grow_width = self.grow,
+            .fill_width = self.fill_width,
+            .width_percent = self.width_percent,
+            .fill_height = true,
+            .background = t.primary,
+            .corner_radius = 4,
+            .alignment = .{ .main = .center, .cross = .center },
+        }, .{
+            ui.text(self.label, .{ .size = 11, .color = ui.Color.white }),
+        });
+    }
+};
+
+// =============================================================================
+// Main Axis Distribution Demo
+// =============================================================================
+
+const MainAxisDemo = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .fill_width = true,
+            .padding = .{ .all = 20 },
+            .background = t.surface,
+            .corner_radius = t.radius_md,
+            .gap = 16,
+        }, .{
+            ui.text("Main Axis Distribution", .{ .size = 18, .color = t.text }),
+            ui.text("Control spacing between children along the main axis (row = horizontal, column = vertical)", .{ .size = 13, .color = t.muted }),
+
+            // All distribution modes in a compact view
+            cx.hstack(.{ .gap = 12 }, .{
+                DistributionExample{ .mode = .start, .label = "start" },
+                DistributionExample{ .mode = .center, .label = "center" },
+                DistributionExample{ .mode = .end, .label = "end" },
+            }),
+            cx.hstack(.{ .gap = 12 }, .{
+                DistributionExample{ .mode = .space_between, .label = "space_between" },
+                DistributionExample{ .mode = .space_around, .label = "space_around" },
+                DistributionExample{ .mode = .space_evenly, .label = "space_evenly" },
+            }),
+        });
+    }
+};
+
+const DistributionExample = struct {
+    mode: ui.Box.Alignment.MainAxis,
+    label: []const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{ .grow = true, .min_width = 120, .gap = 6 }, .{
+            ui.text(self.label, .{ .size = 11, .color = t.subtext }),
+            cx.box(.{
+                .fill_width = true,
+                .height = 44,
+                .padding = .{ .symmetric = .{ .x = 0, .y = 4 } },
+                .background = t.bg,
+                .corner_radius = t.radius_sm,
+                .border_color = t.primary,
+                .border_width = 2,
+                .direction = .row,
+                .alignment = .{ .main = self.mode, .cross = .center },
+            }, .{
+                DistributionBox{ .label = "A" },
+                DistributionBox{ .label = "B" },
+                DistributionBox{ .label = "C" },
             }),
         });
     }
@@ -760,16 +957,92 @@ const DistributionBox = struct {
         const t = cx.theme();
 
         cx.box(.{
-            .width = 40,
-            .height = 30,
+            .width = 28,
+            .height = 28,
             .background = t.primary,
             .corner_radius = 4,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
-            ui.text(self.label, .{ .size = 14, .color = ui.Color.white }),
+            ui.text(self.label, .{ .size = 12, .color = ui.Color.white }),
         });
     }
 };
+
+// =============================================================================
+// Cross Axis Alignment Demo
+// =============================================================================
+
+const CrossAxisDemo = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .fill_width = true,
+            .padding = .{ .all = 20 },
+            .background = t.surface,
+            .corner_radius = t.radius_md,
+            .gap = 16,
+        }, .{
+            ui.text("Cross Axis Alignment", .{ .size = 18, .color = t.text }),
+            ui.text("Align children perpendicular to the main axis", .{ .size = 13, .color = t.muted }),
+
+            cx.hstack(.{ .gap = 12 }, .{
+                CrossAlignExample{ .mode = .start, .label = "start (top)" },
+                CrossAlignExample{ .mode = .center, .label = "center" },
+                CrossAlignExample{ .mode = .end, .label = "end (bottom)" },
+                CrossAlignExample{ .mode = .stretch, .label = "stretch" },
+            }),
+        });
+    }
+};
+
+const CrossAlignExample = struct {
+    mode: ui.Box.Alignment.CrossAxis,
+    label: []const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{ .grow = true, .gap = 6 }, .{
+            ui.text(self.label, .{ .size = 11, .color = t.subtext }),
+            cx.box(.{
+                .fill_width = true,
+                .height = 70,
+                .padding = .{ .all = 6 },
+                .background = t.bg,
+                .corner_radius = t.radius_sm,
+                .direction = .row,
+                .gap = 4,
+                .alignment = .{ .main = .center, .cross = self.mode },
+            }, .{
+                CrossBox{ .height = 20, .stretch = self.mode == .stretch },
+                CrossBox{ .height = 35, .stretch = self.mode == .stretch },
+                CrossBox{ .height = 25, .stretch = self.mode == .stretch },
+            }),
+        });
+    }
+};
+
+const CrossBox = struct {
+    height: f32,
+    stretch: bool = false,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const t = cx.theme();
+
+        cx.box(.{
+            .width = 24,
+            .height = if (self.stretch) null else self.height,
+            .grow_height = self.stretch,
+            .background = t.primary,
+            .corner_radius = 4,
+        }, .{});
+    }
+};
+
+// =============================================================================
+// Quick Stats
+// =============================================================================
 
 const QuickStats = struct {
     pub fn render(_: @This(), cx: *Cx) void {

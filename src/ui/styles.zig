@@ -280,6 +280,8 @@ pub const CenterStyle = struct {
 pub const ScrollStyle = struct {
     width: ?f32 = null,
     height: ?f32 = null,
+    /// Content width (if known ahead of time, for horizontal scrolling)
+    content_width: ?f32 = null,
     /// Content height (if known ahead of time)
     content_height: ?f32 = null,
 
