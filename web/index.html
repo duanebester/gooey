@@ -1793,6 +1793,104 @@
           return allocHandle(handles.pipelines, pipeline);
         },
 
+        // Create a render pipeline with premultiplied alpha blending (srcRGB = ONE)
+        // Used for shaders that output pre-multiplied RGB values (e.g., SVG)
+        createPremultipliedAlphaPipeline: (
+          shaderHandle,
+          vsPtr,
+          vsLen,
+          fsPtr,
+          fsLen,
+        ) => {
+          const module = handles.shaderModules.get(shaderHandle);
+          const vsEntry = getString(vsPtr, vsLen);
+          const fsEntry = getString(fsPtr, fsLen);
+
+          const pipeline = device.createRenderPipeline({
+            layout: "auto",
+            vertex: {
+              module,
+              entryPoint: vsEntry,
+            },
+            fragment: {
+              module,
+              entryPoint: fsEntry,
+              targets: [
+                {
+                  format,
+                  blend: {
+                    color: {
+                      srcFactor: "one", // Premultiplied: RGB already multiplied by alpha
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                  },
+                },
+              ],
+            },
+            primitive: {
+              topology: "triangle-list",
+            },
+          });
+          return allocHandle(handles.pipelines, pipeline);
+        },
+
+        // Create a render pipeline with MSAA and premultiplied alpha blending
+        // Used for shaders that output pre-multiplied RGB values (e.g., SVG)
+        createMSAAPremultipliedAlphaPipeline: (
+          shaderHandle,
+          vsPtr,
+          vsLen,
+          fsPtr,
+          fsLen,
+          sampleCount,
+        ) => {
+          const module = handles.shaderModules.get(shaderHandle);
+          const vsEntry = getString(vsPtr, vsLen);
+          const fsEntry = getString(fsPtr, fsLen);
+
+          const pipeline = device.createRenderPipeline({
+            layout: "auto",
+            vertex: {
+              module,
+              entryPoint: vsEntry,
+            },
+            fragment: {
+              module,
+              entryPoint: fsEntry,
+              targets: [
+                {
+                  format,
+                  blend: {
+                    color: {
+                      srcFactor: "one", // Premultiplied: RGB already multiplied by alpha
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                  },
+                },
+              ],
+            },
+            primitive: {
+              topology: "triangle-list",
+            },
+            multisample: {
+              count: sampleCount,
+            },
+          });
+          return allocHandle(handles.pipelines, pipeline);
+        },
+
         beginMSAARenderPass: (
           msaaTextureHandle,
           resolveViewHandle,

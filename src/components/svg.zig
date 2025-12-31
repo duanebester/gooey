@@ -3,12 +3,15 @@
 //! Renders an SVG icon from path data. Handles mesh tessellation and GPU
 //! upload automatically - just pass the path data and style.
 //!
-//! Colors default to null, which means "use the current theme".
-//! Set explicit colors to override theme defaults.
+//! ## Fill Behavior
+//! - `color = null` (default): Uses theme text color for fill
+//! - `color = .some_color`: Uses explicit fill color
+//! - `no_fill = true`: Disables fill entirely (for stroke-only icons)
 //!
 //! ## Usage
 //! ```zig
 //! const star_path = "M12 2l3.09 6.26L22 9.27l-5 4.87...";
+//! const wave_path = "M2 12 Q6 6 12 12 T22 12";
 //!
 //! // Simple filled icon (uses theme text color)
 //! gooey.Svg{ .path = star_path, .size = 24 }
@@ -16,8 +19,8 @@
 //! // Explicit fill color
 //! gooey.Svg{ .path = star_path, .size = 24, .color = .gold }
 //!
-//! // Stroked icon (outline only)
-//! gooey.Svg{ .path = star_path, .size = 24, .stroke_color = .white, .stroke_width = 2 }
+//! // Stroke-only icon (no fill) - use no_fill = true for open paths like curves
+//! gooey.Svg{ .path = wave_path, .size = 24, .no_fill = true, .stroke_color = .white, .stroke_width = 2 }
 //!
 //! // Both fill and stroke
 //! gooey.Svg{ .path = star_path, .size = 24, .color = .red, .stroke_color = .black, .stroke_width = 1 }

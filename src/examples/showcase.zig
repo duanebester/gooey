@@ -1687,11 +1687,11 @@ const CustomPathsCard = struct {
         card.render(cx, .{
             cx.hstack(.{ .gap = 24, .alignment = .center }, .{
                 cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
-                    Svg{ .path = circle_path, .size = 32, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
+                    Svg{ .path = circle_path, .size = 32, .no_fill = true, .stroke_color = t.primary, .stroke_width = 2 },
                     ui.text("Circle (Arc)", .{ .size = 11, .color = t.muted }),
                 }),
                 cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
-                    Svg{ .path = wave_path, .size = 32, .color = null, .stroke_color = t.accent, .stroke_width = 2 },
+                    Svg{ .path = wave_path, .size = 32, .no_fill = true, .stroke_color = t.accent, .stroke_width = 2 },
                     ui.text("Wave (Bezier)", .{ .size = 11, .color = t.muted }),
                 }),
                 cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{

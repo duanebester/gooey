@@ -2110,10 +2110,10 @@ pub const VulkanRenderer = struct {
             .alphaToOneEnable = vk.FALSE,
         };
 
-        // SVG uses premultiplied alpha blending (same as text)
+        // SVG uses premultiplied alpha blending (shader outputs pre-multiplied RGB)
         const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
             .blendEnable = vk.TRUE,
-            .srcColorBlendFactor = vk.VK_BLEND_FACTOR_SRC_ALPHA,
+            .srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE,
             .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
             .colorBlendOp = vk.VK_BLEND_OP_ADD,
             .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,

@@ -273,6 +273,27 @@ pub extern "env" fn createMSAARenderPipeline(
     sample_count: u32,
 ) u32;
 
+/// Create a render pipeline with premultiplied alpha blending (srcRGB = ONE)
+/// Used for shaders that output pre-multiplied RGB values (e.g., SVG)
+pub extern "env" fn createPremultipliedAlphaPipeline(
+    shader_handle: u32,
+    vertex_entry: [*]const u8,
+    vertex_entry_len: u32,
+    fragment_entry: [*]const u8,
+    fragment_entry_len: u32,
+) u32;
+
+/// Create a render pipeline with MSAA and premultiplied alpha blending
+/// Used for shaders that output pre-multiplied RGB values (e.g., SVG)
+pub extern "env" fn createMSAAPremultipliedAlphaPipeline(
+    shader_handle: u32,
+    vertex_entry: [*]const u8,
+    vertex_entry_len: u32,
+    fragment_entry: [*]const u8,
+    fragment_entry_len: u32,
+    sample_count: u32,
+) u32;
+
 /// Begin an MSAA render pass (renders to MSAA texture, resolves to target)
 pub extern "env" fn beginMSAARenderPass(
     msaa_texture_handle: u32,

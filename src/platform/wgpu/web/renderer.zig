@@ -233,13 +233,15 @@ pub const WebRenderer = struct {
         if (self.sample_count > 1) {
             self.pipeline = imports.createMSAARenderPipeline(unified_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             self.text_pipeline = imports.createMSAARenderPipeline(text_module, "vs_main", 7, "fs_main", 7, self.sample_count);
-            self.svg_pipeline = imports.createMSAARenderPipeline(svg_module, "vs_main", 7, "fs_main", 7, self.sample_count);
+            // SVG shader outputs premultiplied alpha, needs ONE for srcRGB blend factor
+            self.svg_pipeline = imports.createMSAAPremultipliedAlphaPipeline(svg_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             self.image_pipeline = imports.createMSAARenderPipeline(image_module, "vs_main", 7, "fs_main", 7, self.sample_count);
         } else {
             // Fallback to non-MSAA pipelines
             self.pipeline = imports.createRenderPipeline(unified_module, "vs_main", 7, "fs_main", 7);
             self.text_pipeline = imports.createRenderPipeline(text_module, "vs_main", 7, "fs_main", 7);
-            self.svg_pipeline = imports.createRenderPipeline(svg_module, "vs_main", 7, "fs_main", 7);
+            // SVG shader outputs premultiplied alpha, needs ONE for srcRGB blend factor
+            self.svg_pipeline = imports.createPremultipliedAlphaPipeline(svg_module, "vs_main", 7, "fs_main", 7);
             self.image_pipeline = imports.createRenderPipeline(image_module, "vs_main", 7, "fs_main", 7);
         }
 
