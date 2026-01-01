@@ -69,6 +69,12 @@ pub const WebFontFace = struct {
     /// Cached metrics
     metrics: Metrics,
 
+    /// Glyph advance cache - avoids repeated JS calls for common characters
+    /// Direct-mapped cache for codepoints 0-255 (ASCII + Latin-1)
+    advance_cache: [256]f32,
+    /// Tracks which entries are valid (0 = not cached, 1 = cached)
+    advance_cache_valid: [256]u8,
+
     const Self = @This();
 
     /// Load a font by name (CSS font-family)
@@ -77,6 +83,8 @@ pub const WebFontFace = struct {
             .font_name_buf = undefined,
             .font_name_len = 0,
             .metrics = undefined,
+            .advance_cache = [_]f32{0} ** 256,
+            .advance_cache_valid = [_]u8{0} ** 256,
         };
 
         // Copy font name to internal buffer
@@ -144,7 +152,20 @@ pub const WebFontFace = struct {
     }
 
     /// Get metrics for a specific glyph
-    pub fn glyphMetrics(self: *const Self, glyph_id: u16) GlyphMetrics {
+    pub fn glyphMetrics(self: *Self, glyph_id: u16) GlyphMetrics {
+        // Check advance cache first for common characters (avoids JS call)
+        if (glyph_id < 256 and self.advance_cache_valid[glyph_id] != 0) {
+            return .{
+                .glyph_id = glyph_id,
+                .advance_x = self.advance_cache[glyph_id],
+                .advance_y = 0,
+                .bearing_x = 0,
+                .bearing_y = 0,
+                .width = 0,
+                .height = 0,
+            };
+        }
+
         var buffer: [1]u8 = undefined;
         var width: u32 = 0;
         var height: u32 = 0;
@@ -154,6 +175,12 @@ pub const WebFontFace = struct {
 
         const name = self.fontName();
         rasterizeGlyph(name.ptr, @intCast(name.len), self.metrics.point_size, glyph_id, &buffer, 0, &width, &height, &bearing_x, &bearing_y, &advance);
+
+        // Cache the advance for future lookups
+        if (glyph_id < 256) {
+            self.advance_cache[glyph_id] = advance;
+            self.advance_cache_valid[glyph_id] = 1;
+        }
 
         return .{
             .glyph_id = glyph_id,

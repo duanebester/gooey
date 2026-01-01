@@ -157,7 +157,7 @@ pub extern "env" fn getFontMetrics(
 ) void;
 
 /// Measure text width
-pub extern "env" fn measureTextWidth(
+pub extern "env" fn measureText(
     font_ptr: [*]const u8,
     font_len: u32,
     size: f32,

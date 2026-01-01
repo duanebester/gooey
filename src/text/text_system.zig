@@ -507,9 +507,25 @@ pub const TextSystem = struct {
     }
 
     /// Simple width measurement
+    /// On web, uses a single JS call instead of character-by-character iteration
     pub fn measureText(self: *Self, text: []const u8) !f32 {
-        const face = try self.getFontFace();
-        return shaper_mod.measureSimple(face, text);
+        if (is_wasm) {
+            // Web optimization: single JS call to measure entire string
+            // This avoids N boundary crossings for N characters
+            const face = self.current_face orelse return error.NoFontLoaded;
+            const font_name = face.font_name_buf[0..face.font_name_len];
+            const web_imports = @import("../platform/wgpu/web/imports.zig");
+            return web_imports.measureText(
+                font_name.ptr,
+                @intCast(font_name.len),
+                face.metrics.point_size,
+                text.ptr,
+                @intCast(text.len),
+            );
+        } else {
+            const face = try self.getFontFace();
+            return shaper_mod.measureSimple(face, text);
+        }
     }
 
     /// Extended text measurement with wrapping support
