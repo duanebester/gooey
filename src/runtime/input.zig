@@ -77,6 +77,19 @@ pub fn handleInputCx(
         const x: f32 = @floatCast(pos.x);
         const y: f32 = @floatCast(pos.y);
 
+        // Update scrollbar thumb position during drag
+        if (event == .mouse_dragged) {
+            for (cx.builder().pending_scrolls.items) |pending| {
+                if (cx.gooey().widgets.getScrollContainer(pending.id)) |sc| {
+                    if (sc.state.dragging_vertical or sc.state.dragging_horizontal) {
+                        sc.updateDrag(x, y);
+                        cx.notify();
+                        return true;
+                    }
+                }
+            }
+        }
+
         if (cx.gooey().updateHover(x, y)) {
             cx.notify();
         }
@@ -93,6 +106,26 @@ pub fn handleInputCx(
         const pos = event.mouse_down.position;
         const x: f32 = @floatCast(pos.x);
         const y: f32 = @floatCast(pos.y);
+
+        // Check scroll containers for scrollbar clicks (priority - handle before other widgets)
+        for (cx.builder().pending_scrolls.items) |pending| {
+            if (cx.gooey().widgets.getScrollContainer(pending.id)) |sc| {
+                // Check for thumb drag
+                if (sc.hitTestThumb(x, y)) |hit| {
+                    switch (hit) {
+                        .vertical => sc.startDrag(.vertical, x, y),
+                        .horizontal => sc.startDrag(.horizontal, x, y),
+                    }
+                    cx.notify();
+                    return true;
+                }
+                // Check for track click (jump to position)
+                if (sc.handleTrackClick(x, y)) {
+                    cx.notify();
+                    return true;
+                }
+            }
+        }
 
         // Check if click is in a TextArea
         for (cx.builder().pending_text_areas.items) |pending| {
@@ -134,6 +167,19 @@ pub fn handleInputCx(
         if (cx.gooey().debugger.isActive()) {
             cx.gooey().debugger.handleClick(cx.gooey().hovered_layout_id);
             cx.notify();
+        }
+    }
+
+    // Handle mouse_up to end scrollbar drag
+    if (event == .mouse_up) {
+        for (cx.builder().pending_scrolls.items) |pending| {
+            if (cx.gooey().widgets.getScrollContainer(pending.id)) |sc| {
+                if (sc.state.dragging_vertical or sc.state.dragging_horizontal) {
+                    sc.endDrag();
+                    cx.notify();
+                    return true;
+                }
+            }
         }
     }
 
