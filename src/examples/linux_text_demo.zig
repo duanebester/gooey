@@ -86,13 +86,17 @@ fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.scroll("main_scroll", .{
         .width = size.width,
         .height = size.height,
+        .vertical = true,
+        .horizontal = false,
         .padding = .{ .all = 24 },
         .gap = 20,
-        .direction = .column,
         .background = ui.Color.rgb(0.12, 0.12, 0.14),
+        .scrollbar_size = 8,
+        .track_color = ui.Color.rgb(0.18, 0.18, 0.2),
+        .thumb_color = ui.Color.rgb(0.3, 0.3, 0.35),
     }, .{
         // Title
         ui.text("Linux Text Rendering Demo", .{
