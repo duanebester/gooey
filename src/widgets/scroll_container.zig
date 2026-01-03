@@ -315,6 +315,68 @@ pub const ScrollContainer = struct {
         self.state.dragging_horizontal = false;
     }
 
+    /// Handle click on scrollbar track (area outside thumb)
+    /// Returns true if click was on track and scrolling occurred
+    pub fn handleTrackClick(self: *Self, x: f32, y: f32) bool {
+        // Check vertical track
+        if (self.style.vertical and self.state.canScrollY()) {
+            const track_x = self.bounds.x + self.bounds.width - self.style.scrollbar_size - self.style.scrollbar_padding;
+            const track_y = self.bounds.y + self.style.scrollbar_padding;
+            const track_width = self.style.scrollbar_size;
+            const track_height = self.bounds.height - self.style.scrollbar_padding * 2;
+
+            if (track_height <= 0) return false;
+
+            // Check if click is in vertical track area
+            if (x >= track_x and x < track_x + track_width and
+                y >= track_y and y < track_y + track_height)
+            {
+                const thumb = self.getVerticalThumbBounds();
+
+                // Only handle if click is NOT on thumb (thumb clicks are handled by startDrag)
+                if (y < thumb.y or y >= thumb.y + thumb.height) {
+                    // Calculate target scroll position based on click position
+                    const click_percent = (y - track_y) / track_height;
+                    const target_offset = click_percent * self.state.maxScrollY();
+
+                    // Jump to position (could also do page scroll here)
+                    self.state.scrollTo(self.state.offset_x, target_offset);
+                    return true;
+                }
+            }
+        }
+
+        // Check horizontal track
+        if (self.style.horizontal and self.state.canScrollX()) {
+            const track_x = self.bounds.x + self.style.scrollbar_padding;
+            const track_y = self.bounds.y + self.bounds.height - self.style.scrollbar_size - self.style.scrollbar_padding;
+            const track_width = self.bounds.width - self.style.scrollbar_padding * 2;
+            const track_height = self.style.scrollbar_size;
+
+            if (track_width <= 0) return false;
+
+            // Check if click is in horizontal track area
+            if (x >= track_x and x < track_x + track_width and
+                y >= track_y and y < track_y + track_height)
+            {
+                const thumb = self.getHorizontalThumbBounds();
+
+                // Only handle if click is NOT on thumb
+                if (x < thumb.x or x >= thumb.x + thumb.width) {
+                    // Calculate target scroll position based on click position
+                    const click_percent = (x - track_x) / track_width;
+                    const target_offset = click_percent * self.state.maxScrollX();
+
+                    // Jump to position
+                    self.state.scrollTo(target_offset, self.state.offset_y);
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     // =========================================================================
     // Scrollbar Geometry
     // =========================================================================
