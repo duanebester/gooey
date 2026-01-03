@@ -985,7 +985,7 @@ fn displayLinkCallback(
     static.count += 1;
     const now = std.time.milliTimestamp();
     if (now - static.last_print > 1000) {
-        std.debug.print("DisplayLink callbacks/sec: {}, should_render: {}, explicit: {}\n", .{ static.count, should_render, explicit_render });
+        //std.debug.print("DisplayLink callbacks/sec: {}, should_render: {}, explicit: {}\n", .{ static.count, should_render, explicit_render });
         static.count = 0;
         static.last_print = now;
     }
