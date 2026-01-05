@@ -511,88 +511,6 @@ pub const ImageAtlas = struct {
             },
         };
     }
-
-    /// Calculate fit dimensions based on ObjectFit mode (legacy, use calculateFitResult for UV support)
-    pub fn calculateFitDimensions(
-        src_width: f32,
-        src_height: f32,
-        container_width: f32,
-        container_height: f32,
-        fit: ObjectFit,
-    ) struct { width: f32, height: f32, offset_x: f32, offset_y: f32 } {
-        const src_aspect = src_width / src_height;
-        const container_aspect = container_width / container_height;
-
-        return switch (fit) {
-            .contain => {
-                if (src_aspect > container_aspect) {
-                    // Image is wider - fit to width
-                    const h = container_width / src_aspect;
-                    return .{
-                        .width = container_width,
-                        .height = h,
-                        .offset_x = 0,
-                        .offset_y = (container_height - h) / 2,
-                    };
-                } else {
-                    // Image is taller - fit to height
-                    const w = container_height * src_aspect;
-                    return .{
-                        .width = w,
-                        .height = container_height,
-                        .offset_x = (container_width - w) / 2,
-                        .offset_y = 0,
-                    };
-                }
-            },
-            .cover => {
-                if (src_aspect > container_aspect) {
-                    // Image is wider - fit to height, crop width
-                    const w = container_height * src_aspect;
-                    return .{
-                        .width = w,
-                        .height = container_height,
-                        .offset_x = (container_width - w) / 2,
-                        .offset_y = 0,
-                    };
-                } else {
-                    // Image is taller - fit to width, crop height
-                    const h = container_width / src_aspect;
-                    return .{
-                        .width = container_width,
-                        .height = h,
-                        .offset_x = 0,
-                        .offset_y = (container_height - h) / 2,
-                    };
-                }
-            },
-            .fill => .{
-                .width = container_width,
-                .height = container_height,
-                .offset_x = 0,
-                .offset_y = 0,
-            },
-            .none => .{
-                .width = src_width,
-                .height = src_height,
-                .offset_x = (container_width - src_width) / 2,
-                .offset_y = (container_height - src_height) / 2,
-            },
-            .scale_down => {
-                if (src_width <= container_width and src_height <= container_height) {
-                    // Image fits - no scaling
-                    return .{
-                        .width = src_width,
-                        .height = src_height,
-                        .offset_x = (container_width - src_width) / 2,
-                        .offset_y = (container_height - src_height) / 2,
-                    };
-                }
-                // Image too large - use contain
-                return calculateFitDimensions(src_width, src_height, container_width, container_height, .contain);
-            },
-        };
-    }
 };
 
 test "ImageKey hash consistency" {
@@ -606,12 +524,12 @@ test "ImageKey hash consistency" {
 
 test "ObjectFit calculations" {
     // Test contain - wide image in square container
-    const contain_wide = ImageAtlas.calculateFitDimensions(200, 100, 100, 100, .contain);
+    const contain_wide = ImageAtlas.calculateFitResult(200, 100, 100, 100, .contain);
     try std.testing.expectEqual(@as(f32, 100), contain_wide.width);
     try std.testing.expectEqual(@as(f32, 50), contain_wide.height);
 
     // Test fill
-    const fill = ImageAtlas.calculateFitDimensions(200, 100, 100, 100, .fill);
+    const fill = ImageAtlas.calculateFitResult(200, 100, 100, 100, .fill);
     try std.testing.expectEqual(@as(f32, 100), fill.width);
     try std.testing.expectEqual(@as(f32, 100), fill.height);
 }

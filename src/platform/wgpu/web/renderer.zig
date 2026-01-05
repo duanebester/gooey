@@ -466,7 +466,7 @@ pub const WebRenderer = struct {
         // Check if we need post-processing
         const has_post_process = if (self.post_process_state) |*state| state.hasShaders() else false;
         if (has_post_process) {
-            // Render to offscreen texture first (uses legacy non-batched path)
+            // Render to offscreen texture first for post-processing
             const prim_count = unified.convertScene(scene, &self.primitives);
 
             var glyph_count: u32 = 0;
@@ -709,51 +709,6 @@ pub const WebRenderer = struct {
                     }
                 },
             }
-        }
-
-        imports.endRenderPass();
-        imports.releaseTextureView(texture_view);
-    }
-
-    /// Legacy non-batched rendering (used by post-process path)
-    fn renderDirect(
-        self: *Self,
-        prim_count: u32,
-        glyph_count: u32,
-        svg_count: u32,
-        clear_r: f32,
-        clear_g: f32,
-        clear_b: f32,
-        clear_a: f32,
-    ) void {
-        const texture_view = imports.getCurrentTextureView();
-
-        // Use MSAA if available and texture was created successfully
-        if (self.sample_count > 1 and self.msaa_texture != 0) {
-            imports.beginMSAARenderPass(self.msaa_texture, texture_view, clear_r, clear_g, clear_b, clear_a);
-        } else {
-            imports.beginRenderPass(texture_view, clear_r, clear_g, clear_b, clear_a);
-        }
-
-        // Render primitives (quads, shadows)
-        if (prim_count > 0) {
-            imports.setPipeline(self.pipeline);
-            imports.setBindGroup(0, self.bind_group);
-            imports.drawInstanced(6, prim_count);
-        }
-
-        // Render text glyphs
-        if (glyph_count > 0 and self.text_bind_group != 0) {
-            imports.setPipeline(self.text_pipeline);
-            imports.setBindGroup(0, self.text_bind_group);
-            imports.drawInstanced(6, glyph_count);
-        }
-
-        // Render SVG icons
-        if (svg_count > 0 and self.svg_bind_group != 0) {
-            imports.setPipeline(self.svg_pipeline);
-            imports.setBindGroup(0, self.svg_bind_group);
-            imports.drawInstanced(6, svg_count);
         }
 
         imports.endRenderPass();

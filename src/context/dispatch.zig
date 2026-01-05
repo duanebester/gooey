@@ -674,13 +674,13 @@ pub const DispatchTree = struct {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
 
-            // Call simple click listeners (legacy)
+            // Call simple click listeners
             for (node.click_listeners.items) |listener| {
                 listener.callback();
                 return true;
             }
 
-            // Call context click listeners (legacy)
+            // Call context click listeners
             for (node.click_listeners_ctx.items) |listener| {
                 listener.callback(listener.context);
                 return true;
@@ -915,7 +915,7 @@ pub const DispatchTree = struct {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
 
-            // Check legacy action listeners
+            // Check action listeners
             for (node.action_listeners.items) |listener| {
                 if (listener.action_type == action_type) {
                     listener.callback();

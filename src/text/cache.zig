@@ -169,11 +169,6 @@ pub const GlyphCache = struct {
         return glyph;
     }
 
-    /// Legacy: get glyph without subpixel variant (uses variant 0,0)
-    pub inline fn getOrRender(self: *Self, face: FontFace, glyph_id: u16) !CachedGlyph {
-        return self.getOrRenderSubpixel(face, glyph_id, 0, 0);
-    }
-
     fn renderGlyphSubpixel(
         self: *Self,
         face: FontFace,

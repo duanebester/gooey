@@ -500,12 +500,6 @@ pub const TextSystem = struct {
         return self.cache.getOrRenderSubpixel(face, glyph_id, subpixel_x, subpixel_y);
     }
 
-    /// Get cached glyph (renders if needed) - legacy, no subpixel
-    pub inline fn getGlyph(self: *Self, glyph_id: u16) !CachedGlyph {
-        const face = try self.getFontFace();
-        return self.cache.getOrRender(face, glyph_id);
-    }
-
     /// Simple width measurement
     /// On web, uses a single JS call instead of character-by-character iteration
     pub fn measureText(self: *Self, text: []const u8) !f32 {

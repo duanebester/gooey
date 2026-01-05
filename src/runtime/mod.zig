@@ -13,14 +13,10 @@ pub const watcher = @import("watcher.zig");
 pub const runCx = runner.runCx;
 pub const CxConfig = runner.CxConfig;
 pub const renderFrameCx = frame.renderFrameCx;
-pub const renderFrameWithContext = frame.renderFrameWithContext;
 pub const handleInputCx = input.handleInputCx;
-pub const handleInputWithContext = input.handleInputWithContext;
 pub const renderCommand = render.renderCommand;
 
 // Input utilities
 pub const isControlKey = input.isControlKey;
 pub const syncBoundVariablesCx = input.syncBoundVariablesCx;
 pub const syncTextAreaBoundVariablesCx = input.syncTextAreaBoundVariablesCx;
-pub const syncBoundVariablesWithContext = input.syncBoundVariablesWithContext;
-pub const syncTextAreaBoundVariablesWithContext = input.syncTextAreaBoundVariablesWithContext;

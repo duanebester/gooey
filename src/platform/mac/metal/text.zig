@@ -347,67 +347,6 @@ pub const TextPipeline = struct {
         self.atlas_generation = atlas.generation;
     }
 
-    /// Render glyphs (legacy - single call per frame)
-    pub fn render(
-        self: *Self,
-        encoder: objc.Object,
-        glyphs: []const scene.GlyphInstance,
-        viewport_size: [2]f32,
-    ) !void {
-        if (glyphs.len == 0) return;
-        if (self.atlas_texture == null) return;
-
-        const idx = self.frame_index;
-
-        // Ensure buffer capacity for current frame's buffer
-        if (glyphs.len > self.instance_capacities[idx]) {
-            try self.growInstanceBuffer(idx, glyphs.len);
-        }
-
-        // Upload to current frame's buffer (no stall - GPU using previous frames' buffers)
-        const buffer_ptr = self.instance_buffers[idx].msgSend(*anyopaque, "contents", .{});
-        const dest: [*]scene.GlyphInstance = @ptrCast(@alignCast(buffer_ptr));
-        @memcpy(dest[0..glyphs.len], glyphs);
-
-        // Set pipeline state
-        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state});
-
-        // Set vertex buffers
-        encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            self.unit_vertex_buffer,
-            @as(c_ulong, 0),
-            @as(c_ulong, 0),
-        });
-        encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            self.instance_buffers[idx], // Current frame's buffer
-            @as(c_ulong, 0),
-            @as(c_ulong, 1),
-        });
-        encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-            @as(*const anyopaque, @ptrCast(&viewport_size)),
-            @as(c_ulong, @sizeOf([2]f32)),
-            @as(c_ulong, 2),
-        });
-
-        // Set fragment texture
-        encoder.msgSend(void, "setFragmentTexture:atIndex:", .{
-            self.atlas_texture.?,
-            @as(c_ulong, 0),
-        });
-        encoder.msgSend(void, "setFragmentSamplerState:atIndex:", .{
-            self.sampler_state,
-            @as(c_ulong, 0),
-        });
-
-        // Draw instanced
-        encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-            mtl.MTLPrimitiveType.triangle,
-            @as(c_ulong, 0),
-            @as(c_ulong, 6),
-            @as(c_ulong, glyphs.len),
-        });
-    }
-
     /// Render a batch of glyphs using triple-buffered storage with offset tracking.
     /// Safe for multiple calls per frame - appends to buffer at current offset.
     /// More efficient than setVertexBytes for larger batches.

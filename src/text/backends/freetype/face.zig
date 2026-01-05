@@ -256,17 +256,6 @@ pub const FreeTypeFace = struct {
         };
     }
 
-    /// Render a glyph to a bitmap buffer (legacy, calls subpixel with 0,0)
-    pub inline fn renderGlyph(
-        self: *const Self,
-        glyph_id: u16,
-        scale: f32,
-        buffer: []u8,
-        buffer_size: u32,
-    ) !RasterizedGlyph {
-        return self.renderGlyphSubpixel(glyph_id, scale, 0.0, 0.0, buffer, buffer_size);
-    }
-
     /// Render a glyph with subpixel positioning
     /// subpixel_x and subpixel_y are in range [0.0, 1.0)
     ///

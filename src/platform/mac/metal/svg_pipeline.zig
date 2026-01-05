@@ -205,57 +205,6 @@ pub const SvgPipeline = struct {
         self.current_offset = 0; // Reset offset for new frame
     }
 
-    /// Render SVG instances (legacy - single call per frame)
-    pub fn render(
-        self: *SvgPipeline,
-        encoder: objc.Object,
-        instances: []const SvgInstance,
-        viewport_size: [2]f32,
-    ) !void {
-        if (instances.len == 0) return;
-
-        const atlas = self.current_atlas orelse return;
-
-        // Update atlas texture if needed
-        try self.updateAtlasTexture(atlas);
-
-        const idx = self.frame_index;
-        self.frame_index = (self.frame_index + 1) % FRAME_COUNT;
-
-        // Grow buffer if needed
-        if (instances.len > self.instance_capacities[idx]) {
-            try self.growInstanceBuffer(idx, instances.len);
-        }
-
-        // Upload instances
-        const buffer_ptr = self.instance_buffers[idx].msgSend(*anyopaque, "contents", .{});
-        const dest: [*]SvgInstance = @ptrCast(@alignCast(buffer_ptr));
-        @memcpy(dest[0..instances.len], instances);
-
-        // Bind pipeline
-        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
-        encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{ self.unit_vertex_buffer.value, @as(c_ulong, 0), @as(c_ulong, 0) });
-        encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{ self.instance_buffers[idx].value, @as(c_ulong, 0), @as(c_ulong, 1) });
-        encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-            @as(*const anyopaque, @ptrCast(&viewport_size)),
-            @as(c_ulong, @sizeOf([2]f32)),
-            @as(c_ulong, 2),
-        });
-
-        // Bind atlas texture
-        if (self.atlas_texture) |tex| {
-            encoder.msgSend(void, "setFragmentTexture:atIndex:", .{ tex.value, @as(c_ulong, 0) });
-        }
-
-        // Draw
-        encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-            @intFromEnum(mtl.MTLPrimitiveType.triangle),
-            @as(c_ulong, 0),
-            @as(c_ulong, 6),
-            @as(c_ulong, instances.len),
-        });
-    }
-
     /// Render a batch of SVG instances using triple-buffered storage with offset tracking.
     /// Safe for multiple calls per frame - appends to buffer at current offset.
     /// More efficient than setVertexBytes for larger batches.
