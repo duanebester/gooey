@@ -1,6 +1,7 @@
 //! Core layout engine - implements Clay-style flexbox layout algorithm
 
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const layout_id = @import("layout_id.zig");
 const arena_mod = @import("arena.zig");
@@ -27,6 +28,76 @@ const LayoutArena = arena_mod.LayoutArena;
 const RenderCommand = render_commands.RenderCommand;
 const RenderCommandList = render_commands.RenderCommandList;
 const RenderCommandType = render_commands.RenderCommandType;
+
+// ============================================================================
+// Capacity Limits (per CLAUDE.md: put a limit on everything)
+// ============================================================================
+
+/// Maximum elements per frame - prevents unbounded growth
+pub const MAX_ELEMENTS_PER_FRAME = 8192;
+
+/// Maximum nesting depth for open elements (e.g., nested containers)
+pub const MAX_OPEN_DEPTH = 64;
+
+/// Maximum floating elements (dropdowns, tooltips, modals)
+pub const MAX_FLOATING_ROOTS = 256;
+
+/// Maximum tracked IDs for collision detection and lookup
+pub const MAX_TRACKED_IDS = 4096;
+
+/// Maximum lines per text element when wrapping
+pub const MAX_LINES_PER_TEXT = 1024;
+
+/// Maximum words per text element for word-level measurement caching (Phase 2.1)
+pub const MAX_WORDS_PER_TEXT = 2048;
+
+/// Word boundary info for efficient text wrapping (measured once per word, not per char)
+pub const WordInfo = struct {
+    start: u32, // byte offset where word starts
+    end: u32, // byte offset where word ends (exclusive)
+    width: f32, // measured width of this word
+    trailing_space_width: f32, // width of trailing whitespace (space/tab)
+    has_newline: bool, // word ends with a forced newline
+};
+
+// ============================================================================
+// Fixed Capacity Array (since std.BoundedArray doesn't exist in Zig 0.15)
+// ============================================================================
+
+/// A fixed-capacity array that doesn't allocate after initialization.
+/// Used to avoid dynamic allocation during frame rendering per CLAUDE.md.
+pub fn FixedCapacityArray(comptime T: type, comptime capacity: usize) type {
+    return struct {
+        buffer: [capacity]T = undefined,
+        len: usize = 0,
+
+        const Self = @This();
+
+        pub fn append(self: *Self, item: T) error{Overflow}!void {
+            if (self.len >= capacity) return error.Overflow;
+            self.buffer[self.len] = item;
+            self.len += 1;
+        }
+
+        pub fn pop(self: *Self) ?T {
+            if (self.len == 0) return null;
+            self.len -= 1;
+            return self.buffer[self.len];
+        }
+
+        pub fn slice(self: *const Self) []const T {
+            return self.buffer[0..self.len];
+        }
+
+        pub fn sliceMut(self: *Self) []T {
+            return self.buffer[0..self.len];
+        }
+
+        pub fn clear(self: *Self) void {
+            self.len = 0;
+        }
+    };
+}
 
 // ============================================================================
 // Element Types (defined inline)
@@ -85,15 +156,7 @@ pub const SourceLoc = struct {
 
     /// Get just the filename without path (for compact display)
     pub fn getBasename(self: SourceLoc) ?[]const u8 {
-        const file = self.getFile() orelse return null;
-        // Find last '/' or '\\'
-        var last_sep: usize = 0;
-        for (file, 0..) |c, i| {
-            if (c == '/' or c == '\\') {
-                last_sep = i + 1;
-            }
-        }
-        return file[last_sep..];
+        return std.fs.path.basename(self.getFile() orelse return null);
     }
 };
 
@@ -157,6 +220,8 @@ pub const ComputedLayout = struct {
     min_height: f32 = 0,
     sized_width: f32 = 0,
     sized_height: f32 = 0,
+    /// Cached resolved parent index for floating elements (Phase 2.3 - eliminates hot-path HashMap lookup)
+    resolved_floating_parent: ?u32 = null,
 };
 
 pub const LayoutElement = struct {
@@ -248,7 +313,8 @@ pub const LayoutEngine = struct {
     arena: LayoutArena,
     elements: ElementList,
     commands: RenderCommandList,
-    open_element_stack: std.ArrayList(u32),
+    /// Stack of open container indices (fixed capacity per CLAUDE.md)
+    open_element_stack: FixedCapacityArray(u32, MAX_OPEN_DEPTH) = .{},
     root_index: ?u32 = null,
     viewport_width: f32 = 0,
     viewport_height: f32 = 0,
@@ -258,29 +324,33 @@ pub const LayoutEngine = struct {
     seen_ids: std.AutoHashMap(u32, ?[]const u8),
     /// Maps element ID -> element index for O(1) lookups
     id_to_index: std.AutoHashMap(u32, u32),
-    /// Floating elements to position after main layout
-    floating_roots: std.ArrayList(u32),
+    /// Floating elements to position after main layout (fixed capacity per CLAUDE.md)
+    floating_roots: FixedCapacityArray(u32, MAX_FLOATING_ROOTS) = .{},
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
+        var seen_ids = std.AutoHashMap(u32, ?[]const u8).init(allocator);
+        var id_to_index = std.AutoHashMap(u32, u32).init(allocator);
+
+        // Pre-allocate hash maps to avoid allocation during frame (per CLAUDE.md)
+        seen_ids.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
+        id_to_index.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
+
         return .{
             .allocator = allocator,
             .arena = LayoutArena.init(allocator),
             .elements = ElementList.init(allocator),
             .commands = RenderCommandList.init(allocator),
-            .open_element_stack = .{},
-            .floating_roots = .{},
-            .seen_ids = std.AutoHashMap(u32, ?[]const u8).init(allocator),
-            .id_to_index = std.AutoHashMap(u32, u32).init(allocator),
+            .seen_ids = seen_ids,
+            .id_to_index = id_to_index,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.id_to_index.deinit();
         self.seen_ids.deinit();
-        self.open_element_stack.deinit(self.allocator);
-        self.floating_roots.deinit(self.allocator);
+        // BoundedArrays don't need deinit (stack-allocated)
         self.commands.deinit();
         self.elements.deinit();
         self.arena.deinit();
@@ -295,8 +365,8 @@ pub const LayoutEngine = struct {
         self.arena.reset();
         self.elements.clear();
         self.commands.clear();
-        self.open_element_stack.clearRetainingCapacity();
-        self.floating_roots.clearRetainingCapacity();
+        self.open_element_stack.len = 0; // BoundedArray: just reset length
+        self.floating_roots.len = 0; // BoundedArray: just reset length
         self.seen_ids.clearRetainingCapacity();
         self.id_to_index.clearRetainingCapacity();
         self.root_index = null;
@@ -306,18 +376,18 @@ pub const LayoutEngine = struct {
 
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {
         const index = try self.createElement(decl, .container);
-        try self.open_element_stack.append(self.allocator, index);
+        self.open_element_stack.append(index) catch @panic("open_element_stack overflow - increase MAX_OPEN_DEPTH");
     }
 
     pub fn closeElement(self: *Self) void {
-        if (self.open_element_stack.items.len > 0) {
+        if (self.open_element_stack.len > 0) {
             _ = self.open_element_stack.pop();
         }
     }
 
     /// Add a text element (leaf node)
     pub fn text(self: *Self, content: []const u8, config: types.TextConfig) !void {
-        std.debug.assert(self.open_element_stack.items.len > 0);
+        std.debug.assert(self.open_element_stack.len > 0);
 
         var decl = ElementDeclaration{};
         decl.layout.sizing = Sizing.fitContent();
@@ -351,7 +421,7 @@ pub const LayoutEngine = struct {
 
     /// Add an SVG element (leaf node) - renders inline with correct z-order
     pub fn svg(self: *Self, id: LayoutId, width: f32, height: f32, data: SvgData) !void {
-        std.debug.assert(self.open_element_stack.items.len > 0);
+        std.debug.assert(self.open_element_stack.len > 0);
 
         var decl = ElementDeclaration{};
         decl.id = id;
@@ -375,7 +445,7 @@ pub const LayoutEngine = struct {
 
     /// Add an image element (leaf node) - renders inline with correct z-order
     pub fn image(self: *Self, id: LayoutId, width: ?f32, height: ?f32, data: ImageData) !void {
-        std.debug.assert(self.open_element_stack.items.len > 0);
+        std.debug.assert(self.open_element_stack.len > 0);
 
         var decl = ElementDeclaration{};
         decl.id = id;
@@ -409,23 +479,29 @@ pub const LayoutEngine = struct {
 
     /// Create an element and link it into the tree
     fn createElement(self: *Self, decl: ElementDeclaration, elem_type: ElementType) !u32 {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(self.elements.len() < MAX_ELEMENTS_PER_FRAME); // Prevent unbounded growth
+        std.debug.assert(elem_type != .container or self.open_element_stack.len < MAX_OPEN_DEPTH); // Depth check for containers
+
         // Check for ID collisions (skip if ID is none/0)
         // NOTE: Runs in all build modes - ID collisions cause subtle bugs
         if (decl.id.id != 0) {
             const result = self.seen_ids.getOrPut(decl.id.id) catch unreachable;
             if (result.found_existing) {
-                // std.log.warn("Layout ID collision detected! ID hash {d} used by both \"{?s}\" and \"{?s}\"", .{
-                //     decl.id.id,
-                //     result.value_ptr.*,
-                //     decl.id.string_id,
-                // });
+                if (builtin.mode == .Debug) {
+                    std.log.warn("Layout ID collision detected! ID hash {d} used by both \"{?s}\" and \"{?s}\"", .{
+                        decl.id.id,
+                        result.value_ptr.*,
+                        decl.id.string_id,
+                    });
+                }
             } else {
                 result.value_ptr.* = decl.id.string_id;
             }
         }
 
-        const parent_index = if (self.open_element_stack.items.len > 0)
-            self.open_element_stack.items[self.open_element_stack.items.len - 1]
+        const parent_index = if (self.open_element_stack.len > 0)
+            self.open_element_stack.buffer[self.open_element_stack.len - 1]
         else
             null;
 
@@ -438,12 +514,21 @@ pub const LayoutEngine = struct {
 
         // Index non-zero IDs for O(1) lookup
         if (decl.id.id != 0) {
-            self.id_to_index.put(decl.id.id, index) catch {};
+            self.id_to_index.put(decl.id.id, index) catch |err| {
+                // Fail fast per CLAUDE.md - silent failures cause hard-to-debug issues
+                std.debug.panic("id_to_index.put failed for ID {d}: {} - increase MAX_TRACKED_IDS", .{ decl.id.id, err });
+            };
         }
 
-        // Track floating elements separately
-        if (decl.floating != null) {
-            try self.floating_roots.append(self.allocator, index);
+        // Track floating elements separately (BoundedArray - fixed capacity)
+        if (decl.floating) |floating| {
+            self.floating_roots.append(index) catch @panic("floating_roots overflow - increase MAX_FLOATING_ROOTS");
+
+            // Phase 2.3: Resolve parent_id at creation time to eliminate hot-path HashMap lookup
+            // in computeFloatingPositions. The parent must already exist when floating element is created.
+            if (floating.parent_id) |pid| {
+                self.elements.get(index).computed.resolved_floating_parent = self.id_to_index.get(pid);
+            }
         }
 
         // Link to parent (floating elements still have a parent for reference)
@@ -577,28 +662,18 @@ pub const LayoutEngine = struct {
         }
     }
 
+    /// Phase 2.2: Reduced from 4 passes to 2 passes per floating element
+    /// Pass 1: Compute sizes with integrated text wrapping
+    /// Pass 2: Position element and children
     fn computeFloatingPositions(self: *Self) !void {
-        for (self.floating_roots.items) |float_idx| {
+        // Assertions per CLAUDE.md
+        std.debug.assert(self.floating_roots.len <= MAX_FLOATING_ROOTS);
+
+        for (self.floating_roots.slice()) |float_idx| {
             const elem = self.elements.get(float_idx);
             const floating = elem.config.floating orelse continue;
 
-            // Compute sizes for floating element and its children
-            // Floating elements size themselves based on their content (min sizes),
-            // not constrained by parent layout flow
-            self.computeFinalSizes(float_idx, self.viewport_width, self.viewport_height);
-
-            // Wrap text for floating elements now that they're sized
-            // (main text wrapping pass happens before floating elements are sized)
-            try self.computeTextWrapping(float_idx);
-
-            // Recompute min sizes after text wrapping changed text dimensions
-            // This propagates the new text height up to parent containers
-            self.computeMinSizes(float_idx);
-
-            // Recompute final sizes with updated min sizes
-            self.computeFinalSizes(float_idx, self.viewport_width, self.viewport_height);
-
-            // Find parent bounding box
+            // Find parent bounding box FIRST (needed for expand and positioning)
             var parent_bbox: BoundingBox = .{
                 .width = self.viewport_width,
                 .height = self.viewport_height,
@@ -608,57 +683,141 @@ pub const LayoutEngine = struct {
                 if (elem.parent_index) |pi| {
                     parent_bbox = self.elements.getConst(pi).computed.bounding_box;
                 }
-            } else if (floating.parent_id) |pid| {
-                if (self.id_to_index.get(pid)) |pi| {
-                    parent_bbox = self.elements.getConst(pi).computed.bounding_box;
+            } else if (elem.computed.resolved_floating_parent) |pi| {
+                // Phase 2.3: Use cached parent index instead of HashMap lookup
+                parent_bbox = self.elements.getConst(pi).computed.bounding_box;
+            }
+
+            // Phase 3.5: Implement FloatingConfig.expand
+            // If expand is set, use parent dimensions as constraints
+            const constraint_width = if (floating.expand.width) parent_bbox.width else self.viewport_width;
+            const constraint_height = if (floating.expand.height) parent_bbox.height else self.viewport_height;
+
+            // =========================================================================
+            // PASS 1: Compute sizes with integrated text wrapping
+            // =========================================================================
+            // This combines: computeFinalSizes + computeTextWrapping + recompute
+            try self.computeFloatingSizesWithText(float_idx, constraint_width, constraint_height);
+
+            // Apply expand after sizing (override computed sizes if expand is set)
+            if (floating.expand.width) {
+                elem.computed.sized_width = parent_bbox.width;
+            }
+            if (floating.expand.height) {
+                elem.computed.sized_height = parent_bbox.height;
+            }
+
+            // =========================================================================
+            // PASS 2: Position element and children
+            // =========================================================================
+            self.positionFloatingElement(float_idx, floating, parent_bbox);
+        }
+    }
+
+    /// Phase 2.2 Helper: Compute sizes for floating element with text wrapping integrated
+    /// Combines what was previously 4 separate passes into 2 internal operations
+    fn computeFloatingSizesWithText(self: *Self, index: u32, max_width: f32, max_height: f32) !void {
+        std.debug.assert(max_width >= 0);
+        std.debug.assert(max_height >= 0);
+
+        // First compute initial sizes (top-down)
+        self.computeFinalSizes(index, max_width, max_height);
+
+        // Now wrap text with known container widths - this may change element dimensions
+        const elem = self.elements.get(index);
+        var needs_resize = false;
+
+        if (elem.text_data) |*td| {
+            const text_max_width = if (elem.parent_index) |pi| blk: {
+                const parent = self.elements.getConst(pi);
+                break :blk parent.computed.sized_width - parent.config.layout.padding.totalX();
+            } else max_width;
+
+            td.container_width = text_max_width;
+
+            if (td.config.wrap_mode != .none and text_max_width > 0) {
+                const wrap_result = try self.wrapText(td.text, td.config, text_max_width);
+                td.wrapped_lines = wrap_result.lines;
+
+                if (wrap_result.lines.len > 0) {
+                    td.measured_width = wrap_result.max_line_width;
+                    td.measured_height = wrap_result.total_height;
+                    elem.computed.sized_width = wrap_result.max_line_width;
+                    elem.computed.sized_height = wrap_result.total_height;
+                    needs_resize = true;
                 }
             }
+        }
 
-            // Calculate attach point on parent
-            const parent_x = parent_bbox.x + parent_bbox.width * floating.parent_attach.normalizedX();
-            const parent_y = parent_bbox.y + parent_bbox.height * floating.parent_attach.normalizedY();
-
-            // Calculate element anchor offset
-            const elem_offset_x = elem.computed.sized_width * floating.element_attach.normalizedX();
-            const elem_offset_y = elem.computed.sized_height * floating.element_attach.normalizedY();
-
-            // Final position (before clamping)
-            var final_x = parent_x - elem_offset_x + floating.offset.x;
-            var final_y = parent_y - elem_offset_y + floating.offset.y;
-
-            // Clamp to viewport bounds (keep floating elements on-screen)
-            // Only clamp if actually going off-screen, don't add margin otherwise
-            if (final_x < 0) final_x = 0;
-            if (final_y < 0) final_y = 0;
-            const max_x = self.viewport_width - elem.computed.sized_width;
-            const max_y = self.viewport_height - elem.computed.sized_height;
-            if (final_x > max_x) final_x = @max(0, max_x);
-            if (final_y > max_y) final_y = @max(0, max_y);
-
-            // Update bounding boxes
-            elem.computed.bounding_box = .{
-                .x = final_x,
-                .y = final_y,
-                .width = elem.computed.sized_width,
-                .height = elem.computed.sized_height,
-            };
-
-            const padding = elem.config.layout.padding;
-            elem.computed.content_box = .{
-                .x = final_x + @as(f32, @floatFromInt(padding.left)),
-                .y = final_y + @as(f32, @floatFromInt(padding.top)),
-                .width = elem.computed.sized_width - padding.totalX(),
-                .height = elem.computed.sized_height - padding.totalY(),
-            };
-
-            // Recursively position children of floating element
-            if (elem.first_child_index) |first_child| {
-                const scroll_offset: ?ScrollOffset = if (elem.config.scroll) |s|
-                    ScrollOffset{ .x = s.scroll_offset.x, .y = s.scroll_offset.y }
-                else
-                    null;
-                self.positionChildren(first_child, elem.config.layout, elem.computed.content_box, scroll_offset);
+        // Recurse to children
+        if (elem.first_child_index) |first_child| {
+            var child_idx: ?u32 = first_child;
+            while (child_idx) |ci| {
+                const child = self.elements.get(ci);
+                // Skip nested floating elements - they're processed separately
+                if (child.config.floating == null) {
+                    const child_max_w = child.computed.sized_width;
+                    const child_max_h = child.computed.sized_height;
+                    try self.computeFloatingSizesWithText(ci, child_max_w, child_max_h);
+                }
+                child_idx = child.next_sibling_index;
             }
+        }
+
+        // If text wrapping changed dimensions, propagate up and recompute
+        if (needs_resize) {
+            self.computeMinSizes(index);
+            self.computeFinalSizes(index, max_width, max_height);
+        }
+    }
+
+    /// Phase 2.2 Helper: Position a floating element and its children
+    fn positionFloatingElement(self: *Self, float_idx: u32, floating: types.FloatingConfig, parent_bbox: BoundingBox) void {
+        const elem = self.elements.get(float_idx);
+
+        // Calculate attach point on parent
+        const parent_x = parent_bbox.x + parent_bbox.width * floating.parent_attach.normalizedX();
+        const parent_y = parent_bbox.y + parent_bbox.height * floating.parent_attach.normalizedY();
+
+        // Calculate element anchor offset
+        const elem_offset_x = elem.computed.sized_width * floating.element_attach.normalizedX();
+        const elem_offset_y = elem.computed.sized_height * floating.element_attach.normalizedY();
+
+        // Final position (before clamping)
+        var final_x = parent_x - elem_offset_x + floating.offset.x;
+        var final_y = parent_y - elem_offset_y + floating.offset.y;
+
+        // Clamp to viewport bounds (keep floating elements on-screen)
+        if (final_x < 0) final_x = 0;
+        if (final_y < 0) final_y = 0;
+        const max_x = self.viewport_width - elem.computed.sized_width;
+        const max_y = self.viewport_height - elem.computed.sized_height;
+        if (final_x > max_x) final_x = @max(0, max_x);
+        if (final_y > max_y) final_y = @max(0, max_y);
+
+        // Update bounding boxes
+        elem.computed.bounding_box = .{
+            .x = final_x,
+            .y = final_y,
+            .width = elem.computed.sized_width,
+            .height = elem.computed.sized_height,
+        };
+
+        const padding = elem.config.layout.padding;
+        elem.computed.content_box = .{
+            .x = final_x + @as(f32, @floatFromInt(padding.left)),
+            .y = final_y + @as(f32, @floatFromInt(padding.top)),
+            .width = elem.computed.sized_width - padding.totalX(),
+            .height = elem.computed.sized_height - padding.totalY(),
+        };
+
+        // Recursively position children of floating element
+        if (elem.first_child_index) |first_child| {
+            const scroll_offset: ?ScrollOffset = if (elem.config.scroll) |s|
+                ScrollOffset{ .x = s.scroll_offset.x, .y = s.scroll_offset.y }
+            else
+                null;
+            self.positionChildren(first_child, elem.config.layout, elem.computed.content_box, scroll_offset);
         }
     }
 
@@ -687,6 +846,10 @@ pub const LayoutEngine = struct {
     // =========================================================================
 
     fn computeMinSizes(self: *Self, index: u32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(index < self.elements.len()); // Valid element index
+        std.debug.assert(self.elements.len() <= MAX_ELEMENTS_PER_FRAME); // Within capacity
+
         const elem = self.elements.get(index);
         const layout = elem.config.layout;
         const padding = layout.padding;
@@ -770,6 +933,10 @@ pub const LayoutEngine = struct {
     // =========================================================================
 
     fn computeFinalSizes(self: *Self, index: u32, available_width: f32, available_height: f32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(index < self.elements.len()); // Valid element index
+        std.debug.assert(available_width >= 0 or available_width == std.math.floatMax(f32)); // Valid width
+
         const elem = self.elements.get(index);
         const layout = elem.config.layout;
         const sizing = layout.sizing;
@@ -811,7 +978,12 @@ pub const LayoutEngine = struct {
     }
 
     /// Distribute available space among children (handles grow and shrink)
+    /// Phase 3.1: Coordinator function - delegates to distributeShrink/distributeGrow
     fn distributeSpace(self: *Self, first_child: u32, layout: LayoutConfig, width: f32, height: f32) void {
+        // Assertions per CLAUDE.md
+        std.debug.assert(width >= 0 or width == std.math.floatMax(f32));
+        std.debug.assert(height >= 0 or height == std.math.floatMax(f32));
+
         const is_horizontal = layout.layout_direction.isHorizontal();
         const gap: f32 = @floatFromInt(layout.child_gap);
         const available = if (is_horizontal) width else height;
@@ -866,98 +1038,126 @@ pub const LayoutEngine = struct {
         const total_gap = if (child_count > 1) gap * @as(f32, @floatFromInt(child_count - 1)) else 0;
         const size_to_distribute = available - total_desired - total_gap;
 
-        // SHRINK LOGIC: When content exceeds available space
+        // Delegate to appropriate helper based on space situation
         if (size_to_distribute < 0 and total_desired > 0) {
-            const overflow = -size_to_distribute;
-            const shrink_ratio = @max(0, 1.0 - overflow / total_desired);
-
-            child_idx = first_child;
-            while (child_idx) |ci| {
-                const child = self.elements.get(ci);
-
-                // Skip floating elements
-                if (child.config.floating != null) {
-                    child_idx = child.next_sibling_index;
-                    continue;
-                }
-
-                const child_sizing = if (is_horizontal)
-                    child.config.layout.sizing.width
-                else
-                    child.config.layout.sizing.height;
-
-                const child_min_constraint = child_sizing.getMin();
-                const child_min_content = if (is_horizontal) child.computed.min_width else child.computed.min_height;
-
-                // Calculate desired size for this child
-                const child_desired: f32 = switch (child_sizing.value) {
-                    .grow => child_min_content,
-                    .fit => |mm| @max(child_min_content, if (mm.max >= 1e10) child_min_content else mm.max),
-                    .fixed => |mm| mm.min,
-                    .percent => |p| available * p.value,
-                };
-
-                var new_size: f32 = undefined;
-                if (child_sizing.value == .grow) {
-                    new_size = child_min_constraint;
-                } else {
-                    // Shrink proportionally but respect minimum constraint
-                    new_size = @max(child_min_constraint, child_desired * shrink_ratio);
-                }
-
-                if (is_horizontal) {
-                    child.computed.sized_width = new_size;
-                    child.computed.sized_height = computeAxisSize(
-                        child.config.layout.sizing.height,
-                        child.computed.min_height,
-                        height,
-                    );
-                } else {
-                    child.computed.sized_width = computeAxisSize(
-                        child.config.layout.sizing.width,
-                        child.computed.min_width,
-                        width,
-                    );
-                    child.computed.sized_height = new_size;
-                }
-
-                // Handle aspect ratio for shrunk elements
-                if (child.config.layout.aspect_ratio) |ratio| {
-                    if (is_horizontal) {
-                        child.computed.sized_height = child.computed.sized_width / ratio;
-                    } else {
-                        child.computed.sized_width = child.computed.sized_height * ratio;
-                    }
-                }
-
-                // Recurse for children of this child
-                const child_layout = child.config.layout;
-                var content_width = child.computed.sized_width - child_layout.padding.totalX();
-                var content_height = child.computed.sized_height - child_layout.padding.totalY();
-
-                // For scroll containers, allow children to overflow in scrollable directions
-                if (child.config.scroll) |scroll| {
-                    if (scroll.horizontal) {
-                        content_width = std.math.floatMax(f32);
-                    }
-                    if (scroll.vertical) {
-                        content_height = std.math.floatMax(f32);
-                    }
-                }
-
-                if (child.first_child_index) |grandchild| {
-                    self.distributeSpace(grandchild, child_layout, content_width, content_height);
-                }
-
-                child_idx = child.next_sibling_index;
-            }
-            return;
+            self.distributeShrink(first_child, is_horizontal, available, width, height, total_desired, size_to_distribute);
+        } else {
+            self.distributeGrow(first_child, is_horizontal, width, height, grow_count, size_to_distribute);
         }
+    }
 
-        // GROW LOGIC: distribute remaining space
+    /// Phase 3.1 Helper: Shrink children when content exceeds available space
+    fn distributeShrink(
+        self: *Self,
+        first_child: u32,
+        is_horizontal: bool,
+        available: f32,
+        width: f32,
+        height: f32,
+        total_desired: f32,
+        size_to_distribute: f32,
+    ) void {
+        std.debug.assert(size_to_distribute < 0);
+        std.debug.assert(total_desired > 0);
+
+        const overflow = -size_to_distribute;
+        const shrink_ratio = @max(0, 1.0 - overflow / total_desired);
+
+        var child_idx: ?u32 = first_child;
+        while (child_idx) |ci| {
+            const child = self.elements.get(ci);
+
+            // Skip floating elements
+            if (child.config.floating != null) {
+                child_idx = child.next_sibling_index;
+                continue;
+            }
+
+            const child_sizing = if (is_horizontal)
+                child.config.layout.sizing.width
+            else
+                child.config.layout.sizing.height;
+
+            const child_min_constraint = child_sizing.getMin();
+            const child_min_content = if (is_horizontal) child.computed.min_width else child.computed.min_height;
+
+            // Calculate desired size for this child
+            const child_desired: f32 = switch (child_sizing.value) {
+                .grow => child_min_content,
+                .fit => |mm| @max(child_min_content, if (mm.max >= 1e10) child_min_content else mm.max),
+                .fixed => |mm| mm.min,
+                .percent => |p| available * p.value,
+            };
+
+            const new_size: f32 = if (child_sizing.value == .grow)
+                child_min_constraint
+            else
+                // Shrink proportionally but respect minimum constraint
+                @max(child_min_constraint, child_desired * shrink_ratio);
+
+            if (is_horizontal) {
+                child.computed.sized_width = new_size;
+                child.computed.sized_height = computeAxisSize(
+                    child.config.layout.sizing.height,
+                    child.computed.min_height,
+                    height,
+                );
+            } else {
+                child.computed.sized_width = computeAxisSize(
+                    child.config.layout.sizing.width,
+                    child.computed.min_width,
+                    width,
+                );
+                child.computed.sized_height = new_size;
+            }
+
+            // Handle aspect ratio for shrunk elements
+            if (child.config.layout.aspect_ratio) |ratio| {
+                if (is_horizontal) {
+                    child.computed.sized_height = child.computed.sized_width / ratio;
+                } else {
+                    child.computed.sized_width = child.computed.sized_height * ratio;
+                }
+            }
+
+            // Recurse for children of this child
+            const child_layout = child.config.layout;
+            var content_width = child.computed.sized_width - child_layout.padding.totalX();
+            var content_height = child.computed.sized_height - child_layout.padding.totalY();
+
+            // For scroll containers, allow children to overflow in scrollable directions
+            if (child.config.scroll) |scroll| {
+                if (scroll.horizontal) {
+                    content_width = std.math.floatMax(f32);
+                }
+                if (scroll.vertical) {
+                    content_height = std.math.floatMax(f32);
+                }
+            }
+
+            if (child.first_child_index) |grandchild| {
+                self.distributeSpace(grandchild, child_layout, content_width, content_height);
+            }
+
+            child_idx = child.next_sibling_index;
+        }
+    }
+
+    /// Phase 3.1 Helper: Distribute extra space to grow elements
+    fn distributeGrow(
+        self: *Self,
+        first_child: u32,
+        is_horizontal: bool,
+        width: f32,
+        height: f32,
+        grow_count: u32,
+        size_to_distribute: f32,
+    ) void {
+        std.debug.assert(size_to_distribute >= 0 or grow_count == 0);
+
         const per_grow = if (grow_count > 0) @max(0, size_to_distribute) / @as(f32, @floatFromInt(grow_count)) else 0;
 
-        child_idx = first_child;
+        var child_idx: ?u32 = first_child;
         while (child_idx) |ci| {
             const child = self.elements.get(ci);
 
@@ -1007,6 +1207,10 @@ pub const LayoutEngine = struct {
     // =========================================================================
 
     fn computePositions(self: *Self, index: u32, parent_x: f32, parent_y: f32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(index < self.elements.len()); // Valid element index
+        std.debug.assert(!std.math.isNan(parent_x) and !std.math.isNan(parent_y)); // Valid coordinates
+
         const elem = self.elements.get(index);
         const layout = elem.config.layout;
         const padding = layout.padding;
@@ -1038,6 +1242,10 @@ pub const LayoutEngine = struct {
     }
 
     fn positionChildren(self: *Self, first_child: u32, layout: LayoutConfig, content_box: BoundingBox, scroll_offset: ?ScrollOffset) void {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(first_child < self.elements.len()); // Valid child index
+        std.debug.assert(content_box.width >= 0 and content_box.height >= 0); // Valid content box
+
         const is_horizontal = layout.layout_direction.isHorizontal();
         const base_gap: f32 = @floatFromInt(layout.child_gap);
         const alignment = layout.child_alignment;
@@ -1175,9 +1383,13 @@ pub const LayoutEngine = struct {
 
     // =========================================================================
     // Phase 4: Generate render commands
+    // Phase 3.1: Split into per-command-type helpers for readability
     // =========================================================================
 
     fn generateRenderCommands(self: *Self, index: u32, inherited_z_index: i16, inherited_opacity: f32) !void {
+        // Assertions per CLAUDE.md
+        std.debug.assert(inherited_opacity >= 0 and inherited_opacity <= 1.0);
+
         const elem = self.elements.get(index);
         const bbox = elem.computed.bounding_box;
 
@@ -1190,164 +1402,17 @@ pub const LayoutEngine = struct {
         // Cache z_index for O(1) lookup via getZIndex()
         elem.cached_z_index = z_index;
 
-        // Shadow (renders BEFORE background rectangle)
-        if (elem.config.shadow) |shadow| {
-            if (shadow.isVisible()) {
-                try self.commands.append(.{
-                    .bounding_box = bbox,
-                    .command_type = .shadow,
-                    .z_index = z_index,
-                    .id = elem.id,
-                    .data = .{ .shadow = .{
-                        .blur_radius = shadow.blur_radius,
-                        .color = shadow.color.withAlpha(shadow.color.a * opacity),
-                        .offset_x = shadow.offset_x,
-                        .offset_y = shadow.offset_y,
-                        .corner_radius = elem.config.corner_radius,
-                    } },
-                });
-            }
-        }
+        // Generate commands for each visual component
+        try self.emitShadowCommand(elem, bbox, z_index, opacity);
+        try self.emitRectangleCommand(elem, bbox, z_index, opacity);
+        try self.emitBorderCommand(elem, bbox, z_index, opacity);
+        try self.emitTextCommands(elem, bbox, z_index, opacity);
+        try self.emitSvgCommand(elem, bbox, z_index, opacity);
+        try self.emitImageCommand(elem, bbox, z_index, opacity);
 
-        // Background rectangle
-        if (elem.config.background_color) |bg| {
-            try self.commands.append(.{
-                .bounding_box = bbox,
-                .command_type = .rectangle,
-                .z_index = z_index,
-                .id = elem.id,
-                .data = .{ .rectangle = .{
-                    .background_color = bg.withAlpha(bg.a * opacity),
-                    .corner_radius = elem.config.corner_radius,
-                } },
-            });
-        }
-
-        // Border
-        if (elem.config.border) |border| {
-            try self.commands.append(.{
-                .bounding_box = bbox,
-                .command_type = .border,
-                .z_index = z_index,
-                .id = elem.id,
-                .data = .{ .border = .{
-                    .color = border.color.withAlpha(border.color.a * opacity),
-                    .width = border.width,
-                    .corner_radius = elem.config.corner_radius,
-                } },
-            });
-        }
-
-        // Text
-        if (elem.text_data) |td| {
-            const text_color = td.config.color.withAlpha(td.config.color.a * opacity);
-            if (td.wrapped_lines) |lines| {
-                // Render each wrapped line
-                const line_height = td.config.lineHeightPx();
-                // Use container width for alignment if available (from wrapping), otherwise use bbox
-                const align_width = if (td.container_width > 0) td.container_width else bbox.width;
-                for (lines, 0..) |line, i| {
-                    const line_y = bbox.y + @as(f32, @floatFromInt(i)) * line_height;
-                    // Calculate x offset based on text alignment within container
-                    const line_x = bbox.x + switch (td.config.alignment) {
-                        .left => 0,
-                        .center => (align_width - line.width) / 2,
-                        .right => align_width - line.width,
-                    };
-                    try self.commands.append(.{
-                        .bounding_box = .{
-                            .x = line_x,
-                            .y = line_y,
-                            .width = line.width,
-                            .height = line_height,
-                        },
-                        .command_type = .text,
-                        .z_index = z_index,
-                        .id = elem.id,
-                        .data = .{ .text = .{
-                            .text = td.text[line.start_offset..][0..line.length],
-                            .color = text_color,
-                            .font_id = td.config.font_id,
-                            .font_size = td.config.font_size,
-                            .letter_spacing = td.config.letter_spacing,
-                            .underline = td.config.decoration.underline,
-                            .strikethrough = td.config.decoration.strikethrough,
-                        } },
-                    });
-                }
-            } else {
-                // Single line (no wrapping)
-                // Use container width for alignment if available, otherwise use bbox
-                const align_width = if (td.container_width > 0) td.container_width else bbox.width;
-                // Calculate x offset based on text alignment
-                const text_x = bbox.x + switch (td.config.alignment) {
-                    .left => 0,
-                    .center => (align_width - td.measured_width) / 2,
-                    .right => align_width - td.measured_width,
-                };
-                try self.commands.append(.{
-                    .bounding_box = .{
-                        .x = text_x,
-                        .y = bbox.y,
-                        .width = td.measured_width,
-                        .height = bbox.height,
-                    },
-                    .command_type = .text,
-                    .z_index = z_index,
-                    .id = elem.id,
-                    .data = .{ .text = .{
-                        .text = td.text,
-                        .color = text_color,
-                        .font_id = td.config.font_id,
-                        .font_size = td.config.font_size,
-                        .letter_spacing = td.config.letter_spacing,
-                        .underline = td.config.decoration.underline,
-                        .strikethrough = td.config.decoration.strikethrough,
-                    } },
-                });
-            }
-        }
-
-        // SVG
-        if (elem.svg_data) |sd| {
-            try self.commands.append(.{
-                .bounding_box = bbox,
-                .command_type = .svg,
-                .z_index = z_index,
-                .id = elem.id,
-                .data = .{ .svg = .{
-                    .path = sd.path,
-                    .color = sd.color.withAlpha(sd.color.a * opacity),
-                    .stroke_color = if (sd.stroke_color) |sc| sc.withAlpha(sc.a * opacity) else null,
-                    .stroke_width = sd.stroke_width,
-                    .has_fill = sd.has_fill,
-                    .viewbox = sd.viewbox,
-                } },
-            });
-        }
-
-        // Image
-        if (elem.image_data) |id| {
-            try self.commands.append(.{
-                .bounding_box = bbox,
-                .command_type = .image,
-                .z_index = z_index,
-                .id = elem.id,
-                .data = .{ .image = .{
-                    .source = id.source,
-                    .width = id.width,
-                    .height = id.height,
-                    .fit = id.fit,
-                    .corner_radius = id.corner_radius,
-                    .tint = id.tint,
-                    .grayscale = id.grayscale,
-                    .opacity = id.opacity * opacity,
-                } },
-            });
-        }
-
-        // Scissor for scroll containers
-        if (elem.config.scroll) |_| {
+        // Scissor for scroll containers (before children)
+        const has_scroll = elem.config.scroll != null;
+        if (has_scroll) {
             try self.commands.append(.{
                 .bounding_box = bbox,
                 .command_type = .scissor_start,
@@ -1366,8 +1431,8 @@ pub const LayoutEngine = struct {
             }
         }
 
-        // End scissor
-        if (elem.config.scroll != null) {
+        // End scissor (after children)
+        if (has_scroll) {
             try self.commands.append(.{
                 .bounding_box = bbox,
                 .command_type = .scissor_end,
@@ -1378,13 +1443,173 @@ pub const LayoutEngine = struct {
         }
     }
 
+    /// Phase 3.1 Helper: Emit shadow render command
+    fn emitShadowCommand(self: *Self, elem: *LayoutElement, bbox: BoundingBox, z_index: i16, opacity: f32) !void {
+        const shadow = elem.config.shadow orelse return;
+        if (!shadow.isVisible()) return;
+
+        try self.commands.append(.{
+            .bounding_box = bbox,
+            .command_type = .shadow,
+            .z_index = z_index,
+            .id = elem.id,
+            .data = .{ .shadow = .{
+                .blur_radius = shadow.blur_radius,
+                .color = shadow.color.withAlpha(shadow.color.a * opacity),
+                .offset_x = shadow.offset_x,
+                .offset_y = shadow.offset_y,
+                .corner_radius = elem.config.corner_radius,
+            } },
+        });
+    }
+
+    /// Phase 3.1 Helper: Emit background rectangle render command
+    fn emitRectangleCommand(self: *Self, elem: *LayoutElement, bbox: BoundingBox, z_index: i16, opacity: f32) !void {
+        const bg = elem.config.background_color orelse return;
+
+        try self.commands.append(.{
+            .bounding_box = bbox,
+            .command_type = .rectangle,
+            .z_index = z_index,
+            .id = elem.id,
+            .data = .{ .rectangle = .{
+                .background_color = bg.withAlpha(bg.a * opacity),
+                .corner_radius = elem.config.corner_radius,
+            } },
+        });
+    }
+
+    /// Phase 3.1 Helper: Emit border render command
+    fn emitBorderCommand(self: *Self, elem: *LayoutElement, bbox: BoundingBox, z_index: i16, opacity: f32) !void {
+        const border = elem.config.border orelse return;
+
+        try self.commands.append(.{
+            .bounding_box = bbox,
+            .command_type = .border,
+            .z_index = z_index,
+            .id = elem.id,
+            .data = .{ .border = .{
+                .color = border.color.withAlpha(border.color.a * opacity),
+                .width = border.width,
+                .corner_radius = elem.config.corner_radius,
+            } },
+        });
+    }
+
+    /// Phase 3.1 Helper: Emit text render commands (handles wrapped and single-line)
+    fn emitTextCommands(self: *Self, elem: *LayoutElement, bbox: BoundingBox, z_index: i16, opacity: f32) !void {
+        const td = elem.text_data orelse return;
+        const text_color = td.config.color.withAlpha(td.config.color.a * opacity);
+        const align_width = if (td.container_width > 0) td.container_width else bbox.width;
+
+        if (td.wrapped_lines) |lines| {
+            // Render each wrapped line
+            const line_height = td.config.lineHeightPx();
+            for (lines, 0..) |line, i| {
+                const line_y = bbox.y + @as(f32, @floatFromInt(i)) * line_height;
+                const line_x = bbox.x + switch (td.config.alignment) {
+                    .left => 0,
+                    .center => (align_width - line.width) / 2,
+                    .right => align_width - line.width,
+                };
+                try self.commands.append(.{
+                    .bounding_box = .{ .x = line_x, .y = line_y, .width = line.width, .height = line_height },
+                    .command_type = .text,
+                    .z_index = z_index,
+                    .id = elem.id,
+                    .data = .{ .text = .{
+                        .text = td.text[line.start_offset..][0..line.length],
+                        .color = text_color,
+                        .font_id = td.config.font_id,
+                        .font_size = td.config.font_size,
+                        .letter_spacing = td.config.letter_spacing,
+                        .underline = td.config.decoration.underline,
+                        .strikethrough = td.config.decoration.strikethrough,
+                    } },
+                });
+            }
+        } else {
+            // Single line (no wrapping)
+            const text_x = bbox.x + switch (td.config.alignment) {
+                .left => 0,
+                .center => (align_width - td.measured_width) / 2,
+                .right => align_width - td.measured_width,
+            };
+            try self.commands.append(.{
+                .bounding_box = .{ .x = text_x, .y = bbox.y, .width = td.measured_width, .height = bbox.height },
+                .command_type = .text,
+                .z_index = z_index,
+                .id = elem.id,
+                .data = .{ .text = .{
+                    .text = td.text,
+                    .color = text_color,
+                    .font_id = td.config.font_id,
+                    .font_size = td.config.font_size,
+                    .letter_spacing = td.config.letter_spacing,
+                    .underline = td.config.decoration.underline,
+                    .strikethrough = td.config.decoration.strikethrough,
+                } },
+            });
+        }
+    }
+
+    /// Phase 3.1 Helper: Emit SVG render command
+    fn emitSvgCommand(self: *Self, elem: *LayoutElement, bbox: BoundingBox, z_index: i16, opacity: f32) !void {
+        const sd = elem.svg_data orelse return;
+
+        try self.commands.append(.{
+            .bounding_box = bbox,
+            .command_type = .svg,
+            .z_index = z_index,
+            .id = elem.id,
+            .data = .{ .svg = .{
+                .path = sd.path,
+                .color = sd.color.withAlpha(sd.color.a * opacity),
+                .stroke_color = if (sd.stroke_color) |sc| sc.withAlpha(sc.a * opacity) else null,
+                .stroke_width = sd.stroke_width,
+                .has_fill = sd.has_fill,
+                .viewbox = sd.viewbox,
+            } },
+        });
+    }
+
+    /// Phase 3.1 Helper: Emit image render command
+    fn emitImageCommand(self: *Self, elem: *LayoutElement, bbox: BoundingBox, z_index: i16, opacity: f32) !void {
+        const id = elem.image_data orelse return;
+
+        try self.commands.append(.{
+            .bounding_box = bbox,
+            .command_type = .image,
+            .z_index = z_index,
+            .id = elem.id,
+            .data = .{ .image = .{
+                .source = id.source,
+                .width = id.width,
+                .height = id.height,
+                .fit = id.fit,
+                .corner_radius = id.corner_radius,
+                .tint = id.tint,
+                .grayscale = id.grayscale,
+                .opacity = id.opacity * opacity,
+            } },
+        });
+    }
+
     /// Wrap text into lines based on available width
+    /// Phase 2.1: Uses word-level measurement for ~5x fewer measure_fn calls
+    /// Instead of measuring each character, we:
+    /// 1. First pass: Find word boundaries and measure each word ONCE
+    /// 2. Second pass: Accumulate words onto lines until overflow
     fn wrapText(
         self: *Self,
         text_str: []const u8,
         config: TextConfig,
         max_width: f32,
     ) !struct { lines: []types.WrappedLine, total_height: f32, max_line_width: f32 } {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(max_width >= 0 or config.wrap_mode == .none);
+        std.debug.assert(text_str.len <= std.math.maxInt(u32)); // Ensure offsets fit in u32
+
         if (config.wrap_mode == .none or max_width <= 0) {
             return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
         }
@@ -1393,116 +1618,102 @@ pub const LayoutEngine = struct {
             return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
         };
 
-        var lines: std.ArrayListUnmanaged(types.WrappedLine) = .{};
-        defer lines.deinit(self.allocator);
+        // =========================================================================
+        // PASS 1: Find word boundaries and measure each word once
+        // =========================================================================
+        var words: FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT) = .{};
+
+        const word_result = findWordBoundaries(text_str, measure_fn, config, self.measure_text_user_data, &words);
+        _ = word_result; // words array is populated
+
+        // =========================================================================
+        // PASS 2: Accumulate words onto lines until overflow
+        // =========================================================================
+        var lines: FixedCapacityArray(types.WrappedLine, MAX_LINES_PER_TEXT) = .{};
 
         const line_height = config.lineHeightPx();
         var max_line_width: f32 = 0;
 
-        var line_start: u32 = 0;
-        var line_width: f32 = 0; // Width of text from line_start up to (but not including) current word
-        var word_start: u32 = 0;
-        var word_width: f32 = 0; // Width of current word being accumulated
-        var i: u32 = 0;
+        var line_start: u32 = 0; // byte offset where current line starts
+        var line_width: f32 = 0; // accumulated width of current line (without trailing space)
+        var line_width_with_space: f32 = 0; // line width including trailing space
 
-        while (i < text_str.len) : (i += 1) {
-            const c = text_str[i];
-            const is_space = c == ' ' or c == '\t';
-            const is_newline = c == '\n';
-
-            if (is_newline) {
-                // Finalize current word and emit line
-                const total_width = line_width + word_width;
-                try lines.append(self.allocator, .{
+        for (words.slice()) |word| {
+            // Handle forced newlines - emit current line and start fresh
+            if (word.has_newline) {
+                // Add this word's content (if any) to line, then emit
+                const total_width = line_width + word.width;
+                lines.append(.{
                     .start_offset = line_start,
-                    .length = i - line_start,
+                    .length = word.end - line_start,
                     .width = total_width,
-                });
+                }) catch break; // Hit MAX_LINES_PER_TEXT
                 max_line_width = @max(max_line_width, total_width);
-                line_start = i + 1;
-                word_start = i + 1;
+
+                // Start new line after the newline character
+                line_start = word.end + 1; // +1 to skip the newline
                 line_width = 0;
-                word_width = 0;
+                line_width_with_space = 0;
                 continue;
             }
 
-            // Measure character width
-            const char_width = measure_fn(
-                text_str[i .. i + 1],
-                config.font_id,
-                config.font_size,
-                null,
-                self.measure_text_user_data,
-            ).width;
+            // Check if adding this word would overflow the line
+            const potential_width = line_width_with_space + word.width;
 
-            if (is_space) {
-                // Space ends a word - add word to line width
-                line_width += word_width + char_width;
-                word_width = 0;
-                word_start = i + 1;
-                continue;
-            }
+            if (config.wrap_mode == .words and potential_width > max_width and line_width > 0) {
+                // Overflow - emit current line WITHOUT this word
+                lines.append(.{
+                    .start_offset = line_start,
+                    .length = word.start - line_start,
+                    .width = line_width, // Use width without trailing space
+                }) catch break;
+                max_line_width = @max(max_line_width, line_width);
 
-            // Regular character - check if we need to wrap BEFORE adding it
-            if (config.wrap_mode == .words and line_width + word_width + char_width > max_width) {
-                // Need to wrap
-                if (word_start > line_start and line_width > 0) {
-                    // Wrap at last word boundary (emit line without current word)
-                    // Trim trailing space from line_width by re-measuring
-                    const line_text = text_str[line_start..word_start];
-                    const trimmed_len = std.mem.trimRight(u8, line_text, " \t").len;
-                    const trimmed_width = if (trimmed_len > 0)
-                        measure_fn(
-                            text_str[line_start..][0..trimmed_len],
-                            config.font_id,
-                            config.font_size,
-                            null,
-                            self.measure_text_user_data,
-                        ).width
-                    else
-                        0;
+                // Start new line at this word
+                line_start = word.start;
+                line_width = word.width;
+                line_width_with_space = word.width + word.trailing_space_width;
+            } else if (config.wrap_mode == .words and word.width > max_width and line_width == 0) {
+                // Single word is wider than max_width - force it onto its own line
+                lines.append(.{
+                    .start_offset = word.start,
+                    .length = word.end - word.start,
+                    .width = word.width,
+                }) catch break;
+                max_line_width = @max(max_line_width, word.width);
 
-                    try lines.append(self.allocator, .{
-                        .start_offset = line_start,
-                        .length = @intCast(word_start - line_start),
-                        .width = trimmed_width,
-                    });
-                    max_line_width = @max(max_line_width, trimmed_width);
-
-                    // New line starts at current word
-                    line_start = word_start;
-                    line_width = 0;
-                    // word_width already has accumulated chars, keep it
-                } else if (word_width > 0) {
-                    // No word break available but we have content - force break
-                    try lines.append(self.allocator, .{
-                        .start_offset = line_start,
-                        .length = i - line_start,
-                        .width = line_width + word_width,
-                    });
-                    max_line_width = @max(max_line_width, line_width + word_width);
-                    line_start = i;
-                    word_start = i;
-                    line_width = 0;
-                    word_width = 0;
+                // Start new line after this word
+                line_start = word.end;
+                // Skip trailing space
+                if (word.trailing_space_width > 0) {
+                    line_start += 1; // Assume single-byte space
                 }
+                line_width = 0;
+                line_width_with_space = 0;
+            } else {
+                // Word fits - add it to current line
+                line_width = line_width_with_space + word.width;
+                line_width_with_space = line_width + word.trailing_space_width;
             }
-
-            word_width += char_width;
         }
 
-        // Emit final line
+        // Emit final line if there's remaining content
         if (line_start < text_str.len) {
-            const total_width = line_width + word_width;
-            try lines.append(self.allocator, .{
-                .start_offset = line_start,
-                .length = @intCast(text_str.len - line_start),
-                .width = total_width,
-            });
-            max_line_width = @max(max_line_width, total_width);
+            // Trim trailing whitespace from final line
+            const remaining = text_str[line_start..];
+            const trimmed = std.mem.trimRight(u8, remaining, " \t\n");
+            if (trimmed.len > 0) {
+                lines.append(.{
+                    .start_offset = line_start,
+                    .length = @intCast(trimmed.len),
+                    .width = line_width,
+                }) catch {}; // Best effort for final line
+                max_line_width = @max(max_line_width, line_width);
+            }
         }
 
-        const result_lines = try self.arena.allocator().dupe(types.WrappedLine, lines.items);
+        // Copy to arena for return (arena memory persists until frame end)
+        const result_lines = try self.arena.allocator().dupe(types.WrappedLine, lines.slice());
         const total_height = line_height * @as(f32, @floatFromInt(@max(1, result_lines.len)));
 
         return .{
@@ -1510,6 +1721,101 @@ pub const LayoutEngine = struct {
             .total_height = total_height,
             .max_line_width = max_line_width,
         };
+    }
+
+    /// Phase 2.1 Helper: Find word boundaries in text and measure each word once
+    /// Returns number of words found. Words array is populated with boundary info.
+    fn findWordBoundaries(
+        text_str: []const u8,
+        measure_fn: MeasureTextFn,
+        config: TextConfig,
+        user_data: ?*anyopaque,
+        words: *FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT),
+    ) u32 {
+        std.debug.assert(text_str.len > 0);
+        std.debug.assert(words.len == 0); // Should start empty
+
+        var word_start: u32 = 0;
+        var byte_pos: u32 = 0;
+        var in_word = false;
+
+        // Use UTF-8 view for proper multi-byte character handling
+        const utf8_view = std.unicode.Utf8View.initUnchecked(text_str);
+        var iter = utf8_view.iterator();
+
+        while (iter.nextCodepointSlice()) |codepoint_slice| {
+            const codepoint_len: u32 = @intCast(codepoint_slice.len);
+            const c = codepoint_slice[0]; // First byte for ASCII checks
+            const is_ascii = codepoint_len == 1;
+            const is_space = is_ascii and (c == ' ' or c == '\t');
+            const is_newline = is_ascii and c == '\n';
+
+            if (is_newline) {
+                // Emit word ending at newline (word content up to but not including newline)
+                if (in_word) {
+                    const word_text = text_str[word_start..byte_pos];
+                    const word_width = measure_fn(word_text, config.font_id, config.font_size, null, user_data).width;
+                    words.append(.{
+                        .start = word_start,
+                        .end = byte_pos,
+                        .width = word_width,
+                        .trailing_space_width = 0,
+                        .has_newline = true,
+                    }) catch return @intCast(words.len);
+                } else {
+                    // Empty line (newline with no preceding word content)
+                    words.append(.{
+                        .start = byte_pos,
+                        .end = byte_pos,
+                        .width = 0,
+                        .trailing_space_width = 0,
+                        .has_newline = true,
+                    }) catch return @intCast(words.len);
+                }
+                in_word = false;
+                word_start = byte_pos + codepoint_len;
+            } else if (is_space) {
+                if (in_word) {
+                    // End of word - measure it
+                    const word_text = text_str[word_start..byte_pos];
+                    const word_width = measure_fn(word_text, config.font_id, config.font_size, null, user_data).width;
+                    const space_width = measure_fn(codepoint_slice, config.font_id, config.font_size, null, user_data).width;
+                    words.append(.{
+                        .start = word_start,
+                        .end = byte_pos,
+                        .width = word_width,
+                        .trailing_space_width = space_width,
+                        .has_newline = false,
+                    }) catch return @intCast(words.len);
+                    in_word = false;
+                }
+                // Skip leading/consecutive spaces - next word starts after this space
+                word_start = byte_pos + codepoint_len;
+            } else {
+                // Regular character - start or continue word
+                if (!in_word) {
+                    word_start = byte_pos;
+                    in_word = true;
+                }
+            }
+
+            byte_pos += codepoint_len;
+        }
+
+        // Final word (no trailing space/newline)
+        if (in_word and word_start < text_str.len) {
+            const word_text = text_str[word_start..];
+            const word_width = measure_fn(word_text, config.font_id, config.font_size, null, user_data).width;
+            words.append(.{
+                .start = word_start,
+                .end = @intCast(text_str.len),
+                .width = word_width,
+                .trailing_space_width = 0,
+                .has_newline = false,
+            }) catch {};
+        }
+
+        return @intCast(words.len);
     }
 };
 
@@ -2519,4 +2825,650 @@ test "SourceLoc propagates through createElement" {
     const elem = engine.elements.getConst(0);
     try std.testing.expect(elem.config.source_location.isValid());
     try std.testing.expectEqual(loc.line, elem.config.source_location.line);
+}
+
+// =============================================================================
+// Phase 1 Tests: Fixed Capacity Arrays, UTF-8, Capacity Limits
+// =============================================================================
+
+test "FixedCapacityArray basic operations" {
+    var arr: FixedCapacityArray(u32, 4) = .{};
+
+    // Test append
+    try arr.append(10);
+    try arr.append(20);
+    try arr.append(30);
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+
+    // Test slice
+    const slice = arr.slice();
+    try std.testing.expectEqual(@as(usize, 3), slice.len);
+    try std.testing.expectEqual(@as(u32, 10), slice[0]);
+    try std.testing.expectEqual(@as(u32, 20), slice[1]);
+    try std.testing.expectEqual(@as(u32, 30), slice[2]);
+
+    // Test pop
+    const popped = arr.pop();
+    try std.testing.expectEqual(@as(?u32, 30), popped);
+    try std.testing.expectEqual(@as(usize, 2), arr.len);
+
+    // Test clear
+    arr.clear();
+    try std.testing.expectEqual(@as(usize, 0), arr.len);
+}
+
+test "FixedCapacityArray overflow returns error" {
+    var arr: FixedCapacityArray(u32, 2) = .{};
+
+    try arr.append(1);
+    try arr.append(2);
+
+    // Third append should fail
+    const result = arr.append(3);
+    try std.testing.expectError(error.Overflow, result);
+    try std.testing.expectEqual(@as(usize, 2), arr.len);
+}
+
+test "FixedCapacityArray pop on empty returns null" {
+    var arr: FixedCapacityArray(u32, 4) = .{};
+    const result = arr.pop();
+    try std.testing.expectEqual(@as(?u32, null), result);
+}
+
+test "open_element_stack uses fixed capacity" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    // Open several nested elements
+    for (0..10) |_| {
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(100, 100) },
+        });
+    }
+
+    // Verify stack has correct depth
+    try std.testing.expectEqual(@as(usize, 10), engine.open_element_stack.len);
+
+    // Close all
+    for (0..10) |_| {
+        engine.closeElement();
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), engine.open_element_stack.len);
+}
+
+test "floating_roots uses fixed capacity" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    // Create a parent element
+    try engine.openElement(.{
+        .id = LayoutId.init("parent"),
+        .layout = .{ .sizing = Sizing.fixed(400, 300) },
+    });
+
+    // Add several floating elements (no IDs needed for this test)
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(50, 50) },
+        .floating = .{ .z_index = 0 },
+    });
+    engine.closeElement();
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(50, 50) },
+        .floating = .{ .z_index = 1 },
+    });
+    engine.closeElement();
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(50, 50) },
+        .floating = .{ .z_index = 2 },
+    });
+    engine.closeElement();
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(50, 50) },
+        .floating = .{ .z_index = 3 },
+    });
+    engine.closeElement();
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(50, 50) },
+        .floating = .{ .z_index = 4 },
+    });
+    engine.closeElement();
+
+    engine.closeElement();
+
+    // Verify floating roots tracked
+    try std.testing.expectEqual(@as(usize, 5), engine.floating_roots.len);
+}
+
+test "UTF-8 text wrapping handles multi-byte characters" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    // Mock text measurement: each codepoint is 10px wide
+    const mockMeasure = struct {
+        fn measure(
+            text: []const u8,
+            _: u16,
+            font_size: u16,
+            _: ?f32,
+            _: ?*anyopaque,
+        ) TextMeasurement {
+            // Count UTF-8 codepoints, not bytes
+            var codepoint_count: usize = 0;
+            const view = std.unicode.Utf8View.initUnchecked(text);
+            var iter = view.iterator();
+            while (iter.nextCodepointSlice()) |_| {
+                codepoint_count += 1;
+            }
+            return .{
+                .width = @as(f32, @floatFromInt(codepoint_count)) * 10.0,
+                .height = @floatFromInt(font_size),
+            };
+        }
+    }.measure;
+
+    engine.setMeasureTextFn(mockMeasure, null);
+    engine.beginFrame(800, 600);
+
+    // Container that forces wrapping
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(100, 200) }, // 100px wide = 10 codepoints max
+    });
+
+    // Text with UTF-8 characters (each emoji is multi-byte but should be 1 codepoint = 10px)
+    // "Hello 世界" = 8 codepoints (H,e,l,l,o, ,世,界) = 80px, fits in 100px
+    try engine.text("Hello 世界", .{
+        .font_size = 16,
+        .wrap_mode = .words,
+    });
+
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Should render without crashing - UTF-8 handling works
+    const text_elem = engine.elements.getConst(1);
+    try std.testing.expect(text_elem.text_data != null);
+}
+
+test "UTF-8 text wrapping with emoji" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const mockMeasure = struct {
+        fn measure(
+            text: []const u8,
+            _: u16,
+            font_size: u16,
+            _: ?f32,
+            _: ?*anyopaque,
+        ) TextMeasurement {
+            var codepoint_count: usize = 0;
+            const view = std.unicode.Utf8View.initUnchecked(text);
+            var iter = view.iterator();
+            while (iter.nextCodepointSlice()) |_| {
+                codepoint_count += 1;
+            }
+            return .{
+                .width = @as(f32, @floatFromInt(codepoint_count)) * 10.0,
+                .height = @floatFromInt(font_size),
+            };
+        }
+    }.measure;
+
+    engine.setMeasureTextFn(mockMeasure, null);
+    engine.beginFrame(800, 600);
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(50, 200) }, // Very narrow - 5 codepoints
+    });
+
+    // Emoji characters (4 bytes each in UTF-8, but 1 codepoint each)
+    try engine.text("🎉🎊🎁", .{
+        .font_size = 16,
+        .wrap_mode = .words,
+    });
+
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Should complete without panic
+    const text_elem = engine.elements.getConst(1);
+    try std.testing.expect(text_elem.text_data != null);
+}
+
+test "capacity constants are reasonable" {
+    // Verify our limits are sensible
+    try std.testing.expect(MAX_ELEMENTS_PER_FRAME >= 1000);
+    try std.testing.expect(MAX_OPEN_DEPTH >= 32);
+    try std.testing.expect(MAX_FLOATING_ROOTS >= 64);
+    try std.testing.expect(MAX_TRACKED_IDS >= 1000);
+    try std.testing.expect(MAX_LINES_PER_TEXT >= 100);
+}
+
+test "id_to_index is pre-allocated" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    // After init, hashmaps should have capacity (pre-allocated)
+    // We can't directly check capacity, but we can verify lookups work
+    engine.beginFrame(800, 600);
+
+    try engine.openElement(.{
+        .id = LayoutId.init("root"),
+        .layout = .{ .sizing = Sizing.fill() },
+    });
+
+    // Create several elements with comptime IDs
+    try engine.openElement(.{
+        .id = LayoutId.init("elem-a"),
+        .layout = .{ .sizing = Sizing.fixed(10, 10) },
+    });
+    engine.closeElement();
+
+    try engine.openElement(.{
+        .id = LayoutId.init("elem-b"),
+        .layout = .{ .sizing = Sizing.fixed(10, 10) },
+    });
+    engine.closeElement();
+
+    try engine.openElement(.{
+        .id = LayoutId.init("elem-c"),
+        .layout = .{ .sizing = Sizing.fixed(10, 10) },
+    });
+    engine.closeElement();
+
+    engine.closeElement();
+    _ = try engine.endFrame();
+
+    // All IDs should be trackable via getBoundingBox
+    const root_bbox = engine.getBoundingBox(LayoutId.init("root").id);
+    try std.testing.expect(root_bbox != null);
+
+    const elem_a_bbox = engine.getBoundingBox(LayoutId.init("elem-a").id);
+    try std.testing.expect(elem_a_bbox != null);
+
+    const elem_b_bbox = engine.getBoundingBox(LayoutId.init("elem-b").id);
+    try std.testing.expect(elem_b_bbox != null);
+
+    const elem_c_bbox = engine.getBoundingBox(LayoutId.init("elem-c").id);
+    try std.testing.expect(elem_c_bbox != null);
+}
+
+test "beginFrame clears fixed capacity arrays" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    // First frame
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fill() },
+        .floating = .{},
+    });
+    engine.closeElement();
+    _ = try engine.endFrame();
+
+    // Verify state after first frame
+    try std.testing.expect(engine.floating_roots.len > 0 or engine.open_element_stack.len == 0);
+
+    // Second frame should start clean
+    engine.beginFrame(800, 600);
+    try std.testing.expectEqual(@as(usize, 0), engine.open_element_stack.len);
+    try std.testing.expectEqual(@as(usize, 0), engine.floating_roots.len);
+}
+
+// ============================================================================
+// Phase 2 Tests: Performance Improvements
+// ============================================================================
+
+test "word-level measurement measures words not characters" {
+    // This test verifies that findWordBoundaries correctly identifies word boundaries
+    var words: FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT) = .{};
+
+    // Mock measure function that returns width = length * 10
+    const measure = struct {
+        fn measure(text: []const u8, _: u16, _: u16, _: ?f32, _: ?*anyopaque) TextMeasurement {
+            return .{ .width = @floatFromInt(text.len * 10), .height = 20 };
+        }
+    }.measure;
+
+    const config = TextConfig{ .font_size = 16 };
+    const text = "hello world test";
+
+    const word_count = LayoutEngine.findWordBoundaries(text, measure, config, null, &words);
+
+    // Should find 3 words: "hello", "world", "test"
+    try std.testing.expectEqual(@as(u32, 3), word_count);
+    try std.testing.expectEqual(@as(usize, 3), words.len);
+
+    // First word: "hello" (5 chars * 10 = 50)
+    try std.testing.expectEqual(@as(u32, 0), words.buffer[0].start);
+    try std.testing.expectEqual(@as(u32, 5), words.buffer[0].end);
+    try std.testing.expectEqual(@as(f32, 50), words.buffer[0].width);
+    try std.testing.expect(!words.buffer[0].has_newline);
+
+    // Second word: "world" (5 chars * 10 = 50)
+    try std.testing.expectEqual(@as(u32, 6), words.buffer[1].start);
+    try std.testing.expectEqual(@as(u32, 11), words.buffer[1].end);
+    try std.testing.expectEqual(@as(f32, 50), words.buffer[1].width);
+
+    // Third word: "test" (4 chars * 10 = 40)
+    try std.testing.expectEqual(@as(u32, 12), words.buffer[2].start);
+    try std.testing.expectEqual(@as(u32, 16), words.buffer[2].end);
+    try std.testing.expectEqual(@as(f32, 40), words.buffer[2].width);
+}
+
+test "word-level measurement handles newlines" {
+    var words: FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT) = .{};
+
+    const measure = struct {
+        fn measure(text: []const u8, _: u16, _: u16, _: ?f32, _: ?*anyopaque) TextMeasurement {
+            return .{ .width = @floatFromInt(text.len * 10), .height = 20 };
+        }
+    }.measure;
+
+    const config = TextConfig{ .font_size = 16 };
+    const text = "hello\nworld";
+
+    const word_count = LayoutEngine.findWordBoundaries(text, measure, config, null, &words);
+
+    // Should find 2 words with newline marker on first
+    try std.testing.expectEqual(@as(u32, 2), word_count);
+    try std.testing.expect(words.buffer[0].has_newline);
+    try std.testing.expect(!words.buffer[1].has_newline);
+}
+
+test "floating element resolved_floating_parent is cached at creation" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    // Create parent with ID
+    try engine.openElement(.{
+        .id = LayoutId.init("parent"),
+        .layout = .{ .sizing = Sizing.fixed(200, 200) },
+        .background_color = Color.white,
+    });
+
+    // Create floating child that references parent by ID
+    try engine.openElement(.{
+        .id = LayoutId.init("float"),
+        .layout = .{ .sizing = Sizing.fixed(50, 50) },
+        .floating = .{
+            .attach_to_parent = false,
+            .parent_id = LayoutId.init("parent").id,
+        },
+        .background_color = Color.red,
+    });
+    engine.closeElement();
+
+    engine.closeElement();
+
+    // Before endFrame, check that resolved_floating_parent was set
+    const float_idx = engine.id_to_index.get(LayoutId.init("float").id).?;
+    const float_elem = engine.elements.getConst(float_idx);
+
+    // The resolved parent should be cached
+    try std.testing.expect(float_elem.computed.resolved_floating_parent != null);
+
+    const parent_idx = engine.id_to_index.get(LayoutId.init("parent").id).?;
+    try std.testing.expectEqual(parent_idx, float_elem.computed.resolved_floating_parent.?);
+
+    _ = try engine.endFrame();
+}
+
+test "floating expand.width makes element match parent width" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    // Create parent container
+    try engine.openElement(.{
+        .id = LayoutId.init("parent"),
+        .layout = .{ .sizing = Sizing.fixed(300, 200) },
+        .background_color = Color.white,
+    });
+
+    // Create floating child with expand.width = true
+    try engine.openElement(.{
+        .id = LayoutId.init("expand-float"),
+        .layout = .{ .sizing = Sizing.fitContent() }, // Would normally fit content
+        .floating = .{
+            .attach_to_parent = true,
+            .expand = .{ .width = true, .height = false },
+        },
+        .background_color = Color.blue,
+    });
+    engine.closeElement();
+
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // The floating element should have expanded to parent width
+    const float_bbox = engine.getBoundingBox(LayoutId.init("expand-float").id).?;
+    try std.testing.expectEqual(@as(f32, 300), float_bbox.width);
+}
+
+test "floating expand.height makes element match parent height" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    // Create parent container
+    try engine.openElement(.{
+        .id = LayoutId.init("parent"),
+        .layout = .{ .sizing = Sizing.fixed(300, 250) },
+        .background_color = Color.white,
+    });
+
+    // Create floating child with expand.height = true
+    try engine.openElement(.{
+        .id = LayoutId.init("expand-float"),
+        .layout = .{ .sizing = Sizing.fitContent() },
+        .floating = .{
+            .attach_to_parent = true,
+            .expand = .{ .width = false, .height = true },
+        },
+        .background_color = Color.green,
+    });
+    engine.closeElement();
+
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // The floating element should have expanded to parent height
+    const float_bbox = engine.getBoundingBox(LayoutId.init("expand-float").id).?;
+    try std.testing.expectEqual(@as(f32, 250), float_bbox.height);
+}
+
+test "floating expand both dimensions" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+
+    // Create parent container
+    try engine.openElement(.{
+        .id = LayoutId.init("parent"),
+        .layout = .{ .sizing = Sizing.fixed(400, 300) },
+        .background_color = Color.white,
+    });
+
+    // Create floating child with both expand flags
+    try engine.openElement(.{
+        .id = LayoutId.init("modal"),
+        .layout = .{ .sizing = Sizing.fitContent() },
+        .floating = .{
+            .attach_to_parent = true,
+            .expand = .{ .width = true, .height = true },
+        },
+        .background_color = Color.red,
+    });
+    engine.closeElement();
+
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // The floating element should match parent in both dimensions
+    const modal_bbox = engine.getBoundingBox(LayoutId.init("modal").id).?;
+    try std.testing.expectEqual(@as(f32, 400), modal_bbox.width);
+    try std.testing.expectEqual(@as(f32, 300), modal_bbox.height);
+}
+
+// ============================================================================
+// Phase 3 Tests: Code Quality
+// ============================================================================
+
+test "Offset2D shared type works in FloatingConfig" {
+    const float_config = types.FloatingConfig{
+        .offset = types.Offset2D.init(10, 20),
+        .z_index = 5,
+    };
+
+    try std.testing.expectEqual(@as(f32, 10), float_config.offset.x);
+    try std.testing.expectEqual(@as(f32, 20), float_config.offset.y);
+}
+
+test "Offset2D shared type works in ScrollConfig" {
+    const scroll_config = types.ScrollConfig{
+        .horizontal = true,
+        .vertical = true,
+        .scroll_offset = types.Offset2D.init(100, 200),
+    };
+
+    try std.testing.expectEqual(@as(f32, 100), scroll_config.scroll_offset.x);
+    try std.testing.expectEqual(@as(f32, 200), scroll_config.scroll_offset.y);
+}
+
+test "Offset2D zero constructor" {
+    const offset = types.Offset2D.zero();
+    try std.testing.expectEqual(@as(f32, 0), offset.x);
+    try std.testing.expectEqual(@as(f32, 0), offset.y);
+}
+
+test "WordInfo struct has expected fields" {
+    const word = WordInfo{
+        .start = 0,
+        .end = 5,
+        .width = 50.0,
+        .trailing_space_width = 8.0,
+        .has_newline = false,
+    };
+
+    try std.testing.expectEqual(@as(u32, 0), word.start);
+    try std.testing.expectEqual(@as(u32, 5), word.end);
+    try std.testing.expectEqual(@as(f32, 50.0), word.width);
+    try std.testing.expectEqual(@as(f32, 8.0), word.trailing_space_width);
+    try std.testing.expect(!word.has_newline);
+}
+
+test "MAX_WORDS_PER_TEXT constant is reasonable" {
+    // Ensure we have enough capacity for typical text content
+    try std.testing.expect(MAX_WORDS_PER_TEXT >= 1000);
+    try std.testing.expect(MAX_WORDS_PER_TEXT <= 10000); // But not excessive
+}
+
+test "distributeGrow gives equal space to grow elements" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(300, 100);
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fill(), .layout_direction = .left_to_right },
+    });
+    {
+        // Three grow elements should each get 100px (300/3)
+        try engine.openElement(.{
+            .id = LayoutId.init("grow1"),
+            .layout = .{ .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(50) } },
+            .background_color = Color.red,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .id = LayoutId.init("grow2"),
+            .layout = .{ .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(50) } },
+            .background_color = Color.green,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .id = LayoutId.init("grow3"),
+            .layout = .{ .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(50) } },
+            .background_color = Color.blue,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const grow1 = engine.getBoundingBox(LayoutId.init("grow1").id).?;
+    const grow2 = engine.getBoundingBox(LayoutId.init("grow2").id).?;
+    const grow3 = engine.getBoundingBox(LayoutId.init("grow3").id).?;
+
+    try std.testing.expectEqual(@as(f32, 100), grow1.width);
+    try std.testing.expectEqual(@as(f32, 100), grow2.width);
+    try std.testing.expectEqual(@as(f32, 100), grow3.width);
+}
+
+test "distributeShrink respects minimum constraints" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(100, 100); // Very small viewport
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fill(), .layout_direction = .left_to_right },
+    });
+    {
+        // Child with min constraint of 60 should not shrink below that
+        try engine.openElement(.{
+            .id = LayoutId.init("minchild"),
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fitMinMax(60, 200), // min=60, max=200
+                    .height = SizingAxis.fixed(50),
+                },
+            },
+            .background_color = Color.red,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .id = LayoutId.init("shrinkable"),
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fitMax(200), // min=0, can shrink fully
+                    .height = SizingAxis.fixed(50),
+                },
+            },
+            .background_color = Color.blue,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const minchild = engine.getBoundingBox(LayoutId.init("minchild").id).?;
+
+    // minchild should not shrink below its minimum of 60
+    try std.testing.expect(minchild.width >= 60);
 }

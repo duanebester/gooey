@@ -6,6 +6,24 @@
 const std = @import("std");
 
 // ============================================================================
+// Shared Types (Phase 3.4)
+// ============================================================================
+
+/// Shared 2D offset type for scroll offsets, floating offsets, etc.
+pub const Offset2D = struct {
+    x: f32 = 0,
+    y: f32 = 0,
+
+    pub fn zero() Offset2D {
+        return .{};
+    }
+
+    pub fn init(x: f32, y: f32) Offset2D {
+        return .{ .x = x, .y = y };
+    }
+};
+
+// ============================================================================
 // Sizing Types
 // ============================================================================
 
@@ -481,7 +499,7 @@ pub const AttachPoint = enum {
 };
 
 pub const FloatingConfig = struct {
-    offset: struct { x: f32 = 0, y: f32 = 0 } = .{},
+    offset: Offset2D = .{},
     z_index: i16 = 0,
     attach_to_parent: bool = true,
     parent_id: ?u32 = null,
@@ -513,7 +531,7 @@ pub const FloatingConfig = struct {
 pub const ScrollConfig = struct {
     horizontal: bool = false,
     vertical: bool = false,
-    scroll_offset: struct { x: f32 = 0, y: f32 = 0 } = .{},
+    scroll_offset: Offset2D = .{},
 };
 
 // ============================================================================

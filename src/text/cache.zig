@@ -67,8 +67,9 @@ pub const GlyphKey = struct {
 
         var h: u64 = FNV_OFFSET;
 
-        // Hash font_ptr (8 bytes)
-        const ptr_bytes: [8]u8 = @bitCast(self.font_ptr);
+        // Hash font_ptr (convert to u64 first for platform independence - wasm32 has 32-bit usize)
+        const ptr_as_u64: u64 = @intCast(self.font_ptr);
+        const ptr_bytes: [8]u8 = @bitCast(ptr_as_u64);
         for (ptr_bytes) |b| {
             h ^= b;
             h *%= FNV_PRIME;

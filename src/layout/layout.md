@@ -1,4 +1,4 @@
-Gooey Layout System
+# Gooey Layout System
 
 A Clay-inspired declarative layout engine for building UI hierarchies with flexbox-style sizing and positioning.
 
@@ -302,17 +302,87 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
 ### LayoutConfig
 
-| Field              | Type              | Default          | Description             |
-| ------------------ | ----------------- | ---------------- | ----------------------- |
-| `sizing`           | `Sizing`          | fit/fit          | Width and height sizing |
-| `padding`          | `Padding`         | `{}`             | Inner spacing           |
-| `child_gap`        | `u16`             | `0`              | Space between children  |
-| `child_alignment`  | `ChildAlignment`  | top-left         | How to align children   |
-| `layout_direction` | `LayoutDirection` | `.left_to_right` | Row or column           |
+| Field                    | Type                   | Default          | Description                     |
+| ------------------------ | ---------------------- | ---------------- | ------------------------------- |
+| `sizing`                 | `Sizing`               | fit/fit          | Width and height sizing         |
+| `padding`                | `Padding`              | `{}`             | Inner spacing                   |
+| `child_gap`              | `u16`                  | `0`              | Space between children          |
+| `child_alignment`        | `ChildAlignment`       | top-left         | How to align children           |
+| `layout_direction`       | `LayoutDirection`      | `.left_to_right` | Row or column                   |
+| `main_axis_distribution` | `MainAxisDistribution` | `.start`         | How to distribute extra space   |
+| `aspect_ratio`           | `?f32`                 | `null`           | Width/height ratio (e.g., 16/9) |
+
+### FloatingConfig
+
+Floating elements are positioned relative to a parent but don't affect sibling layout:
+
+```zig
+.floating = .{
+    .offset = Offset2D.init(10, 20),     // Position offset
+    .z_index = 100,                       // Render order
+    .attach_to_parent = true,             // Use direct parent
+    .parent_id = LayoutId.init("target").id,  // Or reference by ID
+    .element_attach = .left_top,          // Anchor point on this element
+    .parent_attach = .left_bottom,        // Anchor point on parent
+    .expand = .{ .width = true, .height = false },  // Match parent size
+}
+```
+
+**Preset configurations:**
+
+```zig
+FloatingConfig.dropdown()  // Positioned below parent
+FloatingConfig.tooltip()   // Positioned above parent with offset
+FloatingConfig.modal()     // Centered on viewport
+```
+
+### TextConfig
+
+```zig
+try engine.text("Hello, World!", .{
+    .color = Color.black,
+    .font_id = 0,
+    .font_size = 16,
+    .line_height = 1.2,           // Multiplier of font_size
+    .letter_spacing = 0,
+    .wrap_mode = .words,          // .none, .words, .newlines
+    .alignment = .left,           // .left, .center, .right
+    .decoration = .{ .underline = false, .strikethrough = false },
+});
+```
+
+### Offset2D
+
+Shared type for 2D offsets (used in FloatingConfig and ScrollConfig):
+
+```zig
+const offset = Offset2D.init(10, 20);
+const zero = Offset2D.zero();
+```
+
+## Capacity Constants
+
+The layout engine uses fixed-capacity collections (no allocation during frames):
+
+| Constant                 | Value | Description                         |
+| ------------------------ | ----- | ----------------------------------- |
+| `MAX_ELEMENTS_PER_FRAME` | 8192  | Maximum elements in a single frame  |
+| `MAX_OPEN_DEPTH`         | 64    | Maximum nesting depth               |
+| `MAX_FLOATING_ROOTS`     | 256   | Maximum floating elements per frame |
+| `MAX_TRACKED_IDS`        | 4096  | Maximum elements with IDs           |
+| `MAX_LINES_PER_TEXT`     | 1024  | Maximum wrapped lines per text      |
+| `MAX_WORDS_PER_TEXT`     | 2048  | Maximum words for text wrapping     |
 
 ## Notes
 
 - **Text strings** are copied into the per-frame arena, so they're safe to use with temporary buffers.
 - **ID collisions** are detected in debug builds and logged as warnings.
 - **Text elements** must be inside a container (enforced by debug assertion).
-- The layout algorithm runs in 4 phases: min-sizes → final-sizes → positions → render commands.
+- **Zero allocation during frame** - all collections use fixed capacity, panic on overflow.
+- The layout algorithm runs in these phases:
+  1. **Min sizes** (bottom-up) - compute minimum content sizes
+  2. **Final sizes** (top-down) - distribute available space
+  3. **Text wrapping** - wrap text using word-level measurement for performance
+  4. **Positions** (top-down) - compute final bounding boxes
+  5. **Floating elements** - position floating elements relative to parents
+  6. **Render commands** - generate drawing instructions sorted by z-index
