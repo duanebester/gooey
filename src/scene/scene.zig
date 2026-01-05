@@ -28,6 +28,28 @@ pub const SvgInstance = svg_instance_mod.SvgInstance;
 const image_instance_mod = @import("image_instance.zig");
 pub const ImageInstance = image_instance_mod.ImageInstance;
 
+// ============================================================================
+// Hard Limits (static memory allocation policy)
+// ============================================================================
+
+/// Maximum quads per frame - fail fast if exceeded
+pub const MAX_QUADS_PER_FRAME = 65536;
+
+/// Maximum glyphs per frame - fail fast if exceeded
+pub const MAX_GLYPHS_PER_FRAME = 65536;
+
+/// Maximum shadows per frame - fail fast if exceeded
+pub const MAX_SHADOWS_PER_FRAME = 4096;
+
+/// Maximum SVG instances per frame - fail fast if exceeded
+pub const MAX_SVGS_PER_FRAME = 8192;
+
+/// Maximum image instances per frame - fail fast if exceeded
+pub const MAX_IMAGES_PER_FRAME = 4096;
+
+/// Maximum clip stack depth - fail fast if exceeded
+pub const MAX_CLIP_STACK_DEPTH = 32;
+
 pub const DrawOrder = u32;
 
 // ============================================================================
@@ -161,6 +183,9 @@ pub const Quad = extern struct {
     border_widths: Edges = Edges.zero,
 
     pub fn filled(x: f32, y: f32, width: f32, height: f32, color: Hsla) Quad {
+        // Assert valid bounds: dimensions must be non-negative
+        std.debug.assert(width >= 0);
+        std.debug.assert(height >= 0);
         return .{
             .bounds_origin_x = x,
             .bounds_origin_y = y,
@@ -171,6 +196,10 @@ pub const Quad = extern struct {
     }
 
     pub fn rounded(x: f32, y: f32, width: f32, height: f32, color: Hsla, radius: f32) Quad {
+        // Assert valid bounds: dimensions and radius must be non-negative
+        std.debug.assert(width >= 0);
+        std.debug.assert(height >= 0);
+        std.debug.assert(radius >= 0);
         return .{
             .bounds_origin_x = x,
             .bounds_origin_y = y,
@@ -182,6 +211,8 @@ pub const Quad = extern struct {
     }
 
     pub fn withBorder(self: Quad, color: Hsla, width: f32) Quad {
+        // Assert valid border width
+        std.debug.assert(width >= 0);
         var q = self;
         q.border_color = color;
         q.border_widths = Edges.all(width);
@@ -198,6 +229,23 @@ pub const Quad = extern struct {
         return q;
     }
 };
+
+comptime {
+    // Quad must be 112 bytes for proper GPU buffer alignment
+    if (@sizeOf(Quad) != 112) {
+        @compileError(std.fmt.comptimePrint(
+            "Quad must be 112 bytes, got {}",
+            .{@sizeOf(Quad)},
+        ));
+    }
+    // Verify background is at 16-byte aligned offset for Metal float4
+    if (@offsetOf(Quad, "background") != 48) {
+        @compileError(std.fmt.comptimePrint(
+            "Quad.background must be at offset 48 for Metal float4 alignment, got {}",
+            .{@offsetOf(Quad, "background")},
+        ));
+    }
+}
 
 // ============================================================================
 // Shadow Primitive
@@ -240,6 +288,10 @@ pub const Shadow = extern struct {
     // Total: 80 bytes
 
     pub fn drop(x: f32, y: f32, width: f32, height: f32, blur: f32) Shadow {
+        // Assert valid bounds: dimensions and blur must be non-negative
+        std.debug.assert(width >= 0);
+        std.debug.assert(height >= 0);
+        std.debug.assert(blur >= 0);
         return .{
             .content_origin_x = x,
             .content_origin_y = y,
@@ -252,6 +304,8 @@ pub const Shadow = extern struct {
     }
 
     pub fn forQuad(quad: Quad, blur: f32) Shadow {
+        // Assert valid blur radius
+        std.debug.assert(blur >= 0);
         return .{
             .content_origin_x = quad.bounds_origin_x,
             .content_origin_y = quad.bounds_origin_y,
@@ -278,11 +332,37 @@ pub const Shadow = extern struct {
     }
 
     pub fn withCornerRadius(self: Shadow, radius: f32) Shadow {
+        // Assert valid corner radius
+        std.debug.assert(radius >= 0);
         var s = self;
         s.corner_radii = Corners.all(radius);
         return s;
     }
 };
+
+comptime {
+    // Shadow must be 80 bytes for proper GPU buffer alignment
+    if (@sizeOf(Shadow) != 80) {
+        @compileError(std.fmt.comptimePrint(
+            "Shadow must be 80 bytes, got {}",
+            .{@sizeOf(Shadow)},
+        ));
+    }
+    // Verify corner_radii is at 16-byte aligned offset for Metal float4
+    if (@offsetOf(Shadow, "corner_radii") != 32) {
+        @compileError(std.fmt.comptimePrint(
+            "Shadow.corner_radii must be at offset 32 for Metal float4 alignment, got {}",
+            .{@offsetOf(Shadow, "corner_radii")},
+        ));
+    }
+    // Verify color is at 16-byte aligned offset for Metal float4
+    if (@offsetOf(Shadow, "color") != 48) {
+        @compileError(std.fmt.comptimePrint(
+            "Shadow.color must be at offset 48 for Metal float4 alignment, got {}",
+            .{@offsetOf(Shadow, "color")},
+        ));
+    }
+}
 
 // ============================================================================
 // Text/Glyph Primitive
@@ -328,6 +408,14 @@ pub const GlyphInstance = extern struct {
         uv_bottom: f32,
         color: Hsla,
     ) GlyphInstance {
+        // Assert valid size: dimensions must be non-negative
+        std.debug.assert(width >= 0);
+        std.debug.assert(height >= 0);
+        // Assert valid UV coordinates: must be in normalized range [0, 1]
+        std.debug.assert(uv_left >= 0 and uv_left <= 1);
+        std.debug.assert(uv_top >= 0 and uv_top <= 1);
+        std.debug.assert(uv_right >= 0 and uv_right <= 1);
+        std.debug.assert(uv_bottom >= 0 and uv_bottom <= 1);
         return .{
             .pos_x = x,
             .pos_y = y,
@@ -374,16 +462,22 @@ comptime {
 
 pub const Scene = struct {
     allocator: std.mem.Allocator,
-    shadows: std.ArrayList(Shadow),
-    quads: std.ArrayList(Quad),
-    glyphs: std.ArrayList(GlyphInstance),
-    svg_instances: std.ArrayList(SvgInstance),
-    images: std.ArrayList(ImageInstance),
+    // Using ArrayListUnmanaged for static memory allocation policy:
+    // Pre-allocate at init, no dynamic growth during rendering
+    shadows: std.ArrayListUnmanaged(Shadow),
+    quads: std.ArrayListUnmanaged(Quad),
+    glyphs: std.ArrayListUnmanaged(GlyphInstance),
+    svg_instances: std.ArrayListUnmanaged(SvgInstance),
+    images: std.ArrayListUnmanaged(ImageInstance),
     next_order: DrawOrder,
     // Clip mask stack for nested clipping regions
-    clip_stack: std.ArrayList(ContentMask.ClipBounds),
-    // Track if out-of-order inserts occurred (requiring sort)
-    needs_sort: bool,
+    clip_stack: std.ArrayListUnmanaged(ContentMask.ClipBounds),
+    // Per-array dirty flags: track which arrays had out-of-order inserts (requiring sort)
+    needs_sort_shadows: bool,
+    needs_sort_quads: bool,
+    needs_sort_glyphs: bool,
+    needs_sort_svgs: bool,
+    needs_sort_images: bool,
 
     // Viewport culling
     viewport_width: f32,
@@ -395,6 +489,8 @@ pub const Scene = struct {
 
     const Self = @This();
 
+    /// Initialize scene without pre-allocation (for tests or simple usage).
+    /// For production, prefer initCapacity() to avoid allocations during rendering.
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
@@ -405,13 +501,52 @@ pub const Scene = struct {
             .images = .{},
             .next_order = 0,
             .clip_stack = .{},
-            .needs_sort = false,
+            .needs_sort_shadows = false,
+            .needs_sort_quads = false,
+            .needs_sort_glyphs = false,
+            .needs_sort_svgs = false,
+            .needs_sort_images = false,
             // Viewport culling - disabled by default (0 = no culling)
             .viewport_width = 0,
             .viewport_height = 0,
             .culling_enabled = false,
             .stats = null,
         };
+    }
+
+    /// Initialize scene with pre-allocated capacity for all primitive arrays.
+    /// This eliminates dynamic allocation during frame rendering.
+    /// Uses the hard limits defined at module level.
+    pub fn initCapacity(allocator: std.mem.Allocator) !Self {
+        var self = Self{
+            .allocator = allocator,
+            .shadows = .{},
+            .quads = .{},
+            .glyphs = .{},
+            .svg_instances = .{},
+            .images = .{},
+            .next_order = 0,
+            .clip_stack = .{},
+            .needs_sort_shadows = false,
+            .needs_sort_quads = false,
+            .needs_sort_glyphs = false,
+            .needs_sort_svgs = false,
+            .needs_sort_images = false,
+            .viewport_width = 0,
+            .viewport_height = 0,
+            .culling_enabled = false,
+            .stats = null,
+        };
+
+        // Pre-allocate all arrays to their maximum capacity
+        try self.shadows.ensureTotalCapacity(allocator, MAX_SHADOWS_PER_FRAME);
+        try self.quads.ensureTotalCapacity(allocator, MAX_QUADS_PER_FRAME);
+        try self.glyphs.ensureTotalCapacity(allocator, MAX_GLYPHS_PER_FRAME);
+        try self.svg_instances.ensureTotalCapacity(allocator, MAX_SVGS_PER_FRAME);
+        try self.images.ensureTotalCapacity(allocator, MAX_IMAGES_PER_FRAME);
+        try self.clip_stack.ensureTotalCapacity(allocator, MAX_CLIP_STACK_DEPTH);
+
+        return self;
     }
 
     pub fn deinit(self: *Self) void {
@@ -431,7 +566,11 @@ pub const Scene = struct {
         self.images.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
         self.next_order = 0;
-        self.needs_sort = false;
+        self.needs_sort_shadows = false;
+        self.needs_sort_quads = false;
+        self.needs_sort_glyphs = false;
+        self.needs_sort_svgs = false;
+        self.needs_sort_images = false;
     }
 
     // ========================================================================
@@ -440,6 +579,7 @@ pub const Scene = struct {
 
     /// Push a clip region onto the stack (intersects with current clip)
     pub fn pushClip(self: *Self, bounds: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.clip_stack.items.len < MAX_CLIP_STACK_DEPTH);
         const current = self.currentClip();
         const intersected = ContentMask.ClipBounds.intersect(current, bounds);
         try self.clip_stack.append(self.allocator, intersected);
@@ -479,6 +619,7 @@ pub const Scene = struct {
 
     /// Insert an SVG instance without clipping
     pub fn insertSvg(self: *Self, instance: SvgInstance) !void {
+        std.debug.assert(self.svg_instances.items.len < MAX_SVGS_PER_FRAME);
         var inst = instance;
         inst.order = self.next_order;
         self.next_order += 1;
@@ -487,6 +628,7 @@ pub const Scene = struct {
 
     /// Insert an SVG instance with the current clip mask applied
     pub fn insertSvgClipped(self: *Self, instance: SvgInstance) !void {
+        std.debug.assert(self.svg_instances.items.len < MAX_SVGS_PER_FRAME);
         const clip = self.currentClip();
         var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
         inst.order = self.next_order;
@@ -498,9 +640,10 @@ pub const Scene = struct {
     /// Use this when the draw order was reserved earlier via reserveOrder().
     /// The clip bounds should be captured at the same time as the draw order.
     pub fn insertSvgWithOrder(self: *Self, instance: SvgInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.svg_instances.items.len < MAX_SVGS_PER_FRAME);
         var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
         inst.order = order;
-        self.needs_sort = true; // Out-of-order insert requires sorting
+        self.needs_sort_svgs = true; // Out-of-order insert requires sorting
         try self.svg_instances.append(self.allocator, inst);
     }
 
@@ -518,6 +661,7 @@ pub const Scene = struct {
 
     /// Insert an image instance without clipping
     pub fn insertImage(self: *Self, instance: ImageInstance) !void {
+        std.debug.assert(self.images.items.len < MAX_IMAGES_PER_FRAME);
         var inst = instance;
         inst.order = self.next_order;
         self.next_order += 1;
@@ -526,6 +670,7 @@ pub const Scene = struct {
 
     /// Insert an image instance with the current clip mask applied
     pub fn insertImageClipped(self: *Self, instance: ImageInstance) !void {
+        std.debug.assert(self.images.items.len < MAX_IMAGES_PER_FRAME);
         const clip = self.currentClip();
         var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
         inst.order = self.next_order;
@@ -537,9 +682,10 @@ pub const Scene = struct {
     /// Use this when the draw order was reserved earlier via reserveOrder().
     /// The clip bounds should be captured at the same time as the draw order.
     pub fn insertImageWithOrder(self: *Self, instance: ImageInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.images.items.len < MAX_IMAGES_PER_FRAME);
         var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
         inst.order = order;
-        self.needs_sort = true; // Out-of-order insert requires sorting
+        self.needs_sort_images = true; // Out-of-order insert requires sorting
         try self.images.append(self.allocator, inst);
     }
 
@@ -557,6 +703,7 @@ pub const Scene = struct {
 
     /// Insert a glyph without clipping
     pub fn insertGlyph(self: *Self, glyph: GlyphInstance) !void {
+        std.debug.assert(self.glyphs.items.len < MAX_GLYPHS_PER_FRAME);
         var g = glyph;
         g.order = self.next_order;
         self.next_order += 1;
@@ -568,6 +715,7 @@ pub const Scene = struct {
 
     /// Insert a glyph with the current clip mask applied
     pub fn insertGlyphClipped(self: *Self, glyph: GlyphInstance) !void {
+        std.debug.assert(self.glyphs.items.len < MAX_GLYPHS_PER_FRAME);
         const clip = self.currentClip();
         var g = glyph.withClipBounds(clip);
         g.order = self.next_order;
@@ -588,6 +736,7 @@ pub const Scene = struct {
 
     /// Insert a shadow (call BEFORE the quad it shadows)
     pub fn insertShadow(self: *Self, shadow: Shadow) !void {
+        std.debug.assert(self.shadows.items.len < MAX_SHADOWS_PER_FRAME);
         // Fast viewport cull - account for blur radius and offset
         if (self.culling_enabled) {
             const expand = shadow.blur_radius * 2; // Shadow extends beyond content
@@ -611,6 +760,7 @@ pub const Scene = struct {
     }
 
     pub fn insertQuad(self: *Self, quad: Quad) !void {
+        std.debug.assert(self.quads.items.len < MAX_QUADS_PER_FRAME);
         // Fast viewport cull - skip if completely outside viewport
         if (self.culling_enabled) {
             const right = quad.bounds_origin_x + quad.bounds_size_width;
@@ -637,6 +787,7 @@ pub const Scene = struct {
     /// Insert a quad with a caller-specified draw order (for overlays, debug UI, etc.)
     /// This preserves the quad's order field and triggers sorting in finish().
     pub fn insertQuadWithOrder(self: *Self, quad: Quad) !void {
+        std.debug.assert(self.quads.items.len < MAX_QUADS_PER_FRAME);
         // Fast viewport cull - skip if completely outside viewport
         if (self.culling_enabled) {
             const right = quad.bounds_origin_x + quad.bounds_size_width;
@@ -652,7 +803,7 @@ pub const Scene = struct {
         }
 
         // Preserve caller's order - this will require sorting
-        self.needs_sort = true;
+        self.needs_sort_quads = true;
         try self.quads.append(self.allocator, quad);
 
         // Track inserted quads for profiler
@@ -672,6 +823,7 @@ pub const Scene = struct {
 
     /// Insert a quad with the current clip mask applied
     pub fn insertQuadClipped(self: *Self, quad: Quad) !void {
+        std.debug.assert(self.quads.items.len < MAX_QUADS_PER_FRAME);
         const clip = self.currentClip();
 
         // Cull against clip bounds (even tighter than viewport)
@@ -706,37 +858,44 @@ pub const Scene = struct {
     }
 
     /// Finalize the scene for rendering.
-    /// Sorts primitives by draw order only if out-of-order inserts occurred.
+    /// Sorts primitives by draw order only for arrays that had out-of-order inserts.
     pub fn finish(self: *Self) void {
-        // Fast path: elements are inserted in order via next_order, no sort needed
-        if (!self.needs_sort) return;
-
-        // Slow path: sort by draw order (future: if insertWithOrder is added)
-        std.sort.pdq(Shadow, self.shadows.items, {}, struct {
-            fn lessThan(_: void, a: Shadow, b: Shadow) bool {
-                return a.order < b.order;
-            }
-        }.lessThan);
-        std.sort.pdq(Quad, self.quads.items, {}, struct {
-            fn lessThan(_: void, a: Quad, b: Quad) bool {
-                return a.order < b.order;
-            }
-        }.lessThan);
-        std.sort.pdq(GlyphInstance, self.glyphs.items, {}, struct {
-            fn lessThan(_: void, a: GlyphInstance, b: GlyphInstance) bool {
-                return a.order < b.order;
-            }
-        }.lessThan);
-        std.sort.pdq(SvgInstance, self.svg_instances.items, {}, struct {
-            fn lessThan(_: void, a: SvgInstance, b: SvgInstance) bool {
-                return a.order < b.order;
-            }
-        }.lessThan);
-        std.sort.pdq(ImageInstance, self.images.items, {}, struct {
-            fn lessThan(_: void, a: ImageInstance, b: ImageInstance) bool {
-                return a.order < b.order;
-            }
-        }.lessThan);
+        // Only sort arrays that had out-of-order inserts
+        if (self.needs_sort_shadows) {
+            std.sort.pdq(Shadow, self.shadows.items, {}, struct {
+                fn lessThan(_: void, a: Shadow, b: Shadow) bool {
+                    return a.order < b.order;
+                }
+            }.lessThan);
+        }
+        if (self.needs_sort_quads) {
+            std.sort.pdq(Quad, self.quads.items, {}, struct {
+                fn lessThan(_: void, a: Quad, b: Quad) bool {
+                    return a.order < b.order;
+                }
+            }.lessThan);
+        }
+        if (self.needs_sort_glyphs) {
+            std.sort.pdq(GlyphInstance, self.glyphs.items, {}, struct {
+                fn lessThan(_: void, a: GlyphInstance, b: GlyphInstance) bool {
+                    return a.order < b.order;
+                }
+            }.lessThan);
+        }
+        if (self.needs_sort_svgs) {
+            std.sort.pdq(SvgInstance, self.svg_instances.items, {}, struct {
+                fn lessThan(_: void, a: SvgInstance, b: SvgInstance) bool {
+                    return a.order < b.order;
+                }
+            }.lessThan);
+        }
+        if (self.needs_sort_images) {
+            std.sort.pdq(ImageInstance, self.images.items, {}, struct {
+                fn lessThan(_: void, a: ImageInstance, b: ImageInstance) bool {
+                    return a.order < b.order;
+                }
+            }.lessThan);
+        }
     }
 
     pub fn shadowCount(self: *const Self) usize {
@@ -808,8 +967,8 @@ test "Scene finish skips sort when elements are in order" {
     try scene.insertQuad(.{ .bounds_origin_x = 10, .bounds_origin_y = 10, .bounds_size_width = 10, .bounds_size_height = 10 });
     try scene.insertQuad(.{ .bounds_origin_x = 20, .bounds_origin_y = 20, .bounds_size_width = 10, .bounds_size_height = 10 });
 
-    // needs_sort should be false
-    try testing.expect(!scene.needs_sort);
+    // needs_sort_quads should be false
+    try testing.expect(!scene.needs_sort_quads);
 
     // finish() should be a no-op (fast path)
     scene.finish();
@@ -830,8 +989,8 @@ test "insertQuadWithOrder preserves draw order and triggers sort" {
     try scene.insertQuad(.{ .bounds_origin_x = 10, .bounds_origin_y = 10, .bounds_size_width = 10, .bounds_size_height = 10 });
     try scene.insertQuad(.{ .bounds_origin_x = 20, .bounds_origin_y = 20, .bounds_size_width = 10, .bounds_size_height = 10 });
 
-    // needs_sort should be false after regular inserts
-    try testing.expect(!scene.needs_sort);
+    // needs_sort_quads should be false after regular inserts
+    try testing.expect(!scene.needs_sort_quads);
 
     // Insert a quad with a high explicit order (like debug overlay)
     const DEBUG_ORDER: DrawOrder = 0xFFFF_FF00;
@@ -839,8 +998,8 @@ test "insertQuadWithOrder preserves draw order and triggers sort" {
     overlay_quad.order = DEBUG_ORDER;
     try scene.insertQuadWithOrder(overlay_quad);
 
-    // needs_sort should now be true
-    try testing.expect(scene.needs_sort);
+    // needs_sort_quads should now be true
+    try testing.expect(scene.needs_sort_quads);
 
     // The overlay quad should have its order preserved
     try testing.expectEqual(DEBUG_ORDER, scene.quads.items[3].order);

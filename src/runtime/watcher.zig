@@ -5,16 +5,45 @@
 //!
 //! Usage: zig build hot
 //! Usage: zig build hot -- run-counter  (to run a specific target)
+//!
+//! ## Implementation Notes
+//!
+//! **File Time Tracking**: The watcher maintains a hashmap of file paths to
+//! modification times. Key ownership follows this pattern:
+//! - When a NEW file is detected: the allocated path string is transferred to
+//!   the hashmap (hashmap owns the memory)
+//! - When an EXISTING file changes: the path is freed immediately after lookup
+//!   since the hashmap already owns a copy
+//! - On put() failure: the path is freed to prevent leaks
+//!
+//! **Process Group Handling**: Child processes are spawned as process group
+//! leaders (pgid=0). This allows killing the entire process tree on reload,
+//! including grandchild processes spawned by `zig build run`.
 
 const std = @import("std");
 const posix = std.posix;
 
+// =============================================================================
+// Configuration
+// =============================================================================
+
 const poll_interval_ms = 300;
 const debounce_ms = 100;
 
-// Global flag for signal handling
+/// Maximum number of files to track (per CLAUDE.md: "put a limit on everything")
+/// Prevents unbounded memory growth if pointed at a large directory tree.
+const MAX_WATCHED_FILES: usize = 10_000;
+
+// =============================================================================
+// Global State for Signal Handling
+// =============================================================================
+
 var should_quit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 var global_watcher: ?*Watcher = null;
+
+// =============================================================================
+// Entry Point
+// =============================================================================
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -38,6 +67,7 @@ pub fn main() !void {
     std.debug.print("│  🔥 Gooey Hot Reload                │\n", .{});
     std.debug.print("├─────────────────────────────────────┤\n", .{});
     std.debug.print("│  Watching: {s:<24}│\n", .{watch_path});
+    std.debug.print("│  Max files: {d:<22}│\n", .{MAX_WATCHED_FILES});
     std.debug.print("│  Press Ctrl+C to stop               │\n", .{});
     std.debug.print("└─────────────────────────────────────┘\n", .{});
     std.debug.print("\n", .{});
@@ -77,6 +107,10 @@ fn handleSignal(sig: i32) callconv(.c) void {
     }
 }
 
+// =============================================================================
+// Watcher Implementation
+// =============================================================================
+
 const Watcher = struct {
     allocator: std.mem.Allocator,
     watch_path: []const u8,
@@ -84,6 +118,7 @@ const Watcher = struct {
     file_times: std.StringHashMap(i128),
     child: ?std.process.Child,
     last_change: i64,
+    max_files_warning_shown: bool,
 
     fn init(allocator: std.mem.Allocator, watch_path: []const u8, build_cmd: []const []const u8) Watcher {
         return .{
@@ -93,12 +128,14 @@ const Watcher = struct {
             .file_times = std.StringHashMap(i128).init(allocator),
             .child = null,
             .last_change = 0,
+            .max_files_warning_shown = false,
         };
     }
 
     fn deinit(self: *Watcher) void {
         self.killChild();
 
+        // Free all owned path strings in the hashmap
         var it = self.file_times.keyIterator();
         while (it.next()) |key| {
             self.allocator.free(key.*);
@@ -156,6 +193,15 @@ const Watcher = struct {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.path, ".zig")) continue;
 
+            // Check file limit before adding new files
+            if (self.file_times.count() >= MAX_WATCHED_FILES) {
+                if (!self.max_files_warning_shown) {
+                    std.debug.print("⚠️  Maximum watched files limit reached ({d}). Some files may not be monitored.\n", .{MAX_WATCHED_FILES});
+                    self.max_files_warning_shown = true;
+                }
+                break;
+            }
+
             const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.watch_path, entry.path });
 
             const stat = std.fs.cwd().statFile(full_path) catch |err| {
@@ -167,15 +213,19 @@ const Watcher = struct {
             const mtime = stat.mtime;
 
             if (self.file_times.get(full_path)) |old_time| {
+                // File already tracked - check if modified
                 if (mtime != old_time) {
                     self.file_times.put(full_path, mtime) catch {};
                     changed = true;
                     std.debug.print("   📝 {s}\n", .{entry.path});
                 }
+                // Free the newly allocated path - hashmap already owns a copy of the key
                 self.allocator.free(full_path);
             } else {
-                // New file - store it (don't free, hashmap owns it now)
+                // New file - transfer ownership of full_path to hashmap
+                // DO NOT free full_path here; the hashmap now owns it
                 self.file_times.put(full_path, mtime) catch {
+                    // On failure, we must free since hashmap didn't take ownership
                     self.allocator.free(full_path);
                 };
             }

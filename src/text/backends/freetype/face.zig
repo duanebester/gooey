@@ -271,106 +271,51 @@ pub const FreeTypeFace = struct {
         buffer: []u8,
         buffer_size: u32,
     ) !RasterizedGlyph {
-        _ = buffer_size;
+        std.debug.assert(scale > 0);
+        std.debug.assert(subpixel_x >= 0 and subpixel_x < 1.0);
+        std.debug.assert(subpixel_y >= 0 and subpixel_y < 1.0);
 
-        const glyph_metrics = self.glyphMetrics(glyph_id);
+        return renderGlyphInternal(
+            self.ft_face,
+            glyph_id,
+            self.point_size,
+            scale,
+            subpixel_x,
+            subpixel_y,
+            buffer,
+            buffer_size,
+        );
+    }
 
-        // Handle empty glyphs (spaces, etc.)
-        if (glyph_metrics.width < 1 or glyph_metrics.height < 1) {
-            return RasterizedGlyph{
-                .width = 0,
-                .height = 0,
-                .offset_x = 0,
-                .offset_y = 0,
-                .advance_x = glyph_metrics.advance_x,
-                .is_color = false,
-            };
-        }
+    /// Render a glyph from any FT_Face (for fallback fonts)
+    /// This is a static method that can render glyphs from fonts not owned by this face
+    pub fn renderGlyphFromFont(
+        ft_face: ft.FT_Face,
+        glyph_id: u16,
+        scale: f32,
+        subpixel_x: f32,
+        subpixel_y: f32,
+        buffer: []u8,
+        buffer_size: u32,
+    ) !RasterizedGlyph {
+        std.debug.assert(scale > 0);
+        std.debug.assert(subpixel_x >= 0 and subpixel_x < 1.0);
+        std.debug.assert(subpixel_y >= 0 and subpixel_y < 1.0);
 
-        // Apply subpixel offset via FT_Set_Transform
-        const subpixel_offset_x = ft.floatToF26dot6(subpixel_x * scale);
-        const subpixel_offset_y = ft.floatToF26dot6(subpixel_y * scale);
+        // Get the current point size from the face
+        const size_metrics = ft_face.size.metrics;
+        const point_size = ft.f26dot6ToFloat(size_metrics.y_ppem);
 
-        const delta = ft.FT_Vector{
-            .x = subpixel_offset_x,
-            .y = subpixel_offset_y,
-        };
-
-        ft.FT_Set_Transform(self.ft_face, null, &delta);
-
-        // Set scaled size for rendering
-        const scaled_size = self.point_size * scale;
-        const size_f26d6 = ft.floatToF26dot6(scaled_size);
-        _ = ft.FT_Set_Char_Size(self.ft_face, 0, size_f26d6, 96, 96);
-
-        // Load and render the glyph
-        var load_flags = ft.FT_LOAD_DEFAULT;
-        if (ft.hasColor(self.ft_face)) {
-            load_flags |= ft.FT_LOAD_COLOR;
-        }
-
-        const load_err = ft.FT_Load_Glyph(self.ft_face, glyph_id, load_flags);
-        if (load_err != 0) {
-            ft.FT_Set_Transform(self.ft_face, null, null);
-            _ = ft.FT_Set_Char_Size(self.ft_face, 0, ft.floatToF26dot6(self.point_size), 96, 96);
-            return error.GlyphLoadFailed;
-        }
-
-        const slot = self.ft_face.glyph;
-
-        // Render to bitmap if not already
-        if (slot.format != .FT_GLYPH_FORMAT_BITMAP) {
-            const render_err = ft.FT_Render_Glyph(slot, .FT_RENDER_MODE_NORMAL);
-            if (render_err != 0) {
-                ft.FT_Set_Transform(self.ft_face, null, null);
-                _ = ft.FT_Set_Char_Size(self.ft_face, 0, ft.floatToF26dot6(self.point_size), 96, 96);
-                return error.GlyphRenderFailed;
-            }
-        }
-
-        // Reset transform for future operations
-        ft.FT_Set_Transform(self.ft_face, null, null);
-        _ = ft.FT_Set_Char_Size(self.ft_face, 0, ft.floatToF26dot6(self.point_size), 96, 96);
-
-        const bitmap = slot.bitmap;
-        const width = bitmap.width;
-        const height = bitmap.rows;
-        const is_color = bitmap.pixel_mode == .FT_PIXEL_MODE_BGRA;
-
-        // Copy bitmap to output buffer
-        if (width > 0 and height > 0) {
-            const src_pitch: usize = if (bitmap.pitch < 0)
-                @intCast(-bitmap.pitch)
-            else
-                @intCast(bitmap.pitch);
-
-            const bytes_per_pixel: usize = if (is_color) 4 else 1;
-            const dst_pitch = width * bytes_per_pixel;
-
-            var y: usize = 0;
-            while (y < height) : (y += 1) {
-                const src_row = bitmap.buffer + y * src_pitch;
-                const dst_row = buffer.ptr + y * dst_pitch;
-
-                if (is_color) {
-                    @memcpy(dst_row[0 .. width * 4], src_row[0 .. width * 4]);
-                } else {
-                    @memcpy(dst_row[0..width], src_row[0..width]);
-                }
-            }
-        }
-
-        // Use FreeType's native bitmap positioning
-        // bitmap_left: horizontal offset from pen position to left edge of bitmap
-        // bitmap_top: vertical offset from baseline to top edge of bitmap (positive = above)
-        return RasterizedGlyph{
-            .width = width,
-            .height = height,
-            .offset_x = slot.bitmap_left,
-            .offset_y = slot.bitmap_top,
-            .advance_x = glyph_metrics.advance_x,
-            .is_color = is_color,
-        };
+        return renderGlyphInternal(
+            ft_face,
+            glyph_id,
+            point_size,
+            scale,
+            subpixel_x,
+            subpixel_y,
+            buffer,
+            buffer_size,
+        );
     }
 
     fn computeMetrics(face: ft.FT_Face, size: f32) Metrics {
@@ -439,120 +384,144 @@ pub const FreeTypeFace = struct {
             .cell_width = cell_width,
         };
     }
+};
 
-    /// Render a glyph from any FT_Face (for fallback fonts)
-    /// This is a static method that can render glyphs from fonts not owned by this face
-    pub fn renderGlyphFromFont(
-        ft_face: ft.FT_Face,
-        glyph_id: u16,
-        scale: f32,
-        subpixel_x: f32,
-        subpixel_y: f32,
-        buffer: []u8,
-        buffer_size: u32,
-    ) !RasterizedGlyph {
-        _ = buffer_size;
-        _ = scale; // Scale should already be applied to the face
+// =============================================================================
+// Shared Internal Functions
+// =============================================================================
 
-        // Get glyph metrics first
-        var err = ft.FT_Load_Glyph(ft_face, glyph_id, ft.FT_LOAD_DEFAULT);
-        if (err != 0) {
-            return error.GlyphLoadFailed;
-        }
+/// Internal glyph rendering implementation shared by both public methods
+fn renderGlyphInternal(
+    ft_face: ft.FT_Face,
+    glyph_id: u16,
+    point_size: f32,
+    scale: f32,
+    subpixel_x: f32,
+    subpixel_y: f32,
+    buffer: []u8,
+    buffer_size: u32,
+) !RasterizedGlyph {
+    _ = buffer_size;
 
-        var slot = ft_face.glyph;
-        const metrics = slot.metrics;
+    // Assertions for input validation
+    std.debug.assert(scale > 0);
+    std.debug.assert(point_size > 0);
 
-        const advance_x = ft.f26dot6ToFloat(metrics.horiAdvance);
-        const width_f = ft.f26dot6ToFloat(metrics.width);
-        const height_f = ft.f26dot6ToFloat(metrics.height);
+    // Get glyph metrics first (before applying transform)
+    const err = ft.FT_Load_Glyph(ft_face, glyph_id, ft.FT_LOAD_DEFAULT);
+    if (err != 0) {
+        return error.GlyphLoadFailed;
+    }
 
-        // Handle empty glyphs
-        if (width_f < 1 or height_f < 1) {
-            return RasterizedGlyph{
-                .width = 0,
-                .height = 0,
-                .offset_x = 0,
-                .offset_y = 0,
-                .advance_x = advance_x,
-                .is_color = false,
-            };
-        }
+    const metrics = ft_face.glyph.metrics;
+    const advance_x = ft.f26dot6ToFloat(metrics.horiAdvance);
+    const width_f = ft.f26dot6ToFloat(metrics.width);
+    const height_f = ft.f26dot6ToFloat(metrics.height);
 
-        // Apply subpixel offset
-        const subpixel_offset_x = ft.floatToF26dot6(subpixel_x);
-        const subpixel_offset_y = ft.floatToF26dot6(subpixel_y);
-
-        const delta = ft.FT_Vector{
-            .x = subpixel_offset_x,
-            .y = subpixel_offset_y,
-        };
-
-        ft.FT_Set_Transform(ft_face, null, &delta);
-
-        // Load and render
-        var load_flags = ft.FT_LOAD_DEFAULT;
-        if (ft.hasColor(ft_face)) {
-            load_flags |= ft.FT_LOAD_COLOR;
-        }
-
-        err = ft.FT_Load_Glyph(ft_face, glyph_id, load_flags);
-        if (err != 0) {
-            ft.FT_Set_Transform(ft_face, null, null);
-            return error.GlyphLoadFailed;
-        }
-
-        slot = ft_face.glyph;
-
-        if (slot.format != .FT_GLYPH_FORMAT_BITMAP) {
-            const render_err = ft.FT_Render_Glyph(slot, .FT_RENDER_MODE_NORMAL);
-            if (render_err != 0) {
-                ft.FT_Set_Transform(ft_face, null, null);
-                return error.GlyphRenderFailed;
-            }
-        }
-
-        ft.FT_Set_Transform(ft_face, null, null);
-
-        const bitmap = slot.bitmap;
-        const width = bitmap.width;
-        const height = bitmap.rows;
-        const is_color = bitmap.pixel_mode == .FT_PIXEL_MODE_BGRA;
-
-        // Copy bitmap
-        if (width > 0 and height > 0) {
-            const src_pitch: usize = if (bitmap.pitch < 0)
-                @intCast(-bitmap.pitch)
-            else
-                @intCast(bitmap.pitch);
-
-            const bytes_per_pixel: usize = if (is_color) 4 else 1;
-            const dst_pitch = width * bytes_per_pixel;
-
-            var y: usize = 0;
-            while (y < height) : (y += 1) {
-                const src_row = bitmap.buffer + y * src_pitch;
-                const dst_row = buffer.ptr + y * dst_pitch;
-
-                if (is_color) {
-                    @memcpy(dst_row[0 .. width * 4], src_row[0 .. width * 4]);
-                } else {
-                    @memcpy(dst_row[0..width], src_row[0..width]);
-                }
-            }
-        }
-
-        // Use FreeType's native bitmap positioning
+    // Handle empty glyphs (spaces, etc.)
+    if (width_f < 1 or height_f < 1) {
         return RasterizedGlyph{
-            .width = width,
-            .height = height,
-            .offset_x = slot.bitmap_left,
-            .offset_y = slot.bitmap_top,
+            .width = 0,
+            .height = 0,
+            .offset_x = 0,
+            .offset_y = 0,
             .advance_x = advance_x,
-            .is_color = is_color,
+            .is_color = false,
         };
     }
-};
+
+    // Apply subpixel offset via FT_Set_Transform
+    const subpixel_offset_x = ft.floatToF26dot6(subpixel_x * scale);
+    const subpixel_offset_y = ft.floatToF26dot6(subpixel_y * scale);
+
+    const delta = ft.FT_Vector{
+        .x = subpixel_offset_x,
+        .y = subpixel_offset_y,
+    };
+
+    ft.FT_Set_Transform(ft_face, null, &delta);
+
+    // Set scaled size for rendering
+    const scaled_size = point_size * scale;
+    const size_f26d6 = ft.floatToF26dot6(scaled_size);
+    _ = ft.FT_Set_Char_Size(ft_face, 0, size_f26d6, 96, 96);
+
+    // Load and render the glyph
+    var load_flags = ft.FT_LOAD_DEFAULT;
+    if (ft.hasColor(ft_face)) {
+        load_flags |= ft.FT_LOAD_COLOR;
+    }
+
+    const load_err = ft.FT_Load_Glyph(ft_face, glyph_id, load_flags);
+    if (load_err != 0) {
+        ft.FT_Set_Transform(ft_face, null, null);
+        _ = ft.FT_Set_Char_Size(ft_face, 0, ft.floatToF26dot6(point_size), 96, 96);
+        return error.GlyphLoadFailed;
+    }
+
+    const slot = ft_face.glyph;
+
+    // Render to bitmap if not already
+    if (slot.format != .FT_GLYPH_FORMAT_BITMAP) {
+        const render_err = ft.FT_Render_Glyph(slot, .FT_RENDER_MODE_NORMAL);
+        if (render_err != 0) {
+            ft.FT_Set_Transform(ft_face, null, null);
+            _ = ft.FT_Set_Char_Size(ft_face, 0, ft.floatToF26dot6(point_size), 96, 96);
+            return error.GlyphRenderFailed;
+        }
+    }
+
+    // Reset transform for future operations
+    ft.FT_Set_Transform(ft_face, null, null);
+    _ = ft.FT_Set_Char_Size(ft_face, 0, ft.floatToF26dot6(point_size), 96, 96);
+
+    const bitmap = slot.bitmap;
+    const width = bitmap.width;
+    const height = bitmap.rows;
+    const is_color = bitmap.pixel_mode == .FT_PIXEL_MODE_BGRA;
+
+    std.debug.assert(width <= 256); // Reasonable glyph size limit
+    std.debug.assert(height <= 256);
+
+    // Copy bitmap to output buffer
+    if (width > 0 and height > 0) {
+        const src_pitch: usize = if (bitmap.pitch < 0)
+            @intCast(-bitmap.pitch)
+        else
+            @intCast(bitmap.pitch);
+
+        const bytes_per_pixel: usize = if (is_color) 4 else 1;
+        const dst_pitch = width * bytes_per_pixel;
+
+        var y: usize = 0;
+        while (y < height) : (y += 1) {
+            const src_row = bitmap.buffer + y * src_pitch;
+            const dst_row = buffer.ptr + y * dst_pitch;
+
+            if (is_color) {
+                @memcpy(dst_row[0 .. width * 4], src_row[0 .. width * 4]);
+            } else {
+                @memcpy(dst_row[0..width], src_row[0..width]);
+            }
+        }
+    }
+
+    // Use FreeType's native bitmap positioning
+    // bitmap_left: horizontal offset from pen position to left edge of bitmap
+    // bitmap_top: vertical offset from baseline to top edge of bitmap (positive = above)
+    return RasterizedGlyph{
+        .width = width,
+        .height = height,
+        .offset_x = slot.bitmap_left,
+        .offset_y = slot.bitmap_top,
+        .advance_x = advance_x,
+        .is_color = is_color,
+    };
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 test "load system font" {
     var face = try FreeTypeFace.initSystem(.monospace, 14.0);

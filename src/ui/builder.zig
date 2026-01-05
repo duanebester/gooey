@@ -104,6 +104,13 @@ fn contextTypeId(comptime T: type) usize {
 
 /// The UI builder context passed to component render() methods
 pub const Builder = struct {
+    // =========================================================================
+    // Limits (per CLAUDE.md: "put a limit on everything")
+    // =========================================================================
+    pub const MAX_PENDING_INPUTS = 256;
+    pub const MAX_PENDING_TEXT_AREAS = 64;
+    pub const MAX_PENDING_SCROLLS = 64;
+
     allocator: std.mem.Allocator,
     layout: *LayoutEngine,
     scene: *Scene,
@@ -128,6 +135,12 @@ pub const Builder = struct {
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
+
+    /// Hashmap for O(1) scroll lookup by layout_id (avoids O(n) scan per scissor_end)
+    pending_scrolls_by_layout_id: std.AutoHashMapUnmanaged(u32, usize),
+
+    /// Currently dragged scroll container ID (avoids O(n) scan per mouse drag event)
+    active_scroll_drag_id: ?[]const u8 = null,
 
     const PendingInput = struct {
         id: []const u8,
@@ -168,6 +181,8 @@ pub const Builder = struct {
             .pending_inputs = .{},
             .pending_scrolls = .{},
             .pending_text_areas = .{},
+            .pending_scrolls_by_layout_id = .{},
+            .active_scroll_drag_id = null,
         };
     }
 
@@ -175,6 +190,7 @@ pub const Builder = struct {
         self.pending_inputs.deinit(self.allocator);
         self.pending_text_areas.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
+        self.pending_scrolls_by_layout_id.deinit(self.allocator);
     }
 
     // =========================================================================
@@ -711,22 +727,37 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Store for later processing
+        const index = self.pending_scrolls.items.len;
         self.pending_scrolls.append(self.allocator, .{
             .id = id,
             .layout_id = layout_id,
             .style = style,
             .content_layout_id = content_id,
-        }) catch {};
+        }) catch return;
+
+        // Add to hashmap for O(1) lookup by layout_id
+        self.pending_scrolls_by_layout_id.put(self.allocator, layout_id.id, index) catch {};
     }
 
     /// Find a pending scroll by its layout ID (for rendering scrollbars inline with commands)
+    /// O(1) lookup for pending scroll by layout_id (uses hashmap)
     pub fn findPendingScrollByLayoutId(self: *const Self, layout_id_value: u32) ?*const PendingScroll {
-        for (self.pending_scrolls.items) |*pending| {
-            if (pending.layout_id.id == layout_id_value) {
-                return pending;
+        if (self.pending_scrolls_by_layout_id.get(layout_id_value)) |index| {
+            if (index < self.pending_scrolls.items.len) {
+                return &self.pending_scrolls.items[index];
             }
         }
         return null;
+    }
+
+    /// Track which scroll container is being dragged (for O(1) drag event handling)
+    pub fn setActiveScrollDrag(self: *Self, id: ?[]const u8) void {
+        self.active_scroll_drag_id = id;
+    }
+
+    /// Get the currently dragged scroll container ID
+    pub fn getActiveScrollDrag(self: *const Self) ?[]const u8 {
+        return self.active_scroll_drag_id;
     }
 
     /// Register scroll container regions and update state

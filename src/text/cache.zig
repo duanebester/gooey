@@ -2,6 +2,8 @@
 //!
 //! Renders glyphs on-demand using the FontFace interface and caches
 //! them in the texture atlas.
+//!
+//! Uses fixed-capacity hash table (no dynamic allocation after init).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -57,6 +59,53 @@ pub const GlyphKey = struct {
             .subpixel_y = subpixel_y,
         };
     }
+
+    /// Compute hash for this key using FNV-1a
+    pub fn hash(self: GlyphKey) u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+
+        var h: u64 = FNV_OFFSET;
+
+        // Hash font_ptr (8 bytes)
+        const ptr_bytes: [8]u8 = @bitCast(self.font_ptr);
+        for (ptr_bytes) |b| {
+            h ^= b;
+            h *%= FNV_PRIME;
+        }
+
+        // Hash glyph_id (2 bytes)
+        h ^= @as(u64, self.glyph_id & 0xFF);
+        h *%= FNV_PRIME;
+        h ^= @as(u64, self.glyph_id >> 8);
+        h *%= FNV_PRIME;
+
+        // Hash size_fixed (2 bytes)
+        h ^= @as(u64, self.size_fixed & 0xFF);
+        h *%= FNV_PRIME;
+        h ^= @as(u64, self.size_fixed >> 8);
+        h *%= FNV_PRIME;
+
+        // Hash scale, subpixel_x, subpixel_y (1 byte each)
+        h ^= @as(u64, self.scale_fixed);
+        h *%= FNV_PRIME;
+        h ^= @as(u64, self.subpixel_x);
+        h *%= FNV_PRIME;
+        h ^= @as(u64, self.subpixel_y);
+        h *%= FNV_PRIME;
+
+        return h;
+    }
+
+    /// Check equality of two keys
+    pub fn eql(a: GlyphKey, b: GlyphKey) bool {
+        return a.font_ptr == b.font_ptr and
+            a.glyph_id == b.glyph_id and
+            a.size_fixed == b.size_fixed and
+            a.scale_fixed == b.scale_fixed and
+            a.subpixel_x == b.subpixel_x and
+            a.subpixel_y == b.subpixel_y;
+    }
 };
 
 /// Cached glyph information
@@ -73,40 +122,79 @@ pub const CachedGlyph = struct {
     is_color: bool,
 };
 
-/// Glyph cache with atlas management
+/// Entry in the glyph cache
+const GlyphEntry = struct {
+    key: GlyphKey,
+    glyph: CachedGlyph,
+    valid: bool,
+};
+
+/// Glyph cache with atlas management - fixed capacity, zero runtime allocation
 pub const GlyphCache = struct {
     allocator: std.mem.Allocator,
-    /// Glyph lookup table
-    map: std.AutoHashMap(GlyphKey, CachedGlyph),
+
+    /// Fixed-capacity glyph storage
+    entries: [MAX_CACHED_GLYPHS]GlyphEntry,
+    /// Hash table: maps hash slot -> entry index (EMPTY_SLOT = empty)
+    hash_table: [HASH_TABLE_SIZE]u16,
+    /// Number of valid entries
+    entry_count: u32,
+
     /// Grayscale atlas for regular text
     grayscale_atlas: Atlas,
-    /// Color atlas for emoji (optional)
-    color_atlas: ?Atlas,
+
     /// Reusable bitmap buffer for rendering
     render_buffer: []u8,
     render_buffer_size: u32,
     scale_factor: f32,
 
     const Self = @This();
+
+    // Capacity limits
+    pub const MAX_CACHED_GLYPHS: usize = 4096;
+    const HASH_TABLE_SIZE: usize = 8192; // 2x entries for low collision rate
+    const MAX_PROBE_LENGTH: usize = 64;
+    const EMPTY_SLOT: u16 = 0xFFFF;
     const RENDER_BUFFER_SIZE: u32 = 256; // Max glyph size
 
+    // Compile-time verification
+    comptime {
+        std.debug.assert(MAX_CACHED_GLYPHS < EMPTY_SLOT); // Ensure sentinel is valid
+        std.debug.assert(HASH_TABLE_SIZE >= MAX_CACHED_GLYPHS * 2); // Good load factor
+    }
+
     pub fn init(allocator: std.mem.Allocator, scale: f32) !Self {
+        std.debug.assert(scale > 0);
+        std.debug.assert(scale <= 4.0);
+
         const buffer_bytes = RENDER_BUFFER_SIZE * RENDER_BUFFER_SIZE;
         const render_buffer = try allocator.alloc(u8, buffer_bytes);
         @memset(render_buffer, 0);
 
-        return .{
+        var self = Self{
             .allocator = allocator,
-            .map = std.AutoHashMap(GlyphKey, CachedGlyph).init(allocator),
+            .entries = undefined,
+            .hash_table = [_]u16{EMPTY_SLOT} ** HASH_TABLE_SIZE,
+            .entry_count = 0,
             .grayscale_atlas = try Atlas.init(allocator, .grayscale),
-            .color_atlas = null,
             .render_buffer = render_buffer,
             .render_buffer_size = buffer_bytes,
             .scale_factor = scale,
         };
+
+        // Initialize all entries as invalid
+        for (&self.entries) |*entry| {
+            entry.valid = false;
+        }
+
+        std.debug.assert(self.entry_count == 0);
+        return self;
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
+        std.debug.assert(scale > 0);
+        std.debug.assert(scale <= 4.0);
+
         if (self.scale_factor != scale) {
             self.scale_factor = scale;
             self.clear();
@@ -114,17 +202,103 @@ pub const GlyphCache = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.map.deinit();
         self.grayscale_atlas.deinit();
-        if (self.color_atlas) |*ca| ca.deinit();
         self.allocator.free(self.render_buffer);
         self.* = undefined;
+    }
+
+    /// Get a cached glyph, or null if not cached
+    fn getFromCache(self: *Self, key: GlyphKey) ?CachedGlyph {
+        std.debug.assert(key.font_ptr != 0);
+        std.debug.assert(key.subpixel_x < SUBPIXEL_VARIANTS_X);
+
+        const key_hash = key.hash();
+        const start_slot = @as(usize, @truncate(key_hash)) % HASH_TABLE_SIZE;
+        var probe: usize = start_slot;
+
+        for (0..MAX_PROBE_LENGTH) |_| {
+            const entry_idx = self.hash_table[probe];
+
+            if (entry_idx == EMPTY_SLOT) {
+                return null; // Not found
+            }
+
+            std.debug.assert(entry_idx < MAX_CACHED_GLYPHS);
+            const entry = &self.entries[entry_idx];
+
+            if (entry.valid and GlyphKey.eql(entry.key, key)) {
+                return entry.glyph;
+            }
+
+            probe = (probe + 1) % HASH_TABLE_SIZE;
+        }
+
+        return null; // Max probe length reached
+    }
+
+    /// Store a glyph in the cache
+    fn putInCache(self: *Self, key: GlyphKey, glyph: CachedGlyph) void {
+        std.debug.assert(key.font_ptr != 0);
+        std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
+
+        // Find an empty slot in entries array
+        var target_idx: ?usize = null;
+        for (&self.entries, 0..) |*entry, idx| {
+            if (!entry.valid) {
+                target_idx = idx;
+                break;
+            }
+        }
+
+        // If cache is full, we can't add more (atlas eviction handles this case)
+        if (target_idx == null) {
+            return;
+        }
+
+        const idx = target_idx.?;
+
+        // Store the entry
+        self.entries[idx] = .{
+            .key = key,
+            .glyph = glyph,
+            .valid = true,
+        };
+        self.entry_count += 1;
+
+        // Insert into hash table
+        self.insertIntoHashTable(key, @intCast(idx));
+
+        std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
+    }
+
+    /// Insert entry into hash table using linear probing
+    fn insertIntoHashTable(self: *Self, key: GlyphKey, entry_idx: u16) void {
+        std.debug.assert(entry_idx < MAX_CACHED_GLYPHS);
+
+        const key_hash = key.hash();
+        const start_slot = @as(usize, @truncate(key_hash)) % HASH_TABLE_SIZE;
+        var probe: usize = start_slot;
+
+        for (0..MAX_PROBE_LENGTH) |_| {
+            if (self.hash_table[probe] == EMPTY_SLOT) {
+                self.hash_table[probe] = entry_idx;
+                return;
+            }
+            probe = (probe + 1) % HASH_TABLE_SIZE;
+        }
+
+        // Max probe length reached - entry won't be in hash table
+        // This is rare with 2x table size but we handle it gracefully
+        std.debug.assert(false); // Should not happen with proper sizing
     }
 
     /// Reserve space in the atlas, with eviction on overflow.
     /// When the atlas is at max size and can't fit the glyph,
     /// clears the entire cache and tries again.
     fn reserveWithEviction(self: *Self, width: u32, height: u32) !Region {
+        std.debug.assert(width > 0);
+        std.debug.assert(height > 0);
+
         // First attempt: try to reserve directly
         if (try self.grayscale_atlas.reserve(width, height)) |region| {
             return region;
@@ -160,12 +334,12 @@ pub const GlyphCache = struct {
     ) !CachedGlyph {
         const key = GlyphKey.init(face, glyph_id, self.scale_factor, subpixel_x, subpixel_y);
 
-        if (self.map.get(key)) |cached| {
+        if (self.getFromCache(key)) |cached| {
             return cached;
         }
 
         const glyph = try self.renderGlyphSubpixel(face, glyph_id, subpixel_x, subpixel_y);
-        try self.map.put(key, glyph);
+        self.putInCache(key, glyph);
         return glyph;
     }
 
@@ -176,6 +350,9 @@ pub const GlyphCache = struct {
         subpixel_x: u8,
         subpixel_y: u8,
     ) !CachedGlyph {
+        std.debug.assert(subpixel_x < SUBPIXEL_VARIANTS_X);
+        std.debug.assert(subpixel_y < SUBPIXEL_VARIANTS_Y);
+
         @memset(self.render_buffer, 0);
 
         // Calculate subpixel shift (0.0, 0.25, 0.5, or 0.75)
@@ -236,12 +413,12 @@ pub const GlyphCache = struct {
             subpixel_y,
         );
 
-        if (self.map.get(key)) |cached| {
+        if (self.getFromCache(key)) |cached| {
             return cached;
         }
 
         const glyph = try self.renderFallbackGlyph(font_ptr, glyph_id, subpixel_x, subpixel_y);
-        try self.map.put(key, glyph);
+        self.putInCache(key, glyph);
         return glyph;
     }
 
@@ -257,6 +434,9 @@ pub const GlyphCache = struct {
         if (is_wasm) {
             return error.FallbackNotSupported;
         }
+
+        std.debug.assert(subpixel_x < SUBPIXEL_VARIANTS_X);
+        std.debug.assert(subpixel_y < SUBPIXEL_VARIANTS_Y);
 
         @memset(self.render_buffer, 0);
 
@@ -314,9 +494,18 @@ pub const GlyphCache = struct {
 
     /// Clear the cache (call when changing fonts)
     pub fn clear(self: *Self) void {
-        self.map.clearRetainingCapacity();
+        // Clear all entries
+        for (&self.entries) |*entry| {
+            entry.valid = false;
+        }
+
+        // Clear hash table
+        @memset(&self.hash_table, EMPTY_SLOT);
+
+        self.entry_count = 0;
         self.grayscale_atlas.clear();
-        if (self.color_atlas) |*ca| ca.clear();
+
+        std.debug.assert(self.entry_count == 0);
     }
 
     /// Get the grayscale atlas for GPU upload
@@ -327,5 +516,13 @@ pub const GlyphCache = struct {
     /// Get atlas generation (for detecting changes)
     pub inline fn getGeneration(self: *const Self) u32 {
         return self.grayscale_atlas.generation;
+    }
+
+    /// Get cache statistics for debugging
+    pub fn getStats(self: *const Self) struct { entries: u32, capacity: u32 } {
+        return .{
+            .entries = self.entry_count,
+            .capacity = MAX_CACHED_GLYPHS,
+        };
     }
 };

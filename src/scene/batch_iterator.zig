@@ -126,12 +126,22 @@ pub const BatchIterator = struct {
         // Consume all consecutive primitives of this type until we hit
         // a primitive of another type with a lower order
         return switch (kind) {
-            .shadow => self.consumeShadows(quad_order, glyph_order, svg_order, image_order),
-            .quad => self.consumeQuads(shadow_order, glyph_order, svg_order, image_order),
-            .glyph => self.consumeGlyphs(shadow_order, quad_order, svg_order, image_order),
-            .svg => self.consumeSvgs(shadow_order, quad_order, glyph_order, image_order),
-            .image => self.consumeImages(shadow_order, quad_order, glyph_order, svg_order),
+            .shadow => self.consumeBatch(.shadow, minOfOrders(.{ quad_order, glyph_order, svg_order, image_order })),
+            .quad => self.consumeBatch(.quad, minOfOrders(.{ shadow_order, glyph_order, svg_order, image_order })),
+            .glyph => self.consumeBatch(.glyph, minOfOrders(.{ shadow_order, quad_order, svg_order, image_order })),
+            .svg => self.consumeBatch(.svg, minOfOrders(.{ shadow_order, quad_order, glyph_order, image_order })),
+            .image => self.consumeBatch(.image, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order })),
         };
+    }
+
+    /// Find the minimum order among a set of optional orders.
+    /// Returns maxInt if all are null.
+    fn minOfOrders(orders: [4]?scene_mod.DrawOrder) scene_mod.DrawOrder {
+        var min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
+        inline for (orders) |maybe_order| {
+            if (maybe_order) |o| min = @min(min, o);
+        }
+        return min;
     }
 
     /// Peek at the order of the next primitive of a given type
@@ -145,142 +155,62 @@ pub const BatchIterator = struct {
         };
     }
 
-    /// Consume shadows until another type has a lower order
-    fn consumeShadows(
-        self: *Self,
-        quad_order: ?scene_mod.DrawOrder,
-        glyph_order: ?scene_mod.DrawOrder,
-        svg_order: ?scene_mod.DrawOrder,
-        image_order: ?scene_mod.DrawOrder,
-    ) PrimitiveBatch {
-        const start = self.shadow_idx;
-
-        // Find the minimum order of OTHER types
-        var other_min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
-        if (quad_order) |o| other_min = @min(other_min, o);
-        if (glyph_order) |o| other_min = @min(other_min, o);
-        if (svg_order) |o| other_min = @min(other_min, o);
-        if (image_order) |o| other_min = @min(other_min, o);
-
-        // Consume shadows while their order < other_min
-        while (self.shadow_idx < self.shadows.len and
-            self.shadows[self.shadow_idx].order < other_min)
-        {
-            self.shadow_idx += 1;
-        }
-
-        // Must consume at least one (we were called because shadow had min order)
-        if (self.shadow_idx == start) self.shadow_idx += 1;
-
-        return .{ .shadow = self.shadows[start..self.shadow_idx] };
-    }
-
-    /// Consume quads until another type has a lower order
-    fn consumeQuads(
-        self: *Self,
-        shadow_order: ?scene_mod.DrawOrder,
-        glyph_order: ?scene_mod.DrawOrder,
-        svg_order: ?scene_mod.DrawOrder,
-        image_order: ?scene_mod.DrawOrder,
-    ) PrimitiveBatch {
-        const start = self.quad_idx;
-
-        var other_min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
-        if (shadow_order) |o| other_min = @min(other_min, o);
-        if (glyph_order) |o| other_min = @min(other_min, o);
-        if (svg_order) |o| other_min = @min(other_min, o);
-        if (image_order) |o| other_min = @min(other_min, o);
-
-        while (self.quad_idx < self.quads.len and
-            self.quads[self.quad_idx].order < other_min)
-        {
-            self.quad_idx += 1;
-        }
-
-        if (self.quad_idx == start) self.quad_idx += 1;
-
-        return .{ .quad = self.quads[start..self.quad_idx] };
-    }
-
-    /// Consume glyphs until another type has a lower order
-    fn consumeGlyphs(
-        self: *Self,
-        shadow_order: ?scene_mod.DrawOrder,
-        quad_order: ?scene_mod.DrawOrder,
-        svg_order: ?scene_mod.DrawOrder,
-        image_order: ?scene_mod.DrawOrder,
-    ) PrimitiveBatch {
-        const start = self.glyph_idx;
-
-        var other_min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
-        if (shadow_order) |o| other_min = @min(other_min, o);
-        if (quad_order) |o| other_min = @min(other_min, o);
-        if (svg_order) |o| other_min = @min(other_min, o);
-        if (image_order) |o| other_min = @min(other_min, o);
-
-        while (self.glyph_idx < self.glyphs.len and
-            self.glyphs[self.glyph_idx].order < other_min)
-        {
-            self.glyph_idx += 1;
-        }
-
-        if (self.glyph_idx == start) self.glyph_idx += 1;
-
-        return .{ .glyph = self.glyphs[start..self.glyph_idx] };
-    }
-
-    /// Consume SVGs until another type has a lower order
-    fn consumeSvgs(
-        self: *Self,
-        shadow_order: ?scene_mod.DrawOrder,
-        quad_order: ?scene_mod.DrawOrder,
-        glyph_order: ?scene_mod.DrawOrder,
-        image_order: ?scene_mod.DrawOrder,
-    ) PrimitiveBatch {
-        const start = self.svg_idx;
-
-        var other_min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
-        if (shadow_order) |o| other_min = @min(other_min, o);
-        if (quad_order) |o| other_min = @min(other_min, o);
-        if (glyph_order) |o| other_min = @min(other_min, o);
-        if (image_order) |o| other_min = @min(other_min, o);
-
-        while (self.svg_idx < self.svgs.len and
-            self.svgs[self.svg_idx].order < other_min)
-        {
-            self.svg_idx += 1;
-        }
-
-        if (self.svg_idx == start) self.svg_idx += 1;
-
-        return .{ .svg = self.svgs[start..self.svg_idx] };
-    }
-
-    /// Consume images until another type has a lower order
-    fn consumeImages(
-        self: *Self,
-        shadow_order: ?scene_mod.DrawOrder,
-        quad_order: ?scene_mod.DrawOrder,
-        glyph_order: ?scene_mod.DrawOrder,
-        svg_order: ?scene_mod.DrawOrder,
-    ) PrimitiveBatch {
-        const start = self.image_idx;
-
-        var other_min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
-        if (shadow_order) |o| other_min = @min(other_min, o);
-        if (quad_order) |o| other_min = @min(other_min, o);
-        if (glyph_order) |o| other_min = @min(other_min, o);
-        if (svg_order) |o| other_min = @min(other_min, o);
-
-        while (self.image_idx < self.images.len and
-            self.images[self.image_idx].order < other_min)
-        {
-            self.image_idx += 1;
-        }
-
-        if (self.image_idx == start) self.image_idx += 1;
-
-        return .{ .image = self.images[start..self.image_idx] };
+    /// Consume primitives of a given kind until another type has a lower order.
+    /// Returns a batch slice of the consumed primitives.
+    fn consumeBatch(self: *Self, comptime kind: PrimitiveKind, other_min: scene_mod.DrawOrder) PrimitiveBatch {
+        return switch (kind) {
+            .shadow => blk: {
+                const start = self.shadow_idx;
+                while (self.shadow_idx < self.shadows.len and
+                    self.shadows[self.shadow_idx].order < other_min)
+                {
+                    self.shadow_idx += 1;
+                }
+                // Must consume at least one (we were called because this type had min order)
+                if (self.shadow_idx == start) self.shadow_idx += 1;
+                break :blk .{ .shadow = self.shadows[start..self.shadow_idx] };
+            },
+            .quad => blk: {
+                const start = self.quad_idx;
+                while (self.quad_idx < self.quads.len and
+                    self.quads[self.quad_idx].order < other_min)
+                {
+                    self.quad_idx += 1;
+                }
+                if (self.quad_idx == start) self.quad_idx += 1;
+                break :blk .{ .quad = self.quads[start..self.quad_idx] };
+            },
+            .glyph => blk: {
+                const start = self.glyph_idx;
+                while (self.glyph_idx < self.glyphs.len and
+                    self.glyphs[self.glyph_idx].order < other_min)
+                {
+                    self.glyph_idx += 1;
+                }
+                if (self.glyph_idx == start) self.glyph_idx += 1;
+                break :blk .{ .glyph = self.glyphs[start..self.glyph_idx] };
+            },
+            .svg => blk: {
+                const start = self.svg_idx;
+                while (self.svg_idx < self.svgs.len and
+                    self.svgs[self.svg_idx].order < other_min)
+                {
+                    self.svg_idx += 1;
+                }
+                if (self.svg_idx == start) self.svg_idx += 1;
+                break :blk .{ .svg = self.svgs[start..self.svg_idx] };
+            },
+            .image => blk: {
+                const start = self.image_idx;
+                while (self.image_idx < self.images.len and
+                    self.images[self.image_idx].order < other_min)
+                {
+                    self.image_idx += 1;
+                }
+                if (self.image_idx == start) self.image_idx += 1;
+                break :blk .{ .image = self.images[start..self.image_idx] };
+            },
+        };
     }
 
     /// Check if iteration is complete
@@ -402,4 +332,14 @@ test "BatchIterator - coalesces consecutive same type" {
 
     // Done
     try std.testing.expect(iter.next() == null);
+}
+
+test "minOfOrders - all null returns maxInt" {
+    const result = BatchIterator.minOfOrders(.{ null, null, null, null });
+    try std.testing.expectEqual(std.math.maxInt(scene_mod.DrawOrder), result);
+}
+
+test "minOfOrders - finds minimum" {
+    const result = BatchIterator.minOfOrders(.{ @as(?scene_mod.DrawOrder, 5), @as(?scene_mod.DrawOrder, 2), null, @as(?scene_mod.DrawOrder, 10) });
+    try std.testing.expectEqual(@as(scene_mod.DrawOrder, 2), result);
 }

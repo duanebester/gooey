@@ -21,12 +21,31 @@ pub const CoreTextShaper = struct {
     /// Reusable UTF-16 buffer
     utf16_buffer: std.ArrayList(ct.UniChar),
 
+    /// Pre-allocated buffers for glyph data (eliminates per-shape allocations)
+    glyph_buf: [MAX_GLYPHS_PER_RUN]ct.CGGlyph,
+    position_buf: [MAX_GLYPHS_PER_RUN]ct.CGPoint,
+    advance_buf: [MAX_GLYPHS_PER_RUN]ct.CGSize,
+    index_buf: [MAX_GLYPHS_PER_RUN]ct.CFIndex,
+
+    /// Pre-allocated cluster map buffer
+    cluster_buf: [MAX_CLUSTER_MAP]u32,
+
     const Self = @This();
+
+    /// Maximum glyphs per CTRun (covers most text scenarios)
+    const MAX_GLYPHS_PER_RUN: usize = 512;
+    /// Maximum UTF-16 units for cluster mapping (~2KB UTF-8 text)
+    const MAX_CLUSTER_MAP: usize = 2048;
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
             .utf16_buffer = std.ArrayList(ct.UniChar){},
+            .glyph_buf = undefined,
+            .position_buf = undefined,
+            .advance_buf = undefined,
+            .index_buf = undefined,
+            .cluster_buf = undefined,
         };
     }
 
@@ -71,10 +90,9 @@ pub const CoreTextShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        // Convert UTF-8 to UTF-16
+        // Convert UTF-8 to UTF-16 using pre-allocated cluster buffer
         self.utf16_buffer.clearRetainingCapacity();
-        var cluster_map = std.ArrayList(u32){};
-        defer cluster_map.deinit(allocator);
+        var cluster_count: usize = 0;
 
         var byte_idx: u32 = 0;
         var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
@@ -84,15 +102,21 @@ pub const CoreTextShaper = struct {
 
             if (cp <= 0xFFFF) {
                 try self.utf16_buffer.append(self.allocator, @intCast(cp));
-                try cluster_map.append(allocator, start_byte);
+                if (cluster_count >= MAX_CLUSTER_MAP) return error.TextTooLong;
+                self.cluster_buf[cluster_count] = start_byte;
+                cluster_count += 1;
             } else {
                 const adjusted = cp - 0x10000;
                 try self.utf16_buffer.append(self.allocator, @intCast(0xD800 + (adjusted >> 10)));
                 try self.utf16_buffer.append(self.allocator, @intCast(0xDC00 + (adjusted & 0x3FF)));
-                try cluster_map.append(allocator, start_byte);
-                try cluster_map.append(allocator, start_byte);
+                if (cluster_count + 1 >= MAX_CLUSTER_MAP) return error.TextTooLong;
+                self.cluster_buf[cluster_count] = start_byte;
+                self.cluster_buf[cluster_count + 1] = start_byte;
+                cluster_count += 2;
             }
         }
+
+        const cluster_map = self.cluster_buf[0..cluster_count];
 
         const utf16_len = self.utf16_buffer.items.len;
         if (utf16_len == 0) {
@@ -148,6 +172,9 @@ pub const CoreTextShaper = struct {
 
             if (glyph_count == 0) continue;
 
+            // Check against pre-allocated buffer limits
+            if (glyph_count > MAX_GLYPHS_PER_RUN) return error.RunTooLong;
+
             // Get the font actually used for this run (may be a fallback font)
             const run_attrs = ct.CTRunGetAttributes(run);
             const run_font: ?ct.CTFontRef = if (ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName))) |f|
@@ -164,17 +191,12 @@ pub const CoreTextShaper = struct {
                 break :blk (traits & ct.kCTFontTraitColorGlyphs) != 0;
             } else false;
 
-            const glyphs = try allocator.alloc(ct.CGGlyph, @intCast(glyph_count));
-            defer allocator.free(glyphs);
-
-            const positions = try allocator.alloc(ct.CGPoint, @intCast(glyph_count));
-            defer allocator.free(positions);
-
-            const advances = try allocator.alloc(ct.CGSize, @intCast(glyph_count));
-            defer allocator.free(advances);
-
-            const indices = try allocator.alloc(ct.CFIndex, @intCast(glyph_count));
-            defer allocator.free(indices);
+            // Use pre-allocated buffers instead of per-call allocation
+            const glyph_count_usize: usize = @intCast(glyph_count);
+            const glyphs = self.glyph_buf[0..glyph_count_usize];
+            const positions = self.position_buf[0..glyph_count_usize];
+            const advances = self.advance_buf[0..glyph_count_usize];
+            const indices = self.index_buf[0..glyph_count_usize];
 
             const range = ct.CFRange.init(0, glyph_count);
             ct.CTRunGetGlyphs(run, range, glyphs.ptr);
@@ -183,8 +205,8 @@ pub const CoreTextShaper = struct {
             ct.CTRunGetStringIndices(run, range, indices.ptr);
 
             for (0..@intCast(glyph_count)) |i| {
-                const cluster = if (indices[i] >= 0 and indices[i] < cluster_map.items.len)
-                    cluster_map.items[@intCast(indices[i])]
+                const cluster = if (indices[i] >= 0 and indices[i] < cluster_map.len)
+                    cluster_map[@intCast(indices[i])]
                 else
                     0;
 

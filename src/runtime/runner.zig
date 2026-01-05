@@ -2,8 +2,24 @@
 //!
 //! Platform initialization, window creation, and event loop management.
 //! This is the main entry point for running a gooey application.
+//!
+//! ## Architecture Notes
+//!
+//! **Single-Window Limitation**: The current implementation uses static mutable
+//! state in `CallbackState` to bridge between the platform's C-style callbacks
+//! and the Zig runtime. This design:
+//!
+//! - Prevents running multiple windows simultaneously from the same process
+//! - Is acceptable for single-window desktop applications (the common case)
+//! - Could be extended for multi-window support by passing state through the
+//!   platform's callback userdata mechanism (future enhancement)
+//!
+//! **Frame Budget**: In debug builds, warnings are emitted when frame rendering
+//! exceeds 16.67ms (60 FPS budget). This helps identify performance issues early.
+//! The first few frames are skipped since initialization is expected to be slow.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // Platform abstraction
 const platform = @import("../platform/mod.zig");
@@ -28,7 +44,23 @@ const Cx = cx_mod.Cx;
 const Builder = ui_mod.Builder;
 const InputEvent = input_mod.InputEvent;
 
+// =============================================================================
+// Frame Budget Configuration (debug builds only)
+// =============================================================================
+
+/// Threshold for warning (only warn if significantly over budget)
+const FRAME_WARNING_THRESHOLD_NS: i128 = 20_000_000; // 20ms
+
+/// Number of frames to skip before warning (initialization is expected to be slow)
+const FRAME_BUDGET_SKIP_COUNT: u32 = 3;
+
 /// Run a gooey application with the Cx context API
+///
+/// This function initializes the platform, creates a window, sets up the
+/// rendering context, and runs the main event loop.
+///
+/// **Note**: Only one instance of `runCx` can be active at a time due to
+/// static callback state. See module documentation for details.
 pub fn runCx(
     comptime State: type,
     state: *State,
@@ -103,10 +135,13 @@ pub fn runCx(
     defer handler_mod.clearRootState();
 
     // Store references for callbacks
+    // NOTE: Static state limits this to single-window applications.
+    // See module documentation for architectural notes.
     const CallbackState = struct {
         var g_cx: *Cx = undefined;
         var g_on_event: ?*const fn (*Cx, InputEvent) bool = null;
         var g_building: bool = false;
+        var g_frame_count: u32 = 0;
 
         fn onRender(win: *Window) void {
             _ = win;
@@ -114,9 +149,27 @@ pub fn runCx(
             g_building = true;
             defer g_building = false;
 
+            // Frame timing for budget warnings (debug builds only, skip first few frames)
+            const start_time = if (builtin.mode == .Debug)
+                std.time.nanoTimestamp()
+            else
+                0;
+
             frame_mod.renderFrameCx(g_cx, render) catch |err| {
                 std.debug.print("Render error: {}\n", .{err});
             };
+
+            // Check frame budget in debug builds (skip initialization frames)
+            if (builtin.mode == .Debug) {
+                g_frame_count += 1;
+                if (g_frame_count > FRAME_BUDGET_SKIP_COUNT) {
+                    const elapsed = std.time.nanoTimestamp() - start_time;
+                    if (elapsed > FRAME_WARNING_THRESHOLD_NS) {
+                        const elapsed_ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
+                        std.debug.print("⚠️  Frame budget exceeded: {d:.2}ms (target: 16.67ms)\n", .{elapsed_ms});
+                    }
+                }
+            }
         }
 
         fn onInput(win: *Window, event: InputEvent) bool {

@@ -13,6 +13,11 @@ const is_macos = builtin.os.tag == .macos;
 pub const SUBPIXEL_VARIANTS_X: u8 = 4;
 pub const SUBPIXEL_VARIANTS_Y: u8 = 1; // Only horizontal variants needed for text
 
+/// Maximum unique fallback fonts tracked during ShapedRun cleanup.
+/// This is sufficient for typical text runs - exceeding this is extremely rare
+/// and would only occur with text containing many different scripts/emoji.
+pub const MAX_FALLBACK_FONTS_PER_RUN: usize = 16;
+
 /// System font styles
 pub const SystemFont = enum {
     monospace,
@@ -151,7 +156,7 @@ pub const ShapedRun = struct {
             // Release any retained fallback fonts (avoid double-release)
             // Only needed on macOS where we use CoreFoundation
             if (is_macos) {
-                var released: [16]usize = [_]usize{0} ** 16;
+                var released: [MAX_FALLBACK_FONTS_PER_RUN]usize = [_]usize{0} ** MAX_FALLBACK_FONTS_PER_RUN;
                 var released_count: usize = 0;
 
                 for (self.glyphs) |glyph| {
@@ -164,10 +169,16 @@ pub const ShapedRun = struct {
                                 break;
                             }
                         }
-                        if (!already_released and released_count < released.len) {
-                            CFRelease(font_ptr);
-                            released[released_count] = ptr_val;
-                            released_count += 1;
+                        if (!already_released) {
+                            // Assert we haven't exceeded the limit - this would indicate
+                            // an unusually complex text run with many different fallback fonts
+                            std.debug.assert(released_count < MAX_FALLBACK_FONTS_PER_RUN);
+                            if (released_count < released.len) {
+                                CFRelease(font_ptr);
+                                released[released_count] = ptr_val;
+                                released_count += 1;
+                            }
+                            // In release builds, skip releasing if at capacity (leak is better than crash)
                         }
                     }
                 }

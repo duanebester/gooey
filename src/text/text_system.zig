@@ -117,10 +117,13 @@ const CacheEntry = struct {
 };
 
 /// Cache for shaped text runs - fully pre-allocated, zero runtime allocation
-/// Implements LRU eviction when capacity is reached
+/// Uses hash table with open addressing for O(1) average lookup.
+/// Implements LRU eviction when capacity is reached.
 pub const ShapedRunCache = struct {
     /// Pre-allocated cache entries
     entries: [MAX_ENTRIES]CacheEntry,
+    /// Hash table: maps hash slot -> entry index (EMPTY_SLOT = empty)
+    hash_table: [HASH_TABLE_SIZE]u16,
     /// Number of valid entries
     entry_count: u32,
     /// Global access counter for LRU
@@ -130,13 +133,16 @@ pub const ShapedRunCache = struct {
 
     const Self = @This();
 
-    // Compile-time capacity limits - adjust based on expected usage
-    // Note: Cache lookup is O(n) linear scan with early-exit on match.
-    // At 256 entries with small keys (~34 bytes), this is acceptable.
-    // Consider a hash table if capacity needs to exceed ~1000 entries.
+    // Compile-time capacity limits
     pub const MAX_ENTRIES: usize = 256;
     pub const MAX_GLYPHS_PER_ENTRY: usize = 128; // ~128 chars per cached string
     pub const MAX_TEXT_LEN: usize = 512; // Max cacheable text length
+
+    // Hash table configuration
+    // Size is 2x entries for low collision rate with open addressing
+    const HASH_TABLE_SIZE: usize = 512;
+    const MAX_PROBE_LENGTH: usize = 32; // Limit probing to avoid worst-case
+    const EMPTY_SLOT: u16 = 0xFFFF; // Sentinel for empty hash slots
 
     // Compile-time size verification
     comptime {
@@ -150,6 +156,7 @@ pub const ShapedRunCache = struct {
     pub fn init() Self {
         var self = Self{
             .entries = undefined,
+            .hash_table = [_]u16{EMPTY_SLOT} ** HASH_TABLE_SIZE,
             .entry_count = 0,
             .access_counter = 0,
             .current_font_ptr = 0,
@@ -188,11 +195,25 @@ pub const ShapedRunCache = struct {
 
     /// Get cached shaped run, returns null if not cached
     /// Updates LRU access time on hit
+    /// O(1) average case with hash table lookup
     pub fn get(self: *Self, key: ShapedRunKey) ?ShapedRun {
         std.debug.assert(key.text_len > 0);
         std.debug.assert(key.text_len <= MAX_TEXT_LEN);
 
-        for (&self.entries) |*entry| {
+        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
+        var probe: usize = start_slot;
+
+        for (0..MAX_PROBE_LENGTH) |_| {
+            const entry_idx = self.hash_table[probe];
+
+            if (entry_idx == EMPTY_SLOT) {
+                // Empty slot means key not in table
+                return null;
+            }
+
+            std.debug.assert(entry_idx < MAX_ENTRIES);
+            const entry = &self.entries[entry_idx];
+
             if (entry.valid and ShapedRunKey.eql(entry.key, key)) {
                 // Update LRU
                 self.access_counter += 1;
@@ -207,7 +228,12 @@ pub const ShapedRunCache = struct {
                     .owned = false, // Cache owns this memory
                 };
             }
+
+            // Linear probing: try next slot
+            probe = (probe + 1) % HASH_TABLE_SIZE;
         }
+
+        // Max probe length reached - treat as miss
         return null;
     }
 
@@ -230,28 +256,27 @@ pub const ShapedRunCache = struct {
         }
 
         // Find slot: prefer empty, otherwise LRU
-        var target_slot: ?*CacheEntry = null;
+        var target_idx: usize = 0;
         var oldest_access: u32 = std.math.maxInt(u32);
 
-        for (&self.entries) |*entry| {
+        for (&self.entries, 0..) |*entry, idx| {
             if (!entry.valid) {
                 // Found empty slot
-                target_slot = entry;
+                target_idx = idx;
                 break;
             } else if (entry.last_access < oldest_access) {
                 // Track LRU candidate
                 oldest_access = entry.last_access;
-                target_slot = entry;
+                target_idx = idx;
             }
         }
 
-        std.debug.assert(target_slot != null); // Should always find a slot
+        const slot = &self.entries[target_idx];
 
-        const slot = target_slot.?;
-
-        // If evicting, decrement count
+        // If evicting, remove old entry from hash table first
         if (slot.valid) {
             std.debug.assert(self.entry_count > 0);
+            self.removeFromHashTable(slot.key, target_idx);
             self.entry_count -= 1;
         }
 
@@ -269,8 +294,90 @@ pub const ShapedRunCache = struct {
 
         self.entry_count += 1;
 
+        // Insert into hash table
+        self.insertIntoHashTable(key, @intCast(target_idx));
+
         std.debug.assert(self.entry_count <= MAX_ENTRIES);
         std.debug.assert(slot.valid);
+    }
+
+    /// Insert entry into hash table using linear probing
+    fn insertIntoHashTable(self: *Self, key: ShapedRunKey, entry_idx: u16) void {
+        std.debug.assert(entry_idx < MAX_ENTRIES);
+
+        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
+        var probe: usize = start_slot;
+
+        for (0..MAX_PROBE_LENGTH) |_| {
+            if (self.hash_table[probe] == EMPTY_SLOT) {
+                self.hash_table[probe] = entry_idx;
+                return;
+            }
+            probe = (probe + 1) % HASH_TABLE_SIZE;
+        }
+
+        // Max probe length reached - this shouldn't happen with proper sizing
+        // but we fail gracefully (entry just won't be in hash table)
+        std.debug.assert(false); // Should never reach here with 2x table size
+    }
+
+    /// Remove entry from hash table (used during eviction)
+    /// Uses tombstone-free deletion by rehashing subsequent entries
+    fn removeFromHashTable(self: *Self, key: ShapedRunKey, entry_idx: usize) void {
+        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
+        var probe: usize = start_slot;
+
+        // Find the slot containing this entry
+        for (0..MAX_PROBE_LENGTH) |_| {
+            if (self.hash_table[probe] == EMPTY_SLOT) {
+                return; // Entry not in hash table
+            }
+
+            if (self.hash_table[probe] == @as(u16, @intCast(entry_idx))) {
+                // Found it - remove and rehash subsequent entries
+                self.hash_table[probe] = EMPTY_SLOT;
+                self.rehashAfterRemoval(probe);
+                return;
+            }
+
+            probe = (probe + 1) % HASH_TABLE_SIZE;
+        }
+    }
+
+    /// Rehash entries that may have been displaced by the removed entry
+    fn rehashAfterRemoval(self: *Self, removed_slot: usize) void {
+        var slot = (removed_slot + 1) % HASH_TABLE_SIZE;
+
+        for (0..MAX_PROBE_LENGTH) |_| {
+            const entry_idx = self.hash_table[slot];
+            if (entry_idx == EMPTY_SLOT) {
+                return; // Done - hit empty slot
+            }
+
+            // Check if this entry needs to be moved
+            const entry = &self.entries[entry_idx];
+            if (!entry.valid) {
+                slot = (slot + 1) % HASH_TABLE_SIZE;
+                continue;
+            }
+
+            const natural_slot = @as(usize, @truncate(entry.key.text_hash)) % HASH_TABLE_SIZE;
+
+            // If entry's natural slot is between removed_slot and current slot
+            // (wrapping around), it needs to be rehashed
+            const needs_rehash = if (removed_slot < slot)
+                (natural_slot <= removed_slot or natural_slot > slot)
+            else
+                (natural_slot <= removed_slot and natural_slot > slot);
+
+            if (needs_rehash) {
+                // Remove from current slot and reinsert
+                self.hash_table[slot] = EMPTY_SLOT;
+                self.insertIntoHashTable(entry.key, entry_idx);
+            }
+
+            slot = (slot + 1) % HASH_TABLE_SIZE;
+        }
     }
 
     /// Clear all entries (e.g., on font change)
@@ -278,6 +385,9 @@ pub const ShapedRunCache = struct {
         for (&self.entries) |*entry| {
             entry.clear();
         }
+        // Clear hash table
+        @memset(&self.hash_table, EMPTY_SLOT);
+
         self.entry_count = 0;
         // Don't reset access_counter to preserve LRU ordering after clear
 
@@ -734,4 +844,69 @@ test "ShapedRunCache font change invalidation" {
 
     try std.testing.expectEqual(@as(u32, 0), cache.entry_count);
     try std.testing.expect(cache.get(key) == null);
+}
+
+test "ShapedRunCache hash collision handling" {
+    var cache = ShapedRunCache.init();
+    defer cache.deinit();
+
+    var glyph = ShapedGlyph{
+        .glyph_id = 1,
+        .x_offset = 0,
+        .y_offset = 0,
+        .x_advance = 10,
+        .y_advance = 0,
+        .cluster = 0,
+    };
+
+    const run = ShapedRun{
+        .glyphs = @as(*[1]ShapedGlyph, &glyph),
+        .width = 10.0,
+        .owned = true,
+    };
+
+    cache.checkFont(0x1000);
+
+    // Insert many entries that may have hash collisions
+    // Using sequential strings which may hash to nearby slots
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        var buf: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "collision_test_{d}", .{i}) catch unreachable;
+        const key = ShapedRunKey.init(text, 0x1000, 16.0);
+        cache.put(key, run);
+    }
+
+    try std.testing.expectEqual(@as(u32, 100), cache.entry_count);
+
+    // Verify all entries are still retrievable (hash probing works)
+    i = 0;
+    while (i < 100) : (i += 1) {
+        var buf: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "collision_test_{d}", .{i}) catch unreachable;
+        const key = ShapedRunKey.init(text, 0x1000, 16.0);
+        try std.testing.expect(cache.get(key) != null);
+    }
+
+    // Test eviction maintains hash table consistency
+    // Add more entries to trigger evictions
+    i = 100;
+    while (i < ShapedRunCache.MAX_ENTRIES + 50) : (i += 1) {
+        var buf: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "evict_test_{d}", .{i}) catch unreachable;
+        const key = ShapedRunKey.init(text, 0x1000, 16.0);
+        cache.put(key, run);
+    }
+
+    // Cache should be at capacity
+    try std.testing.expectEqual(@as(u32, ShapedRunCache.MAX_ENTRIES), cache.entry_count);
+
+    // Most recent entries should be retrievable
+    i = ShapedRunCache.MAX_ENTRIES;
+    while (i < ShapedRunCache.MAX_ENTRIES + 50) : (i += 1) {
+        var buf: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "evict_test_{d}", .{i}) catch unreachable;
+        const key = ShapedRunKey.init(text, 0x1000, 16.0);
+        try std.testing.expect(cache.get(key) != null);
+    }
 }

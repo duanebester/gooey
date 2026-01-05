@@ -21,6 +21,14 @@ pub const scene = @import("scene.zig");
 pub const Scene = scene.Scene;
 pub const DrawOrder = scene.DrawOrder;
 
+// Hard limits (static memory allocation policy)
+pub const MAX_QUADS_PER_FRAME = scene.MAX_QUADS_PER_FRAME;
+pub const MAX_GLYPHS_PER_FRAME = scene.MAX_GLYPHS_PER_FRAME;
+pub const MAX_SHADOWS_PER_FRAME = scene.MAX_SHADOWS_PER_FRAME;
+pub const MAX_SVGS_PER_FRAME = scene.MAX_SVGS_PER_FRAME;
+pub const MAX_IMAGES_PER_FRAME = scene.MAX_IMAGES_PER_FRAME;
+pub const MAX_CLIP_STACK_DEPTH = scene.MAX_CLIP_STACK_DEPTH;
+
 // Geometry aliases (GPU-aligned)
 pub const Point = scene.Point;
 pub const Size = scene.Size;
