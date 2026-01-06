@@ -61,6 +61,17 @@ pub const scroll_container = @import("scroll_container.zig");
 pub const ScrollContainer = scroll_container.ScrollContainer;
 
 // =============================================================================
+// Uniform List (Virtualized)
+// =============================================================================
+
+pub const uniform_list = @import("uniform_list.zig");
+
+pub const UniformListState = uniform_list.UniformListState;
+pub const VisibleRange = uniform_list.VisibleRange;
+pub const ScrollStrategy = uniform_list.ScrollStrategy;
+pub const MAX_VISIBLE_ITEMS = uniform_list.MAX_VISIBLE_ITEMS;
+
+// =============================================================================
 // Tests
 // =============================================================================
 

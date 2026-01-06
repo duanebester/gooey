@@ -81,6 +81,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "tooltip", "src/examples/tooltip.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "modal", "src/examples/modal.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "file-dialog", "src/examples/file_dialog.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "uniform-list", "src/examples/uniform_list_example.zig", false);
 
         // =====================================================================
         // Tests

@@ -205,6 +205,11 @@ pub const CornerRadius = layout.CornerRadius;
 pub const LayoutConfig = layout.LayoutConfig;
 pub const BoundingBox = layout.BoundingBox;
 
+// Virtual list (for large datasets)
+pub const UniformListState = widgets.UniformListState;
+pub const VisibleRange = widgets.VisibleRange;
+pub const ScrollStrategy = widgets.ScrollStrategy;
+
 // Focus system
 pub const FocusId = core.FocusId;
 pub const FocusHandle = core.FocusHandle;
@@ -268,6 +273,7 @@ pub const Box = ui.Box;
 pub const StackStyle = ui.StackStyle;
 pub const CenterStyle = ui.CenterStyle;
 pub const ScrollStyle = ui.ScrollStyle;
+pub const UniformListStyle = ui.UniformListStyle;
 pub const InputStyle = ui.InputStyle;
 pub const TextAreaStyle = ui.TextAreaStyle;
 

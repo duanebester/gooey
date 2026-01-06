@@ -306,6 +306,36 @@ pub const ScrollStyle = struct {
     horizontal: bool = false,
 };
 
+/// Uniform list container options (virtualized, fixed-height items)
+/// Use with UniformListState for O(1) layout with any number of items.
+pub const UniformListStyle = struct {
+    /// Fixed viewport width (optional - defaults to grow)
+    width: ?f32 = null,
+    /// Fixed viewport height (required for virtualization to work well)
+    height: ?f32 = null,
+
+    // Flexible sizing (like Box)
+    grow: bool = false, // Grow both axes
+    grow_width: bool = false, // Grow width only
+    grow_height: bool = false, // Grow height only
+    fill_width: bool = false, // 100% of parent width
+    fill_height: bool = false, // 100% of parent height
+
+    /// Padding inside the list area
+    padding: Box.PaddingValue = .{ .all = 0 },
+    /// Gap between items (added to item height for spacing)
+    gap: f32 = 0,
+    /// Background color
+    background: ?Color = null,
+    /// Corner radius
+    corner_radius: f32 = 0,
+
+    /// Scrollbar styling
+    scrollbar_size: f32 = 8,
+    track_color: ?Color = null,
+    thumb_color: ?Color = null,
+};
+
 // =============================================================================
 // Component Styles
 // =============================================================================

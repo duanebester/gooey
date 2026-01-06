@@ -442,6 +442,12 @@ pub const Window = struct {
 
         var handled = false;
         if (self.on_input) |callback| {
+            // Acquire render mutex to safely access layout/scene data.
+            // The input callback may query layout bounds or scene state (e.g., for hit testing).
+            // Without this lock, the DisplayLink thread could be mid-render, mutating
+            // layout/scene data while we read it, causing torn reads or crashes.
+            self.render_mutex.lock();
+            defer self.render_mutex.unlock();
             handled = callback(self, event);
         }
         self.requestRender();

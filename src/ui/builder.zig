@@ -65,6 +65,7 @@ pub const TextAreaStyle = styles.TextAreaStyle;
 pub const StackStyle = styles.StackStyle;
 pub const CenterStyle = styles.CenterStyle;
 pub const ScrollStyle = styles.ScrollStyle;
+pub const UniformListStyle = styles.UniformListStyle;
 pub const ButtonStyle = styles.ButtonStyle;
 
 pub const PrimitiveType = primitives.PrimitiveType;
@@ -758,6 +759,331 @@ pub const Builder = struct {
     /// Get the currently dragged scroll container ID
     pub fn getActiveScrollDrag(self: *const Self) ?[]const u8 {
         return self.active_scroll_drag_id;
+    }
+
+    // =========================================================================
+    // Uniform List (Virtualized)
+    // =========================================================================
+
+    const uniform_list = @import("../widgets/uniform_list.zig");
+    const UniformListState = uniform_list.UniformListState;
+
+    /// Computed layout parameters for uniform list (avoids recomputation).
+    const UniformListLayout = struct {
+        layout_id: LayoutId,
+        sizing: Sizing,
+        padding: Padding,
+        content_height: f32,
+        top_spacer_height: f32,
+        bottom_spacer_height: f32,
+        range: uniform_list.VisibleRange,
+        gap: u16,
+    };
+
+    /// Compute sizing from UniformListStyle - extracted to reduce duplication.
+    fn computeUniformListSizing(style: UniformListStyle) Sizing {
+        var sizing = Sizing.fitContent();
+
+        // Width sizing (default to grow if unspecified)
+        const grow_w = style.grow or style.grow_width;
+        if (grow_w) {
+            sizing.width = SizingAxis.grow();
+        } else if (style.width) |w| {
+            sizing.width = SizingAxis.fixed(w);
+        } else if (style.fill_width) {
+            sizing.width = SizingAxis.percent(1.0);
+        } else {
+            sizing.width = SizingAxis.grow(); // Default: grow to fill
+        }
+
+        // Height sizing (default to fixed for virtualization)
+        const grow_h = style.grow or style.grow_height;
+        if (grow_h) {
+            sizing.height = SizingAxis.grow();
+        } else if (style.height) |h| {
+            sizing.height = SizingAxis.fixed(h);
+        } else if (style.fill_height) {
+            sizing.height = SizingAxis.percent(1.0);
+        } else {
+            sizing.height = SizingAxis.fixed(uniform_list.DEFAULT_VIEWPORT_HEIGHT);
+        }
+
+        return sizing;
+    }
+
+    /// Convert style padding to layout Padding - extracted to reduce duplication.
+    fn computeUniformListPadding(style: UniformListStyle) Padding {
+        return switch (style.padding) {
+            .all => |v| Padding.all(@intFromFloat(v)),
+            .symmetric => |s| Padding.symmetric(@intFromFloat(s.x), @intFromFloat(s.y)),
+            .each => |e| .{
+                .top = @intFromFloat(e.top),
+                .right = @intFromFloat(e.right),
+                .bottom = @intFromFloat(e.bottom),
+                .left = @intFromFloat(e.left),
+            },
+        };
+    }
+
+    /// Sync scroll state between UniformListState and retained ScrollContainer.
+    /// Resolves PendingScrollRequest with accurate viewport dimensions to avoid jitter.
+    fn syncUniformListScroll(self: *Self, id: []const u8, state: *UniformListState) void {
+        const g = self.gooey orelse return;
+        const sc = g.widgets.scrollContainer(id) orelse return;
+
+        // Update viewport dimensions FIRST so calculations are accurate
+        state.viewport_height_px = sc.state.viewport_height;
+
+        if (state.pending_scroll) |request| {
+            // Resolve the scroll request with current accurate viewport dimensions
+            const target: f32 = switch (request) {
+                .absolute => |offset| offset,
+                .to_top => 0,
+                .to_end => state.maxScrollOffset(),
+                .to_item => |item| state.resolveScrollToItem(item.index, item.strategy),
+            };
+
+            // Apply resolved scroll to ScrollContainer (clamped to valid range)
+            const max_scroll = sc.state.maxScrollY();
+            sc.state.offset_y = std.math.clamp(target, 0, max_scroll);
+            state.scroll_offset_px = sc.state.offset_y;
+            state.pending_scroll = null; // Consume the request
+        } else {
+            // Normal sync: read current offset from ScrollContainer
+            state.scroll_offset_px = sc.state.offset_y;
+        }
+    }
+
+    /// Compute all layout parameters for uniform list.
+    fn computeUniformListLayout(
+        id: []const u8,
+        state: *const UniformListState,
+        style: UniformListStyle,
+    ) UniformListLayout {
+        const range = state.visibleRange();
+        const content_height = state.contentHeight();
+
+        return .{
+            .layout_id = LayoutId.fromString(id),
+            .sizing = computeUniformListSizing(style),
+            .padding = computeUniformListPadding(style),
+            .content_height = content_height,
+            .top_spacer_height = state.topSpacerHeight(range),
+            .bottom_spacer_height = state.bottomSpacerHeight(range),
+            .range = range,
+            .gap = @intFromFloat(style.gap),
+        };
+    }
+
+    /// Open the scroll viewport and content container elements.
+    /// Returns the content_id, or null if layout failed.
+    fn openUniformListElements(
+        self: *Self,
+        params: UniformListLayout,
+        style: UniformListStyle,
+        scroll_offset: f32,
+    ) ?LayoutId {
+        // Open scroll viewport element
+        self.layout.openElement(.{
+            .id = params.layout_id,
+            .layout = .{
+                .sizing = params.sizing,
+                .padding = params.padding,
+            },
+            .background_color = style.background,
+            .corner_radius = if (style.corner_radius > 0) CornerRadius.all(style.corner_radius) else .{},
+            .scroll = .{
+                .vertical = true,
+                .horizontal = false,
+                .scroll_offset = .{ .x = 0, .y = scroll_offset },
+            },
+        }) catch {
+            std.debug.assert(false); // Layout allocation failed
+            return null;
+        };
+
+        // Inner content container with full virtual height
+        const content_id = self.generateId();
+        self.layout.openElement(.{
+            .id = content_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.grow(),
+                    .height = SizingAxis.fixed(params.content_height),
+                },
+                .layout_direction = .top_to_bottom,
+                .child_gap = params.gap,
+            },
+        }) catch {
+            self.layout.closeElement(); // Close viewport
+            std.debug.assert(false); // Layout allocation failed
+            return null;
+        };
+
+        return content_id;
+    }
+
+    /// Render a spacer element of given height for uniform list virtualization.
+    fn renderUniformListSpacer(self: *Self, height: f32) void {
+        if (height <= 0) return;
+
+        const spacer_id = self.generateId();
+        self.layout.openElement(.{
+            .id = spacer_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.grow(),
+                    .height = SizingAxis.fixed(height),
+                },
+            },
+        }) catch {
+            std.debug.assert(false); // Spacer allocation failed
+            return;
+        };
+        self.layout.closeElement();
+    }
+
+    /// Register scroll handling for the uniform list.
+    fn registerUniformListScroll(
+        self: *Self,
+        id: []const u8,
+        params: UniformListLayout,
+        content_id: LayoutId,
+        style: UniformListStyle,
+    ) void {
+        const index = self.pending_scrolls.items.len;
+        self.pending_scrolls.append(self.allocator, .{
+            .id = id,
+            .layout_id = params.layout_id,
+            .style = .{
+                .vertical = true,
+                .horizontal = false,
+                .scrollbar_size = style.scrollbar_size,
+                .track_color = style.track_color,
+                .thumb_color = style.thumb_color,
+                .content_height = params.content_height,
+            },
+            .content_layout_id = content_id,
+        }) catch {
+            std.debug.assert(false); // Scroll registration failed
+            return;
+        };
+
+        self.pending_scrolls_by_layout_id.put(self.allocator, params.layout_id.id, index) catch {
+            std.debug.assert(false); // Scroll map insertion failed
+        };
+    }
+
+    /// Render a virtualized uniform-height list.
+    /// Only renders visible items for O(1) layout regardless of total item count.
+    ///
+    /// The `render_item` callback is called once per visible item with:
+    /// - `index`: the item's index in the full list (0 to item_count-1)
+    /// - `builder`: the Builder to render children into
+    ///
+    /// IMPORTANT: The height of each rendered item MUST match `state.item_height_px`.
+    ///
+    /// Example:
+    /// ```zig
+    /// var list_state = UniformListState.init(@intCast(items.len), 32.0);
+    ///
+    /// b.uniformList("file-list", &list_state, .{ .height = 400 }, renderFileItem);
+    ///
+    /// fn renderFileItem(index: u32, builder: *Builder) void {
+    ///     const item = my_items[index];
+    ///     builder.box(.{ .height = 32 }, .{ text(item.name, .{}) });
+    /// }
+    /// ```
+    pub fn uniformList(
+        self: *Self,
+        id: []const u8,
+        state: *UniformListState,
+        style: UniformListStyle,
+        render_item: *const fn (index: u32, builder: *Self) void,
+    ) void {
+        // Sync gap from style to state for correct height calculations
+        state.gap_px = style.gap;
+
+        // Sync scroll state with retained ScrollContainer
+        self.syncUniformListScroll(id, state);
+
+        // Compute layout parameters
+        const params = computeUniformListLayout(id, state, style);
+
+        // Open viewport and content elements
+        const content_id = self.openUniformListElements(params, style, state.scroll_offset_px) orelse return;
+
+        // Top spacer (items above visible range)
+        self.renderUniformListSpacer(params.top_spacer_height);
+
+        // Render only visible items
+        var i = params.range.start;
+        while (i < params.range.end) : (i += 1) {
+            render_item(i, self);
+        }
+
+        // Bottom spacer (items below visible range)
+        self.renderUniformListSpacer(params.bottom_spacer_height);
+
+        // Close content container and viewport
+        self.layout.closeElement();
+        self.layout.closeElement();
+
+        // Register for scroll handling
+        self.registerUniformListScroll(id, params, content_id, style);
+    }
+
+    /// Render a virtualized uniform-height list with context pointer.
+    /// Like uniformList, but passes a context pointer to the render callback
+    /// for accessing external data without globals.
+    ///
+    /// Example:
+    /// ```zig
+    /// b.uniformListWithContext("list", &list_state, .{ .height = 400 }, &my_state, renderItem);
+    ///
+    /// fn renderItem(index: u32, state: *MyState, builder: *Builder) void {
+    ///     const item = state.items[index];
+    ///     builder.box(.{ .height = 32 }, .{ text(item.name, .{}) });
+    /// }
+    /// ```
+    pub fn uniformListWithContext(
+        self: *Self,
+        id: []const u8,
+        state: *UniformListState,
+        style: UniformListStyle,
+        context: anytype,
+        render_item: *const fn (index: u32, ctx: @TypeOf(context), builder: *Self) void,
+    ) void {
+        // Sync gap from style to state for correct height calculations
+        state.gap_px = style.gap;
+
+        // Sync scroll state with retained ScrollContainer
+        self.syncUniformListScroll(id, state);
+
+        // Compute layout parameters
+        const params = computeUniformListLayout(id, state, style);
+
+        // Open viewport and content elements
+        const content_id = self.openUniformListElements(params, style, state.scroll_offset_px) orelse return;
+
+        // Top spacer (items above visible range)
+        self.renderUniformListSpacer(params.top_spacer_height);
+
+        // Render only visible items with context
+        var i = params.range.start;
+        while (i < params.range.end) : (i += 1) {
+            render_item(i, context, self);
+        }
+
+        // Bottom spacer (items below visible range)
+        self.renderUniformListSpacer(params.bottom_spacer_height);
+
+        // Close content container and viewport
+        self.layout.closeElement();
+        self.layout.closeElement();
+
+        // Register for scroll handling
+        self.registerUniformListScroll(id, params, content_id, style);
     }
 
     /// Register scroll container regions and update state
