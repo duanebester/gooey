@@ -83,6 +83,24 @@ pub const MAX_VIRTUAL_LIST_ITEMS = virtual_list.MAX_VIRTUAL_LIST_ITEMS;
 // compatible with UniformList's versions (same structure)
 
 // =============================================================================
+// Data Table (Virtualized 2D table, uniform row height)
+// =============================================================================
+
+pub const data_table = @import("data_table.zig");
+
+pub const DataTableState = data_table.DataTableState;
+pub const DataTableColumn = data_table.Column;
+pub const DataTableSelection = data_table.Selection;
+pub const DataTableSelectionMode = data_table.SelectionMode;
+pub const SortDirection = data_table.SortDirection;
+pub const RowRange = data_table.RowRange;
+pub const ColRange = data_table.ColRange;
+pub const VisibleRange2D = data_table.VisibleRange2D;
+pub const MAX_COLUMNS = data_table.MAX_COLUMNS;
+pub const MAX_VISIBLE_ROWS = data_table.MAX_VISIBLE_ROWS;
+pub const MAX_VISIBLE_COLUMNS = data_table.MAX_VISIBLE_COLUMNS;
+
+// =============================================================================
 // Tests
 // =============================================================================
 

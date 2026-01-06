@@ -102,6 +102,9 @@ pub const DispatchNode = struct {
     /// Click handlers with context (for stateful widgets)
     click_listeners_ctx: std.ArrayListUnmanaged(ClickListenerWithContext) = .{},
 
+    /// Click handlers with u32 data (for table column/row clicks)
+    click_listeners_data: std.ArrayListUnmanaged(ClickListenerWithData) = .{},
+
     /// Full mouse down listeners with phase control
     mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .{},
 
@@ -137,6 +140,7 @@ pub const DispatchNode = struct {
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         self.click_listeners.deinit(allocator);
         self.click_listeners_ctx.deinit(allocator);
+        self.click_listeners_data.deinit(allocator);
         self.key_down_listeners.deinit(allocator);
         self.simple_key_listeners.deinit(allocator);
         self.mouse_down_listeners.deinit(allocator);
@@ -151,6 +155,7 @@ pub const DispatchNode = struct {
     pub fn resetListeners(self: *Self) void {
         self.click_listeners.clearRetainingCapacity();
         self.click_listeners_ctx.clearRetainingCapacity();
+        self.click_listeners_data.clearRetainingCapacity();
         self.mouse_down_listeners.clearRetainingCapacity();
         self.key_down_listeners.clearRetainingCapacity();
         self.simple_key_listeners.clearRetainingCapacity();
@@ -192,6 +197,12 @@ pub const ClickListener = struct {
 pub const ClickListenerWithContext = struct {
     callback: *const fn (ctx: *anyopaque) void,
     context: *anyopaque,
+};
+
+/// Click handler with u32 data (for column/row indices in tables)
+pub const ClickListenerWithData = struct {
+    callback: *const fn (data: u32) void,
+    data: u32,
 };
 
 pub const KeyEvent = input_mod.KeyEvent;
@@ -620,6 +631,17 @@ pub const DispatchTree = struct {
         }
     }
 
+    /// Register a click handler with u32 data on the current node (for table columns/rows)
+    pub fn onClickWithData(self: *Self, callback: *const fn (data: u32) void, data: u32) void {
+        const node_id = self.currentNode();
+        if (self.getNode(node_id)) |node| {
+            node.click_listeners_data.append(self.allocator, .{
+                .callback = callback,
+                .data = data,
+            }) catch {};
+        }
+    }
+
     /// Register a full mouse down listener with phase control
     pub fn onMouseDown(self: *Self, listener: MouseListener) void {
         const node_id = self.currentNode();
@@ -683,6 +705,12 @@ pub const DispatchTree = struct {
             // Call context click listeners
             for (node.click_listeners_ctx.items) |listener| {
                 listener.callback(listener.context);
+                return true;
+            }
+
+            // Call data click listeners (for table columns/rows)
+            for (node.click_listeners_data.items) |listener| {
+                listener.callback(listener.data);
                 return true;
             }
 

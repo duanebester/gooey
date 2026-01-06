@@ -367,6 +367,61 @@ pub const VirtualListStyle = struct {
     thumb_color: ?Color = null,
 };
 
+/// Data table styling options (virtualized 2D table)
+/// Use with DataTableState for O(1) layout with any number of rows/columns.
+pub const DataTableStyle = struct {
+    /// Fixed viewport width (optional - defaults to grow)
+    width: ?f32 = null,
+    /// Fixed viewport height (required for virtualization to work well)
+    height: ?f32 = null,
+
+    // Flexible sizing (like Box)
+    grow: bool = false,
+    grow_width: bool = false,
+    grow_height: bool = false,
+    fill_width: bool = false,
+    fill_height: bool = false,
+
+    /// Padding inside the table area
+    padding: Box.PaddingValue = .{ .all = 0 },
+    /// Gap between rows
+    row_gap: f32 = 0,
+    /// Background color
+    background: ?Color = null,
+    /// Corner radius
+    corner_radius: f32 = 0,
+
+    // Header styling
+    header_background: ?Color = null,
+    header_border_bottom: ?Color = null,
+
+    // Row styling
+    row_background: ?Color = null,
+    row_alternate_background: ?Color = null,
+    row_hover_background: ?Color = null,
+    row_selected_background: ?Color = null,
+
+    // Cell styling
+    cell_padding: Box.PaddingValue = .{ .symmetric = .{ .x = 8, .y = 0 } },
+
+    // Column resize
+    resize_handle_width: f32 = 4.0,
+    resize_handle_color: ?Color = null,
+
+    // Scrollbar styling
+    scrollbar_size: f32 = 8,
+    track_color: ?Color = null,
+    thumb_color: ?Color = null,
+
+    // Interaction callbacks
+    /// Called when a header column is clicked (for sorting)
+    on_header_click: ?*const fn (col: u32) void = null,
+    /// Called when a row is clicked (for selection)
+    on_row_click: ?*const fn (row: u32) void = null,
+    /// Called when a cell is clicked
+    on_cell_click: ?*const fn (row: u32, col: u32) void = null,
+};
+
 // =============================================================================
 // Component Styles
 // =============================================================================

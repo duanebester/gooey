@@ -141,7 +141,7 @@ pub const ShapedRunCache = struct {
     // Hash table configuration
     // Size is 2x entries for low collision rate with open addressing
     const HASH_TABLE_SIZE: usize = 512;
-    const MAX_PROBE_LENGTH: usize = 32; // Limit probing to avoid worst-case
+    const MAX_PROBE_LENGTH: usize = HASH_TABLE_SIZE; // Must be able to probe entire table
     const EMPTY_SLOT: u16 = 0xFFFF; // Sentinel for empty hash slots
 
     // Compile-time size verification
@@ -255,6 +255,19 @@ pub const ShapedRunCache = struct {
             }
         }
 
+        // Check if key already exists - update in place if so
+        const existing_idx = self.findEntryIndex(key);
+        if (existing_idx) |idx| {
+            const slot = &self.entries[idx];
+            const glyph_count: u16 = @intCast(run.glyphs.len);
+            @memcpy(slot.glyphs[0..glyph_count], run.glyphs);
+            slot.glyph_count = glyph_count;
+            slot.width = run.width;
+            self.access_counter += 1;
+            slot.last_access = self.access_counter;
+            return;
+        }
+
         // Find slot: prefer empty, otherwise LRU
         var target_idx: usize = 0;
         var oldest_access: u32 = std.math.maxInt(u32);
@@ -299,6 +312,31 @@ pub const ShapedRunCache = struct {
 
         std.debug.assert(self.entry_count <= MAX_ENTRIES);
         std.debug.assert(slot.valid);
+    }
+
+    /// Find entry index by key, returns null if not found
+    fn findEntryIndex(self: *Self, key: ShapedRunKey) ?usize {
+        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
+        var probe: usize = start_slot;
+
+        for (0..MAX_PROBE_LENGTH) |_| {
+            const entry_idx = self.hash_table[probe];
+
+            if (entry_idx == EMPTY_SLOT) {
+                return null;
+            }
+
+            std.debug.assert(entry_idx < MAX_ENTRIES);
+            const entry = &self.entries[entry_idx];
+
+            if (entry.valid and ShapedRunKey.eql(entry.key, key)) {
+                return entry_idx;
+            }
+
+            probe = (probe + 1) % HASH_TABLE_SIZE;
+        }
+
+        return null;
     }
 
     /// Insert entry into hash table using linear probing

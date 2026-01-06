@@ -211,6 +211,14 @@ pub const VirtualListState = widgets.VirtualListState;
 pub const VisibleRange = widgets.VisibleRange;
 pub const ScrollStrategy = widgets.ScrollStrategy;
 
+// Data table (virtualized 2D table)
+pub const DataTableState = widgets.DataTableState;
+pub const DataTableColumn = widgets.DataTableColumn;
+pub const SortDirection = widgets.SortDirection;
+pub const RowRange = widgets.RowRange;
+pub const ColRange = widgets.ColRange;
+pub const VisibleRange2D = widgets.VisibleRange2D;
+
 // Focus system
 pub const FocusId = core.FocusId;
 pub const FocusHandle = core.FocusHandle;
@@ -276,6 +284,7 @@ pub const CenterStyle = ui.CenterStyle;
 pub const ScrollStyle = ui.ScrollStyle;
 pub const UniformListStyle = ui.UniformListStyle;
 pub const VirtualListStyle = ui.VirtualListStyle;
+pub const DataTableStyle = ui.DataTableStyle;
 pub const InputStyle = ui.InputStyle;
 pub const TextAreaStyle = ui.TextAreaStyle;
 

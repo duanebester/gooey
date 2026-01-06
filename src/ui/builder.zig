@@ -67,6 +67,7 @@ pub const CenterStyle = styles.CenterStyle;
 pub const ScrollStyle = styles.ScrollStyle;
 pub const UniformListStyle = styles.UniformListStyle;
 pub const VirtualListStyle = styles.VirtualListStyle;
+pub const DataTableStyle = styles.DataTableStyle;
 pub const ButtonStyle = styles.ButtonStyle;
 
 pub const PrimitiveType = primitives.PrimitiveType;
@@ -1409,6 +1410,643 @@ pub const Builder = struct {
 
         // Register for scroll handling
         self.registerVirtualListScroll(id, params, content_id, style);
+    }
+
+    // =========================================================================
+    // Data Table (virtualized 2D table, uniform row height)
+    // =========================================================================
+
+    const data_table = @import("../widgets/data_table.zig");
+    pub const DataTableState = data_table.DataTableState;
+
+    /// Layout parameters for data table rendering
+    const DataTableLayout = struct {
+        layout_id: LayoutId,
+        sizing: Sizing,
+        padding: Padding,
+        content_width: f32,
+        content_height: f32,
+        visible_range: data_table.VisibleRange2D,
+        top_spacer: f32,
+        bottom_spacer: f32,
+        left_spacer: f32,
+        right_spacer: f32,
+        row_gap: u16,
+    };
+
+    /// Compute sizing from DataTableStyle
+    fn computeDataTableSizing(style: DataTableStyle) Sizing {
+        var sizing = Sizing.fitContent();
+
+        // Width sizing
+        const grow_w = style.grow or style.grow_width;
+        if (grow_w) {
+            sizing.width = SizingAxis.grow();
+        } else if (style.width) |w| {
+            sizing.width = SizingAxis.fixed(w);
+        } else if (style.fill_width) {
+            sizing.width = SizingAxis.percent(1.0);
+        } else {
+            sizing.width = SizingAxis.fixed(data_table.DEFAULT_VIEWPORT_WIDTH);
+        }
+
+        // Height sizing
+        const grow_h = style.grow or style.grow_height;
+        if (grow_h) {
+            sizing.height = SizingAxis.grow();
+        } else if (style.height) |h| {
+            sizing.height = SizingAxis.fixed(h);
+        } else if (style.fill_height) {
+            sizing.height = SizingAxis.percent(1.0);
+        } else {
+            sizing.height = SizingAxis.fixed(data_table.DEFAULT_VIEWPORT_HEIGHT);
+        }
+
+        return sizing;
+    }
+
+    /// Convert style padding to layout Padding
+    fn computeDataTablePadding(style: DataTableStyle) Padding {
+        return switch (style.padding) {
+            .all => |v| Padding.all(@intFromFloat(v)),
+            .symmetric => |s| Padding.symmetric(@intFromFloat(s.x), @intFromFloat(s.y)),
+            .each => |e| .{
+                .top = @intFromFloat(e.top),
+                .right = @intFromFloat(e.right),
+                .bottom = @intFromFloat(e.bottom),
+                .left = @intFromFloat(e.left),
+            },
+        };
+    }
+
+    /// Sync scroll state between DataTableState and retained ScrollContainer
+    fn syncDataTableScroll(self: *Self, id: []const u8, state: *DataTableState) void {
+        const g = self.gooey orelse return;
+        const sc = g.widgets.scrollContainer(id) orelse return;
+
+        // Update viewport dimensions FIRST so calculations are accurate
+        state.viewport_width_px = sc.state.viewport_width;
+        state.viewport_height_px = sc.state.viewport_height;
+
+        if (state.pending_scroll != null) {
+            // Resolve the scroll request with current accurate viewport dimensions
+            state.resolvePendingScroll();
+            // Apply resolved scroll to ScrollContainer
+            const max_x = sc.state.maxScrollX();
+            const max_y = sc.state.maxScrollY();
+            sc.state.offset_x = std.math.clamp(state.scroll_offset_x, 0, max_x);
+            sc.state.offset_y = std.math.clamp(state.scroll_offset_y, 0, max_y);
+        } else {
+            // Normal sync: read current offset from ScrollContainer
+            state.scroll_offset_x = sc.state.offset_x;
+            state.scroll_offset_y = sc.state.offset_y;
+        }
+    }
+
+    /// Compute all layout parameters for data table
+    fn computeDataTableLayout(
+        id: []const u8,
+        state: *const DataTableState,
+        style: DataTableStyle,
+    ) DataTableLayout {
+        const range = state.visibleRange();
+
+        return .{
+            .layout_id = LayoutId.fromString(id),
+            .sizing = computeDataTableSizing(style),
+            .padding = computeDataTablePadding(style),
+            .content_width = state.contentWidth(),
+            .content_height = state.contentHeight(),
+            .visible_range = range,
+            .top_spacer = state.topSpacerHeight(range.rows),
+            .bottom_spacer = state.bottomSpacerHeight(range.rows),
+            .left_spacer = state.leftSpacerWidth(range.cols),
+            .right_spacer = state.rightSpacerWidth(range.cols),
+            .row_gap = @intFromFloat(style.row_gap),
+        };
+    }
+
+    /// Open the scroll viewport and content container elements for data table
+    fn openDataTableElements(
+        self: *Self,
+        params: DataTableLayout,
+        style: DataTableStyle,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) ?LayoutId {
+        // Open scroll viewport element (both axes)
+        self.layout.openElement(.{
+            .id = params.layout_id,
+            .layout = .{
+                .sizing = params.sizing,
+                .padding = params.padding,
+            },
+            .background_color = style.background,
+            .corner_radius = if (style.corner_radius > 0) CornerRadius.all(style.corner_radius) else .{},
+            .scroll = .{
+                .vertical = true,
+                .horizontal = true,
+                .scroll_offset = .{ .x = scroll_x, .y = scroll_y },
+            },
+        }) catch {
+            std.debug.assert(false);
+            return null;
+        };
+
+        // Inner content container with full virtual size
+        const content_id = self.generateId();
+        self.layout.openElement(.{
+            .id = content_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(params.content_width),
+                    .height = SizingAxis.fixed(params.content_height),
+                },
+                .layout_direction = .top_to_bottom,
+                .child_gap = params.row_gap,
+            },
+        }) catch {
+            self.layout.closeElement();
+            std.debug.assert(false);
+            return null;
+        };
+
+        return content_id;
+    }
+
+    /// Render a spacer element for data table virtualization
+    fn renderDataTableSpacer(self: *Self, width: f32, height: f32) void {
+        if (width <= 0 and height <= 0) return;
+
+        const spacer_id = self.generateId();
+        self.layout.openElement(.{
+            .id = spacer_id,
+            .layout = .{
+                .sizing = .{
+                    .width = if (width > 0) SizingAxis.fixed(width) else SizingAxis.grow(),
+                    .height = if (height > 0) SizingAxis.fixed(height) else SizingAxis.grow(),
+                },
+            },
+        }) catch {
+            std.debug.assert(false);
+            return;
+        };
+        self.layout.closeElement();
+    }
+
+    /// Register scroll handling for the data table
+    fn registerDataTableScroll(
+        self: *Self,
+        id: []const u8,
+        params: DataTableLayout,
+        content_id: LayoutId,
+        style: DataTableStyle,
+    ) void {
+        const index = self.pending_scrolls.items.len;
+        self.pending_scrolls.append(self.allocator, .{
+            .id = id,
+            .layout_id = params.layout_id,
+            .style = .{
+                .vertical = true,
+                .horizontal = true,
+                .scrollbar_size = style.scrollbar_size,
+                .track_color = style.track_color,
+                .thumb_color = style.thumb_color,
+                .content_height = params.content_height,
+                .content_width = params.content_width,
+            },
+            .content_layout_id = content_id,
+        }) catch {
+            std.debug.assert(false);
+            return;
+        };
+
+        self.pending_scrolls_by_layout_id.put(self.allocator, params.layout_id.id, index) catch {
+            std.debug.assert(false);
+        };
+    }
+
+    /// Render a virtualized data table.
+    /// Only renders visible cells for O(1) layout regardless of total size.
+    ///
+    /// The `render_cell` callback receives (row, col, builder) for each visible cell.
+    /// The `render_header` callback receives (col, builder) for each visible header cell.
+    ///
+    /// Example:
+    /// ```zig
+    /// var table = DataTableState.init(1000, 32.0);
+    /// table.addColumn(.{ .width_px = 200 }) catch unreachable;
+    ///
+    /// b.dataTable("users", &table, .{ .height = 400 }, renderCell, renderHeader);
+    /// ```
+    pub fn dataTable(
+        self: *Self,
+        id: []const u8,
+        state: *DataTableState,
+        style: DataTableStyle,
+        render_cell: *const fn (row: u32, col: u32, builder: *Self) void,
+        render_header: ?*const fn (col: u32, builder: *Self) void,
+    ) void {
+        // Sync gap from style to state
+        state.row_gap_px = style.row_gap;
+
+        // Sync scroll state
+        self.syncDataTableScroll(id, state);
+
+        // Compute layout parameters
+        const params = computeDataTableLayout(id, state, style);
+
+        // Open viewport and content elements
+        const content_id = self.openDataTableElements(
+            params,
+            style,
+            state.scroll_offset_x,
+            state.scroll_offset_y,
+        ) orelse return;
+
+        // Render header row if enabled
+        if (state.show_header) {
+            if (render_header) |header_fn| {
+                self.renderDataTableHeader(state, params, style, header_fn);
+            }
+        }
+
+        // Top spacer (rows above visible range)
+        if (params.top_spacer > 0) {
+            self.renderDataTableSpacer(params.content_width, params.top_spacer);
+        }
+
+        // Render visible rows
+        const range = params.visible_range;
+        var row = range.rows.start;
+        while (row < range.rows.end) : (row += 1) {
+            self.renderDataTableRow(state, row, range.cols, params, style, render_cell);
+        }
+
+        // Bottom spacer (rows below visible range)
+        if (params.bottom_spacer > 0) {
+            self.renderDataTableSpacer(params.content_width, params.bottom_spacer);
+        }
+
+        // Close content container and viewport
+        self.layout.closeElement();
+        self.layout.closeElement();
+
+        // Register for scroll handling
+        self.registerDataTableScroll(id, params, content_id, style);
+    }
+
+    /// Render header row for data table
+    fn renderDataTableHeader(
+        self: *Self,
+        state: *const DataTableState,
+        params: DataTableLayout,
+        style: DataTableStyle,
+        render_header: *const fn (col: u32, builder: *Self) void,
+    ) void {
+        // Open header row container
+        self.layout.openElement(.{
+            .id = self.generateId(),
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(params.content_width),
+                    .height = SizingAxis.fixed(state.header_height_px),
+                },
+                .layout_direction = .left_to_right,
+            },
+            .background_color = style.header_background,
+        }) catch return;
+
+        // Left spacer
+        if (params.left_spacer > 0) {
+            self.renderDataTableSpacer(params.left_spacer, state.header_height_px);
+        }
+
+        // Render visible header cells
+        const col_range = params.visible_range.cols;
+        var col = col_range.start;
+        while (col < col_range.end) : (col += 1) {
+            const col_width = state.columns[col].width_px;
+            const header_id = self.generateId();
+
+            // Push dispatch node for click handling
+            _ = self.dispatch.pushNode();
+            self.dispatch.setLayoutId(header_id.id);
+
+            self.layout.openElement(.{
+                .id = header_id,
+                .layout = .{
+                    .sizing = .{
+                        .width = SizingAxis.fixed(col_width),
+                        .height = SizingAxis.fixed(state.header_height_px),
+                    },
+                },
+            }) catch {
+                self.dispatch.popNode();
+                continue;
+            };
+
+            // Register header click handler if column is sortable
+            if (style.on_header_click) |callback| {
+                if (state.columns[col].sortable) {
+                    self.dispatch.onClickWithData(callback, col);
+                }
+            }
+
+            render_header(col, self);
+            self.layout.closeElement();
+            self.dispatch.popNode();
+        }
+
+        // Right spacer
+        if (params.right_spacer > 0) {
+            self.renderDataTableSpacer(params.right_spacer, state.header_height_px);
+        }
+
+        self.layout.closeElement(); // header row
+    }
+
+    /// Render a single data row
+    fn renderDataTableRow(
+        self: *Self,
+        state: *const DataTableState,
+        row: u32,
+        col_range: data_table.ColRange,
+        params: DataTableLayout,
+        style: DataTableStyle,
+        render_cell: *const fn (row: u32, col: u32, builder: *Self) void,
+    ) void {
+        // Determine row background
+        const is_selected = state.selection.isRowSelected(row);
+        const is_alternate = row % 2 == 1;
+        const bg = if (is_selected)
+            style.row_selected_background
+        else if (is_alternate)
+            style.row_alternate_background
+        else
+            style.row_background;
+
+        const row_id = self.generateId();
+
+        // Push dispatch node for row click handling
+        _ = self.dispatch.pushNode();
+        self.dispatch.setLayoutId(row_id.id);
+
+        // Open row container
+        self.layout.openElement(.{
+            .id = row_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(params.content_width),
+                    .height = SizingAxis.fixed(state.row_height_px),
+                },
+                .layout_direction = .left_to_right,
+            },
+            .background_color = bg,
+        }) catch {
+            self.dispatch.popNode();
+            return;
+        };
+
+        // Register row click handler
+        if (style.on_row_click) |callback| {
+            self.dispatch.onClickWithData(callback, row);
+        }
+
+        // Left spacer for columns before visible range
+        if (params.left_spacer > 0) {
+            self.renderDataTableSpacer(params.left_spacer, state.row_height_px);
+        }
+
+        // Render visible cells
+        var col = col_range.start;
+        while (col < col_range.end) : (col += 1) {
+            const col_width = state.columns[col].width_px;
+
+            self.layout.openElement(.{
+                .id = self.generateId(),
+                .layout = .{
+                    .sizing = .{
+                        .width = SizingAxis.fixed(col_width),
+                        .height = SizingAxis.fixed(state.row_height_px),
+                    },
+                },
+            }) catch continue;
+
+            render_cell(row, col, self);
+            self.layout.closeElement();
+        }
+
+        // Right spacer
+        if (params.right_spacer > 0) {
+            self.renderDataTableSpacer(params.right_spacer, state.row_height_px);
+        }
+
+        self.layout.closeElement(); // row container
+        self.dispatch.popNode();
+    }
+
+    /// Render a virtualized data table with context pointer.
+    /// Like dataTable, but passes a context pointer to the render callbacks.
+    pub fn dataTableWithContext(
+        self: *Self,
+        id: []const u8,
+        state: *DataTableState,
+        style: DataTableStyle,
+        context: anytype,
+        render_cell: *const fn (row: u32, col: u32, ctx: @TypeOf(context), builder: *Self) void,
+        render_header: ?*const fn (col: u32, ctx: @TypeOf(context), builder: *Self) void,
+    ) void {
+        // Sync gap from style to state
+        state.row_gap_px = style.row_gap;
+
+        // Sync scroll state
+        self.syncDataTableScroll(id, state);
+
+        // Compute layout parameters
+        const params = computeDataTableLayout(id, state, style);
+
+        // Open viewport and content elements
+        const content_id = self.openDataTableElements(
+            params,
+            style,
+            state.scroll_offset_x,
+            state.scroll_offset_y,
+        ) orelse return;
+
+        // Render header row if enabled
+        if (state.show_header) {
+            if (render_header) |header_fn| {
+                self.renderDataTableHeaderWithContext(state, params, style, context, header_fn);
+            }
+        }
+
+        // Top spacer
+        if (params.top_spacer > 0) {
+            self.renderDataTableSpacer(params.content_width, params.top_spacer);
+        }
+
+        // Render visible rows
+        const range = params.visible_range;
+        var row = range.rows.start;
+        while (row < range.rows.end) : (row += 1) {
+            self.renderDataTableRowWithContext(state, row, range.cols, params, style, context, render_cell);
+        }
+
+        // Bottom spacer
+        if (params.bottom_spacer > 0) {
+            self.renderDataTableSpacer(params.content_width, params.bottom_spacer);
+        }
+
+        // Close elements
+        self.layout.closeElement();
+        self.layout.closeElement();
+
+        // Register for scroll handling
+        self.registerDataTableScroll(id, params, content_id, style);
+    }
+
+    /// Render header row with context
+    fn renderDataTableHeaderWithContext(
+        self: *Self,
+        state: *const DataTableState,
+        params: DataTableLayout,
+        style: DataTableStyle,
+        context: anytype,
+        render_header: *const fn (col: u32, ctx: @TypeOf(context), builder: *Self) void,
+    ) void {
+        self.layout.openElement(.{
+            .id = self.generateId(),
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(params.content_width),
+                    .height = SizingAxis.fixed(state.header_height_px),
+                },
+                .layout_direction = .left_to_right,
+            },
+            .background_color = style.header_background,
+        }) catch return;
+
+        if (params.left_spacer > 0) {
+            self.renderDataTableSpacer(params.left_spacer, state.header_height_px);
+        }
+
+        const col_range = params.visible_range.cols;
+        var col = col_range.start;
+        while (col < col_range.end) : (col += 1) {
+            const col_width = state.columns[col].width_px;
+            const header_id = self.generateId();
+
+            // Push dispatch node for click handling
+            _ = self.dispatch.pushNode();
+            self.dispatch.setLayoutId(header_id.id);
+
+            self.layout.openElement(.{
+                .id = header_id,
+                .layout = .{
+                    .sizing = .{
+                        .width = SizingAxis.fixed(col_width),
+                        .height = SizingAxis.fixed(state.header_height_px),
+                    },
+                },
+            }) catch {
+                self.dispatch.popNode();
+                continue;
+            };
+
+            // Register header click handler if column is sortable
+            if (style.on_header_click) |callback| {
+                if (state.columns[col].sortable) {
+                    self.dispatch.onClickWithData(callback, col);
+                }
+            }
+
+            render_header(col, context, self);
+            self.layout.closeElement();
+            self.dispatch.popNode();
+        }
+
+        if (params.right_spacer > 0) {
+            self.renderDataTableSpacer(params.right_spacer, state.header_height_px);
+        }
+
+        self.layout.closeElement();
+    }
+
+    /// Render data row with context
+    fn renderDataTableRowWithContext(
+        self: *Self,
+        state: *const DataTableState,
+        row: u32,
+        col_range: data_table.ColRange,
+        params: DataTableLayout,
+        style: DataTableStyle,
+        context: anytype,
+        render_cell: *const fn (row: u32, col: u32, ctx: @TypeOf(context), builder: *Self) void,
+    ) void {
+        const is_selected = state.selection.isRowSelected(row);
+        const is_alternate = row % 2 == 1;
+        const bg = if (is_selected)
+            style.row_selected_background
+        else if (is_alternate)
+            style.row_alternate_background
+        else
+            style.row_background;
+
+        const row_id = self.generateId();
+
+        // Push dispatch node for row click handling
+        _ = self.dispatch.pushNode();
+        self.dispatch.setLayoutId(row_id.id);
+
+        self.layout.openElement(.{
+            .id = row_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(params.content_width),
+                    .height = SizingAxis.fixed(state.row_height_px),
+                },
+                .layout_direction = .left_to_right,
+            },
+            .background_color = bg,
+        }) catch {
+            self.dispatch.popNode();
+            return;
+        };
+
+        // Register row click handler
+        if (style.on_row_click) |callback| {
+            self.dispatch.onClickWithData(callback, row);
+        }
+
+        if (params.left_spacer > 0) {
+            self.renderDataTableSpacer(params.left_spacer, state.row_height_px);
+        }
+
+        var col = col_range.start;
+        while (col < col_range.end) : (col += 1) {
+            const col_width = state.columns[col].width_px;
+
+            self.layout.openElement(.{
+                .id = self.generateId(),
+                .layout = .{
+                    .sizing = .{
+                        .width = SizingAxis.fixed(col_width),
+                        .height = SizingAxis.fixed(state.row_height_px),
+                    },
+                },
+            }) catch continue;
+
+            render_cell(row, col, context, self);
+            self.layout.closeElement();
+        }
+
+        if (params.right_spacer > 0) {
+            self.renderDataTableSpacer(params.right_spacer, state.row_height_px);
+        }
+
+        self.layout.closeElement();
+        self.dispatch.popNode();
     }
 
     /// Register scroll container regions and update state

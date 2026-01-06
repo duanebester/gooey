@@ -389,6 +389,95 @@ cx.hstack(.{ .gap = 4 }, .{
 })
 ```
 
+### UniformList
+
+Virtualized list for efficiently rendering large datasets with uniform item heights. Only visible items are rendered, regardless of total count.
+
+```zig
+const State = struct {
+    list_state: UniformListState = UniformListState.init(10_000, 32.0), // count, item height
+    selected: ?u32 = null,
+
+    pub fn scrollToTop(self: *State) void {
+        self.list_state.scrollToTop();
+    }
+
+    pub fn scrollToMiddle(self: *State) void {
+        self.list_state.scrollToItem(5000, .center);
+    }
+};
+
+// In render function:
+cx.uniformList("my-list", &s.list_state, .{ .height = 400 }, struct {
+    fn render(b: *Builder, index: u32) void {
+        b.fmt("Item {d}", .{index});
+    }
+}.render);
+
+// With gaps between items:
+var list_state = UniformListState.initWithGap(1000, 32.0, 4.0);
+```
+
+### VirtualList
+
+Virtualized list supporting variable item heights. Heights are cached after rendering for efficient scroll calculations. Ideal for chat messages or expandable rows.
+
+```zig
+const State = struct {
+    list_state: VirtualListState = VirtualListState.init(1000, 48.0), // count, default height
+};
+
+// In render function - callback returns item height:
+cx.virtualList("chat-list", &s.list_state, .{ .height = 400 }, struct {
+    fn render(b: *Builder, index: u32) f32 {
+        const msg = messages[index];
+        const height: f32 = if (msg.has_image) 120.0 else 48.0;
+        b.box(.{ .height = height }, .{ b.text(msg.text) });
+        return height; // Return actual rendered height
+    }
+}.render);
+```
+
+### DataTable
+
+Virtualized 2D table with both vertical and horizontal virtualization. Supports column resizing, sorting, and selection.
+
+```zig
+const State = struct {
+    table_state: DataTableState = blk: {
+        var t = DataTableState.init(10_000, 32.0); // row count, row height
+        t.addColumn(.{ .width_px = 80, .sortable = true }) catch unreachable;   // ID
+        t.addColumn(.{ .width_px = 200, .sortable = true }) catch unreachable;  // Name
+        t.addColumn(.{ .width_px = 100 }) catch unreachable;                     // Status
+        break :blk t;
+    },
+
+    pub fn onSort(self: *State, col: u32) void {
+        _ = self.table_state.toggleSort(col);
+        // Re-sort your data based on table_state.sort_column and direction
+    }
+};
+
+// In render function:
+cx.dataTable("my-table", &s.table_state, .{ .height = 400, .width = 600 },
+    renderCell,
+    renderHeader,
+);
+
+fn renderCell(b: *Builder, row: u32, col: u32) void {
+    switch (col) {
+        0 => b.fmt("{d}", .{row}),
+        1 => b.text(data[row].name),
+        2 => b.text(data[row].status),
+        else => {},
+    }
+}
+
+fn renderHeader(b: *Builder, col: u32) void {
+    b.text(COLUMN_NAMES[col]);
+}
+```
+
 ## Animation System
 
 Built-in animation support with easing functions:
