@@ -207,6 +207,7 @@ pub const BoundingBox = layout.BoundingBox;
 
 // Virtual list (for large datasets)
 pub const UniformListState = widgets.UniformListState;
+pub const VirtualListState = widgets.VirtualListState;
 pub const VisibleRange = widgets.VisibleRange;
 pub const ScrollStrategy = widgets.ScrollStrategy;
 
@@ -274,6 +275,7 @@ pub const StackStyle = ui.StackStyle;
 pub const CenterStyle = ui.CenterStyle;
 pub const ScrollStyle = ui.ScrollStyle;
 pub const UniformListStyle = ui.UniformListStyle;
+pub const VirtualListStyle = ui.VirtualListStyle;
 pub const InputStyle = ui.InputStyle;
 pub const TextAreaStyle = ui.TextAreaStyle;
 

@@ -61,7 +61,7 @@ pub const scroll_container = @import("scroll_container.zig");
 pub const ScrollContainer = scroll_container.ScrollContainer;
 
 // =============================================================================
-// Uniform List (Virtualized)
+// Uniform List (Virtualized, fixed-height items)
 // =============================================================================
 
 pub const uniform_list = @import("uniform_list.zig");
@@ -70,6 +70,17 @@ pub const UniformListState = uniform_list.UniformListState;
 pub const VisibleRange = uniform_list.VisibleRange;
 pub const ScrollStrategy = uniform_list.ScrollStrategy;
 pub const MAX_VISIBLE_ITEMS = uniform_list.MAX_VISIBLE_ITEMS;
+
+// =============================================================================
+// Virtual List (Virtualized, variable-height items)
+// =============================================================================
+
+pub const virtual_list = @import("virtual_list.zig");
+
+pub const VirtualListState = virtual_list.VirtualListState;
+pub const MAX_VIRTUAL_LIST_ITEMS = virtual_list.MAX_VIRTUAL_LIST_ITEMS;
+// Note: VirtualList uses its own VisibleRange and ScrollStrategy which are
+// compatible with UniformList's versions (same structure)
 
 // =============================================================================
 // Tests

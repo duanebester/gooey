@@ -82,6 +82,7 @@ pub const StackStyle = styles.StackStyle;
 pub const CenterStyle = styles.CenterStyle;
 pub const ScrollStyle = styles.ScrollStyle;
 pub const UniformListStyle = styles.UniformListStyle;
+pub const VirtualListStyle = styles.VirtualListStyle;
 pub const ButtonStyle = styles.ButtonStyle;
 pub const CheckboxStyle = styles.CheckboxStyle;
 pub const ShadowConfig = styles.ShadowConfig;

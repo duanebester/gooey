@@ -66,6 +66,7 @@ pub const StackStyle = styles.StackStyle;
 pub const CenterStyle = styles.CenterStyle;
 pub const ScrollStyle = styles.ScrollStyle;
 pub const UniformListStyle = styles.UniformListStyle;
+pub const VirtualListStyle = styles.VirtualListStyle;
 pub const ButtonStyle = styles.ButtonStyle;
 
 pub const PrimitiveType = primitives.PrimitiveType;
@@ -1084,6 +1085,330 @@ pub const Builder = struct {
 
         // Register for scroll handling
         self.registerUniformListScroll(id, params, content_id, style);
+    }
+
+    // =========================================================================
+    // Virtual List (variable-height items)
+    // =========================================================================
+
+    const virtual_list = @import("../widgets/virtual_list.zig");
+    const VirtualListState = virtual_list.VirtualListState;
+
+    /// Layout parameters for virtual list rendering
+    const VirtualListLayout = struct {
+        layout_id: LayoutId,
+        sizing: Sizing,
+        padding: Padding,
+        content_height: f32,
+        top_spacer_height: f32,
+        bottom_spacer_height: f32,
+        range: @import("../widgets/virtual_list.zig").VisibleRange,
+        gap: u16,
+    };
+
+    /// Sync scroll state between VirtualListState and retained ScrollContainer.
+    fn syncVirtualListScroll(self: *Self, id: []const u8, state: *VirtualListState) void {
+        const g = self.gooey orelse return;
+        const sc = g.widgets.scrollContainer(id) orelse return;
+
+        // Update viewport dimensions FIRST so calculations are accurate
+        state.viewport_height_px = sc.state.viewport_height;
+
+        if (state.pending_scroll) |request| {
+            // Resolve the scroll request with current accurate viewport dimensions
+            const target: f32 = switch (request) {
+                .absolute => |offset| offset,
+                .to_top => 0,
+                .to_end => state.maxScrollOffset(),
+                .to_item => |item| state.resolveScrollToItem(item.index, item.strategy),
+            };
+
+            // Apply resolved scroll to ScrollContainer (clamped to valid range)
+            const max_scroll = sc.state.maxScrollY();
+            sc.state.offset_y = std.math.clamp(target, 0, max_scroll);
+            state.scroll_offset_px = sc.state.offset_y;
+            state.pending_scroll = null; // Consume the request
+        } else {
+            // Normal sync: read current offset from ScrollContainer
+            state.scroll_offset_px = sc.state.offset_y;
+        }
+    }
+
+    /// Compute sizing for virtual list viewport
+    fn computeVirtualListSizing(style: VirtualListStyle) Sizing {
+        var sizing = Sizing{
+            .width = SizingAxis.fit(),
+            .height = SizingAxis.fit(),
+        };
+
+        // Fixed dimensions
+        if (style.width) |w| sizing.width = SizingAxis.fixed(w);
+        if (style.height) |h| sizing.height = SizingAxis.fixed(h);
+
+        // Flexible sizing
+        if (style.grow) {
+            sizing.width = SizingAxis.grow();
+            sizing.height = SizingAxis.grow();
+        }
+        if (style.grow_width) sizing.width = SizingAxis.grow();
+        if (style.grow_height) sizing.height = SizingAxis.grow();
+        if (style.fill_width) sizing.width = SizingAxis.percent(1.0);
+        if (style.fill_height) sizing.height = SizingAxis.percent(1.0);
+
+        return sizing;
+    }
+
+    /// Compute padding for virtual list viewport
+    fn computeVirtualListPadding(style: VirtualListStyle) Padding {
+        return switch (style.padding) {
+            .all => |v| Padding.all(@intFromFloat(v)),
+            .symmetric => |s| Padding.symmetric(@intFromFloat(s.x), @intFromFloat(s.y)),
+            .each => |i| .{
+                .top = @intFromFloat(i.top),
+                .bottom = @intFromFloat(i.bottom),
+                .left = @intFromFloat(i.left),
+                .right = @intFromFloat(i.right),
+            },
+        };
+    }
+
+    /// Compute all layout parameters for virtual list.
+    fn computeVirtualListLayout(
+        id: []const u8,
+        state: *const VirtualListState,
+        style: VirtualListStyle,
+    ) VirtualListLayout {
+        const range = state.visibleRange();
+        const content_height = state.contentHeight();
+
+        return .{
+            .layout_id = LayoutId.fromString(id),
+            .sizing = computeVirtualListSizing(style),
+            .padding = computeVirtualListPadding(style),
+            .content_height = content_height,
+            .top_spacer_height = state.topSpacerHeight(range),
+            .bottom_spacer_height = state.bottomSpacerHeight(range),
+            .range = range,
+            .gap = @intFromFloat(style.gap),
+        };
+    }
+
+    /// Open the scroll viewport and content container elements for virtual list.
+    fn openVirtualListElements(
+        self: *Self,
+        params: VirtualListLayout,
+        style: VirtualListStyle,
+        scroll_offset: f32,
+    ) ?LayoutId {
+        // Open scroll viewport element
+        self.layout.openElement(.{
+            .id = params.layout_id,
+            .layout = .{
+                .sizing = params.sizing,
+                .padding = params.padding,
+            },
+            .background_color = style.background,
+            .corner_radius = if (style.corner_radius > 0) CornerRadius.all(style.corner_radius) else .{},
+            .scroll = .{
+                .vertical = true,
+                .horizontal = false,
+                .scroll_offset = .{ .x = 0, .y = scroll_offset },
+            },
+        }) catch {
+            std.debug.assert(false); // Layout allocation failed
+            return null;
+        };
+
+        // Inner content container with full virtual height
+        const content_id = self.generateId();
+        self.layout.openElement(.{
+            .id = content_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.grow(),
+                    .height = SizingAxis.fixed(params.content_height),
+                },
+                .layout_direction = .top_to_bottom,
+                .child_gap = params.gap,
+            },
+        }) catch {
+            self.layout.closeElement(); // Close viewport
+            std.debug.assert(false); // Layout allocation failed
+            return null;
+        };
+
+        return content_id;
+    }
+
+    /// Render a spacer element for virtual list virtualization.
+    fn renderVirtualListSpacer(self: *Self, height: f32) void {
+        if (height <= 0) return;
+
+        const spacer_id = self.generateId();
+        self.layout.openElement(.{
+            .id = spacer_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.grow(),
+                    .height = SizingAxis.fixed(height),
+                },
+            },
+        }) catch {
+            std.debug.assert(false); // Spacer allocation failed
+            return;
+        };
+        self.layout.closeElement();
+    }
+
+    /// Register scroll handling for the virtual list.
+    fn registerVirtualListScroll(
+        self: *Self,
+        id: []const u8,
+        params: VirtualListLayout,
+        content_id: LayoutId,
+        style: VirtualListStyle,
+    ) void {
+        const index = self.pending_scrolls.items.len;
+        self.pending_scrolls.append(self.allocator, .{
+            .id = id,
+            .layout_id = params.layout_id,
+            .style = .{
+                .vertical = true,
+                .horizontal = false,
+                .scrollbar_size = style.scrollbar_size,
+                .track_color = style.track_color,
+                .thumb_color = style.thumb_color,
+                .content_height = params.content_height,
+            },
+            .content_layout_id = content_id,
+        }) catch {
+            std.debug.assert(false); // Scroll registration failed
+            return;
+        };
+
+        self.pending_scrolls_by_layout_id.put(self.allocator, params.layout_id.id, index) catch {
+            std.debug.assert(false); // Scroll map insertion failed
+        };
+    }
+
+    /// Render a virtualized variable-height list.
+    ///
+    /// Unlike `uniformList` where all items have the same height, `virtualList`
+    /// supports items with different heights. The render callback must return
+    /// the actual height of each rendered item, which is cached for efficient
+    /// scroll calculations.
+    ///
+    /// IMPORTANT: The render callback MUST return the exact height of the
+    /// rendered item. This height is cached and used for scroll calculations.
+    ///
+    /// Example:
+    /// ```zig
+    /// var list_state = VirtualListState.init(100, 32.0); // count, default height
+    ///
+    /// b.virtualList("chat", &list_state, .{ .height = 400 }, renderMessage);
+    ///
+    /// fn renderMessage(index: u32, builder: *Builder) f32 {
+    ///     const msg = messages[index];
+    ///     const height: f32 = if (msg.has_image) 120.0 else 48.0;
+    ///     builder.box(.{ .height = height }, .{ text(msg.text, .{}) });
+    ///     return height; // Return actual height for caching
+    /// }
+    /// ```
+    pub fn virtualList(
+        self: *Self,
+        id: []const u8,
+        state: *VirtualListState,
+        style: VirtualListStyle,
+        render_item: *const fn (index: u32, builder: *Self) f32,
+    ) void {
+        // Sync gap from style to state for correct height calculations
+        state.gap_px = style.gap;
+
+        // Sync scroll state with retained ScrollContainer
+        self.syncVirtualListScroll(id, state);
+
+        // Compute layout parameters
+        const params = computeVirtualListLayout(id, state, style);
+
+        // Open viewport and content elements
+        const content_id = self.openVirtualListElements(params, style, state.scroll_offset_px) orelse return;
+
+        // Top spacer (items above visible range)
+        self.renderVirtualListSpacer(params.top_spacer_height);
+
+        // Render only visible items and cache their heights
+        var i = params.range.start;
+        while (i < params.range.end) : (i += 1) {
+            const height = render_item(i, self);
+            state.setHeight(i, height);
+        }
+
+        // Bottom spacer (items below visible range)
+        self.renderVirtualListSpacer(params.bottom_spacer_height);
+
+        // Close content container and viewport
+        self.layout.closeElement();
+        self.layout.closeElement();
+
+        // Register for scroll handling
+        self.registerVirtualListScroll(id, params, content_id, style);
+    }
+
+    /// Render a virtualized variable-height list with context pointer.
+    /// Like virtualList, but passes a context pointer to the render callback
+    /// for accessing external data without globals.
+    ///
+    /// Example:
+    /// ```zig
+    /// const ctx = RenderContext{ .messages = &my_messages };
+    /// b.virtualListWithContext("chat", &list_state, .{}, ctx, renderMessage);
+    ///
+    /// fn renderMessage(index: u32, ctx: RenderContext, builder: *Builder) f32 {
+    ///     const msg = ctx.messages[index];
+    ///     const height: f32 = if (msg.expanded) 100.0 else 40.0;
+    ///     builder.box(.{ .height = height }, .{ text(msg.text, .{}) });
+    ///     return height;
+    /// }
+    /// ```
+    pub fn virtualListWithContext(
+        self: *Self,
+        id: []const u8,
+        state: *VirtualListState,
+        style: VirtualListStyle,
+        context: anytype,
+        render_item: *const fn (index: u32, ctx: @TypeOf(context), builder: *Self) f32,
+    ) void {
+        // Sync gap from style to state for correct height calculations
+        state.gap_px = style.gap;
+
+        // Sync scroll state with retained ScrollContainer
+        self.syncVirtualListScroll(id, state);
+
+        // Compute layout parameters
+        const params = computeVirtualListLayout(id, state, style);
+
+        // Open viewport and content elements
+        const content_id = self.openVirtualListElements(params, style, state.scroll_offset_px) orelse return;
+
+        // Top spacer (items above visible range)
+        self.renderVirtualListSpacer(params.top_spacer_height);
+
+        // Render only visible items with context and cache their heights
+        var i = params.range.start;
+        while (i < params.range.end) : (i += 1) {
+            const height = render_item(i, context, self);
+            state.setHeight(i, height);
+        }
+
+        // Bottom spacer (items below visible range)
+        self.renderVirtualListSpacer(params.bottom_spacer_height);
+
+        // Close content container and viewport
+        self.layout.closeElement();
+        self.layout.closeElement();
+
+        // Register for scroll handling
+        self.registerVirtualListScroll(id, params, content_id, style);
     }
 
     /// Register scroll container regions and update state
