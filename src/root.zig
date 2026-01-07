@@ -78,6 +78,9 @@ pub const debug = @import("debug/mod.zig");
 /// Layout engine (Clay-inspired)
 pub const layout = @import("layout/layout.zig");
 
+/// Accessibility (A11Y) - screen reader and assistive technology support
+pub const accessibility = @import("accessibility/accessibility.zig");
+
 /// Text rendering system with backend abstraction
 pub const text = @import("text/mod.zig");
 

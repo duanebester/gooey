@@ -317,7 +317,31 @@ const TopNavBar = struct {
 
             ui.spacer(),
 
-            // Navigation items (horizontal)
+            // Navigation items (horizontal) - wrapped in tablist for accessibility
+            NavTabList{},
+
+            ui.spacer(),
+
+            // Theme toggle
+            ThemeToggle{},
+        });
+    }
+};
+
+const NavTabList = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        // Push accessible tablist container
+        const a11y_pushed = cx.accessible(.{
+            .role = .tablist,
+            .name = "Main navigation",
+        });
+        defer if (a11y_pushed) cx.accessibleEnd();
+
+        cx.box(.{
+            .direction = .row,
+            .gap = 8,
+            .alignment = .{ .cross = .center },
+        }, .{
             NavItem{ .section = .overview },
             NavItem{ .section = .buttons },
             NavItem{ .section = .inputs },
@@ -325,11 +349,6 @@ const TopNavBar = struct {
             NavItem{ .section = .feedback },
             NavItem{ .section = .overlays },
             NavItem{ .section = .icons },
-
-            ui.spacer(),
-
-            // Theme toggle
-            ThemeToggle{},
         });
     }
 };
@@ -357,6 +376,16 @@ const NavItem = struct {
         const t = cx.theme();
         const is_active = s.section == self.section;
         const idx = @intFromEnum(self.section);
+
+        // Push accessible element (role: tab)
+        const a11y_pushed = cx.accessible(.{
+            .role = .tab,
+            .name = self.section.title(),
+            .state = .{ .selected = is_active },
+            .pos_in_set = @as(u16, idx + 1), // 1-based position
+            .set_size = Section.count,
+        });
+        defer if (a11y_pushed) cx.accessibleEnd();
 
         cx.box(.{
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },

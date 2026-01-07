@@ -8,10 +8,15 @@
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 
 pub const ProgressBar = struct {
     /// Progress value from 0.0 to 1.0
     progress: f32,
+
+    /// ID for accessibility (optional)
+    id: []const u8 = "progress",
 
     // Sizing
     width: f32 = 200,
@@ -26,6 +31,10 @@ pub const ProgressBar = struct {
     secondary_progress: ?f32 = null,
     secondary_fill: ?Color = null,
 
+    // Accessibility overrides
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
     pub fn render(self: ProgressBar, b: *ui.Builder) void {
         const t = b.theme();
 
@@ -37,6 +46,20 @@ pub const ProgressBar = struct {
 
         const clamped = @max(0.0, @min(1.0, self.progress));
         const fill_width = self.width * clamped;
+
+        const layout_id = LayoutId.fromString(self.id);
+
+        // Push accessible element (role: progressbar)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .progressbar,
+            .name = self.accessible_name orelse "Progress",
+            .description = self.accessible_description,
+            .value_min = 0.0,
+            .value_max = 100.0,
+            .value_now = clamped * 100.0,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.box(.{
             .width = self.width,

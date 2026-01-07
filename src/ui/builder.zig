@@ -22,6 +22,9 @@ pub const HandlerRef = handler_mod.HandlerRef;
 pub const EntityId = entity_mod.EntityId;
 pub const Gooey = gooey_mod.Gooey;
 
+// Accessibility
+const a11y = @import("../accessibility/accessibility.zig");
+
 // Layout imports
 const layout_types = @import("../layout/types.zig");
 const BorderConfig = layout_types.BorderConfig;
@@ -98,6 +101,29 @@ pub const keyContext = primitives.keyContext;
 pub const onAction = primitives.onAction;
 pub const onActionHandler = primitives.onActionHandler;
 pub const when = primitives.when;
+
+// Accessibility config
+pub const AccessibleConfig = struct {
+    role: a11y.Role,
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+    state: a11y.State = .{},
+    live: a11y.Live = .off,
+    heading_level: a11y.types.HeadingLevel = 0,
+    value_min: ?f32 = null,
+    value_max: ?f32 = null,
+    value_now: ?f32 = null,
+    pos_in_set: ?u16 = null,
+    set_size: ?u16 = null,
+    /// Optional layout_id for bounds correlation (none = no correlation)
+    layout_id: LayoutId = LayoutId.none,
+};
+
+// Re-export accessibility types for convenience
+pub const A11yRole = a11y.Role;
+pub const A11yState = a11y.State;
+pub const A11yLive = a11y.Live;
 
 /// Get a unique type ID for context type checking
 fn contextTypeId(comptime T: type) usize {
@@ -308,6 +334,74 @@ pub const Builder = struct {
     pub fn writeEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*T {
         const g = self.gooey orelse return null;
         return g.writeEntity(T, entity);
+    }
+
+    // =========================================================================
+    // Accessibility (Phase 1)
+    // =========================================================================
+
+    /// Begin an accessible element. Call before the visual element.
+    /// Returns true if a11y is active and element was pushed.
+    /// Must be paired with accessibleEnd() when returns true.
+    ///
+    /// ## Example
+    /// ```zig
+    /// if (b.accessible(.{ .role = .button, .name = "Submit" })) {
+    ///     defer b.accessibleEnd();
+    /// }
+    /// // ... render visual element ...
+    /// ```
+    pub fn accessible(self: *Self, config: AccessibleConfig) bool {
+        const g = self.gooey orelse return false;
+        if (!g.a11y_enabled) return false;
+
+        _ = g.a11y_tree.pushElement(.{
+            .layout_id = config.layout_id,
+            .role = config.role,
+            .name = config.name,
+            .description = config.description,
+            .value = config.value,
+            .state = config.state,
+            .live = config.live,
+            .heading_level = config.heading_level,
+            .value_min = config.value_min,
+            .value_max = config.value_max,
+            .value_now = config.value_now,
+            .pos_in_set = config.pos_in_set,
+            .set_size = config.set_size,
+        });
+
+        return true;
+    }
+
+    /// End current accessible element.
+    /// Must be called after accessible() returns true.
+    pub fn accessibleEnd(self: *Self) void {
+        const g = self.gooey orelse return;
+        if (g.a11y_enabled) {
+            g.a11y_tree.popElement();
+        }
+    }
+
+    /// Announce a message to screen readers.
+    /// Use .polite for non-urgent updates, .assertive for critical alerts.
+    ///
+    /// ## Example
+    /// ```zig
+    /// b.announce("Item deleted", .polite);
+    /// b.announce("Error: connection lost", .assertive);
+    /// ```
+    pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
+        const g = self.gooey orelse return;
+        if (g.a11y_enabled) {
+            g.a11y_tree.announce(message, priority);
+        }
+    }
+
+    /// Check if accessibility is currently enabled
+    pub fn isA11yEnabled(self: *Self) bool {
+        const g = self.gooey orelse return false;
+        return g.a11y_enabled;
     }
 
     // =========================================================================

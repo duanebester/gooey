@@ -150,7 +150,7 @@ pub fn WebApp(
         var g_gooey: ?*Gooey = null;
         var g_builder: ?*Builder = null;
         var g_cx: ?Cx = null;
-        var g_renderer: ?WebRenderer = null;
+        var g_renderer: ?*WebRenderer = null;
 
         const on_event: ?*const fn (*Cx, InputEvent) bool = if (@hasField(@TypeOf(config), "on_event"))
             config.on_event
@@ -169,10 +169,8 @@ pub fn WebApp(
             };
         }
 
-        fn initImpl() !void {
+        noinline fn initImpl() !void {
             const allocator = std.heap.wasm_allocator;
-
-            web_imports.log("Initializing gooey app...", .{});
 
             // Initialize platform
             g_platform = try Platform.init();
@@ -185,8 +183,9 @@ pub fn WebApp(
             });
 
             // Initialize Gooey (owns layout, scene, text_system)
+            // Heap-allocated with initOwnedPtr to avoid ~400KB stack frame on WASM
             const gooey_ptr = try allocator.create(Gooey);
-            gooey_ptr.* = try Gooey.initOwned(allocator, g_window.?);
+            try gooey_ptr.initOwnedPtr(allocator, g_window.?);
             g_gooey = gooey_ptr;
 
             // Initialize Builder
@@ -215,7 +214,10 @@ pub fn WebApp(
             handler_mod.setRootState(State, state);
 
             // Initialize GPU renderer
-            g_renderer = try WebRenderer.init(allocator);
+            // Heap-allocated with initInPlace to avoid ~1.15MB stack frame on WASM
+            const renderer_ptr = try allocator.create(WebRenderer);
+            renderer_ptr.initInPlace(allocator);
+            g_renderer = renderer_ptr;
 
             // Load custom shaders (WGSL for web)
             const custom_shaders = if (@hasField(@TypeOf(config), "custom_shaders"))
@@ -238,7 +240,6 @@ pub fn WebApp(
             g_renderer.?.uploadSvgAtlas(&g_gooey.?.svg_atlas);
 
             g_initialized = true;
-            web_imports.log("Gooey app ready!", .{});
 
             // Call user init callback if provided
             if (on_init) |init_fn| {

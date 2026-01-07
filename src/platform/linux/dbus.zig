@@ -403,6 +403,21 @@ pub const Message = struct {
         return Self{ .msg = msg };
     }
 
+    /// Create a signal message
+    pub fn newSignal(
+        path: [:0]const u8,
+        iface: [:0]const u8,
+        signal_name: [:0]const u8,
+    ) Error!Self {
+        const msg = dbus_message_new_signal(
+            path.ptr,
+            iface.ptr,
+            signal_name.ptr,
+        ) orelse return Error.MessageCreationFailed;
+
+        return Self{ .msg = msg };
+    }
+
     pub fn deinit(self: *Self) void {
         dbus_message_unref(self.msg);
     }
@@ -529,10 +544,35 @@ pub const MessageIter = struct {
         return dbus_message_iter_append_basic(&self.inner, TYPE_UINT32, &value) != 0;
     }
 
+    /// Append an i32 argument
+    pub fn appendInt32(self: *Self, value: i32) bool {
+        return dbus_message_iter_append_basic(&self.inner, TYPE_INT32, &value) != 0;
+    }
+
     /// Append a boolean argument
     pub fn appendBool(self: *Self, value: bool) bool {
         const dbus_bool: u32 = if (value) 1 else 0;
         return dbus_message_iter_append_basic(&self.inner, TYPE_BOOLEAN, &dbus_bool) != 0;
+    }
+
+    /// Append a variant containing a string
+    pub fn appendVariantString(self: *Self, str: [:0]const u8) bool {
+        var sub = self.openContainer(TYPE_VARIANT, "s") orelse return false;
+        if (!sub.appendString(str)) {
+            self.abandonContainer(&sub);
+            return false;
+        }
+        return self.closeContainer(&sub);
+    }
+
+    /// Append a variant containing a double
+    pub fn appendVariantDouble(self: *Self, value: f64) bool {
+        var sub = self.openContainer(TYPE_VARIANT, "d") orelse return false;
+        if (dbus_message_iter_append_basic(&sub.inner, TYPE_DOUBLE, &value) == 0) {
+            self.abandonContainer(&sub);
+            return false;
+        }
+        return self.closeContainer(&sub);
     }
 
     /// Append raw bytes (for "ay" type - byte array)

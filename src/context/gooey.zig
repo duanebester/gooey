@@ -20,8 +20,31 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+// Enable verbose init logging for debugging stack overflow issues
+const verbose_init_logging = false;
+
+// WASM debug logging (no-op on native, or when verbose logging disabled)
+const wasm_log = if (builtin.os.tag == .freestanding and verbose_init_logging)
+    struct {
+        const web_imports = @import("../platform/wgpu/web/imports.zig");
+        pub fn log(comptime fmt: []const u8, args: anytype) void {
+            web_imports.log(fmt, args);
+        }
+    }
+else
+    struct {
+        pub fn log(comptime fmt: []const u8, args: anytype) void {
+            _ = fmt;
+            _ = args;
+        }
+    };
 const debugger_mod = @import("../debug/debugger.zig");
 const render_stats = @import("../debug/render_stats.zig");
+
+// Accessibility
+const a11y = @import("../accessibility/accessibility.zig");
 
 // Layout
 const layout_mod = @import("../layout/layout.zig");
@@ -140,6 +163,22 @@ pub const Gooey = struct {
     height: f32 = 0,
     scale_factor: f32 = 1.0,
 
+    // Accessibility (Phase 1: Gooey Integration, Phase 2: Platform Bridges)
+    /// Accessibility tree (rebuilt each frame, zero-alloc after init)
+    a11y_tree: a11y.Tree,
+
+    /// Platform-specific bridge storage (macOS: MacBridge, others: null)
+    a11y_platform_bridge: a11y.PlatformBridge,
+
+    /// Platform accessibility bridge interface (VoiceOver, AT-SPI2, ARIA)
+    a11y_bridge: a11y.Bridge,
+
+    /// Is accessibility enabled? (cached, checked periodically)
+    a11y_enabled: bool = false,
+
+    /// Frame counter for periodic screen reader checks
+    a11y_check_counter: u32 = 0,
+
     const Self = @This();
 
     /// Initialize Gooey creating and owning all resources
@@ -185,7 +224,7 @@ pub const Gooey = struct {
         errdefer allocator.destroy(dispatch);
         dispatch.* = DispatchTree.init(allocator);
 
-        return .{
+        var result: Self = .{
             .allocator = allocator,
             .layout = layout_engine,
             .layout_owned = true,
@@ -204,10 +243,124 @@ pub const Gooey = struct {
             .width = @floatCast(window.size.width),
             .height = @floatCast(window.size.height),
             .scale_factor = @floatCast(window.scale_factor),
+            // Accessibility: static init, no allocations
+            .a11y_tree = a11y.Tree.init(),
+            .a11y_platform_bridge = undefined,
+            .a11y_bridge = undefined, // Initialized below
         };
+
+        // Initialize platform-specific accessibility bridge (Phase 2)
+        // On macOS: MacBridge with VoiceOver support
+        // On other platforms: NullBridge (no-op)
+        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
+
+        return result;
+    }
+
+    /// Initialize Gooey in-place using out-pointer pattern.
+    /// This avoids stack overflow on WASM where the Gooey struct (~400KB with a11y)
+    /// would exceed the default stack size if returned by value.
+    ///
+    /// Usage:
+    /// ```
+    /// const gooey_ptr = try allocator.create(Gooey);
+    /// try gooey_ptr.initOwnedPtr(allocator, window);
+    /// ```
+    /// Marked noinline to prevent stack accumulation in WASM builds.
+    /// Without this, the compiler inlines all sub-functions creating a 2MB+ stack frame.
+    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *Window) !void {
+        // Create layout engine
+        const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
+        layout_engine.* = LayoutEngine.init(allocator);
+        errdefer {
+            layout_engine.deinit();
+            allocator.destroy(layout_engine);
+        }
+
+        // Create scene
+        const scene = allocator.create(Scene) catch return error.OutOfMemory;
+        scene.* = Scene.init(allocator);
+        errdefer {
+            scene.deinit();
+            allocator.destroy(scene);
+        }
+
+        // Enable viewport culling with initial window size
+        scene.setViewport(
+            @floatCast(window.size.width),
+            @floatCast(window.size.height),
+        );
+        scene.enableCulling();
+
+        // Create text system (initInPlace avoids 1.7MB stack temp)
+        const text_system = allocator.create(TextSystem) catch return error.OutOfMemory;
+        try text_system.initInPlace(allocator, @floatCast(window.scale_factor));
+        errdefer {
+            text_system.deinit();
+            allocator.destroy(text_system);
+        }
+
+        // Load default font - use system monospace for proper SF Mono behavior
+        try text_system.loadSystemFont(.sans_serif, 16.0);
+
+        // Set up text measurement callback
+        layout_engine.setMeasureTextFn(measureTextCallback, text_system);
+
+        // Create dispatch tree
+        const dispatch = try allocator.create(DispatchTree);
+        errdefer allocator.destroy(dispatch);
+        dispatch.* = DispatchTree.init(allocator);
+
+        // Field-by-field init avoids ~400KB stack temp from struct literal
+        // Core resources
+        self.allocator = allocator;
+        self.layout = layout_engine;
+        self.layout_owned = true;
+        self.scene = scene;
+        self.scene_owned = true;
+        self.dispatch = dispatch;
+        self.text_system = text_system;
+        self.text_system_owned = true;
+        self.window = window;
+
+        // Small structs
+        self.entities = EntityMap.init(allocator);
+        self.keymap = Keymap.init(allocator);
+        self.focus = FocusManager.init(allocator);
+        self.widgets = WidgetStore.init(allocator);
+        self.svg_atlas = try svg_mod.SvgAtlas.init(allocator, window.scale_factor);
+        self.image_atlas = try image_mod.ImageAtlas.init(allocator, window.scale_factor);
+
+        // Scalar fields
+        self.width = @floatCast(window.size.width);
+        self.height = @floatCast(window.size.height);
+        self.scale_factor = @floatCast(window.scale_factor);
+        self.frame_count = 0;
+        self.needs_render = false;
+        self.hovered_layout_id = null;
+        self.last_mouse_x = 0;
+        self.last_mouse_y = 0;
+        self.hovered_ancestor_count = 0;
+        self.hover_changed = false;
+        self.debugger = .{};
+
+        // Accessibility (initInPlace avoids ~350KB stack temp)
+        self.a11y_tree.initInPlace();
+        self.a11y_enabled = false;
+        self.a11y_check_counter = 0;
+
+        // Platform-specific accessibility bridge
+        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
     }
 
     pub fn deinit(self: *Self) void {
+        // Clean up accessibility bridge
+        self.a11y_bridge.deinit();
+
         self.widgets.deinit();
         self.focus.deinit();
         self.entities.deinit();
@@ -278,6 +431,18 @@ pub const Gooey = struct {
 
         // Clear hover_changed flag at frame start
         self.hover_changed = false;
+
+        // Accessibility: periodic screen reader check (not every frame)
+        self.a11y_check_counter += 1;
+        if (self.a11y_check_counter >= a11y.constants.SCREEN_READER_CHECK_INTERVAL) {
+            self.a11y_check_counter = 0;
+            self.a11y_enabled = self.a11y_bridge.isActive();
+        }
+
+        // Begin a11y tree if enabled (zero-cost when disabled)
+        if (self.a11y_enabled) {
+            self.a11y_tree.beginFrame();
+        }
     }
 
     /// Call at the end of each frame after building UI
@@ -297,6 +462,17 @@ pub const Gooey = struct {
         // End layout and get render commands
         const commands = try self.layout.endFrame();
         self.debugger.endLayout();
+
+        // Accessibility: finalize and sync to platform (zero-cost when disabled)
+        if (self.a11y_enabled) {
+            self.a11y_tree.endFrame();
+
+            // Sync bounds from layout to accessibility elements
+            self.a11y_tree.syncBounds(self.layout);
+
+            // Use syncFrame for complete frame sync
+            self.a11y_bridge.syncFrame(&self.a11y_tree);
+        }
 
         return commands;
     }
@@ -619,6 +795,39 @@ pub const Gooey = struct {
     pub fn setAccentColor(self: *Gooey, r: f32, g: f32, b: f32, a: f32) void {
         if (self.window.renderer.getPostProcess()) |pp| {
             pp.uniforms.accent_color = .{ r, g, b, a };
+        }
+    }
+
+    // =========================================================================
+    // Accessibility (Phase 1)
+    // =========================================================================
+
+    /// Check if accessibility is currently active (screen reader detected)
+    pub fn isA11yEnabled(self: *const Self) bool {
+        return self.a11y_enabled;
+    }
+
+    /// Force enable accessibility (for testing/debugging)
+    pub fn enableA11y(self: *Self) void {
+        self.a11y_enabled = true;
+    }
+
+    /// Force disable accessibility
+    pub fn disableA11y(self: *Self) void {
+        self.a11y_enabled = false;
+    }
+
+    /// Get a mutable reference to the accessibility tree
+    /// Only valid during frame (between beginFrame/endFrame)
+    pub fn getA11yTree(self: *Self) *a11y.Tree {
+        return &self.a11y_tree;
+    }
+
+    /// Announce a message to screen readers
+    /// Convenience wrapper for a11y_tree.announce()
+    pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
+        if (self.a11y_enabled) {
+            self.a11y_tree.announce(message, priority);
         }
     }
 };

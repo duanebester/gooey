@@ -71,6 +71,8 @@ const gooey_mod = @import("context/gooey.zig");
 const Gooey = gooey_mod.Gooey;
 const ui_mod = @import("ui/mod.zig");
 const Builder = ui_mod.Builder;
+const AccessibleConfig = ui_mod.AccessibleConfig;
+const a11y = @import("accessibility/accessibility.zig");
 const handler_mod = @import("context/handler.zig");
 const entity_mod = @import("context/entity.zig");
 const text_field_mod = @import("widgets/text_input_state.zig");
@@ -500,6 +502,47 @@ pub const Cx = struct {
     /// Render for each item in a slice.
     pub fn each(self: *Self, items: anytype, comptime render_fn: anytype) void {
         self._builder.each(items, render_fn);
+    }
+
+    // =========================================================================
+    // Accessibility API
+    // =========================================================================
+
+    /// Begin an accessible element. Call before the visual element.
+    /// Returns true if a11y is active and element was pushed.
+    /// Must be paired with accessibleEnd() when returns true.
+    ///
+    /// ## Example
+    /// ```zig
+    /// const a11y_pushed = cx.accessible(.{ .role = .button, .name = "Submit" });
+    /// defer if (a11y_pushed) cx.accessibleEnd();
+    /// // ... render visual element ...
+    /// ```
+    pub fn accessible(self: *Self, config: AccessibleConfig) bool {
+        return self._builder.accessible(config);
+    }
+
+    /// End current accessible element.
+    /// Must be called after accessible() returns true.
+    pub fn accessibleEnd(self: *Self) void {
+        self._builder.accessibleEnd();
+    }
+
+    /// Announce a message to screen readers.
+    /// Use .polite for non-urgent updates, .assertive for critical alerts.
+    ///
+    /// ## Example
+    /// ```zig
+    /// cx.announce("Item deleted", .polite);
+    /// cx.announce("Error: connection lost", .assertive);
+    /// ```
+    pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
+        self._builder.announce(message, priority);
+    }
+
+    /// Check if accessibility is currently enabled
+    pub fn isA11yEnabled(self: *Self) bool {
+        return self._builder.isA11yEnabled();
     }
 
     // =========================================================================

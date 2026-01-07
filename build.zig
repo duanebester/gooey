@@ -84,6 +84,8 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "uniform-list", "src/examples/uniform_list_example.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "virtual-list", "src/examples/virtual_list_example.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "data-table", "src/examples/data_table_example.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "a11y-demo", "src/examples/a11y_demo.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "accessible-form", "src/examples/accessible_form.zig", false);
 
         // =====================================================================
         // Tests
@@ -405,6 +407,8 @@ pub fn build(b: *std.Build) void {
         });
         wasm_exe.entry = .disabled;
         wasm_exe.rdynamic = true;
+        // Increase stack size for large structs (Gooey is ~400KB with a11y)
+        wasm_exe.stack_size = 1024 * 1024; // 1MB stack
 
         const wasm_step = b.step("wasm", "Build showcase for web (main demo)");
         wasm_step.dependOn(&b.addInstallArtifact(wasm_exe, .{
@@ -489,6 +493,8 @@ fn addWasmExample(
 
     exe.entry = .disabled;
     exe.rdynamic = true;
+    // Increase stack size for large structs (Gooey is ~400KB with a11y)
+    exe.stack_size = 1024 * 1024; // 1MB stack
 
     const step_name = b.fmt("wasm-{s}", .{name});
     const step_desc = b.fmt("Build {s} example for web", .{name});

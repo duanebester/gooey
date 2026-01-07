@@ -46,6 +46,8 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 const Svg = @import("svg.zig").Svg;
 const Icons = @import("svg.zig").Icons;
 
@@ -121,6 +123,10 @@ pub const Select = struct {
     /// Whether the select is disabled
     disabled: bool = false,
 
+    // Accessibility overrides
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
     pub fn render(self: Select, b: *ui.Builder) void {
         const t = b.theme();
 
@@ -136,6 +142,22 @@ pub const Select = struct {
         const radius = self.corner_radius orelse t.radius_md;
 
         const current_border = if (self.is_open) focus_border else border;
+
+        const layout_id = LayoutId.fromString(self.id);
+
+        // Push accessible element (role: combobox)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .combobox,
+            .name = self.accessible_name orelse self.placeholder,
+            .description = self.accessible_description,
+            .value = self.getDisplayText(),
+            .state = .{
+                .expanded = self.is_open,
+                .disabled = self.disabled,
+            },
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         // Container that holds both trigger and dropdown
         b.boxWithId(self.id, .{

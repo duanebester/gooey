@@ -173,6 +173,26 @@ pub const ShapedRunCache = struct {
         return self;
     }
 
+    /// Initialize ShapedRunCache in-place using out-pointer pattern.
+    /// Avoids stack overflow on WASM where ShapedRunCache is ~1.5MB.
+    /// Marked noinline to prevent stack accumulation in WASM builds.
+    pub noinline fn initInPlace(self: *Self) void {
+        self.entry_count = 0;
+        self.access_counter = 0;
+        self.current_font_ptr = 0;
+
+        // Initialize hash table to empty slots
+        @memset(&self.hash_table, EMPTY_SLOT);
+
+        // Initialize all entries as invalid
+        for (&self.entries) |*entry| {
+            entry.clear();
+        }
+
+        std.debug.assert(self.entry_count == 0);
+        std.debug.assert(self.access_counter == 0);
+    }
+
     pub fn deinit(self: *Self) void {
         // No dynamic memory to free - just clear state
         self.entry_count = 0;
@@ -516,6 +536,24 @@ pub const TextSystem = struct {
             .scale_factor = scale,
             .shape_cache = ShapedRunCache.init(),
         };
+    }
+
+    /// Initialize TextSystem in-place using out-pointer pattern.
+    /// Avoids stack overflow on WASM where TextSystem is ~1.7MB
+    /// (GlyphCache: ~200KB, ShapedRunCache: ~1.5MB).
+    /// Marked noinline to prevent stack accumulation in WASM builds.
+    pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator, scale: f32) !void {
+        std.debug.assert(scale > 0);
+        std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
+
+        self.allocator = allocator;
+        self.current_face = null;
+        self.shaper = null;
+        self.scale_factor = scale;
+
+        // Initialize caches in-place to avoid large stack temporaries
+        try self.cache.initInPlace(allocator, scale);
+        self.shape_cache.initInPlace();
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {

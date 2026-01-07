@@ -41,6 +41,7 @@ WASM support!
 - **File Dialogs** - Native file open/save dialogs (macOS, Linux, WASM)
 - **Clipboard** - Native clipboard support on all platforms
 - **IME Support** - Input method editor for international text input
+- **Accessibility** - Built-in screen reader support (VoiceOver, Orca, ARIA) with semantic roles and live regions
 
 ## Quick Start
 
@@ -671,6 +672,10 @@ fn render(cx: *Cx) void {
 | Modal            | `zig build run-modal`            | Modal dialogs with animation          |
 | Images           | `zig build run-images`           | Image loading and effects             |
 | File Dialog      | `zig build run-file-dialog`      | Native file open/save dialogs         |
+| A11y Demo        | `zig build run-a11y-demo`        | VoiceOver accessibility demo          |
+| Accessible Form  | `zig build run-accessible-form`  | Complete accessible form example      |
+
+See [docs/accessibility.md](docs/accessibility.md) for comprehensive accessibility documentation.
 
 ## WASM
 

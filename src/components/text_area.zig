@@ -9,6 +9,8 @@
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 
 pub const TextArea = struct {
     /// Unique identifier for the textarea (required for state retention)
@@ -46,6 +48,10 @@ pub const TextArea = struct {
     tab_index: i32 = 0,
     tab_stop: bool = true,
 
+    // Accessibility overrides
+    accessible_name: ?[]const u8 = null, // Label for screen readers
+    accessible_description: ?[]const u8 = null,
+
     pub fn render(self: TextArea, b: *ui.Builder) void {
         const t = b.theme();
 
@@ -62,6 +68,17 @@ pub const TextArea = struct {
         // Scrollbar colors derived from theme
         const scrollbar_track_color = self.scrollbar_track_color orelse t.muted.withAlpha(0.1);
         const scrollbar_thumb_color = self.scrollbar_thumb_color orelse t.muted.withAlpha(0.4);
+
+        const layout_id = LayoutId.fromString(self.id);
+
+        // Push accessible element (role: textarea)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .textarea,
+            .name = self.accessible_name orelse self.placeholder,
+            .description = self.accessible_description,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.box(.{}, .{
             ui.textArea(self.id, .{

@@ -9,6 +9,8 @@
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 
 pub const TextInput = struct {
     /// Unique identifier for the input (required for state retention)
@@ -41,6 +43,10 @@ pub const TextInput = struct {
     tab_index: i32 = 0,
     tab_stop: bool = true,
 
+    // Accessibility overrides
+    accessible_name: ?[]const u8 = null, // Label for screen readers
+    accessible_description: ?[]const u8 = null,
+
     pub fn render(self: TextInput, b: *ui.Builder) void {
         const t = b.theme();
 
@@ -53,6 +59,17 @@ pub const TextInput = struct {
         const placeholder_color = self.placeholder_color orelse t.muted;
         const selection_color = self.selection_color orelse t.primary.withAlpha(0.3);
         const cursor_color = self.cursor_color orelse t.text;
+
+        const layout_id = LayoutId.fromString(self.id);
+
+        // Push accessible element (role: textbox)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .textbox,
+            .name = self.accessible_name orelse self.placeholder,
+            .description = self.accessible_description,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.box(.{}, .{
             ui.input(self.id, .{

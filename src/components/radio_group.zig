@@ -39,6 +39,8 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 
 /// A single radio button. Can be used standalone or composed into groups.
 pub const RadioButton = struct {
@@ -57,6 +59,11 @@ pub const RadioButton = struct {
     font_size: u16 = 14,
     gap: f32 = 8,
 
+    // Accessibility
+    accessible_name: ?[]const u8 = null,
+    pos_in_set: ?u16 = null, // 1-based position in group
+    set_size: ?u16 = null, // Total items in group
+
     pub fn render(self: RadioButton, b: *ui.Builder) void {
         const t = b.theme();
 
@@ -65,6 +72,21 @@ pub const RadioButton = struct {
         const unselected = self.unselected_color orelse t.surface;
         const border = self.border_color orelse t.border;
         const label_col = self.label_color orelse t.text;
+
+        const layout_id = LayoutId.fromString(self.label);
+
+        // Push accessible element (role: radio)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .radio,
+            .name = self.accessible_name orelse self.label,
+            .state = .{
+                .checked = self.is_selected,
+            },
+            .pos_in_set = self.pos_in_set,
+            .set_size = self.set_size,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.box(.{
             .direction = .row,
@@ -150,6 +172,9 @@ pub const RadioGroup = struct {
     label_color: ?Color = null,
     font_size: u16 = 14,
 
+    // Accessibility
+    accessible_name: ?[]const u8 = null,
+
     pub const Direction = enum { row, column };
 
     pub fn render(self: RadioGroup, b: *ui.Builder) void {
@@ -160,6 +185,16 @@ pub const RadioGroup = struct {
         const unselected = self.unselected_color orelse t.surface;
         const border = self.border_color orelse t.border;
         const label_col = self.label_color orelse t.text;
+
+        const layout_id = LayoutId.fromString(self.id);
+
+        // Push accessible group element
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .group,
+            .name = self.accessible_name orelse self.id,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.boxWithId(self.id, .{
             .direction = if (self.direction == .row) .row else .column,
@@ -176,6 +211,7 @@ pub const RadioGroup = struct {
                 .border_color = border,
                 .label_color = label_col,
                 .font_size = self.font_size,
+                .set_size = @intCast(self.options.len),
             },
         });
     }
@@ -191,6 +227,7 @@ const RadioGroupItems = struct {
     border_color: Color,
     label_color: Color,
     font_size: u16,
+    set_size: u16,
 
     pub fn render(self: RadioGroupItems, b: *ui.Builder) void {
         for (self.options, 0..) |label, i| {
@@ -209,6 +246,8 @@ const RadioGroupItems = struct {
                 .border_color = self.border_color,
                 .label_color = self.label_color,
                 .font_size = self.font_size,
+                .pos_in_set = @intCast(i + 1), // 1-based
+                .set_size = self.set_size,
             });
         }
     }

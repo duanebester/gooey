@@ -67,6 +67,9 @@ pub fn Tooltip(comptime ChildType: type) type {
         /// Gap between trigger and tooltip
         gap: f32 = 6,
 
+        // Accessibility overrides
+        accessible_description: ?[]const u8 = null,
+
         pub const Position = enum {
             top,
             bottom,
@@ -94,6 +97,15 @@ pub fn Tooltip(comptime ChildType: type) type {
                 g.isHoveredOrDescendant(layout_id.id)
             else
                 false;
+
+            // Push accessible element for the tooltip trigger
+            // The tooltip text serves as an accessible description
+            const a11y_pushed = b.accessible(.{
+                .layout_id = layout_id,
+                .role = .group,
+                .description = self.accessible_description orelse self.text,
+            });
+            defer if (a11y_pushed) b.accessibleEnd();
 
             // HoverArea contains both the child and the tooltip popup.
             // This ensures the floating popup's parent IS the hover area,
@@ -133,6 +145,13 @@ const TooltipPopup = struct {
 
     pub fn render(self: TooltipPopup, b: *ui.Builder) void {
         if (!self.visible) return;
+
+        // Push accessible element (role: tooltip)
+        const a11y_pushed = b.accessible(.{
+            .role = .tooltip,
+            .name = self.text,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.box(.{
             .max_width = self.max_width,

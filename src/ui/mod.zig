@@ -101,3 +101,12 @@ pub const AttachPoint = styles.AttachPoint;
 // =============================================================================
 
 pub const Theme = theme_mod.Theme;
+
+// =============================================================================
+// Accessibility (Phase 1)
+// =============================================================================
+
+pub const AccessibleConfig = builder_mod.AccessibleConfig;
+pub const A11yRole = builder_mod.A11yRole;
+pub const A11yState = builder_mod.A11yState;
+pub const A11yLive = builder_mod.A11yLive;

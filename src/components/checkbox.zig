@@ -12,6 +12,8 @@ const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;
 const Svg = @import("svg.zig").Svg;
 const Icons = @import("svg.zig").Icons;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 
 pub const Checkbox = struct {
     id: []const u8,
@@ -31,6 +33,10 @@ pub const Checkbox = struct {
     label_color: ?Color = null,
     corner_radius: ?f32 = null,
 
+    // Accessibility overrides
+    accessible_name: ?[]const u8 = null, // Override label for screen readers
+    accessible_description: ?[]const u8 = null,
+
     pub fn render(self: Checkbox, b: *ui.Builder) void {
         const t = b.theme();
 
@@ -41,6 +47,20 @@ pub const Checkbox = struct {
         const checkmark = self.checkmark_color orelse Color.white;
         const label_col = self.label_color orelse t.text;
         const radius = self.corner_radius orelse t.radius_sm;
+
+        const layout_id = LayoutId.fromString(self.id);
+
+        // Push accessible element (role: checkbox)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .checkbox,
+            .name = self.accessible_name orelse self.label orelse self.id,
+            .description = self.accessible_description,
+            .state = .{
+                .checked = self.checked,
+            },
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         // Outer container - clickable row
         b.boxWithId(self.id, .{

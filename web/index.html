@@ -848,6 +848,162 @@
         return `${size}px ${fontName}`;
       }
 
+      // =========================================================================
+      // Accessibility (A11Y) - Shadow DOM + ARIA for Screen Readers
+      // =========================================================================
+
+      let a11yContainer = null;
+      const a11yElementPool = new Map(); // id -> HTMLElement
+      let a11yNextId = 1;
+      let a11yBatchDepth = 0;
+
+      // Accessibility functions provided to WASM
+      const a11y = {
+        // Create the hidden accessibility container
+        js_createContainer: () => {
+          a11yContainer = document.createElement("div");
+          a11yContainer.id = "gooey-a11y-root";
+          a11yContainer.setAttribute("role", "application");
+          a11yContainer.setAttribute("aria-label", "Gooey Application");
+
+          // Visually hidden but accessible to screen readers
+          Object.assign(a11yContainer.style, {
+            position: "absolute",
+            width: "1px",
+            height: "1px",
+            padding: "0",
+            margin: "-1px",
+            overflow: "hidden",
+            clip: "rect(0, 0, 0, 0)",
+            whiteSpace: "nowrap",
+            border: "0",
+          });
+
+          document.body.appendChild(a11yContainer);
+          return 0; // Container ID (0 is special)
+        },
+
+        // Create a DOM element with ARIA role
+        js_createElement: (rolePtr, roleLen) => {
+          const role = getString(rolePtr, roleLen);
+          const id = a11yNextId++;
+          const el = document.createElement("div");
+          el.setAttribute("role", role);
+          el.setAttribute("tabindex", "-1");
+          el.id = `gooey-a11y-${id}`;
+          a11yElementPool.set(id, el);
+          return id;
+        },
+
+        // Remove a DOM element
+        js_removeElement: (id) => {
+          const el = a11yElementPool.get(id);
+          if (el && el.parentNode) {
+            el.parentNode.removeChild(el);
+          }
+          a11yElementPool.delete(id);
+        },
+
+        // Set parent-child relationship
+        js_setParent: (childId, parentId) => {
+          const child = a11yElementPool.get(childId);
+          const parent =
+            parentId === 0 ? a11yContainer : a11yElementPool.get(parentId);
+          if (child && parent && child.parentNode !== parent) {
+            parent.appendChild(child);
+          }
+        },
+
+        // Set an attribute on element
+        js_setAttribute: (id, attrPtr, attrLen, valPtr, valLen) => {
+          const el = a11yElementPool.get(id);
+          if (el) {
+            const attr = getString(attrPtr, attrLen);
+            const val = getString(valPtr, valLen);
+            el.setAttribute(attr, val);
+          }
+        },
+
+        // Remove an attribute from element
+        js_removeAttribute: (id, attrPtr, attrLen) => {
+          const el = a11yElementPool.get(id);
+          if (el) {
+            const attr = getString(attrPtr, attrLen);
+            el.removeAttribute(attr);
+          }
+        },
+
+        // Set bounds (stored as data attribute for touch exploration)
+        js_setBounds: (id, x, y, w, h) => {
+          const el = a11yElementPool.get(id);
+          if (el) {
+            el.dataset.bounds = `${x},${y},${w},${h}`;
+          }
+        },
+
+        // Focus an element
+        // No-op: Don't programmatically focus hidden a11y elements.
+        // Focus should stay on canvas/hiddenInput for keyboard events.
+        // Screen readers discover elements through DOM traversal, not focus.
+        js_focus: (id) => {
+          // Intentionally empty - focusing hidden elements breaks keyboard input
+          void id;
+        },
+
+        // Announce a message via live region
+        js_announce: (msgPtr, msgLen, assertive) => {
+          const message = getString(msgPtr, msgLen);
+
+          // Create a temporary live region for the announcement
+          const el = document.createElement("div");
+          el.setAttribute("role", "status");
+          el.setAttribute("aria-live", assertive ? "assertive" : "polite");
+          el.setAttribute("aria-atomic", "true");
+
+          // Visually hidden
+          Object.assign(el.style, {
+            position: "absolute",
+            width: "1px",
+            height: "1px",
+            overflow: "hidden",
+            clip: "rect(0, 0, 0, 0)",
+          });
+
+          document.body.appendChild(el);
+
+          // Delay to ensure screen reader picks up the change
+          requestAnimationFrame(() => {
+            el.textContent = message;
+            // Remove after screen reader has time to read
+            setTimeout(() => el.remove(), 1000);
+          });
+        },
+
+        // Heuristic check for screen reader presence
+        js_isScreenReaderHinted: () => {
+          // Can't reliably detect screen readers, use heuristics:
+          // 1. prefers-reduced-motion often correlates with accessibility needs
+          // 2. Some screen readers add class or modify userAgent
+          // 3. Default to true to be accessible by default
+          return (
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+            document.body.classList.contains("sr-mode") ||
+            true // Always assume active for maximum accessibility
+          );
+        },
+
+        // Begin batching DOM operations (for future optimization)
+        js_beginBatch: () => {
+          a11yBatchDepth++;
+        },
+
+        // End batching
+        js_endBatch: () => {
+          a11yBatchDepth--;
+          // Future: could use DocumentFragment or requestAnimationFrame batching
+        },
+      };
+
       // Environment functions provided to WASM
       const env = {
         consoleLog: (ptr, len) => console.log("[WASM]", getString(ptr, len)),
@@ -2135,7 +2291,10 @@
         // Load WASM
         const response = await fetch("app.wasm");
         const wasmBytes = await response.arrayBuffer();
-        const { instance } = await WebAssembly.instantiate(wasmBytes, { env });
+        const { instance } = await WebAssembly.instantiate(wasmBytes, {
+          env,
+          a11y,
+        });
         wasmInstance = instance;
 
         // Handle resize - debounced to avoid loops
@@ -2152,7 +2311,19 @@
         resizeObserver.observe(canvas);
 
         // Initialize and start
-        wasmInstance.exports.init();
+        console.log("[JS] About to call wasmInstance.exports.init()...");
+        console.log(
+          "[JS] WASM memory size:",
+          wasmInstance.exports.memory?.buffer?.byteLength || "unknown",
+        );
+        try {
+          wasmInstance.exports.init();
+          console.log("[JS] init() completed successfully");
+        } catch (e) {
+          console.error("[JS] init() threw error:", e);
+          console.error("[JS] Error stack:", e.stack);
+          throw e;
+        }
 
         // Initialize after WASM is ready
         initKeyboard();

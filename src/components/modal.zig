@@ -30,6 +30,8 @@ const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
 const ShadowConfig = ui.ShadowConfig;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 const animation_mod = @import("../animation/mod.zig");
 const Easing = animation_mod.Easing;
 const AnimationHandle = animation_mod.AnimationHandle;
@@ -88,6 +90,10 @@ pub fn Modal(comptime ChildType: type) type {
             .color = Color.rgba(0, 0, 0, 0.25),
         },
 
+        // Accessibility overrides
+        accessible_name: ?[]const u8 = null,
+        accessible_description: ?[]const u8 = null,
+
         const Self = @This();
 
         pub fn render(self: Self, b: *ui.Builder) void {
@@ -120,6 +126,17 @@ pub fn Modal(comptime ChildType: type) type {
 
             // Only render when open or animating out
             if (!self.is_open and !anim.running) return;
+
+            const layout_id = LayoutId.fromString(self.id);
+
+            // Push accessible element (role: dialog)
+            const a11y_pushed = b.accessible(.{
+                .layout_id = layout_id,
+                .role = .dialog,
+                .name = self.accessible_name orelse self.id,
+                .description = self.accessible_description,
+            });
+            defer if (a11y_pushed) b.accessibleEnd();
 
             // Calculate animated values
             const progress = if (self.is_open) anim.progress else 1.0 - anim.progress;

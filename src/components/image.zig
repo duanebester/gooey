@@ -26,7 +26,9 @@
 const std = @import("std");
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
-const CornerRadius = @import("../layout/layout.zig").CornerRadius;
+const layout_mod = @import("../layout/layout.zig");
+const CornerRadius = layout_mod.CornerRadius;
+const LayoutId = layout_mod.LayoutId;
 
 pub const Image = struct {
     /// Image source - file path or embedded asset path
@@ -59,11 +61,32 @@ pub const Image = struct {
     /// Opacity (0.0 = transparent, 1.0 = opaque)
     opacity: f32 = 1,
 
-    /// Alt text for accessibility (future use)
+    /// Alt text for accessibility - describes the image for screen readers
+    /// If null, image is treated as decorative (presentation role)
     alt: ?[]const u8 = null,
+
+    /// Unique identifier for accessibility (defaults to src)
+    id: ?[]const u8 = null,
 
     /// Render the image component
     pub fn render(self: Image, b: *ui.Builder) void {
+        // Push accessible element for images with alt text
+        // Images without alt are treated as decorative (presentation)
+        const layout_id = LayoutId.fromString(self.id orelse self.src);
+        const a11y_pushed = if (self.alt) |alt_text|
+            b.accessible(.{
+                .layout_id = layout_id,
+                .role = .img,
+                .name = alt_text,
+            })
+        else
+            // Decorative image - explicitly mark as presentation
+            b.accessible(.{
+                .layout_id = layout_id,
+                .role = .presentation,
+            });
+        defer if (a11y_pushed) b.accessibleEnd();
+
         // Determine final dimensions
         const w = self.width orelse self.size;
         const h = self.height orelse self.size;

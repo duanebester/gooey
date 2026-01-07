@@ -11,6 +11,8 @@ const Color = ui.Color;
 const Theme = ui.Theme;
 const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 
 pub const Button = struct {
     label: []const u8,
@@ -28,6 +30,10 @@ pub const Button = struct {
     hover_background: ?Color = null,
     text_color: ?Color = null,
     corner_radius: ?f32 = null,
+
+    // Accessibility overrides
+    accessible_name: ?[]const u8 = null, // Override label for screen readers
+    accessible_description: ?[]const u8 = null,
 
     pub const Variant = enum {
         primary,
@@ -80,6 +86,19 @@ pub const Button = struct {
 
         // Use explicit ID or derive from label
         const id = self.id orelse self.label;
+        const layout_id = LayoutId.fromString(id);
+
+        // Push accessible element (role: button)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .button,
+            .name = self.accessible_name orelse self.label,
+            .description = self.accessible_description,
+            .state = .{
+                .disabled = !self.enabled,
+            },
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.boxWithId(id, .{
             .padding = self.size.padding(),

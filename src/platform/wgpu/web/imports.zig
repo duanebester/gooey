@@ -12,6 +12,12 @@ const std = @import("std");
 pub extern "env" fn consoleLog(ptr: [*]const u8, len: u32) void;
 pub extern "env" fn consoleError(ptr: [*]const u8, len: u32) void;
 
+/// Log a comptime string directly - no stack allocation, no formatting.
+/// Use this for the earliest possible debugging before stack is verified.
+pub fn logRaw(comptime msg: []const u8) void {
+    consoleLog(msg.ptr, msg.len);
+}
+
 pub fn log(comptime fmt: []const u8, args: anytype) void {
     var buf: [1024]u8 = undefined;
     const str = std.fmt.bufPrint(&buf, fmt, args) catch return;

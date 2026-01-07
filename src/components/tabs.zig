@@ -28,6 +28,8 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
+const layout_mod = @import("../layout/layout.zig");
+const LayoutId = layout_mod.LayoutId;
 
 /// A single tab button. Can be used standalone or composed into a tab bar.
 pub const Tab = struct {
@@ -50,6 +52,11 @@ pub const Tab = struct {
     font_size: u16 = 14,
     grow: bool = false,
 
+    // Accessibility
+    accessible_name: ?[]const u8 = null,
+    pos_in_set: ?u16 = null, // 1-based position in tab list
+    set_size: ?u16 = null, // Total tabs in list
+
     pub const Style = enum {
         /// Rounded pill-style tabs (default)
         pills,
@@ -68,6 +75,21 @@ pub const Tab = struct {
         const active_text = self.active_text_color orelse Color.white;
         const inactive_text = self.inactive_text_color orelse t.text;
         const radius = self.corner_radius orelse t.radius_md;
+
+        const layout_id = LayoutId.fromString(self.label);
+
+        // Push accessible element (role: tab)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .tab,
+            .name = self.accessible_name orelse self.label,
+            .state = .{
+                .selected = self.is_active,
+            },
+            .pos_in_set = self.pos_in_set,
+            .set_size = self.set_size,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         const bg = if (self.is_active) active_bg else inactive_bg;
         const text_color = if (self.is_active) active_text else inactive_text;
@@ -146,6 +168,9 @@ pub const TabBar = struct {
     padding_y: f32 = 8,
     font_size: u16 = 14,
 
+    // Accessibility
+    accessible_name: ?[]const u8 = null,
+
     pub fn render(self: TabBar, b: *ui.Builder) void {
         const t = b.theme();
 
@@ -172,6 +197,16 @@ pub const TabBar = struct {
             else => null,
         };
 
+        const layout_id = LayoutId.fromString(self.id);
+
+        // Push accessible element (role: tablist)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .tablist,
+            .name = self.accessible_name orelse self.id,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
+
         b.boxWithId(self.id, .{
             .direction = .row,
             .gap = self.gap,
@@ -196,6 +231,7 @@ pub const TabBar = struct {
                 .padding_y = self.padding_y,
                 .font_size = self.font_size,
                 .grow = self.fill_width,
+                .set_size = @intCast(self.tabs.len),
             },
         });
     }
@@ -216,6 +252,7 @@ const TabBarItems = struct {
     padding_y: f32,
     font_size: u16,
     grow: bool,
+    set_size: u16,
 
     pub fn render(self: TabBarItems, b: *ui.Builder) void {
         for (self.tabs, 0..) |label, i| {
@@ -235,6 +272,8 @@ const TabBarItems = struct {
                 .padding_y = self.padding_y,
                 .font_size = self.font_size,
                 .grow = self.grow,
+                .pos_in_set = @intCast(i + 1), // 1-based
+                .set_size = self.set_size,
             });
         }
     }
@@ -256,6 +295,8 @@ const TabBarItem = struct {
     padding_y: f32,
     font_size: u16,
     grow: bool,
+    pos_in_set: u16,
+    set_size: u16,
 
     pub fn render(self: TabBarItem, b: *ui.Builder) void {
         const bg = if (self.is_active) self.active_background else self.inactive_background;
@@ -300,6 +341,21 @@ const TabBarItem = struct {
             ClickWrapper.captured_fn = change_fn;
             break :blk ClickWrapper.call;
         } else null;
+
+        const layout_id = LayoutId.fromString(self.label);
+
+        // Push accessible element (role: tab)
+        const a11y_pushed = b.accessible(.{
+            .layout_id = layout_id,
+            .role = .tab,
+            .name = self.label,
+            .state = .{
+                .selected = self.is_active,
+            },
+            .pos_in_set = self.pos_in_set,
+            .set_size = self.set_size,
+        });
+        defer if (a11y_pushed) b.accessibleEnd();
 
         b.box(.{
             .padding = .{ .symmetric = .{ .x = self.padding_x, .y = self.padding_y } },

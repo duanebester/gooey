@@ -215,10 +215,42 @@ pub const WebRenderer = struct {
     const svg_shader = @embedFile("svg_wgsl");
     const image_shader = @embedFile("image_wgsl");
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
-        var self = Self{
-            .allocator = allocator,
-        };
+    /// Initialize WebRenderer in-place using out-pointer pattern.
+    /// Avoids stack overflow on WASM where WebRenderer is ~1.15MB
+    /// (primitives: 512KB, gpu_glyphs: 512KB, etc.)
+    /// Marked noinline to prevent stack accumulation in WASM builds.
+    pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator) void {
+        // Zero all fields to handle the large undefined arrays safely
+        // This avoids creating a stack temporary for the arrays
+        self.allocator = allocator;
+        self.pipeline = 0;
+        self.primitive_buffer = 0;
+        self.bind_group = 0;
+        self.uniform_buffer = 0;
+        self.sampler = 0;
+        self.text_pipeline = 0;
+        self.glyph_buffer = 0;
+        self.text_bind_group = 0;
+        self.atlas_texture = 0;
+        self.atlas_generation = 0;
+        self.svg_pipeline = 0;
+        self.svg_buffer = 0;
+        self.svg_bind_group = 0;
+        self.svg_atlas_texture = 0;
+        self.svg_atlas_generation = 0;
+        self.image_pipeline = 0;
+        self.image_buffer = 0;
+        self.image_bind_group = 0;
+        self.image_atlas_texture = 0;
+        self.image_atlas_generation = 0;
+        self.initialized = false;
+        self.msaa_texture = 0;
+        self.msaa_width = 0;
+        self.msaa_height = 0;
+        self.sample_count = 4;
+        self.post_process_state = null;
+        // Note: primitives, gpu_glyphs, gpu_svgs, gpu_images, batches arrays
+        // are left undefined - they get overwritten during rendering anyway
 
         // Get MSAA sample count from JS (usually 4)
         self.sample_count = imports.getMSAASampleCount();
@@ -261,7 +293,6 @@ pub const WebRenderer = struct {
         self.sampler = imports.createSampler();
 
         self.initialized = true;
-        return self;
     }
 
     pub fn deinit(self: *Self) void {

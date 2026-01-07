@@ -192,6 +192,37 @@ pub const GlyphCache = struct {
         return self;
     }
 
+    /// Initialize GlyphCache in-place using out-pointer pattern.
+    /// Avoids stack overflow on WASM where GlyphCache is ~200KB.
+    /// Marked noinline to prevent stack accumulation in WASM builds.
+    pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator, scale: f32) !void {
+        std.debug.assert(scale > 0);
+        std.debug.assert(scale <= 4.0);
+
+        const buffer_bytes = RENDER_BUFFER_SIZE * RENDER_BUFFER_SIZE;
+        const render_buffer = try allocator.alloc(u8, buffer_bytes);
+        @memset(render_buffer, 0);
+
+        self.allocator = allocator;
+        self.entry_count = 0;
+        self.render_buffer = render_buffer;
+        self.render_buffer_size = buffer_bytes;
+        self.scale_factor = scale;
+
+        // Initialize hash table to empty slots
+        @memset(&self.hash_table, EMPTY_SLOT);
+
+        // Initialize all entries as invalid
+        for (&self.entries) |*entry| {
+            entry.valid = false;
+        }
+
+        // Initialize atlas in-place
+        self.grayscale_atlas = try Atlas.init(allocator, .grayscale);
+
+        std.debug.assert(self.entry_count == 0);
+    }
+
     pub fn setScaleFactor(self: *Self, scale: f32) void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0);

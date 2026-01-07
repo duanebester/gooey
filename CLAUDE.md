@@ -106,3 +106,28 @@ pub fn init(self: *RenderState) void {
 ```
 
 This avoids stack growth and copy-move allocations.
+
+### 14. **WASM Stack Budget**
+
+WASM has a **1MB stack** starting at address 1,048,576, growing downward. Large structs returned by value or struct literals blow this budget fast. Hard rules:
+
+- **Heap-allocate structs >50KB**: Use `allocator.create(T)` + `initInPlace()`
+- **Mark init functions `noinline`**: Prevents ReleaseSmall from combining stack frames
+- **Avoid struct literals for large types**: `self.* = .{ ... }` creates a stack temp; use field-by-field init instead
+- **Know your struct sizes**: `TextSystem` ~1.7MB, `WebRenderer` ~1.15MB, `Gooey` ~400KB, `Tree` ~350KB
+
+Pattern for large structs:
+
+```example.zig
+// Instead of: const thing = try Thing.init(allocator);
+const thing = try allocator.create(Thing);
+thing.initInPlace(allocator);
+
+// initInPlace must be noinline to prevent stack accumulation
+pub noinline fn initInPlace(self: *Self, allocator: Allocator) void {
+    self.field1 = 0;  // Field-by-field, no struct literal
+    self.field2 = 0;
+}
+```
+
+Debug logging for stack issues: Set `verbose_init_logging = true` in `gooey.zig`, `accessibility.zig`, or `web_bridge.zig`.
