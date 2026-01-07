@@ -34,6 +34,7 @@ WASM support!
 - **Retained Widgets** - TextInput, TextArea, Checkbox, Scroll containers
 - **Text Rendering** - CoreText (macOS), FreeType/HarfBuzz (Linux), Canvas (WASM)
 - **Custom Shaders** - Drop in your own Metal/GLSL shaders
+- **Drag & Drop** - Type-safe drag sources and drop targets with `pointer_events` control
 - **Liquid Glass** - macOS 26.0+ Tahoe transparent window effects
 - **Actions & Keybindings** - Contextual action system with keymap
 - **Theming** - Built-in light/dark mode support
@@ -674,6 +675,7 @@ fn render(cx: *Cx) void {
 | File Dialog      | `zig build run-file-dialog`      | Native file open/save dialogs         |
 | A11y Demo        | `zig build run-a11y-demo`        | VoiceOver accessibility demo          |
 | Accessible Form  | `zig build run-accessible-form`  | Complete accessible form example      |
+| Drag & Drop      | `zig build run-drag-drop`        | Draggable items and drop targets      |
 
 See [docs/accessibility.md](docs/accessibility.md) for comprehensive accessibility documentation.
 
