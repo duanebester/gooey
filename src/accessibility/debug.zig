@@ -174,7 +174,7 @@ pub fn validate(tree: *const Tree) ValidationResult {
         }
 
         // Check heading level
-        if (elem.role == .heading and elem.heading_level == 0) {
+        if (elem.role == .heading and elem.heading_level == .none) {
             result.addIssue(i, .invalid_heading_level, "Heading element missing heading_level");
         }
 
@@ -498,7 +498,7 @@ test "validation passes for valid tree" {
     _ = tree.pushElement(.{ .role = .button, .name = "Submit" });
     tree.popElement();
 
-    _ = tree.pushElement(.{ .role = .heading, .name = "Title", .heading_level = 1 });
+    _ = tree.pushElement(.{ .role = .heading, .name = "Title", .heading_level = .h1 });
     tree.popElement();
 
     tree.endFrame();
@@ -522,7 +522,7 @@ test "format element" {
         .layout_id = layout_mod.LayoutId.fromString("test"),
         .description = null,
         .value = null,
-        .heading_level = 0,
+        .heading_level = .none,
         .value_min = null,
         .value_max = null,
         .value_now = null,

@@ -161,7 +161,7 @@ const HeaderSection = struct {
         if (b.accessible(.{
             .role = .heading,
             .name = "Accessibility Demo",
-            .heading_level = 1,
+            .heading_level = .h1,
         })) {
             defer b.accessibleEnd();
         }

@@ -21,6 +21,8 @@
 //! allowing widgets to update their visual state.
 
 const std = @import("std");
+const layout_id_mod = @import("../layout/layout_id.zig");
+const LayoutId = layout_id_mod.LayoutId;
 
 // =============================================================================
 // FocusId - Lightweight focus identifier
@@ -52,6 +54,22 @@ pub const FocusId = struct {
     /// Compare two FocusIds for equality
     pub fn eql(self: Self, other: Self) bool {
         return self.hash == other.hash;
+    }
+
+    /// Create a FocusId from a LayoutId.
+    /// Uses the string_id if available, otherwise derives from the 32-bit hash.
+    /// This enables auto-injection of focus state in accessibility.
+    pub fn fromLayoutId(layout_id: LayoutId) Self {
+        // If we have the original string, use it for consistent hashing
+        if (layout_id.string_id) |str| {
+            return Self.init(str);
+        }
+        // Otherwise, extend the 32-bit layout hash to 64-bit
+        // Mix the bits to create a reasonable 64-bit hash
+        const id32 = layout_id.id;
+        const high: u64 = @as(u64, id32) << 32;
+        const low: u64 = @as(u64, id32) *% 0x9E3779B97F4A7C15; // Golden ratio prime
+        return .{ .hash = high ^ low };
     }
 };
 
@@ -436,6 +454,39 @@ test "FocusId basic operations" {
     try std.testing.expect(!id1.eql(id3));
     try std.testing.expect(id1.isValid());
     try std.testing.expect(!none_id.isValid());
+}
+
+test "FocusId fromLayoutId with string_id" {
+    // When LayoutId has a string_id, FocusId should match FocusId.init with same string
+    const layout_id = LayoutId.fromString("my_button");
+    const focus_id_from_layout = FocusId.fromLayoutId(layout_id);
+    const focus_id_direct = FocusId.init("my_button");
+
+    try std.testing.expect(focus_id_from_layout.eql(focus_id_direct));
+    try std.testing.expect(focus_id_from_layout.isValid());
+}
+
+test "FocusId fromLayoutId without string_id" {
+    // When LayoutId has no string_id, should still produce valid unique hash
+    const layout_id = LayoutId.fromInt(12345);
+    const focus_id = FocusId.fromLayoutId(layout_id);
+
+    try std.testing.expect(focus_id.isValid());
+
+    // Different layout IDs should produce different focus IDs
+    const layout_id2 = LayoutId.fromInt(67890);
+    const focus_id2 = FocusId.fromLayoutId(layout_id2);
+
+    try std.testing.expect(!focus_id.eql(focus_id2));
+}
+
+test "FocusId fromLayoutId none" {
+    // LayoutId.none should produce a deterministic (though potentially valid) FocusId
+    const layout_id = LayoutId.none;
+    const focus_id = FocusId.fromLayoutId(layout_id);
+
+    // The hash of 0 extended will be 0, which is the none hash
+    try std.testing.expect(!focus_id.isValid());
 }
 
 test "FocusHandle fluent API" {

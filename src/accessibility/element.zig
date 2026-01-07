@@ -43,8 +43,8 @@ pub const Element = struct {
     /// Live region behavior
     live: types.Live = .off,
 
-    /// Heading level (1-6, 0 = not a heading)
-    heading_level: types.HeadingLevel = 0,
+    /// Heading level (1-6, .none = not a heading)
+    heading_level: types.HeadingLevel = .none,
 
     // =========================================================================
     // Range values (for sliders, progress bars)

@@ -155,6 +155,7 @@ pub const Select = struct {
             .state = .{
                 .expanded = self.is_open,
                 .disabled = self.disabled,
+                .has_popup = true,
             },
         });
         defer if (a11y_pushed) b.accessibleEnd();

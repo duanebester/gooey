@@ -5,6 +5,7 @@
 //! - Fingerprint-based identity for cross-frame correlation
 //! - Dirty tracking to minimize platform sync overhead
 //! - Deferred announcements batched per frame
+//! - Hash map for O(1) fingerprint lookups (Phase 2 optimization)
 
 const std = @import("std");
 const constants = @import("constants.zig");
@@ -16,6 +17,84 @@ const engine_mod = @import("../layout/engine.zig");
 
 pub const Element = element_mod.Element;
 pub const Fingerprint = fingerprint_mod.Fingerprint;
+
+/// Hash map for O(1) fingerprint → index lookups.
+/// Uses open addressing with linear probing.
+/// Bucket count is power of 2 for fast modulo via bitmask.
+const FingerprintMap = struct {
+    const BUCKET_COUNT: u16 = 4096; // Power of 2, ~2x MAX_ELEMENTS for low collision rate
+    const BUCKET_MASK: u64 = BUCKET_COUNT - 1;
+    const EMPTY: u16 = 0xFFFF; // Sentinel for empty bucket
+
+    /// Maps hash bucket → element index (or EMPTY)
+    buckets: [BUCKET_COUNT]u16 = [_]u16{EMPTY} ** BUCKET_COUNT,
+
+    /// Fingerprints stored at each bucket (for collision resolution)
+    fingerprints: [BUCKET_COUNT]Fingerprint = [_]Fingerprint{Fingerprint.INVALID} ** BUCKET_COUNT,
+
+    const Self = @This();
+
+    /// Insert fingerprint → index mapping
+    pub fn insert(self: *Self, fp: Fingerprint, index: u16) void {
+        std.debug.assert(fp.isValid());
+        std.debug.assert(index < constants.MAX_ELEMENTS);
+
+        var bucket = self.hash(fp);
+        var probes: u16 = 0;
+
+        while (probes < BUCKET_COUNT) : (probes += 1) {
+            if (self.buckets[bucket] == EMPTY) {
+                self.buckets[bucket] = index;
+                self.fingerprints[bucket] = fp;
+                return;
+            }
+            // Linear probe to next bucket
+            bucket = (bucket + 1) & @as(u16, @truncate(BUCKET_MASK));
+        }
+
+        // Table full - should never happen with proper sizing
+        // Fail fast per CLAUDE.md
+        unreachable;
+    }
+
+    /// Find index for fingerprint, or null if not found
+    pub fn find(self: *const Self, fp: Fingerprint) ?u16 {
+        std.debug.assert(fp.isValid());
+
+        var bucket = self.hash(fp);
+        var probes: u16 = 0;
+
+        while (probes < BUCKET_COUNT) : (probes += 1) {
+            const stored_idx = self.buckets[bucket];
+            if (stored_idx == EMPTY) {
+                return null; // Not found
+            }
+            if (self.fingerprints[bucket].eql(fp)) {
+                return stored_idx;
+            }
+            // Linear probe to next bucket
+            bucket = (bucket + 1) & @as(u16, @truncate(BUCKET_MASK));
+        }
+
+        return null;
+    }
+
+    /// Clear all entries
+    pub fn clear(self: *Self) void {
+        @memset(&self.buckets, EMPTY);
+        // No need to clear fingerprints - they're only valid when bucket != EMPTY
+    }
+
+    /// Hash fingerprint to bucket index
+    fn hash(self: *const Self, fp: Fingerprint) u16 {
+        _ = self;
+        // Use fingerprint's u64 value directly - it's already well-distributed
+        const fp_u64 = fp.toU64();
+        // Mix high and low bits for better distribution
+        const mixed = fp_u64 ^ (fp_u64 >> 32);
+        return @truncate(mixed & BUCKET_MASK);
+    }
+};
 
 pub const Tree = struct {
     // =========================================================================
@@ -45,6 +124,9 @@ pub const Tree = struct {
     /// Previous frame's content hashes (for dirty detection)
     prev_hashes: [constants.MAX_ELEMENTS]u32 = [_]u32{0} ** constants.MAX_ELEMENTS,
 
+    /// Hash map for O(1) previous fingerprint lookups
+    prev_fingerprint_map: FingerprintMap = .{},
+
     /// Dirty element indices (need platform sync)
     dirty_indices: [constants.MAX_ELEMENTS]u16 = undefined,
     dirty_count: u16 = 0,
@@ -72,6 +154,9 @@ pub const Tree = struct {
 
     /// Previous frame's focused fingerprint (for focus change detection)
     prev_focused_fingerprint: ?Fingerprint = null,
+
+    /// Hash map for O(1) current frame fingerprint lookups
+    current_fingerprint_map: FingerprintMap = .{},
 
     const Self = @This();
 
@@ -106,6 +191,10 @@ pub const Tree = struct {
         // Zero large arrays using @memset (no stack allocation)
         @memset(&self.prev_fingerprints, Fingerprint.INVALID);
         @memset(&self.prev_hashes, 0);
+
+        // Clear hash maps
+        self.prev_fingerprint_map.clear();
+        self.current_fingerprint_map.clear();
     }
 
     /// Reset for new frame. Preserves cross-frame state.
@@ -119,9 +208,18 @@ pub const Tree = struct {
         self.prev_count = self.element_count;
         self.prev_focused_fingerprint = self.focused_fingerprint;
 
-        for (0..self.element_count) |i| {
-            self.prev_fingerprints[i] = self.elements[i].fingerprint;
-            self.prev_hashes[i] = self.elements[i].contentHash();
+        // Clear and rebuild previous fingerprint map
+        // Only copy the used portion (Phase 2.2 optimization)
+        self.prev_fingerprint_map.clear();
+        const elem_count = self.element_count;
+        for (0..elem_count) |i| {
+            const elem = &self.elements[i];
+            self.prev_fingerprints[i] = elem.fingerprint;
+            self.prev_hashes[i] = elem.contentHash();
+            // Build hash map for O(1) lookups during dirty detection
+            if (elem.fingerprint.isValid()) {
+                self.prev_fingerprint_map.insert(elem.fingerprint, @intCast(i));
+            }
         }
 
         // Reset current frame
@@ -132,6 +230,9 @@ pub const Tree = struct {
         self.announcement_count = 0;
         self.root = null;
         self.focused_fingerprint = null;
+
+        // Clear current frame fingerprint map
+        self.current_fingerprint_map.clear();
     }
 
     /// Finalize frame. Computes dirty set and removals.
@@ -146,21 +247,28 @@ pub const Tree = struct {
     }
 
     /// Find dirty elements (content changed or new)
+    /// Uses hash map for O(n) total instead of O(n²)
+    /// Phase 3.3: Auto-announces live region content changes
     fn computeDirtyElements(self: *Self) void {
         std.debug.assert(self.dirty_count == 0); // Should be reset in beginFrame
         std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
 
-        for (0..self.element_count) |i| {
+        const elem_count = self.element_count;
+        for (0..elem_count) |i| {
             const elem = &self.elements[i];
             const current_hash = elem.contentHash();
 
-            // Look up previous version by fingerprint
-            const prev_idx = self.findPrevByFingerprint(elem.fingerprint);
+            // O(1) lookup using hash map instead of O(n) scan
+            const prev_idx = self.prev_fingerprint_map.find(elem.fingerprint);
 
             if (prev_idx) |pi| {
                 // Element existed - check if content changed
                 if (self.prev_hashes[pi] != current_hash) {
                     self.markDirty(@intCast(i));
+
+                    // Phase 3.3: Auto-announce live region content changes
+                    // When a live region's content changes, automatically announce it
+                    self.autoAnnounceLiveRegion(elem);
                 }
             } else {
                 // New element - always dirty
@@ -169,16 +277,34 @@ pub const Tree = struct {
         }
     }
 
+    /// Phase 3.3: Auto-announce content changes for live regions
+    /// Called when a live region element's content hash changes
+    fn autoAnnounceLiveRegion(self: *Self, elem: *const Element) void {
+        // Check if this is a live region (explicit live property or role-based)
+        const live_level = elem.effectiveLive();
+        if (live_level == .off) return;
+
+        // Get the content to announce - prefer value, then name
+        const content = elem.value orelse elem.name orelse return;
+        if (content.len == 0) return;
+
+        // Queue the announcement with appropriate priority
+        self.announce(content, live_level);
+    }
+
     /// Find removed elements (existed before, not now)
+    /// Uses hash map for O(n) total instead of O(n²)
     fn computeRemovedElements(self: *Self) void {
         std.debug.assert(self.removed_count == 0); // Should be reset in beginFrame
         std.debug.assert(self.prev_count <= constants.MAX_ELEMENTS);
 
-        for (0..self.prev_count) |i| {
+        const prev_elem_count = self.prev_count;
+        for (0..prev_elem_count) |i| {
             const prev_fp = self.prev_fingerprints[i];
             if (!prev_fp.isValid()) continue;
 
-            const found = self.findElementByFingerprint(prev_fp) != null;
+            // O(1) lookup using hash map instead of O(n) scan
+            const found = self.current_fingerprint_map.find(prev_fp) != null;
 
             if (!found and self.removed_count < constants.MAX_ELEMENTS) {
                 self.removed_fingerprints[self.removed_count] = prev_fp;
@@ -187,29 +313,16 @@ pub const Tree = struct {
         }
     }
 
+    /// Find element in previous frame by fingerprint (O(1) via hash map)
     fn findPrevByFingerprint(self: *const Self, fp: Fingerprint) ?u16 {
         std.debug.assert(fp.isValid());
-        std.debug.assert(self.prev_count <= constants.MAX_ELEMENTS);
-
-        for (0..self.prev_count) |i| {
-            if (self.prev_fingerprints[i].eql(fp)) {
-                return @intCast(i);
-            }
-        }
-        return null;
+        return self.prev_fingerprint_map.find(fp);
     }
 
-    /// Find element in current frame by fingerprint
+    /// Find element in current frame by fingerprint (O(1) via hash map)
     fn findElementByFingerprint(self: *const Self, fp: Fingerprint) ?u16 {
         std.debug.assert(fp.isValid());
-        std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
-
-        for (0..self.element_count) |i| {
-            if (self.elements[i].fingerprint.eql(fp)) {
-                return @intCast(i);
-            }
-        }
-        return null;
+        return self.current_fingerprint_map.find(fp);
     }
 
     fn markDirty(self: *Self, index: u16) void {
@@ -282,7 +395,16 @@ pub const Tree = struct {
             .pos_in_set = config.pos_in_set,
             .set_size = config.set_size,
             .parent = parent_idx,
+            // Relationships
+            .labelled_by = config.labelled_by,
+            .described_by = config.described_by,
+            .controls = config.controls,
         };
+
+        // Add to current frame fingerprint map for O(1) lookups
+        if (fp.isValid()) {
+            self.current_fingerprint_map.insert(fp, index);
+        }
 
         self.linkToParent(index, parent_idx);
         self.trackFocus(index, config.state.focused, fp);
@@ -441,6 +563,34 @@ pub const Tree = struct {
         return self.element_count == 0;
     }
 
+    /// Find element by layout_id (for resolving relationship IDs).
+    /// Returns element index if found, null otherwise.
+    /// Note: This is O(n) - use sparingly, primarily for relationship resolution.
+    pub fn findElementByLayoutId(self: *const Self, layout_id: layout.LayoutId) ?u16 {
+        std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
+
+        if (layout_id.id == 0) return null;
+
+        const elem_count = self.element_count;
+        for (0..elem_count) |i| {
+            if (self.elements[i].layout_id.id == layout_id.id) {
+                return @intCast(i);
+            }
+        }
+        return null;
+    }
+
+    /// Find element by string ID (convenience wrapper).
+    /// Converts string to LayoutId and searches.
+    pub fn findElementByStringId(self: *const Self, id: []const u8) ?u16 {
+        std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
+
+        if (id.len == 0) return null;
+
+        const layout_id = layout.LayoutId.fromString(id);
+        return self.findElementByLayoutId(layout_id);
+    }
+
     /// Check if tree has capacity for more elements
     pub fn hasCapacity(self: *const Self) bool {
         std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
@@ -457,7 +607,8 @@ pub const Tree = struct {
         // Assertion: element count is bounded
         std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
 
-        for (0..self.element_count) |i| {
+        const elem_count = self.element_count;
+        for (0..elem_count) |i| {
             const elem = &self.elements[i];
 
             // Skip elements without layout_id
@@ -480,23 +631,45 @@ pub const ElementConfig = struct {
     value: ?[]const u8 = null,
     state: types.State = .{},
     live: types.Live = .off,
-    heading_level: types.HeadingLevel = 0,
+    heading_level: types.HeadingLevel = .none,
     value_min: ?f32 = null,
     value_max: ?f32 = null,
     value_now: ?f32 = null,
     pos_in_set: ?u16 = null,
     set_size: ?u16 = null,
+
+    // =========================================================================
+    // Relationships (indices into element pool)
+    // =========================================================================
+
+    /// Element that labels this one (for aria-labelledby)
+    labelled_by: ?u16 = null,
+
+    /// Element that describes this one (for aria-describedby)
+    described_by: ?u16 = null,
+
+    /// Element this one controls (for aria-controls)
+    controls: ?u16 = null,
 };
 
 // Compile-time assertions per CLAUDE.md
 comptime {
     // Tree should have reasonable size (mostly arrays with known bounds)
     // Each array is sized by constants, total should be manageable
+    // Note: Size increased due to FingerprintMap additions (~50KB extra)
     const tree_size = @sizeOf(Tree);
-    std.debug.assert(tree_size < 1024 * 1024); // Less than 1MB
+    std.debug.assert(tree_size < 2 * 1024 * 1024); // Less than 2MB
 
     // ElementConfig should be small for stack passing
-    std.debug.assert(@sizeOf(ElementConfig) <= 128);
+    // Size increased to accommodate relationship fields (labelled_by, described_by, controls)
+    std.debug.assert(@sizeOf(ElementConfig) <= 160);
+
+    // FingerprintMap should be reasonably sized
+    const map_size = @sizeOf(FingerprintMap);
+    std.debug.assert(map_size < 64 * 1024); // Less than 64KB per map
+
+    // Bucket count must be power of 2 for bitmask optimization
+    std.debug.assert(FingerprintMap.BUCKET_COUNT & (FingerprintMap.BUCKET_COUNT - 1) == 0);
 }
 
 test "tree basic operations" {
@@ -695,4 +868,293 @@ test "tree fingerprint stability across frames" {
     tree.endFrame();
 
     try std.testing.expect(fp1.eql(fp2));
+}
+
+test "fingerprint map basic operations" {
+    var map = FingerprintMap{};
+
+    const fp1 = fingerprint_mod.compute(.button, "Button1", null, 0);
+    const fp2 = fingerprint_mod.compute(.button, "Button2", null, 1);
+    const fp3 = fingerprint_mod.compute(.checkbox, "Check", null, 0);
+
+    // Initially empty
+    try std.testing.expectEqual(@as(?u16, null), map.find(fp1));
+
+    // Insert and find
+    map.insert(fp1, 0);
+    map.insert(fp2, 1);
+    map.insert(fp3, 2);
+
+    try std.testing.expectEqual(@as(?u16, 0), map.find(fp1));
+    try std.testing.expectEqual(@as(?u16, 1), map.find(fp2));
+    try std.testing.expectEqual(@as(?u16, 2), map.find(fp3));
+
+    // Non-existent fingerprint
+    const fp_missing = fingerprint_mod.compute(.slider, "Missing", null, 0);
+    try std.testing.expectEqual(@as(?u16, null), map.find(fp_missing));
+
+    // Clear and verify empty
+    map.clear();
+    try std.testing.expectEqual(@as(?u16, null), map.find(fp1));
+    try std.testing.expectEqual(@as(?u16, null), map.find(fp2));
+}
+
+test "fingerprint map collision handling" {
+    var map = FingerprintMap{};
+
+    // Insert many elements to test collision handling
+    var fps: [100]Fingerprint = undefined;
+    for (0..100) |i| {
+        fps[i] = fingerprint_mod.compute(.button, "CollisionTest", null, @intCast(i));
+        map.insert(fps[i], @intCast(i));
+    }
+
+    // All should be findable despite potential collisions
+    for (0..100) |i| {
+        const found = map.find(fps[i]);
+        try std.testing.expect(found != null);
+        try std.testing.expectEqual(@as(u16, @intCast(i)), found.?);
+    }
+}
+
+test "tree dirty detection uses hash map" {
+    var tree = Tree.init();
+
+    // Frame 1: Create elements inside a parent (so they get unique positions)
+    tree.beginFrame();
+    _ = tree.pushElement(.{ .role = .group, .name = "Container" });
+    for (0..50) |i| {
+        _ = tree.pushElement(.{
+            .role = .button,
+            .name = if (i < 25) "ButtonA" else "ButtonB",
+            .state = .{ .disabled = i % 2 == 0 },
+        });
+        tree.popElement();
+    }
+    tree.popElement(); // Close container
+    tree.endFrame();
+
+    // All new = all dirty (51 elements: 1 container + 50 buttons)
+    try std.testing.expectEqual(@as(u16, 51), tree.dirty_count);
+
+    // Frame 2: Same content - should be O(n) not O(n²) now
+    tree.beginFrame();
+    _ = tree.pushElement(.{ .role = .group, .name = "Container" });
+    for (0..50) |i| {
+        _ = tree.pushElement(.{
+            .role = .button,
+            .name = if (i < 25) "ButtonA" else "ButtonB",
+            .state = .{ .disabled = i % 2 == 0 },
+        });
+        tree.popElement();
+    }
+    tree.popElement(); // Close container
+    tree.endFrame();
+
+    // Nothing changed
+    try std.testing.expectEqual(@as(u16, 0), tree.dirty_count);
+}
+
+test "live region auto-announcement on content change" {
+    var tree = Tree.init();
+
+    // Frame 1: Create a status live region
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .status,
+        .name = "Status",
+        .value = "Ready",
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // New elements don't auto-announce (they're just created)
+    try std.testing.expectEqual(@as(u8, 0), tree.announcement_count);
+
+    // Frame 2: Change the status content
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .status,
+        .name = "Status",
+        .value = "Loading...",
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // Content change should trigger auto-announcement
+    try std.testing.expectEqual(@as(u8, 1), tree.announcement_count);
+    const announcements = tree.getAnnouncements();
+    try std.testing.expectEqualStrings("Loading...", announcements[0].message);
+    try std.testing.expectEqual(types.Live.polite, announcements[0].live);
+}
+
+test "alert role auto-announces assertively" {
+    var tree = Tree.init();
+
+    // Frame 1: Create an alert
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .alert,
+        .name = "Error",
+        .value = "Something went wrong",
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // Frame 2: Change alert content
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .alert,
+        .name = "Error",
+        .value = "Connection lost",
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // Alert should announce assertively
+    try std.testing.expectEqual(@as(u8, 1), tree.announcement_count);
+    const announcements = tree.getAnnouncements();
+    try std.testing.expectEqualStrings("Connection lost", announcements[0].message);
+    try std.testing.expectEqual(types.Live.assertive, announcements[0].live);
+}
+
+test "explicit live property overrides role default" {
+    var tree = Tree.init();
+
+    // Frame 1: Create a group with explicit live=assertive
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .group,
+        .name = "Updates",
+        .value = "No updates",
+        .live = .assertive,
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // Frame 2: Change content
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .group,
+        .name = "Updates",
+        .value = "3 new messages",
+        .live = .assertive,
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // Should use explicit live level
+    try std.testing.expectEqual(@as(u8, 1), tree.announcement_count);
+    const announcements = tree.getAnnouncements();
+    try std.testing.expectEqual(types.Live.assertive, announcements[0].live);
+}
+
+test "non-live regions do not auto-announce" {
+    var tree = Tree.init();
+
+    // Frame 1: Create a regular button
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .button,
+        .name = "Submit",
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // Frame 2: Change button name
+    tree.beginFrame();
+    _ = tree.pushElement(.{
+        .role = .button,
+        .name = "Cancel",
+    });
+    tree.popElement();
+    tree.endFrame();
+
+    // Regular elements don't auto-announce
+    try std.testing.expectEqual(@as(u8, 0), tree.announcement_count);
+}
+
+test "findElementByLayoutId returns correct index" {
+    var tree = Tree.init();
+    tree.beginFrame();
+
+    const label_id = layout.LayoutId.fromString("name-label");
+    const input_id = layout.LayoutId.fromString("name-input");
+
+    // Create label element first
+    const label_idx = tree.pushElement(.{
+        .layout_id = label_id,
+        .role = .paragraph,
+        .name = "Name:",
+    });
+    tree.popElement();
+
+    // Create input element with relationship to label
+    const input_idx = tree.pushElement(.{
+        .layout_id = input_id,
+        .role = .textbox,
+        .name = "Name input",
+        .labelled_by = label_idx,
+    });
+    tree.popElement();
+
+    tree.endFrame();
+
+    // Verify findElementByLayoutId works
+    try std.testing.expectEqual(label_idx, tree.findElementByLayoutId(label_id));
+    try std.testing.expectEqual(input_idx, tree.findElementByLayoutId(input_id));
+
+    // Verify findElementByStringId works
+    try std.testing.expectEqual(label_idx, tree.findElementByStringId("name-label"));
+    try std.testing.expectEqual(input_idx, tree.findElementByStringId("name-input"));
+
+    // Verify relationship is set correctly
+    const input_elem = tree.getElement(input_idx.?).?;
+    try std.testing.expectEqual(label_idx, input_elem.labelled_by);
+
+    // Non-existent ID returns null
+    try std.testing.expectEqual(@as(?u16, null), tree.findElementByStringId("non-existent"));
+    try std.testing.expectEqual(@as(?u16, null), tree.findElementByLayoutId(layout.LayoutId.none));
+}
+
+test "relationship fields propagate correctly" {
+    var tree = Tree.init();
+    tree.beginFrame();
+
+    // Create elements with all relationship types
+    const label_idx = tree.pushElement(.{
+        .role = .paragraph,
+        .name = "Label",
+    });
+    tree.popElement();
+
+    const desc_idx = tree.pushElement(.{
+        .role = .paragraph,
+        .name = "Description text",
+    });
+    tree.popElement();
+
+    const target_idx = tree.pushElement(.{
+        .role = .region,
+        .name = "Target region",
+    });
+    tree.popElement();
+
+    // Create element with all relationships
+    const main_idx = tree.pushElement(.{
+        .role = .textbox,
+        .name = "Input field",
+        .labelled_by = label_idx,
+        .described_by = desc_idx,
+        .controls = target_idx,
+    });
+    tree.popElement();
+
+    tree.endFrame();
+
+    // Verify all relationships are set
+    const main_elem = tree.getElement(main_idx.?).?;
+    try std.testing.expectEqual(label_idx, main_elem.labelled_by);
+    try std.testing.expectEqual(desc_idx, main_elem.described_by);
+    try std.testing.expectEqual(target_idx, main_elem.controls);
 }

@@ -76,7 +76,7 @@ test "tree nested structure" {
     // Dialog with nested content
     _ = tree.pushElement(.{ .role = .dialog, .name = "Confirm" });
     {
-        _ = tree.pushElement(.{ .role = .heading, .name = "Are you sure?", .heading_level = 2 });
+        _ = tree.pushElement(.{ .role = .heading, .name = "Are you sure?", .heading_level = .h2 });
         tree.popElement();
 
         _ = tree.pushElement(.{ .role = .group, .name = "Actions" });

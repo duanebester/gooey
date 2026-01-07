@@ -110,7 +110,7 @@ pub const AccessibleConfig = struct {
     value: ?[]const u8 = null,
     state: a11y.State = .{},
     live: a11y.Live = .off,
-    heading_level: a11y.types.HeadingLevel = 0,
+    heading_level: a11y.types.HeadingLevel = .none,
     value_min: ?f32 = null,
     value_max: ?f32 = null,
     value_now: ?f32 = null,
@@ -118,6 +118,19 @@ pub const AccessibleConfig = struct {
     set_size: ?u16 = null,
     /// Optional layout_id for bounds correlation (none = no correlation)
     layout_id: LayoutId = LayoutId.none,
+
+    // =========================================================================
+    // Relationships (Phase 3.2) - string IDs that will be resolved to indices
+    // =========================================================================
+
+    /// ID of element that labels this one (for aria-labelledby)
+    labelled_by_id: ?[]const u8 = null,
+
+    /// ID of element that describes this one (for aria-describedby)
+    described_by_id: ?[]const u8 = null,
+
+    /// ID of element this one controls (for aria-controls)
+    controls_id: ?[]const u8 = null,
 };
 
 // Re-export accessibility types for convenience
@@ -344,6 +357,9 @@ pub const Builder = struct {
     /// Returns true if a11y is active and element was pushed.
     /// Must be paired with accessibleEnd() when returns true.
     ///
+    /// Focus state is automatically injected from the FocusManager based on
+    /// the layout_id - components don't need to manually track focus.
+    ///
     /// ## Example
     /// ```zig
     /// if (b.accessible(.{ .role = .button, .name = "Submit" })) {
@@ -355,13 +371,41 @@ pub const Builder = struct {
         const g = self.gooey orelse return false;
         if (!g.a11y_enabled) return false;
 
+        // Phase 3: Auto-inject focus state from FocusManager
+        // This centralizes focus tracking - components don't need to know about it
+        var state = config.state;
+        if (config.layout_id.id != 0) {
+            // Check if this element is focused via FocusManager
+            const focus_id = FocusId.fromLayoutId(config.layout_id);
+            if (g.focus.isFocused(focus_id)) {
+                state.focused = true;
+            }
+        }
+
+        // Resolve string-based relationship IDs to element indices
+        // Note: Target elements must be rendered earlier in the same frame
+        const labelled_by: ?u16 = if (config.labelled_by_id) |id|
+            g.a11y_tree.findElementByStringId(id)
+        else
+            null;
+
+        const described_by: ?u16 = if (config.described_by_id) |id|
+            g.a11y_tree.findElementByStringId(id)
+        else
+            null;
+
+        const controls: ?u16 = if (config.controls_id) |id|
+            g.a11y_tree.findElementByStringId(id)
+        else
+            null;
+
         _ = g.a11y_tree.pushElement(.{
             .layout_id = config.layout_id,
             .role = config.role,
             .name = config.name,
             .description = config.description,
             .value = config.value,
-            .state = config.state,
+            .state = state,
             .live = config.live,
             .heading_level = config.heading_level,
             .value_min = config.value_min,
@@ -369,6 +413,10 @@ pub const Builder = struct {
             .value_now = config.value_now,
             .pos_in_set = config.pos_in_set,
             .set_size = config.set_size,
+            // Relationships
+            .labelled_by = labelled_by,
+            .described_by = described_by,
+            .controls = controls,
         });
 
         return true;

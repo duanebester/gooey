@@ -240,7 +240,8 @@ pub const State = packed struct(u16) {
     invalid: bool = false, // validation failed
     busy: bool = false, // async operation in progress
     hidden: bool = false, // not visible (skip in a11y tree)
-    _reserved: u5 = 0,
+    has_popup: bool = false, // element triggers a popup (listbox, menu, dialog, etc.)
+    _reserved: u4 = 0,
 
     pub fn eql(self: State, other: State) bool {
         return @as(u16, @bitCast(self)) == @as(u16, @bitCast(other));
@@ -271,7 +272,48 @@ pub const Live = enum(u2) {
 };
 
 /// Heading level (1-6, 0 = not a heading)
-pub const HeadingLevel = u3;
+/// Using enum instead of u3 to prevent invalid level 7.
+pub const HeadingLevel = enum(u3) {
+    none = 0, // Not a heading
+    h1 = 1,
+    h2 = 2,
+    h3 = 3,
+    h4 = 4,
+    h5 = 5,
+    h6 = 6,
+    // Level 7 intentionally omitted - invalid in HTML
+
+    /// Convert to ARIA heading level (1-6) or null for none
+    pub fn toAriaLevel(self: HeadingLevel) ?u8 {
+        return switch (self) {
+            .none => null,
+            .h1 => 1,
+            .h2 => 2,
+            .h3 => 3,
+            .h4 => 4,
+            .h5 => 5,
+            .h6 => 6,
+        };
+    }
+
+    /// Create from numeric level (clamps invalid values)
+    pub fn fromInt(level: u8) HeadingLevel {
+        return switch (level) {
+            1 => .h1,
+            2 => .h2,
+            3 => .h3,
+            4 => .h4,
+            5 => .h5,
+            6 => .h6,
+            else => .none,
+        };
+    }
+
+    /// Check if this is a valid heading (not none)
+    pub fn isHeading(self: HeadingLevel) bool {
+        return self != .none;
+    }
+};
 
 // Compile-time assertions per CLAUDE.md
 comptime {
@@ -284,6 +326,26 @@ comptime {
 
     // Live must be minimal
     std.debug.assert(@sizeOf(Live) == 1);
+
+    // HeadingLevel must fit in a byte
+    std.debug.assert(@sizeOf(HeadingLevel) == 1);
+}
+
+test "heading level validation" {
+    // Valid levels
+    try std.testing.expectEqual(@as(?u8, 1), HeadingLevel.h1.toAriaLevel());
+    try std.testing.expectEqual(@as(?u8, 6), HeadingLevel.h6.toAriaLevel());
+    try std.testing.expectEqual(@as(?u8, null), HeadingLevel.none.toAriaLevel());
+
+    // fromInt clamps invalid values
+    try std.testing.expectEqual(HeadingLevel.h1, HeadingLevel.fromInt(1));
+    try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(0));
+    try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(7)); // Invalid -> none
+    try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(255)); // Invalid -> none
+
+    // isHeading check
+    try std.testing.expect(HeadingLevel.h1.isHeading());
+    try std.testing.expect(!HeadingLevel.none.isHeading());
 }
 
 test "state equality" {
@@ -305,6 +367,34 @@ test "state bitcast roundtrip" {
     try std.testing.expect(s2.checked);
     try std.testing.expect(s2.expanded);
     try std.testing.expect(!s2.disabled);
+}
+
+test "has_popup state field" {
+    // Default is false
+    const s1 = State{};
+    try std.testing.expect(!s1.has_popup);
+
+    // Can be set to true
+    const s2 = State{ .has_popup = true };
+    try std.testing.expect(s2.has_popup);
+
+    // Works with other state flags
+    const s3 = State{ .expanded = true, .has_popup = true };
+    try std.testing.expect(s3.expanded);
+    try std.testing.expect(s3.has_popup);
+    try std.testing.expect(!s3.disabled);
+
+    // Bitcast roundtrip preserves has_popup
+    const bits = s3.toU16();
+    const s4 = State.fromU16(bits);
+    try std.testing.expect(s3.eql(s4));
+    try std.testing.expect(s4.has_popup);
+    try std.testing.expect(s4.expanded);
+
+    // Equality check works with has_popup
+    const s5 = State{ .has_popup = true };
+    const s6 = State{ .has_popup = false };
+    try std.testing.expect(!s5.eql(s6));
 }
 
 test "role conversions" {

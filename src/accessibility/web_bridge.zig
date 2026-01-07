@@ -192,6 +192,11 @@ pub const WebBridge = struct {
                 self.syncValueAttributes(dom_id, elem);
             }
 
+            // Update relationship attributes (aria-labelledby, aria-describedby, aria-controls)
+            if (elem.labelled_by != null or elem.described_by != null or elem.controls != null) {
+                self.syncRelationshipAttributes(tree, dom_id, elem);
+            }
+
             // Set parent relationship
             const parent_dom = self.resolveParentDomId(tree, elem.parent);
             js_setParent(dom_id, parent_dom);
@@ -297,6 +302,20 @@ pub const WebBridge = struct {
         } else {
             js_removeAttribute(dom_id, "aria-hidden", 11);
         }
+
+        // aria-haspopup (for combobox, menu triggers, etc.)
+        if (state.has_popup) {
+            // Determine popup type based on role
+            const popup_type: []const u8 = switch (role) {
+                .combobox => "listbox",
+                .menu, .menubar => "menu",
+                .tree => "tree",
+                else => "true", // Generic popup
+            };
+            js_setAttribute(dom_id, "aria-haspopup", 12, popup_type.ptr, @intCast(popup_type.len));
+        } else {
+            js_removeAttribute(dom_id, "aria-haspopup", 12);
+        }
     }
 
     /// Sync value-related ARIA attributes (for sliders, progress bars, etc.)
@@ -327,6 +346,59 @@ pub const WebBridge = struct {
         // aria-valuetext from value field
         if (elem.value) |value| {
             js_setAttribute(dom_id, "aria-valuetext", 14, value.ptr, @intCast(value.len));
+        }
+    }
+
+    /// Sync ARIA relationship attributes (aria-labelledby, aria-describedby, aria-controls)
+    fn syncRelationshipAttributes(self: *Self, tree: *const tree_mod.Tree, dom_id: u32, elem: *const tree_mod.Element) void {
+        // Assertion: dom_id must be valid
+        std.debug.assert(dom_id != 0);
+
+        var id_buf: [16]u8 = undefined;
+
+        // aria-labelledby
+        if (elem.labelled_by) |label_idx| {
+            if (tree.getElement(label_idx)) |label_elem| {
+                if (self.findSlotByFingerprint(label_elem.fingerprint)) |label_slot| {
+                    const label_dom = self.dom_ids[label_slot];
+                    if (label_dom != 0) {
+                        const id_str = std.fmt.bufPrint(&id_buf, "a11y-{d}", .{label_dom}) catch return;
+                        js_setAttribute(dom_id, "aria-labelledby", 15, id_str.ptr, @intCast(id_str.len));
+                    }
+                }
+            }
+        } else {
+            js_removeAttribute(dom_id, "aria-labelledby", 15);
+        }
+
+        // aria-describedby
+        if (elem.described_by) |desc_idx| {
+            if (tree.getElement(desc_idx)) |desc_elem| {
+                if (self.findSlotByFingerprint(desc_elem.fingerprint)) |desc_slot| {
+                    const desc_dom = self.dom_ids[desc_slot];
+                    if (desc_dom != 0) {
+                        const id_str = std.fmt.bufPrint(&id_buf, "a11y-{d}", .{desc_dom}) catch return;
+                        js_setAttribute(dom_id, "aria-describedby", 16, id_str.ptr, @intCast(id_str.len));
+                    }
+                }
+            }
+        } else {
+            js_removeAttribute(dom_id, "aria-describedby", 16);
+        }
+
+        // aria-controls
+        if (elem.controls) |ctrl_idx| {
+            if (tree.getElement(ctrl_idx)) |ctrl_elem| {
+                if (self.findSlotByFingerprint(ctrl_elem.fingerprint)) |ctrl_slot| {
+                    const ctrl_dom = self.dom_ids[ctrl_slot];
+                    if (ctrl_dom != 0) {
+                        const id_str = std.fmt.bufPrint(&id_buf, "a11y-{d}", .{ctrl_dom}) catch return;
+                        js_setAttribute(dom_id, "aria-controls", 13, id_str.ptr, @intCast(id_str.len));
+                    }
+                }
+            }
+        } else {
+            js_removeAttribute(dom_id, "aria-controls", 13);
         }
     }
 
@@ -517,4 +589,18 @@ test "state flag combinations" {
     try std.testing.expect(state2.focused);
     try std.testing.expect(state2.expanded);
     try std.testing.expect(!state2.disabled);
+}
+
+test "has_popup state for combobox" {
+    // Test that has_popup works with combobox role (used by Select component)
+    const combobox_state = types.State{ .expanded = true, .has_popup = true };
+
+    try std.testing.expect(combobox_state.has_popup);
+    try std.testing.expect(combobox_state.expanded);
+    try std.testing.expect(!combobox_state.disabled);
+
+    // Verify role-based popup type mapping
+    try std.testing.expectEqualStrings("combobox", types.Role.combobox.toAriaRole());
+    try std.testing.expectEqualStrings("menu", types.Role.menu.toAriaRole());
+    try std.testing.expectEqualStrings("tree", types.Role.tree.toAriaRole());
 }

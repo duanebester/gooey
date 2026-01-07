@@ -288,7 +288,7 @@ const FormHeader = struct {
         if (b.accessible(.{
             .role = .heading,
             .name = "Registration Form",
-            .heading_level = 1,
+            .heading_level = .h1,
         })) {
             defer b.accessibleEnd();
         }
@@ -363,7 +363,7 @@ const PersonalInfoSection = struct {
         if (b.accessible(.{
             .role = .heading,
             .name = "Personal Information",
-            .heading_level = 2,
+            .heading_level = .h2,
         })) {
             defer b.accessibleEnd();
         }
@@ -453,7 +453,7 @@ const ContactPreferencesSection = struct {
         if (b.accessible(.{
             .role = .heading,
             .name = "Contact Preferences",
-            .heading_level = 2,
+            .heading_level = .h2,
         })) {
             defer b.accessibleEnd();
         }
@@ -613,7 +613,7 @@ const ExperienceSection = struct {
         if (b.accessible(.{
             .role = .heading,
             .name = "Experience Level",
-            .heading_level = 2,
+            .heading_level = .h2,
         })) {
             defer b.accessibleEnd();
         }
