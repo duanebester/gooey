@@ -98,6 +98,14 @@ const FocusId = focus_mod.FocusId;
 const FocusHandle = focus_mod.FocusHandle;
 const FocusEvent = focus_mod.FocusEvent;
 
+// Drag & Drop
+const drag_mod = @import("drag.zig");
+pub const DragState = drag_mod.DragState;
+
+// Geometry
+const geometry = @import("../core/geometry.zig");
+const Point = geometry.Point;
+
 /// Gooey - unified UI context
 pub const Gooey = struct {
     allocator: std.mem.Allocator,
@@ -138,6 +146,14 @@ pub const Gooey = struct {
 
     // Track if hover changed to trigger re-render
     hover_changed: bool = false,
+
+    // Drag & Drop state
+    /// Pending drag (mouse down, threshold not yet exceeded)
+    pending_drag: ?drag_mod.PendingDrag = null,
+    /// Active drag (threshold exceeded, drag in progress)
+    active_drag: ?drag_mod.DragState = null,
+    /// Layout ID of current drop target (for drag-over styling)
+    drag_over_target: ?u32 = null,
 
     /// UI Debugger/Inspector (toggle with Cmd+Shift+I)
     debugger: debugger_mod.Debugger = .{},
@@ -431,6 +447,9 @@ pub const Gooey = struct {
 
         // Clear hover_changed flag at frame start
         self.hover_changed = false;
+
+        // Clear drag-over target (recalculated each frame during drag)
+        self.drag_over_target = null;
 
         // Accessibility: periodic screen reader check (not every frame)
         self.a11y_check_counter += 1;
@@ -746,6 +765,65 @@ pub const Gooey = struct {
     /// Get the entity map
     pub fn getEntities(self: *Self) *EntityMap {
         return &self.entities;
+    }
+
+    // =========================================================================
+    // Drag & Drop
+    // =========================================================================
+
+    /// Start a pending drag (called on mouse_down over draggable element)
+    /// Drag activates when cursor moves > DRAG_THRESHOLD pixels
+    pub fn startPendingDrag(
+        self: *Self,
+        comptime T: type,
+        value: *T,
+        start_pos: Point(f32),
+        source_id: ?u32,
+    ) void {
+        std.debug.assert(self.active_drag == null); // One drag at a time
+        self.pending_drag = .{
+            .value_ptr = value,
+            .type_id = drag_mod.dragTypeId(T),
+            .start_position = start_pos,
+            .source_layout_id = source_id,
+        };
+    }
+
+    /// Check if there's an active drag of the given type
+    pub fn hasDragOfType(self: *const Self, comptime T: type) bool {
+        if (self.active_drag) |drag| {
+            return drag.type_id == drag_mod.dragTypeId(T);
+        }
+        return false;
+    }
+
+    /// Get active drag state (if any)
+    pub fn getActiveDrag(self: *const Self) ?*const drag_mod.DragState {
+        if (self.active_drag) |*drag| return drag;
+        return null;
+    }
+
+    /// Cancel any active or pending drag
+    pub fn cancelDrag(self: *Self) void {
+        self.active_drag = null;
+        self.pending_drag = null;
+        self.drag_over_target = null;
+    }
+
+    /// Check if a layout ID is the current drag-over target
+    pub fn isDragOverTarget(self: *const Self, layout_id: u32) bool {
+        if (self.drag_over_target) |target| {
+            return target == layout_id;
+        }
+        return false;
+    }
+
+    /// Check if element is being dragged (for source styling)
+    pub fn isDragSource(self: *const Self, layout_id: u32) bool {
+        if (self.active_drag) |drag| {
+            if (drag.source_layout_id) |src| return src == layout_id;
+        }
+        return false;
     }
 
     // =========================================================================

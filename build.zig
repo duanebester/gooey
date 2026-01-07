@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "data-table", "src/examples/data_table_example.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "a11y-demo", "src/examples/a11y_demo.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "accessible-form", "src/examples/accessible_form.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "drag-drop", "src/examples/drag_drop.zig", false);
 
         // =====================================================================
         // Tests
@@ -336,6 +337,39 @@ pub fn build(b: *std.Build) void {
         run_file_dialog_step.dependOn(&run_file_dialog_cmd.step);
         run_file_dialog_cmd.step.dependOn(b.getInstallStep());
 
+        // =========================================================================
+        // Linux Drag & Drop Demo
+        // =========================================================================
+
+        const drag_drop_exe = b.addExecutable(.{
+            .name = "gooey-drag-drop",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/drag_drop.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        drag_drop_exe.linkSystemLibrary("vulkan");
+        drag_drop_exe.linkSystemLibrary("wayland-client");
+        drag_drop_exe.linkSystemLibrary("freetype");
+        drag_drop_exe.linkSystemLibrary("harfbuzz");
+        drag_drop_exe.linkSystemLibrary("fontconfig");
+        drag_drop_exe.linkSystemLibrary("png");
+        drag_drop_exe.linkSystemLibrary("dbus-1");
+        drag_drop_exe.linkLibC();
+
+        b.installArtifact(drag_drop_exe);
+
+        const run_drag_drop_step = b.step("run-drag-drop", "Run the Linux drag & drop demo");
+        const run_drag_drop_cmd = b.addRunArtifact(drag_drop_exe);
+        run_drag_drop_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+        run_drag_drop_step.dependOn(&run_drag_drop_cmd.step);
+        run_drag_drop_cmd.step.dependOn(b.getInstallStep());
+
         // =====================================================================
         // Tests
         // =====================================================================
@@ -429,6 +463,7 @@ pub fn build(b: *std.Build) void {
     addWasmExample(b, gooey_wasm_module, wasm_target, "tooltip", "src/examples/tooltip.zig", "web/tooltip");
     addWasmExample(b, gooey_wasm_module, wasm_target, "modal", "src/examples/modal.zig", "web/modal");
     addWasmExample(b, gooey_wasm_module, wasm_target, "file-dialog", "src/examples/web_file_dialog.zig", "web/file-dialog");
+    addWasmExample(b, gooey_wasm_module, wasm_target, "drag-drop", "src/examples/drag_drop.zig", "web/drag-drop");
 }
 
 /// Helper to add a native macOS example with minimal boilerplate.

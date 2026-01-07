@@ -15,6 +15,7 @@ const geometry = @import("../core/geometry.zig");
 
 // Core imports
 const gooey_mod = @import("../context/gooey.zig");
+const drag_mod = @import("../context/drag.zig");
 const input_mod = @import("../input/events.zig");
 const dispatch_mod = @import("../context/dispatch.zig");
 const debugger_mod = @import("../debug/debugger.zig");
@@ -171,7 +172,7 @@ fn handleMouseDragEvent(
     return false;
 }
 
-/// Handle mouse move events for hover state
+/// Handle mouse move events for hover state and drag activation
 fn handleMouseMoveEvent(
     cx: *Cx,
     gooey: *Gooey,
@@ -183,12 +184,64 @@ fn handleMouseMoveEvent(
     const x: f32 = @floatCast(position.x);
     const y: f32 = @floatCast(position.y);
 
+    // Check if pending drag should become active
+    if (gooey.pending_drag) |pending| {
+        const dx = x - pending.start_position.x;
+        const dy = y - pending.start_position.y;
+        const distance = @sqrt(dx * dx + dy * dy);
+
+        if (distance > drag_mod.DRAG_THRESHOLD) {
+            // Promote to active drag
+            gooey.active_drag = .{
+                .value_ptr = pending.value_ptr,
+                .type_id = pending.type_id,
+                .cursor_offset = .{ .x = dx, .y = dy },
+                .cursor_position = .{ .x = x, .y = y },
+                .start_position = pending.start_position,
+                .source_layout_id = pending.source_layout_id,
+            };
+            gooey.pending_drag = null;
+            cx.notify();
+            return true;
+        }
+    }
+
+    // Update active drag position and find drop target
+    if (gooey.active_drag) |*drag| {
+        drag.cursor_position = .{ .x = x, .y = y };
+
+        // Find drop target under cursor
+        updateDragOverTarget(gooey, x, y, drag.type_id);
+
+        cx.notify();
+        return true;
+    }
+
+    // Normal hover update
     if (gooey.updateHover(x, y)) {
         cx.notify();
         return true;
     }
 
     return false;
+}
+
+/// Find and track the drop target under cursor during drag
+fn updateDragOverTarget(gooey: *Gooey, x: f32, y: f32, drag_type_id: drag_mod.DragTypeId) void {
+    gooey.drag_over_target = null;
+
+    if (gooey.dispatch.hitTest(x, y)) |hit| {
+        var path_buf: [64]DispatchNodeId = undefined;
+        const path = gooey.dispatch.dispatchPath(hit, &path_buf);
+        if (path.len > 0) {
+            // Walk up path to find compatible drop target
+            if (gooey.dispatch.findDropTarget(path, drag_type_id)) |target| {
+                if (gooey.dispatch.getNodeConst(target.node_id)) |node| {
+                    gooey.drag_over_target = node.layout_id;
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -215,22 +268,55 @@ fn handleMouseDownEvent(
     // 3. Compute hit target once for both click-outside and click dispatch
     const hit_target = gooey.dispatch.hitTest(x, y);
 
-    // 4. Dispatch click-outside events (for closing dropdowns, modals, etc.)
+    // 4. Check for drag source — start pending drag
+    if (hit_target) |target| {
+        _ = handleDragSourceClick(gooey, target, x, y);
+        // Don't return true yet — still dispatch click-outside etc.
+    }
+
+    // 5. Dispatch click-outside events (for closing dropdowns, modals, etc.)
     if (gooey.dispatch.dispatchClickOutsideWithTarget(x, y, hit_target, gooey)) {
         cx.notify();
     }
 
-    // 5. Dispatch click to hit target
+    // 6. Dispatch click to hit target
     if (hit_target) |target| {
         if (handleDispatchClick(cx, gooey, target)) return true;
     }
 
-    // 6. Debugger: handle click to select element for inspection
+    // 7. Debugger: handle click to select element for inspection
     if (gooey.debugger.isActive()) {
         gooey.debugger.handleClick(gooey.hovered_layout_id);
         cx.notify();
     }
 
+    return false;
+}
+
+/// Check if click hit a drag source, start pending drag if so
+/// Walks up the dispatch path to find drag source on parent elements
+fn handleDragSourceClick(gooey: *Gooey, target: DispatchNodeId, x: f32, y: f32) bool {
+    // Don't start new drag if one is active
+    if (gooey.active_drag != null or gooey.pending_drag != null) return false;
+
+    // Build dispatch path from hit target to root
+    var path_buf: [64]DispatchNodeId = undefined;
+    const path = gooey.dispatch.dispatchPath(target, &path_buf);
+
+    // Walk up path to find drag source (closest to hit point first)
+    for (path) |node_id| {
+        if (gooey.dispatch.getNodeConst(node_id)) |node| {
+            if (node.drag_source) |source| {
+                gooey.pending_drag = .{
+                    .value_ptr = source.value_ptr,
+                    .type_id = source.type_id,
+                    .start_position = .{ .x = x, .y = y },
+                    .source_layout_id = node.layout_id,
+                };
+                return true;
+            }
+        }
+    }
     return false;
 }
 
@@ -315,7 +401,43 @@ fn handleMouseUpEvent(
     gooey: *Gooey,
     builder: *Builder,
 ) bool {
-    // O(1) check: use tracked active drag ID
+    // Handle drop if drag is active
+    if (gooey.active_drag) |drag| {
+        defer {
+            gooey.active_drag = null;
+            gooey.pending_drag = null;
+            gooey.drag_over_target = null;
+        }
+
+        const x = drag.cursor_position.x;
+        const y = drag.cursor_position.y;
+
+        if (gooey.dispatch.hitTest(x, y)) |hit| {
+            var path_buf: [64]DispatchNodeId = undefined;
+            const path = gooey.dispatch.dispatchPath(hit, &path_buf);
+            if (path.len > 0) {
+                if (gooey.dispatch.findDropTarget(path, drag.type_id)) |target| {
+                    // Execute drop handler
+                    if (target.handler) |handler| {
+                        handler.invoke(gooey);
+                    }
+                    cx.notify();
+                    return true;
+                }
+            }
+        }
+
+        // Drag ended without drop
+        cx.notify();
+        return true;
+    }
+
+    // Cancel pending drag on mouse up (click without drag)
+    if (gooey.pending_drag != null) {
+        gooey.pending_drag = null;
+    }
+
+    // O(1) check: use tracked active drag ID for scroll
     if (builder.getActiveScrollDrag()) |drag_id| {
         if (gooey.widgets.getScrollContainer(drag_id)) |sc| {
             if (sc.state.dragging_vertical or sc.state.dragging_horizontal) {
@@ -338,6 +460,13 @@ fn handleMouseUpEvent(
 
 /// Handle key down events
 fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
+    // Cancel drag on Escape
+    if (k.key == .escape and (gooey.active_drag != null or gooey.pending_drag != null)) {
+        gooey.cancelDrag();
+        cx.notify();
+        return true;
+    }
+
     // Debugger toggle: Cmd+Shift+I (macOS) or Ctrl+Shift+I
     if (debugger_mod.Debugger.isToggleShortcut(k.key, k.modifiers)) {
         gooey.debugger.toggle();

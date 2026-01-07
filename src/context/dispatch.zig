@@ -23,10 +23,13 @@ const std = @import("std");
 const layout_types = @import("../layout/types.zig");
 const focus_mod = @import("focus.zig");
 const gooey_mod = @import("gooey.zig");
+const drag_mod = @import("drag.zig");
 
 const BoundingBox = layout_types.BoundingBox;
 const FocusId = focus_mod.FocusId;
 const Gooey = gooey_mod.Gooey;
+pub const DragTypeId = drag_mod.DragTypeId;
+pub const dragTypeId = drag_mod.dragTypeId;
 
 // =============================================================================
 // Dispatch Node ID
@@ -126,6 +129,16 @@ pub const DispatchNode = struct {
     /// Click-outside listeners (for closing dropdowns, modals, etc.)
     click_outside_listeners: std.ArrayListUnmanaged(ClickOutsideListener) = .{},
 
+    // Drag & Drop
+    /// Drag source (if this node is draggable)
+    drag_source: ?DragSource = null,
+    /// Drop target (if this node accepts drops)
+    drop_target: ?DropTargetListener = null,
+
+    /// Pointer events mode - when true, this node is transparent to hit testing
+    /// (like CSS pointer-events: none)
+    pointer_events_none: bool = false,
+
     const Self = @This();
 
     pub fn containsPoint(self: Self, x: f32, y: f32) bool {
@@ -164,6 +177,10 @@ pub const DispatchNode = struct {
         self.click_listeners_handler.clearRetainingCapacity();
         self.action_listeners_handler.clearRetainingCapacity();
         self.click_outside_listeners.clearRetainingCapacity();
+        // Drag & Drop
+        self.drag_source = null;
+        self.drop_target = null;
+        self.pointer_events_none = false;
     }
 };
 
@@ -249,6 +266,18 @@ pub const ClickOutsideListener = struct {
     callback: ?*const fn () void = null,
     /// Handler-based callback (with context)
     handler: ?HandlerRef = null,
+};
+
+/// Drag source configuration on a dispatch node
+pub const DragSource = struct {
+    value_ptr: *anyopaque,
+    type_id: DragTypeId,
+};
+
+/// Drop target configuration on a dispatch node
+pub const DropTargetListener = struct {
+    type_id: DragTypeId,
+    handler: ?HandlerRef,
 };
 
 // =============================================================================
@@ -499,9 +528,10 @@ pub const DispatchTree = struct {
             true; // No bounds = assume contains (for structural nodes)
 
         if (contains_point) {
-            // Only accept this node if z_index >= best so far
-            // (equal z_index: later in tree order wins, which is DOM order)
-            if (node.z_index >= best_z.*) {
+            // Only accept this node if:
+            // - z_index >= best so far (equal z_index: later in tree order wins)
+            // - pointer_events_none is false (otherwise transparent to hit testing)
+            if (node.z_index >= best_z.* and !node.pointer_events_none) {
                 result.* = node_id;
                 best_z.* = node.z_index;
             }
@@ -913,6 +943,46 @@ pub const DispatchTree = struct {
                 .handler = ref,
             }) catch {};
         }
+    }
+
+    // =========================================================================
+    // Drag & Drop
+    // =========================================================================
+
+    /// Register a drag source on the current node
+    pub fn setDragSource(self: *Self, comptime T: type, value: *T) void {
+        const node_id = self.currentNode();
+        if (self.getNode(node_id)) |node| {
+            node.drag_source = .{
+                .value_ptr = value,
+                .type_id = dragTypeId(T),
+            };
+        }
+    }
+
+    /// Register a drop target on the current node
+    pub fn setDropTarget(self: *Self, comptime T: type, handler: ?HandlerRef) void {
+        const node_id = self.currentNode();
+        if (self.getNode(node_id)) |node| {
+            node.drop_target = .{
+                .type_id = dragTypeId(T),
+                .handler = handler,
+            };
+        }
+    }
+
+    /// Find drop target in dispatch path (walks from hit node to root)
+    pub fn findDropTarget(self: *Self, path: []const DispatchNodeId, type_id: DragTypeId) ?struct { node_id: DispatchNodeId, handler: ?HandlerRef } {
+        for (path) |node_id| {
+            if (self.getNodeConst(node_id)) |node| {
+                if (node.drop_target) |target| {
+                    if (target.type_id == type_id) {
+                        return .{ .node_id = node_id, .handler = target.handler };
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /// Build the context stack from a dispatch path

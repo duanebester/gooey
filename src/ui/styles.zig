@@ -19,6 +19,48 @@ pub const CornerRadius = layout_mod.CornerRadius;
 pub const ObjectFit = @import("../image/atlas.zig").ObjectFit;
 pub const HandlerRef = @import("../context/handler.zig").HandlerRef;
 
+// Drag & Drop
+const drag_mod = @import("../context/drag.zig");
+pub const DragTypeId = drag_mod.DragTypeId;
+
+// =============================================================================
+// Drag & Drop Configuration
+// =============================================================================
+
+/// Configuration for a draggable element
+/// WARNING: value_ptr must remain valid for the duration of any drag operation.
+/// Use entity-backed or heap-stable storage, not stack locals.
+pub const Draggable = struct {
+    /// Pointer to the value being dragged (type-erased)
+    value_ptr: *anyopaque,
+    /// Type ID for drop target matching
+    type_id: DragTypeId,
+
+    /// Create a typed Draggable config
+    pub fn init(comptime T: type, value: *T) Draggable {
+        return .{
+            .value_ptr = value,
+            .type_id = drag_mod.dragTypeId(T),
+        };
+    }
+};
+
+/// Configuration for a drop target element
+pub const DropTarget = struct {
+    /// Type ID of accepted drag payload
+    type_id: DragTypeId,
+    /// Handler invoked on drop (receives entity notification)
+    handler: ?HandlerRef = null,
+
+    /// Create a typed DropTarget config
+    pub fn init(comptime T: type, handler: ?HandlerRef) DropTarget {
+        return .{
+            .type_id = drag_mod.dragTypeId(T),
+            .handler = handler,
+        };
+    }
+};
+
 // =============================================================================
 // Floating Configuration
 // =============================================================================
@@ -156,6 +198,27 @@ pub const Box = struct {
     on_click_handler: ?HandlerRef = null,
     on_click_outside: ?*const fn () void = null,
     on_click_outside_handler: ?HandlerRef = null,
+    /// Control pointer event behavior (like CSS pointer-events)
+    /// When set to .none, this element won't receive mouse events or block elements below
+    pointer_events: PointerEvents = .auto,
+
+    // Drag & Drop
+    /// Make this element draggable
+    draggable: ?Draggable = null,
+    /// Make this element a drop target
+    drop_target: ?DropTarget = null,
+    /// Background color when compatible drag hovers over this element
+    drag_over_background: ?Color = null,
+    /// Border color when compatible drag hovers over this element
+    drag_over_border_color: ?Color = null,
+
+    /// Pointer events mode (similar to CSS pointer-events)
+    pub const PointerEvents = enum {
+        /// Normal behavior - element receives events and blocks elements below
+        auto,
+        /// Element is transparent to pointer events (like CSS pointer-events: none)
+        none,
+    };
 
     pub const Direction = enum { row, column };
 
