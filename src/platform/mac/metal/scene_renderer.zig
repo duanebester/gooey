@@ -17,6 +17,8 @@ const render_stats = @import("../../../debug/render_stats.zig");
 const unified = @import("unified.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
 const image_pipeline = @import("image_pipeline.zig");
+const path_pipeline = @import("path_pipeline.zig");
+const mesh_pool_mod = @import("../../../scene/mesh_pool.zig");
 
 /// Pipeline references for batch rendering
 pub const Pipelines = struct {
@@ -24,6 +26,8 @@ pub const Pipelines = struct {
     text: ?*text_pipeline.TextPipeline,
     svg: ?*svg_pipeline.SvgPipeline,
     image: ?*image_pipeline.ImagePipeline,
+    path: ?*path_pipeline.PathPipeline,
+    mesh_pool: ?*const mesh_pool_mod.MeshPool,
     unit_vertex_buffer: objc.Object,
 };
 
@@ -49,12 +53,13 @@ pub fn drawSceneWithStats(
 
     if (DEBUG_BATCHES) {
         std.debug.print("\n=== BATCH RENDER START ===\n", .{});
-        std.debug.print("  Total shadows: {d}, quads: {d}, glyphs: {d}, svgs: {d}, images: {d}\n", .{
+        std.debug.print("  Total shadows: {d}, quads: {d}, glyphs: {d}, svgs: {d}, images: {d}, paths: {d}\n", .{
             scene.getShadows().len,
             scene.getQuads().len,
             scene.getGlyphs().len,
             scene.getSvgInstances().len,
             scene.getImages().len,
+            scene.getPathInstances().len,
         });
     }
 
@@ -83,6 +88,10 @@ pub fn drawSceneWithStats(
             .image => |images| {
                 if (DEBUG_BATCHES) std.debug.print("IMAGE x{d}\n", .{images.len});
                 drawImageBatch(encoder, images, pipelines, viewport_size, stats);
+            },
+            .path => |paths| {
+                if (DEBUG_BATCHES) std.debug.print("PATH x{d}\n", .{paths.len});
+                drawPathBatch(encoder, paths, scene, pipelines, viewport_size, stats);
             },
         }
         batch_num += 1;
@@ -237,6 +246,47 @@ fn drawImageBatch(
     if (stats) |s| {
         s.recordDrawCall();
         // TODO: Add recordImages to stats if needed
+    }
+}
+
+/// Draw a batch of path instances using the path pipeline
+fn drawPathBatch(
+    encoder: objc.Object,
+    paths: []const @import("../../../scene/path_instance.zig").PathInstance,
+    scene: *const scene_mod.Scene,
+    pipelines: Pipelines,
+    viewport_size: [2]f32,
+    stats: ?*render_stats.RenderStats,
+) void {
+    if (paths.len == 0) return;
+    const pp = pipelines.path orelse return;
+    const pool = pipelines.mesh_pool orelse return;
+
+    // Calculate offset of this batch within the full paths array
+    // (paths is a slice that may start at any index in the full array)
+    const all_paths = scene.getPathInstances();
+    const all_gradients = scene.getPathGradients();
+
+    // Use pointer arithmetic to find the batch offset
+    const PathInstance = @import("../../../scene/path_instance.zig").PathInstance;
+
+    // Safety assertions for pointer arithmetic (per CLAUDE.md: minimum 2 assertions per function)
+    std.debug.assert(@intFromPtr(paths.ptr) >= @intFromPtr(all_paths.ptr));
+    const batch_offset = (@intFromPtr(paths.ptr) - @intFromPtr(all_paths.ptr)) / @sizeOf(PathInstance);
+    std.debug.assert(batch_offset + paths.len <= all_gradients.len);
+
+    // Slice gradients to match the path batch (parallel arrays must stay aligned)
+    const gradients = all_gradients[batch_offset..][0..paths.len];
+
+    pp.renderBatchWithGradients(encoder, paths, gradients, pool, viewport_size) catch |err| {
+        if (builtin.mode == .Debug) {
+            std.debug.print("drawPathBatch failed: {}\n", .{err});
+        }
+    };
+
+    if (stats) |s| {
+        s.recordDrawCall();
+        s.recordPaths(@intCast(paths.len));
     }
 }
 

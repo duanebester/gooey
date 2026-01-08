@@ -27,6 +27,19 @@ const svg_instance_mod = @import("svg_instance.zig");
 pub const SvgInstance = svg_instance_mod.SvgInstance;
 const image_instance_mod = @import("image_instance.zig");
 pub const ImageInstance = image_instance_mod.ImageInstance;
+const path_instance_mod = @import("path_instance.zig");
+pub const PathInstance = path_instance_mod.PathInstance;
+const mesh_pool_mod = @import("mesh_pool.zig");
+pub const MeshPool = mesh_pool_mod.MeshPool;
+pub const MeshRef = mesh_pool_mod.MeshRef;
+const path_mesh_mod = @import("path_mesh.zig");
+pub const PathMesh = path_mesh_mod.PathMesh;
+pub const PathVertex = path_mesh_mod.PathVertex;
+const gradient_uniforms_mod = @import("gradient_uniforms.zig");
+pub const GradientUniforms = gradient_uniforms_mod.GradientUniforms;
+const gradient_mod = @import("../core/gradient.zig");
+pub const LinearGradient = gradient_mod.LinearGradient;
+pub const RadialGradient = gradient_mod.RadialGradient;
 
 // ============================================================================
 // Hard Limits (static memory allocation policy)
@@ -46,6 +59,9 @@ pub const MAX_SVGS_PER_FRAME = 8192;
 
 /// Maximum image instances per frame - fail fast if exceeded
 pub const MAX_IMAGES_PER_FRAME = 4096;
+
+/// Maximum path instances per frame - fail fast if exceeded
+pub const MAX_PATHS_PER_FRAME = 4096;
 
 /// Maximum clip stack depth - fail fast if exceeded
 pub const MAX_CLIP_STACK_DEPTH = 32;
@@ -469,6 +485,11 @@ pub const Scene = struct {
     glyphs: std.ArrayListUnmanaged(GlyphInstance),
     svg_instances: std.ArrayListUnmanaged(SvgInstance),
     images: std.ArrayListUnmanaged(ImageInstance),
+    path_instances: std.ArrayListUnmanaged(PathInstance),
+    /// Parallel array of gradient data for path instances (same index as path_instances)
+    /// If path_instances[i].hasGradient(), use path_gradients[i] for stop data
+    path_gradients: std.ArrayListUnmanaged(GradientUniforms),
+    mesh_pool: MeshPool,
     next_order: DrawOrder,
     // Clip mask stack for nested clipping regions
     clip_stack: std.ArrayListUnmanaged(ContentMask.ClipBounds),
@@ -478,6 +499,7 @@ pub const Scene = struct {
     needs_sort_glyphs: bool,
     needs_sort_svgs: bool,
     needs_sort_images: bool,
+    needs_sort_paths: bool,
 
     // Viewport culling
     viewport_width: f32,
@@ -499,6 +521,9 @@ pub const Scene = struct {
             .glyphs = .{},
             .svg_instances = .{},
             .images = .{},
+            .path_instances = .{},
+            .path_gradients = .{},
+            .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .{},
             .needs_sort_shadows = false,
@@ -506,6 +531,7 @@ pub const Scene = struct {
             .needs_sort_glyphs = false,
             .needs_sort_svgs = false,
             .needs_sort_images = false,
+            .needs_sort_paths = false,
             // Viewport culling - disabled by default (0 = no culling)
             .viewport_width = 0,
             .viewport_height = 0,
@@ -525,6 +551,9 @@ pub const Scene = struct {
             .glyphs = .{},
             .svg_instances = .{},
             .images = .{},
+            .path_instances = .{},
+            .path_gradients = .{},
+            .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .{},
             .needs_sort_shadows = false,
@@ -532,6 +561,7 @@ pub const Scene = struct {
             .needs_sort_glyphs = false,
             .needs_sort_svgs = false,
             .needs_sort_images = false,
+            .needs_sort_paths = false,
             .viewport_width = 0,
             .viewport_height = 0,
             .culling_enabled = false,
@@ -544,6 +574,8 @@ pub const Scene = struct {
         try self.glyphs.ensureTotalCapacity(allocator, MAX_GLYPHS_PER_FRAME);
         try self.svg_instances.ensureTotalCapacity(allocator, MAX_SVGS_PER_FRAME);
         try self.images.ensureTotalCapacity(allocator, MAX_IMAGES_PER_FRAME);
+        try self.path_instances.ensureTotalCapacity(allocator, MAX_PATHS_PER_FRAME);
+        try self.path_gradients.ensureTotalCapacity(allocator, MAX_PATHS_PER_FRAME);
         try self.clip_stack.ensureTotalCapacity(allocator, MAX_CLIP_STACK_DEPTH);
 
         return self;
@@ -555,7 +587,10 @@ pub const Scene = struct {
         self.glyphs.deinit(self.allocator);
         self.svg_instances.deinit(self.allocator);
         self.images.deinit(self.allocator);
+        self.path_instances.deinit(self.allocator);
+        self.path_gradients.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
+        self.mesh_pool.deinit();
     }
 
     pub fn clear(self: *Self) void {
@@ -564,6 +599,9 @@ pub const Scene = struct {
         self.glyphs.clearRetainingCapacity();
         self.svg_instances.clearRetainingCapacity();
         self.images.clearRetainingCapacity();
+        self.path_instances.clearRetainingCapacity();
+        self.path_gradients.clearRetainingCapacity();
+        self.mesh_pool.resetFrame();
         self.clip_stack.clearRetainingCapacity();
         self.next_order = 0;
         self.needs_sort_shadows = false;
@@ -571,6 +609,7 @@ pub const Scene = struct {
         self.needs_sort_glyphs = false;
         self.needs_sort_svgs = false;
         self.needs_sort_images = false;
+        self.needs_sort_paths = false;
     }
 
     // ========================================================================
@@ -695,6 +734,129 @@ pub const Scene = struct {
 
     pub fn getImages(self: *const Self) []const ImageInstance {
         return self.images.items;
+    }
+
+    // ========================================================================
+    // Path Insertion
+    // ========================================================================
+
+    /// Insert a path instance without clipping
+    pub fn insertPath(self: *Self, instance: PathInstance) !void {
+        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(instance.index_count > 0);
+
+        var inst = instance;
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.path_instances.append(self.allocator, inst);
+        // Append empty gradient (will be populated if instance has gradient)
+        try self.path_gradients.append(self.allocator, GradientUniforms.none());
+    }
+
+    /// Insert a path instance with the current clip mask applied
+    pub fn insertPathClipped(self: *Self, instance: PathInstance) !void {
+        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(instance.index_count > 0);
+
+        const clip = self.currentClip();
+        var inst = instance.withClipBounds(clip);
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.path_instances.append(self.allocator, inst);
+        try self.path_gradients.append(self.allocator, GradientUniforms.none());
+    }
+
+    /// Insert a path instance with a pre-reserved draw order
+    pub fn insertPathWithOrder(self: *Self, instance: PathInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(instance.index_count > 0);
+
+        var inst = instance.withClipBounds(clip);
+        inst.order = order;
+        self.needs_sort_paths = true; // Out-of-order insert requires sorting
+        try self.path_instances.append(self.allocator, inst);
+        try self.path_gradients.append(self.allocator, GradientUniforms.none());
+    }
+
+    /// Insert a path instance with a linear gradient fill
+    pub fn insertPathWithLinearGradient(
+        self: *Self,
+        instance: PathInstance,
+        gradient: LinearGradient,
+    ) !void {
+        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(instance.index_count > 0);
+        std.debug.assert(gradient.stop_count >= 2);
+
+        const clip = self.currentClip();
+        var inst = instance.withClipBounds(clip);
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.path_instances.append(self.allocator, inst);
+        try self.path_gradients.append(self.allocator, GradientUniforms.fromLinear(gradient));
+    }
+
+    /// Insert a path instance with a radial gradient fill
+    pub fn insertPathWithRadialGradient(
+        self: *Self,
+        instance: PathInstance,
+        gradient: RadialGradient,
+    ) !void {
+        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(instance.index_count > 0);
+        std.debug.assert(gradient.stop_count >= 2);
+
+        const clip = self.currentClip();
+        var inst = instance.withClipBounds(clip);
+        inst.order = self.next_order;
+        self.next_order += 1;
+        try self.path_instances.append(self.allocator, inst);
+        try self.path_gradients.append(self.allocator, GradientUniforms.fromRadial(gradient));
+    }
+
+    /// Insert a path with a mesh, allocating the mesh in the frame pool
+    /// This is a convenience method that handles mesh allocation
+    pub fn insertPathWithMesh(
+        self: *Self,
+        mesh: PathMesh,
+        offset_x: f32,
+        offset_y: f32,
+        fill_color: Hsla,
+    ) !void {
+        std.debug.assert(!mesh.isEmpty());
+
+        // Allocate mesh in frame pool
+        const mesh_ref = try self.mesh_pool.allocateFrame(mesh);
+
+        const inst = PathInstance.initWithBufferRanges(
+            mesh_ref,
+            offset_x,
+            offset_y,
+            fill_color,
+            0, // vertex_offset - to be set by renderer
+            0, // index_offset - to be set by renderer
+            @intCast(mesh.indices.len),
+        );
+
+        try self.insertPathClipped(inst);
+    }
+
+    /// Get mesh pool for external use (e.g., caching persistent meshes)
+    pub fn getMeshPool(self: *Self) *MeshPool {
+        return &self.mesh_pool;
+    }
+
+    pub fn pathCount(self: *const Self) usize {
+        return self.path_instances.items.len;
+    }
+
+    pub fn getPathInstances(self: *const Self) []const PathInstance {
+        return self.path_instances.items;
+    }
+
+    /// Get gradient uniforms for path instances (parallel array)
+    pub fn getPathGradients(self: *const Self) []const GradientUniforms {
+        return self.path_gradients.items;
     }
 
     // ========================================================================
@@ -895,6 +1057,34 @@ pub const Scene = struct {
                     return a.order < b.order;
                 }
             }.lessThan);
+        }
+        if (self.needs_sort_paths) {
+            // Sort both path_instances and path_gradients together to maintain parallel alignment
+            const n = self.path_instances.items.len;
+            if (n > 1) {
+                // Simple in-place parallel sort using selection sort for correctness
+                // (path counts per frame are typically small, so O(n²) is acceptable)
+                var i: usize = 0;
+                while (i < n - 1) : (i += 1) {
+                    var min_idx = i;
+                    var j = i + 1;
+                    while (j < n) : (j += 1) {
+                        if (self.path_instances.items[j].order < self.path_instances.items[min_idx].order) {
+                            min_idx = j;
+                        }
+                    }
+                    if (min_idx != i) {
+                        // Swap both arrays at the same indices
+                        const tmp_path = self.path_instances.items[i];
+                        self.path_instances.items[i] = self.path_instances.items[min_idx];
+                        self.path_instances.items[min_idx] = tmp_path;
+
+                        const tmp_grad = self.path_gradients.items[i];
+                        self.path_gradients.items[i] = self.path_gradients.items[min_idx];
+                        self.path_gradients.items[min_idx] = tmp_grad;
+                    }
+                }
+            }
         }
     }
 

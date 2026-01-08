@@ -220,6 +220,61 @@ pub const shader = @import("shader.zig");
 pub const CustomShader = shader.CustomShader;
 
 // =============================================================================
+// Triangulator - LOCAL
+// =============================================================================
+
+pub const triangulator = @import("triangulator.zig");
+pub const Triangulator = triangulator.Triangulator;
+pub const Vec2 = triangulator.Vec2;
+pub const IndexSlice = triangulator.IndexSlice;
+
+// =============================================================================
+// Path Builder API - LOCAL
+// =============================================================================
+
+pub const path = @import("path.zig");
+pub const Path = path.Path;
+pub const PathCommand = path.Command;
+pub const PathError = path.PathError;
+
+// =============================================================================
+// Stroke API - LOCAL
+// =============================================================================
+
+pub const stroke = @import("stroke.zig");
+pub const LineCap = stroke.LineCap;
+pub const LineJoin = stroke.LineJoin;
+pub const StrokeStyle = stroke.StrokeStyle;
+pub const StrokeError = stroke.StrokeError;
+
+// =============================================================================
+// Gradient API - LOCAL
+// =============================================================================
+
+pub const gradient = @import("gradient.zig");
+pub const Gradient = gradient.Gradient;
+pub const GradientType = gradient.GradientType;
+pub const GradientStop = gradient.GradientStop;
+pub const LinearGradient = gradient.LinearGradient;
+pub const RadialGradient = gradient.RadialGradient;
+
+// =============================================================================
+// Path Types - RE-EXPORTED from scene module
+// =============================================================================
+
+pub const PathInstance = scene.PathInstance;
+pub const PathMesh = scene.PathMesh;
+pub const PathVertex = scene.PathVertex;
+pub const MeshPool = scene.MeshPool;
+pub const MeshRef = scene.MeshRef;
+
+// =============================================================================
+// Path Rendering Limits - LOCAL
+// =============================================================================
+
+pub const limits = @import("limits.zig");
+
+// =============================================================================
 // Tests
 // =============================================================================
 

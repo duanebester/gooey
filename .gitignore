@@ -1,5 +1,11 @@
 .zig-cache
 zig-out/
 
+# Object files and static libraries
+*.o
+*.a
+*.so
+*.dylib
 
+# System files
 .DS_Store

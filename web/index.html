@@ -1171,6 +1171,43 @@
           env.currentPass.draw(vertexCount, instanceCount, 0, firstInstance);
         },
 
+        // Indexed drawing for path rendering
+        setIndexBuffer: (bufferHandle, format, offset, size) => {
+          const buffer = handles.buffers.get(bufferHandle);
+          if (!buffer) {
+            console.error("setIndexBuffer: invalid buffer handle");
+            return;
+          }
+          // format: 0 = uint16, 1 = uint32
+          const indexFormat = format === 0 ? "uint16" : "uint32";
+          env.currentPass.setIndexBuffer(buffer, indexFormat, offset, size);
+        },
+
+        setVertexBuffer: (slot, bufferHandle, offset, size) => {
+          const buffer = handles.buffers.get(bufferHandle);
+          if (!buffer) {
+            console.error("setVertexBuffer: invalid buffer handle");
+            return;
+          }
+          env.currentPass.setVertexBuffer(slot, buffer, offset, size);
+        },
+
+        drawIndexed: (
+          indexCount,
+          instanceCount,
+          firstIndex,
+          baseVertex,
+          firstInstance,
+        ) => {
+          env.currentPass.drawIndexed(
+            indexCount,
+            instanceCount,
+            firstIndex,
+            baseVertex,
+            firstInstance,
+          );
+        },
+
         endRenderPass: () => {
           env.currentPass.end();
           queue.submit([env.currentEncoder.finish()]);
@@ -2045,6 +2082,147 @@
             },
           });
           return allocHandle(handles.pipelines, pipeline);
+        },
+
+        // Create path pipeline with MSAA and premultiplied alpha
+        // Path rendering uses indexed drawing with storage buffers for vertices
+        createPathPipeline: (
+          shaderHandle,
+          vsPtr,
+          vsLen,
+          fsPtr,
+          fsLen,
+          sampleCount,
+        ) => {
+          const module = handles.shaderModules.get(shaderHandle);
+          const vsEntry = getString(vsPtr, vsLen);
+          const fsEntry = getString(fsPtr, fsLen);
+
+          const pipeline = device.createRenderPipeline({
+            layout: "auto",
+            vertex: {
+              module,
+              entryPoint: vsEntry,
+            },
+            fragment: {
+              module,
+              entryPoint: fsEntry,
+              targets: [
+                {
+                  format,
+                  blend: {
+                    color: {
+                      srcFactor: "one", // Premultiplied alpha
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                  },
+                },
+              ],
+            },
+            primitive: {
+              topology: "triangle-list",
+            },
+            multisample: {
+              count: sampleCount > 1 ? sampleCount : 1,
+            },
+          });
+          return allocHandle(handles.pipelines, pipeline);
+        },
+
+        // Create bind group for path pipeline
+        // Bindings: 0 = vertex storage buffer, 1 = instance uniform, 2 = viewport uniform
+        createPathBindGroup: (
+          pipelineHandle,
+          groupIndex,
+          vertexBufferHandle,
+          instanceBufferHandle,
+          uniformBufferHandle,
+        ) => {
+          const pipeline = handles.pipelines.get(pipelineHandle);
+          const vertexBuffer = handles.buffers.get(vertexBufferHandle);
+          const instanceBuffer = handles.buffers.get(instanceBufferHandle);
+          const uniformBuffer = handles.buffers.get(uniformBufferHandle);
+
+          if (!pipeline || !vertexBuffer || !instanceBuffer || !uniformBuffer) {
+            console.error("createPathBindGroup: invalid handles");
+            return 0;
+          }
+
+          const bindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(groupIndex),
+            entries: [
+              {
+                binding: 0,
+                resource: { buffer: vertexBuffer },
+              },
+              {
+                binding: 1,
+                resource: { buffer: instanceBuffer },
+              },
+              {
+                binding: 2,
+                resource: { buffer: uniformBuffer },
+              },
+            ],
+          });
+          return allocHandle(handles.bindGroups, bindGroup);
+        },
+
+        // Create bind group for path pipeline with gradient support
+        // Bindings: 0 = vertex storage buffer, 1 = instance uniform, 2 = viewport uniform, 3 = gradient uniform
+        createPathBindGroupWithGradient: (
+          pipelineHandle,
+          groupIndex,
+          vertexBufferHandle,
+          instanceBufferHandle,
+          uniformBufferHandle,
+          gradientBufferHandle,
+        ) => {
+          const pipeline = handles.pipelines.get(pipelineHandle);
+          const vertexBuffer = handles.buffers.get(vertexBufferHandle);
+          const instanceBuffer = handles.buffers.get(instanceBufferHandle);
+          const uniformBuffer = handles.buffers.get(uniformBufferHandle);
+          const gradientBuffer = handles.buffers.get(gradientBufferHandle);
+
+          if (
+            !pipeline ||
+            !vertexBuffer ||
+            !instanceBuffer ||
+            !uniformBuffer ||
+            !gradientBuffer
+          ) {
+            console.error("createPathBindGroupWithGradient: invalid handles");
+            return 0;
+          }
+
+          const bindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(groupIndex),
+            entries: [
+              {
+                binding: 0,
+                resource: { buffer: vertexBuffer },
+              },
+              {
+                binding: 1,
+                resource: { buffer: instanceBuffer },
+              },
+              {
+                binding: 2,
+                resource: { buffer: uniformBuffer },
+              },
+              {
+                binding: 3,
+                resource: { buffer: gradientBuffer },
+              },
+            ],
+          });
+          return allocHandle(handles.bindGroups, bindGroup);
         },
 
         beginMSAARenderPass: (

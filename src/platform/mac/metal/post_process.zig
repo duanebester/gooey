@@ -59,6 +59,8 @@ pub fn renderFullPipeline(
             .text = tp,
             .svg = sp,
             .image = null,
+            .path = null,
+            .mesh_pool = null,
             .unit_vertex_buffer = unit_vertex_buffer,
         }, viewport_size);
 

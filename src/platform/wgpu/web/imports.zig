@@ -123,6 +123,15 @@ pub extern "env" fn drawInstanced(vertex_count: u32, instance_count: u32) void;
 /// Draw instanced primitives with first instance offset (for batched rendering)
 pub extern "env" fn drawInstancedWithOffset(vertex_count: u32, instance_count: u32, first_instance: u32) void;
 
+/// Set the index buffer for indexed drawing
+pub extern "env" fn setIndexBuffer(buffer_handle: u32, format: u32, offset: u32, size: u32) void;
+
+/// Set a vertex buffer for vertex attribute drawing
+pub extern "env" fn setVertexBuffer(slot: u32, buffer_handle: u32, offset: u32, size: u32) void;
+
+/// Draw indexed primitives (for triangulated meshes like paths)
+pub extern "env" fn drawIndexed(index_count: u32, instance_count: u32, first_index: u32, base_vertex: i32, first_instance: u32) void;
+
 /// End the render pass and submit
 pub extern "env" fn endRenderPass() void;
 
@@ -385,4 +394,51 @@ pub extern "env" fn createImageBindGroup(
     uniform_buffer: u32,
     texture_handle: u32,
     sampler_handle: u32,
+) u32;
+
+// =============================================================================
+// Path Rendering (Indexed Drawing)
+// =============================================================================
+
+/// Index buffer format constants (matches WebGPU GPUIndexFormat)
+pub const IndexFormat = struct {
+    pub const uint16: u32 = 0;
+    pub const uint32: u32 = 1;
+};
+
+/// Create a path render pipeline with indexed drawing support
+/// Uses MSAA and premultiplied alpha blending
+pub extern "env" fn createPathPipeline(
+    shader_handle: u32,
+    vertex_entry: [*]const u8,
+    vertex_entry_len: u32,
+    fragment_entry: [*]const u8,
+    fragment_entry_len: u32,
+    sample_count: u32,
+) u32;
+
+/// Create bind group for path pipeline
+/// vertex_buffer: storage buffer containing PathVertex array
+/// instance_buffer: uniform buffer containing single PathInstance
+/// uniform_buffer: uniform buffer containing viewport uniforms
+pub extern "env" fn createPathBindGroup(
+    pipeline_handle: u32,
+    group_index: u32,
+    vertex_buffer: u32,
+    instance_buffer: u32,
+    uniform_buffer: u32,
+) u32;
+
+/// Create bind group for path pipeline with gradient support
+/// vertex_buffer: storage buffer containing PathVertex array
+/// instance_buffer: uniform buffer containing single PathInstance
+/// uniform_buffer: uniform buffer containing viewport uniforms
+/// gradient_buffer: uniform buffer containing GradientUniforms
+pub extern "env" fn createPathBindGroupWithGradient(
+    pipeline_handle: u32,
+    group_index: u32,
+    vertex_buffer: u32,
+    instance_buffer: u32,
+    uniform_buffer: u32,
+    gradient_buffer: u32,
 ) u32;

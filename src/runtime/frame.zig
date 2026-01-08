@@ -13,6 +13,8 @@ const text_mod = @import("../text/mod.zig");
 const cx_mod = @import("../cx.zig");
 const ui_mod = @import("../ui/mod.zig");
 const render_cmd = @import("render.zig");
+const canvas_mod = @import("../ui/canvas.zig");
+const scene_mod = @import("../scene/mod.zig");
 
 const Gooey = gooey_mod.Gooey;
 const Cx = cx_mod.Cx;
@@ -39,6 +41,7 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     builder.pending_inputs.clearRetainingCapacity();
     builder.pending_text_areas.clearRetainingCapacity();
     builder.pending_scrolls.clearRetainingCapacity();
+    builder.pending_canvas.clearRetainingCapacity();
     builder.pending_scrolls_by_layout_id.clearRetainingCapacity();
     builder.active_scroll_drag_id = null;
 
@@ -49,6 +52,7 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
     std.debug.assert(builder.pending_scrolls.items.len <= Builder.MAX_PENDING_SCROLLS);
+    std.debug.assert(builder.pending_canvas.items.len <= Builder.MAX_PENDING_CANVAS);
 
     // End frame and get render commands
     const commands = try gooey.endFrame();
@@ -87,6 +91,9 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     // Render text areas
     try renderTextAreas(gooey, builder);
 
+    // Render canvas elements (custom vector graphics)
+    renderCanvasElements(gooey, builder);
+
     // Update IME cursor position for focused text input
     updateImeCursorPosition(gooey);
 
@@ -120,6 +127,19 @@ fn renderCommands(gooey: *Gooey, builder: *const Builder, commands: []const layo
                 }
             }
         }
+    }
+}
+
+/// Render all pending canvas elements
+fn renderCanvasElements(gooey: *Gooey, builder: *const Builder) void {
+    for (builder.pending_canvas.items) |pending| {
+        const bounds = gooey.layout.getBoundingBox(pending.layout_id) orelse continue;
+        canvas_mod.executePendingCanvas(pending, gooey.scene, scene_mod.Bounds.init(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+        ));
     }
 }
 

@@ -15,18 +15,21 @@ pub const RenderStats = struct {
     shadows_rendered: u32 = 0,
     glyphs_rendered: u32 = 0,
     svgs_rendered: u32 = 0,
+    paths_rendered: u32 = 0,
 
     // Culling stats
     quads_culled: u32 = 0,
     shadows_culled: u32 = 0,
     glyphs_culled: u32 = 0,
     svgs_culled: u32 = 0,
+    paths_culled: u32 = 0,
 
     // Batch stats
     quad_batches: u32 = 0,
     shadow_batches: u32 = 0,
     glyph_batches: u32 = 0,
     svg_batches: u32 = 0,
+    path_batches: u32 = 0,
 
     // Text shaping stats
     shape_misses: u32 = 0,
@@ -74,6 +77,12 @@ pub const RenderStats = struct {
         self.svg_batches += 1;
     }
 
+    /// Record rendered paths (canvas/vector graphics)
+    pub inline fn recordPaths(self: *Self, count: u32) void {
+        self.paths_rendered += count;
+        self.path_batches += 1;
+    }
+
     /// Record culled quads (skipped due to being off-screen)
     pub inline fn recordQuadsCulled(self: *Self, count: u32) void {
         self.quads_culled += count;
@@ -92,6 +101,11 @@ pub const RenderStats = struct {
     /// Record culled SVGs
     pub inline fn recordSvgsCulled(self: *Self, count: u32) void {
         self.svgs_culled += count;
+    }
+
+    /// Record culled paths
+    pub inline fn recordPathsCulled(self: *Self, count: u32) void {
+        self.paths_culled += count;
     }
 
     /// Record a text shaping cache miss with timing

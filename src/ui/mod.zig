@@ -24,6 +24,7 @@ const builder_mod = @import("builder.zig");
 const primitives = @import("primitives.zig");
 const styles = @import("styles.zig");
 const theme_mod = @import("theme.zig");
+const canvas_mod = @import("canvas.zig");
 
 // =============================================================================
 // Builder
@@ -48,6 +49,7 @@ pub const keyContext = primitives.keyContext;
 pub const onAction = primitives.onAction;
 pub const onActionHandler = primitives.onActionHandler;
 pub const when = primitives.when;
+pub const canvas = canvas_mod.canvas;
 
 // =============================================================================
 // Primitive Types
@@ -68,6 +70,21 @@ pub const ActionHandlerRefPrimitive = primitives.ActionHandlerRefPrimitive;
 pub const PrimitiveType = primitives.PrimitiveType;
 pub const HandlerRef = primitives.HandlerRef;
 pub const ObjectFit = primitives.ObjectFit;
+
+// =============================================================================
+// Canvas (Custom Drawing)
+// =============================================================================
+
+pub const Canvas = canvas_mod.Canvas;
+pub const DrawContext = canvas_mod.DrawContext;
+pub const CachedPath = canvas_mod.CachedPath;
+pub const Path = canvas_mod.Path;
+pub const LinearGradient = canvas_mod.LinearGradient;
+pub const RadialGradient = canvas_mod.RadialGradient;
+pub const Gradient = canvas_mod.Gradient;
+pub const LineCap = canvas_mod.LineCap;
+pub const LineJoin = canvas_mod.LineJoin;
+pub const StrokeStyle = canvas_mod.StrokeStyle;
 
 // =============================================================================
 // Styles

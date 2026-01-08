@@ -5,6 +5,7 @@
 //! and managing component context.
 
 const std = @import("std");
+const canvas_mod = @import("canvas.zig");
 
 // Core imports
 const dispatch_mod = @import("../context/dispatch.zig");
@@ -153,6 +154,7 @@ pub const Builder = struct {
     pub const MAX_PENDING_INPUTS = 256;
     pub const MAX_PENDING_TEXT_AREAS = 64;
     pub const MAX_PENDING_SCROLLS = 64;
+    pub const MAX_PENDING_CANVAS = canvas_mod.MAX_PENDING_CANVAS;
 
     allocator: std.mem.Allocator,
     layout: *LayoutEngine,
@@ -178,6 +180,7 @@ pub const Builder = struct {
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
+    pending_canvas: std.ArrayListUnmanaged(canvas_mod.PendingCanvas),
 
     /// Hashmap for O(1) scroll lookup by layout_id (avoids O(n) scan per scissor_end)
     pending_scrolls_by_layout_id: std.AutoHashMapUnmanaged(u32, usize),
@@ -224,6 +227,7 @@ pub const Builder = struct {
             .pending_inputs = .{},
             .pending_scrolls = .{},
             .pending_text_areas = .{},
+            .pending_canvas = .{},
             .pending_scrolls_by_layout_id = .{},
             .active_scroll_drag_id = null,
         };
@@ -233,7 +237,23 @@ pub const Builder = struct {
         self.pending_inputs.deinit(self.allocator);
         self.pending_text_areas.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
+        self.pending_canvas.deinit(self.allocator);
         self.pending_scrolls_by_layout_id.deinit(self.allocator);
+    }
+
+    // =========================================================================
+    // Canvas Registration
+    // =========================================================================
+
+    /// Register a pending canvas for deferred rendering after layout.
+    pub fn registerPendingCanvas(self: *Self, pending: canvas_mod.PendingCanvas) void {
+        std.debug.assert(self.pending_canvas.items.len < MAX_PENDING_CANVAS);
+        self.pending_canvas.append(self.allocator, pending) catch {};
+    }
+
+    /// Get pending canvas elements for rendering
+    pub fn getPendingCanvas(self: *const Self) []const canvas_mod.PendingCanvas {
+        return self.pending_canvas.items;
     }
 
     // =========================================================================
@@ -473,10 +493,20 @@ pub const Builder = struct {
         self.boxWithIdTracked(id, props, children, SourceLoc.none);
     }
 
+    /// Box with pre-generated LayoutId (for canvas and other deferred rendering)
+    pub fn boxWithLayoutId(self: *Self, layout_id: LayoutId, props: Box, children: anytype) void {
+        self.boxWithLayoutIdImpl(layout_id, props, children, SourceLoc.none);
+    }
+
     /// Box with explicit ID and source location tracking (Phase 5)
     /// Call as: b.boxWithIdTracked("my-id", props, children, @src())
     pub fn boxWithIdTracked(self: *Self, id: ?[]const u8, props: Box, children: anytype, source_loc: SourceLoc) void {
         const layout_id = if (id) |i| LayoutId.fromString(i) else self.generateId();
+        self.boxWithLayoutIdImpl(layout_id, props, children, source_loc);
+    }
+
+    /// Internal: Box implementation with pre-resolved LayoutId
+    fn boxWithLayoutIdImpl(self: *Self, layout_id: LayoutId, props: Box, children: anytype, source_loc: SourceLoc) void {
 
         // Push dispatch node at element open
         _ = self.dispatch.pushNode();
@@ -2761,7 +2791,7 @@ pub const Builder = struct {
     // Internal: ID Generation
     // =========================================================================
 
-    fn generateId(self: *Self) LayoutId {
+    pub fn generateId(self: *Self) LayoutId {
         self.id_counter += 1;
         return LayoutId.fromInt(self.id_counter);
     }

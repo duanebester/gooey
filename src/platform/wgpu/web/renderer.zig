@@ -7,11 +7,15 @@ const std = @import("std");
 const imports = @import("imports.zig");
 const unified = @import("../unified.zig");
 const scene_mod = @import("../../../scene/mod.zig");
+const GradientUniforms = scene_mod.GradientUniforms;
 const batch_iter = @import("../../../scene/batch_iterator.zig");
 const text_mod = @import("../../../text/mod.zig");
 const svg_mod = @import("../../../svg/mod.zig");
 const image_mod = @import("../../../image/mod.zig");
 const custom_shader = @import("custom_shader.zig");
+const path_mesh_mod = @import("../../../scene/path_mesh.zig");
+const path_instance_mod = @import("../../../scene/path_instance.zig");
+const mesh_pool_mod = @import("../../../scene/mesh_pool.zig");
 
 const Scene = scene_mod.Scene;
 const SvgInstance = scene_mod.SvgInstance;
@@ -20,6 +24,9 @@ const SvgAtlas = svg_mod.SvgAtlas;
 const ImageAtlas = image_mod.ImageAtlas;
 const ImageInstance = scene_mod.ImageInstance;
 const PostProcessState = custom_shader.PostProcessState;
+const PathInstance = path_instance_mod.PathInstance;
+const PathVertex = path_mesh_mod.PathVertex;
+const MeshPool = mesh_pool_mod.MeshPool;
 
 // =============================================================================
 // Constants
@@ -29,6 +36,16 @@ pub const MAX_PRIMITIVES: u32 = 4096;
 pub const MAX_GLYPHS: u32 = 8192;
 pub const MAX_SVGS: u32 = 1024;
 pub const MAX_IMAGES: u32 = 512;
+
+// Path batch buffer limits - these are LARGER than per-path limits because
+// these buffers hold MULTIPLE paths in a single batch upload.
+// See src/core/limits.zig for the full limit hierarchy documentation.
+//
+// Per-path limit: 512 vertices, 1530 indices (from triangulator.zig)
+// Batch capacity: ~32 max-size paths (16384 / 512)
+pub const MAX_PATHS: u32 = 256;
+pub const MAX_PATH_VERTICES: u32 = 16384;
+pub const MAX_PATH_INDICES: u32 = 49152;
 
 // =============================================================================
 // GPU Types
@@ -144,6 +161,101 @@ comptime {
     }
 }
 
+/// GPU-ready path instance data for WGSL shader
+/// Matches the PathInstance struct layout in path.wgsl
+pub const GpuPathInstance = extern struct {
+    offset_x: f32 = 0,
+    offset_y: f32 = 0,
+    scale_x: f32 = 1,
+    scale_y: f32 = 1,
+    // Fill color (HSLA) - 4 floats
+    fill_h: f32 = 0,
+    fill_s: f32 = 0,
+    fill_l: f32 = 0,
+    fill_a: f32 = 1,
+    // Clip bounds
+    clip_x: f32 = 0,
+    clip_y: f32 = 0,
+    clip_width: f32 = 99999,
+    clip_height: f32 = 99999,
+    // Gradient fields
+    gradient_type: u32 = 0, // 0=none, 1=linear, 2=radial
+    gradient_stop_count: u32 = 0,
+    _grad_pad0: u32 = 0,
+    _grad_pad1: u32 = 0,
+    // Gradient params: linear(start_x, start_y, end_x, end_y) / radial(center_x, center_y, radius, inner_radius)
+    grad_param0: f32 = 0,
+    grad_param1: f32 = 0,
+    grad_param2: f32 = 0,
+    grad_param3: f32 = 0,
+
+    pub fn fromScene(p: PathInstance) GpuPathInstance {
+        return .{
+            .offset_x = p.offset_x,
+            .offset_y = p.offset_y,
+            .scale_x = p.scale_x,
+            .scale_y = p.scale_y,
+            .fill_h = p.fill_color.h,
+            .fill_s = p.fill_color.s,
+            .fill_l = p.fill_color.l,
+            .fill_a = p.fill_color.a,
+            .clip_x = p.clip_x,
+            .clip_y = p.clip_y,
+            .clip_width = p.clip_width,
+            .clip_height = p.clip_height,
+            .gradient_type = p.gradient_type,
+            .gradient_stop_count = p.gradient_stop_count,
+            .grad_param0 = p.grad_param0,
+            .grad_param1 = p.grad_param1,
+            .grad_param2 = p.grad_param2,
+            .grad_param3 = p.grad_param3,
+        };
+    }
+};
+
+// Verify GpuPathInstance size (80 bytes = 20 floats/uints)
+comptime {
+    if (@sizeOf(GpuPathInstance) != 80) {
+        @compileError(std.fmt.comptimePrint(
+            "GpuPathInstance must be 80 bytes, got {}",
+            .{@sizeOf(GpuPathInstance)},
+        ));
+    }
+}
+
+/// GPU gradient uniforms (352 bytes)
+/// Matches GradientUniforms in gradient_uniforms.zig
+pub const GpuGradientUniforms = extern struct {
+    gradient_type: u32 = 0,
+    stop_count: u32 = 0,
+    _pad0: u32 = 0,
+    _pad1: u32 = 0,
+    param0: f32 = 0,
+    param1: f32 = 0,
+    param2: f32 = 0,
+    param3: f32 = 0,
+    stop_offsets: [16]f32 = [_]f32{0} ** 16,
+    stop_h: [16]f32 = [_]f32{0} ** 16,
+    stop_s: [16]f32 = [_]f32{0} ** 16,
+    stop_l: [16]f32 = [_]f32{0} ** 16,
+    stop_a: [16]f32 = [_]f32{1} ** 16,
+
+    /// Create empty gradient uniforms (for solid color fills)
+    pub fn none() GpuGradientUniforms {
+        return .{};
+    }
+};
+
+// Verify GpuGradientUniforms size (352 bytes)
+comptime {
+    if (@sizeOf(GpuGradientUniforms) != 352) {
+        @compileError(std.fmt.comptimePrint(
+            "GpuGradientUniforms must be 352 bytes, got {}",
+            .{@sizeOf(GpuGradientUniforms)},
+        ));
+    }
+}
+
 // =============================================================================
 // WebRenderer
 // =============================================================================
@@ -194,6 +306,14 @@ pub const WebRenderer = struct {
     image_atlas_generation: u32 = 0,
     gpu_images: [MAX_IMAGES]ImageInstance = undefined,
 
+    // Path rendering (triangulated meshes)
+    path_pipeline: u32 = 0,
+    path_vertex_buffer: u32 = 0,
+    path_index_buffer: u32 = 0,
+    path_instance_buffer: u32 = 0,
+    path_gradient_buffer: u32 = 0,
+    path_bind_group: u32 = 0,
+
     initialized: bool = false,
 
     // MSAA state
@@ -214,6 +334,13 @@ pub const WebRenderer = struct {
     const text_shader = @embedFile("text_wgsl");
     const svg_shader = @embedFile("svg_wgsl");
     const image_shader = @embedFile("image_wgsl");
+    const path_shader = @embedFile("path_wgsl");
+
+    const unified_wgsl = "../shaders/unified.wgsl";
+    const text_wgsl = "../shaders/text.wgsl";
+    const svg_wgsl = "../shaders/svg.wgsl";
+    const image_wgsl = "../shaders/image.wgsl";
+    const path_wgsl = "../shaders/path.wgsl";
 
     /// Initialize WebRenderer in-place using out-pointer pattern.
     /// Avoids stack overflow on WASM where WebRenderer is ~1.15MB
@@ -243,6 +370,12 @@ pub const WebRenderer = struct {
         self.image_bind_group = 0;
         self.image_atlas_texture = 0;
         self.image_atlas_generation = 0;
+        self.path_pipeline = 0;
+        self.path_vertex_buffer = 0;
+        self.path_index_buffer = 0;
+        self.path_instance_buffer = 0;
+        self.path_gradient_buffer = 0;
+        self.path_bind_group = 0;
         self.initialized = false;
         self.msaa_texture = 0;
         self.msaa_width = 0;
@@ -260,6 +393,7 @@ pub const WebRenderer = struct {
         const text_module = imports.createShaderModule(text_shader.ptr, text_shader.len);
         const svg_module = imports.createShaderModule(svg_shader.ptr, svg_shader.len);
         const image_module = imports.createShaderModule(image_shader.ptr, image_shader.len);
+        const path_module = imports.createShaderModule(path_shader.ptr, path_shader.len);
 
         // Create MSAA-enabled pipelines
         if (self.sample_count > 1) {
@@ -268,6 +402,8 @@ pub const WebRenderer = struct {
             // SVG shader outputs premultiplied alpha, needs ONE for srcRGB blend factor
             self.svg_pipeline = imports.createMSAAPremultipliedAlphaPipeline(svg_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             self.image_pipeline = imports.createMSAARenderPipeline(image_module, "vs_main", 7, "fs_main", 7, self.sample_count);
+            // Path shader outputs premultiplied alpha
+            self.path_pipeline = imports.createPathPipeline(path_module, "vs_main", 7, "fs_main", 7, self.sample_count);
         } else {
             // Fallback to non-MSAA pipelines
             self.pipeline = imports.createRenderPipeline(unified_module, "vs_main", 7, "fs_main", 7);
@@ -275,6 +411,8 @@ pub const WebRenderer = struct {
             // SVG shader outputs premultiplied alpha, needs ONE for srcRGB blend factor
             self.svg_pipeline = imports.createPremultipliedAlphaPipeline(svg_module, "vs_main", 7, "fs_main", 7);
             self.image_pipeline = imports.createRenderPipeline(image_module, "vs_main", 7, "fs_main", 7);
+            // Path shader outputs premultiplied alpha (fallback non-MSAA)
+            self.path_pipeline = imports.createPremultipliedAlphaPipeline(path_module, "vs_main", 7, "fs_main", 7);
         }
 
         const storage_copy = 0x0080 | 0x0008; // STORAGE | COPY_DST
@@ -287,10 +425,26 @@ pub const WebRenderer = struct {
         self.image_buffer = imports.createBuffer(@sizeOf(ImageInstance) * MAX_IMAGES, storage_copy);
         self.uniform_buffer = imports.createBuffer(@sizeOf(Uniforms), uniform_copy);
 
+        // Path buffers - vertex storage, index storage, instance uniform, gradient uniform
+        self.path_vertex_buffer = imports.createBuffer(@sizeOf(PathVertex) * MAX_PATH_VERTICES, storage_copy);
+        self.path_index_buffer = imports.createBuffer(@sizeOf(u32) * MAX_PATH_INDICES, storage_copy);
+        self.path_instance_buffer = imports.createBuffer(@sizeOf(GpuPathInstance), uniform_copy);
+        self.path_gradient_buffer = imports.createBuffer(@sizeOf(GpuGradientUniforms), uniform_copy);
+
         // Create bind groups
         const prim_bufs = [_]u32{ self.primitive_buffer, self.uniform_buffer };
         self.bind_group = imports.createBindGroup(self.pipeline, 0, &prim_bufs, 2);
         self.sampler = imports.createSampler();
+
+        // Path bind group: vertex buffer, instance buffer, uniform buffer, gradient buffer
+        self.path_bind_group = imports.createPathBindGroupWithGradient(
+            self.path_pipeline,
+            0,
+            self.path_vertex_buffer,
+            self.path_instance_buffer,
+            self.uniform_buffer,
+            self.path_gradient_buffer,
+        );
 
         self.initialized = true;
     }
@@ -579,6 +733,7 @@ pub const WebRenderer = struct {
         var glyph_offset: u32 = 0;
         var svg_offset: u32 = 0;
         var image_offset: u32 = 0;
+        var path_offset: u32 = 0;
 
         while (iter.next()) |batch| {
             if (batch_count >= MAX_BATCHES) break;
@@ -665,6 +820,20 @@ pub const WebRenderer = struct {
                     image_offset += count;
                     batch_count += 1;
                 },
+                .path => |paths| {
+                    // Paths are rendered individually (each has its own mesh)
+                    // Record batch for deferred rendering - actual mesh upload happens during draw
+                    if (paths.len == 0) continue;
+
+                    const count: u32 = @intCast(paths.len);
+                    self.batches[batch_count] = .{
+                        .kind = .path,
+                        .start = path_offset, // Offset into scene's path_instances array
+                        .count = count,
+                    };
+                    path_offset += count;
+                    batch_count += 1;
+                },
             }
         }
 
@@ -739,11 +908,107 @@ pub const WebRenderer = struct {
                         imports.drawInstancedWithOffset(6, batch_desc.count, batch_desc.start);
                     }
                 },
+                .path => {
+                    // Path rendering requires indexed drawing with per-instance mesh data
+                    // Each path instance references a mesh in the MeshPool
+                    if (self.path_bind_group != 0) {
+                        self.renderPathBatch(scene, batch_desc.start, batch_desc.count);
+                    }
+                },
             }
         }
 
         imports.endRenderPass();
         imports.releaseTextureView(texture_view);
+    }
+
+    /// Render a batch of path instances
+    /// Each path has its own mesh data that must be uploaded individually
+    fn renderPathBatch(self: *Self, scene: *const Scene, start: u32, count: u32) void {
+        if (count == 0) return;
+
+        const all_paths = scene.getPathInstances();
+        const all_gradients = scene.getPathGradients();
+        const mesh_pool = scene.getMeshPool();
+
+        // Slice to the batch we're rendering
+        const end = @min(start + count, @as(u32, @intCast(all_paths.len)));
+        if (start >= end) return;
+
+        const paths = all_paths[start..end];
+        const gradients = all_gradients[start..@min(start + count, @as(u32, @intCast(all_gradients.len)))];
+
+        imports.setPipeline(self.path_pipeline);
+        imports.setBindGroup(0, self.path_bind_group);
+
+        // Render each path instance
+        for (paths, 0..) |path_inst, path_idx| {
+            const mesh_ref = path_inst.getMeshRef();
+            const mesh = mesh_pool.getMesh(mesh_ref);
+
+            if (mesh.isEmpty()) continue;
+
+            const vertex_count = mesh.vertices.len;
+            const index_count = mesh.indices.len;
+
+            // Skip if mesh exceeds buffer capacity
+            if (vertex_count > MAX_PATH_VERTICES or index_count > MAX_PATH_INDICES) continue;
+
+            // Upload vertex data
+            imports.writeBuffer(
+                self.path_vertex_buffer,
+                0,
+                mesh.vertexBytes().ptr,
+                @intCast(vertex_count * @sizeOf(PathVertex)),
+            );
+
+            // Upload index data
+            imports.writeBuffer(
+                self.path_index_buffer,
+                0,
+                mesh.indexBytes().ptr,
+                @intCast(index_count * @sizeOf(u32)),
+            );
+
+            // Upload instance data
+            const gpu_instance = GpuPathInstance.fromScene(path_inst);
+            imports.writeBuffer(
+                self.path_instance_buffer,
+                0,
+                @as([*]const u8, @ptrCast(&gpu_instance)),
+                @sizeOf(GpuPathInstance),
+            );
+
+            // Upload gradient data from scene (parallel array with path_instances)
+            const scene_gradient = if (path_idx < gradients.len) gradients[path_idx] else GradientUniforms.none();
+
+            // Convert scene GradientUniforms to GPU format
+            var gpu_gradient = GpuGradientUniforms{
+                .gradient_type = scene_gradient.gradient_type,
+                .stop_count = scene_gradient.stop_count,
+                .param0 = scene_gradient.param0,
+                .param1 = scene_gradient.param1,
+                .param2 = scene_gradient.param2,
+                .param3 = scene_gradient.param3,
+            };
+            // Copy stop data
+            @memcpy(&gpu_gradient.stop_offsets, &scene_gradient.stop_offsets);
+            @memcpy(&gpu_gradient.stop_h, &scene_gradient.stop_h);
+            @memcpy(&gpu_gradient.stop_s, &scene_gradient.stop_s);
+            @memcpy(&gpu_gradient.stop_l, &scene_gradient.stop_l);
+            @memcpy(&gpu_gradient.stop_a, &scene_gradient.stop_a);
+
+            imports.writeBuffer(
+                self.path_gradient_buffer,
+                0,
+                @as([*]const u8, @ptrCast(&gpu_gradient)),
+                @sizeOf(GpuGradientUniforms),
+            );
+
+            // Draw indexed triangles
+            imports.setIndexBuffer(self.path_index_buffer, imports.IndexFormat.uint32, 0, @intCast(index_count * @sizeOf(u32)));
+            imports.drawIndexed(@intCast(index_count), 1, 0, 0, 0);
+        }
     }
 
     /// Render with post-processing shaders

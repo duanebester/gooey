@@ -15,6 +15,7 @@ const text_pipeline = @import("text.zig");
 const custom_shader = @import("custom_shader.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
 const image_pipeline = @import("image_pipeline.zig");
+const path_pipeline = @import("path_pipeline.zig");
 const Atlas = @import("../../../text/mod.zig").Atlas;
 
 pub const Vertex = extern struct {
@@ -35,6 +36,7 @@ pub const Renderer = struct {
     text_pipeline_state: ?text_pipeline.TextPipeline,
     svg_pipeline_state: ?svg_pipeline.SvgPipeline,
     image_pipeline_state: ?image_pipeline.ImagePipeline,
+    path_pipeline_state: ?path_pipeline.PathPipeline,
 
     quad_unit_vertex_buffer: ?objc.Object,
     msaa_texture: ?objc.Object,
@@ -73,6 +75,7 @@ pub const Renderer = struct {
             .text_pipeline_state = null,
             .svg_pipeline_state = null,
             .image_pipeline_state = null,
+            .path_pipeline_state = null,
             .quad_unit_vertex_buffer = null,
             .msaa_texture = null,
             .sample_count = sample_count,
@@ -106,6 +109,9 @@ pub const Renderer = struct {
         // Initialize Image pipeline
         self.image_pipeline_state = image_pipeline.ImagePipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
 
+        // Initialize Path pipeline
+        self.path_pipeline_state = path_pipeline.PathPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
         return self;
     }
 
@@ -116,6 +122,7 @@ pub const Renderer = struct {
         if (self.text_pipeline_state) |*tp| tp.deinit();
         if (self.svg_pipeline_state) |*sp| sp.deinit();
         if (self.image_pipeline_state) |*ip| ip.deinit();
+        if (self.path_pipeline_state) |*pp| pp.deinit();
         if (self.post_process_state) |*pp| pp.deinit();
         self.command_queue.msgSend(void, "release", .{});
         self.device.msgSend(void, "release", .{});
@@ -318,6 +325,8 @@ pub const Renderer = struct {
             .text = if (self.text_pipeline_state) |*tp| tp else null,
             .svg = if (self.svg_pipeline_state) |*sp| sp else null,
             .image = if (self.image_pipeline_state) |*ip| ip else null,
+            .path = if (self.path_pipeline_state) |*pp| pp else null,
+            .mesh_pool = &scene.mesh_pool,
             .unit_vertex_buffer = unit_verts,
         }, viewport_size);
 
