@@ -141,6 +141,14 @@ fn renderText(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         cmd.bounding_box.y + cmd.bounding_box.height * 0.75;
 
     const use_clip = gooey_ctx.scene.hasActiveClip();
+    var opts = text_mod.RenderTextOptions{
+        .clipped = use_clip,
+        .decoration = .{
+            .underline = text_data.underline,
+            .strikethrough = text_data.strikethrough,
+        },
+        .stats = gooey_ctx.scene.stats,
+    };
     _ = try text_mod.renderText(
         gooey_ctx.scene,
         gooey_ctx.text_system,
@@ -149,14 +157,7 @@ fn renderText(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         baseline_y,
         gooey_ctx.scale_factor,
         render_bridge.colorToHsla(text_data.color),
-        .{
-            .clipped = use_clip,
-            .decoration = .{
-                .underline = text_data.underline,
-                .strikethrough = text_data.strikethrough,
-            },
-            .stats = gooey_ctx.scene.stats,
-        },
+        &opts,
     );
 }
 

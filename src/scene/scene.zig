@@ -29,6 +29,10 @@ const image_instance_mod = @import("image_instance.zig");
 pub const ImageInstance = image_instance_mod.ImageInstance;
 const path_instance_mod = @import("path_instance.zig");
 pub const PathInstance = path_instance_mod.PathInstance;
+const polyline_mod = @import("polyline.zig");
+pub const Polyline = polyline_mod.Polyline;
+const point_cloud_mod = @import("point_cloud.zig");
+pub const PointCloud = point_cloud_mod.PointCloud;
 const mesh_pool_mod = @import("mesh_pool.zig");
 pub const MeshPool = mesh_pool_mod.MeshPool;
 pub const MeshRef = mesh_pool_mod.MeshRef;
@@ -62,6 +66,14 @@ pub const MAX_IMAGES_PER_FRAME = 4096;
 
 /// Maximum path instances per frame - fail fast if exceeded
 pub const MAX_PATHS_PER_FRAME = 4096;
+
+/// Maximum polylines per frame - fail fast if exceeded
+/// Polylines are for efficient chart rendering (thousands of connected points)
+pub const MAX_POLYLINES_PER_FRAME = 4096;
+
+/// Maximum point clouds per frame - fail fast if exceeded
+/// Point clouds are for efficient scatter plot / marker rendering
+pub const MAX_POINT_CLOUDS_PER_FRAME = 4096;
 
 /// Maximum clip stack depth - fail fast if exceeded
 pub const MAX_CLIP_STACK_DEPTH = 32;
@@ -489,6 +501,10 @@ pub const Scene = struct {
     /// Parallel array of gradient data for path instances (same index as path_instances)
     /// If path_instances[i].hasGradient(), use path_gradients[i] for stop data
     path_gradients: std.ArrayListUnmanaged(GradientUniforms),
+    /// Polylines for efficient chart/data visualization rendering
+    polylines: std.ArrayListUnmanaged(Polyline),
+    /// Point clouds for efficient scatter plot/marker rendering
+    point_clouds: std.ArrayListUnmanaged(PointCloud),
     mesh_pool: MeshPool,
     next_order: DrawOrder,
     // Clip mask stack for nested clipping regions
@@ -500,6 +516,8 @@ pub const Scene = struct {
     needs_sort_svgs: bool,
     needs_sort_images: bool,
     needs_sort_paths: bool,
+    needs_sort_polylines: bool,
+    needs_sort_point_clouds: bool,
 
     // Viewport culling
     viewport_width: f32,
@@ -523,6 +541,8 @@ pub const Scene = struct {
             .images = .{},
             .path_instances = .{},
             .path_gradients = .{},
+            .polylines = .{},
+            .point_clouds = .{},
             .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .{},
@@ -532,6 +552,8 @@ pub const Scene = struct {
             .needs_sort_svgs = false,
             .needs_sort_images = false,
             .needs_sort_paths = false,
+            .needs_sort_polylines = false,
+            .needs_sort_point_clouds = false,
             // Viewport culling - disabled by default (0 = no culling)
             .viewport_width = 0,
             .viewport_height = 0,
@@ -553,6 +575,8 @@ pub const Scene = struct {
             .images = .{},
             .path_instances = .{},
             .path_gradients = .{},
+            .polylines = .{},
+            .point_clouds = .{},
             .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .{},
@@ -562,6 +586,8 @@ pub const Scene = struct {
             .needs_sort_svgs = false,
             .needs_sort_images = false,
             .needs_sort_paths = false,
+            .needs_sort_polylines = false,
+            .needs_sort_point_clouds = false,
             .viewport_width = 0,
             .viewport_height = 0,
             .culling_enabled = false,
@@ -576,6 +602,8 @@ pub const Scene = struct {
         try self.images.ensureTotalCapacity(allocator, MAX_IMAGES_PER_FRAME);
         try self.path_instances.ensureTotalCapacity(allocator, MAX_PATHS_PER_FRAME);
         try self.path_gradients.ensureTotalCapacity(allocator, MAX_PATHS_PER_FRAME);
+        try self.polylines.ensureTotalCapacity(allocator, MAX_POLYLINES_PER_FRAME);
+        try self.point_clouds.ensureTotalCapacity(allocator, MAX_POINT_CLOUDS_PER_FRAME);
         try self.clip_stack.ensureTotalCapacity(allocator, MAX_CLIP_STACK_DEPTH);
 
         return self;
@@ -589,6 +617,8 @@ pub const Scene = struct {
         self.images.deinit(self.allocator);
         self.path_instances.deinit(self.allocator);
         self.path_gradients.deinit(self.allocator);
+        self.polylines.deinit(self.allocator);
+        self.point_clouds.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
         self.mesh_pool.deinit();
     }
@@ -601,6 +631,8 @@ pub const Scene = struct {
         self.images.clearRetainingCapacity();
         self.path_instances.clearRetainingCapacity();
         self.path_gradients.clearRetainingCapacity();
+        self.polylines.clearRetainingCapacity();
+        self.point_clouds.clearRetainingCapacity();
         self.mesh_pool.resetFrame();
         self.clip_stack.clearRetainingCapacity();
         self.next_order = 0;
@@ -610,6 +642,8 @@ pub const Scene = struct {
         self.needs_sort_svgs = false;
         self.needs_sort_images = false;
         self.needs_sort_paths = false;
+        self.needs_sort_polylines = false;
+        self.needs_sort_point_clouds = false;
     }
 
     // ========================================================================
@@ -650,6 +684,15 @@ pub const Scene = struct {
         const order = self.next_order;
         self.next_order += 1;
         return order;
+    }
+
+    /// Reserve a block of draw orders for canvas rendering.
+    /// Returns the base order; the canvas should use orders [base, base+count).
+    /// This allows canvas primitives to maintain correct z-ordering with UI elements.
+    pub fn reserveCanvasOrders(self: *Self, count: u32) DrawOrder {
+        const base_order = self.next_order;
+        self.next_order += count;
+        return base_order;
     }
 
     // ========================================================================
@@ -841,8 +884,200 @@ pub const Scene = struct {
         try self.insertPathClipped(inst);
     }
 
+    /// Insert a path with a mesh and a pre-reserved draw order.
+    /// Use this for canvas rendering where z-order must match layout order.
+    pub fn insertPathWithMeshAndOrder(
+        self: *Self,
+        mesh: PathMesh,
+        offset_x: f32,
+        offset_y: f32,
+        fill_color: Hsla,
+        order: DrawOrder,
+        clip: ContentMask.ClipBounds,
+    ) !void {
+        std.debug.assert(!mesh.isEmpty());
+
+        // Allocate mesh in frame pool
+        const mesh_ref = try self.mesh_pool.allocateFrame(mesh);
+
+        const inst = PathInstance.initWithBufferRanges(
+            mesh_ref,
+            offset_x,
+            offset_y,
+            fill_color,
+            0, // vertex_offset - to be set by renderer
+            0, // index_offset - to be set by renderer
+            @intCast(mesh.indices.len),
+        );
+
+        try self.insertPathWithOrder(inst, order, clip);
+    }
+
+    /// Insert a line as a quad (4 vertices, 2 triangles) - efficient for diagonal lines
+    /// This avoids the 67KB Path allocation by using a reusable scratch buffer.
+    /// The 4 corners should be in counter-clockwise order: c0 -> c1 -> c2 -> c3
+    pub fn insertLineQuad(
+        self: *Self,
+        c0_x: f32,
+        c0_y: f32,
+        c1_x: f32,
+        c1_y: f32,
+        c2_x: f32,
+        c2_y: f32,
+        c3_x: f32,
+        c3_y: f32,
+        fill_color: Hsla,
+    ) !void {
+        // Create a minimal mesh with just 4 vertices and 6 indices
+        // PathMesh is ~14KB on stack, but much better than 67KB Path allocation
+        var mesh = PathMesh.init();
+
+        // Calculate bounds
+        const min_x = @min(@min(c0_x, c1_x), @min(c2_x, c3_x));
+        const max_x = @max(@max(c0_x, c1_x), @max(c2_x, c3_x));
+        const min_y = @min(@min(c0_y, c1_y), @min(c2_y, c3_y));
+        const max_y = @max(@max(c0_y, c1_y), @max(c2_y, c3_y));
+        const w = if (max_x > min_x) max_x - min_x else 1;
+        const h = if (max_y > min_y) max_y - min_y else 1;
+
+        // Add 4 vertices with UV coordinates
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c0_x, c0_y, (c0_x - min_x) / w, (c0_y - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c1_x, c1_y, (c1_x - min_x) / w, (c1_y - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c2_x, c2_y, (c2_x - min_x) / w, (c2_y - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c3_x, c3_y, (c3_x - min_x) / w, (c3_y - min_y) / h));
+
+        // Add 2 triangles (6 indices): 0-1-2 and 0-2-3
+        mesh.indices.appendAssumeCapacity(0);
+        mesh.indices.appendAssumeCapacity(1);
+        mesh.indices.appendAssumeCapacity(2);
+        mesh.indices.appendAssumeCapacity(0);
+        mesh.indices.appendAssumeCapacity(2);
+        mesh.indices.appendAssumeCapacity(3);
+
+        mesh.bounds = Bounds.init(min_x, min_y, w, h);
+
+        // Use the standard path insertion
+        try self.insertPathWithMesh(mesh, 0, 0, fill_color);
+    }
+
+    /// Insert a line as a quad with a pre-reserved draw order.
+    /// Use for canvas rendering where z-order must match layout order.
+    pub fn insertLineQuadWithOrder(
+        self: *Self,
+        c0_x: f32,
+        c0_y: f32,
+        c1_x: f32,
+        c1_y: f32,
+        c2_x: f32,
+        c2_y: f32,
+        c3_x: f32,
+        c3_y: f32,
+        fill_color: Hsla,
+        order: DrawOrder,
+        clip: ContentMask.ClipBounds,
+    ) !void {
+        var mesh = PathMesh.init();
+
+        const min_x = @min(@min(c0_x, c1_x), @min(c2_x, c3_x));
+        const max_x = @max(@max(c0_x, c1_x), @max(c2_x, c3_x));
+        const min_y = @min(@min(c0_y, c1_y), @min(c2_y, c3_y));
+        const max_y = @max(@max(c0_y, c1_y), @max(c2_y, c3_y));
+        const w = if (max_x > min_x) max_x - min_x else 1;
+        const h = if (max_y > min_y) max_y - min_y else 1;
+
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c0_x, c0_y, (c0_x - min_x) / w, (c0_y - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c1_x, c1_y, (c1_x - min_x) / w, (c1_y - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c2_x, c2_y, (c2_x - min_x) / w, (c2_y - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(c3_x, c3_y, (c3_x - min_x) / w, (c3_y - min_y) / h));
+
+        mesh.indices.appendAssumeCapacity(0);
+        mesh.indices.appendAssumeCapacity(1);
+        mesh.indices.appendAssumeCapacity(2);
+        mesh.indices.appendAssumeCapacity(0);
+        mesh.indices.appendAssumeCapacity(2);
+        mesh.indices.appendAssumeCapacity(3);
+
+        mesh.bounds = Bounds.init(min_x, min_y, w, h);
+
+        try self.insertPathWithMeshAndOrder(mesh, 0, 0, fill_color, order, clip);
+    }
+
+    /// Insert a single triangle (3 vertices, 1 triangle) - efficient for pie chart slices
+    /// This avoids the 67KB Path allocation by creating a minimal mesh directly.
+    /// Vertices should be in counter-clockwise order: v0 -> v1 -> v2
+    pub fn insertTriangle(
+        self: *Self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        fill_color: Hsla,
+    ) !void {
+        var mesh = PathMesh.init();
+
+        // Calculate bounds
+        const min_x = @min(@min(x0, x1), x2);
+        const max_x = @max(@max(x0, x1), x2);
+        const min_y = @min(@min(y0, y1), y2);
+        const max_y = @max(@max(y0, y1), y2);
+        const w = if (max_x > min_x) max_x - min_x else 1;
+        const h = if (max_y > min_y) max_y - min_y else 1;
+
+        // Add 3 vertices with UV coordinates
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(x0, y0, (x0 - min_x) / w, (y0 - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(x1, y1, (x1 - min_x) / w, (y1 - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(x2, y2, (x2 - min_x) / w, (y2 - min_y) / h));
+
+        // Add 1 triangle (3 indices): 0-1-2
+        mesh.indices.appendAssumeCapacity(0);
+        mesh.indices.appendAssumeCapacity(1);
+        mesh.indices.appendAssumeCapacity(2);
+
+        mesh.bounds = Bounds.init(min_x, min_y, w, h);
+
+        try self.insertPathWithMesh(mesh, 0, 0, fill_color);
+    }
+
+    /// Insert a single triangle with a pre-reserved draw order.
+    /// Use for canvas rendering where z-order must match layout order.
+    pub fn insertTriangleWithOrder(
+        self: *Self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        fill_color: Hsla,
+        order: DrawOrder,
+        clip: ContentMask.ClipBounds,
+    ) !void {
+        var mesh = PathMesh.init();
+
+        const min_x = @min(@min(x0, x1), x2);
+        const max_x = @max(@max(x0, x1), x2);
+        const min_y = @min(@min(y0, y1), y2);
+        const max_y = @max(@max(y0, y1), y2);
+        const w = if (max_x > min_x) max_x - min_x else 1;
+        const h = if (max_y > min_y) max_y - min_y else 1;
+
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(x0, y0, (x0 - min_x) / w, (y0 - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(x1, y1, (x1 - min_x) / w, (y1 - min_y) / h));
+        mesh.vertices.appendAssumeCapacity(PathVertex.withUV(x2, y2, (x2 - min_x) / w, (y2 - min_y) / h));
+
+        mesh.indices.appendAssumeCapacity(0);
+        mesh.indices.appendAssumeCapacity(1);
+        mesh.indices.appendAssumeCapacity(2);
+
+        mesh.bounds = Bounds.init(min_x, min_y, w, h);
+
+        try self.insertPathWithMeshAndOrder(mesh, 0, 0, fill_color, order, clip);
+    }
+
     /// Get mesh pool for external use (e.g., caching persistent meshes)
-    pub fn getMeshPool(self: *Self) *MeshPool {
+    pub fn getMeshPool(self: *const Self) *const MeshPool {
         return &self.mesh_pool;
     }
 
@@ -857,6 +1092,106 @@ pub const Scene = struct {
     /// Get gradient uniforms for path instances (parallel array)
     pub fn getPathGradients(self: *const Self) []const GradientUniforms {
         return self.path_gradients.items;
+    }
+
+    // ========================================================================
+    // Polyline Insertion (efficient chart/data visualization)
+    // ========================================================================
+
+    /// Insert a polyline without clipping.
+    /// Points should be pre-allocated (e.g., from scene.allocator or frame arena).
+    pub fn insertPolyline(self: *Self, polyline: Polyline) !void {
+        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
+        std.debug.assert(self.polylines.items.len < MAX_POLYLINES_PER_FRAME);
+        std.debug.assert(polyline.point_count >= 2); // Need at least 2 points for a line
+
+        var pl = polyline;
+        pl.order = self.next_order;
+        self.next_order += 1;
+        try self.polylines.append(self.allocator, pl);
+    }
+
+    /// Insert a polyline with the current clip mask applied.
+    /// Points should be pre-allocated (e.g., from scene.allocator or frame arena).
+    pub fn insertPolylineClipped(self: *Self, polyline: Polyline) !void {
+        std.debug.assert(self.polylines.items.len < MAX_POLYLINES_PER_FRAME);
+        std.debug.assert(polyline.point_count >= 2);
+
+        const clip = self.currentClip();
+        var pl = polyline.withClipBounds(clip);
+        pl.order = self.next_order;
+        self.next_order += 1;
+        try self.polylines.append(self.allocator, pl);
+    }
+
+    /// Insert a polyline with a pre-reserved draw order.
+    /// Use when interleaving polylines with other primitives at specific z-orders.
+    pub fn insertPolylineWithOrder(self: *Self, polyline: Polyline, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.polylines.items.len < MAX_POLYLINES_PER_FRAME);
+        std.debug.assert(polyline.point_count >= 2);
+
+        var pl = polyline.withClipBounds(clip);
+        pl.order = order;
+        self.needs_sort_polylines = true; // Out-of-order insert requires sorting
+        try self.polylines.append(self.allocator, pl);
+    }
+
+    pub fn polylineCount(self: *const Self) usize {
+        return self.polylines.items.len;
+    }
+
+    pub fn getPolylines(self: *const Self) []const Polyline {
+        return self.polylines.items;
+    }
+
+    // ========================================================================
+    // Point Cloud Primitives (instanced circles for scatter plots)
+    // ========================================================================
+
+    /// Insert a point cloud for instanced circle rendering.
+    /// Positions should be pre-allocated (e.g., from scene.allocator or frame arena).
+    pub fn insertPointCloud(self: *Self, cloud: PointCloud) !void {
+        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
+        std.debug.assert(self.point_clouds.items.len < MAX_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(cloud.count >= 1); // Need at least 1 point
+
+        var pc = cloud;
+        pc.order = self.next_order;
+        self.next_order += 1;
+        try self.point_clouds.append(self.allocator, pc);
+    }
+
+    /// Insert a point cloud with the current clip mask applied.
+    /// Positions should be pre-allocated (e.g., from scene.allocator or frame arena).
+    pub fn insertPointCloudClipped(self: *Self, cloud: PointCloud) !void {
+        std.debug.assert(self.point_clouds.items.len < MAX_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(cloud.count >= 1);
+
+        const clip = self.currentClip();
+        var pc = cloud.withClipBounds(clip);
+        pc.order = self.next_order;
+        self.next_order += 1;
+        try self.point_clouds.append(self.allocator, pc);
+    }
+
+    /// Insert a point cloud with a pre-reserved draw order.
+    /// Use when interleaving point clouds with other primitives at specific z-orders.
+    pub fn insertPointCloudWithOrder(self: *Self, cloud: PointCloud, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.point_clouds.items.len < MAX_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(cloud.count >= 1);
+
+        var pc = cloud.withClipBounds(clip);
+        pc.order = order;
+        self.needs_sort_point_clouds = true; // Out-of-order insert requires sorting
+        try self.point_clouds.append(self.allocator, pc);
+    }
+
+    pub fn pointCloudCount(self: *const Self) usize {
+        return self.point_clouds.items.len;
+    }
+
+    pub fn getPointClouds(self: *const Self) []const PointCloud {
+        return self.point_clouds.items;
     }
 
     // ========================================================================
@@ -882,6 +1217,19 @@ pub const Scene = struct {
         var g = glyph.withClipBounds(clip);
         g.order = self.next_order;
         self.next_order += 1;
+        try self.glyphs.append(self.allocator, g);
+
+        // Track inserted glyphs for profiler
+        if (self.stats) |s| s.recordGlyphs(1);
+    }
+
+    /// Insert a glyph with a pre-reserved draw order.
+    /// Use this for canvas text rendering where z-order must match layout order.
+    pub fn insertGlyphWithOrder(self: *Self, glyph: GlyphInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.glyphs.items.len < MAX_GLYPHS_PER_FRAME);
+        var g = glyph.withClipBounds(clip);
+        g.order = order;
+        self.needs_sort_glyphs = true;
         try self.glyphs.append(self.allocator, g);
 
         // Track inserted glyphs for profiler
@@ -1085,6 +1433,20 @@ pub const Scene = struct {
                     }
                 }
             }
+        }
+        if (self.needs_sort_polylines) {
+            std.sort.pdq(Polyline, self.polylines.items, {}, struct {
+                fn lessThan(_: void, a: Polyline, b: Polyline) bool {
+                    return a.order < b.order;
+                }
+            }.lessThan);
+        }
+        if (self.needs_sort_point_clouds) {
+            std.sort.pdq(PointCloud, self.point_clouds.items, {}, struct {
+                fn lessThan(_: void, a: PointCloud, b: PointCloud) bool {
+                    return a.order < b.order;
+                }
+            }.lessThan);
         }
     }
 

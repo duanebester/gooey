@@ -799,6 +799,7 @@ pub const TextArea = struct {
         if (!has_content and self.placeholder.len > 0) {
             // Render placeholder (first line only)
             const baseline_y = metrics.calcBaseline(self.bounds.y, self.line_height);
+            var opts = text_mod.RenderTextOptions{};
             _ = try text_mod.renderText(
                 scene,
                 text_system,
@@ -807,7 +808,7 @@ pub const TextArea = struct {
                 baseline_y,
                 scale_factor,
                 self.style.placeholder_color,
-                .{},
+                &opts,
             );
         } else if (has_content) {
             // Render selection background first
@@ -854,6 +855,7 @@ pub const TextArea = struct {
             // Text before cursor
             if (cursor_in_line > 0) {
                 const before = line_content[0..cursor_in_line];
+                var opts = text_mod.RenderTextOptions{};
                 const width = try text_mod.renderText(
                     scene,
                     text_system,
@@ -862,13 +864,14 @@ pub const TextArea = struct {
                     baseline_y,
                     scale_factor,
                     self.style.text_color,
-                    .{},
+                    &opts,
                 );
                 pen_x += width;
             }
 
             // Preedit with underline
             const preedit_start_x = pen_x;
+            var preedit_opts = text_mod.RenderTextOptions{};
             const preedit_width = try text_mod.renderText(
                 scene,
                 text_system,
@@ -877,7 +880,7 @@ pub const TextArea = struct {
                 baseline_y,
                 scale_factor,
                 self.style.text_color,
-                .{},
+                &preedit_opts,
             );
 
             // Draw underline
@@ -895,6 +898,7 @@ pub const TextArea = struct {
             // Text after cursor
             if (cursor_in_line < line_content.len) {
                 const after = line_content[cursor_in_line..];
+                var after_opts = text_mod.RenderTextOptions{};
                 _ = try text_mod.renderText(
                     scene,
                     text_system,
@@ -903,12 +907,13 @@ pub const TextArea = struct {
                     baseline_y,
                     scale_factor,
                     self.style.text_color,
-                    .{},
+                    &after_opts,
                 );
             }
         } else {
             // Normal line rendering
             if (line_content.len > 0) {
+                var line_opts = text_mod.RenderTextOptions{};
                 _ = try text_mod.renderText(
                     scene,
                     text_system,
@@ -917,7 +922,7 @@ pub const TextArea = struct {
                     baseline_y,
                     scale_factor,
                     self.style.text_color,
-                    .{},
+                    &line_opts,
                 );
             }
         }

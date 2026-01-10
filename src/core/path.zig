@@ -355,6 +355,75 @@ pub const Path = struct {
         return self;
     }
 
+    /// Add a circle with explicit segment count (for LOD control)
+    /// Use this when you need precise control over vertex count.
+    pub fn circleWithSegments(self: *Self, cx: f32, cy: f32, r: f32, segments: u8) *Self {
+        std.debug.assert(r >= 0);
+        std.debug.assert(segments >= 3);
+        std.debug.assert(!std.math.isNan(cx) and !std.math.isNan(cy));
+
+        const delta = std.math.tau / @as(f32, @floatFromInt(segments));
+
+        _ = self.moveTo(cx + r, cy);
+        for (1..segments) |i| {
+            const angle = delta * @as(f32, @floatFromInt(i));
+            _ = self.lineTo(cx + r * @cos(angle), cy + r * @sin(angle));
+        }
+        return self.closePath();
+    }
+
+    /// Add a circle with automatic LOD based on screen size
+    /// `pixels_per_unit` is the scale factor (e.g., from DrawContext.scale)
+    /// Small circles get fewer segments, large circles remain smooth.
+    pub fn circleAdaptive(self: *Self, cx: f32, cy: f32, r: f32, pixels_per_unit: f32) *Self {
+        std.debug.assert(r >= 0);
+        std.debug.assert(pixels_per_unit > 0);
+        std.debug.assert(!std.math.isNan(cx) and !std.math.isNan(cy));
+
+        const screen_radius = r * pixels_per_unit;
+
+        // Segment count based on screen coverage
+        // Tiny circles can be squares, large ones need smoothness
+        const segments: u8 = if (screen_radius < 2) 4 // Tiny: square is fine
+            else if (screen_radius < 8) 6 // Small: hexagon
+            else if (screen_radius < 32) 12 // Medium
+            else if (screen_radius < 128) 24 // Large
+            else 32; // Very large
+
+        return self.circleWithSegments(cx, cy, r, segments);
+    }
+
+    /// Add an ellipse with explicit segment count (for LOD control)
+    pub fn ellipseWithSegments(self: *Self, cx: f32, cy: f32, rx: f32, ry: f32, segments: u8) *Self {
+        std.debug.assert(rx >= 0 and ry >= 0);
+        std.debug.assert(segments >= 3);
+        std.debug.assert(!std.math.isNan(cx) and !std.math.isNan(cy));
+
+        const delta = std.math.tau / @as(f32, @floatFromInt(segments));
+
+        _ = self.moveTo(cx + rx, cy);
+        for (1..segments) |i| {
+            const angle = delta * @as(f32, @floatFromInt(i));
+            _ = self.lineTo(cx + rx * @cos(angle), cy + ry * @sin(angle));
+        }
+        return self.closePath();
+    }
+
+    /// Add an ellipse with automatic LOD based on screen size
+    pub fn ellipseAdaptive(self: *Self, cx: f32, cy: f32, rx: f32, ry: f32, pixels_per_unit: f32) *Self {
+        std.debug.assert(rx >= 0 and ry >= 0);
+        std.debug.assert(pixels_per_unit > 0);
+        std.debug.assert(!std.math.isNan(cx) and !std.math.isNan(cy));
+
+        // Use the larger radius for LOD calculation
+        const max_radius = @max(rx, ry);
+        const screen_radius = max_radius * pixels_per_unit;
+
+        const segments: u8 = if (screen_radius < 2) 4 else if (screen_radius < 8) 6 else if (screen_radius < 32) 12 else if (screen_radius < 128) 24 else 32;
+
+        return self.ellipseWithSegments(cx, cy, rx, ry, segments);
+    }
+
     // =========================================================================
     // Mesh Conversion
     // =========================================================================
@@ -1693,4 +1762,104 @@ test "long fluent chain" {
     _ = p.closePath();
 
     try std.testing.expectEqual(@as(usize, 102), p.commandCount());
+}
+
+// =============================================================================
+// Adaptive Circle LOD Tests (P3)
+// =============================================================================
+
+test "circleWithSegments produces correct vertex count" {
+    var p = Path.init();
+    _ = p.circleWithSegments(50, 50, 20, 6); // Hexagon
+
+    // moveTo + 5 lineTo + close = 7 commands
+    try std.testing.expectEqual(@as(usize, 7), p.commandCount());
+
+    // Mesh should have 6 vertices (hexagon)
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 6), mesh.vertices.len);
+}
+
+test "circleWithSegments minimum 3 segments" {
+    var p = Path.init();
+    _ = p.circleWithSegments(0, 0, 10, 3); // Triangle
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 3), mesh.vertices.len);
+}
+
+test "circleAdaptive tiny radius uses 4 segments" {
+    var p = Path.init();
+    // radius 1 * scale 1 = 1 pixel screen radius -> 4 segments (square)
+    _ = p.circleAdaptive(0, 0, 1, 1.0);
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 4), mesh.vertices.len);
+}
+
+test "circleAdaptive small radius uses 6 segments" {
+    var p = Path.init();
+    // radius 5 * scale 1 = 5 pixel screen radius -> 6 segments (hexagon)
+    _ = p.circleAdaptive(0, 0, 5, 1.0);
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 6), mesh.vertices.len);
+}
+
+test "circleAdaptive medium radius uses 12 segments" {
+    var p = Path.init();
+    // radius 20 * scale 1 = 20 pixel screen radius -> 12 segments
+    _ = p.circleAdaptive(0, 0, 20, 1.0);
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 12), mesh.vertices.len);
+}
+
+test "circleAdaptive large radius uses 24 segments" {
+    var p = Path.init();
+    // radius 64 * scale 1 = 64 pixel screen radius -> 24 segments
+    _ = p.circleAdaptive(0, 0, 64, 1.0);
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 24), mesh.vertices.len);
+}
+
+test "circleAdaptive very large radius uses 32 segments" {
+    var p = Path.init();
+    // radius 200 * scale 1 = 200 pixel screen radius -> 32 segments
+    _ = p.circleAdaptive(0, 0, 200, 1.0);
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 32), mesh.vertices.len);
+}
+
+test "circleAdaptive scale affects LOD" {
+    // Same radius, different scales should produce different segment counts
+    var p1 = Path.init();
+    _ = p1.circleAdaptive(0, 0, 10, 0.5); // 10 * 0.5 = 5 px -> 6 segments
+    const mesh1 = try p1.toMesh(std.testing.allocator, 0.5);
+
+    var p2 = Path.init();
+    _ = p2.circleAdaptive(0, 0, 10, 4.0); // 10 * 4 = 40 px -> 24 segments (>= 32)
+    const mesh2 = try p2.toMesh(std.testing.allocator, 0.5);
+
+    try std.testing.expectEqual(@as(usize, 6), mesh1.vertices.len);
+    try std.testing.expectEqual(@as(usize, 24), mesh2.vertices.len);
+}
+
+test "ellipseWithSegments produces correct shape" {
+    var p = Path.init();
+    _ = p.ellipseWithSegments(50, 50, 30, 20, 8); // Octagon-ish ellipse
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 8), mesh.vertices.len);
+}
+
+test "ellipseAdaptive uses larger radius for LOD" {
+    var p = Path.init();
+    // rx=50, ry=10 -> max_radius=50 * scale 1 = 50 px -> 24 segments (>= 32)
+    _ = p.ellipseAdaptive(0, 0, 50, 10, 1.0);
+
+    const mesh = try p.toMesh(std.testing.allocator, 0.5);
+    try std.testing.expectEqual(@as(usize, 24), mesh.vertices.len);
 }

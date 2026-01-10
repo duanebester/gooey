@@ -1,0 +1,12 @@
+.{
+    .name = .gooey_charts,
+    .version = "0.0.1",
+    .fingerprint = 0xc53b58b1c2bbcf89,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

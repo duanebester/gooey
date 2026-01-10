@@ -34,6 +34,17 @@ pub fn build(b: *std.Build) void {
         mod.link_libc = true;
 
         // =========================================================================
+        // Gooey Charts Module
+        // =========================================================================
+
+        const charts_mod = b.addModule("gooey-charts", .{
+            .root_source_file = b.path("charts/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        charts_mod.addImport("gooey", mod);
+
+        // =========================================================================
         // Main Demo (Showcase)
         // =========================================================================
 
@@ -89,6 +100,13 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "drag-drop", "src/examples/drag_drop.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "canvas-demo", "src/examples/canvas_demo.zig", false);
 
+        // =========================================================================
+        // Charts Examples
+        // =========================================================================
+
+        addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "charts-demo", "src/examples/charts_demo.zig");
+        addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "dashboard", "src/examples/dashboard.zig");
+
         // =====================================================================
         // Tests
         // =====================================================================
@@ -103,9 +121,16 @@ pub fn build(b: *std.Build) void {
         });
         const run_exe_tests = b.addRunArtifact(exe_tests);
 
+        // Charts tests
+        const charts_tests = b.addTest(.{
+            .root_module = charts_mod,
+        });
+        const run_charts_tests = b.addRunArtifact(charts_tests);
+
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_exe_tests.step);
+        test_step.dependOn(&run_charts_tests.step);
 
         // =====================================================================
         // Hot Reload Watcher
@@ -422,6 +447,15 @@ pub fn build(b: *std.Build) void {
     gooey_wasm_module.addAnonymousImport("image_wgsl", .{
         .root_source_file = b.path("src/platform/wgpu/shaders/image.wgsl"),
     });
+    gooey_wasm_module.addAnonymousImport("path_wgsl", .{
+        .root_source_file = b.path("src/platform/wgpu/shaders/path.wgsl"),
+    });
+    gooey_wasm_module.addAnonymousImport("polyline_wgsl", .{
+        .root_source_file = b.path("src/platform/wgpu/shaders/polyline.wgsl"),
+    });
+    gooey_wasm_module.addAnonymousImport("point_cloud_wgsl", .{
+        .root_source_file = b.path("src/platform/wgpu/shaders/point_cloud.wgsl"),
+    });
 
     // -------------------------------------------------------------------------
     // WASM Examples
@@ -501,6 +535,42 @@ fn addNativeExample(
     if (metal_hud) {
         run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
     }
+    step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+}
+
+/// Helper to add a charts example with both gooey and gooey-charts modules.
+fn addChartsExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    charts_module: *std.Build.Module,
+    objc_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    source: []const u8,
+) void {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-charts", .module = charts_module },
+                .{ .name = "objc", .module = objc_module },
+            },
+        }),
+    });
+
+    b.installArtifact(exe);
+
+    const step_name = b.fmt("run-{s}", .{name});
+    const step_desc = b.fmt("Run the {s} example", .{name});
+    const step = b.step(step_name, step_desc);
+
+    const run_cmd = b.addRunArtifact(exe);
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 }

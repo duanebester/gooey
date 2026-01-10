@@ -190,6 +190,26 @@ pub fn drawScene(
                 counts.images += drawn;
                 counts.draw_calls += 1;
             },
+            .path => |paths| {
+                // TODO: Implement path rendering for Linux
+                if (DEBUG_BATCHES) {
+                    std.debug.print("PATH x{d} (stub - not rendered)\n", .{paths.len});
+                }
+            },
+            .polyline => |polylines| {
+                // TODO: Phase 4-5 - Implement polyline GPU pipeline
+                // For now, stub that skips rendering (API validation phase)
+                if (DEBUG_BATCHES) {
+                    std.debug.print("POLYLINE x{d} (stub - not rendered)\n", .{polylines.len});
+                }
+            },
+            .point_cloud => |point_clouds| {
+                // TODO: Phase 4-5 - Implement point cloud GPU pipeline
+                // For now, stub that skips rendering (API validation phase)
+                if (DEBUG_BATCHES) {
+                    std.debug.print("POINT_CLOUD x{d} (stub - not rendered)\n", .{point_clouds.len});
+                }
+            },
         }
         batch_num += 1;
     }

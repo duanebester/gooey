@@ -26,6 +26,8 @@ const scene_mod = @import("scene.zig");
 const SvgInstance = @import("svg_instance.zig").SvgInstance;
 const ImageInstance = @import("image_instance.zig").ImageInstance;
 const PathInstance = @import("path_instance.zig").PathInstance;
+const Polyline = @import("polyline.zig").Polyline;
+const PointCloud = @import("point_cloud.zig").PointCloud;
 
 pub const PrimitiveKind = enum(u8) {
     shadow,
@@ -34,6 +36,8 @@ pub const PrimitiveKind = enum(u8) {
     svg,
     image,
     path,
+    polyline,
+    point_cloud,
 };
 
 pub const PrimitiveBatch = union(PrimitiveKind) {
@@ -43,6 +47,8 @@ pub const PrimitiveBatch = union(PrimitiveKind) {
     svg: []const SvgInstance,
     image: []const ImageInstance,
     path: []const PathInstance,
+    polyline: []const Polyline,
+    point_cloud: []const PointCloud,
 
     pub fn len(self: PrimitiveBatch) usize {
         return switch (self) {
@@ -52,6 +58,8 @@ pub const PrimitiveBatch = union(PrimitiveKind) {
             .svg => |sv| sv.len,
             .image => |img| img.len,
             .path => |p| p.len,
+            .polyline => |pl| pl.len,
+            .point_cloud => |pc| pc.len,
         };
     }
 };
@@ -63,6 +71,8 @@ pub const BatchIterator = struct {
     svgs: []const SvgInstance,
     images: []const ImageInstance,
     paths: []const PathInstance,
+    polylines: []const Polyline,
+    point_clouds: []const PointCloud,
 
     shadow_idx: usize = 0,
     quad_idx: usize = 0,
@@ -70,6 +80,8 @@ pub const BatchIterator = struct {
     svg_idx: usize = 0,
     image_idx: usize = 0,
     path_idx: usize = 0,
+    polyline_idx: usize = 0,
+    point_cloud_idx: usize = 0,
 
     const Self = @This();
 
@@ -81,6 +93,8 @@ pub const BatchIterator = struct {
             .svgs = scene.getSvgInstances(),
             .images = scene.getImages(),
             .paths = scene.getPathInstances(),
+            .polylines = scene.getPolylines(),
+            .point_clouds = scene.getPointClouds(),
         };
     }
 
@@ -93,8 +107,10 @@ pub const BatchIterator = struct {
         const svg_order = self.peekOrder(.svg);
         const image_order = self.peekOrder(.image);
         const path_order = self.peekOrder(.path);
+        const polyline_order = self.peekOrder(.polyline);
+        const point_cloud_order = self.peekOrder(.point_cloud);
 
-        // Find minimum order (with tie-breaking by kind priority: shadow < quad < glyph < svg < image < path)
+        // Find minimum order (with tie-breaking by kind priority: shadow < quad < glyph < svg < image < path < polyline < point_cloud)
         var min_kind: ?PrimitiveKind = null;
         var min_order: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
 
@@ -134,24 +150,38 @@ pub const BatchIterator = struct {
                 min_kind = .path;
             }
         }
+        if (polyline_order) |order| {
+            if (order < min_order) {
+                min_order = order;
+                min_kind = .polyline;
+            }
+        }
+        if (point_cloud_order) |order| {
+            if (order < min_order) {
+                min_order = order;
+                min_kind = .point_cloud;
+            }
+        }
 
         const kind = min_kind orelse return null;
 
         // Consume all consecutive primitives of this type until we hit
         // a primitive of another type with a lower order
         return switch (kind) {
-            .shadow => self.consumeBatch(.shadow, minOfOrders(.{ quad_order, glyph_order, svg_order, image_order, path_order })),
-            .quad => self.consumeBatch(.quad, minOfOrders(.{ shadow_order, glyph_order, svg_order, image_order, path_order })),
-            .glyph => self.consumeBatch(.glyph, minOfOrders(.{ shadow_order, quad_order, svg_order, image_order, path_order })),
-            .svg => self.consumeBatch(.svg, minOfOrders(.{ shadow_order, quad_order, glyph_order, image_order, path_order })),
-            .image => self.consumeBatch(.image, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, path_order })),
-            .path => self.consumeBatch(.path, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order })),
+            .shadow => self.consumeBatch(.shadow, minOfOrders(.{ quad_order, glyph_order, svg_order, image_order, path_order, polyline_order, point_cloud_order })),
+            .quad => self.consumeBatch(.quad, minOfOrders(.{ shadow_order, glyph_order, svg_order, image_order, path_order, polyline_order, point_cloud_order })),
+            .glyph => self.consumeBatch(.glyph, minOfOrders(.{ shadow_order, quad_order, svg_order, image_order, path_order, polyline_order, point_cloud_order })),
+            .svg => self.consumeBatch(.svg, minOfOrders(.{ shadow_order, quad_order, glyph_order, image_order, path_order, polyline_order, point_cloud_order })),
+            .image => self.consumeBatch(.image, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, path_order, polyline_order, point_cloud_order })),
+            .path => self.consumeBatch(.path, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order, polyline_order, point_cloud_order })),
+            .polyline => self.consumeBatch(.polyline, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order, path_order, point_cloud_order })),
+            .point_cloud => self.consumeBatch(.point_cloud, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order, path_order, polyline_order })),
         };
     }
 
     /// Find the minimum order among a set of optional orders.
     /// Returns maxInt if all are null.
-    fn minOfOrders(orders: [5]?scene_mod.DrawOrder) scene_mod.DrawOrder {
+    fn minOfOrders(orders: [7]?scene_mod.DrawOrder) scene_mod.DrawOrder {
         var min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
         inline for (orders) |maybe_order| {
             if (maybe_order) |o| min = @min(min, o);
@@ -168,6 +198,8 @@ pub const BatchIterator = struct {
             .svg => if (self.svg_idx < self.svgs.len) self.svgs[self.svg_idx].order else null,
             .image => if (self.image_idx < self.images.len) self.images[self.image_idx].order else null,
             .path => if (self.path_idx < self.paths.len) self.paths[self.path_idx].order else null,
+            .polyline => if (self.polyline_idx < self.polylines.len) self.polylines[self.polyline_idx].order else null,
+            .point_cloud => if (self.point_cloud_idx < self.point_clouds.len) self.point_clouds[self.point_cloud_idx].order else null,
         };
     }
 
@@ -236,6 +268,26 @@ pub const BatchIterator = struct {
                 if (self.path_idx == start) self.path_idx += 1;
                 break :blk .{ .path = self.paths[start..self.path_idx] };
             },
+            .polyline => blk: {
+                const start = self.polyline_idx;
+                while (self.polyline_idx < self.polylines.len and
+                    self.polylines[self.polyline_idx].order < other_min)
+                {
+                    self.polyline_idx += 1;
+                }
+                if (self.polyline_idx == start) self.polyline_idx += 1;
+                break :blk .{ .polyline = self.polylines[start..self.polyline_idx] };
+            },
+            .point_cloud => blk: {
+                const start = self.point_cloud_idx;
+                while (self.point_cloud_idx < self.point_clouds.len and
+                    self.point_clouds[self.point_cloud_idx].order < other_min)
+                {
+                    self.point_cloud_idx += 1;
+                }
+                if (self.point_cloud_idx == start) self.point_cloud_idx += 1;
+                break :blk .{ .point_cloud = self.point_clouds[start..self.point_cloud_idx] };
+            },
         };
     }
 
@@ -246,7 +298,9 @@ pub const BatchIterator = struct {
             self.glyph_idx >= self.glyphs.len and
             self.svg_idx >= self.svgs.len and
             self.image_idx >= self.images.len and
-            self.path_idx >= self.paths.len;
+            self.path_idx >= self.paths.len and
+            self.polyline_idx >= self.polylines.len and
+            self.point_cloud_idx >= self.point_clouds.len;
     }
 
     /// Reset iterator to beginning
@@ -257,6 +311,8 @@ pub const BatchIterator = struct {
         self.svg_idx = 0;
         self.image_idx = 0;
         self.path_idx = 0;
+        self.polyline_idx = 0;
+        self.point_cloud_idx = 0;
     }
 };
 
@@ -363,11 +419,11 @@ test "BatchIterator - coalesces consecutive same type" {
 }
 
 test "minOfOrders - all null returns maxInt" {
-    const result = BatchIterator.minOfOrders(.{ null, null, null, null, null });
+    const result = BatchIterator.minOfOrders(.{ null, null, null, null, null, null, null });
     try std.testing.expectEqual(std.math.maxInt(scene_mod.DrawOrder), result);
 }
 
 test "minOfOrders - finds minimum" {
-    const result = BatchIterator.minOfOrders(.{ @as(?scene_mod.DrawOrder, 5), @as(?scene_mod.DrawOrder, 2), null, @as(?scene_mod.DrawOrder, 10), null });
+    const result = BatchIterator.minOfOrders(.{ @as(?scene_mod.DrawOrder, 5), @as(?scene_mod.DrawOrder, 2), null, @as(?scene_mod.DrawOrder, 10), null, null, null });
     try std.testing.expectEqual(@as(scene_mod.DrawOrder, 2), result);
 }

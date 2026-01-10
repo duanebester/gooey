@@ -83,7 +83,8 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
 
     // Render all commands (includes SVGs and images inline for correct z-ordering)
     // Scrollbars are rendered inline when their scissor_end is encountered
-    try renderCommands(gooey, builder, commands);
+    // Canvas draw orders are reserved during this pass for correct z-ordering
+    try renderCommands(gooey, @constCast(builder), commands);
 
     // Render text inputs
     try renderTextInputs(gooey, builder);
@@ -114,8 +115,20 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
 // =============================================================================
 
 /// Render all layout commands
-fn renderCommands(gooey: *Gooey, builder: *const Builder, commands: []const layout_mod.RenderCommand) !void {
+fn renderCommands(gooey: *Gooey, builder: *Builder, commands: []const layout_mod.RenderCommand) !void {
     for (commands) |cmd| {
+        // Check if this command's element corresponds to a pending canvas
+        // If so, reserve a draw order now (in correct z-order) for later canvas painting
+        for (builder.pending_canvas.items) |*pending| {
+            if (pending.layout_id == cmd.id and pending.base_order == 0) {
+                // Reserve a base draw order for this canvas
+                // Canvas primitives will use orders starting from this base
+                pending.base_order = gooey.scene.reserveCanvasOrders(256); // Reserve block of 256 orders
+                pending.clip_bounds = gooey.scene.currentClip();
+                break;
+            }
+        }
+
         try render_cmd.renderCommand(gooey, cmd);
 
         // When a scissor region ends, check if it's a scroll container and render its scrollbars
@@ -139,7 +152,7 @@ fn renderCanvasElements(gooey: *Gooey, builder: *const Builder) void {
             bounds.y,
             bounds.width,
             bounds.height,
-        ));
+        ), gooey.text_system);
     }
 }
 

@@ -495,18 +495,23 @@ pub const Builder = struct {
 
     /// Box with pre-generated LayoutId (for canvas and other deferred rendering)
     pub fn boxWithLayoutId(self: *Self, layout_id: LayoutId, props: Box, children: anytype) void {
-        self.boxWithLayoutIdImpl(layout_id, props, children, SourceLoc.none);
+        self.boxWithLayoutIdImpl(layout_id, props, children, SourceLoc.none, false);
+    }
+
+    /// Box with pre-generated LayoutId marked as a canvas element for proper z-ordering
+    pub fn boxWithLayoutIdCanvas(self: *Self, layout_id: LayoutId, props: Box, children: anytype) void {
+        self.boxWithLayoutIdImpl(layout_id, props, children, SourceLoc.none, true);
     }
 
     /// Box with explicit ID and source location tracking (Phase 5)
     /// Call as: b.boxWithIdTracked("my-id", props, children, @src())
     pub fn boxWithIdTracked(self: *Self, id: ?[]const u8, props: Box, children: anytype, source_loc: SourceLoc) void {
         const layout_id = if (id) |i| LayoutId.fromString(i) else self.generateId();
-        self.boxWithLayoutIdImpl(layout_id, props, children, source_loc);
+        self.boxWithLayoutIdImpl(layout_id, props, children, source_loc, false);
     }
 
     /// Internal: Box implementation with pre-resolved LayoutId
-    fn boxWithLayoutIdImpl(self: *Self, layout_id: LayoutId, props: Box, children: anytype, source_loc: SourceLoc) void {
+    fn boxWithLayoutIdImpl(self: *Self, layout_id: LayoutId, props: Box, children: anytype, source_loc: SourceLoc, is_canvas: bool) void {
 
         // Push dispatch node at element open
         _ = self.dispatch.pushNode();
@@ -671,6 +676,7 @@ pub const Builder = struct {
             .floating = floating_config,
             .opacity = props.opacity,
             .source_location = source_loc,
+            .is_canvas = is_canvas,
         }) catch return;
 
         // Mark floating elements for hit testing optimization

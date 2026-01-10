@@ -2,9 +2,12 @@
 
 const std = @import("std");
 const platform = @import("../platform/mod.zig");
-const Scene = @import("../scene/mod.zig").Scene;
-const Quad = @import("../scene/mod.zig").Quad;
-const GlyphInstance = @import("../scene/mod.zig").GlyphInstance;
+const scene_mod = @import("../scene/mod.zig");
+const Scene = scene_mod.Scene;
+const Quad = scene_mod.Quad;
+const GlyphInstance = scene_mod.GlyphInstance;
+const ContentMask = scene_mod.ContentMask;
+const DrawOrder = scene_mod.DrawOrder;
 const TextSystem = @import("text_system.zig").TextSystem;
 const Hsla = @import("../core/mod.zig").Hsla;
 const types = @import("types.zig");
@@ -23,6 +26,24 @@ pub const RenderTextOptions = struct {
     decoration_color: ?Hsla = null,
     /// Optional stats for performance tracking (pass null to skip)
     stats: ?*RenderStats = null,
+    /// Base draw order for z-ordering (0 = use scene's auto-ordering)
+    base_order: DrawOrder = 0,
+    /// Current draw order offset (incremented per glyph when ordered)
+    current_order: *DrawOrder = undefined,
+    /// Clip bounds for ordered rendering
+    clip_bounds: ContentMask.ClipBounds = ContentMask.none.bounds,
+
+    /// Check if this uses explicit ordering
+    pub fn isOrdered(self: *const RenderTextOptions) bool {
+        return self.base_order != 0;
+    }
+
+    /// Get next order and increment
+    pub fn nextOrder(self: *RenderTextOptions) DrawOrder {
+        const order = self.base_order + self.current_order.*;
+        self.current_order.* += 1;
+        return order;
+    }
 };
 
 pub fn renderText(
@@ -33,7 +54,7 @@ pub fn renderText(
     baseline_y: f32,
     scale_factor: f32,
     color: Hsla,
-    options: RenderTextOptions,
+    options: *RenderTextOptions,
 ) !f32 {
     if (text.len == 0) return 0;
 
@@ -70,7 +91,9 @@ pub fn renderText(
 
             const instance = GlyphInstance.init(glyph_x, glyph_y, glyph_w, glyph_h, uv.u0, uv.v0, uv.u1, uv.v1, color);
 
-            if (options.clipped) {
+            if (options.isOrdered()) {
+                try scene.insertGlyphWithOrder(instance, options.nextOrder(), options.clip_bounds);
+            } else if (options.clipped) {
                 try scene.insertGlyphClipped(instance);
             } else {
                 try scene.insertGlyph(instance);
@@ -92,14 +115,20 @@ pub fn renderText(
                 const underline_y = baseline_y - metrics.underline_position;
                 const thickness = @max(1.0, metrics.underline_thickness);
 
-                const underline_quad = Quad.filled(
+                var underline_quad = Quad.filled(
                     x,
                     underline_y,
                     text_width,
                     thickness,
                     decoration_color,
                 );
-                try scene.insertQuad(underline_quad);
+                if (options.isOrdered()) {
+                    underline_quad.order = options.nextOrder();
+                    underline_quad = underline_quad.withClipBounds(options.clip_bounds);
+                    try scene.insertQuadWithOrder(underline_quad);
+                } else {
+                    try scene.insertQuad(underline_quad);
+                }
             }
 
             // Strikethrough
@@ -108,14 +137,20 @@ pub fn renderText(
                 const strike_y = baseline_y - (metrics.x_height * 0.5);
                 const thickness = @max(1.0, metrics.underline_thickness);
 
-                const strike_quad = Quad.filled(
+                var strike_quad = Quad.filled(
                     x,
                     strike_y,
                     text_width,
                     thickness,
                     decoration_color,
                 );
-                try scene.insertQuad(strike_quad);
+                if (options.isOrdered()) {
+                    strike_quad.order = options.nextOrder();
+                    strike_quad = strike_quad.withClipBounds(options.clip_bounds);
+                    try scene.insertQuadWithOrder(strike_quad);
+                } else {
+                    try scene.insertQuad(strike_quad);
+                }
             }
         }
     }

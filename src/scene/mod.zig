@@ -28,6 +28,8 @@ pub const MAX_SHADOWS_PER_FRAME = scene.MAX_SHADOWS_PER_FRAME;
 pub const MAX_SVGS_PER_FRAME = scene.MAX_SVGS_PER_FRAME;
 pub const MAX_IMAGES_PER_FRAME = scene.MAX_IMAGES_PER_FRAME;
 pub const MAX_PATHS_PER_FRAME = scene.MAX_PATHS_PER_FRAME;
+pub const MAX_POLYLINES_PER_FRAME = scene.MAX_POLYLINES_PER_FRAME;
+pub const MAX_POINT_CLOUDS_PER_FRAME = scene.MAX_POINT_CLOUDS_PER_FRAME;
 pub const MAX_CLIP_STACK_DEPTH = scene.MAX_CLIP_STACK_DEPTH;
 
 // Geometry aliases (GPU-aligned)
@@ -64,6 +66,22 @@ pub const SvgInstance = svg_instance.SvgInstance;
 
 pub const path_instance = @import("path_instance.zig");
 pub const PathInstance = path_instance.PathInstance;
+
+// =============================================================================
+// Polyline (efficient chart/data visualization)
+// =============================================================================
+
+pub const polyline = @import("polyline.zig");
+pub const Polyline = polyline.Polyline;
+pub const MAX_POLYLINE_POINTS = polyline.MAX_POLYLINE_POINTS;
+
+// =============================================================================
+// Point Cloud (instanced circles for scatter plots/markers)
+// =============================================================================
+
+pub const point_cloud = @import("point_cloud.zig");
+pub const PointCloud = point_cloud.PointCloud;
+pub const MAX_POINTS_PER_CLOUD = point_cloud.MAX_POINTS_PER_CLOUD;
 
 // =============================================================================
 // Path Mesh

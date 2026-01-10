@@ -174,6 +174,8 @@ pub const ElementDeclaration = struct {
     opacity: f32 = 1.0,
     /// Source location where this element was created (for debugging)
     source_location: SourceLoc = .{},
+    /// Whether this element is a canvas (for deferred paint callbacks)
+    is_canvas: bool = false,
 };
 
 pub const ElementType = enum {
@@ -1409,6 +1411,7 @@ pub const LayoutEngine = struct {
         try self.emitTextCommands(elem, bbox, z_index, opacity);
         try self.emitSvgCommand(elem, bbox, z_index, opacity);
         try self.emitImageCommand(elem, bbox, z_index, opacity);
+        try self.emitCanvasCommand(elem, bbox, z_index);
 
         // Scissor for scroll containers (before children)
         const has_scroll = elem.config.scroll != null;
@@ -1592,6 +1595,20 @@ pub const LayoutEngine = struct {
                 .grayscale = id.grayscale,
                 .opacity = id.opacity * opacity,
             } },
+        });
+    }
+
+    /// Phase 3.1 Helper: Emit canvas render command
+    /// Canvas commands reserve draw orders for deferred paint callbacks
+    fn emitCanvasCommand(self: *Self, elem: *LayoutElement, bbox: BoundingBox, z_index: i16) !void {
+        if (!elem.config.is_canvas) return;
+
+        try self.commands.append(.{
+            .bounding_box = bbox,
+            .command_type = .canvas,
+            .z_index = z_index,
+            .id = elem.id,
+            .data = .{ .canvas = .{ .layout_id = elem.id } },
         });
     }
 

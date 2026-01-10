@@ -78,10 +78,10 @@ fn paintSimple(ctx: *ui.DrawContext) void {
     ctx.fillRoundedRect(100, 15, 60, 35, 8, ui.Color.rgb(0.3, 0.9, 0.3));
     ctx.fillRoundedRect(180, 15, 60, 35, 17, ui.Color.rgb(0.3, 0.3, 0.9));
 
-    // Circles and ellipses
-    ctx.fillCircle(50, 85, 22, ui.Color.rgb(1.0, 0.7, 0.2));
-    ctx.fillCircle(130, 85, 18, ui.Color.rgb(0.7, 0.2, 1.0));
-    ctx.fillEllipse(210, 85, 30, 18, ui.Color.rgb(0.2, 0.8, 0.8));
+    // Circles and ellipses (using adaptive LOD for performance)
+    ctx.fillCircleAdaptive(50, 85, 22, ui.Color.rgb(1.0, 0.7, 0.2));
+    ctx.fillCircleAdaptive(130, 85, 18, ui.Color.rgb(0.7, 0.2, 1.0));
+    ctx.fillEllipseAdaptive(210, 85, 30, 18, ui.Color.rgb(0.2, 0.8, 0.8));
 
     // Triangle
     ctx.fillTriangle(280, 20, 320, 55, 260, 55, ui.Color.rgb(1.0, 0.4, 0.6));
@@ -111,9 +111,9 @@ fn paintSimple(ctx: *ui.DrawContext) void {
 
     // Bottom row - solid shapes
     ctx.fillRoundedRect(20, 220, 100, 40, 10, ui.Color.rgb(0.5, 0.8, 0.4));
-    ctx.fillCircle(170, 240, 22, ui.Color.rgb(0.9, 0.5, 0.3));
+    ctx.fillCircleAdaptive(170, 240, 22, ui.Color.rgb(0.9, 0.5, 0.3));
     ctx.strokeCircle(230, 240, 22, 3, ui.Color.rgb(0.8, 0.8, 0.2));
-    ctx.fillEllipse(300, 240, 32, 18, ui.Color.rgb(0.4, 0.6, 0.9));
+    ctx.fillEllipseAdaptive(300, 240, 32, 18, ui.Color.rgb(0.4, 0.6, 0.9));
 }
 
 // =============================================================================

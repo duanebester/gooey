@@ -605,7 +605,8 @@ pub const TextInput = struct {
 
         if (!has_content and self.placeholder.len > 0) {
             // Render placeholder
-            _ = try text_mod.renderText(scene, text_system, self.placeholder, text_x, baseline_y, scale_factor, self.style.placeholder_color, .{});
+            var placeholder_opts = text_mod.RenderTextOptions{};
+            _ = try text_mod.renderText(scene, text_system, self.placeholder, text_x, baseline_y, scale_factor, self.style.placeholder_color, &placeholder_opts);
         } else if (has_content) {
             // Render selection background first (if any)
             if (self.hasSelection()) {
@@ -616,14 +617,16 @@ pub const TextInput = struct {
             var pen_x = text_x - self.scroll_offset;
             if (cursor_byte > 0) {
                 const before = text[0..cursor_byte];
-                const width = try text_mod.renderText(scene, text_system, before, pen_x, baseline_y, scale_factor, self.style.text_color, .{});
+                var before_opts = text_mod.RenderTextOptions{};
+                const width = try text_mod.renderText(scene, text_system, before, pen_x, baseline_y, scale_factor, self.style.text_color, &before_opts);
                 pen_x += width;
             }
 
             // Render preedit with underline
             const preedit_start_x = pen_x;
             if (preedit.len > 0) {
-                const preedit_width = try text_mod.renderText(scene, text_system, preedit, pen_x, baseline_y, scale_factor, self.style.text_color, .{});
+                var preedit_opts = text_mod.RenderTextOptions{};
+                const preedit_width = try text_mod.renderText(scene, text_system, preedit, pen_x, baseline_y, scale_factor, self.style.text_color, &preedit_opts);
 
                 // Draw underline under preedit
                 const underline_y = baseline_y + 2;
@@ -642,7 +645,8 @@ pub const TextInput = struct {
             // Render text after cursor
             if (cursor_byte < text.len) {
                 const after = text[cursor_byte..];
-                _ = try text_mod.renderText(scene, text_system, after, pen_x, baseline_y, scale_factor, self.style.text_color, .{});
+                var after_opts = text_mod.RenderTextOptions{};
+                _ = try text_mod.renderText(scene, text_system, after, pen_x, baseline_y, scale_factor, self.style.text_color, &after_opts);
             }
         }
 

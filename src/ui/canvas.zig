@@ -37,6 +37,11 @@ const gradient_mod = @import("../core/gradient.zig");
 const styles = @import("styles.zig");
 const builder_mod = @import("builder.zig");
 
+// Text rendering imports
+const text_mod = @import("../text/mod.zig");
+const TextSystem = text_mod.TextSystem;
+const text_render = text_mod.render;
+
 // Re-exports for canvas users
 pub const Path = path_mod.Path;
 pub const Color = styles.Color;
@@ -51,11 +56,14 @@ pub const StrokeStyle = path_mod.StrokeStyle;
 const Scene = scene_mod.Scene;
 const Hsla = scene_mod.Hsla;
 const Bounds = scene_mod.Bounds;
+const Point = scene_mod.Point;
 const PathInstance = scene_mod.PathInstance;
 const PathMesh = scene_mod.PathMesh;
 const MeshRef = scene_mod.MeshRef;
 const MeshPool = scene_mod.MeshPool;
 const Quad = scene_mod.Quad;
+const Polyline = scene_mod.Polyline;
+const PointCloud = scene_mod.PointCloud;
 
 // =============================================================================
 // Constants (per CLAUDE.md: "put a limit on everything")
@@ -91,6 +99,10 @@ pub const PendingCanvas = struct {
     layout_id: u32,
     paint: *const fn (*DrawContext) void,
     scale: f32,
+    /// Reserved draw order for correct z-ordering (0 = use scene's auto-ordering)
+    base_order: scene_mod.DrawOrder = 0,
+    /// Clip bounds captured at layout time
+    clip_bounds: scene_mod.ContentMask.ClipBounds = scene_mod.ContentMask.none.bounds,
 };
 
 // =============================================================================
@@ -99,12 +111,50 @@ pub const PendingCanvas = struct {
 
 /// Drawing context passed to canvas paint callbacks.
 /// Provides immediate-mode and cached-mode APIs for custom vector graphics.
+/// Optionally supports text rendering when text_system is provided.
 pub const DrawContext = struct {
     scene: *Scene,
     bounds: Bounds,
     scale: f32,
+    /// Optional text system for real text rendering.
+    /// When null, drawText falls back to placeholder rectangles.
+    text_system: ?*TextSystem = null,
+    /// Base draw order for z-ordering (0 = use scene's auto-ordering)
+    base_order: scene_mod.DrawOrder = 0,
+    /// Clip bounds for this canvas
+    clip_bounds: scene_mod.ContentMask.ClipBounds = scene_mod.ContentMask.none.bounds,
+    /// Current draw order (increments with each primitive)
+    current_order: scene_mod.DrawOrder = 0,
 
     const Self = @This();
+
+    // =========================================================================
+    // Z-Order Helpers (for correct layering with UI elements)
+    // =========================================================================
+
+    /// Check if this canvas uses explicit ordering (for correct z-layering)
+    fn isOrdered(self: *const Self) bool {
+        return self.base_order != 0;
+    }
+
+    /// Get the next draw order and increment counter
+    fn nextOrder(self: *Self) scene_mod.DrawOrder {
+        const order = self.current_order;
+        self.current_order += 1;
+        return order;
+    }
+
+    /// Insert a quad with proper z-ordering
+    fn insertQuadOrdered(self: *Self, quad: Quad) void {
+        if (self.isOrdered()) {
+            var q = quad;
+            q.order = self.nextOrder();
+            q = q.withClipBounds(self.clip_bounds);
+            self.scene.insertQuadWithOrder(q) catch {};
+        } else {
+            self.scene.insertQuad(quad) catch {};
+        }
+    }
 
     // =========================================================================
     // Immediate Mode API (simple, tessellates every call)
@@ -117,14 +167,23 @@ pub const DrawContext = struct {
         std.debug.assert(w >= 0 and h >= 0);
         std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
 
-        const quad = Quad.filled(
+        var quad = Quad.filled(
             self.bounds.origin.x + x,
             self.bounds.origin.y + y,
             w,
             h,
             Hsla.fromColor(color),
         );
-        self.scene.insertQuad(quad) catch {};
+
+        // Use reserved order for correct z-ordering with UI elements
+        if (self.base_order != 0) {
+            quad.order = self.current_order;
+            self.current_order += 1;
+            quad = quad.withClipBounds(self.clip_bounds);
+            self.scene.insertQuadWithOrder(quad) catch {};
+        } else {
+            self.scene.insertQuad(quad) catch {};
+        }
     }
 
     /// Fill a rounded rectangle with solid color.
@@ -141,7 +200,16 @@ pub const DrawContext = struct {
             Hsla.fromColor(color),
         );
         quad.corner_radii = scene_mod.Corners.all(radius);
-        self.scene.insertQuad(quad) catch {};
+
+        // Use reserved order for correct z-ordering with UI elements
+        if (self.base_order != 0) {
+            quad.order = self.current_order;
+            self.current_order += 1;
+            quad = quad.withClipBounds(self.clip_bounds);
+            self.scene.insertQuadWithOrder(quad) catch {};
+        } else {
+            self.scene.insertQuad(quad) catch {};
+        }
     }
 
     /// Stroke a rectangle outline.
@@ -150,14 +218,23 @@ pub const DrawContext = struct {
         std.debug.assert(w >= 0 and h >= 0);
         std.debug.assert(stroke_width >= 0);
 
-        const quad = Quad.filled(
+        var quad = Quad.filled(
             self.bounds.origin.x + x,
             self.bounds.origin.y + y,
             w,
             h,
             Hsla.transparent,
         ).withBorder(Hsla.fromColor(color), stroke_width);
-        self.scene.insertQuad(quad) catch {};
+
+        // Use reserved order for correct z-ordering with UI elements
+        if (self.base_order != 0) {
+            quad.order = self.current_order;
+            self.current_order += 1;
+            quad = quad.withClipBounds(self.clip_bounds);
+            self.scene.insertQuadWithOrder(quad) catch {};
+        } else {
+            self.scene.insertQuad(quad) catch {};
+        }
     }
 
     /// Begin a new path at the given position.
@@ -181,12 +258,25 @@ pub const DrawContext = struct {
             return;
         };
 
-        self.scene.insertPathWithMesh(
-            mesh,
-            self.bounds.origin.x,
-            self.bounds.origin.y,
-            Hsla.fromColor(color),
-        ) catch {};
+        // Use reserved order for correct z-ordering with UI elements
+        if (self.base_order != 0) {
+            self.scene.insertPathWithMeshAndOrder(
+                mesh,
+                self.bounds.origin.x,
+                self.bounds.origin.y,
+                Hsla.fromColor(color),
+                self.current_order,
+                self.clip_bounds,
+            ) catch {};
+            self.current_order += 1;
+        } else {
+            self.scene.insertPathWithMesh(
+                mesh,
+                self.bounds.origin.x,
+                self.bounds.origin.y,
+                Hsla.fromColor(color),
+            ) catch {};
+        }
     }
 
     /// Draw a filled circle.
@@ -227,6 +317,41 @@ pub const DrawContext = struct {
             .cubicTo(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy)
             .closePath();
 
+        self.fillPath(&p, color);
+    }
+
+    /// Draw a filled circle with adaptive LOD based on screen size.
+    /// Small circles use fewer segments (faster), large circles remain smooth.
+    /// Uses the DrawContext's scale factor for LOD calculation.
+    pub fn fillCircleAdaptive(self: *Self, cx: f32, cy: f32, r: f32, color: Color) void {
+        std.debug.assert(r >= 0);
+        std.debug.assert(!std.math.isNan(cx) and !std.math.isNan(cy));
+
+        var p = Path.init();
+        _ = p.circleAdaptive(cx, cy, r, self.scale);
+        self.fillPath(&p, color);
+    }
+
+    /// Draw a filled ellipse with adaptive LOD based on screen size.
+    /// Uses the larger radius for LOD calculation.
+    pub fn fillEllipseAdaptive(self: *Self, cx: f32, cy: f32, rx: f32, ry: f32, color: Color) void {
+        std.debug.assert(rx >= 0 and ry >= 0);
+        std.debug.assert(!std.math.isNan(cx) and !std.math.isNan(cy));
+
+        var p = Path.init();
+        _ = p.ellipseAdaptive(cx, cy, rx, ry, self.scale);
+        self.fillPath(&p, color);
+    }
+
+    /// Draw a filled circle with explicit segment count.
+    /// Use this when you need precise control over vertex count.
+    pub fn fillCircleWithSegments(self: *Self, cx: f32, cy: f32, r: f32, segments: u8, color: Color) void {
+        std.debug.assert(r >= 0);
+        std.debug.assert(segments >= 3);
+        std.debug.assert(!std.math.isNan(cx) and !std.math.isNan(cy));
+
+        var p = Path.init();
+        _ = p.circleWithSegments(cx, cy, r, segments);
         self.fillPath(&p, color);
     }
 
@@ -379,30 +504,78 @@ pub const DrawContext = struct {
     // =========================================================================
 
     /// Draw a line from (x1, y1) to (x2, y2) with given width and color.
-    /// Note: This creates a thin rectangle, not a true stroke (Phase 4).
+    /// Optimized for axis-aligned lines (uses Quad, no Path allocation).
+    /// Falls back to Path for diagonal lines.
     pub fn line(self: *Self, x1: f32, y1: f32, x2: f32, y2: f32, line_width: f32, color: Color) void {
         std.debug.assert(line_width > 0);
 
         const dx = x2 - x1;
         const dy = y2 - y1;
-        const len = @sqrt(dx * dx + dy * dy);
 
+        // Optimized path for axis-aligned lines (common in charts/grids)
+        // Uses Quad directly instead of 67KB Path allocation
+        const is_horizontal = @abs(dy) < 0.001;
+        const is_vertical = @abs(dx) < 0.001;
+
+        if (is_horizontal) {
+            const min_x = @min(x1, x2);
+            const quad = Quad.filled(
+                self.bounds.origin.x + min_x,
+                self.bounds.origin.y + y1 - line_width * 0.5,
+                @abs(dx),
+                line_width,
+                Hsla.fromColor(color),
+            );
+            self.insertQuadOrdered(quad);
+            return;
+        }
+
+        if (is_vertical) {
+            const min_y = @min(y1, y2);
+            const quad = Quad.filled(
+                self.bounds.origin.x + x1 - line_width * 0.5,
+                self.bounds.origin.y + min_y,
+                line_width,
+                @abs(dy),
+                Hsla.fromColor(color),
+            );
+            self.insertQuadOrdered(quad);
+            return;
+        }
+
+        // Diagonal lines: compute quad corners directly (avoids 67KB Path allocation)
+        const len = @sqrt(dx * dx + dy * dy);
         if (len < 0.001) return; // Degenerate line
 
-        // Perpendicular unit vector
+        // Perpendicular unit vector scaled by half line width
         const px = -dy / len * line_width * 0.5;
         const py = dx / len * line_width * 0.5;
 
-        var p = self.beginPath(x1 + px, y1 + py);
-        _ = p.lineTo(x2 + px, y2 + py)
-            .lineTo(x2 - px, y2 - py)
-            .lineTo(x1 - px, y1 - py)
-            .closePath();
+        // Compute quad corners (offset by canvas bounds)
+        const ox = self.bounds.origin.x;
+        const oy = self.bounds.origin.y;
 
-        self.fillPath(&p, color);
+        const c0_x = ox + x1 + px;
+        const c0_y = oy + y1 + py;
+        const c1_x = ox + x2 + px;
+        const c1_y = oy + y2 + py;
+        const c2_x = ox + x2 - px;
+        const c2_y = oy + y2 - py;
+        const c3_x = ox + x1 - px;
+        const c3_y = oy + y1 - py;
+
+        // Insert as a quad (2 triangles) - uses ~14KB PathMesh instead of 67KB Path
+        const hsla = Hsla.fromColor(color);
+        if (self.isOrdered()) {
+            self.scene.insertLineQuadWithOrder(c0_x, c0_y, c1_x, c1_y, c2_x, c2_y, c3_x, c3_y, hsla, self.nextOrder(), self.clip_bounds) catch {};
+        } else {
+            self.scene.insertLineQuad(c0_x, c0_y, c1_x, c1_y, c2_x, c2_y, c3_x, c3_y, hsla) catch {};
+        }
     }
 
     /// Draw a triangle with vertices at (x1,y1), (x2,y2), (x3,y3).
+    /// OPTIMIZED: Uses direct triangle insertion instead of 67KB Path allocation.
+    /// This is critical for pie charts which draw many triangles per frame.
     pub fn fillTriangle(
         self: *Self,
         x1: f32,
@@ -413,9 +586,171 @@ pub const DrawContext = struct {
         y3: f32,
         color: Color,
     ) void {
-        var p = self.beginPath(x1, y1);
-        _ = p.lineTo(x2, y2).lineTo(x3, y3).closePath();
-        self.fillPath(&p, color);
+        // Transform to scene coordinates
+        const ox = self.bounds.origin.x;
+        const oy = self.bounds.origin.y;
+
+        const hsla = Hsla.fromColor(color);
+
+        // Use direct triangle insertion (bypasses 67KB Path allocation)
+        if (self.isOrdered()) {
+            self.scene.insertTriangleWithOrder(
+                ox + x1,
+                oy + y1,
+                ox + x2,
+                oy + y2,
+                ox + x3,
+                oy + y3,
+                hsla,
+                self.nextOrder(),
+                self.clip_bounds,
+            ) catch {};
+        } else {
+            self.scene.insertTriangle(
+                ox + x1,
+                oy + y1,
+                ox + x2,
+                oy + y2,
+                ox + x3,
+                oy + y3,
+                hsla,
+            ) catch {};
+        }
+    }
+
+    // =========================================================================
+    // Polyline API (efficient chart/data visualization)
+    // =========================================================================
+
+    /// Draw a polyline through multiple points (single draw call).
+    /// Points are copied to scene allocator, not stack - efficient for charts.
+    ///
+    /// This is the recommended way to draw connected line segments for
+    /// data visualization (charts, graphs) where thousands of points
+    /// need to be rendered efficiently.
+    ///
+    /// Unlike strokeLine() which creates a 67KB Path per segment, polyline()
+    /// uses a single lightweight primitive for all points.
+    ///
+    /// Example:
+    /// ```
+    /// var points: [100][2]f32 = undefined;
+    /// for (0..100) |i| {
+    ///     points[i] = .{ @floatFromInt(i) * 5, @sin(@as(f32, @floatFromInt(i)) * 0.1) * 50 + 100 };
+    /// }
+    /// ctx.polyline(&points, 2.0, Color.blue);
+    /// ```
+    pub fn polyline(self: *Self, points: []const [2]f32, line_width: f32, color: Color) void {
+        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
+        std.debug.assert(points.len >= 2); // Need at least 2 points for a line
+        std.debug.assert(line_width > 0);
+
+        if (points.len < 2) return;
+
+        // Allocate points from scene's allocator (arena), not stack
+        const scene_points = self.scene.allocator.alloc(Point, points.len) catch return;
+
+        // Transform points to scene coordinates (apply canvas bounds offset)
+        const ox = self.bounds.origin.x;
+        const oy = self.bounds.origin.y;
+        for (points, 0..) |p, i| {
+            scene_points[i] = .{ .x = ox + p[0], .y = oy + p[1] };
+        }
+
+        // Create and insert polyline primitive
+        const pl = Polyline.init(scene_points, line_width, Hsla.fromColor(color));
+        if (self.isOrdered()) {
+            self.scene.insertPolylineWithOrder(pl, self.nextOrder(), self.clip_bounds) catch {};
+        } else {
+            self.scene.insertPolyline(pl) catch {};
+        }
+    }
+
+    /// Draw a polyline with clipping applied.
+    /// Points are copied to scene allocator, not stack.
+    pub fn polylineClipped(self: *Self, points: []const [2]f32, line_width: f32, color: Color) void {
+        std.debug.assert(points.len >= 2);
+        std.debug.assert(line_width > 0);
+
+        if (points.len < 2) return;
+
+        const scene_points = self.scene.allocator.alloc(Point, points.len) catch return;
+
+        const ox = self.bounds.origin.x;
+        const oy = self.bounds.origin.y;
+        for (points, 0..) |p, i| {
+            scene_points[i] = .{ .x = ox + p[0], .y = oy + p[1] };
+        }
+
+        const pl = Polyline.init(scene_points, line_width, Hsla.fromColor(color));
+        if (self.isOrdered()) {
+            self.scene.insertPolylineWithOrder(pl, self.nextOrder(), self.clip_bounds) catch {};
+        } else {
+            self.scene.insertPolylineClipped(pl) catch {};
+        }
+    }
+
+    // =========================================================================
+    // Point Cloud API (instanced circles for scatter plots/markers)
+    // =========================================================================
+
+    /// Draw multiple circles with the same style using instanced rendering.
+    /// Positions are copied to scene allocator, not stack.
+    /// Single draw call for all points - highly efficient for scatter plots.
+    ///
+    /// ## Example
+    /// ```
+    /// const centers = [_][2]f32{ .{50, 50}, .{100, 75}, .{150, 60} };
+    /// ctx.pointCloud(&centers, 4.0, Color.red);
+    /// ```
+    pub fn pointCloud(self: *Self, centers: []const [2]f32, radius: f32, color: Color) void {
+        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
+        std.debug.assert(centers.len >= 1); // Need at least 1 point
+        std.debug.assert(radius > 0);
+
+        if (centers.len < 1) return;
+
+        // Allocate positions from scene's allocator (arena), not stack
+        const scene_positions = self.scene.allocator.alloc(Point, centers.len) catch return;
+
+        // Transform positions to scene coordinates (apply canvas bounds offset)
+        const ox = self.bounds.origin.x;
+        const oy = self.bounds.origin.y;
+        for (centers, 0..) |c, i| {
+            scene_positions[i] = .{ .x = ox + c[0], .y = oy + c[1] };
+        }
+
+        // Create and insert point cloud primitive
+        const pc = PointCloud.init(scene_positions, radius, Hsla.fromColor(color));
+        if (self.isOrdered()) {
+            self.scene.insertPointCloudWithOrder(pc, self.nextOrder(), self.clip_bounds) catch {};
+        } else {
+            self.scene.insertPointCloud(pc) catch {};
+        }
+    }
+
+    /// Draw a point cloud with clipping applied.
+    /// Positions are copied to scene allocator, not stack.
+    pub fn pointCloudClipped(self: *Self, centers: []const [2]f32, radius: f32, color: Color) void {
+        std.debug.assert(centers.len >= 1);
+        std.debug.assert(radius > 0);
+
+        if (centers.len < 1) return;
+
+        const scene_positions = self.scene.allocator.alloc(Point, centers.len) catch return;
+
+        const ox = self.bounds.origin.x;
+        const oy = self.bounds.origin.y;
+        for (centers, 0..) |c, i| {
+            scene_positions[i] = .{ .x = ox + c[0], .y = oy + c[1] };
+        }
+
+        const pc = PointCloud.init(scene_positions, radius, Hsla.fromColor(color));
+        if (self.isOrdered()) {
+            self.scene.insertPointCloudWithOrder(pc, self.nextOrder(), self.clip_bounds) catch {};
+        } else {
+            self.scene.insertPointCloudClipped(pc) catch {};
+        }
     }
 
     // =========================================================================
@@ -654,12 +989,23 @@ pub const DrawContext = struct {
             return;
         };
 
-        self.scene.insertPathWithMesh(
-            mesh,
-            self.bounds.origin.x,
-            self.bounds.origin.y,
-            Hsla.fromColor(color),
-        ) catch {};
+        if (self.isOrdered()) {
+            self.scene.insertPathWithMeshAndOrder(
+                mesh,
+                self.bounds.origin.x,
+                self.bounds.origin.y,
+                Hsla.fromColor(color),
+                self.nextOrder(),
+                self.clip_bounds,
+            ) catch {};
+        } else {
+            self.scene.insertPathWithMesh(
+                mesh,
+                self.bounds.origin.x,
+                self.bounds.origin.y,
+                Hsla.fromColor(color),
+            ) catch {};
+        }
     }
 
     /// Stroke a circle outline.
@@ -702,14 +1048,75 @@ pub const DrawContext = struct {
     }
 
     /// Stroke a line from (x1, y1) to (x2, y2).
-    /// Uses stroke expansion for proper line caps.
+    /// Optimized for axis-aligned lines (uses Quad, no Path allocation).
+    /// Falls back to stroke expansion for diagonal lines.
     pub fn strokeLine(self: *Self, x1: f32, y1: f32, x2: f32, y2: f32, stroke_width: f32, color: Color) void {
         std.debug.assert(stroke_width > 0);
 
-        var p = self.beginPath(x1, y1);
-        _ = p.lineTo(x2, y2);
+        const dx = x2 - x1;
+        const dy = y2 - y1;
 
-        self.strokePath(&p, stroke_width, color);
+        // Optimized path for axis-aligned lines (common in charts/grids)
+        // Uses Quad directly instead of 67KB Path allocation
+        const is_horizontal = @abs(dy) < 0.001;
+        const is_vertical = @abs(dx) < 0.001;
+
+        if (is_horizontal) {
+            // Horizontal line: simple rect
+            const min_x = @min(x1, x2);
+            const quad = Quad.filled(
+                self.bounds.origin.x + min_x,
+                self.bounds.origin.y + y1 - stroke_width * 0.5,
+                @abs(dx),
+                stroke_width,
+                Hsla.fromColor(color),
+            );
+            self.insertQuadOrdered(quad);
+            return;
+        }
+
+        if (is_vertical) {
+            // Vertical line: simple rect
+            const min_y = @min(y1, y2);
+            const quad = Quad.filled(
+                self.bounds.origin.x + x1 - stroke_width * 0.5,
+                self.bounds.origin.y + min_y,
+                stroke_width,
+                @abs(dy),
+                Hsla.fromColor(color),
+            );
+            self.insertQuadOrdered(quad);
+            return;
+        }
+
+        // Diagonal lines: compute quad corners directly (avoids 67KB Path allocation)
+        const len = @sqrt(dx * dx + dy * dy);
+        if (len < 0.001) return; // Degenerate line
+
+        // Perpendicular unit vector scaled by half stroke width
+        const px = -dy / len * stroke_width * 0.5;
+        const py = dx / len * stroke_width * 0.5;
+
+        // Compute quad corners (offset by canvas bounds)
+        const ox = self.bounds.origin.x;
+        const oy = self.bounds.origin.y;
+
+        const c0_x = ox + x1 + px;
+        const c0_y = oy + y1 + py;
+        const c1_x = ox + x2 + px;
+        const c1_y = oy + y2 + py;
+        const c2_x = ox + x2 - px;
+        const c2_y = oy + y2 - py;
+        const c3_x = ox + x1 - px;
+        const c3_y = oy + y1 - py;
+
+        // Insert as a quad (2 triangles) - uses ~14KB PathMesh instead of 67KB Path
+        const hsla = Hsla.fromColor(color);
+        if (self.isOrdered()) {
+            self.scene.insertLineQuadWithOrder(c0_x, c0_y, c1_x, c1_y, c2_x, c2_y, c3_x, c3_y, hsla, self.nextOrder(), self.clip_bounds) catch {};
+        } else {
+            self.scene.insertLineQuad(c0_x, c0_y, c1_x, c1_y, c2_x, c2_y, c3_x, c3_y, hsla) catch {};
+        }
     }
 
     /// Stroke a line with custom cap style.
@@ -729,6 +1136,188 @@ pub const DrawContext = struct {
         _ = p.lineTo(x2, y2);
 
         self.strokePathStyled(&p, stroke_width, color, cap, .miter);
+    }
+
+    // =========================================================================
+    // Text Rendering API
+    // =========================================================================
+
+    /// Draw text at the given position.
+    /// Uses real text rendering when text_system is available, otherwise
+    /// falls back to placeholder rectangles (for backwards compatibility).
+    ///
+    /// Returns the width of the rendered text.
+    ///
+    /// Note: The font_size parameter is currently used for layout calculations
+    /// and fallback rendering. Actual rendered size uses the TextSystem's
+    /// loaded font size.
+    pub fn drawText(
+        self: *Self,
+        text: []const u8,
+        x: f32,
+        y: f32,
+        color: Color,
+        font_size: f32,
+    ) f32 {
+        std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
+        std.debug.assert(font_size > 0);
+
+        if (text.len == 0) return 0;
+
+        // Use real text rendering if TextSystem is available
+        if (self.text_system) |ts| {
+            // Calculate baseline from top-left position
+            // y is top of text, baseline is below by ascender amount
+            const metrics = ts.getMetrics() orelse {
+                // Fallback if no metrics available
+                return self.drawTextFallback(text, x, y, color, font_size);
+            };
+
+            const abs_x = self.bounds.origin.x + x;
+            const baseline_y = self.bounds.origin.y + y + metrics.ascender;
+
+            var render_opts = text_render.RenderTextOptions{ .clipped = false };
+            if (self.isOrdered()) {
+                render_opts.base_order = self.base_order;
+                render_opts.current_order = &self.current_order;
+                render_opts.clip_bounds = self.clip_bounds;
+            }
+
+            const rendered_width = text_render.renderText(
+                self.scene,
+                ts,
+                text,
+                abs_x,
+                baseline_y,
+                self.scale,
+                Hsla.fromColor(color),
+                &render_opts,
+            ) catch {
+                // Fallback on render error
+                return self.drawTextFallback(text, x, y, color, font_size);
+            };
+
+            return rendered_width;
+        }
+
+        // Fallback: draw rectangles as character placeholders
+        return self.drawTextFallback(text, x, y, color, font_size);
+    }
+
+    /// Fallback text rendering using rectangles (when TextSystem unavailable)
+    fn drawTextFallback(
+        self: *Self,
+        text: []const u8,
+        x: f32,
+        y: f32,
+        color: Color,
+        font_size: f32,
+    ) f32 {
+        const char_width = font_size * 0.6;
+        const char_height = font_size * 0.8;
+        const spacing = font_size * 0.1;
+
+        var offset: f32 = 0;
+        for (text) |_| {
+            self.fillRect(x + offset, y, char_width, char_height, color);
+            offset += char_width + spacing;
+        }
+
+        return offset;
+    }
+
+    /// Draw text vertically centered at the given y position.
+    /// The text's visual center will be aligned with y_center.
+    /// Returns the width of the rendered text.
+    pub fn drawTextVCentered(
+        self: *Self,
+        text: []const u8,
+        x: f32,
+        y_center: f32,
+        color: Color,
+        font_size: f32,
+    ) f32 {
+        std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y_center));
+        std.debug.assert(font_size > 0);
+
+        if (text.len == 0) return 0;
+
+        // Use real text rendering if TextSystem is available
+        if (self.text_system) |ts| {
+            const metrics = ts.getMetrics() orelse {
+                // Fallback if no metrics available
+                const top_y = y_center - font_size * 0.4;
+                return self.drawTextFallback(text, x, top_y, color, font_size);
+            };
+
+            // Calculate baseline for vertical centering
+            // Visual center of text is roughly at baseline - cap_height/2
+            // Cap height is approximately ascender * 0.7 for most fonts
+            // So visual center ≈ baseline - ascender * 0.35
+            // Therefore: baseline = y_center + ascender * 0.35
+            const abs_x = self.bounds.origin.x + x;
+            const baseline_y = self.bounds.origin.y + y_center + metrics.ascender * 0.35;
+
+            var render_opts = text_render.RenderTextOptions{ .clipped = false };
+            if (self.isOrdered()) {
+                render_opts.base_order = self.base_order;
+                render_opts.current_order = &self.current_order;
+                render_opts.clip_bounds = self.clip_bounds;
+            }
+
+            const rendered_width = text_render.renderText(
+                self.scene,
+                ts,
+                text,
+                abs_x,
+                baseline_y,
+                self.scale,
+                Hsla.fromColor(color),
+                &render_opts,
+            ) catch {
+                // Fallback on render error
+                const top_y = y_center - font_size * 0.4;
+                return self.drawTextFallback(text, x, top_y, color, font_size);
+            };
+
+            return rendered_width;
+        }
+
+        // Fallback: draw rectangles as character placeholders, centered
+        const top_y = y_center - font_size * 0.4;
+        return self.drawTextFallback(text, x, top_y, color, font_size);
+    }
+
+    /// Measure the width of text without rendering it.
+    /// Uses TextSystem measurement when available, otherwise estimates based on font_size.
+    pub fn measureText(self: *Self, text: []const u8, font_size: f32) f32 {
+        std.debug.assert(font_size > 0);
+
+        if (text.len == 0) return 0;
+
+        // Use real measurement if TextSystem is available
+        if (self.text_system) |ts| {
+            return ts.measureText(text) catch {
+                // Fallback on measurement error
+                return self.measureTextFallback(text, font_size);
+            };
+        }
+
+        // Fallback: estimate based on character count
+        return self.measureTextFallback(text, font_size);
+    }
+
+    /// Fallback text measurement (when TextSystem unavailable)
+    fn measureTextFallback(_: *Self, text: []const u8, font_size: f32) f32 {
+        const char_width = font_size * 0.6;
+        const spacing = font_size * 0.1;
+        const text_len: f32 = @floatFromInt(text.len);
+        return text_len * (char_width + spacing);
+    }
+
+    /// Check if real text rendering is available
+    pub fn hasTextSupport(self: *const Self) bool {
+        return self.text_system != null;
     }
 
     // =========================================================================
@@ -757,15 +1346,21 @@ pub const DrawContext = struct {
 
 /// Execute a pending canvas paint callback.
 /// Called by the frame renderer after layout is complete.
+/// Optionally accepts a TextSystem for real text rendering in canvas callbacks.
 pub fn executePendingCanvas(
     pending: PendingCanvas,
     scene: *Scene,
     bounds: Bounds,
+    text_system: ?*TextSystem,
 ) void {
     var ctx = DrawContext{
         .scene = scene,
         .bounds = bounds,
         .scale = pending.scale,
+        .text_system = text_system,
+        .base_order = pending.base_order,
+        .clip_bounds = pending.clip_bounds,
+        .current_order = pending.base_order,
     };
     pending.paint(&ctx);
 }
@@ -824,7 +1419,8 @@ pub const Canvas = struct {
         });
 
         // Create a box to reserve space in layout - use same layout_id!
-        b.boxWithLayoutId(layout_id, .{
+        // Use boxWithLayoutIdCanvas to emit a canvas command for proper z-ordering
+        b.boxWithLayoutIdCanvas(layout_id, .{
             .width = self.width,
             .height = self.height,
         }, .{});

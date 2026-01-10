@@ -25,6 +25,7 @@ pub const RenderCommandType = enum {
     image,
     scissor_start,
     scissor_end,
+    canvas,
     custom,
 };
 
@@ -55,6 +56,7 @@ pub const RenderData = union(RenderCommandType) {
     image: ImageData,
     scissor_start: ScissorData,
     scissor_end: void,
+    canvas: CanvasData,
     custom: CustomData,
 };
 
@@ -130,6 +132,12 @@ pub const ImageData = struct {
 /// Data for scissor/clip regions
 pub const ScissorData = struct {
     clip_bounds: BoundingBox,
+};
+
+/// Data for canvas rendering (deferred paint callback)
+pub const CanvasData = struct {
+    /// Layout ID to match with pending canvas
+    layout_id: u32,
 };
 
 /// Data for custom rendering

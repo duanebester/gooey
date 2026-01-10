@@ -18,7 +18,11 @@ const unified = @import("unified.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
 const image_pipeline = @import("image_pipeline.zig");
 const path_pipeline = @import("path_pipeline.zig");
+const polyline_pipeline = @import("polyline_pipeline.zig");
+const point_cloud_pipeline = @import("point_cloud_pipeline.zig");
 const mesh_pool_mod = @import("../../../scene/mesh_pool.zig");
+const Polyline = @import("../../../scene/polyline.zig").Polyline;
+const PointCloud = @import("../../../scene/point_cloud.zig").PointCloud;
 
 /// Pipeline references for batch rendering
 pub const Pipelines = struct {
@@ -27,6 +31,8 @@ pub const Pipelines = struct {
     svg: ?*svg_pipeline.SvgPipeline,
     image: ?*image_pipeline.ImagePipeline,
     path: ?*path_pipeline.PathPipeline,
+    polyline: ?*polyline_pipeline.PolylinePipeline,
+    point_cloud: ?*point_cloud_pipeline.PointCloudPipeline,
     mesh_pool: ?*const mesh_pool_mod.MeshPool,
     unit_vertex_buffer: objc.Object,
 };
@@ -92,6 +98,14 @@ pub fn drawSceneWithStats(
             .path => |paths| {
                 if (DEBUG_BATCHES) std.debug.print("PATH x{d}\n", .{paths.len});
                 drawPathBatch(encoder, paths, scene, pipelines, viewport_size, stats);
+            },
+            .polyline => |polylines| {
+                if (DEBUG_BATCHES) std.debug.print("POLYLINE x{d}\n", .{polylines.len});
+                drawPolylineBatch(encoder, polylines, pipelines, viewport_size, stats);
+            },
+            .point_cloud => |point_clouds| {
+                if (DEBUG_BATCHES) std.debug.print("POINT_CLOUD x{d}\n", .{point_clouds.len});
+                drawPointCloudBatch(encoder, point_clouds, pipelines, viewport_size, stats);
             },
         }
         batch_num += 1;
@@ -287,6 +301,52 @@ fn drawPathBatch(
     if (stats) |s| {
         s.recordDrawCall();
         s.recordPaths(@intCast(paths.len));
+    }
+}
+
+/// Draw a batch of polylines using the polyline pipeline
+fn drawPolylineBatch(
+    encoder: objc.Object,
+    polylines: []const Polyline,
+    pipelines: Pipelines,
+    viewport_size: [2]f32,
+    stats: ?*render_stats.RenderStats,
+) void {
+    if (polylines.len == 0) return;
+    const plp = pipelines.polyline orelse return;
+
+    plp.renderBatch(encoder, polylines, viewport_size) catch |err| {
+        if (builtin.mode == .Debug) {
+            std.debug.print("drawPolylineBatch failed: {}\n", .{err});
+        }
+    };
+
+    if (stats) |s| {
+        s.recordDrawCall();
+        // TODO: Add recordPolylines to stats if needed
+    }
+}
+
+/// Draw a batch of point clouds using the point cloud pipeline
+fn drawPointCloudBatch(
+    encoder: objc.Object,
+    point_clouds: []const PointCloud,
+    pipelines: Pipelines,
+    viewport_size: [2]f32,
+    stats: ?*render_stats.RenderStats,
+) void {
+    if (point_clouds.len == 0) return;
+    const pcp = pipelines.point_cloud orelse return;
+
+    pcp.renderBatch(encoder, point_clouds, viewport_size) catch |err| {
+        if (builtin.mode == .Debug) {
+            std.debug.print("drawPointCloudBatch failed: {}\n", .{err});
+        }
+    };
+
+    if (stats) |s| {
+        s.recordDrawCall();
+        // TODO: Add recordPointClouds to stats if needed
     }
 }
 
