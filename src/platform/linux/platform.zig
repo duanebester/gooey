@@ -4,6 +4,7 @@
 //! using Wayland as the display server protocol.
 
 const std = @import("std");
+const posix = std.posix;
 const wayland = @import("wayland.zig");
 const interface_mod = @import("../interface.zig");
 const LinuxWindow = @import("window.zig").Window;
@@ -236,6 +237,16 @@ pub const LinuxPlatform = struct {
 
     /// Run the platform event loop (blocking)
     pub fn run(self: *Self) void {
+        const display = self.display orelse return;
+        const fd = wayland.displayGetFd(display);
+
+        // Use poll() for non-blocking event handling with timeout.
+        // This allows frame callbacks to drive rendering at vsync rate
+        // without blocking on input events (unlike wl_display_dispatch).
+        var pollfds = [_]posix.pollfd{
+            .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 },
+        };
+
         while (self.running) {
             // Render frame if we have an active window
             if (self.active_window) |window| {
@@ -246,27 +257,62 @@ pub const LinuxPlatform = struct {
                 window.renderFrame();
             }
 
-            // Flush outgoing requests
-            _ = wayland.wl_display_flush(self.display.?);
+            // Flush outgoing requests before polling
+            while (true) {
+                const flush_result = wayland.wl_display_flush(display);
+                if (flush_result >= 0) break;
+                // EAGAIN means write buffer is full, poll for writability
+                // (EAGAIN == EWOULDBLOCK on Linux)
+                const errno_val = std.c._errno().*;
+                if (errno_val == @intFromEnum(posix.E.AGAIN)) {
+                    pollfds[0].events = posix.POLL.OUT;
+                    _ = posix.poll(&pollfds, -1) catch break;
+                    pollfds[0].events = posix.POLL.IN;
+                } else {
+                    self.running = false;
+                    break;
+                }
+            }
 
-            // Dispatch Wayland events (blocking)
-            if (wayland.wl_display_dispatch(self.display.?) < 0) {
-                // Connection error
+            // First dispatch any pending events (non-blocking)
+            if (wayland.wl_display_dispatch_pending(display) < 0) {
                 self.running = false;
                 break;
+            }
+
+            // Poll with a short timeout (1ms) to allow:
+            // 1. Quick response to input events
+            // 2. Frame callbacks to be received promptly
+            // 3. CPU to idle when no events pending
+            // The timeout is short because Wayland frame callbacks pace us to vsync.
+            const timeout_ms: i32 = 1;
+            const poll_result = posix.poll(&pollfds, timeout_ms) catch {
+                self.running = false;
+                break;
+            };
+
+            // If events are available, dispatch them
+            if (poll_result > 0 and (pollfds[0].revents & posix.POLL.IN) != 0) {
+                // Read events from socket (non-blocking after poll says data is ready)
+                if (wayland.wl_display_dispatch(display) < 0) {
+                    self.running = false;
+                    break;
+                }
             }
         }
     }
 
     /// Run a single iteration of the event loop (non-blocking)
+    /// Dispatches any pending events already read from the socket.
     pub fn poll(self: *Self) bool {
         if (!self.running) return false;
+        const display = self.display orelse return false;
 
         // Flush outgoing requests
-        _ = wayland.wl_display_flush(self.display.?);
+        _ = wayland.wl_display_flush(display);
 
-        // Dispatch pending events
-        if (wayland.wl_display_dispatch_pending(self.display.?) < 0) {
+        // Dispatch pending events (already in the queue)
+        if (wayland.wl_display_dispatch_pending(display) < 0) {
             self.running = false;
             return false;
         }
@@ -283,6 +329,62 @@ pub const LinuxPlatform = struct {
         if (wayland.wl_display_dispatch(self.display.?) < 0) {
             self.running = false;
             return false;
+        }
+
+        return self.running;
+    }
+
+    /// Wait for events with a timeout, then dispatch them.
+    /// This is ideal for continuous rendering - it won't block indefinitely
+    /// like dispatch(), allowing frame callbacks to drive rendering at vsync rate.
+    /// timeout_ms: -1 = block forever, 0 = non-blocking, >0 = wait up to timeout_ms
+    /// Returns false if the connection is broken or quit was requested
+    pub fn dispatchWithTimeout(self: *Self, timeout_ms: i32) bool {
+        if (!self.running) return false;
+        const display = self.display orelse return false;
+
+        // Flush outgoing requests first
+        while (true) {
+            const flush_result = wayland.wl_display_flush(display);
+            if (flush_result >= 0) break;
+            // EAGAIN means write buffer is full (EAGAIN == EWOULDBLOCK on Linux)
+            const errno_val = std.c._errno().*;
+            if (errno_val == @intFromEnum(posix.E.AGAIN)) {
+                // Poll for writability
+                var pollfds = [_]posix.pollfd{
+                    .{ .fd = wayland.displayGetFd(display), .events = posix.POLL.OUT, .revents = 0 },
+                };
+                _ = posix.poll(&pollfds, -1) catch {
+                    self.running = false;
+                    return false;
+                };
+            } else {
+                self.running = false;
+                return false;
+            }
+        }
+
+        // Dispatch any already-pending events
+        if (wayland.wl_display_dispatch_pending(display) < 0) {
+            self.running = false;
+            return false;
+        }
+
+        // Poll for new events with timeout
+        var pollfds = [_]posix.pollfd{
+            .{ .fd = wayland.displayGetFd(display), .events = posix.POLL.IN, .revents = 0 },
+        };
+        const poll_result = posix.poll(&pollfds, timeout_ms) catch {
+            self.running = false;
+            return false;
+        };
+
+        // If events arrived, dispatch them
+        if (poll_result > 0 and (pollfds[0].revents & posix.POLL.IN) != 0) {
+            if (wayland.wl_display_dispatch(display) < 0) {
+                self.running = false;
+                return false;
+            }
         }
 
         return self.running;

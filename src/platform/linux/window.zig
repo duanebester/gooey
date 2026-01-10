@@ -42,6 +42,11 @@ const toplevel_listener = wayland.XdgToplevelListener{
     .wm_capabilities = Window.xdgToplevelWmCapabilities,
 };
 
+// Frame callback listener - must be static to persist across scheduleFrame() calls
+const frame_callback_listener = wayland.CallbackListener{
+    .done = Window.frameCallback,
+};
+
 pub const Window = struct {
     allocator: Allocator,
     platform: *LinuxPlatform,
@@ -78,6 +83,10 @@ pub const Window = struct {
     renderer: VulkanRenderer,
     background_color: geometry.Color = geometry.Color.init(0.2, 0.2, 0.25, 1.0),
     needs_redraw: bool = true,
+
+    /// When true, continuously schedule frames at vsync rate (like macOS DisplayLink).
+    /// This enables smooth 120fps+ rendering without requiring explicit requestRender() calls.
+    continuous_render: bool = true,
 
     // Scene reference (set externally)
     scene: ?*const scene_mod.Scene = null,
@@ -616,10 +625,8 @@ pub const Window = struct {
 
         self.frame_callback = wayland.surfaceFrame(self.wl_surface.?);
         if (self.frame_callback) |cb| {
-            const callback_listener = wayland.CallbackListener{
-                .done = frameCallback,
-            };
-            _ = wayland.callbackAddListener(cb, &callback_listener, self);
+            // Use static listener - local variables would be dangling pointers!
+            _ = wayland.callbackAddListener(cb, &frame_callback_listener, self);
         }
         wayland.surfaceCommit(self.wl_surface.?);
     }
@@ -892,11 +899,32 @@ pub const Window = struct {
         wayland.callbackDestroy(callback);
         self.frame_callback = null;
 
+        // DEBUG: FPS counter
+        const static = struct {
+            var count: u32 = 0;
+            var last_print: i64 = 0;
+        };
+        static.count += 1;
+        const now = std.time.milliTimestamp();
+        if (now - static.last_print > 1000) {
+            std.debug.print("Wayland frame callbacks/sec: {}\n", .{static.count});
+            static.count = 0;
+            static.last_print = now;
+        }
+
+        // In continuous mode, always render (like macOS benchmark_mode)
+        // This ensures animations run smoothly and the render callback is always invoked
+        if (self.continuous_render) {
+            self.needs_redraw = true;
+        }
+
         // Render the frame
         self.renderFrame();
 
-        // Schedule next frame if we still need to redraw
-        if (self.needs_redraw) {
+        // Schedule next frame:
+        // - In continuous mode: always schedule (vsync-driven like macOS DisplayLink)
+        // - In on-demand mode: only if needs_redraw is still true
+        if (self.continuous_render or self.needs_redraw) {
             self.scheduleFrame();
         }
     }
