@@ -625,10 +625,24 @@ pub const LinuxBridge = struct {
         std.debug.assert(sig.slot < constants.MAX_ELEMENTS);
 
         const obj = &self.objects[sig.slot];
-        if (!obj.active and sig.signal_type != .children_changed_remove) return;
 
+        // Handle children_changed signals early - they don't need the object path
+        // (they emit on APP_A11Y_PATH) and for remove signals the object may
+        // already be invalidated
+        if (sig.signal_type == .children_changed_remove) {
+            self.emitChildrenChangedSignal(conn, "remove", sig.slot);
+            return;
+        }
+        if (sig.signal_type == .children_changed_add) {
+            self.emitChildrenChangedSignal(conn, "add", sig.slot);
+            return;
+        }
+
+        if (!obj.active) return;
+
+        // Get object path - required for remaining signal types
+        if (obj.path_len == 0) return;
         const path = obj.objectPath();
-        if (path.len == 0) return;
 
         // Build signal based on type
         switch (sig.signal_type) {
@@ -656,11 +670,9 @@ pub const LinuxBridge = struct {
             .state_changed_enabled => {
                 self.emitStateChangeSignal(conn, path, "enabled", sig.detail.state_value);
             },
-            .children_changed_add => {
-                self.emitChildrenChangedSignal(conn, "add", sig.slot);
-            },
-            .children_changed_remove => {
-                self.emitChildrenChangedSignal(conn, "remove", sig.slot);
+            .children_changed_add, .children_changed_remove => {
+                // Already handled above
+                unreachable;
             },
             .focus_gained => {
                 self.emitFocusSignal(conn, path);

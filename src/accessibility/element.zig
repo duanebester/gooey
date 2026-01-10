@@ -116,7 +116,7 @@ pub const Element = struct {
         // Assertion: can't check focusability of hidden elements meaningfully
         std.debug.assert(self.fingerprint.isValid() or !self.isAccessible());
         // Assertion: disabled state should be explicitly set, not garbage
-        std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x07FF); // Only 11 bits used
+        std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x0FFF); // Only 12 bits used
 
         if (self.state.disabled or self.state.hidden) return false;
         return self.role.isFocusableByDefault();
@@ -127,8 +127,8 @@ pub const Element = struct {
     pub fn contentHash(self: *const Self) u32 {
         // Assertion: fingerprint must be initialized before hashing
         std.debug.assert(self.fingerprint.isValid() or self.role == .presentation);
-        // Assertion: state bits are valid
-        std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x07FF);
+        // Assertion: state bits are valid (12 bools in bits 0-11, reserved u4 in bits 12-15 must be 0)
+        std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x0FFF);
 
         var h = std.hash.Wyhash.init(0);
 

@@ -307,6 +307,10 @@ pub const DispatchTree = struct {
     /// Root node ID
     root: DispatchNodeId = .invalid,
 
+    /// High water mark: max number of nodes ever initialized (for safe reuse)
+    /// Only reuse nodes up to this index to avoid using uninitialized memory
+    high_water_mark: usize = 0,
+
     const Self = @This();
 
     /// Maximum depth for dispatch paths (should be plenty for any UI)
@@ -321,8 +325,10 @@ pub const DispatchTree = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Clean up listeners in all nodes before freeing the nodes array
-        for (self.nodes.items) |*node| {
+        // Clean up listeners in all nodes up to high water mark
+        // (these are the only ones with initialized listener arrays)
+        const backing = self.nodes.allocatedSlice();
+        for (backing[0..self.high_water_mark]) |*node| {
             node.deinit(self.allocator);
         }
         self.nodes.deinit(self.allocator);
@@ -334,8 +340,14 @@ pub const DispatchTree = struct {
 
     /// Reset tree for a new frame. Clears all nodes but retains capacity.
     pub fn reset(self: *Self) void {
-        // Clear listeners from all nodes (but keep node capacity)
-        for (self.nodes.items) |*node| {
+        // Update high water mark before clearing
+        if (self.nodes.items.len > self.high_water_mark) {
+            self.high_water_mark = self.nodes.items.len;
+        }
+
+        // Clear listeners from all nodes up to high water mark (but keep node capacity)
+        const backing = self.nodes.allocatedSlice();
+        for (backing[0..self.high_water_mark]) |*node| {
             node.resetListeners();
         }
 
@@ -360,9 +372,32 @@ pub const DispatchTree = struct {
         const node_index: u32 = @intCast(self.nodes.items.len);
         const node_id = DispatchNodeId.fromIndex(node_index);
 
-        self.nodes.append(self.allocator, .{
-            .parent = parent_id,
-        }) catch return .invalid;
+        // Reuse existing node if within high water mark (nodes that were properly initialized)
+        if (self.nodes.items.len < self.high_water_mark) {
+            // Access the backing buffer directly to reuse existing node
+            self.nodes.items.len += 1;
+            const node = &self.nodes.items[node_index];
+            // Reset node fields but keep listener array capacities
+            node.parent = parent_id;
+            node.first_child = .invalid;
+            node.next_sibling = .invalid;
+            node.bounds = null;
+            node.z_index = 0;
+            node.has_floating_descendant = false;
+            node.layout_id = null;
+            node.focus_id = null;
+            node.key_context = null;
+            node.child_count = 0;
+            node.drag_source = null;
+            node.drop_target = null;
+            node.pointer_events_none = false;
+            // Listeners already cleared by resetListeners() in reset()
+        } else {
+            // Beyond high water mark - append new node (either growing or first use of this slot)
+            self.nodes.append(self.allocator, .{
+                .parent = parent_id,
+            }) catch return .invalid;
+        }
 
         // Link to parent
         if (parent_id.toIndex()) |parent_idx| {
