@@ -151,6 +151,30 @@ pub const WebFontFace = struct {
         return @truncate(codepoint);
     }
 
+    /// Get advance width for a glyph (fast path for text measurement)
+    /// Uses cached value if available, otherwise measures via JS
+    pub fn glyphAdvance(self: *Self, glyph_id: u16) f32 {
+        // Check cache first for common characters (avoids JS call)
+        if (glyph_id < 256 and self.advance_cache_valid[glyph_id] != 0) {
+            return self.advance_cache[glyph_id];
+        }
+
+        // Cache miss - measure single character via JS
+        var char_buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(@intCast(glyph_id), &char_buf) catch return 0;
+
+        const name = self.fontName();
+        const advance = measureText(name.ptr, @intCast(name.len), self.metrics.point_size, &char_buf, @intCast(len));
+
+        // Cache for future lookups
+        if (glyph_id < 256) {
+            self.advance_cache[glyph_id] = advance;
+            self.advance_cache_valid[glyph_id] = 1;
+        }
+
+        return advance;
+    }
+
     /// Get metrics for a specific glyph
     pub fn glyphMetrics(self: *Self, glyph_id: u16) GlyphMetrics {
         // Check advance cache first for common characters (avoids JS call)

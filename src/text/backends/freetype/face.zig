@@ -38,6 +38,11 @@ fn ensureLibraryInit() !ft.FT_Library {
     return lib;
 }
 
+/// Maximum glyph ID for advance cache (covers most fonts)
+const ADVANCE_CACHE_SIZE: usize = 4096;
+/// Sentinel value for uncached advances
+const ADVANCE_UNCACHED: f32 = -1.0;
+
 /// FreeType-backed font face
 pub const FreeTypeFace = struct {
     /// FreeType face handle
@@ -51,6 +56,9 @@ pub const FreeTypeFace = struct {
     /// Font file path (for debugging)
     font_path_buf: [512]u8,
     font_path_len: usize,
+    /// Glyph advance cache - avoids expensive FT_Load_Glyph calls during measurement
+    /// Index by glyph_id, stores advance_x. ADVANCE_UNCACHED means not yet loaded.
+    advance_cache: [ADVANCE_CACHE_SIZE]f32,
 
     const Self = @This();
 
@@ -196,6 +204,7 @@ pub const FreeTypeFace = struct {
             .point_size = size,
             .font_path_buf = undefined,
             .font_path_len = @min(path_len, 511),
+            .advance_cache = [_]f32{ADVANCE_UNCACHED} ** ADVANCE_CACHE_SIZE,
         };
 
         // Store path for debugging
@@ -225,7 +234,36 @@ pub const FreeTypeFace = struct {
         return @intCast(glyph_idx);
     }
 
-    /// Get metrics for a specific glyph
+    /// Get advance width for a glyph (fast path for text measurement)
+    /// Uses cached value if available, otherwise loads and caches
+    pub fn glyphAdvance(self: *Self, glyph_id: u16) f32 {
+        // Check cache first (fast path)
+        if (glyph_id < ADVANCE_CACHE_SIZE) {
+            const cached = self.advance_cache[glyph_id];
+            if (cached != ADVANCE_UNCACHED) {
+                return cached;
+            }
+        }
+
+        // Cache miss - load glyph with minimal work (no hinting, no bitmap)
+        const err = ft.FT_Load_Glyph(self.ft_face, glyph_id, ft.FT_LOAD_NO_HINTING | ft.FT_LOAD_NO_BITMAP);
+        if (err != 0) {
+            return 0;
+        }
+
+        const advance = ft.f26dot6ToFloat(self.ft_face.glyph.metrics.horiAdvance);
+
+        // Cache for future lookups
+        if (glyph_id < ADVANCE_CACHE_SIZE) {
+            // Cast away const for caching (cache is logically mutable even on const self)
+            const mutable_self = @constCast(self);
+            mutable_self.advance_cache[glyph_id] = advance;
+        }
+
+        return advance;
+    }
+
+    /// Get metrics for a specific glyph (full metrics, slower path)
     pub fn glyphMetrics(self: *const Self, glyph_id: u16) GlyphMetrics {
         // Load glyph without rendering (just get metrics)
         const err = ft.FT_Load_Glyph(self.ft_face, glyph_id, ft.FT_LOAD_DEFAULT);
@@ -243,11 +281,18 @@ pub const FreeTypeFace = struct {
 
         const slot = self.ft_face.glyph;
         const m = slot.metrics;
+        const advance_x = ft.f26dot6ToFloat(m.horiAdvance);
+
+        // Update advance cache while we have it
+        if (glyph_id < ADVANCE_CACHE_SIZE) {
+            const mutable_self = @constCast(self);
+            mutable_self.advance_cache[glyph_id] = advance_x;
+        }
 
         // Convert from 26.6 fixed-point to float
         return .{
             .glyph_id = glyph_id,
-            .advance_x = ft.f26dot6ToFloat(m.horiAdvance),
+            .advance_x = advance_x,
             .advance_y = ft.f26dot6ToFloat(m.vertAdvance),
             .bearing_x = ft.f26dot6ToFloat(m.horiBearingX),
             .bearing_y = ft.f26dot6ToFloat(m.horiBearingY),

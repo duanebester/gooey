@@ -240,12 +240,19 @@ fn drawShadowBatch(
     buffer_offset: u32,
     current_pipeline: *?PipelineKind,
 ) u32 {
+    // Assertions: validate inputs
+    std.debug.assert(cmd != null);
+    std.debug.assert(buffer_offset <= MAX_PRIMITIVES_PER_BATCH);
+
     if (shadows.len == 0) return 0;
     if (pipelines.unified_pipeline == null) return 0;
     if (pipelines.primitive_mapped == null) return 0;
 
     const count: u32 = @intCast(@min(shadows.len, MAX_PRIMITIVES_PER_BATCH - buffer_offset));
     if (count == 0) return 0;
+
+    // Assert buffer bounds before GPU write
+    std.debug.assert(buffer_offset + count <= MAX_PRIMITIVES_PER_BATCH);
 
     // Upload shadow data to GPU buffer
     const dest: [*]unified.Primitive = @ptrCast(@alignCast(pipelines.primitive_mapped));
@@ -283,12 +290,19 @@ fn drawQuadBatch(
     buffer_offset: u32,
     current_pipeline: *?PipelineKind,
 ) u32 {
+    // Assertions: validate inputs
+    std.debug.assert(cmd != null);
+    std.debug.assert(buffer_offset <= MAX_PRIMITIVES_PER_BATCH);
+
     if (quads.len == 0) return 0;
     if (pipelines.unified_pipeline == null) return 0;
     if (pipelines.primitive_mapped == null) return 0;
 
     const count: u32 = @intCast(@min(quads.len, MAX_PRIMITIVES_PER_BATCH - buffer_offset));
     if (count == 0) return 0;
+
+    // Assert buffer bounds before GPU write
+    std.debug.assert(buffer_offset + count <= MAX_PRIMITIVES_PER_BATCH);
 
     // Upload quad data to GPU buffer
     const dest: [*]unified.Primitive = @ptrCast(@alignCast(pipelines.primitive_mapped));
@@ -326,6 +340,10 @@ fn drawGlyphBatch(
     buffer_offset: u32,
     current_pipeline: *?PipelineKind,
 ) u32 {
+    // Assertions: validate inputs
+    std.debug.assert(cmd != null);
+    std.debug.assert(buffer_offset <= MAX_GLYPHS_PER_BATCH);
+
     if (glyphs.len == 0) return 0;
     if (pipelines.text_pipeline == null) return 0;
     if (pipelines.atlas_view == null) return 0;
@@ -333,6 +351,9 @@ fn drawGlyphBatch(
 
     const count: u32 = @intCast(@min(glyphs.len, MAX_GLYPHS_PER_BATCH - buffer_offset));
     if (count == 0) return 0;
+
+    // Assert buffer bounds before GPU write
+    std.debug.assert(buffer_offset + count <= MAX_GLYPHS_PER_BATCH);
 
     // Upload glyph data to GPU buffer
     const dest: [*]GpuGlyph = @ptrCast(@alignCast(pipelines.glyph_mapped));
@@ -370,6 +391,10 @@ fn drawSvgBatch(
     buffer_offset: u32,
     current_pipeline: *?PipelineKind,
 ) u32 {
+    // Assertions: validate inputs
+    std.debug.assert(cmd != null);
+    std.debug.assert(buffer_offset <= MAX_SVGS_PER_BATCH);
+
     if (svgs.len == 0) return 0;
     if (pipelines.svg_pipeline == null) return 0;
     if (pipelines.svg_atlas_view == null) return 0;
@@ -377,6 +402,9 @@ fn drawSvgBatch(
 
     const count: u32 = @intCast(@min(svgs.len, MAX_SVGS_PER_BATCH - buffer_offset));
     if (count == 0) return 0;
+
+    // Assert buffer bounds before GPU write
+    std.debug.assert(buffer_offset + count <= MAX_SVGS_PER_BATCH);
 
     // Upload SVG data to GPU buffer
     const dest: [*]GpuSvg = @ptrCast(@alignCast(pipelines.svg_mapped));
@@ -414,6 +442,10 @@ fn drawImageBatch(
     buffer_offset: u32,
     current_pipeline: *?PipelineKind,
 ) u32 {
+    // Assertions: validate inputs
+    std.debug.assert(cmd != null);
+    std.debug.assert(buffer_offset <= MAX_IMAGES_PER_BATCH);
+
     if (images.len == 0) return 0;
     if (pipelines.image_pipeline == null) return 0;
     if (pipelines.image_atlas_view == null) return 0;
@@ -421,6 +453,9 @@ fn drawImageBatch(
 
     const count: u32 = @intCast(@min(images.len, MAX_IMAGES_PER_BATCH - buffer_offset));
     if (count == 0) return 0;
+
+    // Assert buffer bounds before GPU write
+    std.debug.assert(buffer_offset + count <= MAX_IMAGES_PER_BATCH);
 
     // Upload image data to GPU buffer
     const dest: [*]GpuImage = @ptrCast(@alignCast(pipelines.image_mapped));

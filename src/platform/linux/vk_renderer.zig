@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
+const wayland = @import("wayland.zig");
 const unified = @import("../wgpu/unified.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
@@ -17,6 +18,15 @@ const ImageInstance = image_instance_mod.ImageInstance;
 
 const Scene = scene_mod.Scene;
 const Allocator = std.mem.Allocator;
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/// Enable Vulkan validation layers in debug builds.
+/// Set to true to enable VK_LAYER_KHRONOS_validation for API error checking.
+/// This adds runtime overhead but catches many common Vulkan usage errors.
+pub const enable_validation_layers = @import("builtin").mode == .Debug;
 
 // =============================================================================
 // Constants
@@ -202,8 +212,12 @@ pub const GpuImage = extern struct {
 pub const VulkanRenderer = struct {
     allocator: Allocator,
 
+    // Wayland display reference (for roundtrip during cleanup)
+    wl_display: ?*wayland.Display = null,
+
     // Core Vulkan objects
     instance: vk.Instance = null,
+    debug_messenger: vk.DebugUtilsMessengerEXT = null,
     physical_device: vk.PhysicalDevice = null,
     device: vk.Device = null,
     graphics_queue: vk.Queue = null,
@@ -248,12 +262,15 @@ pub const VulkanRenderer = struct {
     // Command buffers
     command_pool: vk.CommandPool = null,
     command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer = [_]vk.CommandBuffer{null} ** MAX_FRAMES_IN_FLIGHT,
+    transfer_command_buffer: vk.CommandBuffer = null,
 
     // Synchronization
     image_available_semaphores: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore = [_]vk.Semaphore{null} ** MAX_FRAMES_IN_FLIGHT,
     render_finished_semaphores: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore = [_]vk.Semaphore{null} ** MAX_FRAMES_IN_FLIGHT,
     in_flight_fences: [MAX_FRAMES_IN_FLIGHT]vk.Fence = [_]vk.Fence{null} ** MAX_FRAMES_IN_FLIGHT,
+    transfer_fence: vk.Fence = null,
     current_frame: u32 = 0,
+    swapchain_needs_recreate: bool = false,
 
     // Buffers
     uniform_buffer: vk.Buffer = null,
@@ -367,6 +384,11 @@ pub const VulkanRenderer = struct {
             if (self.in_flight_fences[i]) |fence| {
                 vk.vkDestroyFence(self.device, fence, null);
             }
+        }
+
+        // Destroy transfer fence
+        if (self.transfer_fence) |fence| {
+            vk.vkDestroyFence(self.device, fence, null);
         }
 
         // Destroy command pool (frees command buffers)
@@ -508,6 +530,9 @@ pub const VulkanRenderer = struct {
             vk.vkDestroyDevice(dev, null);
         }
 
+        // Destroy debug messenger before instance
+        self.destroyDebugMessenger();
+
         // Destroy instance
         if (self.instance) |inst| {
             vk.vkDestroyInstance(inst, null);
@@ -525,6 +550,141 @@ pub const VulkanRenderer = struct {
         }
     }
 
+    // Helper functions for errdefer cleanup chains
+    fn destroySwapchainResources(self: *Self) void {
+        // Wait for device to be idle before destroying swapchain
+        // This ensures all GPU work is complete before cleanup
+        if (self.device) |dev| {
+            _ = vk.vkDeviceWaitIdle(dev);
+        }
+
+        // Flush pending Wayland requests before destroying swapchain
+        if (self.wl_display) |display| {
+            _ = wayland.wl_display_flush(display);
+            _ = wayland.wl_display_roundtrip(display);
+        }
+
+        for (&self.swapchain_image_views) |iv| {
+            if (iv) |view| vk.vkDestroyImageView(self.device, view, null);
+        }
+        @memset(&self.swapchain_image_views, null);
+        if (self.swapchain) |sc| vk.vkDestroySwapchainKHR(self.device, sc, null);
+        self.swapchain = null;
+
+        // Roundtrip after destroying swapchain to process compositor release events
+        //
+        // NOTE: A "queue destroyed while proxies still attached" warning may still appear.
+        // This is a KNOWN LIMITATION of Mesa's Vulkan Wayland WSI implementation:
+        // - Mesa creates internal wl_buffer objects for each swapchain image
+        // - When the swapchain is destroyed, Mesa destroys these wl_buffers
+        // - The compositor may still hold references, sending wl_buffer.release later
+        // - If the app exits before processing release events, the warning appears
+        //
+        // This warning is HARMLESS - the compositor cleans up properly regardless.
+        // It's a libwayland-client debugging message, not an actual resource leak.
+        // The roundtrips here minimize but cannot fully eliminate this race condition.
+        if (self.wl_display) |display| {
+            _ = wayland.wl_display_flush(display);
+            _ = wayland.wl_display_roundtrip(display);
+            _ = wayland.wl_display_roundtrip(display);
+        }
+    }
+
+    fn destroyMSAAResources(self: *Self) void {
+        if (self.msaa_view) |view| vk.vkDestroyImageView(self.device, view, null);
+        self.msaa_view = null;
+        if (self.msaa_image) |image| vk.vkDestroyImage(self.device, image, null);
+        self.msaa_image = null;
+        if (self.msaa_memory) |mem| vk.vkFreeMemory(self.device, mem, null);
+        self.msaa_memory = null;
+    }
+
+    fn destroyFramebuffers(self: *Self) void {
+        for (&self.framebuffers) |fb| {
+            if (fb) |framebuffer| vk.vkDestroyFramebuffer(self.device, framebuffer, null);
+        }
+        @memset(&self.framebuffers, null);
+    }
+
+    fn destroySyncObjects(self: *Self) void {
+        for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+            if (self.image_available_semaphores[i]) |sem| vk.vkDestroySemaphore(self.device, sem, null);
+            if (self.render_finished_semaphores[i]) |sem| vk.vkDestroySemaphore(self.device, sem, null);
+            if (self.in_flight_fences[i]) |fence| vk.vkDestroyFence(self.device, fence, null);
+        }
+        @memset(&self.image_available_semaphores, null);
+        @memset(&self.render_finished_semaphores, null);
+        @memset(&self.in_flight_fences, null);
+        if (self.transfer_fence) |fence| vk.vkDestroyFence(self.device, fence, null);
+        self.transfer_fence = null;
+    }
+
+    fn destroyAllBuffers(self: *Self) void {
+        self.destroyBuffer(self.uniform_buffer, self.uniform_memory);
+        self.uniform_buffer = null;
+        self.uniform_memory = null;
+        self.uniform_mapped = null;
+        self.destroyBuffer(self.primitive_buffer, self.primitive_memory);
+        self.primitive_buffer = null;
+        self.primitive_memory = null;
+        self.primitive_mapped = null;
+        self.destroyBuffer(self.glyph_buffer, self.glyph_memory);
+        self.glyph_buffer = null;
+        self.glyph_memory = null;
+        self.glyph_mapped = null;
+        self.destroyBuffer(self.svg_buffer, self.svg_memory);
+        self.svg_buffer = null;
+        self.svg_memory = null;
+        self.svg_mapped = null;
+        self.destroyBuffer(self.image_buffer, self.image_memory);
+        self.image_buffer = null;
+        self.image_memory = null;
+        self.image_mapped = null;
+        self.destroyBuffer(self.staging_buffer, self.staging_memory);
+        self.staging_buffer = null;
+        self.staging_memory = null;
+        self.staging_mapped = null;
+    }
+
+    fn destroyDescriptorLayouts(self: *Self) void {
+        if (self.unified_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
+        self.unified_descriptor_layout = null;
+        if (self.text_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
+        self.text_descriptor_layout = null;
+        if (self.svg_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
+        self.svg_descriptor_layout = null;
+        if (self.image_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
+        self.image_descriptor_layout = null;
+    }
+
+    fn destroyUnifiedPipeline(self: *Self) void {
+        if (self.unified_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
+        self.unified_pipeline = null;
+        if (self.unified_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
+        self.unified_pipeline_layout = null;
+    }
+
+    fn destroyTextPipeline(self: *Self) void {
+        if (self.text_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
+        self.text_pipeline = null;
+        if (self.text_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
+        self.text_pipeline_layout = null;
+    }
+
+    fn destroySvgPipeline(self: *Self) void {
+        if (self.svg_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
+        self.svg_pipeline = null;
+        if (self.svg_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
+        self.svg_pipeline_layout = null;
+    }
+
+    fn destroyImagePipeline(self: *Self) void {
+        if (self.image_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
+        self.image_pipeline = null;
+        if (self.image_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
+        self.image_pipeline_layout = null;
+    }
+
     /// Initialize with Wayland surface
     pub fn initWithWaylandSurface(
         self: *Self,
@@ -536,14 +696,25 @@ pub const VulkanRenderer = struct {
     ) !void {
         std.debug.assert(!self.initialized);
 
+        // Store Wayland display reference for cleanup roundtrips
+        self.wl_display = @ptrCast(wl_display);
+
         // Store scale factor
         self.scale_factor = scale_factor;
 
         // Create Vulkan instance
         try self.createInstance();
+        errdefer {
+            if (self.instance) |inst| vk.vkDestroyInstance(inst, null);
+            self.instance = null;
+        }
 
         // Create Wayland surface
         try self.createWaylandSurface(wl_display, wl_surface);
+        errdefer {
+            if (self.surface) |surf| vk.vkDestroySurfaceKHR(self.instance, surf, null);
+            self.surface = null;
+        }
 
         // Pick physical device and find queue families
         try self.pickPhysicalDevice();
@@ -554,6 +725,10 @@ pub const VulkanRenderer = struct {
 
         // Create logical device
         try self.createLogicalDevice();
+        errdefer {
+            if (self.device) |dev| vk.vkDestroyDevice(dev, null);
+            self.device = null;
+        }
 
         // Get memory properties
         vk.vkGetPhysicalDeviceMemoryProperties(self.physical_device, &self.mem_properties);
@@ -564,43 +739,69 @@ pub const VulkanRenderer = struct {
 
         // Create swapchain at physical pixel resolution for crisp HiDPI rendering
         try self.createSwapchain(physical_width, physical_height);
+        errdefer self.destroySwapchainResources();
 
         // Create MSAA color buffer (if MSAA enabled)
         try self.createMSAAResources();
+        errdefer self.destroyMSAAResources();
 
         // Create render pass
         try self.createRenderPass();
+        errdefer {
+            if (self.render_pass) |rp| vk.vkDestroyRenderPass(self.device, rp, null);
+            self.render_pass = null;
+        }
 
         // Create framebuffers
         try self.createFramebuffers();
+        errdefer self.destroyFramebuffers();
 
         // Create command pool and buffers
         try self.createCommandPool();
+        errdefer {
+            if (self.command_pool) |pool| vk.vkDestroyCommandPool(self.device, pool, null);
+            self.command_pool = null;
+        }
         try self.allocateCommandBuffers();
 
         // Create synchronization objects
         try self.createSyncObjects();
+        errdefer self.destroySyncObjects();
 
         // Create buffers
         try self.createBuffers();
+        errdefer self.destroyAllBuffers();
 
         // Create descriptor layouts
         try self.createDescriptorLayouts();
+        errdefer self.destroyDescriptorLayouts();
 
         // Create descriptor pool
         try self.createDescriptorPool();
+        errdefer {
+            if (self.descriptor_pool) |pool| vk.vkDestroyDescriptorPool(self.device, pool, null);
+            self.descriptor_pool = null;
+        }
 
         // Allocate descriptor sets
         try self.allocateDescriptorSets();
 
         // Create sampler for atlas
         try self.createSampler();
+        errdefer {
+            if (self.atlas_sampler) |sampler| vk.vkDestroySampler(self.device, sampler, null);
+            self.atlas_sampler = null;
+        }
 
         // Create pipelines
         try self.createUnifiedPipeline();
+        errdefer self.destroyUnifiedPipeline();
         try self.createTextPipeline();
+        errdefer self.destroyTextPipeline();
         try self.createSvgPipeline();
+        errdefer self.destroySvgPipeline();
         try self.createImagePipeline();
+        errdefer self.destroyImagePipeline();
 
         // Update uniform buffer with LOGICAL pixel dimensions
         // Scene coordinates are in logical pixels, so the shader needs logical viewport size
@@ -720,20 +921,50 @@ pub const VulkanRenderer = struct {
             .apiVersion = vk.c.VK_API_VERSION_1_0,
         };
 
-        const extensions = [_][*:0]const u8{
+        // Check if validation layers should be enabled
+        const use_validation = enable_validation_layers and vk.isValidationLayerAvailable();
+        if (enable_validation_layers and !use_validation) {
+            std.log.warn("Validation layers requested but VK_LAYER_KHRONOS_validation not available", .{});
+        }
+
+        // Extensions - add debug utils if validation enabled
+        const base_extensions = [_][*:0]const u8{
             "VK_KHR_surface",
             "VK_KHR_wayland_surface",
+        };
+        const debug_extensions = [_][*:0]const u8{
+            "VK_KHR_surface",
+            "VK_KHR_wayland_surface",
+            "VK_EXT_debug_utils",
+        };
+        const extensions: []const [*:0]const u8 = if (use_validation) &debug_extensions else &base_extensions;
+
+        // Validation layer
+        const validation_layers = [_][*:0]const u8{vk.VALIDATION_LAYER_NAME};
+
+        // Debug messenger create info (chained via pNext when validation enabled)
+        var debug_create_info = vk.DebugUtilsMessengerCreateInfoEXT{
+            .sType = vk.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            .pNext = null,
+            .flags = 0,
+            .messageSeverity = vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            .messageType = vk.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                vk.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                vk.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+            .pfnUserCallback = debugCallback,
+            .pUserData = null,
         };
 
         const create_info = vk.InstanceCreateInfo{
             .sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            .pNext = null,
+            .pNext = if (use_validation) @ptrCast(&debug_create_info) else null,
             .flags = 0,
             .pApplicationInfo = &app_info,
-            .enabledLayerCount = 0,
-            .ppEnabledLayerNames = null,
-            .enabledExtensionCount = extensions.len,
-            .ppEnabledExtensionNames = &extensions,
+            .enabledLayerCount = if (use_validation) validation_layers.len else 0,
+            .ppEnabledLayerNames = if (use_validation) &validation_layers else null,
+            .enabledExtensionCount = @intCast(extensions.len),
+            .ppEnabledExtensionNames = extensions.ptr,
         };
 
         const result = vk.vkCreateInstance(&create_info, null, &self.instance);
@@ -741,6 +972,69 @@ pub const VulkanRenderer = struct {
             std.log.err("Failed to create Vulkan instance: {}", .{result});
             return error.VulkanInstanceCreationFailed;
         }
+
+        // Create debug messenger after instance creation
+        if (use_validation) {
+            self.createDebugMessenger(&debug_create_info);
+        }
+    }
+
+    /// Debug callback for validation layer messages
+    fn debugCallback(
+        severity: c_uint,
+        msg_type: c_uint,
+        callback_data: [*c]const vk.DebugUtilsMessengerCallbackDataEXT,
+        _: ?*anyopaque,
+    ) callconv(.c) vk.Bool32 {
+        _ = msg_type;
+
+        // Dereference C pointer to access fields
+        const message: [*c]const u8 = if (callback_data != null) callback_data.*.pMessage else "unknown";
+
+        if ((severity & vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+            std.log.err("[Vulkan Validation] {s}", .{message});
+        } else if ((severity & vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
+            std.log.warn("[Vulkan Validation] {s}", .{message});
+        } else {
+            std.log.info("[Vulkan Validation] {s}", .{message});
+        }
+
+        return vk.FALSE; // Don't abort the call
+    }
+
+    /// Create the debug messenger (called after instance creation)
+    fn createDebugMessenger(self: *Self, create_info: *const vk.DebugUtilsMessengerCreateInfoEXT) void {
+        // Get function pointer dynamically since it's an extension
+        const func = @as(
+            ?*const fn (vk.Instance, *const vk.DebugUtilsMessengerCreateInfoEXT, ?*const anyopaque, *vk.DebugUtilsMessengerEXT) callconv(.c) vk.Result,
+            @ptrCast(vk.vkGetInstanceProcAddr(self.instance, "vkCreateDebugUtilsMessengerEXT")),
+        );
+
+        if (func) |create_fn| {
+            const result = create_fn(self.instance, create_info, null, &self.debug_messenger);
+            if (vk.succeeded(result)) {
+                std.log.info("Vulkan validation layers enabled", .{});
+            } else {
+                std.log.warn("Failed to create debug messenger: {}", .{result});
+            }
+        } else {
+            std.log.warn("vkCreateDebugUtilsMessengerEXT not available", .{});
+        }
+    }
+
+    /// Destroy the debug messenger (called before instance destruction)
+    fn destroyDebugMessenger(self: *Self) void {
+        if (self.debug_messenger == null) return;
+
+        const func = @as(
+            ?*const fn (vk.Instance, vk.DebugUtilsMessengerEXT, ?*const anyopaque) callconv(.c) void,
+            @ptrCast(vk.vkGetInstanceProcAddr(self.instance, "vkDestroyDebugUtilsMessengerEXT")),
+        );
+
+        if (func) |destroy_fn| {
+            destroy_fn(self.instance, self.debug_messenger, null);
+        }
+        self.debug_messenger = null;
     }
 
     fn createWaylandSurface(self: *Self, wl_display: *anyopaque, wl_surface: *anyopaque) !void {
@@ -766,6 +1060,9 @@ pub const VulkanRenderer = struct {
             return error.NoVulkanDevicesFound;
         }
 
+        // Assert device count fits our fixed array - fail fast if assumption violated
+        // (16 devices should be more than enough for any reasonable system)
+        std.debug.assert(device_count <= 16);
         var devices: [16]vk.PhysicalDevice = [_]vk.PhysicalDevice{null} ** 16;
         var count: u32 = @min(device_count, 16);
         _ = vk.vkEnumeratePhysicalDevices(self.instance, &count, &devices);
@@ -792,6 +1089,8 @@ pub const VulkanRenderer = struct {
         var queue_family_count: u32 = 0;
         vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, null);
 
+        // Assert queue family count fits our fixed array - fail fast if assumption violated
+        std.debug.assert(queue_family_count <= 32);
         var queue_families: [32]vk.QueueFamilyProperties = undefined;
         var count: u32 = @min(queue_family_count, 32);
         vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &count, &queue_families);
@@ -886,6 +1185,8 @@ pub const VulkanRenderer = struct {
         var format_count: u32 = 0;
         _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &format_count, null);
 
+        // Assert format count fits our fixed array - fail fast if assumption violated
+        std.debug.assert(format_count <= 16);
         var formats: [16]vk.SurfaceFormatKHR = undefined;
         var fmt_count: u32 = @min(format_count, 16);
         _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &fmt_count, &formats);
@@ -921,6 +1222,8 @@ pub const VulkanRenderer = struct {
         var present_mode_count: u32 = 0;
         _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &present_mode_count, null);
 
+        // Assert present mode count fits our fixed array - fail fast if assumption violated
+        std.debug.assert(present_mode_count <= 8);
         var present_modes: [8]c_uint = undefined;
         var pm_count: u32 = @min(present_mode_count, 8);
         _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &pm_count, @ptrCast(&present_modes));
@@ -933,6 +1236,27 @@ pub const VulkanRenderer = struct {
                 break;
             }
         }
+
+        // Choose composite alpha mode - prefer in order: OPAQUE, PRE_MULTIPLIED, POST_MULTIPLIED, INHERIT
+        // This ensures compatibility across different Wayland compositors
+        const preferred_alpha_modes = [_]c_uint{
+            vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            vk.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+            vk.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+            vk.VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+        };
+        var chosen_composite_alpha: c_uint = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        var found_alpha = false;
+        for (preferred_alpha_modes) |alpha_mode| {
+            if ((capabilities.supportedCompositeAlpha & alpha_mode) != 0) {
+                chosen_composite_alpha = alpha_mode;
+                found_alpha = true;
+                break;
+            }
+        }
+        // Assert at least one mode is supported (should always be true per Vulkan spec)
+        std.debug.assert(found_alpha);
+        std.debug.assert(capabilities.supportedCompositeAlpha != 0);
 
         // Determine extent
         var extent: vk.Extent2D = undefined;
@@ -967,7 +1291,7 @@ pub const VulkanRenderer = struct {
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = null,
             .preTransform = capabilities.currentTransform,
-            .compositeAlpha = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            .compositeAlpha = chosen_composite_alpha,
             .presentMode = chosen_present_mode,
             .clipped = vk.TRUE,
             .oldSwapchain = null,
@@ -980,6 +1304,8 @@ pub const VulkanRenderer = struct {
 
         // Get swapchain images
         _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &self.swapchain_image_count, null);
+        // Assert swapchain image count fits our fixed array - fail fast if assumption violated
+        std.debug.assert(self.swapchain_image_count <= 8);
         var img_count: u32 = @min(self.swapchain_image_count, 8);
         _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &img_count, &self.swapchain_images);
         self.swapchain_image_count = img_count;
@@ -1222,6 +1548,7 @@ pub const VulkanRenderer = struct {
     }
 
     fn allocateCommandBuffers(self: *Self) !void {
+        // Allocate render command buffers (one per frame in flight)
         const alloc_info = vk.CommandBufferAllocateInfo{
             .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .pNext = null,
@@ -1232,6 +1559,21 @@ pub const VulkanRenderer = struct {
 
         const result = vk.vkAllocateCommandBuffers(self.device, &alloc_info, &self.command_buffers);
         if (!vk.succeeded(result)) {
+            return error.CommandBufferAllocationFailed;
+        }
+
+        // Allocate dedicated transfer command buffer for atlas uploads
+        // This avoids race conditions with render command buffers
+        const transfer_alloc_info = vk.CommandBufferAllocateInfo{
+            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = null,
+            .commandPool = self.command_pool,
+            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+
+        const transfer_result = vk.vkAllocateCommandBuffers(self.device, &transfer_alloc_info, &self.transfer_command_buffer);
+        if (!vk.succeeded(transfer_result)) {
             return error.CommandBufferAllocationFailed;
         }
     }
@@ -1259,6 +1601,10 @@ pub const VulkanRenderer = struct {
             res = vk.vkCreateFence(self.device, &fence_info, null, &self.in_flight_fences[i]);
             if (!vk.succeeded(res)) return error.SyncObjectCreationFailed;
         }
+
+        // Create dedicated fence for transfer operations (starts signaled so first wait succeeds)
+        const transfer_res = vk.vkCreateFence(self.device, &fence_info, null, &self.transfer_fence);
+        if (!vk.succeeded(transfer_res)) return error.SyncObjectCreationFailed;
     }
 
     fn createBuffers(self: *Self) !void {
@@ -2679,6 +3025,12 @@ pub const VulkanRenderer = struct {
     }
 
     fn uploadAtlasData(self: *Self, data: []const u8, width: u32, height: u32) !void {
+        // Assertions: validate input data
+        std.debug.assert(width > 0 and height > 0);
+        std.debug.assert(data.len == width * height);
+        std.debug.assert(self.transfer_command_buffer != null);
+        std.debug.assert(self.transfer_fence != null);
+
         const image_size: vk.DeviceSize = @intCast(width * height);
 
         // Create or resize staging buffer if needed
@@ -2708,8 +3060,8 @@ pub const VulkanRenderer = struct {
             @memcpy(dest[0..data.len], data);
         }
 
-        // Record command buffer for copy
-        const cmd = self.command_buffers[0];
+        // Use dedicated transfer command buffer (avoids race with render command buffers)
+        const cmd = self.transfer_command_buffer;
         _ = vk.vkResetCommandBuffer(cmd, 0);
 
         const begin_info = vk.CommandBufferBeginInfo{
@@ -2812,7 +3164,10 @@ pub const VulkanRenderer = struct {
 
         _ = vk.vkEndCommandBuffer(cmd);
 
-        // Submit and wait
+        // Reset fence before submit
+        _ = vk.vkResetFences(self.device, 1, &self.transfer_fence);
+
+        // Submit with fence for synchronization
         const submit_info = vk.SubmitInfo{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = null,
@@ -2825,8 +3180,10 @@ pub const VulkanRenderer = struct {
             .pSignalSemaphores = null,
         };
 
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, null);
-        _ = vk.vkQueueWaitIdle(self.graphics_queue);
+        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.transfer_fence);
+
+        // Wait for transfer to complete before returning
+        _ = vk.vkWaitForFences(self.device, 1, &self.transfer_fence, vk.TRUE, std.math.maxInt(u64));
 
         self.atlas_generation += 1;
     }
@@ -3025,6 +3382,12 @@ pub const VulkanRenderer = struct {
     }
 
     fn uploadSvgAtlasData(self: *Self, data: []const u8, width: u32, height: u32) !void {
+        // Assertions: validate input data
+        std.debug.assert(width > 0 and height > 0);
+        std.debug.assert(data.len == width * height * 4); // RGBA
+        std.debug.assert(self.transfer_command_buffer != null);
+        std.debug.assert(self.transfer_fence != null);
+
         const image_size: vk.DeviceSize = @intCast(width * height * 4); // RGBA = 4 bytes per pixel
 
         // Create or resize staging buffer if needed
@@ -3054,8 +3417,8 @@ pub const VulkanRenderer = struct {
             @memcpy(dest[0..data.len], data);
         }
 
-        // Record command buffer for copy
-        const cmd = self.command_buffers[0];
+        // Use dedicated transfer command buffer (avoids race with render command buffers)
+        const cmd = self.transfer_command_buffer;
         _ = vk.vkResetCommandBuffer(cmd, 0);
 
         const begin_info = vk.CommandBufferBeginInfo{
@@ -3158,7 +3521,10 @@ pub const VulkanRenderer = struct {
 
         _ = vk.vkEndCommandBuffer(cmd);
 
-        // Submit and wait
+        // Reset fence before submit
+        _ = vk.vkResetFences(self.device, 1, &self.transfer_fence);
+
+        // Submit with fence for synchronization
         const submit_info = vk.SubmitInfo{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = null,
@@ -3171,8 +3537,10 @@ pub const VulkanRenderer = struct {
             .pSignalSemaphores = null,
         };
 
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, null);
-        _ = vk.vkQueueWaitIdle(self.graphics_queue);
+        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.transfer_fence);
+
+        // Wait for transfer to complete before returning
+        _ = vk.vkWaitForFences(self.device, 1, &self.transfer_fence, vk.TRUE, std.math.maxInt(u64));
 
         self.svg_atlas_generation += 1;
     }
@@ -3371,6 +3739,12 @@ pub const VulkanRenderer = struct {
     }
 
     fn uploadImageAtlasData(self: *Self, data: []const u8, width: u32, height: u32) !void {
+        // Assertions: validate input data
+        std.debug.assert(width > 0 and height > 0);
+        std.debug.assert(data.len == width * height * 4); // RGBA
+        std.debug.assert(self.transfer_command_buffer != null);
+        std.debug.assert(self.transfer_fence != null);
+
         const image_size: vk.DeviceSize = @intCast(width * height * 4); // RGBA = 4 bytes per pixel
 
         // Create or resize staging buffer if needed
@@ -3400,8 +3774,8 @@ pub const VulkanRenderer = struct {
             @memcpy(dest[0..data.len], data);
         }
 
-        // Record command buffer for copy
-        const cmd = self.command_buffers[0];
+        // Use dedicated transfer command buffer (avoids race with render command buffers)
+        const cmd = self.transfer_command_buffer;
         _ = vk.vkResetCommandBuffer(cmd, 0);
 
         const begin_info = vk.CommandBufferBeginInfo{
@@ -3504,7 +3878,10 @@ pub const VulkanRenderer = struct {
 
         _ = vk.vkEndCommandBuffer(cmd);
 
-        // Submit and wait
+        // Reset fence before submit
+        _ = vk.vkResetFences(self.device, 1, &self.transfer_fence);
+
+        // Submit with fence for synchronization
         const submit_info = vk.SubmitInfo{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = null,
@@ -3517,8 +3894,10 @@ pub const VulkanRenderer = struct {
             .pSignalSemaphores = null,
         };
 
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, null);
-        _ = vk.vkQueueWaitIdle(self.graphics_queue);
+        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.transfer_fence);
+
+        // Wait for transfer to complete before returning
+        _ = vk.vkWaitForFences(self.device, 1, &self.transfer_fence, vk.TRUE, std.math.maxInt(u64));
 
         self.image_atlas_generation += 1;
     }
@@ -3609,6 +3988,16 @@ pub const VulkanRenderer = struct {
     pub fn render(self: *Self, scene: *const Scene) void {
         if (!self.initialized) return;
 
+        // Check if swapchain needs recreation from previous frame
+        if (self.swapchain_needs_recreate) {
+            self.swapchain_needs_recreate = false;
+            _ = vk.vkDeviceWaitIdle(self.device);
+            self.recreateSwapchain(self.swapchain_extent.width, self.swapchain_extent.height) catch |err| {
+                std.debug.print("Failed to recreate swapchain: {}\n", .{err});
+                return;
+            };
+        }
+
         const frame = self.current_frame;
 
         // Wait for previous frame
@@ -3626,10 +4015,35 @@ pub const VulkanRenderer = struct {
             &image_index,
         );
 
-        if (acquire_result == vk.ERROR_OUT_OF_DATE_KHR) {
-            // Swapchain needs recreation
-            return;
+        // Handle acquire result exhaustively
+        switch (acquire_result) {
+            vk.SUCCESS => {
+                // Image acquired successfully, continue rendering
+            },
+            vk.SUBOPTIMAL_KHR => {
+                // Image acquired but swapchain properties don't match surface
+                // We can still render this frame, but schedule recreation for next frame
+                self.swapchain_needs_recreate = true;
+            },
+            vk.ERROR_OUT_OF_DATE_KHR => {
+                // Swapchain is incompatible with surface, must recreate before rendering
+                self.swapchain_needs_recreate = true;
+                return;
+            },
+            vk.TIMEOUT, vk.NOT_READY => {
+                // Should not happen with maxInt timeout, but handle gracefully
+                std.debug.print("vkAcquireNextImageKHR returned unexpected timeout/not_ready\n", .{});
+                return;
+            },
+            else => {
+                // Any other result is an error we don't expect
+                std.debug.print("vkAcquireNextImageKHR failed with unexpected result: {}\n", .{acquire_result});
+                unreachable;
+            },
         }
+
+        // Assert image index is valid
+        std.debug.assert(image_index < self.swapchain_image_count);
 
         // Record command buffer
         const cmd = self.command_buffers[frame];
@@ -3726,7 +4140,29 @@ pub const VulkanRenderer = struct {
             .pResults = null,
         };
 
-        _ = vk.vkQueuePresentKHR(self.present_queue, &present_info);
+        const present_result = vk.vkQueuePresentKHR(self.present_queue, &present_info);
+
+        // Handle present result exhaustively
+        switch (present_result) {
+            vk.SUCCESS => {
+                // Presented successfully
+            },
+            vk.SUBOPTIMAL_KHR => {
+                // Presented but swapchain properties don't match surface
+                // Schedule recreation for next frame
+                self.swapchain_needs_recreate = true;
+            },
+            vk.ERROR_OUT_OF_DATE_KHR => {
+                // Swapchain became incompatible during present
+                // Schedule recreation for next frame
+                self.swapchain_needs_recreate = true;
+            },
+            else => {
+                // Any other result is an error we don't expect
+                std.debug.print("vkQueuePresentKHR failed with unexpected result: {}\n", .{present_result});
+                unreachable;
+            },
+        }
 
         self.current_frame = (frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }

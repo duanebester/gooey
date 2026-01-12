@@ -199,6 +199,10 @@ pub const Window = struct {
         // Create Wayland surface
         const compositor = platform.getCompositor() orelse return error.NoCompositor;
         self.wl_surface = wayland.compositorCreateSurface(compositor) orelse return error.FailedToCreateSurface;
+        errdefer {
+            if (self.wl_surface) |s| wayland.surfaceDestroy(s);
+            self.wl_surface = null;
+        }
 
         // Set up surface listener (uses module-level static listener)
         _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
@@ -206,12 +210,20 @@ pub const Window = struct {
         // Create XDG surface
         const xdg_wm_base = platform.getXdgWmBase() orelse return error.NoXdgWmBase;
         self.xdg_surface = wayland.xdgWmBaseGetXdgSurface(xdg_wm_base, self.wl_surface.?) orelse return error.FailedToCreateXdgSurface;
+        errdefer {
+            if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
+            self.xdg_surface = null;
+        }
 
         // Set up XDG surface listener (uses module-level static listener)
         _ = wayland.xdgSurfaceAddListener(self.xdg_surface.?, &xdg_surface_listener, self);
 
         // Create XDG toplevel
         self.xdg_toplevel = wayland.xdgSurfaceGetToplevel(self.xdg_surface.?) orelse return error.FailedToCreateToplevel;
+        errdefer {
+            if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
+            self.xdg_toplevel = null;
+        }
 
         // Set up toplevel listener (uses module-level static listener)
         _ = wayland.xdgToplevelAddListener(self.xdg_toplevel.?, &toplevel_listener, self);
@@ -256,6 +268,12 @@ pub const Window = struct {
         // Wait for initial configure - this may update scale_factor via preferred_buffer_scale callback
         _ = wayland.wl_display_roundtrip(platform.display.?);
 
+        // errdefer for decoration (created above, may be null)
+        errdefer {
+            if (self.decoration) |dec| wayland.zxdgToplevelDecorationV1Destroy(dec);
+            self.decoration = null;
+        }
+
         // Create viewport for HiDPI scaling (preferred method over set_buffer_scale for Vulkan)
         // wp_viewporter allows us to render at physical resolution and display at logical size
         if (platform.getViewporter()) |viewporter| {
@@ -268,6 +286,12 @@ pub const Window = struct {
             // Fallback: use buffer scale (may not work correctly with Vulkan on all compositors)
             const scale_int: i32 = @intFromFloat(self.scale_factor);
             wayland.surfaceSetBufferScale(self.wl_surface.?, scale_int);
+        }
+
+        // errdefer for viewport (created above, may be null)
+        errdefer {
+            if (self.viewport) |vp| wayland.viewportDestroy(vp);
+            self.viewport = null;
         }
 
         // Set window geometry to logical size (what the user sees)

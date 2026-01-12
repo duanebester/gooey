@@ -18,6 +18,15 @@ const registry_listener = wayland.RegistryListener{
     .global_remove = LinuxPlatform.registryGlobalRemove,
 };
 
+const output_listener = wayland.OutputListener{
+    .geometry = LinuxPlatform.outputGeometry,
+    .mode = LinuxPlatform.outputMode,
+    .done = LinuxPlatform.outputDone,
+    .scale = LinuxPlatform.outputScale,
+    .name = LinuxPlatform.outputName,
+    .description = LinuxPlatform.outputDescription,
+};
+
 const wm_base_listener = wayland.XdgWmBaseListener{
     .ping = LinuxPlatform.xdgWmBasePing,
 };
@@ -75,6 +84,11 @@ pub const LinuxPlatform = struct {
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
+    output: ?*wayland.Output = null,
+
+    // Display refresh rate in millihertz (e.g., 60000 = 60Hz, 144000 = 144Hz)
+    // Default to 60Hz (60000 mHz) until we get actual value from wl_output
+    refresh_rate_mhz: i32 = 60000,
 
     // Clipboard state
     clipboard_state: *clipboard.ClipboardState = clipboard.getState(),
@@ -216,6 +230,10 @@ pub const LinuxPlatform = struct {
             wayland.xdgWmBaseDestroy(wm);
             self.xdg_wm_base = null;
         }
+        if (self.output) |output| {
+            wayland.outputDestroy(output);
+            self.output = null;
+        }
         if (self.compositor) |comp| {
             wayland.compositorDestroy(comp);
             self.compositor = null;
@@ -280,12 +298,22 @@ pub const LinuxPlatform = struct {
                 break;
             }
 
-            // Poll with a short timeout (1ms) to allow:
-            // 1. Quick response to input events
-            // 2. Frame callbacks to be received promptly
-            // 3. CPU to idle when no events pending
-            // The timeout is short because Wayland frame callbacks pace us to vsync.
-            const timeout_ms: i32 = 1;
+            // Adaptive poll timeout based on work state:
+            // - 0ms if redraw/animation pending (minimize latency, max FPS)
+            // - 1000/refresh_rate if idle (reduce CPU usage, match display responsiveness)
+            // Wayland frame callbacks still pace actual rendering to vsync.
+            const timeout_ms: i32 = blk: {
+                if (self.active_window) |window| {
+                    // Check if window has pending work
+                    if (window.needs_redraw or window.continuous_render or window.pending_resize) {
+                        break :blk 0; // Work pending - poll immediately
+                    }
+                }
+                // Calculate frame time from display refresh rate (mHz to ms)
+                // refresh_rate_mhz is in millihertz, so 1000000 / mHz = ms per frame
+                const frame_time_ms: i32 = @intCast(@divTrunc(@as(i64, 1000000), self.refresh_rate_mhz));
+                break :blk frame_time_ms; // Idle - match display refresh rate
+            };
             const poll_result = posix.poll(&pollfds, timeout_ms) catch {
                 self.running = false;
                 break;
@@ -513,6 +541,19 @@ pub const LinuxPlatform = struct {
             }
         } else if (std.mem.eql(u8, interface_name, wayland.WP_VIEWPORTER_INTERFACE_NAME)) {
             self.viewporter = wayland.bindViewporter(registry, name, version);
+        } else if (std.mem.eql(u8, interface_name, wayland.WL_OUTPUT_INTERFACE_NAME)) {
+            // Bind to first output only (for refresh rate)
+            if (self.output == null) {
+                self.output = @ptrCast(@alignCast(wayland.registryBind(
+                    registry,
+                    name,
+                    wayland.getOutputInterface(),
+                    @min(version, 4),
+                )));
+                if (self.output) |output| {
+                    _ = wayland.outputAddListener(output, &output_listener, self);
+                }
+            }
         } else if (std.mem.eql(u8, interface_name, clipboard.WL_DATA_DEVICE_MANAGER_INTERFACE_NAME)) {
             self.clipboard_state.bindManager(registry, name, version);
             // Data device setup is deferred to setupListeners() after roundtrips complete
@@ -528,6 +569,103 @@ pub const LinuxPlatform = struct {
         _ = registry;
         _ = name;
         // Handle global removal if needed
+    }
+
+    // =========================================================================
+    // Output Listener Callbacks
+    // =========================================================================
+
+    fn outputGeometry(
+        data: ?*anyopaque,
+        output: *wayland.Output,
+        x: i32,
+        y: i32,
+        physical_width: i32,
+        physical_height: i32,
+        subpixel: i32,
+        make: [*:0]const u8,
+        model: [*:0]const u8,
+        transform: i32,
+    ) callconv(.c) void {
+        _ = data;
+        _ = output;
+        _ = x;
+        _ = y;
+        _ = physical_width;
+        _ = physical_height;
+        _ = subpixel;
+        _ = make;
+        _ = model;
+        _ = transform;
+        // Geometry info is informational, we only care about mode and scale
+    }
+
+    fn outputMode(
+        data: ?*anyopaque,
+        output: *wayland.Output,
+        flags: u32,
+        width: i32,
+        height: i32,
+        refresh: i32,
+    ) callconv(.c) void {
+        _ = output;
+        _ = width;
+        _ = height;
+        const self: *Self = @ptrCast(@alignCast(data));
+
+        // WL_OUTPUT_MODE_CURRENT = 0x1
+        const WL_OUTPUT_MODE_CURRENT: u32 = 0x1;
+        if ((flags & WL_OUTPUT_MODE_CURRENT) != 0 and refresh > 0) {
+            self.refresh_rate_mhz = refresh;
+            std.debug.print("Display refresh rate: {}mHz ({d:.1}Hz)\n", .{
+                refresh,
+                @as(f64, @floatFromInt(refresh)) / 1000.0,
+            });
+        }
+    }
+
+    fn outputScale(
+        data: ?*anyopaque,
+        output: *wayland.Output,
+        factor: i32,
+    ) callconv(.c) void {
+        _ = output;
+        const self: *Self = @ptrCast(@alignCast(data));
+
+        if (factor > 0) {
+            self.scale_factor = factor;
+        }
+    }
+
+    fn outputDone(
+        data: ?*anyopaque,
+        output: *wayland.Output,
+    ) callconv(.c) void {
+        _ = data;
+        _ = output;
+        // All output properties have been sent
+    }
+
+    fn outputName(
+        data: ?*anyopaque,
+        output: *wayland.Output,
+        name: [*:0]const u8,
+    ) callconv(.c) void {
+        _ = data;
+        _ = output;
+        _ = name;
+        // Output name is informational
+    }
+
+    fn outputDescription(
+        data: ?*anyopaque,
+        output: *wayland.Output,
+        description: [*:0]const u8,
+    ) callconv(.c) void {
+        _ = data;
+        _ = output;
+        _ = description;
+        // Output description is informational
     }
 
     fn xdgWmBasePing(

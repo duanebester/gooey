@@ -22,6 +22,9 @@ pub const FontFace = struct {
         /// Get glyph ID for a Unicode codepoint
         glyphIndex: *const fn (ptr: *anyopaque, codepoint: u21) u16,
 
+        /// Get advance width for a glyph (fast path for text measurement)
+        glyphAdvance: *const fn (ptr: *anyopaque, glyph_id: u16) f32,
+
         /// Get metrics for a specific glyph
         glyphMetrics: *const fn (ptr: *anyopaque, glyph_id: u16) GlyphMetrics,
 
@@ -44,6 +47,12 @@ pub const FontFace = struct {
     /// Returns 0 for missing glyphs (.notdef)
     pub inline fn glyphIndex(self: FontFace, codepoint: u21) u16 {
         return self.vtable.glyphIndex(self.ptr, codepoint);
+    }
+
+    /// Get advance width for a glyph (fast path for text measurement)
+    /// This is optimized to avoid loading full glyph outlines
+    pub inline fn glyphAdvance(self: FontFace, glyph_id: u16) f32 {
+        return self.vtable.glyphAdvance(self.ptr, glyph_id);
     }
 
     /// Get metrics for a specific glyph
@@ -84,6 +93,16 @@ pub fn createFontFace(comptime T: type, impl: *T) FontFace {
             return self.glyphIndex(codepoint);
         }
 
+        fn glyphAdvance(ptr: *anyopaque, glyph_id: u16) f32 {
+            const self: *T = @ptrCast(@alignCast(ptr));
+            // Use glyphAdvance if available, otherwise fall back to glyphMetrics
+            if (@hasDecl(T, "glyphAdvance")) {
+                return self.glyphAdvance(glyph_id);
+            } else {
+                return self.glyphMetrics(glyph_id).advance_x;
+            }
+        }
+
         fn glyphMetrics(ptr: *anyopaque, glyph_id: u16) GlyphMetrics {
             const self: *T = @ptrCast(@alignCast(ptr));
             return self.glyphMetrics(glyph_id);
@@ -109,6 +128,7 @@ pub fn createFontFace(comptime T: type, impl: *T) FontFace {
 
         const vtable = FontFace.VTable{
             .glyphIndex = glyphIndex,
+            .glyphAdvance = glyphAdvance,
             .glyphMetrics = glyphMetrics,
             .renderGlyphSubpixel = renderGlyphSubpixel,
             .deinit = deinit,

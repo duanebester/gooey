@@ -108,6 +108,21 @@ pub const CoreTextFace = struct {
         return if (success) glyph else 0;
     }
 
+    /// Get advance width for a glyph (fast path for text measurement)
+    /// Uses CTFontGetAdvancesForGlyphs which is optimized for this use case
+    pub fn glyphAdvance(self: *const Self, glyph_id: u16) f32 {
+        var glyph = glyph_id;
+        var advance: ct.CGSize = undefined;
+        _ = ct.CTFontGetAdvancesForGlyphs(
+            self.ct_font,
+            .horizontal,
+            @ptrCast(&glyph),
+            @ptrCast(&advance),
+            1,
+        );
+        return @floatCast(advance.width);
+    }
+
     /// Get metrics for a specific glyph
     pub fn glyphMetrics(self: *const Self, glyph_id: u16) GlyphMetrics {
         return getGlyphMetricsFromFont(self.ct_font, glyph_id);

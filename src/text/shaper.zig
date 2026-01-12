@@ -82,14 +82,14 @@ pub fn shapeSimple(allocator: std.mem.Allocator, face: FontFace, text: []const u
 }
 
 /// Measure text width without full shaping (convenience)
+/// Uses glyphAdvance for fast cached lookups instead of full glyphMetrics
 pub fn measureSimple(face: FontFace, text: []const u8) f32 {
     var total_width: f32 = 0;
 
     var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
     while (iter.nextCodepoint()) |cp| {
         const glyph_id = face.glyphIndex(cp);
-        const metrics = face.glyphMetrics(glyph_id);
-        total_width += metrics.advance_x;
+        total_width += face.glyphAdvance(glyph_id);
     }
 
     return total_width;

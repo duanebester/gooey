@@ -58,6 +58,7 @@ pub const DescriptorSetLayout = c.VkDescriptorSetLayout;
 pub const DescriptorPool = c.VkDescriptorPool;
 pub const DescriptorSet = c.VkDescriptorSet;
 pub const Sampler = c.VkSampler;
+pub const DebugUtilsMessengerEXT = c.VkDebugUtilsMessengerEXT;
 
 // =============================================================================
 // Result
@@ -116,6 +117,7 @@ pub const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO = c.VK_STRUCTURE_TYPE_D
 pub const VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 pub const VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 pub const VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+pub const VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT = c.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
 
 // Format constants
 pub const VK_FORMAT_UNDEFINED = c.VK_FORMAT_UNDEFINED;
@@ -302,6 +304,9 @@ pub const VK_ACCESS_MEMORY_READ_BIT = c.VK_ACCESS_MEMORY_READ_BIT;
 
 // Composite alpha
 pub const VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+pub const VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR = c.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
+pub const VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR = c.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
+pub const VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR = c.VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
 
 // Command pool flags
 pub const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -317,6 +322,17 @@ pub const VK_COMPONENT_SWIZZLE_IDENTITY = c.VK_COMPONENT_SWIZZLE_IDENTITY;
 
 // Compare op
 pub const VK_COMPARE_OP_NEVER = c.VK_COMPARE_OP_NEVER;
+
+// Debug message severity flags
+pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT = c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
+pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT = c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT = c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
+pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT = c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+
+// Debug message type flags
+pub const VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT = c.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
+pub const VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT = c.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+pub const VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT = c.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 
 // =============================================================================
 // Struct Type Aliases (using C types for ABI compatibility)
@@ -369,6 +385,11 @@ pub const WriteDescriptorSet = c.VkWriteDescriptorSet;
 pub const SamplerCreateInfo = c.VkSamplerCreateInfo;
 pub const ImageMemoryBarrier = c.VkImageMemoryBarrier;
 pub const BufferImageCopy = c.VkBufferImageCopy;
+pub const DebugUtilsMessengerCreateInfoEXT = c.VkDebugUtilsMessengerCreateInfoEXT;
+pub const DebugUtilsMessengerCallbackDataEXT = c.VkDebugUtilsMessengerCallbackDataEXT;
+
+/// Debug messenger callback function type
+pub const PFN_vkDebugUtilsMessengerCallbackEXT = c.PFN_vkDebugUtilsMessengerCallbackEXT;
 
 pub const Extent2D = c.VkExtent2D;
 pub const Extent3D = c.VkExtent3D;
@@ -402,6 +423,12 @@ pub const vkGetPhysicalDeviceProperties = c.vkGetPhysicalDeviceProperties;
 pub const vkGetPhysicalDeviceFeatures = c.vkGetPhysicalDeviceFeatures;
 pub const vkGetPhysicalDeviceMemoryProperties = c.vkGetPhysicalDeviceMemoryProperties;
 pub const vkGetPhysicalDeviceQueueFamilyProperties = c.vkGetPhysicalDeviceQueueFamilyProperties;
+pub const vkEnumerateInstanceLayerProperties = c.vkEnumerateInstanceLayerProperties;
+pub const vkGetInstanceProcAddr = c.vkGetInstanceProcAddr;
+
+// Debug utils functions (loaded dynamically via vkGetInstanceProcAddr)
+pub const vkCreateDebugUtilsMessengerEXT = c.vkCreateDebugUtilsMessengerEXT;
+pub const vkDestroyDebugUtilsMessengerEXT = c.vkDestroyDebugUtilsMessengerEXT;
 
 // =============================================================================
 // Vulkan Functions - Device
@@ -530,6 +557,33 @@ pub const vkUpdateDescriptorSets = c.vkUpdateDescriptorSets;
 
 pub const vkCreateSampler = c.vkCreateSampler;
 pub const vkDestroySampler = c.vkDestroySampler;
+
+// =============================================================================
+// Validation Layer Support
+// =============================================================================
+
+/// Validation layer name for Khronos validation
+pub const VALIDATION_LAYER_NAME: [*:0]const u8 = "VK_LAYER_KHRONOS_validation";
+
+/// Check if the Khronos validation layer is available
+pub fn isValidationLayerAvailable() bool {
+    var layer_count: u32 = 0;
+    _ = vkEnumerateInstanceLayerProperties(&layer_count, null);
+    if (layer_count == 0) return false;
+
+    // Use stack-allocated array with reasonable limit
+    var layers: [64]c.VkLayerProperties = undefined;
+    var count: u32 = @min(layer_count, 64);
+    _ = vkEnumerateInstanceLayerProperties(&count, &layers);
+
+    for (layers[0..count]) |layer| {
+        const name: [*:0]const u8 = @ptrCast(&layer.layerName);
+        if (std.mem.eql(u8, std.mem.sliceTo(name, 0), "VK_LAYER_KHRONOS_validation")) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // =============================================================================
 // Helper Functions
