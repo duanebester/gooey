@@ -201,13 +201,27 @@ pub fn dataDeviceSetSelection(device: *WlDataDevice, source: ?*WlDataSource, ser
 }
 
 pub fn dataDeviceRelease(device: *WlDataDevice) void {
-    _ = wayland.wl_proxy_marshal_flags(
-        @ptrCast(device),
-        WL_DATA_DEVICE_RELEASE,
-        null,
-        wayland.wl_proxy_get_version(@ptrCast(device)),
-        wayland.MARSHAL_FLAG_DESTROY,
-    );
+    const version = wayland.wl_proxy_get_version(@ptrCast(device));
+
+    // wl_data_device version range: 1-3 per Wayland core protocol specification
+    // Version 2 added the 'release' request, version 3 added DnD actions
+    std.debug.assert(version >= 1);
+    std.debug.assert(version <= 3);
+
+    if (version >= 2) {
+        // wl_data_device::release request was added in version 2
+        _ = wayland.wl_proxy_marshal_flags(
+            @ptrCast(device),
+            WL_DATA_DEVICE_RELEASE,
+            null,
+            version,
+            wayland.MARSHAL_FLAG_DESTROY,
+        );
+    } else {
+        // For version 1 compositors (some minimal window managers),
+        // just destroy the proxy directly without sending release request
+        wayland.wl_proxy_destroy(@ptrCast(device));
+    }
 }
 
 pub fn dataDeviceAddListener(device: *WlDataDevice, listener: *const WlDataDeviceListener, data: ?*anyopaque) c_int {
@@ -532,6 +546,10 @@ pub const ClipboardState = struct {
 
 const data_device_listener = WlDataDeviceListener{
     .data_offer = dataDeviceDataOfferCallback,
+    .enter = dataDeviceEnterCallback,
+    .leave = dataDeviceLeaveCallback,
+    .motion = dataDeviceMotionCallback,
+    .drop = dataDeviceDropCallback,
     .selection = dataDeviceSelectionCallback,
 };
 
@@ -553,8 +571,50 @@ fn dataDeviceSelectionCallback(
     state.handleSelection(offer);
 }
 
+// Stub callbacks for DnD events - required to prevent null pointer crashes
+// when compositors like Hyprland dispatch these events
+const log = std.log.scoped(.clipboard_dnd);
+
+fn dataDeviceEnterCallback(
+    _: ?*anyopaque,
+    _: *WlDataDevice,
+    serial: u32,
+    _: ?*wayland.Surface,
+    _: i32,
+    _: i32,
+    _: ?*WlDataOffer,
+) callconv(.c) void {
+    log.debug("DnD enter event received (serial={}), ignoring - clipboard-only mode", .{serial});
+}
+
+fn dataDeviceLeaveCallback(
+    _: ?*anyopaque,
+    _: *WlDataDevice,
+) callconv(.c) void {
+    log.debug("DnD leave event received, ignoring - clipboard-only mode", .{});
+}
+
+fn dataDeviceMotionCallback(
+    _: ?*anyopaque,
+    _: *WlDataDevice,
+    time: u32,
+    _: i32,
+    _: i32,
+) callconv(.c) void {
+    log.debug("DnD motion event received (time={}), ignoring - clipboard-only mode", .{time});
+}
+
+fn dataDeviceDropCallback(
+    _: ?*anyopaque,
+    _: *WlDataDevice,
+) callconv(.c) void {
+    log.debug("DnD drop event received, ignoring - clipboard-only mode", .{});
+}
+
 const data_offer_listener = WlDataOfferListener{
     .offer = dataOfferOfferCallback,
+    .source_actions = dataOfferSourceActionsCallback,
+    .action = dataOfferActionCallback,
 };
 
 fn dataOfferOfferCallback(
@@ -566,10 +626,62 @@ fn dataOfferOfferCallback(
     state.handleOfferMimeType(mime_type);
 }
 
+// Stub callbacks for DnD-related offer events - required to prevent null pointer crashes
+fn dataOfferSourceActionsCallback(
+    _: ?*anyopaque,
+    _: *WlDataOffer,
+    source_actions: u32,
+) callconv(.c) void {
+    log.debug("Data offer source_actions event (actions=0x{x}), ignoring - clipboard-only mode", .{source_actions});
+}
+
+fn dataOfferActionCallback(
+    _: ?*anyopaque,
+    _: *WlDataOffer,
+    dnd_action: u32,
+) callconv(.c) void {
+    log.debug("Data offer action event (action=0x{x}), ignoring - clipboard-only mode", .{dnd_action});
+}
+
 const data_source_listener = WlDataSourceListener{
+    .target = dataSourceTargetCallback,
     .send = dataSourceSendCallback,
     .cancelled = dataSourceCancelledCallback,
+    .dnd_drop_performed = dataSourceDndDropPerformedCallback,
+    .dnd_finished = dataSourceDndFinishedCallback,
+    .action = dataSourceActionCallback,
 };
+
+// Stub callbacks for optional data source events
+fn dataSourceTargetCallback(
+    _: ?*anyopaque,
+    _: *WlDataSource,
+    mime_type: ?[*:0]const u8,
+) callconv(.c) void {
+    log.debug("Data source target event (mime_type={s}), informational", .{mime_type orelse "(null)"});
+}
+
+fn dataSourceDndDropPerformedCallback(
+    _: ?*anyopaque,
+    _: *WlDataSource,
+) callconv(.c) void {
+    log.debug("Data source DnD drop performed, ignoring - clipboard-only mode", .{});
+}
+
+fn dataSourceDndFinishedCallback(
+    _: ?*anyopaque,
+    _: *WlDataSource,
+) callconv(.c) void {
+    log.debug("Data source DnD finished, ignoring - clipboard-only mode", .{});
+}
+
+fn dataSourceActionCallback(
+    _: ?*anyopaque,
+    _: *WlDataSource,
+    dnd_action: u32,
+) callconv(.c) void {
+    log.debug("Data source action event (action=0x{x}), ignoring - clipboard-only mode", .{dnd_action});
+}
 
 fn dataSourceSendCallback(
     data: ?*anyopaque,
