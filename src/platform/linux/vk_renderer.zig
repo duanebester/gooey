@@ -1186,9 +1186,9 @@ pub const VulkanRenderer = struct {
         _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &format_count, null);
 
         // Assert format count fits our fixed array - fail fast if assumption violated
-        std.debug.assert(format_count <= 16);
-        var formats: [16]vk.SurfaceFormatKHR = undefined;
-        var fmt_count: u32 = @min(format_count, 16);
+        std.debug.assert(format_count <= 64);
+        var formats: [64]vk.SurfaceFormatKHR = undefined;
+        var fmt_count: u32 = @min(format_count, 64);
         _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &fmt_count, &formats);
 
         // Choose format - prefer UNORM since our colors are already in sRGB space
@@ -1223,9 +1223,9 @@ pub const VulkanRenderer = struct {
         _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &present_mode_count, null);
 
         // Assert present mode count fits our fixed array - fail fast if assumption violated
-        std.debug.assert(present_mode_count <= 8);
-        var present_modes: [8]c_uint = undefined;
-        var pm_count: u32 = @min(present_mode_count, 8);
+        std.debug.assert(present_mode_count <= 16);
+        var present_modes: [16]c_uint = undefined;
+        var pm_count: u32 = @min(present_mode_count, 16);
         _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &pm_count, @ptrCast(&present_modes));
 
         // Choose present mode (prefer FIFO for vsync)
@@ -2828,6 +2828,8 @@ pub const VulkanRenderer = struct {
 
         // Get new swapchain images
         _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &self.swapchain_image_count, null);
+        // Assert swapchain image count fits our fixed array - fail fast if assumption violated
+        std.debug.assert(self.swapchain_image_count <= 8);
         var img_count: u32 = @min(self.swapchain_image_count, 8);
         _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &img_count, &self.swapchain_images);
         self.swapchain_image_count = img_count;
