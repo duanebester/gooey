@@ -325,10 +325,11 @@ pub const DispatchTree = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Clean up listeners in all nodes up to high water mark
-        // (these are the only ones with initialized listener arrays)
+        // Clean up listeners in all nodes that have been initialized
+        // This includes both nodes from previous frames (high_water_mark) and current frame (items.len)
         const backing = self.nodes.allocatedSlice();
-        for (backing[0..self.high_water_mark]) |*node| {
+        const max_initialized = @max(self.high_water_mark, self.nodes.items.len);
+        for (backing[0..max_initialized]) |*node| {
             node.deinit(self.allocator);
         }
         self.nodes.deinit(self.allocator);

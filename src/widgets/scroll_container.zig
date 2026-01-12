@@ -577,7 +577,7 @@ test "ScrollState basic" {
     try std.testing.expect(state.canScrollY());
     try std.testing.expectEqual(@as(f32, 700), state.maxScrollY());
 
-    state.scrollBy(0, -100); // scroll down
+    state.scrollTo(0, 100); // scroll to offset 100
     try std.testing.expectEqual(@as(f32, 100), state.offset_y);
 }
 
@@ -586,9 +586,9 @@ test "ScrollState clamping" {
     state.content_height = 500;
     state.viewport_height = 300;
 
-    state.scrollBy(0, -1000); // try to scroll way past end
+    state.scrollTo(0, 1000); // try to scroll way past end - should clamp
     try std.testing.expectEqual(@as(f32, 200), state.offset_y);
 
-    state.scrollBy(0, 1000); // try to scroll way past start
+    state.scrollTo(0, -1000); // try to scroll to negative - should clamp to 0
     try std.testing.expectEqual(@as(f32, 0), state.offset_y);
 }

@@ -565,6 +565,7 @@ pub const LinuxBridge = struct {
         // Find an inactive slot to reuse
         for (&self.objects, 0..) |*obj, i| {
             if (!obj.active) {
+                obj.active = true;
                 self.fingerprint_to_slot[i] = fp;
                 if (self.object_count <= i) {
                     self.object_count = @intCast(i + 1);
