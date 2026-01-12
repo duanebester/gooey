@@ -416,6 +416,52 @@ pub fn build(b: *std.Build) void {
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
+
+        // =====================================================================
+        // Valgrind Memory Leak Detection
+        // =====================================================================
+        // Valgrind doesn't support modern CPU instructions (AVX, SSE4.2, etc.)
+        // so we need a separate test build with baseline CPU features.
+        // We use native OS/arch but override just the CPU model to keep
+        // system library search paths working.
+
+        const valgrind_target = b.resolveTargetQuery(.{
+            .cpu_model = .baseline, // No AVX/SSE4.2 - valgrind doesn't support them
+        });
+
+        // Create a valgrind-compatible module (baseline CPU, no fancy instructions)
+        const valgrind_mod = b.addModule("gooey-valgrind", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = valgrind_target,
+            .optimize = .ReleaseSafe, // ReleaseSafe for meaningful stack traces
+        });
+
+        // Separate test artifact for valgrind with baseline CPU
+        const valgrind_tests = b.addTest(.{
+            .root_module = valgrind_mod,
+        });
+        valgrind_tests.linkSystemLibrary("vulkan");
+        valgrind_tests.linkSystemLibrary("wayland-client");
+        valgrind_tests.linkSystemLibrary("freetype");
+        valgrind_tests.linkSystemLibrary("harfbuzz");
+        valgrind_tests.linkSystemLibrary("fontconfig");
+        valgrind_tests.linkSystemLibrary("png");
+        valgrind_tests.linkSystemLibrary("dbus-1");
+        valgrind_tests.linkLibC();
+
+        const test_valgrind_step = b.step("test-valgrind", "Run tests under valgrind");
+        const valgrind_run = b.addSystemCommand(&.{
+            "valgrind",
+            "--leak-check=full",
+            "--show-leak-kinds=definite,indirect,possible", // Exclude "still reachable" (not real leaks)
+            "--errors-for-leak-kinds=definite,indirect,possible", // Only fail on actual leaks
+            "--num-callers=15", // Enough for useful traces without noise
+            "--error-exitcode=1",
+            b.fmt("--suppressions={s}", .{b.pathFromRoot("valgrind.supp")}),
+            "--max-stackframe=4000000", // Zig's large stack frames for async/coroutines
+        });
+        valgrind_run.addArtifactArg(valgrind_tests);
+        test_valgrind_step.dependOn(&valgrind_run.step);
     }
 
     // =============================================================================

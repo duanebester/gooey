@@ -1,0 +1,322 @@
+# =============================================================================
+# Gooey CI Pipeline
+# =============================================================================
+# Runs on push to main, pull requests, and manual triggers.
+#
+# Jobs:
+#   - test-linux: Run unit tests on Linux
+#   - test-macos: Run unit tests on macOS
+#   - build-linux: Build all optimization levels on Linux
+#   - build-macos: Build all optimization levels on macOS
+#   - build-wasm: Build WebAssembly targets
+#   - valgrind: Memory leak detection (Linux only)
+#   - zig-fmt: Code formatting check
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Cancel in-progress runs for the same branch (except main)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name != 'main' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: "0.14.0"
+
+jobs:
+  # ==========================================================================
+  # Required Checks Summary
+  # ==========================================================================
+  required:
+    name: "Required Checks"
+    runs-on: ubuntu-latest
+    needs:
+      - test-linux
+      - test-macos
+      - build-linux
+      - build-macos
+      - build-wasm
+      - valgrind
+      - zig-fmt
+    if: always()
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          results='${{ toJSON(needs.*.result) }}'
+          if echo "$results" | grep -qE '"(failure|cancelled)"'; then
+            echo "result=failed" >> $GITHUB_OUTPUT
+          else
+            echo "result=success" >> $GITHUB_OUTPUT
+          fi
+          echo "results=$results" >> $GITHUB_OUTPUT
+
+      - name: Check for failed status
+        if: steps.status.outputs.result != 'success'
+        run: |
+          echo "One or more required jobs failed: ${{ steps.status.outputs.results }}"
+          exit 1
+
+      - name: All checks passed
+        run: echo "All required checks passed!"
+
+  # ==========================================================================
+  # Linux Tests
+  # ==========================================================================
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libfreetype-dev \
+            libharfbuzz-dev \
+            libfontconfig-dev \
+            libpng-dev \
+            libdbus-1-dev
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache
+          key: zig-cache-linux-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-linux-
+
+      - name: Run tests
+        run: zig build test
+
+  # ==========================================================================
+  # macOS Tests
+  # ==========================================================================
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/zig
+            zig-cache
+          key: zig-cache-macos-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-macos-
+
+      - name: Run tests
+        run: zig build test
+
+  # ==========================================================================
+  # Linux Build (Multiple Optimization Levels)
+  # ==========================================================================
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-latest
+    needs: test-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        optimize: [Debug, ReleaseSafe, ReleaseFast, ReleaseSmall]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libfreetype-dev \
+            libharfbuzz-dev \
+            libfontconfig-dev \
+            libpng-dev \
+            libdbus-1-dev
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache
+          key: zig-cache-linux-${{ matrix.optimize }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-linux-${{ matrix.optimize }}-
+            zig-cache-linux-
+
+      - name: Build (${{ matrix.optimize }})
+        run: zig build -Doptimize=${{ matrix.optimize }}
+
+  # ==========================================================================
+  # macOS Build (Multiple Optimization Levels)
+  # ==========================================================================
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    needs: test-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        optimize: [Debug, ReleaseSafe, ReleaseFast]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/zig
+            zig-cache
+          key: zig-cache-macos-${{ matrix.optimize }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-macos-${{ matrix.optimize }}-
+            zig-cache-macos-
+
+      - name: Build (${{ matrix.optimize }})
+        run: zig build -Doptimize=${{ matrix.optimize }}
+
+  # ==========================================================================
+  # WebAssembly Build
+  # ==========================================================================
+  build-wasm:
+    name: Build (WASM)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache
+          key: zig-cache-wasm-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-wasm-
+
+      - name: Build WASM (showcase)
+        run: zig build wasm
+
+      - name: Build WASM examples
+        run: |
+          zig build wasm-counter
+          zig build wasm-dynamic-counters
+          zig build wasm-pomodoro
+          zig build wasm-layout
+          zig build wasm-select
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-build
+          path: zig-out/web/
+          retention-days: 7
+
+  # ==========================================================================
+  # Valgrind Memory Leak Detection
+  # ==========================================================================
+  valgrind:
+    name: Valgrind
+    runs-on: ubuntu-latest
+    needs: test-linux
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            valgrind \
+            libc6-dbg \
+            libvulkan-dev \
+            libwayland-dev \
+            libfreetype-dev \
+            libharfbuzz-dev \
+            libfontconfig-dev \
+            libpng-dev \
+            libdbus-1-dev
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache
+          key: zig-cache-valgrind-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-valgrind-
+            zig-cache-linux-
+
+      - name: Run tests under valgrind
+        run: zig build test-valgrind
+
+  # ==========================================================================
+  # Code Formatting
+  # ==========================================================================
+  zig-fmt:
+    name: Zig Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Check formatting
+        run: zig fmt --check src/ charts/
