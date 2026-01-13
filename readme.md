@@ -884,6 +884,46 @@ zig build compile-shaders
 3. **Glass effects** - macOS-specific (compositor-dependent on Linux)
 4. **Multi-window** - Supported in platform but not fully tested
 
+## Testing & CI
+
+### Running Tests
+
+```bash
+# Run all tests
+zig build test
+
+# Run tests under valgrind (Linux only - detects memory leaks)
+zig build test-valgrind
+
+# Check code formatting
+zig fmt --check src/ charts/
+```
+
+### Continuous Integration
+
+The project uses GitHub Actions for CI. Every push and pull request runs:
+
+| Job | Platform | Description |
+|-----|----------|-------------|
+| `test-linux` | Ubuntu | Unit tests on Linux |
+| `test-macos` | macOS | Unit tests on macOS |
+| `build-linux` | Ubuntu | Build all optimization levels (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall) |
+| `build-macos` | macOS | Build all optimization levels |
+| `build-wasm` | Ubuntu | WebAssembly targets |
+| `valgrind` | Ubuntu | Memory leak detection via valgrind |
+| `zig-fmt` | Ubuntu | Code formatting check |
+
+### Memory Leak Detection
+
+Valgrind integration helps catch memory issues early:
+
+```bash
+# Run tests with full leak checking
+zig build test-valgrind
+```
+
+The `valgrind.supp` file contains suppressions for known false positives from system libraries (Vulkan, Wayland, FreeType, HarfBuzz, etc.).
+
 ## Inspiration
 
 - [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) - Zed's GPU UI framework

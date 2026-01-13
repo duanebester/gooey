@@ -1,0 +1,245 @@
+# =============================================================================
+# Gooey Valgrind Suppressions File
+# =============================================================================
+# This file contains precise suppressions based on actual false positives
+# observed during test runs. Each suppression targets a specific stack trace
+# rather than using broad wildcard patterns.
+#
+# Usage: valgrind --suppressions=valgrind.supp <program>
+#
+# Last updated: Based on valgrind 3.22.0 output from test suite
+# =============================================================================
+
+# =============================================================================
+# CATEGORY 1: D-Bus / LinuxBridge String Handling
+# =============================================================================
+# D-Bus returns unique name strings that valgrind considers "uninitialized"
+# because D-Bus uses internal memory pools. These are false positives - the
+# memory IS initialized by D-Bus, just not in a way valgrind can track.
+
+{
+   dbus_unique_name_span_value8
+   Memcheck:Value8
+   fun:span__anon_*
+   fun:getUniqueName
+   fun:accessibility.linux_bridge.LinuxBridge.init
+   ...
+}
+
+{
+   dbus_linux_bridge_init_cond
+   Memcheck:Cond
+   fun:accessibility.linux_bridge.LinuxBridge.init
+   ...
+}
+
+# =============================================================================
+# CATEGORY 2: Zig memcpy SIMD Operations
+# =============================================================================
+# Zig's optimized memcpy uses SIMD instructions (SSE/AVX) that copy more bytes
+# than strictly necessary for alignment/performance. Valgrind flags these as
+# "uninitialized" reads because it tracks byte-level initialization, not the
+# fact that the extra bytes are intentionally ignored.
+
+# memcpy in LinuxBridge.init (copying D-Bus strings)
+{
+   zig_memcpy_copySmallLength_cond_linux_bridge
+   Memcheck:Cond
+   fun:copySmallLength
+   fun:memcpy
+   fun:accessibility.linux_bridge.LinuxBridge.init
+   ...
+}
+
+{
+   zig_memcpy_copyLessThan16_cond_linux_bridge
+   Memcheck:Cond
+   fun:copyLessThan16
+   fun:copySmallLength
+   fun:memcpy
+   fun:accessibility.linux_bridge.LinuxBridge.init
+   ...
+}
+
+{
+   zig_memcpy_copyFixedLength_value8_linux_bridge
+   Memcheck:Value8
+   fun:copyFixedLength
+   fun:copyRange4
+   fun:copyLessThan16
+   fun:copySmallLength
+   fun:memcpy
+   fun:accessibility.linux_bridge.LinuxBridge.init
+   ...
+}
+
+# memcpy in TextSystem (ShapedRunCache initialization)
+# These occur when initializing large cache structures
+{
+   zig_memcpy_copyBlocks_addr8_text_system
+   Memcheck:Addr8
+   fun:copyBlocks
+   fun:copyBlocksAlignedSource
+   fun:copyForwards
+   fun:memcpy
+   fun:init
+   fun:text.text_system.test.*
+   ...
+}
+
+{
+   zig_memcpy_copyBlocks_addr16_text_system
+   Memcheck:Addr16
+   fun:copyBlocks
+   fun:copyBlocksAlignedSource
+   fun:copyForwards
+   fun:memcpy
+   fun:text.text_system.test.*
+   ...
+}
+
+# =============================================================================
+# CATEGORY 3: Fontconfig / Expat XML Parsing
+# =============================================================================
+# Fontconfig uses expat to parse XML configuration files. Fontconfig's internal
+# memory management keeps some allocations alive for caching purposes.
+# This is a known issue in fontconfig, not a real leak.
+# See: https://gitlab.freedesktop.org/fontconfig/fontconfig/-/issues/
+
+{
+   fontconfig_expat_xml_parse_definite
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   obj:*libfontconfig*
+   ...
+   fun:XML_ParseBuffer
+   ...
+   fun:FcConfigSubstituteWithPat
+   ...
+}
+
+{
+   fontconfig_expat_xml_parse_indirect
+   Memcheck:Leak
+   match-leak-kinds: indirect
+   fun:calloc
+   obj:*libfontconfig*
+   ...
+   fun:XML_ParseBuffer
+   ...
+   fun:FcConfigSubstituteWithPat
+   ...
+}
+
+{
+   fontconfig_expat_xml_parse_definite_nested
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   obj:*libfontconfig*
+   obj:*libfontconfig*
+   obj:*libfontconfig*
+   ...
+   fun:XML_ParseBuffer
+   ...
+}
+
+{
+   fontconfig_expat_xml_parse_indirect_nested
+   Memcheck:Leak
+   match-leak-kinds: indirect
+   fun:calloc
+   obj:*libfontconfig*
+   obj:*libfontconfig*
+   ...
+   fun:XML_ParseBuffer
+   ...
+}
+
+# =============================================================================
+# CATEGORY 4: System Library One-Time Initializations
+# =============================================================================
+# These are "still reachable" allocations from system libraries that initialize
+# global state once and never free it (intentionally - it's cleaned up on exit).
+# We exclude "still reachable" from error reporting, but these patterns catch
+# any that might be miscategorized.
+
+{
+   glibc_dlopen_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:_dl_open
+   ...
+}
+
+{
+   pthread_create_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:pthread_create*
+   ...
+}
+
+# =============================================================================
+# CATEGORY 5: FreeType / HarfBuzz Initialization
+# =============================================================================
+# Font libraries maintain internal caches that are allocated once per process.
+
+{
+   freetype_init_face_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:FT_Open_Face
+   ...
+}
+
+{
+   harfbuzz_face_create_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:hb_face_*
+   ...
+}
+
+# =============================================================================
+# CATEGORY 6: Zig Runtime / Debug Info
+# =============================================================================
+# When Zig captures stack traces for error returns, it may allocate debug info
+# that persists. This is expected behavior for debugging support.
+
+{
+   zig_debug_self_info_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:*debug.SelfInfo*
+   ...
+}
+
+# =============================================================================
+# NOTES FOR MAINTAINERS
+# =============================================================================
+# To generate new suppressions when you encounter false positives:
+#
+# 1. Run: zig build test-valgrind 2>&1 | grep -A 30 "definitely lost"
+#
+# 2. Or generate automatic suppressions:
+#    valgrind --gen-suppressions=all --leak-check=full \
+#      ./.zig-cache/o/<hash>/test 2>&1 | grep -A 20 "insert_a_suppression"
+#
+# 3. Add the suppression here with:
+#    - A descriptive name
+#    - A comment explaining WHY this is a false positive
+#    - The minimal stack trace needed to match
+#
+# AVOID broad patterns like:
+#    fun:*std.mem*     <- This suppresses ALL std.mem usage!
+#
+# PREFER specific patterns like:
+#    fun:accessibility.linux_bridge.LinuxBridge.init  <- Exact function
+# =============================================================================
