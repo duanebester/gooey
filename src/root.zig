@@ -102,6 +102,7 @@ pub const Button = components.Button;
 pub const Checkbox = components.Checkbox;
 pub const TextInput = components.TextInput;
 pub const TextArea = components.TextArea;
+pub const CodeEditor = components.CodeEditor;
 pub const ProgressBar = components.ProgressBar;
 pub const RadioGroup = components.RadioGroup;
 pub const RadioButton = components.RadioButton;
@@ -290,6 +291,7 @@ pub const VirtualListStyle = ui.VirtualListStyle;
 pub const DataTableStyle = ui.DataTableStyle;
 pub const InputStyle = ui.InputStyle;
 pub const TextAreaStyle = ui.TextAreaStyle;
+pub const CodeEditorStyle = ui.CodeEditorStyle;
 
 // Platform (for direct access)
 pub const MacPlatform = platform.Platform;

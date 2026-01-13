@@ -78,6 +78,18 @@ pub const MAX_VISIBLE_ITEMS = uniform_list.MAX_VISIBLE_ITEMS;
 pub const virtual_list = @import("virtual_list.zig");
 
 pub const VirtualListState = virtual_list.VirtualListState;
+
+// =============================================================================
+// Code Editor (multi-line with line numbers and highlighting)
+// =============================================================================
+
+pub const code_editor_state = @import("code_editor_state.zig");
+
+pub const CodeEditorState = code_editor_state.CodeEditorState;
+pub const CodeEditorBounds = code_editor_state.Bounds;
+pub const CodeEditorStyle = code_editor_state.Style;
+pub const HighlightSpan = code_editor_state.HighlightSpan;
+pub const MAX_HIGHLIGHT_SPANS = code_editor_state.MAX_HIGHLIGHT_SPANS;
 pub const MAX_VIRTUAL_LIST_ITEMS = virtual_list.MAX_VIRTUAL_LIST_ITEMS;
 // Note: VirtualList uses its own VisibleRange and ScrollStrategy which are
 // compatible with UniformList's versions (same structure)

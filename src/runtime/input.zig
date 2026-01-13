@@ -265,7 +265,10 @@ fn handleMouseDownEvent(
     // 2. Check if click is in a TextArea
     if (handleTextAreaClick(cx, gooey, builder, x, y)) return true;
 
-    // 3. Compute hit target once for both click-outside and click dispatch
+    // 3. Check if click is in a CodeEditor
+    if (handleCodeEditorClick(cx, gooey, builder, x, y)) return true;
+
+    // 4. Compute hit target once for both click-outside and click dispatch
     const hit_target = gooey.dispatch.hitTest(x, y);
 
     // 4. Check for drag source — start pending drag
@@ -364,6 +367,27 @@ fn handleTextAreaClick(
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (pointInBounds(x, y, bounds)) {
             gooey.focusTextArea(pending.id);
+            cx.notify();
+            return true;
+        }
+    }
+    return false;
+}
+
+fn handleCodeEditorClick(
+    cx: *Cx,
+    gooey: *Gooey,
+    builder: *Builder,
+    x: f32,
+    y: f32,
+) bool {
+    std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
+    std.debug.assert(std.math.isFinite(x) and std.math.isFinite(y));
+
+    for (builder.pending_code_editors.items) |pending| {
+        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        if (pointInBounds(x, y, bounds)) {
+            gooey.focusCodeEditor(pending.id);
             cx.notify();
             return true;
         }
@@ -474,8 +498,18 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
         return true;
     }
 
-    // Tab navigation
+    // Tab navigation - but let CodeEditor handle Tab for indentation
     if (k.key == .tab) {
+        // CodeEditor intercepts Tab for indentation (not focus navigation)
+        if (gooey.getFocusedCodeEditor()) |ce| {
+            if (!k.modifiers.shift and !k.modifiers.ctrl and !k.modifiers.alt) {
+                _ = ce.handleKey(k.key, k.modifiers);
+                syncCodeEditorBoundVariablesCx(cx);
+                cx.notify();
+                return true;
+            }
+        }
+        // Default: use Tab for focus navigation
         if (k.modifiers.shift) {
             gooey.focusPrev();
         } else {
@@ -502,6 +536,16 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
         if (isControlKey(k.key, k.modifiers)) {
             ta.handleKey(k) catch {};
             syncTextAreaBoundVariablesCx(cx);
+            cx.notify();
+            return true;
+        }
+    }
+
+    // Handle focused CodeEditor
+    if (gooey.getFocusedCodeEditor()) |ce| {
+        if (isControlKey(k.key, k.modifiers)) {
+            _ = ce.handleKey(k.key, k.modifiers);
+            syncCodeEditorBoundVariablesCx(cx);
             cx.notify();
             return true;
         }
@@ -559,6 +603,12 @@ fn handleTextInputEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
         cx.notify();
         return true;
     }
+    if (gooey.getFocusedCodeEditor()) |ce| {
+        ce.insertText(text);
+        syncCodeEditorBoundVariablesCx(cx);
+        cx.notify();
+        return true;
+    }
     return false;
 }
 
@@ -571,6 +621,11 @@ fn handleCompositionEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
     }
     if (gooey.getFocusedTextArea()) |ta| {
         ta.setComposition(text) catch {};
+        cx.notify();
+        return true;
+    }
+    if (gooey.getFocusedCodeEditor()) |ce| {
+        ce.setComposition(text);
         cx.notify();
         return true;
     }
@@ -604,6 +659,20 @@ pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
         if (pending.style.bind) |bind_ptr| {
             if (gooey.textArea(pending.id)) |ta| {
                 bind_ptr.* = ta.getText();
+            }
+        }
+    }
+}
+
+/// Sync CodeEditor content back to bound variables (Cx version)
+pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
+    const builder = cx.builder();
+    const gooey = cx.gooey();
+
+    for (builder.pending_code_editors.items) |pending| {
+        if (pending.style.bind) |bind_ptr| {
+            if (gooey.codeEditor(pending.id)) |ce| {
+                bind_ptr.* = ce.getText();
             }
         }
     }

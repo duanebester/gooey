@@ -82,6 +82,7 @@ const handler_mod = @import("context/handler.zig");
 const entity_mod = @import("context/entity.zig");
 const text_field_mod = @import("widgets/text_input_state.zig");
 const text_area_mod = @import("widgets/text_area_state.zig");
+const code_editor_mod = @import("widgets/code_editor_state.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
 
 // Animation types (re-exported from root.zig for users)
@@ -427,6 +428,11 @@ pub const Cx = struct {
     /// Get a text area widget by ID.
     pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextArea {
         return self._gooey.textArea(id);
+    }
+
+    /// Get a code editor widget by ID.
+    pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {
+        return self._gooey.codeEditor(id);
     }
 
     /// Get a scroll view widget by ID.

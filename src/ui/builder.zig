@@ -67,6 +67,7 @@ pub const Box = styles.Box;
 pub const TextStyle = styles.TextStyle;
 pub const InputStyle = styles.InputStyle;
 pub const TextAreaStyle = styles.TextAreaStyle;
+pub const CodeEditorStyle = styles.CodeEditorStyle;
 pub const StackStyle = styles.StackStyle;
 pub const CenterStyle = styles.CenterStyle;
 pub const ScrollStyle = styles.ScrollStyle;
@@ -79,6 +80,7 @@ pub const PrimitiveType = primitives.PrimitiveType;
 pub const Text = primitives.Text;
 pub const Input = primitives.Input;
 pub const TextAreaPrimitive = primitives.TextAreaPrimitive;
+pub const CodeEditorPrimitive = primitives.CodeEditorPrimitive;
 pub const Spacer = primitives.Spacer;
 pub const Button = primitives.Button;
 pub const ButtonHandler = primitives.ButtonHandler;
@@ -94,6 +96,7 @@ pub const text = primitives.text;
 pub const textFmt = primitives.textFmt;
 pub const input = primitives.input;
 pub const textArea = primitives.textArea;
+pub const codeEditor = primitives.codeEditor;
 pub const spacer = primitives.spacer;
 pub const spacerMin = primitives.spacerMin;
 pub const svg = primitives.svg;
@@ -159,6 +162,7 @@ pub const Builder = struct {
     // =========================================================================
     pub const MAX_PENDING_INPUTS = 256;
     pub const MAX_PENDING_TEXT_AREAS = 64;
+    pub const MAX_PENDING_CODE_EDITORS = 32;
     pub const MAX_PENDING_SCROLLS = 64;
     pub const MAX_PENDING_CANVAS = canvas_mod.MAX_PENDING_CANVAS;
 
@@ -185,6 +189,7 @@ pub const Builder = struct {
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
+    pending_code_editors: std.ArrayList(PendingCodeEditor),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
     pending_canvas: std.ArrayListUnmanaged(canvas_mod.PendingCanvas),
 
@@ -206,6 +211,14 @@ pub const Builder = struct {
         id: []const u8,
         layout_id: LayoutId,
         style: TextAreaStyle,
+        inner_width: f32,
+        inner_height: f32,
+    };
+
+    pub const PendingCodeEditor = struct {
+        id: []const u8,
+        layout_id: LayoutId,
+        style: CodeEditorStyle,
         inner_width: f32,
         inner_height: f32,
     };
@@ -233,6 +246,7 @@ pub const Builder = struct {
             .pending_inputs = .{},
             .pending_scrolls = .{},
             .pending_text_areas = .{},
+            .pending_code_editors = .{},
             .pending_canvas = .{},
             .pending_scrolls_by_layout_id = .{},
             .active_scroll_drag_id = null,
@@ -242,6 +256,7 @@ pub const Builder = struct {
     pub fn deinit(self: *Self) void {
         self.pending_inputs.deinit(self.allocator);
         self.pending_text_areas.deinit(self.allocator);
+        self.pending_code_editors.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
         self.pending_canvas.deinit(self.allocator);
         self.pending_scrolls_by_layout_id.deinit(self.allocator);
@@ -2368,6 +2383,7 @@ pub const Builder = struct {
                 .text => self.renderText(child),
                 .input => self.renderInput(child),
                 .text_area => self.renderTextArea(child),
+                .code_editor => self.renderCodeEditor(child),
                 .spacer => self.renderSpacer(child),
                 .button => self.renderButton(child),
                 .key_context => self.renderKeyContext(child),
@@ -2588,6 +2604,83 @@ pub const Builder = struct {
             g.focus.register(FocusHandle.init(ta.id)
                 .tabIndex(ta.style.tab_index)
                 .tabStop(ta.style.tab_stop));
+        }
+
+        self.dispatch.popNode();
+    }
+
+    fn renderCodeEditor(self: *Self, ce: CodeEditorPrimitive) void {
+        std.debug.assert(ce.id.len > 0);
+        std.debug.assert(ce.style.rows > 0);
+
+        const layout_id = LayoutId.fromString(ce.id);
+
+        // Push dispatch node
+        _ = self.dispatch.pushNode();
+        self.dispatch.setLayoutId(layout_id.id);
+
+        // Register as focusable
+        const focus_id = FocusId.init(ce.id);
+        self.dispatch.setFocusable(focus_id);
+
+        // Check if this code editor is focused (for border color)
+        const is_focused = if (self.gooey) |g|
+            if (g.codeEditor(ce.id)) |editor| editor.isFocused() else false
+        else
+            false;
+
+        // Calculate height: use explicit height or auto-size from rows * line_height
+        const chrome = (ce.style.padding + ce.style.border_width) * 2;
+        const editor_height = ce.style.height orelse blk: {
+            const line_height = if (self.gooey) |g|
+                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+            else
+                20.0;
+            const rows_f: f32 = @floatFromInt(ce.style.rows);
+            break :blk (line_height * rows_f) + chrome;
+        };
+
+        // Calculate dimensions
+        const editor_width = ce.style.width orelse 400;
+        const inner_width = editor_width - chrome;
+        const inner_height = editor_height - chrome;
+
+        // Create the outer box with chrome
+        self.layout.openElement(.{
+            .id = layout_id,
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.fixed(editor_width),
+                    .height = SizingAxis.fixed(editor_height),
+                },
+                .padding = Padding.all(@intFromFloat(ce.style.padding + ce.style.border_width)),
+            },
+            .background_color = ce.style.background,
+            .corner_radius = CornerRadius.all(ce.style.corner_radius),
+            .border = BorderConfig.all(
+                if (is_focused) ce.style.border_color_focused else ce.style.border_color,
+                ce.style.border_width,
+            ),
+        }) catch {
+            self.dispatch.popNode();
+            return;
+        };
+        self.layout.closeElement();
+
+        // Store for later rendering
+        self.pending_code_editors.append(self.allocator, .{
+            .id = ce.id,
+            .layout_id = layout_id,
+            .style = ce.style,
+            .inner_width = inner_width,
+            .inner_height = inner_height,
+        }) catch {};
+
+        // Register focus with FocusManager
+        if (self.gooey) |g| {
+            g.focus.register(FocusHandle.init(ce.id)
+                .tabIndex(ce.style.tab_index)
+                .tabStop(ce.style.tab_stop));
         }
 
         self.dispatch.popNode();

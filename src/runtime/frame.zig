@@ -40,6 +40,7 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     builder.id_counter = 0;
     builder.pending_inputs.clearRetainingCapacity();
     builder.pending_text_areas.clearRetainingCapacity();
+    builder.pending_code_editors.clearRetainingCapacity();
     builder.pending_scrolls.clearRetainingCapacity();
     builder.pending_canvas.clearRetainingCapacity();
     builder.pending_scrolls_by_layout_id.clearRetainingCapacity();
@@ -51,6 +52,7 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
     // Assert pending item counts are within limits
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
+    std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
     std.debug.assert(builder.pending_scrolls.items.len <= Builder.MAX_PENDING_SCROLLS);
     std.debug.assert(builder.pending_canvas.items.len <= Builder.MAX_PENDING_CANVAS);
 
@@ -91,6 +93,9 @@ pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
 
     // Render text areas
     try renderTextAreas(gooey, builder);
+
+    // Render code editors
+    try renderCodeEditors(gooey, builder);
 
     // Render canvas elements (custom vector graphics)
     renderCanvasElements(gooey, builder);
@@ -199,6 +204,51 @@ fn renderTextAreas(gooey: *Gooey, builder: *const Builder) !void {
     }
 }
 
+/// Render all pending code editors
+fn renderCodeEditors(gooey: *Gooey, builder: *const Builder) !void {
+    for (builder.pending_code_editors.items) |pending| {
+        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const ce_widget = gooey.codeEditor(pending.id) orelse continue;
+
+        const inset = pending.style.padding + pending.style.border_width;
+        ce_widget.setBounds(.{
+            .x = bounds.x + inset,
+            .y = bounds.y + inset,
+            .width = pending.inner_width,
+            .height = pending.inner_height,
+        });
+
+        // Update code editor specific settings
+        ce_widget.show_line_numbers = pending.style.show_line_numbers;
+        ce_widget.gutter_width = pending.style.gutter_width;
+        ce_widget.tab_size = pending.style.tab_size;
+        ce_widget.use_hard_tabs = pending.style.use_hard_tabs;
+
+        // Update style colors
+        ce_widget.style.text.text_color = render_bridge.colorToHsla(pending.style.text_color);
+        ce_widget.style.text.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
+        ce_widget.style.text.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
+        ce_widget.style.text.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
+        ce_widget.style.gutter_background = render_bridge.colorToHsla(pending.style.gutter_background);
+        ce_widget.style.line_number_color = render_bridge.colorToHsla(pending.style.line_number_color);
+        ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
+        ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
+        ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
+
+        // Status bar settings
+        ce_widget.show_status_bar = pending.style.show_status_bar;
+        ce_widget.status_bar_height = pending.style.status_bar_height;
+        ce_widget.style.status_bar_background = render_bridge.colorToHsla(pending.style.status_bar_background);
+        ce_widget.style.status_bar_text_color = render_bridge.colorToHsla(pending.style.status_bar_text_color);
+        ce_widget.style.status_bar_separator_color = render_bridge.colorToHsla(pending.style.status_bar_separator_color);
+        ce_widget.language_mode = pending.style.language_mode;
+        ce_widget.encoding = pending.style.encoding;
+
+        ce_widget.setPlaceholder(pending.style.placeholder);
+        try ce_widget.render(gooey.scene, gooey.text_system, gooey.scale_factor);
+    }
+}
+
 /// Update IME cursor position for focused text widget
 fn updateImeCursorPosition(gooey: *Gooey) void {
     if (gooey.getFocusedTextInput()) |input| {
@@ -206,6 +256,9 @@ fn updateImeCursorPosition(gooey: *Gooey) void {
         gooey.getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     } else if (gooey.getFocusedTextArea()) |ta| {
         const rect = ta.cursor_rect;
+        gooey.getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+    } else if (gooey.getFocusedCodeEditor()) |ce| {
+        const rect = ce.getCursorRect();
         gooey.getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
 }

@@ -11,6 +11,7 @@ pub const Color = styles.Color;
 pub const TextStyle = styles.TextStyle;
 pub const InputStyle = styles.InputStyle;
 pub const TextAreaStyle = styles.TextAreaStyle;
+pub const CodeEditorStyle = styles.CodeEditorStyle;
 pub const ButtonStyle = styles.ButtonStyle;
 pub const CornerRadius = styles.CornerRadius;
 pub const ObjectFit = styles.ObjectFit;
@@ -27,6 +28,7 @@ const actionTypeId = action_mod.actionTypeId;
 pub const PrimitiveType = enum {
     text,
     text_area,
+    code_editor,
     input,
     spacer,
     button,
@@ -37,7 +39,7 @@ pub const PrimitiveType = enum {
     action_handler_ref,
     svg,
     image,
-    // Container elements (Phase 1: cx/ui separation)
+    // Container elements
     box_element,
     hstack,
     vstack,
@@ -100,6 +102,23 @@ pub const TextAreaPrimitive = struct {
 
 /// Create a text area element
 pub fn textArea(id: []const u8, style: TextAreaStyle) TextAreaPrimitive {
+    return .{ .id = id, .style = style };
+}
+
+// =============================================================================
+// Code Editor Primitive
+// =============================================================================
+
+/// Code editor element descriptor (line numbers, syntax highlighting)
+pub const CodeEditorPrimitive = struct {
+    id: []const u8,
+    style: CodeEditorStyle,
+
+    pub const primitive_type: PrimitiveType = .code_editor;
+};
+
+/// Create a code editor element
+pub fn codeEditor(id: []const u8, style: CodeEditorStyle) CodeEditorPrimitive {
     return .{ .id = id, .style = style };
 }
 

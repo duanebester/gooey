@@ -8,6 +8,8 @@ const Bounds = @import("../widgets/text_input_state.zig").Bounds;
 const ScrollContainer = @import("../widgets/scroll_container.zig").ScrollContainer;
 const TextArea = @import("../widgets/text_area_state.zig").TextArea;
 const TextAreaBounds = @import("../widgets/text_area_state.zig").Bounds;
+const CodeEditorState = @import("../widgets/code_editor_state.zig").CodeEditorState;
+const CodeEditorBounds = @import("../widgets/code_editor_state.zig").Bounds;
 const animation = @import("../animation/animation.zig");
 const AnimationState = animation.AnimationState;
 const AnimationConfig = animation.AnimationConfig;
@@ -18,6 +20,7 @@ pub const WidgetStore = struct {
     allocator: std.mem.Allocator,
     text_inputs: std.StringHashMap(*TextInput),
     text_areas: std.StringHashMap(*TextArea),
+    code_editors: std.StringHashMap(*CodeEditorState),
     scroll_containers: std.StringHashMap(*ScrollContainer),
     accessed_this_frame: std.StringHashMap(void),
 
@@ -27,6 +30,7 @@ pub const WidgetStore = struct {
 
     default_text_input_bounds: Bounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 },
     default_text_area_bounds: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 },
+    default_code_editor_bounds: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 },
 
     const Self = @This();
 
@@ -35,6 +39,7 @@ pub const WidgetStore = struct {
             .allocator = allocator,
             .text_inputs = std.StringHashMap(*TextInput).init(allocator),
             .text_areas = std.StringHashMap(*TextArea).init(allocator),
+            .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
             .accessed_this_frame = std.StringHashMap(void).init(allocator),
             .animations = std.AutoArrayHashMap(u32, AnimationState).init(allocator),
@@ -59,6 +64,15 @@ pub const WidgetStore = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.text_areas.deinit();
+
+        // Clean up CodeEditors
+        var ce_it = self.code_editors.iterator();
+        while (ce_it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+            self.allocator.destroy(entry.value_ptr.*);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.code_editors.deinit();
 
         // Clean up ScrollContainers
         var sc_it = self.scroll_containers.iterator();
@@ -319,6 +333,68 @@ pub const WidgetStore = struct {
     }
 
     // =========================================================================
+    // CodeEditor
+    // =========================================================================
+
+    pub fn codeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
+        if (self.code_editors.getEntry(id)) |entry| {
+            const stable_key = entry.key_ptr.*;
+            if (!self.accessed_this_frame.contains(stable_key)) {
+                self.accessed_this_frame.put(stable_key, {}) catch {};
+            }
+            return entry.value_ptr.*;
+        }
+
+        const ce = self.allocator.create(CodeEditorState) catch return null;
+        errdefer self.allocator.destroy(ce);
+
+        const owned_key = self.allocator.dupe(u8, id) catch {
+            self.allocator.destroy(ce);
+            return null;
+        };
+        errdefer self.allocator.free(owned_key);
+
+        ce.* = CodeEditorState.initWithId(self.allocator, self.default_code_editor_bounds, owned_key);
+
+        self.code_editors.put(owned_key, ce) catch {
+            ce.deinit();
+            self.allocator.destroy(ce);
+            self.allocator.free(owned_key);
+            return null;
+        };
+
+        self.accessed_this_frame.put(owned_key, {}) catch {};
+        return ce;
+    }
+
+    pub fn codeEditorOrPanic(self: *Self, id: []const u8) *CodeEditorState {
+        return self.codeEditor(id) orelse @panic("Failed to allocate CodeEditorState");
+    }
+
+    pub fn getCodeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
+        return self.code_editors.get(id);
+    }
+
+    pub fn removeCodeEditor(self: *Self, id: []const u8) void {
+        if (self.code_editors.fetchRemove(id)) |kv| {
+            _ = self.accessed_this_frame.remove(kv.key);
+            kv.value.deinit();
+            self.allocator.destroy(kv.value);
+            self.allocator.free(kv.key);
+        }
+    }
+
+    pub fn getFocusedCodeEditor(self: *Self) ?*CodeEditorState {
+        var it = self.code_editors.valueIterator();
+        while (it.next()) |ce| {
+            if (ce.*.isFocused()) {
+                return ce.*;
+            }
+        }
+        return null;
+    }
+
+    // =========================================================================
     // ScrollContainer (existing)
     // =========================================================================
 
@@ -409,6 +485,10 @@ pub const WidgetStore = struct {
         var ta_it = self.text_areas.valueIterator();
         while (ta_it.next()) |ta| {
             ta.*.blur();
+        }
+        var ce_it = self.code_editors.valueIterator();
+        while (ce_it.next()) |ce| {
+            ce.*.blur();
         }
     }
 };

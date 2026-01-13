@@ -82,6 +82,7 @@ const widget_store_mod = @import("widget_store.zig");
 const WidgetStore = widget_store_mod.WidgetStore;
 const TextInput = @import("../widgets/text_input_state.zig").TextInput;
 const TextArea = @import("../widgets/text_area_state.zig").TextArea;
+const CodeEditorState = @import("../widgets/code_editor_state.zig").CodeEditorState;
 
 // Platform
 const platform = @import("../platform/mod.zig");
@@ -662,6 +663,44 @@ pub const Gooey = struct {
 
     pub fn getFocusedTextArea(self: *Self) ?*TextArea {
         return self.widgets.getFocusedTextArea();
+    }
+
+    // =========================================================================
+    // Code Editor
+    // =========================================================================
+
+    pub fn codeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
+        return self.widgets.codeEditor(id);
+    }
+
+    pub fn codeEditorOrPanic(self: *Self, id: []const u8) *CodeEditorState {
+        return self.widgets.codeEditorOrPanic(id);
+    }
+
+    pub fn focusCodeEditor(self: *Self, id: []const u8) void {
+        // Blur any currently focused TextInput
+        if (self.getFocusedTextInput()) |current| {
+            current.blur();
+        }
+        // Blur any currently focused TextArea
+        if (self.getFocusedTextArea()) |current| {
+            current.blur();
+        }
+        // Blur any currently focused CodeEditor
+        if (self.getFocusedCodeEditor()) |current| {
+            current.blur();
+        }
+        // Focus the new one
+        if (self.widgets.codeEditor(id)) |ce| {
+            ce.focus();
+        } else {}
+        // Also update FocusManager so action dispatch works
+        self.focus.focusByName(id);
+        self.requestRender();
+    }
+
+    pub fn getFocusedCodeEditor(self: *Self) ?*CodeEditorState {
+        return self.widgets.getFocusedCodeEditor();
     }
 
     // =========================================================================
