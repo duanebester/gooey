@@ -203,7 +203,7 @@ fn render(cx: *Cx) void {
         }
     }
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .padding = .{ .all = 24 },
         .gap = 16,
         .background = Color.fromHex("#1a1a2e"),
@@ -218,7 +218,7 @@ fn render(cx: *Cx) void {
             .color = Color.fromHex("#888888"),
         }),
         ScrollContent{},
-    });
+    }));
 }
 
 // =============================================================================
@@ -227,7 +227,7 @@ fn render(cx: *Cx) void {
 
 const ScrollContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.scroll("images_scroll", .{
+        cx.render(ui.scroll("images_scroll", .{
             .width = 852,
             .height = 560,
             .background = Color.fromHex("#1a1a2e"),
@@ -240,7 +240,7 @@ const ScrollContent = struct {
             SectionImages{},
             SectionCornerRadius{},
             SectionEffects{},
-        });
+        }));
     }
 };
 
@@ -250,20 +250,20 @@ const ScrollContent = struct {
 
 const SectionImages = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 12, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
             ui.text("Loaded Images", .{
                 .size = 16,
                 .color = Color.fromHex("#888888"),
                 .weight = .medium,
             }),
             ImagesRow{},
-        });
+        }));
     }
 };
 
 const ImagesRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 16,
             .padding = .{ .all = 16 },
@@ -274,7 +274,7 @@ const ImagesRow = struct {
             ImageItem{ .index = 0, .label = "Square" },
             ImageItem{ .index = 1, .label = "Landscape" },
             ImageItem{ .index = 2, .label = "Portrait" },
-        });
+        }));
     }
 };
 
@@ -285,11 +285,11 @@ const ImageItem = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const img = &state.images[self.index];
 
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ImageOrPlaceholder{ .index = self.index },
             ui.text(self.label, .{ .size = 12, .color = Color.fromHex("#666666") }),
             StatusText{ .state = img.state },
-        });
+        }));
     }
 };
 
@@ -302,7 +302,7 @@ const ImageOrPlaceholder = struct {
         switch (img.state) {
             .loaded => {
                 // Render actual image using the cached key
-                cx.box(.{
+                cx.render(ui.box(.{
                     .width = 150,
                     .height = 150,
                     .background = Color.fromHex("#2a2a4e"),
@@ -314,7 +314,7 @@ const ImageOrPlaceholder = struct {
                         .height = 150,
                         .fit = .cover,
                     },
-                });
+                }));
             },
             .loading => {
                 // Animated loading placeholder
@@ -323,7 +323,7 @@ const ImageOrPlaceholder = struct {
             },
             .failed => {
                 // Error state
-                cx.box(.{
+                cx.render(ui.box(.{
                     .width = 150,
                     .height = 150,
                     .background = Color.fromHex("#4a2020"),
@@ -331,16 +331,16 @@ const ImageOrPlaceholder = struct {
                     .alignment = .{ .main = .center, .cross = .center },
                 }, .{
                     ui.text("Failed", .{ .size = 12, .color = Color.fromHex("#ff6666") }),
-                });
+                }));
             },
             .not_started => {
                 // Waiting to start
-                cx.box(.{
+                cx.render(ui.box(.{
                     .width = 150,
                     .height = 150,
                     .background = Color.fromHex("#2a2a4e"),
                     .corner_radius = 4,
-                }, .{});
+                }, .{}));
             },
         }
     }
@@ -350,7 +350,7 @@ const LoadingPlaceholder = struct {
     size: f32,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .background = Color.fromHex("#3a3a5e"),
@@ -359,7 +359,7 @@ const LoadingPlaceholder = struct {
         }, .{
             // Pulsing inner box
             PulsingBox{ .size = self.size * 0.3 },
-        });
+        }));
     }
 };
 
@@ -367,12 +367,12 @@ const PulsingBox = struct {
     size: f32,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .background = Color.fromHex("#5a5a8e"),
             .corner_radius = self.size * 0.2,
-        }, .{});
+        }, .{}));
     }
 };
 
@@ -393,9 +393,9 @@ const StatusText = struct {
             .failed => Color.fromHex("#ff6666"),
         };
 
-        cx.box(.{}, .{
+        cx.render(ui.box(.{}, .{
             ui.text(text_str, .{ .size = 10, .color = color }),
-        });
+        }));
     }
 };
 
@@ -405,20 +405,20 @@ const StatusText = struct {
 
 const SectionCornerRadius = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 12, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
             ui.text("Corner Radius", .{
                 .size = 16,
                 .color = Color.fromHex("#888888"),
                 .weight = .medium,
             }),
             CornerRadiusRow{},
-        });
+        }));
     }
 };
 
 const CornerRadiusRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 16,
             .padding = .{ .all = 16 },
@@ -429,7 +429,7 @@ const CornerRadiusRow = struct {
             RadiusItem{ .index = 3, .radius = 8, .label = "8px" },
             RadiusItem{ .index = 3, .radius = 20, .label = "20px" },
             RadiusItem{ .index = 3, .radius = 40, .label = "circle" },
-        });
+        }));
     }
 };
 
@@ -439,13 +439,13 @@ const RadiusItem = struct {
     label: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             RadiusImageOrPlaceholder{
                 .index = self.index,
                 .radius = self.radius,
             },
             ui.text(self.label, .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
@@ -471,7 +471,7 @@ const RoundedImage = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const img = &state.images[self.index];
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 80,
             .height = 80,
             .corner_radius = self.radius,
@@ -483,7 +483,7 @@ const RoundedImage = struct {
                 .fit = .cover,
                 .corner_radius = gooey.CornerRadius.all(self.radius),
             },
-        });
+        }));
     }
 };
 
@@ -492,12 +492,12 @@ const PlaceholderBox = struct {
     radius: f32,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .corner_radius = self.radius,
             .background = Color.fromHex("#3a3a5e"),
-        }, .{});
+        }, .{}));
     }
 };
 
@@ -507,20 +507,20 @@ const PlaceholderBox = struct {
 
 const SectionEffects = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 12, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
             ui.text("Visual Effects", .{
                 .size = 16,
                 .color = Color.fromHex("#888888"),
                 .weight = .medium,
             }),
             EffectsRow{},
-        });
+        }));
     }
 };
 
 const EffectsRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 16,
             .padding = .{ .all = 16 },
@@ -532,7 +532,7 @@ const EffectsRow = struct {
             EffectItem{ .index = 4, .label = "Grayscale", .opacity = 1.0, .grayscale = 1.0, .tint = null },
             EffectItem{ .index = 4, .label = "Blue Tint", .opacity = 1.0, .grayscale = 0, .tint = Color.fromHex("#4488ff") },
             EffectItem{ .index = 4, .label = "Combined", .opacity = 0.8, .grayscale = 0.5, .tint = Color.fromHex("#ff8844") },
-        });
+        }));
     }
 };
 
@@ -544,7 +544,7 @@ const EffectItem = struct {
     tint: ?Color,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             EffectImageOrPlaceholder{
                 .index = self.index,
                 .opacity = self.opacity,
@@ -552,7 +552,7 @@ const EffectItem = struct {
                 .tint = self.tint,
             },
             ui.text(self.label, .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
@@ -590,7 +590,7 @@ const EffectImage = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const img = &state.images[self.index];
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 100,
             .height = 60,
             .corner_radius = 8,
@@ -605,7 +605,7 @@ const EffectImage = struct {
                 .grayscale = self.grayscale,
                 .tint = self.tint,
             },
-        });
+        }));
     }
 };
 
@@ -615,12 +615,12 @@ const EffectPlaceholder = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const base_color = self.tint orelse Color.fromHex("#f7a41d");
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 100,
             .height = 60,
             .corner_radius = 8,
             .background = base_color.withAlpha(self.opacity),
-        }, .{});
+        }, .{}));
     }
 };
 

@@ -147,7 +147,7 @@ fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 32 },
@@ -172,7 +172,7 @@ fn render(cx: *Cx) void {
 
         // Results section
         ResultsPanel{ .state = s },
-    });
+    }));
 }
 
 // =============================================================================
@@ -181,7 +181,7 @@ fn render(cx: *Cx) void {
 
 const ButtonRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12 }, .{
+        cx.render(ui.hstack(.{ .gap = 12 }, .{
             Button{
                 .label = "Open File",
                 .variant = .primary,
@@ -202,7 +202,7 @@ const ButtonRow = struct {
                 .variant = .secondary,
                 .on_click_handler = cx.update(AppState, AppState.saveFile),
             },
-        });
+        }));
     }
 };
 
@@ -210,7 +210,7 @@ const ResultsPanel = struct {
     state: *const AppState,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .gap = 8,
             .padding = .{ .all = 16 },
@@ -226,7 +226,7 @@ const ResultsPanel = struct {
 
             // Path list
             PathList{ .state = self.state },
-        });
+        }));
     }
 };
 
@@ -236,7 +236,7 @@ const PathList = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         if (self.state.path_count == 0) return;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .gap = 4,
             .padding = .{ .each = .{ .top = 8, .right = 0, .bottom = 0, .left = 0 } },
@@ -251,7 +251,7 @@ const PathList = struct {
             PathItem{ .state = self.state, .index = 7 },
             PathItem{ .state = self.state, .index = 8 },
             PathItem{ .state = self.state, .index = 9 },
-        });
+        }));
     }
 };
 

@@ -7,12 +7,11 @@
 //!
 //! Usage with Cx (recommended):
 //! ```zig
-//! const tabs = [_][]const u8{ "Home", "Settings", "About" };
-//! cx.box(.{ .direction = .row, .gap = 0 }, .{
+//! cx.render(ui.box(.{ .direction = .row, .gap = 0 }, .{
 //!     Tab{ .label = "Home", .is_active = s.page == 0, .on_click_handler = cx.updateWith(State, @as(u8, 0), State.setPage) },
 //!     Tab{ .label = "Settings", .is_active = s.page == 1, .on_click_handler = cx.updateWith(State, @as(u8, 1), State.setPage) },
 //!     Tab{ .label = "About", .is_active = s.page == 2, .on_click_handler = cx.updateWith(State, @as(u8, 2), State.setPage) },
-//! });
+//! }));
 //! ```
 //!
 //! Or use TabBar for simple cases with fn callback:

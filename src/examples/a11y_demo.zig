@@ -112,7 +112,7 @@ fn render(cx: *Cx) void {
     else
         ui.Color.rgb(0.2, 0.2, 0.2);
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 24 },
@@ -144,7 +144,7 @@ fn render(cx: *Cx) void {
 
         // Action log
         ActionLogSection{ .action = s.last_action, .text_color = text_color },
-    });
+    }));
 }
 
 // =============================================================================
@@ -166,7 +166,7 @@ const HeaderSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.vstack(.{ .gap = 4 }, .{
+        cx.render(ui.vstack(.{ .gap = 4 }, .{
             ui.text("Accessibility Demo", .{
                 .size = 28,
                 .color = self.text_color,
@@ -176,7 +176,7 @@ const HeaderSection = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.5, 0.5, 0.5),
             }),
-        });
+        }));
     }
 };
 
@@ -202,8 +202,8 @@ const A11yStatusSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.hstack(.{ .gap = 8, .alignment = .center }, .{
-            cx.box(.{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+            ui.box(.{
                 .width = 12,
                 .height = 12,
                 .corner_radius = 6,
@@ -213,7 +213,7 @@ const A11yStatusSection = struct {
                 if (is_enabled) "VoiceOver Active" else "VoiceOver Not Detected",
                 .{ .size = 12, .color = self.text_color },
             ),
-        });
+        }));
     }
 };
 
@@ -233,7 +233,7 @@ const CounterSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .gap = 12,
             .background = if (self.dark_mode)
@@ -248,7 +248,7 @@ const CounterSection = struct {
                 .weight = .semibold,
             }),
 
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 // Decrement button - Button has built-in a11y
                 Button{
                     .label = "−",
@@ -270,7 +270,7 @@ const CounterSection = struct {
                     .on_click_handler = cx.update(AppState, AppState.increment),
                 },
             }),
-        });
+        }));
     }
 };
 
@@ -290,7 +290,7 @@ const ToggleSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .gap = 12,
             .background = if (self.dark_mode)
@@ -305,7 +305,7 @@ const ToggleSection = struct {
                 .weight = .semibold,
             }),
 
-            cx.hstack(.{ .gap = 12 }, .{
+            ui.hstack(.{ .gap = 12 }, .{
                 // Notifications toggle - Checkbox has built-in a11y
                 gooey.Checkbox{
                     .id = "notifications",
@@ -323,7 +323,7 @@ const ToggleSection = struct {
                     .on_click_handler = cx.update(AppState, AppState.toggleDarkMode),
                 },
             }),
-        });
+        }));
     }
 };
 
@@ -359,12 +359,12 @@ const StatusSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 12 },
             .background = bg_color,
             .corner_radius = 8,
         }, .{
-            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
                 ui.text(if (is_error) "⚠" else "✓", .{ .size = 16, .color = text_color }),
                 ui.text(self.message, .{ .size = 14, .color = text_color }),
                 ui.spacerMin(20),
@@ -385,7 +385,7 @@ const StatusSection = struct {
                     },
                 }),
             }),
-        });
+        }));
     }
 };
 
@@ -394,10 +394,10 @@ const ActionLogSection = struct {
     text_color: ui.Color,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 4 }, .{
+        cx.render(ui.hstack(.{ .gap = 4 }, .{
             ui.text("Last action: ", .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
             ui.text(self.action, .{ .size = 12, .color = self.text_color }),
-        });
+        }));
     }
 };
 

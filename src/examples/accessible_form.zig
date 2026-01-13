@@ -228,7 +228,7 @@ fn render(cx: *Cx) void {
     }
 
     // Use scroll container for form content
-    cx.scroll("form-scroll", .{
+    cx.render(ui.scroll("form-scroll", .{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 32 },
@@ -273,7 +273,7 @@ fn render(cx: *Cx) void {
             // Form Actions
             FormActions{},
         }),
-    });
+    }));
 }
 
 // =============================================================================
@@ -293,7 +293,7 @@ const FormHeader = struct {
             defer b.accessibleEnd();
         }
 
-        cx.vstack(.{ .gap = 8 }, .{
+        cx.render(ui.vstack(.{ .gap = 8 }, .{
             ui.text("Registration Form", .{
                 .size = 32,
                 .weight = .bold,
@@ -303,7 +303,7 @@ const FormHeader = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.5, 0.5, 0.5),
             }),
-        });
+        }));
     }
 };
 
@@ -327,8 +327,8 @@ const A11yStatus = struct {
             defer b.accessibleEnd();
         }
 
-        cx.hstack(.{ .gap = 8, .alignment = .center }, .{
-            cx.box(.{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+            ui.box(.{
                 .width = 10,
                 .height = 10,
                 .corner_radius = 5,
@@ -341,7 +341,7 @@ const A11yStatus = struct {
                 if (is_enabled) "Accessibility Active" else "Standard Mode",
                 .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.5) },
             ),
-        });
+        }));
     }
 };
 
@@ -376,7 +376,7 @@ const PersonalInfoSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 20 },
             .gap = 16,
             .background = ui.Color.white,
@@ -438,7 +438,7 @@ const PersonalInfoSection = struct {
                 .bind = @constCast(&s.phone),
                 .width = 300,
             },
-        });
+        }));
     }
 };
 
@@ -458,7 +458,7 @@ const ContactPreferencesSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 20 },
             .gap = 16,
             .background = ui.Color.white,
@@ -488,7 +488,7 @@ const ContactPreferencesSection = struct {
                 .accessible_description = "Receive weekly updates about our products and services",
                 .on_click_handler = cx.update(FormState, FormState.toggleNewsletter),
             },
-        });
+        }));
     }
 };
 
@@ -507,14 +507,14 @@ const RadioGroupSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.vstack(.{ .gap = 12 }, .{
+        cx.render(ui.vstack(.{ .gap = 12 }, .{
             ui.text(self.label, .{
                 .size = 14,
                 .weight = .medium,
                 .color = ui.Color.rgb(0.3, 0.3, 0.4),
             }),
 
-            cx.vstack(.{ .gap = 8 }, .{
+            ui.vstack(.{ .gap = 8 }, .{
                 RadioOption{
                     .label = "Email",
                     .selected = self.contact_method == .email,
@@ -537,7 +537,7 @@ const RadioGroupSection = struct {
                     .on_select = cx.update(FormState, FormState.setContactMail),
                 },
             }),
-        });
+        }));
     }
 };
 
@@ -565,14 +565,14 @@ const RadioOption = struct {
         }
 
         // Wrap in clickable box
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 8,
             .alignment = .{ .cross = .center },
             .on_click_handler = self.on_select,
         }, .{
             // Radio circle
-            cx.box(.{
+            ui.box(.{
                 .width = 18,
                 .height = 18,
                 .corner_radius = 9,
@@ -586,7 +586,7 @@ const RadioOption = struct {
             }, .{
                 // Inner dot when selected
                 ui.when(self.selected, .{
-                    cx.box(.{
+                    ui.box(.{
                         .width = 10,
                         .height = 10,
                         .corner_radius = 5,
@@ -598,7 +598,7 @@ const RadioOption = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.2, 0.2, 0.3),
             }),
-        });
+        }));
     }
 };
 
@@ -618,7 +618,7 @@ const ExperienceSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 20 },
             .gap = 16,
             .background = ui.Color.white,
@@ -654,7 +654,7 @@ const ExperienceSection = struct {
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
             },
-        });
+        }));
     }
 };
 
@@ -673,7 +673,7 @@ const TermsSection = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 20 },
             .gap = 12,
             .background = if (self.has_error)
@@ -704,7 +704,7 @@ const TermsSection = struct {
                     .message = "You must accept the terms and conditions to continue",
                 },
             }),
-        });
+        }));
     }
 };
 
@@ -720,7 +720,7 @@ const FormActions = struct {
             defer b.accessibleEnd();
         }
 
-        cx.hstack(.{ .gap = 16 }, .{
+        cx.render(ui.hstack(.{ .gap = 16 }, .{
             Button{
                 .label = "Submit",
                 .accessible_name = "Submit registration form",
@@ -736,7 +736,7 @@ const FormActions = struct {
                 .size = .large,
                 .on_click_handler = cx.update(FormState, FormState.reset),
             },
-        });
+        }));
     }
 };
 
@@ -749,7 +749,7 @@ const FormField = struct {
     error_message: ?[]const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.vstack(.{ .gap = 4 }, .{
+        cx.render(ui.vstack(.{ .gap = 4 }, .{
             ui.text(self.label, .{
                 .size = 14,
                 .weight = .medium,
@@ -761,7 +761,7 @@ const FormField = struct {
             ui.when(self.error_message != null, .{
                 ErrorMessage{ .message = self.error_message orelse "" },
             }),
-        });
+        }));
     }
 };
 
@@ -780,7 +780,7 @@ const ErrorMessage = struct {
             defer b.accessibleEnd();
         }
 
-        cx.hstack(.{ .gap = 4, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 4, .alignment = .center }, .{
             ui.text("⚠", .{
                 .size = 12,
                 .color = ui.Color.rgb(0.9, 0.3, 0.3),
@@ -789,7 +789,7 @@ const ErrorMessage = struct {
                 .size = 12,
                 .color = ui.Color.rgb(0.9, 0.3, 0.3),
             }),
-        });
+        }));
     }
 };
 
@@ -806,7 +806,7 @@ const SuccessMessage = struct {
             defer b.accessibleEnd();
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 32 },
             .gap = 20,
             .background = ui.Color.rgb(0.9, 1.0, 0.9),
@@ -835,7 +835,7 @@ const SuccessMessage = struct {
                 .variant = .primary,
                 .on_click_handler = cx.update(FormState, FormState.dismissSuccess),
             },
-        });
+        }));
     }
 };
 

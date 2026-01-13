@@ -49,7 +49,7 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 20 },
@@ -63,7 +63,7 @@ fn render(cx: *Cx) void {
         }),
 
         ui.canvas(500, 320, paintSimple),
-    });
+    }));
 }
 
 fn paintSimple(ctx: *ui.DrawContext) void {

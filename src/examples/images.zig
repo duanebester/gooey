@@ -28,7 +28,7 @@ const App = gooey.App(AppState, &state, render, .{
 });
 
 fn render(cx: *Cx) void {
-    cx.box(.{
+    cx.render(ui.box(.{
         .padding = .{ .all = 24 },
         .gap = 16,
         .background = Color.fromHex("#1a1a2e"),
@@ -39,7 +39,7 @@ fn render(cx: *Cx) void {
             .weight = .bold,
         }),
         ScrollContent{},
-    });
+    }));
 }
 
 // =============================================================================
@@ -48,7 +48,7 @@ fn render(cx: *Cx) void {
 
 const ScrollContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.scroll("images_scroll", .{
+        cx.render(ui.scroll("images_scroll", .{
             .width = 852,
             .height = 610,
             .background = Color.fromHex("#1a1a2e"),
@@ -62,7 +62,7 @@ const ScrollContent = struct {
             SectionFitModes{},
             SectionCornerRadius{},
             SectionEffects{},
-        });
+        }));
     }
 };
 
@@ -72,20 +72,20 @@ const ScrollContent = struct {
 
 const SectionSizing = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 12, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
             ui.text("Sizing", .{
                 .size = 16,
                 .color = Color.fromHex("#888888"),
                 .weight = .medium,
             }),
             SizingRow{},
-        });
+        }));
     }
 };
 
 const SizingRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 16,
             .padding = .{ .all = 16 },
@@ -96,7 +96,7 @@ const SizingRow = struct {
             SizeItem{ .size = 64, .label = "64x64" },
             SizeItem{ .size = 128, .label = "128x128" },
             CustomSizeItem{},
-        });
+        }));
     }
 };
 
@@ -105,26 +105,26 @@ const SizeItem = struct {
     label: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = self.size,
             },
             ui.text(self.label, .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const CustomSizeItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 200,
                 .height = 80,
             },
             ui.text("200x80", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
@@ -134,20 +134,20 @@ const CustomSizeItem = struct {
 
 const SectionFitModes = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 12, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
             ui.text("Object Fit Modes", .{
                 .size = 16,
                 .color = Color.fromHex("#888888"),
                 .weight = .medium,
             }),
             FitModesRow{},
-        });
+        }));
     }
 };
 
 const FitModesRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 16,
             .padding = .{ .all = 16 },
@@ -158,13 +158,13 @@ const FitModesRow = struct {
             FitCoverItem{},
             FitFillItem{},
             FitNoneItem{},
-        });
+        }));
     }
 };
 
 const FitContainItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
@@ -172,13 +172,13 @@ const FitContainItem = struct {
                 .fit = .contain,
             },
             ui.text("contain", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const FitCoverItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
@@ -186,13 +186,13 @@ const FitCoverItem = struct {
                 .fit = .cover,
             },
             ui.text("cover", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const FitFillItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
@@ -200,13 +200,13 @@ const FitFillItem = struct {
                 .fit = .fill,
             },
             ui.text("fill", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const FitNoneItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
@@ -214,7 +214,7 @@ const FitNoneItem = struct {
                 .fit = .none,
             },
             ui.text("none", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
@@ -224,20 +224,20 @@ const FitNoneItem = struct {
 
 const SectionCornerRadius = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 12, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
             ui.text("Corner Radius", .{
                 .size = 16,
                 .color = Color.fromHex("#888888"),
                 .weight = .medium,
             }),
             CornerRadiusRow{},
-        });
+        }));
     }
 };
 
 const CornerRadiusRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 16,
             .padding = .{ .all = 16 },
@@ -248,58 +248,58 @@ const CornerRadiusRow = struct {
             RadiusSmallItem{},
             RadiusLargeItem{},
             RadiusCircleItem{},
-        });
+        }));
     }
 };
 
 const RadiusNoneItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
             },
             ui.text("none", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const RadiusSmallItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
             },
             ui.text("8px", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const RadiusLargeItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 20,
             },
             ui.text("20px", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const RadiusCircleItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .rounded = true,
             },
             ui.text("circle", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
@@ -309,20 +309,20 @@ const RadiusCircleItem = struct {
 
 const SectionEffects = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 12, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
             ui.text("Visual Effects", .{
                 .size = 16,
                 .color = Color.fromHex("#888888"),
                 .weight = .medium,
             }),
             EffectsRow{},
-        });
+        }));
     }
 };
 
 const EffectsRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 16,
             .padding = .{ .all = 16 },
@@ -335,26 +335,26 @@ const EffectsRow = struct {
             EffectPartialGrayItem{},
             EffectOpacityItem{},
             EffectCombinedItem{},
-        });
+        }));
     }
 };
 
 const EffectNormalItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
             },
             ui.text("normal", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const EffectTintItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
@@ -362,13 +362,13 @@ const EffectTintItem = struct {
                 .tint = Color.fromHex("#4488ff"),
             },
             ui.text("tint", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const EffectGrayscaleItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
@@ -376,13 +376,13 @@ const EffectGrayscaleItem = struct {
                 .grayscale = 1.0,
             },
             ui.text("grayscale", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const EffectPartialGrayItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
@@ -390,13 +390,13 @@ const EffectPartialGrayItem = struct {
                 .grayscale = 0.5,
             },
             ui.text("50% gray", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const EffectOpacityItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
@@ -404,13 +404,13 @@ const EffectOpacityItem = struct {
                 .opacity = 0.5,
             },
             ui.text("50% opacity", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 
 const EffectCombinedItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             gooey.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
@@ -420,7 +420,7 @@ const EffectCombinedItem = struct {
                 .opacity = 0.9,
             },
             ui.text("combined", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        });
+        }));
     }
 };
 

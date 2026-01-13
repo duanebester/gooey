@@ -49,7 +49,22 @@ pub const keyContext = primitives.keyContext;
 pub const onAction = primitives.onAction;
 pub const onActionHandler = primitives.onActionHandler;
 pub const when = primitives.when;
+pub const maybe = primitives.maybe;
+pub const each = primitives.each;
 pub const canvas = canvas_mod.canvas;
+
+// Container element functions (Phase 1: cx/ui separation)
+// These return element structs for use with cx.render()
+pub const box = primitives.box;
+pub const hstack = primitives.hstack;
+pub const vstack = primitives.vstack;
+pub const scroll = primitives.scroll;
+
+// Tracked variants with source location (Phase 4)
+pub const boxTracked = primitives.boxTracked;
+pub const hstackTracked = primitives.hstackTracked;
+pub const vstackTracked = primitives.vstackTracked;
+pub const scrollTracked = primitives.scrollTracked;
 
 // =============================================================================
 // Primitive Types

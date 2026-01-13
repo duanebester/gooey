@@ -425,7 +425,7 @@ const Header = struct {
         // Fade in header on load
         const fade = cx.animateComptime("header-fade", .{ .duration_ms = 600 });
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .each = .{ .top = 24, .bottom = 16, .left = 24, .right = 24 } },
             .background = Colors.bg_panel.withAlpha(0.9), // * fade.progress),
@@ -435,7 +435,7 @@ const Header = struct {
             ShipName{ .opacity = fade.progress },
             ui.spacer(),
             StatusIndicator{},
-        });
+        }));
     }
 };
 
@@ -443,7 +443,7 @@ const ShipName = struct {
     opacity: f32 = 1.0,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             Svg{
                 .path = SpaceIcons.ship,
                 .size = 28,
@@ -451,7 +451,7 @@ const ShipName = struct {
             },
             ui.text("USS AURORA", .{ .size = 22, .color = Colors.text.withAlpha(self.opacity) }),
             ui.text("NCC-1701-G", .{ .size = 12, .color = Colors.text_dim.withAlpha(self.opacity) }),
-        });
+        }));
     }
 };
 const StatusIndicator = struct {
@@ -475,14 +475,14 @@ const StatusIndicator = struct {
 
         const status_alpha = 1.0 - (pulse_intensity * (1.0 - pulse.progress));
 
-        cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 16, .alignment = .center }, .{
             ui.text("STATUS:", .{ .size = 12, .color = Colors.text_dim }),
             ui.text(s.alert_level.label(), .{
                 .size = 14,
                 .color = s.alert_level.color().withAlpha(status_alpha),
             }),
             AlertBadge{},
-        });
+        }));
     }
 };
 
@@ -501,12 +501,12 @@ const AlertBadge = struct {
             const scale = 1.0 + pulse.progress * 0.08;
             const glow_alpha = gooey.lerp(0.8, 1.0, pulse.progress);
 
-            cx.box(.{
+            cx.render(ui.box(.{
                 .padding = .{ .symmetric = .{ .x = 8 * scale, .y = 4 * scale } },
                 .background = Colors.red.withAlpha(glow_alpha),
                 .corner_radius = 10,
             }, .{
-                cx.hstack(.{ .gap = 4, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 4, .alignment = .center }, .{
                     Svg{
                         .path = SpaceIcons.alert,
                         .size = 12,
@@ -517,14 +517,14 @@ const AlertBadge = struct {
                         .color = ui.Color.white,
                     }),
                 }),
-            });
+            }));
         }
     }
 };
 
 const MainDashboard = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .grow = true,
             .padding = .{ .all = 16 },
             .gap = 16,
@@ -536,13 +536,13 @@ const MainDashboard = struct {
             CenterPanel{},
             // Right - Controls
             RightPanel{},
-        });
+        }));
     }
 };
 
 const LeftPanel = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 220,
             .gap = 12,
             .direction = .column,
@@ -553,13 +553,13 @@ const LeftPanel = struct {
             SystemGauge{ .label = "FUEL", .value = cx.stateConst(AppState).fuel_level, .color = Colors.orange, .icon = SpaceIcons.fuel },
             SystemGauge{ .label = "O2", .value = cx.stateConst(AppState).oxygen_level, .color = Colors.green, .icon = SpaceIcons.oxygen },
             ReactorStatus{},
-        });
+        }));
     }
 };
 
 const CenterPanel = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .grow = true,
             .gap = 12,
             .direction = .column,
@@ -569,13 +569,13 @@ const CenterPanel = struct {
             CoordinatesPanel{},
             VelocityDisplay{},
             QuickActions{},
-        });
+        }));
     }
 };
 
 const RightPanel = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 200,
             .gap = 12,
             .direction = .column,
@@ -583,7 +583,7 @@ const RightPanel = struct {
             PanelHeader{ .title = "CONTROLS", .icon = SpaceIcons.controls },
             ShipControls{},
             JumpDrive{},
-        });
+        }));
     }
 };
 
@@ -592,7 +592,7 @@ const PanelHeader = struct {
     icon: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
             .background = Colors.bg_card,
@@ -603,13 +603,11 @@ const PanelHeader = struct {
         }, .{
             Svg{
                 .path = self.icon,
-                .size = 16,
-                .color = null,
-                .stroke_color = Colors.cyan,
-                .stroke_width = 1.5,
+                .size = 14,
+                .color = Colors.text_glow,
             },
-            ui.text(self.title, .{ .size = 12, .color = Colors.text_dim }),
-        });
+            ui.text(self.title, .{ .size = 11, .color = Colors.text_glow }),
+        }));
     }
 };
 
@@ -620,16 +618,15 @@ const JumpDrive = struct {
         const status_color = if (s.jump_ready) Colors.green else if (s.destination_locked) Colors.cyan else Colors.text_dim;
         const status_text = if (s.jump_ready) "READY" else if (s.destination_locked) "CHARGING" else "STANDBY";
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 12 },
             .background = Colors.bg_card,
             .corner_radius = 6,
             .gap = 12,
             .direction = .column,
-            .alignment = .{ .cross = .center },
         }, .{
-            cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
                     .path = SpaceIcons.jump_drive,
                     .size = 14,
@@ -639,10 +636,10 @@ const JumpDrive = struct {
                 },
                 ui.text("JUMP DRIVE", .{ .size = 10, .color = Colors.magenta_dim }),
             }),
+            ui.text(status_text, .{ .size = 12, .color = status_color }),
             JumpChargeRing{},
-            ui.text(status_text, .{ .size = 11, .color = status_color }),
             JumpButtons{},
-        });
+        }));
     }
 };
 
@@ -683,7 +680,7 @@ const JumpChargeRing = struct {
         // Choose icon based on state
         const ring_icon = if (is_ready) SpaceIcons.star else if (is_charging) SpaceIcons.target else SpaceIcons.jump_drive;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 80 * scale,
             .height = 80 * scale,
             .background = base_color.withAlpha(intensity),
@@ -701,7 +698,7 @@ const JumpChargeRing = struct {
             },
             ui.textFmt("{}%", .{s.jump_charge}, .{ .size = 18, .color = base_color }),
             JumpDestLabel{},
-        });
+        }));
     }
 };
 
@@ -710,13 +707,13 @@ const JumpDestLabel = struct {
         const s = cx.stateConst(AppState);
 
         if (s.destination_locked) {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 ui.text("LOCKED", .{ .size = 8, .color = Colors.green }),
-            });
+            }));
         } else {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 ui.text("NO DEST", .{ .size = 8, .color = Colors.text_dim }),
-            });
+            }));
         }
     }
 };
@@ -726,30 +723,30 @@ const JumpButtons = struct {
         const s = cx.stateConst(AppState);
 
         if (s.jump_ready) {
-            cx.box(.{ .fill_width = true }, .{
+            cx.render(ui.box(.{ .fill_width = true }, .{
                 NeonButton{
                     .label = "INITIATE JUMP",
                     .color = Colors.green,
                     .icon = SpaceIcons.jump_drive,
                     .handler = cx.update(AppState, AppState.initiateJump),
                 },
-            });
+            }));
         } else if (!s.destination_locked) {
-            cx.box(.{ .fill_width = true }, .{
+            cx.render(ui.box(.{ .fill_width = true }, .{
                 NeonButton{
                     .label = "LOCK DESTINATION",
                     .color = Colors.magenta,
                     .icon = SpaceIcons.target,
                     .handler = cx.update(AppState, AppState.lockDestination),
                 },
-            });
+            }));
         } else {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .fill_width = true,
                 .alignment = .{ .main = .center, .cross = .center },
             }, .{
                 ui.text("» CHARGING «", .{ .size = 10, .color = Colors.magenta_dim }),
-            });
+            }));
         }
     }
 };
@@ -764,7 +761,7 @@ const SystemGauge = struct {
         const is_critical = self.value <= 30;
         const display_color = if (is_critical) Colors.red else self.color;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 12 },
             .background = Colors.bg_card,
@@ -772,8 +769,8 @@ const SystemGauge = struct {
             .gap = 8,
             .direction = .column,
         }, .{
-            cx.box(.{ .direction = .row, .fill_width = true, .alignment = .{ .main = .space_between, .cross = .center } }, .{
-                cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.box(.{ .direction = .row, .fill_width = true, .alignment = .{ .main = .space_between, .cross = .center } }, .{
+                ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                     Svg{
                         .path = self.icon,
                         .size = 14,
@@ -786,8 +783,8 @@ const SystemGauge = struct {
                     .color = display_color,
                 }),
             }),
-            GaugeBar{ .value = self.value, .color = self.color, .id = self.label },
-        });
+            GaugeBar{ .value = self.value, .color = display_color, .id = self.label },
+        }));
     }
 };
 
@@ -810,19 +807,19 @@ const GaugeBar = struct {
         const bar_color = if (self.value > 30) self.color else Colors.red;
         const fill_width = @as(f32, @floatFromInt(self.value)) / 100.0 * fill_scale;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .height = 6,
-            .background = ui.Color.rgba(1, 1, 1, 0.1),
+            .background = Colors.bg_dark,
             .corner_radius = 3,
         }, .{
-            cx.box(.{
+            ui.box(.{
                 .width_percent = fill_width,
                 .height = 6,
                 .background = bar_color,
                 .corner_radius = 3,
             }, .{}),
-        });
+        }));
     }
 };
 
@@ -841,16 +838,15 @@ const ReactorStatus = struct {
         const temp_color = if (is_hot) Colors.orange else Colors.green;
         const glow_intensity: f32 = if (is_hot) gooey.lerp(0.8, 1.0, pulse.progress) else 1.0;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 12 },
             .background = Colors.bg_card,
             .corner_radius = 6,
-            .gap = 6,
+            .gap = 8,
             .direction = .column,
-            .alignment = .{ .cross = .center },
         }, .{
-            cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
                     .path = SpaceIcons.reactor,
                     .size = 14,
@@ -862,17 +858,17 @@ const ReactorStatus = struct {
                 .size = 28,
                 .color = temp_color.withAlpha(glow_intensity),
             }),
-            ui.text(if (is_hot) "ELEVATED" else "FUSION STABLE", .{
+            ui.text(if (is_hot) "⚠ OVERHEATING" else if (s.reactor_temp > 3500) "HOT" else "NOMINAL", .{
                 .size = 9,
-                .color = if (is_hot) Colors.orange.withAlpha(glow_intensity) else Colors.green_dim,
+                .color = temp_color.withAlpha(0.7),
             }),
-        });
+        }));
     }
 };
 
 const NavigationDisplay = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = Colors.bg_card,
@@ -883,10 +879,9 @@ const NavigationDisplay = struct {
         }, .{
             // Row of circular displays
             CircleRow{},
-
             // Autopilot status
             AutopilotStatus{},
-        });
+        }));
     }
 };
 
@@ -894,11 +889,11 @@ const CircleRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.box(.{ .direction = .row, .gap = 24, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .direction = .row, .gap = 24, .alignment = .{ .cross = .center } }, .{
             CircleGauge{ .label = "HDG", .value = s.heading, .color = Colors.cyan, .unit = "deg", .icon = SpaceIcons.heading },
             CircleGauge{ .label = "VEL", .value = @as(u16, @intCast(s.velocity / 100)), .color = Colors.magenta, .unit = "x100", .icon = SpaceIcons.velocity },
             CircleGauge{ .label = "FUEL", .value = s.fuel_level, .color = Colors.orange, .unit = "%", .icon = SpaceIcons.fuel },
-        });
+        }));
     }
 };
 
@@ -906,7 +901,7 @@ const AutopilotStatus = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
             Svg{
                 .path = SpaceIcons.autopilot,
                 .size = 16,
@@ -916,7 +911,7 @@ const AutopilotStatus = struct {
                 .size = 11,
                 .color = if (s.autopilot_engaged) Colors.green else Colors.text_dim,
             }),
-        });
+        }));
     }
 };
 
@@ -937,7 +932,7 @@ const CircleGauge = struct {
 
         const bg_alpha = gooey.lerp(0.06, 0.12, breathe.progress);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 100,
             .height = 100,
             .background = self.color.withAlpha(bg_alpha),
@@ -955,7 +950,7 @@ const CircleGauge = struct {
             },
             ui.textFmt("{}", .{self.value}, .{ .size = 24, .color = self.color }),
             CircleUnit{ .unit = self.unit },
-        });
+        }));
     }
 };
 
@@ -964,9 +959,9 @@ const CircleUnit = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         if (self.unit) |u| {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 ui.text(u, .{ .size = 9, .color = Colors.text_dim }),
-            });
+            }));
         }
     }
 };
@@ -975,7 +970,7 @@ const CoordinatesPanel = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 16 },
             .background = Colors.bg_card,
@@ -983,7 +978,7 @@ const CoordinatesPanel = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
                     .path = SpaceIcons.coords,
                     .size = 14,
@@ -993,12 +988,12 @@ const CoordinatesPanel = struct {
                 },
                 ui.text("COORDINATES", .{ .size = 10, .color = Colors.text_dim }),
             }),
-            cx.box(.{ .direction = .row, .alignment = .{ .main = .space_around } }, .{
+            ui.box(.{ .direction = .row, .alignment = .{ .main = .space_around } }, .{
                 CoordDisplay{ .axis = "X", .value = s.coordinates[0] },
                 CoordDisplay{ .axis = "Y", .value = s.coordinates[1] },
                 CoordDisplay{ .axis = "Z", .value = s.coordinates[2] },
             }),
-        });
+        }));
     }
 };
 
@@ -1007,14 +1002,14 @@ const CoordDisplay = struct {
     value: i32,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .alignment = .{ .cross = .center },
             .gap = 2,
         }, .{
             ui.text(self.axis, .{ .size = 10, .color = Colors.magenta_dim }),
             ui.textFmt("{}", .{self.value}, .{ .size = 18, .color = Colors.text }),
-        });
+        }));
     }
 };
 
@@ -1023,7 +1018,7 @@ const VelocityDisplay = struct {
         const s = cx.stateConst(AppState);
         const vel_color = if (s.velocity > 0) Colors.cyan else Colors.text_dim;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 16 },
             .background = Colors.bg_card,
@@ -1031,7 +1026,7 @@ const VelocityDisplay = struct {
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
         }, .{
-            cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
                     .path = SpaceIcons.velocity,
                     .size = 16,
@@ -1041,11 +1036,11 @@ const VelocityDisplay = struct {
                 },
                 ui.text("VELOCITY", .{ .size = 11, .color = Colors.text_dim }),
             }),
-            cx.hstack(.{ .gap = 4, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 4, .alignment = .center }, .{
                 ui.textFmt("{}", .{s.velocity}, .{ .size = 24, .color = vel_color }),
                 ui.text("km/s", .{ .size = 11, .color = Colors.text_dim }),
             }),
-        });
+        }));
     }
 };
 
@@ -1053,7 +1048,7 @@ const ShipControls = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 12 },
             .background = Colors.bg_card,
@@ -1061,7 +1056,7 @@ const ShipControls = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
                     .path = SpaceIcons.target,
                     .size = 12,
@@ -1085,7 +1080,7 @@ const ShipControls = struct {
                 .padding = 8,
             },
             ToggleRow{},
-        });
+        }));
     }
 };
 
@@ -1093,14 +1088,14 @@ const ToggleRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .direction = .column,
             .gap = 8,
         }, .{
             AutopilotToggle{ .active = s.autopilot_engaged },
             ShieldsToggle{ .active = s.shields_active },
-        });
+        }));
     }
 };
 
@@ -1118,7 +1113,7 @@ const AutopilotToggle = struct {
         // Blend from previous state
         const current_alpha = gooey.lerp(0.1, 0.15, toggle_anim.progress);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 16, .y = 10 } },
             .background = target_color.withAlpha(current_alpha),
@@ -1127,7 +1122,7 @@ const AutopilotToggle = struct {
             .alignment = .{ .cross = .center },
             .on_click_handler = cx.update(AppState, AppState.toggleAutopilot),
         }, .{
-            cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
                     .path = SpaceIcons.autopilot,
                     .size = 14,
@@ -1137,7 +1132,7 @@ const AutopilotToggle = struct {
             }),
             ui.spacer(),
             ToggleStatus{ .active = self.active },
-        });
+        }));
     }
 };
 
@@ -1154,7 +1149,7 @@ const ShieldsToggle = struct {
         const target_color = if (self.active) Colors.green else Colors.red;
         const current_alpha = gooey.lerp(0.1, 0.15, toggle_anim.progress);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 16, .y = 10 } },
             .background = target_color.withAlpha(current_alpha),
@@ -1163,7 +1158,7 @@ const ShieldsToggle = struct {
             .alignment = .{ .cross = .center },
             .on_click_handler = cx.update(AppState, AppState.toggleShields),
         }, .{
-            cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
                     .path = SpaceIcons.shield,
                     .size = 14,
@@ -1173,7 +1168,7 @@ const ShieldsToggle = struct {
             }),
             ui.spacer(),
             ToggleStatus{ .active = self.active },
-        });
+        }));
     }
 };
 
@@ -1184,9 +1179,9 @@ const ToggleStatus = struct {
         const status_color = if (self.active) Colors.green else Colors.red;
         const status_text = if (self.active) "ON" else "OFF";
 
-        cx.box(.{}, .{
+        cx.render(ui.box(.{}, .{
             ui.text(status_text, .{ .size = 11, .color = status_color }),
-        });
+        }));
     }
 };
 
@@ -1208,7 +1203,7 @@ const NeonButton = struct {
 
         if (self.icon) |icon_path| {
             // Button with icon
-            cx.box(.{
+            cx.render(ui.box(.{
                 .fill_width = true,
                 .padding = .{ .symmetric = .{ .x = 16, .y = 10 } },
                 .background = self.color.withAlpha(bg_alpha),
@@ -1226,10 +1221,10 @@ const NeonButton = struct {
                     .stroke_width = 1.5,
                 },
                 ui.text(self.label, .{ .size = 11, .color = self.color }),
-            });
+            }));
         } else {
             // Button without icon
-            cx.box(.{
+            cx.render(ui.box(.{
                 .fill_width = true,
                 .padding = .{ .symmetric = .{ .x = 16, .y = 10 } },
                 .background = self.color.withAlpha(bg_alpha),
@@ -1238,14 +1233,14 @@ const NeonButton = struct {
                 .on_click_handler = self.handler,
             }, .{
                 ui.text(self.label, .{ .size = 11, .color = self.color }),
-            });
+            }));
         }
     }
 };
 
 const QuickActions = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .gap = 8,
             .direction = .row,
@@ -1262,13 +1257,13 @@ const QuickActions = struct {
                 .icon = SpaceIcons.emergency,
                 .handler = cx.update(AppState, AppState.emergencyStop),
             },
-        });
+        }));
     }
 };
 
 const Footer = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 24, .y = 12 } },
             .background = Colors.bg_panel,
@@ -1280,13 +1275,13 @@ const Footer = struct {
             FooterBrand{},
             ui.spacer(),
             FooterTick{},
-        });
+        }));
     }
 };
 
 const FooterVersion = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 6, .alignment = .center }, .{
             Svg{
                 .path = SpaceIcons.dashboard,
                 .size = 12,
@@ -1295,13 +1290,13 @@ const FooterVersion = struct {
                 .stroke_width = 1.5,
             },
             ui.text("v2.4.7", .{ .size = 10, .color = Colors.text_dim }),
-        });
+        }));
     }
 };
 
 const FooterBrand = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 6, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 6, .alignment = .center }, .{
             Svg{
                 .path = SpaceIcons.star,
                 .size = 12,
@@ -1313,7 +1308,7 @@ const FooterBrand = struct {
                 .size = 12,
                 .color = Colors.cyan_dim,
             },
-        });
+        }));
     }
 };
 
@@ -1321,9 +1316,9 @@ const FooterTick = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.box(.{}, .{
+        cx.render(ui.box(.{}, .{
             ui.textFmt("TICK: {}", .{s.tick_counter}, .{ .size = 10, .color = Colors.cyan_dim }),
-        });
+        }));
     }
 };
 
@@ -1358,7 +1353,7 @@ fn render(cx: *Cx) void {
 
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = Colors.bg_dark,
@@ -1367,5 +1362,5 @@ fn render(cx: *Cx) void {
         Header{},
         MainDashboard{},
         Footer{},
-    });
+    }));
 }

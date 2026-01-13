@@ -123,7 +123,7 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = ui.Color.rgb(0.95, 0.95, 0.95),
@@ -134,7 +134,7 @@ fn render(cx: *Cx) void {
         Header{},
         SelectExamples{},
         SelectionStatus{},
-    });
+    }));
 }
 
 // =============================================================================
@@ -164,7 +164,7 @@ const SelectExamples = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = ui.Color.white,
@@ -236,7 +236,7 @@ const SelectExamples = struct {
                     },
                 },
             },
-        });
+        }));
     }
 };
 
@@ -276,7 +276,7 @@ const SelectionStatus = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = ui.Color.white,
@@ -297,7 +297,7 @@ const SelectionStatus = struct {
                 .label = "Size:",
                 .value = if (s.size_selected) |idx| size_options[idx] else "(none)",
             },
-        });
+        }));
     }
 };
 

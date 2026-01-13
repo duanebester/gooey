@@ -283,7 +283,7 @@ fn render(cx: *Cx) void {
     const size = cx.windowSize();
     const bg = backgroundColor();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 24 },
@@ -296,7 +296,7 @@ fn render(cx: *Cx) void {
 
         // Main content area
         DashboardContent{},
-    });
+    }));
 }
 
 // =============================================================================
@@ -308,13 +308,13 @@ const DashboardHeader = struct {
         const text_col = textColor();
         const muted_col = mutedTextColor();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
         }, .{
             // Title with accent
-            cx.box(.{ .gap = 4, .direction = .column }, .{
-                cx.box(.{ .direction = .row, .gap = 12, .alignment = .{ .cross = .center } }, .{
+            ui.box(.{ .gap = 4, .direction = .column }, .{
+                ui.box(.{ .direction = .row, .gap = 12, .alignment = .{ .cross = .center } }, .{
                     // Accent dot
                     ui.canvas(8, 8, paintAccentDot),
                     ui.text("Analytics Dashboard", .{
@@ -329,7 +329,7 @@ const DashboardHeader = struct {
             }),
 
             // Theme toggle badge
-            cx.box(.{
+            ui.box(.{
                 .padding = .{ .symmetric = .{ .x = 12, .y = 6 } },
                 .corner_radius = 6,
                 .background = cardBackground(),
@@ -339,7 +339,7 @@ const DashboardHeader = struct {
                     .color = muted_col,
                 }),
             }),
-        });
+        }));
     }
 };
 
@@ -372,7 +372,7 @@ const DashboardContent = struct {
         const size = cx.windowSize();
         const content_height = size.height - 130;
 
-        cx.scroll("dashboard-scroll", .{
+        cx.render(ui.scroll("dashboard-scroll", .{
             .width = size.width - 48,
             .height = content_height,
             .content_height = total_content_height,
@@ -402,7 +402,7 @@ const DashboardContent = struct {
             // Conversion Rate Section
             SectionLabel{ .title = "Conversion Rate", .subtitle = "Overall funnel performance" },
             ui.canvas(220, conversion_chart_height, paintConversionRing),
-        });
+        }));
     }
 };
 
@@ -415,7 +415,7 @@ const SectionLabel = struct {
     subtitle: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{ .direction = .row, .gap = 8, .alignment = .{ .cross = .end } }, .{
+        cx.render(ui.box(.{ .direction = .row, .gap = 8, .alignment = .{ .cross = .end } }, .{
             ui.text(self.title, .{
                 .size = 15,
                 .color = textColor(),
@@ -424,7 +424,7 @@ const SectionLabel = struct {
                 .size = 11,
                 .color = mutedTextColor(),
             }),
-        });
+        }));
     }
 };
 

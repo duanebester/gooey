@@ -87,7 +87,7 @@ const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const theme = cx.builder().theme();
 
-        cx.hstack(.{ .gap = 8 }, .{
+        cx.render(ui.hstack(.{ .gap = 8 }, .{
             ui.text("Virtual List Demo", .{
                 .size = 18,
                 .weight = .bold,
@@ -98,7 +98,7 @@ const Header = struct {
                 .size = 12,
                 .color = theme.muted,
             }),
-        });
+        }));
     }
 };
 
@@ -118,14 +118,14 @@ const StatsBar = struct {
             s.list_state.scrollPercent() * 100,
         }) catch "Stats error";
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
             .background = theme.surface,
             .corner_radius = 4,
         }, .{
             ui.text(stats, .{ .size = 12, .color = theme.muted }),
-        });
+        }));
     }
 };
 
@@ -208,7 +208,7 @@ const FileList = struct {
 
 const Controls = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 8 }, .{
+        cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Top",
                 .on_click_handler = cx.update(State, State.scrollToTop),
@@ -230,7 +230,7 @@ const Controls = struct {
                 .label = "↓ Next",
                 .on_click_handler = cx.update(State, State.selectNext),
             },
-        });
+        }));
     }
 };
 
@@ -242,7 +242,7 @@ fn render(cx: *Cx) void {
     const size = cx.windowSize();
     const theme = cx.builder().theme();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = theme.bg,
@@ -254,7 +254,7 @@ fn render(cx: *Cx) void {
         StatsBar{},
         FileList{},
         Controls{},
-    });
+    }));
 }
 
 // =============================================================================

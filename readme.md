@@ -26,8 +26,8 @@ WASM support!
 ## Features
 
 - **GPU Rendering** - Metal (macOS), Vulkan (Linux), WebGPU (WASM) with MSAA anti-aliasing
-- **Declarative UI** - Component-based layout with flexbox-style system
-- **Unified Cx Context** - Single `Cx` type for state, layout, handlers, and focus
+- **Declarative UI** - Component-based layout with `ui.*` primitives and flexbox-style system
+- **Cx/UI Separation** - `Cx` for state, handlers, and focus; `ui.*` for layout primitives
 - **Pure State Pattern** - Testable state methods with automatic re-rendering
 - **Animation System** - Built-in animations with easing, `animateOn` triggers
 - **Entity System** - Dynamic entity creation/deletion with auto-cleanup
@@ -110,7 +110,7 @@ fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .alignment = .{ .main = .center, .cross = .center },
@@ -118,13 +118,13 @@ fn render(cx: *Cx) void {
         .direction = .column,
     }, .{
         ui.textFmt("{d}", .{s.count}, .{ .size = 48 }),
-        cx.hstack(.{ .gap = 12 }, .{
+        ui.hstack(.{ .gap = 12 }, .{
             // Pure handlers - framework auto-renders after mutation!
             Button{ .label = "-", .on_click_handler = cx.update(AppState, AppState.decrement) },
             Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
         }),
         Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.reset) },
-    });
+    }));
 }
 
 // State is testable without UI!
@@ -137,6 +137,48 @@ test "counter logic" {
     try std.testing.expectEqual(0, s.count);
 }
 ```
+
+## API Pattern
+
+Gooey separates concerns between `Cx` (context) and `ui` (layout primitives):
+
+| Module | Purpose                            | Examples                                                           |
+| ------ | ---------------------------------- | ------------------------------------------------------------------ |
+| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.update()`, `cx.animate()`, `cx.render()`         |
+| `ui.*` | Layout containers and primitives   | `ui.box()`, `ui.hstack()`, `ui.vstack()`, `ui.text()`, `ui.when()` |
+
+```/dev/null/example.zig#L1-19
+fn render(cx: *Cx) void {
+    const s = cx.state(AppState);
+
+    cx.render(ui.box(.{ .width = 100 }, .{
+        ui.text("Hello", .{}),
+
+        // Conditional rendering
+        ui.when(s.show_extra, .{
+            ui.text("Extra content", .{}),
+        }),
+
+        // Iterate over items
+        ui.each(&s.items, struct {
+            fn render(item: Item, _: usize) @TypeOf(ui.text("", .{})) {
+                return ui.text(item.name, .{});
+            }
+        }.render),
+    }));
+}
+```
+
+**Key primitives:**
+
+- `ui.box()` - Container with flexbox layout
+- `ui.hstack()` / `ui.vstack()` - Horizontal/vertical stacks
+- `ui.text()` / `ui.textFmt()` - Text rendering
+- `ui.when(cond, children)` - Conditional rendering
+- `ui.maybe(optional, fn)` - Render if optional has value
+- `ui.each(items, fn)` - Render for each item
+- `ui.scroll(id, style, children)` - Scrollable container
+- `ui.spacer()` - Flexible space
 
 ## Handler Types
 
@@ -376,7 +418,7 @@ ProgressBar{
 
 ```zig
 // Individual tabs for custom navigation
-cx.hstack(.{ .gap = 4 }, .{
+cx.render(ui.hstack(.{ .gap = 4 }, .{
     Tab{
         .label = "Home",
         .is_active = s.tab == 0,
@@ -388,7 +430,7 @@ cx.hstack(.{ .gap = 4 }, .{
         .on_click_handler = cx.updateWith(State, @as(u8, 1), State.setTab),
         .style = .underline,  // .pills (default), .underline, .segmented
     },
-})
+}))
 ```
 
 ### UniformList
@@ -502,10 +544,10 @@ const spin = cx.animate("spinner", .{
 });
 
 // Use animation values
-cx.box(.{
+cx.render(ui.box(.{
     .background = Color.white.withAlpha(fade.progress),
     .width = gooey.lerp(100.0, 150.0, pulse.progress),
-}, .{...});
+}, .{...}));
 ```
 
 **Available Easings:** `linear`, `easeIn`, `easeOut`, `easeInOut`, `easeOutBack`, `easeOutCubic`, `easeInOutCubic`
@@ -546,17 +588,17 @@ if (cx.gooey().readEntity(Counter, entity)) |data| {
 Flexbox-inspired layout with shrink behavior and text wrapping:
 
 ```zig
-cx.box(.{
+cx.render(ui.box(.{
     .direction = .row,           // or .column
     .gap = 16,
     .padding = .{ .all = 24 },   // or .symmetric, .each
     .alignment = .{ .main = .space_between, .cross = .center },
     .fill_width = true,
     .grow = true,
-}, .{...});
+}, .{...}));
 
 // Shrink behavior - elements shrink when container is too small
-cx.box(.{ .width = 150, .min_width = 60 }, .{...});
+cx.render(ui.box(.{ .width = 150, .min_width = 60 }, .{...}));
 
 // Text wrapping
 ui.text("Long text...", .{ .wrap = .words });  // .none, .words, .newlines
@@ -645,13 +687,13 @@ fn setupKeymap(cx: *Cx) void {
 }
 
 fn render(cx: *Cx) void {
-    cx.box(.{}, .{
+    cx.render(ui.box(.{}, .{
         ui.onAction(Undo, doUndo),  // Handle action
 
         // Scoped context
         ui.keyContext("Editor"),
         ui.onAction(Save, doSave),
-    });
+    }));
 }
 ```
 

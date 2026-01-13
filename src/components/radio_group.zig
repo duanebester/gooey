@@ -7,7 +7,7 @@
 //!
 //! Usage with Cx (recommended):
 //! ```zig
-//! cx.box(.{ .direction = .column, .gap = 10 }, .{
+//! cx.render(ui.box(.{ .direction = .column, .gap = 10 }, .{
 //!     RadioButton{
 //!         .label = "Email",
 //!         .is_selected = s.contact == 0,
@@ -18,7 +18,7 @@
 //!         .is_selected = s.contact == 1,
 //!         .on_click_handler = cx.updateWith(State, @as(u8, 1), State.setContact),
 //!     },
-//! });
+//! }));
 //! ```
 //!
 //! Or use RadioGroup with handler array:

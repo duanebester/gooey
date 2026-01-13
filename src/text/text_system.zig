@@ -681,9 +681,10 @@ pub const TextSystem = struct {
     }
 
     /// Get cached glyph with subpixel variant (renders if needed)
-    pub inline fn getGlyphSubpixel(self: *Self, glyph_id: u16, subpixel_x: u8, subpixel_y: u8) !CachedGlyph {
+    pub inline fn getGlyphSubpixel(self: *Self, glyph_id: u16, font_size: f32, subpixel_x: u8, subpixel_y: u8) !CachedGlyph {
+        std.debug.assert(font_size > 0);
         const face = try self.getFontFace();
-        return self.cache.getOrRenderSubpixel(face, glyph_id, subpixel_x, subpixel_y);
+        return self.cache.getOrRenderSubpixel(face, glyph_id, font_size, subpixel_x, subpixel_y);
     }
 
     /// Simple width measurement
@@ -706,6 +707,20 @@ pub const TextSystem = struct {
             const face = try self.getFontFace();
             return shaper_mod.measureSimple(face, text);
         }
+    }
+
+    /// Measure text at a specific font size (scales from base metrics)
+    pub fn measureTextAtSize(self: *Self, text: []const u8, font_size: f32) !f32 {
+        std.debug.assert(font_size > 0);
+        std.debug.assert(font_size < 1000);
+
+        const base_width = try self.measureText(text);
+        if (self.getMetrics()) |metrics| {
+            std.debug.assert(metrics.point_size > 0);
+            const scale = font_size / metrics.point_size;
+            return base_width * scale;
+        }
+        return base_width;
     }
 
     /// Extended text measurement with wrapping support
@@ -780,11 +795,12 @@ pub const TextSystem = struct {
         self: *Self,
         font_ptr: *anyopaque,
         glyph_id: u16,
+        font_size: f32,
         subpixel_x: u8,
         subpixel_y: u8,
     ) !CachedGlyph {
-        const metrics = self.getMetrics() orelse return error.NoFontLoaded;
-        return self.cache.getOrRenderFallback(font_ptr, glyph_id, metrics.point_size, subpixel_x, subpixel_y);
+        std.debug.assert(font_size > 0);
+        return self.cache.getOrRenderFallback(font_ptr, glyph_id, font_size, subpixel_x, subpixel_y);
     }
 
     /// Get shape cache statistics for debugging
@@ -985,4 +1001,63 @@ test "ShapedRunCache hash collision handling" {
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
         try std.testing.expect(cache.get(key) != null);
     }
+}
+
+test "measureTextAtSize scaling" {
+    // This test verifies the mathematical scaling is correct
+    // We can't easily test the full pipeline without a font, but we can test the formula
+    const testing = std.testing;
+
+    const base_width: f32 = 100.0;
+    const base_size: f32 = 16.0;
+
+    // Scale formula: base_width * (target_size / base_size)
+    const width_at_24 = base_width * (24.0 / base_size);
+    const width_at_32 = base_width * (32.0 / base_size);
+    const width_at_8 = base_width * (8.0 / base_size);
+
+    try testing.expectApproxEqAbs(@as(f32, 150.0), width_at_24, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 200.0), width_at_32, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 50.0), width_at_8, 0.001);
+}
+
+test "ShapedRunKey includes font size" {
+    const testing = std.testing;
+
+    const key1 = ShapedRunKey.init("Hello", 0x1234, 16.0);
+    const key2 = ShapedRunKey.init("Hello", 0x1234, 24.0);
+    const key3 = ShapedRunKey.init("Hello", 0x1234, 16.0);
+
+    // Same text, same font, different size = different keys
+    try testing.expect(!ShapedRunKey.eql(key1, key2));
+
+    // Same text, same font, same size = equal keys
+    try testing.expect(ShapedRunKey.eql(key1, key3));
+
+    // size_fixed should reflect the size
+    try testing.expectEqual(key1.size_fixed, key3.size_fixed);
+    try testing.expect(key1.size_fixed != key2.size_fixed);
+
+    // Verify size_fixed encoding (size * 64 for 26.6 fixed point)
+    try testing.expectEqual(@as(u16, 16 * 64), key1.size_fixed);
+    try testing.expectEqual(@as(u16, 24 * 64), key2.size_fixed);
+}
+
+test "ShapedRunKey size differentiation" {
+    const testing = std.testing;
+
+    // Different sizes should produce different keys even with same text
+    const key_14 = ShapedRunKey.init("Test", 0x1234, 14.0);
+    const key_16 = ShapedRunKey.init("Test", 0x1234, 16.0);
+    const key_18 = ShapedRunKey.init("Test", 0x1234, 18.0);
+
+    // Keys should not be equal due to different sizes
+    try testing.expect(!ShapedRunKey.eql(key_14, key_16));
+    try testing.expect(!ShapedRunKey.eql(key_16, key_18));
+    try testing.expect(!ShapedRunKey.eql(key_14, key_18));
+
+    // Text hash is the same (same text), but size_fixed differs
+    try testing.expectEqual(key_14.text_hash, key_16.text_hash);
+    try testing.expect(key_14.size_fixed != key_16.size_fixed);
+    try testing.expect(key_16.size_fixed != key_18.size_fixed);
 }

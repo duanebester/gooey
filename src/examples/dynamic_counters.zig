@@ -104,7 +104,7 @@ const CounterCard = struct {
         const g = cx.gooey();
         const data = g.readEntity(Counter, self.counter) orelse return;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .gap = 8,
             .background = ui.Color.white,
@@ -116,7 +116,7 @@ const CounterCard = struct {
             ui.text(data.label, .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
             ui.textFmt("{}", .{data.count}, .{ .size = 32 }),
             CounterButtons{ .counter = self.counter },
-        });
+        }));
     }
 };
 
@@ -131,10 +131,10 @@ const CounterButtons = struct {
         const dec_id = std.fmt.bufPrint(&dec_id_buf, "dec_{d}", .{self.counter.id.id}) catch "-";
         const inc_id = std.fmt.bufPrint(&inc_id_buf, "inc_{d}", .{self.counter.id.id}) catch "+";
 
-        cx.hstack(.{ .gap = 8 }, .{
+        cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{ .id = dec_id, .label = "-", .size = .small, .on_click_handler = entity_cx.update(Counter.decrement) },
             Button{ .id = inc_id, .label = "+", .size = .small, .on_click_handler = entity_cx.update(Counter.increment) },
-        });
+        }));
     }
 };
 
@@ -151,13 +151,13 @@ const TotalDisplay = struct {
             }
         }
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .background = ui.Color.rgb(0.2, 0.6, 0.9),
             .corner_radius = 8,
         }, .{
             ui.textFmt("Total: {}", .{total}, .{ .size = 24, .color = ui.Color.white }),
-        });
+        }));
     }
 };
 
@@ -166,21 +166,21 @@ const ControlPanel = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             // These need command() because they create/remove entities
             Button{ .label = "+ Add Counter", .on_click_handler = cx.command(AppState, AppState.addCounter) },
             Button{ .label = "- Remove Counter", .variant = .secondary, .on_click_handler = cx.command(AppState, AppState.removeCounter) },
             ui.textFmt("({}/10)", .{s.countersSlice().len}, .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
-        });
+        }));
     }
 };
 
 /// Grid of counter cards
 const CounterGrid = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12 }, .{
+        cx.render(ui.hstack(.{ .gap = 12 }, .{
             CounterItems{},
-        });
+        }));
     }
 };
 
@@ -189,9 +189,9 @@ const CounterItems = struct {
         const s = cx.stateConst(AppState);
 
         for (s.countersSlice()) |counter_entity| {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 CounterCard{ .counter = counter_entity },
-            });
+            }));
         }
     }
 };
@@ -222,7 +222,7 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = ui.Color.rgb(0.95, 0.95, 0.95),
@@ -236,7 +236,7 @@ fn render(cx: *Cx) void {
         ControlPanel{},
         CounterGrid{},
         TotalDisplay{},
-    });
+    }));
 }
 
 // =============================================================================

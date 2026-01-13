@@ -590,7 +590,8 @@ pub const LayoutEngine = struct {
             // Calculate container width for alignment (used for all text, not just wrapped)
             const max_width = if (elem.parent_index) |pi| blk: {
                 const parent = self.elements.getConst(pi);
-                break :blk parent.computed.sized_width - parent.config.layout.padding.totalX();
+                // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
+                break :blk @max(0, parent.computed.sized_width - parent.config.layout.padding.totalX());
             } else self.viewport_width;
 
             // Always store container width for alignment calculations
@@ -732,7 +733,8 @@ pub const LayoutEngine = struct {
         if (elem.text_data) |*td| {
             const text_max_width = if (elem.parent_index) |pi| blk: {
                 const parent = self.elements.getConst(pi);
-                break :blk parent.computed.sized_width - parent.config.layout.padding.totalX();
+                // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
+                break :blk @max(0, parent.computed.sized_width - parent.config.layout.padding.totalX());
             } else max_width;
 
             td.container_width = text_max_width;
@@ -809,8 +811,9 @@ pub const LayoutEngine = struct {
         elem.computed.content_box = .{
             .x = final_x + @as(f32, @floatFromInt(padding.left)),
             .y = final_y + @as(f32, @floatFromInt(padding.top)),
-            .width = elem.computed.sized_width - padding.totalX(),
-            .height = elem.computed.sized_height - padding.totalY(),
+            // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
+            .width = @max(0, elem.computed.sized_width - padding.totalX()),
+            .height = @max(0, elem.computed.sized_height - padding.totalY()),
         };
 
         // Recursively position children of floating element
@@ -957,8 +960,9 @@ pub const LayoutEngine = struct {
         elem.computed.sized_height = final_height;
 
         // Content area for children (after padding)
-        const content_width = final_width - layout.padding.totalX();
-        const content_height = final_height - layout.padding.totalY();
+        // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
+        const content_width = @max(0, final_width - layout.padding.totalX());
+        const content_height = @max(0, final_height - layout.padding.totalY());
 
         if (elem.first_child_index) |first_child| {
             // For scroll containers, allow children to overflow in scrollable directions
@@ -1124,8 +1128,9 @@ pub const LayoutEngine = struct {
 
             // Recurse for children of this child
             const child_layout = child.config.layout;
-            var content_width = child.computed.sized_width - child_layout.padding.totalX();
-            var content_height = child.computed.sized_height - child_layout.padding.totalY();
+            // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
+            var content_width = @max(0, child.computed.sized_width - child_layout.padding.totalX());
+            var content_height = @max(0, child.computed.sized_height - child_layout.padding.totalY());
 
             // For scroll containers, allow children to overflow in scrollable directions
             if (child.config.scroll) |scroll| {
@@ -1229,8 +1234,9 @@ pub const LayoutEngine = struct {
         elem.computed.content_box = BoundingBox{
             .x = parent_x + @as(f32, @floatFromInt(padding.left)),
             .y = parent_y + @as(f32, @floatFromInt(padding.top)),
-            .width = elem.computed.sized_width - padding.totalX(),
-            .height = elem.computed.sized_height - padding.totalY(),
+            // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
+            .width = @max(0, elem.computed.sized_width - padding.totalX()),
+            .height = @max(0, elem.computed.sized_height - padding.totalY()),
         };
 
         // Position children (pass scroll offset if this is a scroll container)

@@ -133,12 +133,14 @@ pub const CoreTextFace = struct {
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
+        font_size: f32,
         scale: f32,
         subpixel_x: f32,
         subpixel_y: f32,
         buffer: []u8,
         buffer_size: u32,
     ) !RasterizedGlyph {
+        std.debug.assert(font_size > 0);
         std.debug.assert(scale > 0);
         std.debug.assert(subpixel_x >= 0 and subpixel_x < 1.0);
         std.debug.assert(subpixel_y >= 0 and subpixel_y < 1.0);
@@ -146,7 +148,7 @@ pub const CoreTextFace = struct {
         return renderGlyphInternal(
             self.ct_font,
             glyph_id,
-            self.metrics.point_size,
+            font_size,
             scale,
             subpixel_x,
             subpixel_y,
@@ -160,17 +162,18 @@ pub const CoreTextFace = struct {
     pub fn renderGlyphFromFont(
         ct_font: ct.CTFontRef,
         glyph_id: u16,
+        font_size: f32,
         scale: f32,
         subpixel_x: f32,
         subpixel_y: f32,
         buffer: []u8,
         buffer_size: u32,
     ) !RasterizedGlyph {
+        std.debug.assert(font_size > 0);
         std.debug.assert(scale > 0);
         std.debug.assert(subpixel_x >= 0 and subpixel_x < 1.0);
         std.debug.assert(subpixel_y >= 0 and subpixel_y < 1.0);
 
-        const font_size: f32 = @floatCast(ct.CTFontGetSize(ct_font));
         return renderGlyphInternal(
             ct_font,
             glyph_id,
@@ -270,28 +273,39 @@ fn renderGlyphInternal(
     std.debug.assert(font_size > 0);
     std.debug.assert(buffer.len >= buffer_size);
 
-    const glyph_metrics = getGlyphMetricsFromFont(ct_font, glyph_id);
+    // Create scaled font first - we need metrics at the target size
+    const scaled_font = ct.CTFontCreateCopyWithAttributes(
+        ct_font,
+        font_size * scale,
+        null,
+        null,
+    ) orelse return error.FontError;
+    defer ct.release(scaled_font);
+
+    // Get metrics from the scaled font so bounds are correct for the target size
+    const glyph_metrics = getGlyphMetricsFromFont(scaled_font, glyph_id);
     const padding: u32 = 2;
     const padding_f: f32 = @floatFromInt(padding);
 
     // Handle empty glyphs (spaces, etc.)
     if (glyph_metrics.width < 1 or glyph_metrics.height < 1) {
+        // Return advance scaled back to logical units (font_size, not font_size * scale)
         return RasterizedGlyph{
             .width = 0,
             .height = 0,
             .offset_x = 0,
             .offset_y = 0,
-            .advance_x = glyph_metrics.advance_x,
+            .advance_x = glyph_metrics.advance_x / scale,
             .is_color = false,
         };
     }
 
-    // Raster bounds in physical pixels (like GPUI's raster_bounds)
-    // bearing_x/bearing_y are the glyph origin relative to pen position
-    const raster_left = @floor(glyph_metrics.bearing_x * scale);
-    const raster_top = @floor(glyph_metrics.bearing_y * scale);
-    const raster_right = @ceil((glyph_metrics.bearing_x + glyph_metrics.width) * scale);
-    const raster_bottom = @ceil((glyph_metrics.bearing_y - glyph_metrics.height) * scale);
+    // Raster bounds in physical pixels
+    // Metrics are already at scaled size, so no additional scaling needed
+    const raster_left = @floor(glyph_metrics.bearing_x);
+    const raster_top = @floor(glyph_metrics.bearing_y);
+    const raster_right = @ceil(glyph_metrics.bearing_x + glyph_metrics.width);
+    const raster_bottom = @ceil(glyph_metrics.bearing_y - glyph_metrics.height);
 
     // Bitmap size with padding for antialiasing
     var width: u32 = @intFromFloat(raster_right - raster_left + padding_f * 2);
@@ -342,15 +356,6 @@ fn renderGlyphInternal(
     );
     ct.CGContextSetTextMatrix(context, ct.CGAffineTransform.identity);
 
-    // Create scaled font for rasterization
-    const scaled_font = ct.CTFontCreateCopyWithAttributes(
-        ct_font,
-        font_size * scale,
-        null,
-        null,
-    ) orelse return error.FontError;
-    defer ct.release(scaled_font);
-
     // Draw glyph at origin - the context translation positions it correctly
     var glyph = glyph_id;
     const position = ct.CGPoint{ .x = 0, .y = 0 };
@@ -359,12 +364,13 @@ fn renderGlyphInternal(
     // Return offsets directly from font metrics - no bitmap scanning needed
     // offset_x: where to place bitmap left edge relative to pen (physical pixels)
     // offset_y: where to place bitmap top edge relative to baseline (physical pixels, positive = above)
+    // advance_x is returned in logical units (at font_size), not physical pixels
     return RasterizedGlyph{
         .width = clamped_w,
         .height = clamped_h,
         .offset_x = @intFromFloat(raster_left - padding_f),
         .offset_y = @intFromFloat(raster_top + padding_f),
-        .advance_x = glyph_metrics.advance_x,
+        .advance_x = glyph_metrics.advance_x / scale,
         .is_color = false,
     };
 }

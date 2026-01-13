@@ -239,6 +239,8 @@ comptime {
 
 /// GPU gradient uniforms (352 bytes)
 /// Matches GradientUniforms in gradient_uniforms.zig
+/// Note: Arrays use [4][4]f32 (equivalent to array<vec4<f32>, 4>) for WGSL uniform
+/// 16-byte alignment requirements. Each inner [4]f32 maps to a vec4.
 pub const GpuGradientUniforms = extern struct {
     gradient_type: u32 = 0,
     stop_count: u32 = 0,
@@ -248,15 +250,43 @@ pub const GpuGradientUniforms = extern struct {
     param1: f32 = 0,
     param2: f32 = 0,
     param3: f32 = 0,
-    stop_offsets: [16]f32 = [_]f32{0} ** 16,
-    stop_h: [16]f32 = [_]f32{0} ** 16,
-    stop_s: [16]f32 = [_]f32{0} ** 16,
-    stop_l: [16]f32 = [_]f32{0} ** 16,
-    stop_a: [16]f32 = [_]f32{1} ** 16,
+    // Each array is 4 vec4s = 16 floats, matching WGSL array<vec4<f32>, 4>
+    stop_offsets: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
+    stop_h: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
+    stop_s: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
+    stop_l: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
+    stop_a: [4][4]f32 = [_][4]f32{[_]f32{1} ** 4} ** 4,
 
     /// Create empty gradient uniforms (for solid color fills)
     pub fn none() GpuGradientUniforms {
         return .{};
+    }
+
+    /// Copy a flat [16]f32 array into the packed [4][4]f32 format
+    fn copyToPacked(dst: *[4][4]f32, src: *const [16]f32) void {
+        for (0..4) |i| {
+            for (0..4) |j| {
+                dst[i][j] = src[i * 4 + j];
+            }
+        }
+    }
+
+    /// Initialize from a scene GradientUniforms
+    pub fn fromScene(scene_gradient: GradientUniforms) GpuGradientUniforms {
+        var result = GpuGradientUniforms{
+            .gradient_type = scene_gradient.gradient_type,
+            .stop_count = scene_gradient.stop_count,
+            .param0 = scene_gradient.param0,
+            .param1 = scene_gradient.param1,
+            .param2 = scene_gradient.param2,
+            .param3 = scene_gradient.param3,
+        };
+        copyToPacked(&result.stop_offsets, &scene_gradient.stop_offsets);
+        copyToPacked(&result.stop_h, &scene_gradient.stop_h);
+        copyToPacked(&result.stop_s, &scene_gradient.stop_s);
+        copyToPacked(&result.stop_l, &scene_gradient.stop_l);
+        copyToPacked(&result.stop_a, &scene_gradient.stop_a);
+        return result;
     }
 };
 
@@ -376,6 +406,7 @@ pub const WebRenderer = struct {
     text_bind_group: u32 = 0,
     atlas_texture: u32 = 0,
     atlas_generation: u32 = 0,
+    atlas_texture_size: u32 = 0,
     gpu_glyphs: [MAX_GLYPHS]GpuGlyph = undefined,
 
     // SVG rendering
@@ -384,6 +415,7 @@ pub const WebRenderer = struct {
     svg_bind_group: u32 = 0,
     svg_atlas_texture: u32 = 0,
     svg_atlas_generation: u32 = 0,
+    svg_atlas_texture_size: u32 = 0,
     gpu_svgs: [MAX_SVGS]GpuSvgInstance = undefined,
 
     // Image rendering
@@ -392,6 +424,7 @@ pub const WebRenderer = struct {
     image_bind_group: u32 = 0,
     image_atlas_texture: u32 = 0,
     image_atlas_generation: u32 = 0,
+    image_atlas_texture_size: u32 = 0,
     gpu_images: [MAX_IMAGES]ImageInstance = undefined,
 
     // Path rendering (triangulated meshes)
@@ -676,6 +709,7 @@ pub const WebRenderer = struct {
 
         if (self.atlas_texture == 0) {
             self.atlas_texture = imports.createTexture(size, size, pixels.ptr, @intCast(pixels.len));
+            self.atlas_texture_size = size;
         }
 
         self.text_bind_group = imports.createTextBindGroup(
@@ -697,7 +731,25 @@ pub const WebRenderer = struct {
         if (self.atlas_texture != 0) {
             const pixels = atlas.getData();
             const size = atlas.size;
-            imports.updateTexture(self.atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
+
+            // Check if atlas size changed - need to recreate texture
+            if (size != self.atlas_texture_size) {
+                imports.destroyTexture(self.atlas_texture);
+                self.atlas_texture = imports.createTexture(size, size, pixels.ptr, @intCast(pixels.len));
+                self.atlas_texture_size = size;
+
+                // Recreate bind group with new texture
+                self.text_bind_group = imports.createTextBindGroup(
+                    self.text_pipeline,
+                    0,
+                    self.glyph_buffer,
+                    self.uniform_buffer,
+                    self.atlas_texture,
+                    self.sampler,
+                );
+            } else {
+                imports.updateTexture(self.atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
+            }
             self.atlas_generation = atlas.generation;
         }
     }
@@ -714,6 +766,7 @@ pub const WebRenderer = struct {
         if (self.svg_atlas_texture == 0) {
             // SVG atlas uses RGBA format
             self.svg_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
+            self.svg_atlas_texture_size = size;
         }
 
         self.svg_bind_group = imports.createSvgBindGroup(
@@ -738,7 +791,25 @@ pub const WebRenderer = struct {
         if (self.svg_atlas_texture != 0) {
             const pixels = atlas.getData();
             const size = atlas.size;
-            imports.updateRgbaTexture(self.svg_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
+
+            // Check if atlas size changed - need to recreate texture
+            if (size != self.svg_atlas_texture_size) {
+                imports.destroyTexture(self.svg_atlas_texture);
+                self.svg_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
+                self.svg_atlas_texture_size = size;
+
+                // Recreate bind group with new texture
+                self.svg_bind_group = imports.createSvgBindGroup(
+                    self.svg_pipeline,
+                    0,
+                    self.svg_buffer,
+                    self.uniform_buffer,
+                    self.svg_atlas_texture,
+                    self.sampler,
+                );
+            } else {
+                imports.updateRgbaTexture(self.svg_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
+            }
             self.svg_atlas_generation = generation;
         } else {
             // First time - create the texture
@@ -758,6 +829,7 @@ pub const WebRenderer = struct {
         if (self.image_atlas_texture == 0) {
             // Image atlas uses RGBA format
             self.image_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
+            self.image_atlas_texture_size = size;
         }
 
         self.image_bind_group = imports.createImageBindGroup(
@@ -782,7 +854,25 @@ pub const WebRenderer = struct {
         if (self.image_atlas_texture != 0) {
             const pixels = atlas.getData();
             const size = atlas.size;
-            imports.updateRgbaTexture(self.image_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
+
+            // Check if atlas size changed - need to recreate texture
+            if (size != self.image_atlas_texture_size) {
+                imports.destroyTexture(self.image_atlas_texture);
+                self.image_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
+                self.image_atlas_texture_size = size;
+
+                // Recreate bind group with new texture
+                self.image_bind_group = imports.createImageBindGroup(
+                    self.image_pipeline,
+                    0,
+                    self.image_buffer,
+                    self.uniform_buffer,
+                    self.image_atlas_texture,
+                    self.sampler,
+                );
+            } else {
+                imports.updateRgbaTexture(self.image_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
+            }
             self.image_atlas_generation = generation;
         } else {
             // First time - create the texture
@@ -1228,21 +1318,9 @@ pub const WebRenderer = struct {
             // Build GPU instance data
             self.staging_instances[draw_call_count] = GpuPathInstance.fromScene(path_inst);
 
-            // Build GPU gradient data
+            // Build GPU gradient data (converts flat [16]f32 to packed [4][4]f32 for WGSL alignment)
             const scene_gradient = if (path_idx < gradients.len) gradients[path_idx] else GradientUniforms.none();
-            self.staging_gradients[draw_call_count] = .{
-                .gradient_type = scene_gradient.gradient_type,
-                .stop_count = scene_gradient.stop_count,
-                .param0 = scene_gradient.param0,
-                .param1 = scene_gradient.param1,
-                .param2 = scene_gradient.param2,
-                .param3 = scene_gradient.param3,
-            };
-            @memcpy(&self.staging_gradients[draw_call_count].stop_offsets, &scene_gradient.stop_offsets);
-            @memcpy(&self.staging_gradients[draw_call_count].stop_h, &scene_gradient.stop_h);
-            @memcpy(&self.staging_gradients[draw_call_count].stop_s, &scene_gradient.stop_s);
-            @memcpy(&self.staging_gradients[draw_call_count].stop_l, &scene_gradient.stop_l);
-            @memcpy(&self.staging_gradients[draw_call_count].stop_a, &scene_gradient.stop_a);
+            self.staging_gradients[draw_call_count] = GpuGradientUniforms.fromScene(scene_gradient);
 
             vertex_offset += vert_count;
             index_offset += idx_count;
@@ -1404,19 +1482,7 @@ pub const WebRenderer = struct {
             );
 
             const scene_gradient = if (path_idx < gradients.len) gradients[path_idx] else GradientUniforms.none();
-            var gpu_gradient = GpuGradientUniforms{
-                .gradient_type = scene_gradient.gradient_type,
-                .stop_count = scene_gradient.stop_count,
-                .param0 = scene_gradient.param0,
-                .param1 = scene_gradient.param1,
-                .param2 = scene_gradient.param2,
-                .param3 = scene_gradient.param3,
-            };
-            @memcpy(&gpu_gradient.stop_offsets, &scene_gradient.stop_offsets);
-            @memcpy(&gpu_gradient.stop_h, &scene_gradient.stop_h);
-            @memcpy(&gpu_gradient.stop_s, &scene_gradient.stop_s);
-            @memcpy(&gpu_gradient.stop_l, &scene_gradient.stop_l);
-            @memcpy(&gpu_gradient.stop_a, &scene_gradient.stop_a);
+            const gpu_gradient = GpuGradientUniforms.fromScene(scene_gradient);
 
             imports.writeBuffer(
                 self.path_gradient_buffer,
@@ -1749,3 +1815,81 @@ pub const WebRenderer = struct {
         }
     }
 };
+
+// =============================================================================
+// Tests for GPU struct alignment (WGSL compatibility)
+// =============================================================================
+
+test "GpuGradientUniforms size and alignment for WGSL" {
+    const testing = std.testing;
+
+    // Total size must be 352 bytes (matches Metal and scene GradientUniforms)
+    try testing.expectEqual(@as(usize, 352), @sizeOf(GpuGradientUniforms));
+
+    // WGSL uniform arrays require 16-byte element alignment.
+    // Each [4]f32 inner array is 16 bytes, satisfying vec4<f32> alignment.
+    try testing.expectEqual(@as(usize, 16), @sizeOf([4]f32));
+
+    // Verify field offsets match WGSL struct layout expectations
+    try testing.expectEqual(@as(usize, 0), @offsetOf(GpuGradientUniforms, "gradient_type"));
+    try testing.expectEqual(@as(usize, 4), @offsetOf(GpuGradientUniforms, "stop_count"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(GpuGradientUniforms, "_pad0"));
+    try testing.expectEqual(@as(usize, 12), @offsetOf(GpuGradientUniforms, "_pad1"));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(GpuGradientUniforms, "param0"));
+    try testing.expectEqual(@as(usize, 20), @offsetOf(GpuGradientUniforms, "param1"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(GpuGradientUniforms, "param2"));
+    try testing.expectEqual(@as(usize, 28), @offsetOf(GpuGradientUniforms, "param3"));
+
+    // Arrays start at offset 32, each is 4 * 16 = 64 bytes
+    try testing.expectEqual(@as(usize, 32), @offsetOf(GpuGradientUniforms, "stop_offsets"));
+    try testing.expectEqual(@as(usize, 96), @offsetOf(GpuGradientUniforms, "stop_h"));
+    try testing.expectEqual(@as(usize, 160), @offsetOf(GpuGradientUniforms, "stop_s"));
+    try testing.expectEqual(@as(usize, 224), @offsetOf(GpuGradientUniforms, "stop_l"));
+    try testing.expectEqual(@as(usize, 288), @offsetOf(GpuGradientUniforms, "stop_a"));
+}
+
+test "GpuGradientUniforms.fromScene converts flat arrays to packed vec4 format" {
+    const testing = std.testing;
+    const LinearGradient = scene_mod.LinearGradient;
+    const Hsla = scene_mod.Hsla;
+
+    // Create a gradient with known stop values
+    var grad = LinearGradient.init(10, 20, 110, 120);
+    _ = grad.addStop(0.0, Hsla{ .h = 0.0, .s = 1.0, .l = 0.5, .a = 1.0 }); // red
+    _ = grad.addStop(0.5, Hsla{ .h = 0.33, .s = 1.0, .l = 0.5, .a = 0.8 }); // green
+    _ = grad.addStop(1.0, Hsla{ .h = 0.66, .s = 1.0, .l = 0.5, .a = 0.6 }); // blue
+
+    const scene_gradient = GradientUniforms.fromLinear(grad);
+    const gpu_gradient = GpuGradientUniforms.fromScene(scene_gradient);
+
+    // Verify scalar fields copied correctly
+    try testing.expectEqual(@as(u32, 1), gpu_gradient.gradient_type);
+    try testing.expectEqual(@as(u32, 3), gpu_gradient.stop_count);
+    try testing.expectEqual(@as(f32, 10), gpu_gradient.param0);
+    try testing.expectEqual(@as(f32, 20), gpu_gradient.param1);
+
+    // Verify packed array format: index i maps to [i/4][i%4]
+    // Stop offsets: 0.0, 0.5, 1.0
+    try testing.expectEqual(@as(f32, 0.0), gpu_gradient.stop_offsets[0][0]); // index 0
+    try testing.expectEqual(@as(f32, 0.5), gpu_gradient.stop_offsets[0][1]); // index 1
+    try testing.expectEqual(@as(f32, 1.0), gpu_gradient.stop_offsets[0][2]); // index 2
+
+    // Hue values: 0.0, 0.33, 0.66
+    try testing.expectApproxEqAbs(@as(f32, 0.0), gpu_gradient.stop_h[0][0], 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 0.33), gpu_gradient.stop_h[0][1], 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 0.66), gpu_gradient.stop_h[0][2], 0.01);
+
+    // Alpha values: 1.0, 0.8, 0.6
+    try testing.expectApproxEqAbs(@as(f32, 1.0), gpu_gradient.stop_a[0][0], 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 0.8), gpu_gradient.stop_a[0][1], 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 0.6), gpu_gradient.stop_a[0][2], 0.01);
+}
+
+test "GpuGradientUniforms.none creates valid empty gradient" {
+    const testing = std.testing;
+
+    const gpu_gradient = GpuGradientUniforms.none();
+
+    try testing.expectEqual(@as(u32, 0), gpu_gradient.gradient_type);
+    try testing.expectEqual(@as(u32, 0), gpu_gradient.stop_count);
+}

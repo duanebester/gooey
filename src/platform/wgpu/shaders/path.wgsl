@@ -45,6 +45,8 @@ struct PathInstance {
 }
 
 // GradientUniforms (352 bytes)
+// Note: Arrays use vec4<f32> for 16-byte alignment required by uniform storage
+// Each vec4 holds 4 consecutive stop values, so 4 vec4s = 16 stops
 struct GradientUniforms {
     gradient_type: u32,
     stop_count: u32,
@@ -54,11 +56,28 @@ struct GradientUniforms {
     param1: f32,  // linear: start_y / radial: center_y
     param2: f32,  // linear: end_x / radial: radius
     param3: f32,  // linear: end_y / radial: inner_radius
-    stop_offsets: array<f32, 16>,
-    stop_h: array<f32, 16>,
-    stop_s: array<f32, 16>,
-    stop_l: array<f32, 16>,
-    stop_a: array<f32, 16>,
+    stop_offsets: array<vec4<f32>, 4>,
+    stop_h: array<vec4<f32>, 4>,
+    stop_s: array<vec4<f32>, 4>,
+    stop_l: array<vec4<f32>, 4>,
+    stop_a: array<vec4<f32>, 4>,
+}
+
+// Helper to access packed gradient arrays (index 0-15 -> vec4 array)
+fn get_stop_offset(i: u32) -> f32 {
+    return gradient.stop_offsets[i / 4u][i % 4u];
+}
+fn get_stop_h(i: u32) -> f32 {
+    return gradient.stop_h[i / 4u][i % 4u];
+}
+fn get_stop_s(i: u32) -> f32 {
+    return gradient.stop_s[i / 4u][i % 4u];
+}
+fn get_stop_l(i: u32) -> f32 {
+    return gradient.stop_l[i / 4u][i % 4u];
+}
+fn get_stop_a(i: u32) -> f32 {
+    return gradient.stop_a[i / 4u][i % 4u];
 }
 
 struct Uniforms {
@@ -106,7 +125,7 @@ fn sample_gradient(t_in: f32) -> vec4<f32> {
     var i0: u32 = 0u;
     var i1: u32 = 1u;
     for (var i: u32 = 0u; i < count - 1u; i = i + 1u) {
-        if t >= gradient.stop_offsets[i] && t <= gradient.stop_offsets[i + 1u] {
+        if t >= get_stop_offset(i) && t <= get_stop_offset(i + 1u) {
             i0 = i;
             i1 = i + 1u;
             break;
@@ -114,23 +133,25 @@ fn sample_gradient(t_in: f32) -> vec4<f32> {
     }
 
     // Calculate interpolation factor
-    let range = gradient.stop_offsets[i1] - gradient.stop_offsets[i0];
+    let offset0 = get_stop_offset(i0);
+    let offset1 = get_stop_offset(i1);
+    let range = offset1 - offset0;
     var factor: f32;
     if range > GRADIENT_RANGE_EPSILON {
-        factor = (t - gradient.stop_offsets[i0]) / range;
+        factor = (t - offset0) / range;
     } else {
         factor = 0.0;
     }
 
     // Get HSLA values for both stops
-    var h0 = gradient.stop_h[i0];
-    var h1 = gradient.stop_h[i1];
-    let s0 = gradient.stop_s[i0];
-    let s1 = gradient.stop_s[i1];
-    let l0 = gradient.stop_l[i0];
-    let l1 = gradient.stop_l[i1];
-    let a0 = gradient.stop_a[i0];
-    let a1 = gradient.stop_a[i1];
+    var h0 = get_stop_h(i0);
+    var h1 = get_stop_h(i1);
+    let s0 = get_stop_s(i0);
+    let s1 = get_stop_s(i1);
+    let l0 = get_stop_l(i0);
+    let l1 = get_stop_l(i1);
+    let a0 = get_stop_a(i0);
+    let a1 = get_stop_a(i1);
 
     // Handle hue wrapping (shortest path around color wheel)
     if abs(h1 - h0) > 0.5 {

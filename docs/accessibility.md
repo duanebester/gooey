@@ -131,15 +131,15 @@ b.announce("Error: Connection lost!", .assertive);
 
 ### Key Components
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| `Tree` | `src/accessibility/tree.zig` | Maintains accessibility element hierarchy |
-| `Element` | `src/accessibility/element.zig` | Single accessible element with properties |
-| `Fingerprint` | `src/accessibility/fingerprint.zig` | Stable identity for cross-frame correlation |
-| `Bridge` | `src/accessibility/bridge.zig` | Platform-agnostic bridge interface |
-| `MacBridge` | `src/accessibility/mac_bridge.zig` | macOS VoiceOver integration |
-| `LinuxBridge` | `src/accessibility/linux_bridge.zig` | Linux AT-SPI2 integration |
-| `WebBridge` | `src/accessibility/web_bridge.zig` | Web ARIA integration |
+| Component     | File                                 | Purpose                                     |
+| ------------- | ------------------------------------ | ------------------------------------------- |
+| `Tree`        | `src/accessibility/tree.zig`         | Maintains accessibility element hierarchy   |
+| `Element`     | `src/accessibility/element.zig`      | Single accessible element with properties   |
+| `Fingerprint` | `src/accessibility/fingerprint.zig`  | Stable identity for cross-frame correlation |
+| `Bridge`      | `src/accessibility/bridge.zig`       | Platform-agnostic bridge interface          |
+| `MacBridge`   | `src/accessibility/mac_bridge.zig`   | macOS VoiceOver integration                 |
+| `LinuxBridge` | `src/accessibility/linux_bridge.zig` | Linux AT-SPI2 integration                   |
+| `WebBridge`   | `src/accessibility/web_bridge.zig`   | Web ARIA integration                        |
 
 ---
 
@@ -236,6 +236,7 @@ const Fingerprint = packed struct(u64) {
 ```
 
 This allows the accessibility system to:
+
 - Detect which elements changed between frames
 - Only sync dirty elements to the platform
 - Maintain focus across re-renders
@@ -246,19 +247,19 @@ This allows the accessibility system to:
 
 All standard Gooey components have accessibility built-in:
 
-| Component | Role | Key States | Notes |
-|-----------|------|------------|-------|
-| `Button` | `button` | `disabled` | Use `accessible_name` to override label |
-| `Checkbox` | `checkbox` | `checked` | Label used as accessible name |
-| `TextInput` | `textbox` | - | Placeholder used as fallback name |
-| `TextArea` | `textarea` | - | Multi-line text input |
-| `Select` | `combobox` | `expanded`, `disabled` | Selected value exposed |
-| `Tab` | `tab` | `selected` | Includes `pos_in_set`, `set_size` |
-| `TabBar` | `tablist` | - | Container for tabs |
-| `RadioGroup` | `radiogroup` | - | Groups radio buttons |
-| `ProgressBar` | `progressbar` | - | Exposes value, min, max |
-| `Modal` | `dialog` | - | Modal dialog |
-| `Tooltip` | `tooltip` | - | Contextual help |
+| Component     | Role          | Key States             | Notes                                   |
+| ------------- | ------------- | ---------------------- | --------------------------------------- |
+| `Button`      | `button`      | `disabled`             | Use `accessible_name` to override label |
+| `Checkbox`    | `checkbox`    | `checked`              | Label used as accessible name           |
+| `TextInput`   | `textbox`     | -                      | Placeholder used as fallback name       |
+| `TextArea`    | `textarea`    | -                      | Multi-line text input                   |
+| `Select`      | `combobox`    | `expanded`, `disabled` | Selected value exposed                  |
+| `Tab`         | `tab`         | `selected`             | Includes `pos_in_set`, `set_size`       |
+| `TabBar`      | `tablist`     | -                      | Container for tabs                      |
+| `RadioGroup`  | `radiogroup`  | -                      | Groups radio buttons                    |
+| `ProgressBar` | `progressbar` | -                      | Exposes value, min, max                 |
+| `Modal`       | `dialog`      | -                      | Modal dialog                            |
+| `Tooltip`     | `tooltip`     | -                      | Contextual help                         |
 
 ### Example: Accessible Form
 
@@ -373,11 +374,11 @@ fn renderSlider(b: *ui.Builder, value: f32, min: f32, max: f32) void {
 
 ### Types of Live Regions
 
-| Priority | Use Case | Behavior |
-|----------|----------|----------|
-| `.off` | No announcements | Default for most elements |
-| `.polite` | Non-urgent updates | Announced after current speech |
-| `.assertive` | Critical alerts | Interrupts current speech |
+| Priority     | Use Case           | Behavior                       |
+| ------------ | ------------------ | ------------------------------ |
+| `.off`       | No announcements   | Default for most elements      |
+| `.polite`    | Non-urgent updates | Announced after current speech |
+| `.assertive` | Critical alerts    | Interrupts current speech      |
 
 ### Explicit Announcements
 
@@ -405,7 +406,7 @@ if (b.accessible(.{
 })) {
     defer b.accessibleEnd();
 }
-cx.text(status_message, .{ ... });
+cx.render(ui.text(status_message, .{ ... }));
 
 // Alert that appears
 if (show_error) {
@@ -416,9 +417,9 @@ if (show_error) {
     })) {
         defer b.accessibleEnd();
     }
-    cx.box(.{ .background = Color.red }, .{
-        cx.text(error_message, .{ ... }),
-    });
+    cx.render(ui.box(.{ .background = Color.red }, .{
+        ui.text(error_message, .{ ... }),
+    }));
 }
 ```
 
@@ -436,6 +437,7 @@ The macOS bridge creates `NSAccessibilityElement` objects and posts notification
 - **Detection**: Checks for VoiceOver via `AXIsVoiceOverRunning()`
 
 **Testing with VoiceOver:**
+
 1. Enable: `Cmd+F5` or System Settings → Accessibility → VoiceOver
 2. Navigate: `Tab` for focus, `VO+arrows` for reading
 3. Actions: `VO+Space` to activate
@@ -450,6 +452,7 @@ The Linux bridge exposes elements via D-Bus AT-SPI2 protocol:
 - **Detection**: Queries AT-SPI2 registry daemon
 
 **Testing with Orca:**
+
 1. Install: `sudo apt install orca`
 2. Enable: `Super+Alt+S` or run `orca`
 3. Navigate: `Tab`, `Arrow keys`, `Orca+H` for help
@@ -464,6 +467,7 @@ The Web bridge creates a hidden ARIA tree that screen readers can access:
 - **Announcements**: Live region elements
 
 **Testing:**
+
 1. Use browser DevTools → Accessibility tab
 2. Test with NVDA (Windows), VoiceOver (macOS), Orca (Linux)
 3. Verify with axe-core or Lighthouse
@@ -486,14 +490,14 @@ The Web bridge creates a hidden ARIA tree that screen readers can access:
 pub const MyWidget = struct {
     id: []const u8,
     label: []const u8,
-    
+
     // Widget state
     is_active: bool = false,
     enabled: bool = true,
-    
+
     // Interaction
     on_click_handler: ?HandlerRef = null,
-    
+
     // Accessibility overrides
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
@@ -590,6 +594,7 @@ pub const MyWidget = struct {
 ### Screen Reader Testing
 
 **macOS VoiceOver:**
+
 ```bash
 # Enable/disable VoiceOver
 Cmd+F5
@@ -603,6 +608,7 @@ VO+U       # Rotor (element lists)
 ```
 
 **Linux Orca:**
+
 ```bash
 # Enable/disable
 Super+Alt+S
@@ -636,15 +642,15 @@ if (builtin.mode == .Debug) {
 
 ### Budget
 
-| Metric | Target |
-|--------|--------|
-| Tree construction (100 elements) | < 50μs |
-| Dirty detection (100 elements) | < 10μs |
-| Fingerprint computation | < 100ns |
-| macOS sync (10 dirty) | < 500μs |
-| Linux D-Bus sync (10 dirty) | < 2ms |
-| Web DOM sync (10 dirty) | < 1ms |
-| Memory overhead | < 500KB |
+| Metric                           | Target  |
+| -------------------------------- | ------- |
+| Tree construction (100 elements) | < 50μs  |
+| Dirty detection (100 elements)   | < 10μs  |
+| Fingerprint computation          | < 100ns |
+| macOS sync (10 dirty)            | < 500μs |
+| Linux D-Bus sync (10 dirty)      | < 2ms   |
+| Web DOM sync (10 dirty)          | < 1ms   |
+| Memory overhead                  | < 500KB |
 
 ### Limits
 
@@ -691,23 +697,23 @@ pub fn isA11yEnabled(self: *Builder) bool
 pub const AccessibleConfig = struct {
     // Identity
     layout_id: ?LayoutId = null,
-    
+
     // Semantics
     role: Role = .none,
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
     value: ?[]const u8 = null,
-    
+
     // State
     state: State = .{},
     live: Live = .off,
     heading_level: ?HeadingLevel = null,
-    
+
     // Range values (for sliders, progress bars)
     value_min: ?f32 = null,
     value_max: ?f32 = null,
     value_now: ?f32 = null,
-    
+
     // Set position (for tabs, list items)
     pos_in_set: ?u16 = null,
     set_size: ?u16 = null,

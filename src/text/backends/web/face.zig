@@ -218,19 +218,19 @@ pub const WebFontFace = struct {
     }
 
     /// Render a glyph to a bitmap buffer
-    pub inline fn renderGlyph(self: *const Self, glyph_id: u16, scale: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
-        return self.renderGlyphSubpixel(glyph_id, scale, 0.0, 0.0, buffer, buffer_size);
+    pub inline fn renderGlyph(self: *const Self, glyph_id: u16, font_size: f32, scale: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
+        return self.renderGlyphSubpixel(glyph_id, font_size, scale, 0.0, 0.0, buffer, buffer_size);
     }
 
     /// Render a glyph with subpixel positioning
-    pub fn renderGlyphSubpixel(self: *const Self, glyph_id: u16, scale: f32, subpixel_x: f32, subpixel_y: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
+    pub fn renderGlyphSubpixel(self: *const Self, glyph_id: u16, font_size: f32, scale: f32, subpixel_x: f32, subpixel_y: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
         var width: u32 = 0;
         var height: u32 = 0;
         var bearing_x: f32 = 0;
         var bearing_y: f32 = 0;
         var advance: f32 = 0;
 
-        const size = self.metrics.point_size * scale;
+        const size = font_size * scale;
         const name = self.fontName();
 
         // Use subpixel-aware rasterization
@@ -250,12 +250,13 @@ pub const WebFontFace = struct {
             &advance,
         );
 
+        // advance from JS is at scaled size (font_size * scale), convert to logical units
         return .{
             .width = width,
             .height = height,
             .offset_x = @intFromFloat(bearing_x),
             .offset_y = @intFromFloat(-bearing_y),
-            .advance_x = advance,
+            .advance_x = advance / scale,
             .is_color = false,
         };
     }

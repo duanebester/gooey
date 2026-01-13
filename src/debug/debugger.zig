@@ -648,7 +648,7 @@ fn renderTextSimple(
     if (content.len == 0) return;
     const baseline_y = y + metrics.ascender;
     var opts = text_render.RenderTextOptions{ .clipped = false };
-    _ = text_render.renderText(s, text_system, content, x, baseline_y, scale_factor, color, &opts) catch return;
+    _ = text_render.renderText(s, text_system, content, x, baseline_y, scale_factor, color, metrics.point_size, &opts) catch return;
 }
 
 // =============================================================================

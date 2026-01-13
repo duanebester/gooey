@@ -310,12 +310,14 @@ pub const FreeTypeFace = struct {
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
+        font_size: f32,
         scale: f32,
         subpixel_x: f32,
         subpixel_y: f32,
         buffer: []u8,
         buffer_size: u32,
     ) !RasterizedGlyph {
+        std.debug.assert(font_size > 0);
         std.debug.assert(scale > 0);
         std.debug.assert(subpixel_x >= 0 and subpixel_x < 1.0);
         std.debug.assert(subpixel_y >= 0 and subpixel_y < 1.0);
@@ -323,7 +325,7 @@ pub const FreeTypeFace = struct {
         return renderGlyphInternal(
             self.ft_face,
             glyph_id,
-            self.point_size,
+            font_size,
             scale,
             subpixel_x,
             subpixel_y,
@@ -337,24 +339,22 @@ pub const FreeTypeFace = struct {
     pub fn renderGlyphFromFont(
         ft_face: ft.FT_Face,
         glyph_id: u16,
+        font_size: f32,
         scale: f32,
         subpixel_x: f32,
         subpixel_y: f32,
         buffer: []u8,
         buffer_size: u32,
     ) !RasterizedGlyph {
+        std.debug.assert(font_size > 0);
         std.debug.assert(scale > 0);
         std.debug.assert(subpixel_x >= 0 and subpixel_x < 1.0);
         std.debug.assert(subpixel_y >= 0 and subpixel_y < 1.0);
 
-        // Get the current point size from the face
-        const size_metrics = ft_face.size.metrics;
-        const point_size = ft.f26dot6ToFloat(size_metrics.y_ppem);
-
         return renderGlyphInternal(
             ft_face,
             glyph_id,
-            point_size,
+            font_size,
             scale,
             subpixel_x,
             subpixel_y,
@@ -452,29 +452,6 @@ fn renderGlyphInternal(
     std.debug.assert(scale > 0);
     std.debug.assert(point_size > 0);
 
-    // Get glyph metrics first (before applying transform)
-    const err = ft.FT_Load_Glyph(ft_face, glyph_id, ft.FT_LOAD_DEFAULT);
-    if (err != 0) {
-        return error.GlyphLoadFailed;
-    }
-
-    const metrics = ft_face.glyph.metrics;
-    const advance_x = ft.f26dot6ToFloat(metrics.horiAdvance);
-    const width_f = ft.f26dot6ToFloat(metrics.width);
-    const height_f = ft.f26dot6ToFloat(metrics.height);
-
-    // Handle empty glyphs (spaces, etc.)
-    if (width_f < 1 or height_f < 1) {
-        return RasterizedGlyph{
-            .width = 0,
-            .height = 0,
-            .offset_x = 0,
-            .offset_y = 0,
-            .advance_x = advance_x,
-            .is_color = false,
-        };
-    }
-
     // Apply subpixel offset via FT_Set_Transform
     const subpixel_offset_x = ft.floatToF26dot6(subpixel_x * scale);
     const subpixel_offset_y = ft.floatToF26dot6(subpixel_y * scale);
@@ -486,12 +463,12 @@ fn renderGlyphInternal(
 
     ft.FT_Set_Transform(ft_face, null, &delta);
 
-    // Set scaled size for rendering
+    // Set scaled size for rendering (point_size * scale = physical pixels)
     const scaled_size = point_size * scale;
     const size_f26d6 = ft.floatToF26dot6(scaled_size);
     _ = ft.FT_Set_Char_Size(ft_face, 0, size_f26d6, 96, 96);
 
-    // Load and render the glyph
+    // Load the glyph at scaled size to get correct metrics
     var load_flags = ft.FT_LOAD_DEFAULT;
     if (ft.hasColor(ft_face)) {
         load_flags |= ft.FT_LOAD_COLOR;
@@ -505,6 +482,26 @@ fn renderGlyphInternal(
     }
 
     const slot = ft_face.glyph;
+
+    // Get metrics from the scaled glyph, then convert advance back to logical units
+    const scaled_advance = ft.f26dot6ToFloat(slot.metrics.horiAdvance);
+    const advance_x = scaled_advance / scale;
+    const width_f = ft.f26dot6ToFloat(slot.metrics.width);
+    const height_f = ft.f26dot6ToFloat(slot.metrics.height);
+
+    // Handle empty glyphs (spaces, etc.)
+    if (width_f < 1 or height_f < 1) {
+        ft.FT_Set_Transform(ft_face, null, null);
+        _ = ft.FT_Set_Char_Size(ft_face, 0, ft.floatToF26dot6(point_size), 96, 96);
+        return RasterizedGlyph{
+            .width = 0,
+            .height = 0,
+            .offset_x = 0,
+            .offset_y = 0,
+            .advance_x = advance_x,
+            .is_color = false,
+        };
+    }
 
     // Render to bitmap if not already
     if (slot.format != .FT_GLYPH_FORMAT_BITMAP) {

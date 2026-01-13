@@ -1,27 +1,29 @@
 //! Cx - The Unified Rendering Context
 //!
 //! Provides access to:
-//! - Layout building (box, vstack, hstack, etc.)
+//! - Rendering via `cx.render()` with `ui.*` elements
 //! - Application state
 //! - Window operations
 //! - Entity system
 //! - Focus management
 //!
-//! ## Migration from Context(T)
+//! ## Rendering Pattern
 //!
-//! Before (Context pattern):
-//! ```zig
-//! fn render(cx: *gooey.Context(AppState)) void {
-//!     const s = cx.state();
-//!     cx.vstack(.{}, .{...});
-//! }
-//! ```
+//! Use `cx.render()` with UI primitives from `gooey.ui`:
 //!
-//! After (Cx pattern):
 //! ```zig
+//! const ui = gooey.ui;
+//!
 //! fn render(cx: *gooey.Cx) void {
 //!     const s = cx.state(AppState);
-//!     cx.vstack(.{}, .{...});
+//!
+//!     cx.render(ui.vstack(.{ .gap = 8 }, .{
+//!         ui.text("Hello", .{}),
+//!         ui.hstack(.{ .gap = 4 }, .{
+//!             ui.text("Count: ", .{}),
+//!             ui.textFmt("{}", .{s.count}, .{}),
+//!         }),
+//!     }));
 //! }
 //! ```
 //!
@@ -37,6 +39,9 @@
 //! ## Example
 //!
 //! ```zig
+//! const gooey = @import("gooey");
+//! const ui = gooey.ui;
+//!
 //! const AppState = struct {
 //!     count: i32 = 0,
 //!
@@ -53,14 +58,14 @@
 //!     const s = cx.state(AppState);
 //!     const size = cx.windowSize();
 //!
-//!     cx.box(.{
+//!     cx.render(ui.box(.{
 //!         .width = size.width,
 //!         .height = size.height,
 //!     }, .{
-//!         gooey.ui.textFmt("Count: {}", .{s.count}, .{}),
+//!         ui.textFmt("Count: {}", .{s.count}, .{}),
 //!         gooey.Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
 //!         gooey.Button{ .label = "Reset", .on_click_handler = cx.updateWith(AppState, @as(i32, 0), AppState.setCount) },
-//!     });
+//!     }));
 //! }
 //! ```
 
@@ -97,17 +102,13 @@ const EntityMap = entity_mod.EntityMap;
 const EntityContext = entity_mod.EntityContext;
 
 // UI types (re-exported from root.zig for users)
-const Box = ui_mod.Box;
-const StackStyle = ui_mod.StackStyle;
-const CenterStyle = ui_mod.CenterStyle;
-const ScrollStyle = ui_mod.ScrollStyle;
 const Theme = ui_mod.Theme;
 
 /// Cx - The unified rendering context
 ///
 /// Provides a single entry point for:
 /// - State access: `cx.state(AppState)`
-/// - Layout building: `cx.box()`, `cx.vstack()`, etc.
+/// - Rendering: `cx.render(ui.box(...))`, `cx.render(ui.vstack(...))`
 /// - Handler creation: `cx.update()`, `cx.command()`, etc.
 /// - Entity operations: `cx.createEntity()`, `cx.entityCx()`, etc.
 /// - Window operations: `cx.windowSize()`, `cx.scaleFactor()`, etc.
@@ -437,71 +438,20 @@ pub const Cx = struct {
     // Layout Building - Delegates to Builder
     // =========================================================================
 
-    /// Create a box container with the given style and children.
-    pub fn box(self: *Self, style: Box, children: anytype) void {
-        self._builder.box(style, children);
-    }
-
-    /// Create a box container with source location tracking (Phase 5).
-    /// Usage: cx.boxTracked(.{ ... }, .{ ... }, @src())
-    pub fn boxTracked(self: *Self, style: Box, children: anytype, src: std.builtin.SourceLocation) void {
-        self._builder.boxTracked(style, children, src);
-    }
-
-    /// Create a box container with an explicit ID.
-    pub fn boxWithId(self: *Self, id: []const u8, style: Box, children: anytype) void {
-        self._builder.boxWithId(id, style, children);
-    }
-
-    /// Create a vertical stack (column).
-    pub fn vstack(self: *Self, style: StackStyle, children: anytype) void {
-        self._builder.vstack(style, children);
-    }
-
-    /// Create a vertical stack with source location tracking (Phase 5).
-    /// Usage: cx.vstackTracked(.{ ... }, .{ ... }, @src())
-    pub fn vstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
-        self._builder.vstackTracked(style, children, src);
-    }
-
-    /// Create a horizontal stack (row).
-    pub fn hstack(self: *Self, style: StackStyle, children: anytype) void {
-        self._builder.hstack(style, children);
-    }
-
-    /// Create a horizontal stack with source location tracking (Phase 5).
-    /// Usage: cx.hstackTracked(.{ ... }, .{ ... }, @src())
-    pub fn hstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
-        self._builder.hstackTracked(style, children, src);
-    }
-
-    /// Center children in available space.
-    pub fn center(self: *Self, style: CenterStyle, children: anytype) void {
-        self._builder.center(style, children);
-    }
-
-    /// Create a scrollable container.
-    pub fn scroll(self: *Self, id: []const u8, style: ScrollStyle, children: anytype) void {
-        self._builder.scroll(id, style, children);
-    }
-
-    // =========================================================================
-    // Conditionals
-    // =========================================================================
-
-    /// Render children only if condition is true.
-    pub fn when(self: *Self, condition: bool, children: anytype) void {
-        self._builder.when(condition, children);
-    }
-
-    /// Render with value if optional is non-null.
-    pub fn maybe(self: *Self, optional: anytype, comptime render_fn: anytype) void {
-        self._builder.maybe(optional, render_fn);
-    }
-
-    /// Render for each item in a slice.
-    pub fn each(self: *Self, items: anytype, comptime render_fn: anytype) void {
-        self._builder.each(items, render_fn);
+    /// Render an element tree. This is the primary entry point for the new ui.* API.
+    ///
+    /// Usage:
+    /// ```
+    /// cx.render(ui.box(.{ .background = t.bg }, .{
+    ///     ui.text("Hello", .{}),
+    ///     ui.hstack(.{ .gap = 8 }, .{
+    ///         ui.text("A", .{}),
+    ///         ui.text("B", .{}),
+    ///     }),
+    /// }));
+    /// ```
+    pub fn render(self: *Self, element: anytype) void {
+        self._builder.processChildren(element);
     }
 
     // =========================================================================

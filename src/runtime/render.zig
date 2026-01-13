@@ -135,10 +135,14 @@ fn renderBorder(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 /// Render text with baseline calculation
 fn renderText(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
     const text_data = cmd.data.text;
-    const baseline_y = if (gooey_ctx.text_system.getMetrics()) |metrics|
-        metrics.calcBaseline(cmd.bounding_box.y, cmd.bounding_box.height)
-    else
-        cmd.bounding_box.y + cmd.bounding_box.height * 0.75;
+    const font_size_f: f32 = @floatFromInt(text_data.font_size);
+
+    // Calculate baseline using requested font size
+    const baseline_y = if (gooey_ctx.text_system.getMetrics()) |metrics| blk: {
+        const scale = font_size_f / metrics.point_size;
+        const scaled_ascender = metrics.ascender * scale;
+        break :blk cmd.bounding_box.y + scaled_ascender;
+    } else cmd.bounding_box.y + cmd.bounding_box.height * 0.75;
 
     const use_clip = gooey_ctx.scene.hasActiveClip();
     var opts = text_mod.RenderTextOptions{
@@ -157,6 +161,7 @@ fn renderText(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         baseline_y,
         gooey_ctx.scale_factor,
         render_bridge.colorToHsla(text_data.color),
+        font_size_f,
         &opts,
     );
 }

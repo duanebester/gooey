@@ -32,6 +32,7 @@ pub const FontFace = struct {
         renderGlyphSubpixel: *const fn (
             ptr: *anyopaque,
             glyph_id: u16,
+            font_size: f32,
             scale: f32,
             subpixel_x: f32,
             subpixel_y: f32,
@@ -69,13 +70,14 @@ pub const FontFace = struct {
     pub inline fn renderGlyphSubpixel(
         self: FontFace,
         glyph_id: u16,
+        font_size: f32,
         scale: f32,
         subpixel_x: f32,
         subpixel_y: f32,
         buffer: []u8,
         buffer_size: u32,
     ) !RasterizedGlyph {
-        return self.vtable.renderGlyphSubpixel(self.ptr, glyph_id, scale, subpixel_x, subpixel_y, buffer, buffer_size);
+        return self.vtable.renderGlyphSubpixel(self.ptr, glyph_id, font_size, scale, subpixel_x, subpixel_y, buffer, buffer_size);
     }
 
     /// Release resources
@@ -111,6 +113,7 @@ pub fn createFontFace(comptime T: type, impl: *T) FontFace {
         fn renderGlyphSubpixel(
             ptr: *anyopaque,
             glyph_id: u16,
+            font_size: f32,
             scale: f32,
             subpixel_x: f32,
             subpixel_y: f32,
@@ -118,7 +121,7 @@ pub fn createFontFace(comptime T: type, impl: *T) FontFace {
             buffer_size: u32,
         ) anyerror!RasterizedGlyph {
             const self: *T = @ptrCast(@alignCast(ptr));
-            return self.renderGlyphSubpixel(glyph_id, scale, subpixel_x, subpixel_y, buffer, buffer_size);
+            return self.renderGlyphSubpixel(glyph_id, font_size, scale, subpixel_x, subpixel_y, buffer, buffer_size);
         }
 
         fn deinit(ptr: *anyopaque) void {

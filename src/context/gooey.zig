@@ -912,16 +912,32 @@ pub const Gooey = struct {
 
 fn measureTextCallback(
     text_content: []const u8,
-    _: u16, // font_id
-    _: u16, // font_size - ignored, rendering uses base font size
+    _: u16, // font_id (future use)
+    font_size: u16,
     _: ?f32, // max_width
     user_data: ?*anyopaque,
 ) TextMeasurement {
     if (user_data) |ptr| {
         const text_system: *TextSystem = @ptrCast(@alignCast(ptr));
-        const width = text_system.measureText(text_content) catch 0;
         const metrics = text_system.getMetrics() orelse return .{ .width = 0, .height = 20 };
-        return .{ .width = width, .height = metrics.line_height };
+
+        // Scale factor: requested size / base font size
+        const requested: f32 = @floatFromInt(font_size);
+
+        // Assertions: validate font size values
+        std.debug.assert(requested > 0);
+        std.debug.assert(metrics.point_size > 0);
+
+        const scale = requested / metrics.point_size;
+
+        // Assertion: scale must be positive
+        std.debug.assert(scale > 0);
+
+        const base_width = text_system.measureText(text_content) catch 0;
+        return .{
+            .width = base_width * scale,
+            .height = metrics.line_height * scale,
+        };
     }
     return .{
         .width = @as(f32, @floatFromInt(text_content.len)) * 10,

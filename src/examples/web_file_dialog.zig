@@ -233,7 +233,7 @@ fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 32 },
@@ -261,7 +261,7 @@ fn render(cx: *Cx) void {
 
         // Results section
         ResultsPanel{ .state = s },
-    });
+    }));
 }
 
 // =============================================================================
@@ -270,7 +270,7 @@ fn render(cx: *Cx) void {
 
 const OpenButtonRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12 }, .{
+        cx.render(ui.hstack(.{ .gap = 12 }, .{
             ui.text("Open:", .{
                 .size = 14,
                 .color = ui.Color.rgb(0.7, 0.7, 0.7),
@@ -290,13 +290,13 @@ const OpenButtonRow = struct {
                 .variant = .secondary,
                 .on_click_handler = cx.update(AppState, AppState.openAnyFile),
             },
-        });
+        }));
     }
 };
 
 const SaveButtonRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12 }, .{
+        cx.render(ui.hstack(.{ .gap = 12 }, .{
             ui.text("Save:", .{
                 .size = 14,
                 .color = ui.Color.rgb(0.7, 0.7, 0.7),
@@ -311,7 +311,7 @@ const SaveButtonRow = struct {
                 .variant = .secondary,
                 .on_click_handler = cx.update(AppState, AppState.saveJsonFile),
             },
-        });
+        }));
     }
 };
 
@@ -319,7 +319,7 @@ const ResultsPanel = struct {
     state: *const AppState,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .gap = 12,
             .padding = .{ .all = 16 },
@@ -338,7 +338,7 @@ const ResultsPanel = struct {
 
             // Content preview
             ContentPreview{ .state = self.state },
-        });
+        }));
     }
 };
 
@@ -349,7 +349,7 @@ const FileInfo = struct {
         const name = self.state.getFileName();
         if (name.len == 0) return;
 
-        cx.hstack(.{ .gap = 8 }, .{
+        cx.render(ui.hstack(.{ .gap = 8 }, .{
             ui.text("File:", .{
                 .size = 14,
                 .color = ui.Color.rgb(0.5, 0.5, 0.5),
@@ -358,7 +358,7 @@ const FileInfo = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.6, 0.9, 0.6),
             }),
-        });
+        }));
     }
 };
 
@@ -369,7 +369,7 @@ const ContentPreview = struct {
         const preview = self.state.getContentPreview();
         if (preview.len == 0) return;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .gap = 8,
             .padding = .{ .all = 12 },
@@ -385,7 +385,7 @@ const ContentPreview = struct {
                 .size = 13,
                 .color = ui.Color.rgb(0.8, 0.8, 0.8),
             }),
-        });
+        }));
     }
 };
 

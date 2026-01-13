@@ -38,7 +38,7 @@ fn setupKeymap(cx: *Cx) void {
 fn render(cx: *Cx) void {
     setupKeymap(cx);
 
-    cx.box(.{ .padding = .{ .all = 24 }, .gap = 16, .direction = .column }, .{
+    cx.render(ui.box(.{ .padding = .{ .all = 24 }, .gap = 16, .direction = .column }, .{
         ui.onAction(Undo, doUndo),
         ui.onAction(Redo, doRedo),
         ui.onAction(Cancel, doCancel),
@@ -48,7 +48,7 @@ fn render(cx: *Cx) void {
 
         EditorPanel{},
         ButtonRow{},
-    });
+    }));
 }
 
 const EditorPanel = struct {

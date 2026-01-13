@@ -85,7 +85,7 @@ fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 32 },
@@ -109,7 +109,7 @@ fn render(cx: *Cx) void {
         ui.when(s.message.len > 0, .{
             ui.text(s.message, .{ .size = 14, .color = ui.Color.rgb(0.3, 0.6, 0.3) }),
         }),
-    });
+    }));
 }
 
 // =============================================================================
@@ -120,7 +120,7 @@ const CounterDisplay = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 24 },
             .background = ui.Color.white,
             .corner_radius = 12,
@@ -133,13 +133,13 @@ const CounterDisplay = struct {
                 else
                     ui.Color.rgb(0.8, 0.3, 0.3),
             }),
-        });
+        }));
     }
 };
 
 const ControlButtons = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             // Pure state handlers - cx.update()
             Button{ .label = "−", .size = .large, .on_click_handler = cx.update(AppState, AppState.decrement) },
             Button{ .label = "+", .size = .large, .on_click_handler = cx.update(AppState, AppState.increment) },
@@ -151,7 +151,7 @@ const ControlButtons = struct {
 
             // Command handler - cx.command() for framework access
             Button{ .label = "Reset & Blur", .variant = .danger, .on_click_handler = cx.command(AppState, AppState.resetAndBlur) },
-        });
+        }));
     }
 };
 
@@ -159,14 +159,14 @@ const StepSelector = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
             ui.text("Step:", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
 
             // Using cx.updateWith() to pass arguments
             StepButton{ .value = 1, .current = s.step },
             StepButton{ .value = 5, .current = s.step },
             StepButton{ .value = 10, .current = s.step },
-        });
+        }));
     }
 };
 

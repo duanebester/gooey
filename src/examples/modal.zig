@@ -89,7 +89,7 @@ fn render(cx: *Cx) void {
     const size = cx.windowSize();
     const s = cx.state(AppState);
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = ui.Color.rgb(0.95, 0.95, 0.95),
@@ -128,7 +128,7 @@ fn render(cx: *Cx) void {
             .content_background = ui.Color.rgb(0.15, 0.15, 0.2),
             .content_corner_radius = 16,
         },
-    });
+    }));
 }
 
 // =============================================================================
@@ -157,7 +157,7 @@ const Header = struct {
 
 const ButtonRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = ui.Color.white,
@@ -181,7 +181,7 @@ const ButtonRow = struct {
                 .variant = .secondary,
                 .on_click_handler = cx.update(AppState, AppState.openCustom),
             },
-        });
+        }));
     }
 };
 
@@ -205,7 +205,7 @@ const StatusRow = struct {
 
 const BasicModalContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .gap = 16,
             .fill_width = true,
@@ -221,13 +221,13 @@ const BasicModalContent = struct {
                 .variant = .primary,
                 .on_click_handler = cx.update(AppState, AppState.closeBasic),
             },
-        });
+        }));
     }
 };
 
 const ConfirmModalContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .gap = 20,
             .fill_width = true,
@@ -239,13 +239,13 @@ const ConfirmModalContent = struct {
                 .wrap = .words,
             }),
             ActionButtons{},
-        });
+        }));
     }
 };
 
 const ActionButtons = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 12,
             .alignment = .{ .main = .end },
@@ -261,13 +261,13 @@ const ActionButtons = struct {
                 .variant = .danger,
                 .on_click_handler = cx.update(AppState, AppState.doDelete),
             },
-        });
+        }));
     }
 };
 
 const CustomModalContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .column,
             .gap = 16,
             .alignment = .{ .cross = .center },
@@ -284,7 +284,7 @@ const CustomModalContent = struct {
                 .variant = .primary,
                 .on_click_handler = cx.update(AppState, AppState.closeCustom),
             },
-        });
+        }));
     }
 };
 

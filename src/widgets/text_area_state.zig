@@ -808,6 +808,7 @@ pub const TextArea = struct {
                 baseline_y,
                 scale_factor,
                 self.style.placeholder_color,
+                metrics.point_size,
                 &opts,
             );
         } else if (has_content) {
@@ -864,6 +865,7 @@ pub const TextArea = struct {
                     baseline_y,
                     scale_factor,
                     self.style.text_color,
+                    metrics.point_size,
                     &opts,
                 );
                 pen_x += width;
@@ -880,6 +882,7 @@ pub const TextArea = struct {
                 baseline_y,
                 scale_factor,
                 self.style.text_color,
+                metrics.point_size,
                 &preedit_opts,
             );
 
@@ -907,6 +910,7 @@ pub const TextArea = struct {
                     baseline_y,
                     scale_factor,
                     self.style.text_color,
+                    metrics.point_size,
                     &after_opts,
                 );
             }
@@ -922,6 +926,7 @@ pub const TextArea = struct {
                     baseline_y,
                     scale_factor,
                     self.style.text_color,
+                    metrics.point_size,
                     &line_opts,
                 );
             }

@@ -269,7 +269,7 @@ fn render(cx: *Cx) void {
     cx.setTheme(t);
 
     // Using boxTracked to demonstrate source location in debugger (Cmd+Shift+I)
-    cx.boxTracked(.{
+    cx.render(ui.boxTracked(.{
         .width = size.width,
         .height = size.height,
         .background = t.bg,
@@ -292,7 +292,7 @@ fn render(cx: *Cx) void {
             .on_close = cx.update(AppState, AppState.closeConfirm),
             .child = ConfirmModalContent{},
         },
-    }, @src());
+    }, @src()));
 }
 
 // =============================================================================
@@ -303,7 +303,7 @@ const TopNavBar = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .height = 60,
             .background = t.surface,
@@ -324,7 +324,7 @@ const TopNavBar = struct {
 
             // Theme toggle
             ThemeToggle{},
-        });
+        }));
     }
 };
 
@@ -337,7 +337,7 @@ const NavTabList = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 8,
             .alignment = .{ .cross = .center },
@@ -349,7 +349,7 @@ const NavTabList = struct {
             NavItem{ .section = .feedback },
             NavItem{ .section = .overlays },
             NavItem{ .section = .icons },
-        });
+        }));
     }
 };
 
@@ -357,14 +357,14 @@ const NavLogo = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .gap = 8,
             .direction = .row,
             .alignment = .{ .cross = .center, .main = .center },
         }, .{
             gooey.Image{ .src = "assets/gooey.png", .size = 28, .fit = .cover },
             ui.text("Gooey", .{ .size = 24, .color = t.text }),
-        });
+        }));
     }
 };
 
@@ -387,7 +387,7 @@ const NavItem = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
             .corner_radius = 6,
             .direction = .row,
@@ -400,7 +400,7 @@ const NavItem = struct {
                 .size = 14,
                 .color = if (is_active) t.primary else t.text,
             }),
-        });
+        }));
     }
 };
 
@@ -409,7 +409,7 @@ const ThemeToggle = struct {
         const s = cx.state(AppState);
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 8 },
             .corner_radius = 6,
             .alignment = .{ .cross = .center },
@@ -423,7 +423,7 @@ const ThemeToggle = struct {
                 .stroke_color = t.muted,
                 .stroke_width = 1,
             },
-        });
+        }));
     }
 };
 
@@ -434,13 +434,13 @@ const ThemeToggle = struct {
 const MainContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         // Main content area fills remaining space after nav bar
-        cx.box(.{
+        cx.render(ui.box(.{
             .grow = true,
             .fill_width = true,
             .direction = .column,
         }, .{
             SectionContent{},
-        });
+        }));
     }
 };
 
@@ -463,14 +463,15 @@ const SectionContent = struct {
         };
 
         // Each section gets its own scroll container (preserves scroll position per section)
+        // Render directly in switch branches to avoid type unification issues with generic ScrollElement
         switch (s.section) {
-            .overview => cx.scroll("scroll-overview", scroll_style, .{OverviewSection{}}),
-            .buttons => cx.scroll("scroll-buttons", scroll_style, .{ButtonsSection{}}),
-            .inputs => cx.scroll("scroll-inputs", scroll_style, .{InputsSection{}}),
-            .selection => cx.scroll("scroll-selection", scroll_style, .{SelectionSection{}}),
-            .feedback => cx.scroll("scroll-feedback", scroll_style, .{FeedbackSection{}}),
-            .overlays => cx.scroll("scroll-overlays", scroll_style, .{OverlaysSection{}}),
-            .icons => cx.scroll("scroll-icons", scroll_style, .{IconsSection{}}),
+            .overview => cx.render(ui.scroll("scroll-overview", scroll_style, .{OverviewSection{}})),
+            .buttons => cx.render(ui.scroll("scroll-buttons", scroll_style, .{ButtonsSection{}})),
+            .inputs => cx.render(ui.scroll("scroll-inputs", scroll_style, .{InputsSection{}})),
+            .selection => cx.render(ui.scroll("scroll-selection", scroll_style, .{SelectionSection{}})),
+            .feedback => cx.render(ui.scroll("scroll-feedback", scroll_style, .{FeedbackSection{}})),
+            .overlays => cx.render(ui.scroll("scroll-overlays", scroll_style, .{OverlaysSection{}})),
+            .icons => cx.render(ui.scroll("scroll-icons", scroll_style, .{IconsSection{}})),
         }
     }
 };
@@ -487,7 +488,7 @@ const Card = struct {
         const t = cx.theme();
 
         // Using boxTracked for source location debugging
-        cx.boxTracked(.{
+        cx.render(ui.boxTracked(.{
             .fill_width = true,
             .padding = .{ .all = 24 },
             .background = t.surface,
@@ -500,7 +501,7 @@ const Card = struct {
             CardHeader{ .title = self.title, .description = self.description },
             // Card content
             children,
-        }, @src());
+        }, @src()));
     }
 };
 
@@ -512,14 +513,14 @@ const CardHeader = struct {
         const t = cx.theme();
 
         if (self.description) |desc| {
-            cx.box(.{ .gap = 4 }, .{
+            cx.render(ui.box(.{ .gap = 4 }, .{
                 ui.text(self.title, .{ .size = 18, .color = t.text }),
                 ui.text(desc, .{ .size = 13, .color = t.muted, .wrap = .words }),
-            });
+            }));
         } else {
-            cx.box(.{ .gap = 4 }, .{
+            cx.render(ui.box(.{ .gap = 4 }, .{
                 ui.text(self.title, .{ .size = 18, .color = t.text }),
-            });
+            }));
         }
     }
 };
@@ -532,9 +533,9 @@ const OverviewSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+        cx.render(ui.box(.{ .fill_width = true, .gap = 24 }, .{
             // Hero
-            cx.box(.{
+            ui.box(.{
                 .fill_width = true,
                 .padding = .{ .all = 32 },
                 .background = t.primary.withAlpha(0.1),
@@ -544,7 +545,7 @@ const OverviewSection = struct {
             }, .{
                 ui.text("Welcome to Gooey", .{ .size = 36, .color = t.text }),
                 ui.text("A GPU-accelerated UI framework for Zig with a powerful layout system", .{ .size = 18, .color = t.subtext }),
-                cx.hstack(.{ .gap = 12 }, .{
+                ui.hstack(.{ .gap = 12 }, .{
                     FeatureBadge{ .icon = Icons.star, .label = "Fast" },
                     FeatureBadge{ .icon = Icons.folder, .label = "Composable" },
                     FeatureBadge{ .icon = Icons.menu, .label = "Flexible" },
@@ -568,7 +569,7 @@ const OverviewSection = struct {
 
             // Quick stats
             QuickStats{},
-        });
+        }));
     }
 };
 
@@ -579,7 +580,7 @@ const FeatureBadge = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .symmetric = .{ .x = 12, .y = 6 } },
             .background = t.surface,
             .corner_radius = 16,
@@ -590,12 +591,10 @@ const FeatureBadge = struct {
             Svg{
                 .path = self.icon,
                 .size = 14,
-                .color = null,
-                .stroke_color = t.primary,
-                .stroke_width = 2,
+                .color = t.primary,
             },
-            ui.text(self.label, .{ .size = 12, .color = t.text }),
-        });
+            ui.text(self.label, .{ .size = 13, .color = t.text }),
+        }));
     }
 };
 
@@ -607,7 +606,7 @@ const LayoutApiSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = t.surface,
@@ -618,7 +617,7 @@ const LayoutApiSection = struct {
             ui.text("The box primitive supports flexible sizing, alignment, and distribution", .{ .size = 13, .color = t.muted }),
 
             // API cards in a grid
-            cx.hstack(.{ .gap = 12 }, .{
+            ui.hstack(.{ .gap = 12 }, .{
                 ApiCard{
                     .title = "Sizing",
                     .items = &[_][]const u8{
@@ -645,7 +644,7 @@ const LayoutApiSection = struct {
                     },
                 },
             }),
-        });
+        }));
     }
 };
 
@@ -656,7 +655,7 @@ const ApiCard = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .grow = true,
             .padding = .{ .all = 16 },
             .background = t.bg,
@@ -664,8 +663,8 @@ const ApiCard = struct {
             .gap = 8,
         }, .{
             ui.text(self.title, .{ .size = 14, .color = t.primary }),
-            cx.box(.{ .gap = 4 }, ApiItems{ .items = self.items }),
-        });
+            ui.box(.{ .gap = 4 }, ApiItems{ .items = self.items }),
+        }));
     }
 };
 
@@ -675,10 +674,10 @@ const ApiItems = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
         for (self.items) |item| {
-            cx.box(.{ .direction = .row, .gap = 6 }, .{
+            cx.render(ui.box(.{ .direction = .row, .gap = 6 }, .{
                 ui.text("•", .{ .size = 11, .color = t.muted }),
                 ui.text(item, .{ .size = 11, .color = t.subtext }),
-            });
+            }));
         }
     }
 };
@@ -695,7 +694,7 @@ const ScrollDemo = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = t.surface,
@@ -706,9 +705,9 @@ const ScrollDemo = struct {
             ui.text("Scrollable areas with content overflow - supports vertical, horizontal, or both", .{ .size = 13, .color = t.muted }),
 
             // Horizontal scroll demo
-            cx.box(.{ .gap = 8 }, .{
+            ui.box(.{ .fill_width = true, .gap = 8 }, .{
                 ui.text("Horizontal scroll (content_width > viewport)", .{ .size = 12, .color = t.subtext }),
-                cx.scroll("demo-h-scroll", .{
+                ui.scroll("demo-h-scroll", .{
                     .width = 400,
                     .height = 80,
                     .horizontal = true,
@@ -722,7 +721,7 @@ const ScrollDemo = struct {
                     .track_color = t.overlay,
                     .thumb_color = t.muted,
                 }, .{
-                    cx.hstack(.{ .gap = 8 }, .{
+                    ui.hstack(.{ .gap = 8 }, .{
                         ScrollDemoBox{ .label = "Item 1", .width = 120 },
                         ScrollDemoBox{ .label = "Item 2", .width = 120 },
                         ScrollDemoBox{ .label = "Item 3", .width = 120 },
@@ -734,9 +733,9 @@ const ScrollDemo = struct {
             }),
 
             // Vertical scroll demo
-            cx.box(.{ .gap = 8 }, .{
+            ui.box(.{ .fill_width = true, .gap = 8 }, .{
                 ui.text("Vertical scroll (content_height > viewport)", .{ .size = 12, .color = t.subtext }),
-                cx.scroll("demo-v-scroll", .{
+                ui.scroll("demo-v-scroll", .{
                     .fill_width = true,
                     .height = 120,
                     .horizontal = false,
@@ -759,9 +758,9 @@ const ScrollDemo = struct {
             }),
 
             // Both directions demo
-            cx.box(.{ .gap = 8 }, .{
+            ui.box(.{ .fill_width = true, .gap = 8 }, .{
                 ui.text("Both directions (horizontal + vertical)", .{ .size = 12, .color = t.subtext }),
-                cx.scroll("demo-both-scroll", .{
+                ui.scroll("demo-both-scroll", .{
                     .width = 400,
                     .height = 150,
                     .horizontal = true,
@@ -783,7 +782,7 @@ const ScrollDemo = struct {
                     ScrollDemoBox{ .label = "Wide & Tall 6", .width = 550 },
                 }),
             }),
-        });
+        }));
     }
 };
 
@@ -794,7 +793,7 @@ const ScrollDemoBox = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.width,
             .fill_width = self.width == null,
             .height = 40,
@@ -803,8 +802,8 @@ const ScrollDemoBox = struct {
             .corner_radius = t.radius_sm,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
-            ui.text(self.label, .{ .size = 12, .color = t.text }),
-        });
+            ui.text(self.label, .{ .size = 12, .color = t.primary }),
+        }));
     }
 };
 
@@ -812,7 +811,7 @@ const SizingDemo = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = t.surface,
@@ -823,9 +822,9 @@ const SizingDemo = struct {
             ui.text("Control how elements size themselves within their container", .{ .size = 13, .color = t.muted }),
 
             // Fixed vs Grow demo
-            cx.box(.{ .gap = 8 }, .{
+            ui.box(.{ .fill_width = true, .gap = 8 }, .{
                 ui.text("Fixed width (100px) + Grow (fills remaining)", .{ .size = 12, .color = t.subtext }),
-                cx.box(.{
+                ui.box(.{
                     .fill_width = true,
                     .height = 40,
                     .padding = .{ .all = 4 },
@@ -840,9 +839,9 @@ const SizingDemo = struct {
             }),
 
             // Percent sizing demo
-            cx.box(.{ .gap = 8 }, .{
+            ui.box(.{ .fill_width = true, .gap = 8 }, .{
                 ui.text("Percentage sizing: 25% + 50% + 25%", .{ .size = 12, .color = t.subtext }),
-                cx.box(.{
+                ui.box(.{
                     .fill_width = true,
                     .height = 40,
                     .padding = .{ .all = 4 },
@@ -858,9 +857,9 @@ const SizingDemo = struct {
             }),
 
             // Multiple grow demo
-            cx.box(.{ .gap = 8 }, .{
+            ui.box(.{ .fill_width = true, .gap = 8 }, .{
                 ui.text("Multiple grow elements share space equally", .{ .size = 12, .color = t.subtext }),
-                cx.box(.{
+                ui.box(.{
                     .fill_width = true,
                     .height = 40,
                     .padding = .{ .all = 4 },
@@ -876,9 +875,9 @@ const SizingDemo = struct {
             }),
 
             // Fill width/height demo
-            cx.box(.{ .gap = 8 }, .{
+            ui.box(.{ .fill_width = true, .gap = 8 }, .{
                 ui.text("fill_width = 100% of parent (same as width_percent: 1.0)", .{ .size = 12, .color = t.subtext }),
-                cx.box(.{
+                ui.box(.{
                     .fill_width = true,
                     .height = 40,
                     .padding = .{ .all = 4 },
@@ -889,7 +888,7 @@ const SizingDemo = struct {
                     SizeBox{ .label = "fill_width = true", .fill_width = true },
                 }),
             }),
-        });
+        }));
     }
 };
 
@@ -903,7 +902,7 @@ const SizeBox = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.fixed_width,
             .grow_width = self.grow,
             .fill_width = self.fill_width,
@@ -914,7 +913,7 @@ const SizeBox = struct {
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             ui.text(self.label, .{ .size = 11, .color = ui.Color.white }),
-        });
+        }));
     }
 };
 
@@ -926,7 +925,7 @@ const MainAxisDemo = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = t.surface,
@@ -937,17 +936,17 @@ const MainAxisDemo = struct {
             ui.text("Control spacing between children along the main axis (row = horizontal, column = vertical)", .{ .size = 13, .color = t.muted }),
 
             // All distribution modes in a compact view
-            cx.hstack(.{ .gap = 12 }, .{
+            ui.hstack(.{ .gap = 12 }, .{
                 DistributionExample{ .mode = .start, .label = "start" },
                 DistributionExample{ .mode = .center, .label = "center" },
                 DistributionExample{ .mode = .end, .label = "end" },
             }),
-            cx.hstack(.{ .gap = 12 }, .{
+            ui.hstack(.{ .gap = 12 }, .{
                 DistributionExample{ .mode = .space_between, .label = "space_between" },
                 DistributionExample{ .mode = .space_around, .label = "space_around" },
                 DistributionExample{ .mode = .space_evenly, .label = "space_evenly" },
             }),
-        });
+        }));
     }
 };
 
@@ -958,9 +957,9 @@ const DistributionExample = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{ .grow = true, .min_width = 120, .gap = 6 }, .{
+        cx.render(ui.box(.{ .grow = true, .min_width = 120, .gap = 6 }, .{
             ui.text(self.label, .{ .size = 11, .color = t.subtext }),
-            cx.box(.{
+            ui.box(.{
                 .fill_width = true,
                 .height = 44,
                 .padding = .{ .symmetric = .{ .x = 0, .y = 4 } },
@@ -975,7 +974,7 @@ const DistributionExample = struct {
                 DistributionBox{ .label = "B" },
                 DistributionBox{ .label = "C" },
             }),
-        });
+        }));
     }
 };
 
@@ -985,7 +984,7 @@ const DistributionBox = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 28,
             .height = 28,
             .background = t.primary,
@@ -993,7 +992,7 @@ const DistributionBox = struct {
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             ui.text(self.label, .{ .size = 12, .color = ui.Color.white }),
-        });
+        }));
     }
 };
 
@@ -1005,7 +1004,7 @@ const CrossAxisDemo = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = t.surface,
@@ -1015,13 +1014,13 @@ const CrossAxisDemo = struct {
             ui.text("Cross Axis Alignment", .{ .size = 18, .color = t.text }),
             ui.text("Align children perpendicular to the main axis", .{ .size = 13, .color = t.muted }),
 
-            cx.hstack(.{ .gap = 12 }, .{
+            ui.hstack(.{ .gap = 12 }, .{
                 CrossAlignExample{ .mode = .start, .label = "start (top)" },
                 CrossAlignExample{ .mode = .center, .label = "center" },
                 CrossAlignExample{ .mode = .end, .label = "end (bottom)" },
                 CrossAlignExample{ .mode = .stretch, .label = "stretch" },
             }),
-        });
+        }));
     }
 };
 
@@ -1032,9 +1031,9 @@ const CrossAlignExample = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{ .grow = true, .gap = 6 }, .{
+        cx.render(ui.box(.{ .grow = true, .gap = 6 }, .{
             ui.text(self.label, .{ .size = 11, .color = t.subtext }),
-            cx.box(.{
+            ui.box(.{
                 .fill_width = true,
                 .height = 70,
                 .padding = .{ .all = 6 },
@@ -1048,7 +1047,7 @@ const CrossAlignExample = struct {
                 CrossBox{ .height = 35, .stretch = self.mode == .stretch },
                 CrossBox{ .height = 25, .stretch = self.mode == .stretch },
             }),
-        });
+        }));
     }
 };
 
@@ -1059,13 +1058,13 @@ const CrossBox = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 24,
             .height = if (self.stretch) null else self.height,
             .grow_height = self.stretch,
             .background = t.primary,
             .corner_radius = 4,
-        }, .{});
+        }, .{}));
     }
 };
 
@@ -1077,7 +1076,7 @@ const QuickStats = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = t.surface,
@@ -1089,7 +1088,7 @@ const QuickStats = struct {
             StatItem{ .value = "7", .label = "Components" },
             StatItem{ .value = "60", .label = "FPS Target" },
             StatItem{ .value = "0", .label = "Dependencies" },
-        });
+        }));
     }
 };
 
@@ -1100,10 +1099,10 @@ const StatItem = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
             ui.text(self.value, .{ .size = 28, .color = t.primary }),
             ui.text(self.label, .{ .size = 12, .color = t.muted }),
-        });
+        }));
     }
 };
 
@@ -1113,11 +1112,11 @@ const StatItem = struct {
 
 const ButtonsSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.boxTracked(.{ .fill_width = true, .gap = 24 }, .{
+        cx.render(ui.boxTracked(.{ .fill_width = true, .gap = 24 }, .{
             ButtonVariantsCard{},
             ButtonSizesCard{},
             ButtonInteractiveCard{},
-        }, @src());
+        }, @src()));
     }
 };
 
@@ -1127,13 +1126,13 @@ const ButtonVariantsCard = struct {
         const card = Card{ .title = "Button Variants", .description = "Different button styles for various contexts" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
                 Button{ .label = "Primary", .variant = .primary },
                 Button{ .label = "Secondary", .variant = .secondary },
                 Button{ .label = "Danger", .variant = .danger },
             }),
 
-            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
                 Button{ .label = "Disabled", .variant = .primary, .enabled = false },
                 Tooltip(Button){
                     .text = "This button has a tooltip!",
@@ -1151,7 +1150,7 @@ const ButtonSizesCard = struct {
         const card = Card{ .title = "Button Sizes", .description = "Small, medium, and large variants" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
                 Button{ .label = "Small", .size = .small },
                 Button{ .label = "Medium", .size = .medium },
                 Button{ .label = "Large", .size = .large },
@@ -1167,7 +1166,7 @@ const ButtonInteractiveCard = struct {
         const card = Card{ .title = "Interactive Demo", .description = "Click to see state updates" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 Button{
                     .label = "Click Me!",
                     .variant = .primary,
@@ -1178,7 +1177,7 @@ const ButtonInteractiveCard = struct {
                     .variant = .secondary,
                     .on_click_handler = cx.update(AppState, AppState.resetClicks),
                 },
-                cx.box(.{
+                ui.box(.{
                     .padding = .{ .symmetric = .{ .x = 16, .y = 8 } },
                     .background = t.overlay,
                     .corner_radius = t.radius_md,
@@ -1196,10 +1195,10 @@ const ButtonInteractiveCard = struct {
 
 const InputsSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+        cx.render(ui.box(.{ .fill_width = true, .gap = 24 }, .{
             TextInputCard{},
             TextAreaCard{},
-        });
+        }));
     }
 };
 
@@ -1210,8 +1209,8 @@ const TextInputCard = struct {
         const card = Card{ .title = "Text Input", .description = "Single-line text entry with placeholder and binding" };
 
         card.render(cx, .{
-            cx.box(.{ .gap = 16 }, .{
-                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.box(.{ .gap = 16 }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                     TextInput{
                         .id = "name-input",
                         .placeholder = "Your name",
@@ -1226,7 +1225,7 @@ const TextInputCard = struct {
                         .bind = &s.email,
                     },
                 }),
-                cx.hstack(.{ .gap = 8 }, .{
+                ui.hstack(.{ .gap = 8 }, .{
                     ui.text("Name:", .{ .size = 13, .color = t.muted }),
                     ui.text(if (s.name.len > 0) s.name else "(empty)", .{ .size = 13, .color = t.text }),
                     ui.text("  Email:", .{ .size = 13, .color = t.muted }),
@@ -1260,11 +1259,11 @@ const TextAreaCard = struct {
 
 const SelectionSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+        cx.render(ui.box(.{ .fill_width = true, .gap = 24 }, .{
             CheckboxCard{},
             RadioCard{},
             SelectCard{},
-        });
+        }));
     }
 };
 
@@ -1275,7 +1274,7 @@ const CheckboxCard = struct {
         const card = Card{ .title = "Checkbox", .description = "Toggle options on or off" };
 
         card.render(cx, .{
-            cx.box(.{ .gap = 12 }, .{
+            ui.box(.{ .gap = 12 }, .{
                 Checkbox{
                     .id = "opt-a",
                     .checked = s.option_a,
@@ -1309,9 +1308,9 @@ const RadioCard = struct {
         const card = Card{ .title = "Radio Buttons", .description = "Select one option from a group" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 32, .alignment = .start }, .{
+            ui.hstack(.{ .gap = 32, .alignment = .start }, .{
                 // Color selection - vertical
-                cx.box(.{ .gap = 8 }, .{
+                ui.box(.{ .gap = 8 }, .{
                     ui.text("Color", .{ .size = 13, .color = t.muted }),
                     RadioButton{
                         .label = "Red",
@@ -1333,7 +1332,7 @@ const RadioCard = struct {
                     },
                 }),
                 // Size selection - horizontal using RadioGroup
-                cx.box(.{ .gap = 8 }, .{
+                ui.box(.{ .gap = 8 }, .{
                     ui.text("Size", .{ .size = 13, .color = t.muted }),
                     RadioGroup{
                         .id = "size-group",
@@ -1365,8 +1364,8 @@ const SelectCard = struct {
         const card = Card{ .title = "Select / Dropdown", .description = "Choose from a list of options" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 24, .alignment = .start }, .{
-                cx.box(.{ .gap = 8 }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .start }, .{
+                ui.box(.{ .gap = 8 }, .{
                     ui.text("Fruit", .{ .size = 13, .color = t.muted }),
                     Select{
                         .id = "fruit-select",
@@ -1387,7 +1386,7 @@ const SelectCard = struct {
                         // Uses theme defaults
                     },
                 }),
-                cx.box(.{ .gap = 8 }, .{
+                ui.box(.{ .gap = 8 }, .{
                     ui.text("Priority", .{ .size = 13, .color = t.muted }),
                     Select{
                         .id = "priority-select",
@@ -1418,10 +1417,10 @@ const SelectCard = struct {
 
 const FeedbackSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+        cx.render(ui.box(.{ .fill_width = true, .gap = 24 }, .{
             ProgressCard{},
             TooltipCard{},
-        });
+        }));
     }
 };
 
@@ -1432,8 +1431,8 @@ const ProgressCard = struct {
         const card = Card{ .title = "Progress Bar", .description = "Show completion status" };
 
         card.render(cx, .{
-            cx.box(.{ .gap = 16 }, .{
-                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.box(.{ .gap = 16 }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                     ui.text("65%", .{ .size = 13, .color = t.muted }),
                     ProgressBar{
                         .progress = 0.65,
@@ -1442,7 +1441,7 @@ const ProgressCard = struct {
                         // Uses theme defaults (overlay bg, primary fill)
                     },
                 }),
-                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                     ui.text("25%", .{ .size = 13, .color = t.muted }),
                     ProgressBar{
                         .progress = 0.25,
@@ -1451,7 +1450,7 @@ const ProgressCard = struct {
                         .fill = t.warning,
                     },
                 }),
-                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                     ui.text("100%", .{ .size = 13, .color = t.muted }),
                     ProgressBar{
                         .progress = 1.0,
@@ -1460,7 +1459,7 @@ const ProgressCard = struct {
                         .fill = t.success,
                     },
                 }),
-                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                     Button{
                         .label = "Step Progress",
                         .variant = .secondary,
@@ -1488,7 +1487,7 @@ const TooltipCard = struct {
         const card = Card{ .title = "Tooltips", .description = "Hover to see contextual information" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 Tooltip(Button){
                     .text = "Appears above",
                     .position = .top,
@@ -1520,9 +1519,9 @@ const TooltipCard = struct {
 
 const OverlaysSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+        cx.render(ui.box(.{ .fill_width = true, .gap = 24 }, .{
             ModalCard{},
-        });
+        }));
     }
 };
 
@@ -1533,8 +1532,8 @@ const ModalCard = struct {
         const card = Card{ .title = "Modal Dialogs", .description = "Overlay dialogs for important interactions" };
 
         card.render(cx, .{
-            cx.box(.{ .gap = 16 }, .{
-                cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.box(.{ .gap = 16 }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                     Button{
                         .label = "Info Modal",
                         .variant = .primary,
@@ -1546,7 +1545,7 @@ const ModalCard = struct {
                         .on_click_handler = cx.update(AppState, AppState.openConfirm),
                     },
                 }),
-                cx.hstack(.{ .gap = 8 }, .{
+                ui.hstack(.{ .gap = 8 }, .{
                     ui.text("Confirmed actions:", .{ .size = 13, .color = t.muted }),
                     ui.textFmt("{d}", .{s.confirmed_count}, .{ .size = 13, .color = t.text }),
                 }),
@@ -1559,7 +1558,7 @@ const InfoModalContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{ .gap = 16, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 16, .fill_width = true }, .{
             ui.text("Information", .{ .size = 20, .color = t.text }),
             ui.text("This is a modal dialog. Click outside or press Escape to close.", .{
                 .size = 14,
@@ -1567,11 +1566,11 @@ const InfoModalContent = struct {
                 .wrap = .words,
             }),
             Button{
-                .label = "Got it",
+                .label = "Got it!",
                 .variant = .primary,
                 .on_click_handler = cx.update(AppState, AppState.closeModal),
             },
-        });
+        }));
     }
 };
 
@@ -1579,14 +1578,14 @@ const ConfirmModalContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
 
-        cx.box(.{ .gap = 20, .fill_width = true }, .{
+        cx.render(ui.box(.{ .gap = 20, .fill_width = true }, .{
             ui.text("Confirm Action", .{ .size = 20, .color = t.text }),
             ui.text("Are you sure you want to proceed? This action will be counted.", .{
                 .size = 14,
                 .color = t.subtext,
                 .wrap = .words,
             }),
-            cx.hstack(.{ .gap = 12, .alignment = .end }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .end }, .{
                 ui.spacer(),
                 Button{
                     .label = "Cancel",
@@ -1599,7 +1598,7 @@ const ConfirmModalContent = struct {
                     .on_click_handler = cx.update(AppState, AppState.doConfirm),
                 },
             }),
-        });
+        }));
     }
 };
 
@@ -1609,11 +1608,11 @@ const ConfirmModalContent = struct {
 
 const IconsSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{ .fill_width = true, .gap = 24 }, .{
+        cx.render(ui.box(.{ .fill_width = true, .gap = 24 }, .{
             BasicIconsCard{},
             StyledIconsCard{},
             CustomPathsCard{},
-        });
+        }));
     }
 };
 
@@ -1623,7 +1622,7 @@ const BasicIconsCard = struct {
         const card = Card{ .title = "Basic Icons", .description = "Built-in icon set with stroke rendering" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 20, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 20, .alignment = .center }, .{
                 IconWithLabel{ .icon = Icons.folder, .label = "Folder" },
                 IconWithLabel{ .icon = Icons.search, .label = "Search" },
                 IconWithLabel{ .icon = Icons.edit, .label = "Edit" },
@@ -1633,7 +1632,7 @@ const BasicIconsCard = struct {
                 IconWithLabel{ .icon = Icons.menu, .label = "Menu" },
                 IconWithLabel{ .icon = Icons.download, .label = "Download" },
             }),
-            cx.hstack(.{ .gap = 20, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 20, .alignment = .center }, .{
                 IconWithLabel{ .icon = Icons.check, .label = "Check", .color = t.success },
                 IconWithLabel{ .icon = Icons.close, .label = "Close", .color = t.danger },
                 IconWithLabel{ .icon = Icons.warning, .label = "Warning", .color = t.warning },
@@ -1654,7 +1653,7 @@ const IconWithLabel = struct {
         const t = cx.theme();
         const icon_color = self.color orelse t.text;
 
-        cx.box(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
+        cx.render(ui.box(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
             Svg{
                 .path = self.icon,
                 .size = 24,
@@ -1663,7 +1662,7 @@ const IconWithLabel = struct {
                 .stroke_width = 2,
             },
             ui.text(self.label, .{ .size = 11, .color = t.muted }),
-        });
+        }));
     }
 };
 
@@ -1673,25 +1672,25 @@ const StyledIconsCard = struct {
         const card = Card{ .title = "Icon Styles", .description = "Different sizes and stroke widths" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 24, .alignment = .end }, .{
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .end }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = Icons.star_outline, .size = 16, .color = null, .stroke_color = t.primary, .stroke_width = 1.5 },
                     ui.text("16px", .{ .size = 11, .color = t.muted }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = Icons.star_outline, .size = 24, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
                     ui.text("24px", .{ .size = 11, .color = t.muted }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = Icons.star_outline, .size = 32, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
                     ui.text("32px", .{ .size = 11, .color = t.muted }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = Icons.star_outline, .size = 48, .color = null, .stroke_color = t.primary, .stroke_width = 2.5 },
                     ui.text("48px", .{ .size = 11, .color = t.muted }),
                 }),
             }),
-            cx.hstack(.{ .gap = 24, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .center }, .{
                 // Filled star
                 Svg{ .path = Icons.star, .size = 32, .color = t.warning },
                 // Stroke only
@@ -1714,16 +1713,16 @@ const CustomPathsCard = struct {
         const card = Card{ .title = "Custom SVG Paths", .description = "Arcs, beziers, and custom shapes" };
 
         card.render(cx, .{
-            cx.hstack(.{ .gap = 24, .alignment = .center }, .{
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .center }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = circle_path, .size = 32, .no_fill = true, .stroke_color = t.primary, .stroke_width = 2 },
                     ui.text("Circle (Arc)", .{ .size = 11, .color = t.muted }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = wave_path, .size = 32, .no_fill = true, .stroke_color = t.accent, .stroke_width = 2 },
                     ui.text("Wave (Bezier)", .{ .size = 11, .color = t.muted }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = rounded_rect, .size = 32, .color = t.surface, .stroke_color = t.text, .stroke_width = 1.5 },
                     ui.text("Rounded Rect", .{ .size = 11, .color = t.muted }),
                 }),

@@ -181,7 +181,7 @@ fn render(cx: *Cx) void {
     // Ensure chart data is initialized before rendering
     ensureDataInitialized();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 20 },
@@ -197,14 +197,14 @@ fn render(cx: *Cx) void {
 
         // Scrollable chart content
         ScrollableCharts{},
-    });
+    }));
 }
 
 const ScrollableCharts = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const size = cx.windowSize();
 
-        cx.scroll("charts-scroll", .{
+        cx.render(ui.scroll("charts-scroll", .{
             .width = size.width - 40,
             .height = size.height - 100,
             .content_height = 1600, // Increased for themed chart
@@ -260,7 +260,7 @@ const ScrollableCharts = struct {
                 .color = ui.Color.hex(0xaaaaaa),
             }),
             ui.canvas(500, 200, paintThemedLineChart),
-        });
+        }));
     }
 };
 

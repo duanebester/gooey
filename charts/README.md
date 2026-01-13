@@ -32,9 +32,9 @@ fn render(cx: *gooey.Cx) void {
         .height = 300,
     };
 
-    cx.box(.{}, .{
+    cx.render(ui.box(.{}, .{
         ui.canvas(400, 300, chart.bindRender()),
-    });
+    }));
 }
 ```
 
@@ -49,14 +49,14 @@ fn render(cx: *gooey.Cx) void {
 
 Per CLAUDE.md engineering guidelines, all structures have hard limits:
 
-| Constant           | Value | Description                    |
-|--------------------|-------|--------------------------------|
-| MAX_DATA_POINTS    | 4096  | Points per series              |
-| MAX_SERIES         | 16    | Series per chart               |
-| MAX_CATEGORIES     | 256   | Categories (bar chart labels)  |
-| MAX_TICKS          | 32    | Tick marks per axis            |
-| MAX_LEGEND_ITEMS   | 32    | Items in legend                |
-| MAX_LABEL_LENGTH   | 64    | Characters per label           |
+| Constant         | Value | Description                   |
+| ---------------- | ----- | ----------------------------- |
+| MAX_DATA_POINTS  | 4096  | Points per series             |
+| MAX_SERIES       | 16    | Series per chart              |
+| MAX_CATEGORIES   | 256   | Categories (bar chart labels) |
+| MAX_TICKS        | 32    | Tick marks per axis           |
+| MAX_LEGEND_ITEMS | 32    | Items in legend               |
+| MAX_LABEL_LENGTH | 64    | Characters per label          |
 
 ## API Reference
 

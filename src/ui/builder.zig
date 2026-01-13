@@ -104,6 +104,12 @@ pub const onAction = primitives.onAction;
 pub const onActionHandler = primitives.onActionHandler;
 pub const when = primitives.when;
 
+// Container element functions (Phase 1: cx/ui separation)
+// These return element structs for use with cx.render()
+pub const box_element = primitives.box;
+pub const hstack_element = primitives.hstack;
+pub const vstack_element = primitives.vstack;
+
 // Accessibility config
 pub const AccessibleConfig = struct {
     role: a11y.Role,
@@ -2371,7 +2377,10 @@ pub const Builder = struct {
                 .svg => self.renderSvg(child),
                 .image => self.renderImage(child),
                 .empty => {}, // Do nothing
-
+                // Container elements (Phase 1: cx/ui separation)
+                // These have render() methods, so they'll be handled by the component check below
+                // But we handle them explicitly here for clarity and to avoid the component path
+                .box_element, .hstack, .vstack, .scroll => child.render(self),
             }
             return;
         }

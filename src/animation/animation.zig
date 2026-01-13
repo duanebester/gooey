@@ -8,9 +8,9 @@
 //! ```zig
 //! fn render(cx: *Cx) void {
 //!     const anim = cx.animate("fade-in", .{ .duration_ms = 300 });
-//!     cx.box(.{
+//!     cx.render(ui.box(.{
 //!         .background = ui.Color.rgba(0.2, 0.5, 1.0, anim.progress),
-//!     }, .{});
+//!     }, .{}));
 //! }
 //! ```
 

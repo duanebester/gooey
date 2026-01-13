@@ -86,7 +86,7 @@ fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
 
-    cx.scroll("main_scroll", .{
+    cx.render(ui.scroll("main_scroll", .{
         .width = size.width,
         .height = size.height,
         .vertical = true,
@@ -130,7 +130,7 @@ fn render(cx: *Cx) void {
             .size = 14,
             .color = ui.Color.rgb(0.4, 0.8, 0.4),
         }),
-    });
+    }));
 }
 
 // =============================================================================
@@ -141,7 +141,7 @@ const CounterSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 20 },
             .gap = 16,
             .direction = .column,
@@ -154,7 +154,7 @@ const CounterSection = struct {
             }),
 
             // Counter value
-            cx.box(.{
+            ui.box(.{
                 .padding = .{ .all = 16 },
                 .background = ui.Color.rgb(0.1, 0.1, 0.12),
                 .corner_radius = 8,
@@ -170,7 +170,7 @@ const CounterSection = struct {
             }),
 
             // Control buttons
-            cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
                 Button{
                     .label = "−",
                     .size = .large,
@@ -188,7 +188,7 @@ const CounterSection = struct {
                     .on_click_handler = cx.update(AppState, AppState.reset),
                 },
             }),
-        });
+        }));
     }
 };
 
@@ -196,7 +196,7 @@ const FontSizeSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             ui.text("Font Size:", .{
                 .size = 14,
                 .color = ui.Color.rgb(0.6, 0.6, 0.65),
@@ -218,7 +218,7 @@ const FontSizeSection = struct {
                 .size = .small,
                 .on_click_handler = cx.update(AppState, AppState.increaseFontSize),
             },
-        });
+        }));
     }
 };
 
@@ -226,7 +226,7 @@ const TextSamplesSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .gap = 12,
             .direction = .column,
@@ -261,7 +261,7 @@ const TextSamplesSection = struct {
             }),
 
             // Colored text
-            cx.hstack(.{ .gap = 16 }, .{
+            ui.hstack(.{ .gap = 16 }, .{
                 ui.text("Red", .{ .size = 16, .color = ui.Color.rgb(1.0, 0.3, 0.3) }),
                 ui.text("Green", .{ .size = 16, .color = ui.Color.rgb(0.3, 1.0, 0.3) }),
                 ui.text("Blue", .{ .size = 16, .color = ui.Color.rgb(0.3, 0.5, 1.0) }),
@@ -279,13 +279,13 @@ const TextSamplesSection = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.6, 0.6, 0.65),
             }),
-        });
+        }));
     }
 };
 
 const ImageSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .gap = 16,
             .direction = .column,
@@ -298,29 +298,29 @@ const ImageSection = struct {
             }),
 
             // Row of images at different sizes
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 32,
                     },
                     ui.text("32px", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 48,
                     },
                     ui.text("48px", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 64,
                     },
                     ui.text("64px", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 80,
@@ -330,8 +330,8 @@ const ImageSection = struct {
             }),
 
             // Row with corner radius and effects
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 64,
@@ -339,7 +339,7 @@ const ImageSection = struct {
                     },
                     ui.text("rounded", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 64,
@@ -347,7 +347,7 @@ const ImageSection = struct {
                     },
                     ui.text("circle", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 64,
@@ -355,7 +355,7 @@ const ImageSection = struct {
                     },
                     ui.text("grayscale", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 64,
@@ -363,7 +363,7 @@ const ImageSection = struct {
                     },
                     ui.text("tinted", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
-                cx.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
+                ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
                         .size = 64,
@@ -372,13 +372,13 @@ const ImageSection = struct {
                     ui.text("50% opacity", .{ .size = 10, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 }),
             }),
-        });
+        }));
     }
 };
 
 const SvgIconsSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .gap = 16,
             .direction = .column,
@@ -391,7 +391,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of navigation icons
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 Svg{ .path = Icons.menu, .size = 24, .color = ui.Color.rgb(0.9, 0.9, 0.95) },
                 Svg{ .path = Icons.arrow_back, .size = 24, .color = ui.Color.rgb(0.9, 0.9, 0.95) },
                 Svg{ .path = Icons.arrow_forward, .size = 24, .color = ui.Color.rgb(0.9, 0.9, 0.95) },
@@ -400,7 +400,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of action icons with colors
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 Svg{ .path = Icons.add, .size = 24, .color = ui.Color.rgb(0.3, 0.8, 0.3) },
                 Svg{ .path = Icons.remove, .size = 24, .color = ui.Color.rgb(0.8, 0.3, 0.3) },
                 Svg{ .path = Icons.check, .size = 24, .color = ui.Color.rgb(0.3, 0.8, 0.3) },
@@ -410,7 +410,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of status icons
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 Svg{ .path = Icons.star, .size = 24, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.star_outline, .size = 24, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.favorite, .size = 24, .color = ui.Color.rgb(1.0, 0.3, 0.4) },
@@ -420,7 +420,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of media icons
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 Svg{ .path = Icons.play, .size = 24, .color = ui.Color.rgb(0.3, 0.8, 0.5) },
                 Svg{ .path = Icons.pause, .size = 24, .color = ui.Color.rgb(0.8, 0.8, 0.85) },
                 Svg{ .path = Icons.skip_prev, .size = 24, .color = ui.Color.rgb(0.8, 0.8, 0.85) },
@@ -429,7 +429,7 @@ const SvgIconsSection = struct {
             }),
 
             // Different sizes
-            cx.hstack(.{ .gap = 20, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 20, .alignment = .center }, .{
                 Svg{ .path = Icons.star, .size = 16, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.star, .size = 24, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.star, .size = 32, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
@@ -437,12 +437,12 @@ const SvgIconsSection = struct {
             }),
 
             // Stroked icons
-            cx.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
                 ui.text("Stroked:", .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 Svg{ .path = Icons.star_outline, .size = 24, .no_fill = true, .stroke_color = ui.Color.rgb(1.0, 0.8, 0.0), .stroke_width = 1.5 },
                 Svg{ .path = Icons.favorite, .size = 24, .no_fill = true, .stroke_color = ui.Color.rgb(1.0, 0.3, 0.4), .stroke_width = 1.5 },
                 Svg{ .path = Icons.folder, .size = 24, .no_fill = true, .stroke_color = ui.Color.rgb(0.3, 0.6, 1.0), .stroke_width = 1.5 },
             }),
-        });
+        }));
     }
 };

@@ -45,7 +45,7 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = ui.Color.rgb(0.95, 0.95, 0.95),
@@ -56,7 +56,7 @@ fn render(cx: *Cx) void {
         Header{},
         PositionDemo{},
         StyleDemo{},
-    });
+    }));
 }
 
 // =============================================================================

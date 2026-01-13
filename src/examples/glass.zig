@@ -92,7 +92,7 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 24 },
@@ -124,14 +124,14 @@ fn render(cx: *Cx) void {
             .size = 11,
             .color = text_muted,
         }),
-    });
+    }));
 }
 
 const StyleDisplay = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .corner_radius = 12,
             .background = card_bg,
@@ -150,17 +150,17 @@ const StyleDisplay = struct {
                 .size = 14,
                 .color = text_muted,
             }),
-        });
+        }));
     }
 };
 
 const StyleControls = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 8 }, .{
+        cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Cycle Style",
                 .on_click_handler = cx.command(AppState, AppState.cycleStyleCmd),
             },
-        });
+        }));
     }
 };

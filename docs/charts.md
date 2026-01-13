@@ -139,13 +139,13 @@ Charts are rendered via Gooey's canvas system:
 
 ```gooey/docs/charts.md#L124-132
 fn render(cx: *gooey.Cx) void {
-    cx.box(.{ .padding = .{ .all = 20 } }, .{
+    cx.render(ui.box(.{ .padding = .{ .all = 20 } }, .{
         // Bar chart at 400x300 pixels
         ui.canvas(400, 300, paintBarChart),
 
         // Line chart at 500x200 pixels
         ui.canvas(500, 200, paintLineChart),
-    });
+    }));
 }
 ```
 

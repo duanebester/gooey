@@ -71,9 +71,9 @@ Updated documentation to show the actual API pattern (using a free function for 
 //! }
 //!
 //! fn render(cx: *gooey.Cx) void {
-//!     cx.box(.{}, .{
+//!     cx.render(ui.box(.{}, .{
 //!         ui.canvas(400, 300, paintChart),
-//!     });
+//!     }));
 //! }
 ```
 

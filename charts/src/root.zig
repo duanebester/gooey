@@ -30,9 +30,9 @@
 //!         initialized = true;
 //!     }
 //!
-//!     cx.box(.{}, .{
+//!     cx.render(ui.box(.{}, .{
 //!         ui.canvas(400, 300, paintChart),
-//!     });
+//!     }));
 //! }
 //! ```
 //!

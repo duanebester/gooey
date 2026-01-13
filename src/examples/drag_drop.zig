@@ -188,7 +188,7 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 32 },
@@ -212,7 +212,7 @@ fn render(cx: *Cx) void {
 
         // Drag preview overlay (renders on top when dragging)
         DragPreview{},
-    });
+    }));
 }
 
 // =============================================================================
@@ -221,13 +221,13 @@ fn render(cx: *Cx) void {
 
 const ListColumns = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{
+        cx.render(ui.hstack(.{
             .gap = 32,
             .alignment = .stretch,
         }, .{
             ItemList{ .side = .left, .title = "Fruits" },
             ItemList{ .side = .right, .title = "Basket" },
-        });
+        }));
     }
 };
 
@@ -246,7 +246,7 @@ const ItemList = struct {
             cx.command(AppState, AppState.onDropRight);
 
         // List container (drop target)
-        cx.box(.{
+        cx.render(ui.box(.{
             .drop_target = ui.DropTarget.init(Item, drop_handler),
             .background = ui.Color.rgb(0.18, 0.18, 0.2),
             .drag_over_background = ui.Color.rgb(0.25, 0.35, 0.45),
@@ -277,7 +277,7 @@ const ItemList = struct {
 
             // Spacer to push content up
             ui.spacer(),
-        });
+        }));
     }
 };
 
@@ -295,9 +295,9 @@ const ItemsRenderer = struct {
                 s.getRightItem(i);
 
             if (item_ptr) |item| {
-                cx.box(.{}, .{
+                cx.render(ui.box(.{}, .{
                     DraggableCard{ .item = item },
-                });
+                }));
             }
         }
     }
@@ -335,7 +335,7 @@ const DragCardContent = struct {
     item: *Item,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             // Drag handle icon (three lines)
             DragHandle{},
             // Item name
@@ -343,34 +343,34 @@ const DragCardContent = struct {
                 .size = 16,
                 .color = ui.Color.white,
             }),
-        });
+        }));
     }
 };
 
 const DragHandle = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.vstack(.{ .gap = 3 }, .{
+        cx.render(ui.vstack(.{ .gap = 3 }, .{
             HandleLine{},
             HandleLine{},
             HandleLine{},
-        });
+        }));
     }
 };
 
 const HandleLine = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 16,
             .height = 2,
             .background = ui.Color.rgba(1, 1, 1, 0.5),
             .corner_radius = 1,
-        }, .{});
+        }, .{}));
     }
 };
 
 const EmptyState = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .alignment = .{ .main = .center, .cross = .center },
             .padding = .{ .all = 32 },
             .grow = true,
@@ -379,7 +379,7 @@ const EmptyState = struct {
                 .size = 14,
                 .color = ui.Color.rgba(0.4, 0.4, 0.4, 1.0),
             }),
-        });
+        }));
     }
 };
 
@@ -398,7 +398,7 @@ const DragPreview = struct {
         const preview_x = drag.cursor_position.x - 60; // Center horizontally
         const preview_y = drag.cursor_position.y - 20; // Slightly above cursor
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .floating = .{
                 .offset_x = preview_x,
                 .offset_y = preview_y,
@@ -419,7 +419,7 @@ const DragPreview = struct {
                 .size = 16,
                 .color = ui.Color.white,
             }),
-        });
+        }));
     }
 };
 

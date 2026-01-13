@@ -37,11 +37,11 @@ pub const GlyphKey = struct {
     /// Subpixel Y variant (0 to SUBPIXEL_VARIANTS_Y - 1)
     subpixel_y: u8,
 
-    pub inline fn init(face: FontFace, glyph_id: u16, scale: f32, subpixel_x: u8, subpixel_y: u8) GlyphKey {
+    pub inline fn init(face: FontFace, glyph_id: u16, font_size: f32, scale: f32, subpixel_x: u8, subpixel_y: u8) GlyphKey {
         return .{
             .font_ptr = @intFromPtr(face.ptr),
             .glyph_id = glyph_id,
-            .size_fixed = @intFromFloat(face.metrics.point_size * 64.0),
+            .size_fixed = @intFromFloat(font_size * 64.0),
             .scale_fixed = @intFromFloat(@max(1.0, @min(4.0, scale))),
             .subpixel_x = subpixel_x,
             .subpixel_y = subpixel_y,
@@ -361,16 +361,17 @@ pub const GlyphCache = struct {
         self: *Self,
         face: FontFace,
         glyph_id: u16,
+        font_size: f32,
         subpixel_x: u8,
         subpixel_y: u8,
     ) !CachedGlyph {
-        const key = GlyphKey.init(face, glyph_id, self.scale_factor, subpixel_x, subpixel_y);
+        const key = GlyphKey.init(face, glyph_id, font_size, self.scale_factor, subpixel_x, subpixel_y);
 
         if (self.getFromCache(key)) |cached| {
             return cached;
         }
 
-        const glyph = try self.renderGlyphSubpixel(face, glyph_id, subpixel_x, subpixel_y);
+        const glyph = try self.renderGlyphSubpixel(face, glyph_id, font_size, subpixel_x, subpixel_y);
         self.putInCache(key, glyph);
         return glyph;
     }
@@ -379,6 +380,7 @@ pub const GlyphCache = struct {
         self: *Self,
         face: FontFace,
         glyph_id: u16,
+        font_size: f32,
         subpixel_x: u8,
         subpixel_y: u8,
     ) !CachedGlyph {
@@ -394,6 +396,7 @@ pub const GlyphCache = struct {
         // Use the FontFace interface to render with subpixel shift
         const rasterized = try face.renderGlyphSubpixel(
             glyph_id,
+            font_size,
             self.scale_factor,
             subpixel_shift_x,
             subpixel_shift_y,
@@ -449,7 +452,7 @@ pub const GlyphCache = struct {
             return cached;
         }
 
-        const glyph = try self.renderFallbackGlyph(font_ptr, glyph_id, subpixel_x, subpixel_y);
+        const glyph = try self.renderFallbackGlyph(font_ptr, glyph_id, font_size, subpixel_x, subpixel_y);
         self.putInCache(key, glyph);
         return glyph;
     }
@@ -458,9 +461,11 @@ pub const GlyphCache = struct {
         self: *Self,
         font_ptr: *anyopaque,
         glyph_id: u16,
+        font_size: f32,
         subpixel_x: u8,
         subpixel_y: u8,
     ) !CachedGlyph {
+        std.debug.assert(font_size > 0);
         // Fallback fonts are only supported on native platforms
         // On web, the browser handles font fallback automatically
         if (is_wasm) {
@@ -481,6 +486,7 @@ pub const GlyphCache = struct {
             break :blk try FreeTypeFace.renderGlyphFromFont(
                 @ptrCast(@alignCast(font_ptr)),
                 glyph_id,
+                font_size,
                 self.scale_factor,
                 subpixel_shift_x,
                 subpixel_shift_y,
@@ -492,6 +498,7 @@ pub const GlyphCache = struct {
             break :blk try CoreTextFace.renderGlyphFromFont(
                 font_ptr,
                 glyph_id,
+                font_size,
                 self.scale_factor,
                 subpixel_shift_x,
                 subpixel_shift_y,
@@ -558,3 +565,59 @@ pub const GlyphCache = struct {
         };
     }
 };
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "GlyphKey size encoding" {
+    const testing = std.testing;
+
+    // Different sizes should produce different keys
+    const key_16 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0);
+    const key_24 = GlyphKey.initWithFontPtr(0x1234, 65, 24.0, 1.0, 0, 0);
+    const key_32 = GlyphKey.initWithFontPtr(0x1234, 65, 32.0, 1.0, 0, 0);
+
+    // size_fixed should be size * 64 (26.6 fixed point)
+    try testing.expectEqual(@as(u16, 16 * 64), key_16.size_fixed);
+    try testing.expectEqual(@as(u16, 24 * 64), key_24.size_fixed);
+    try testing.expectEqual(@as(u16, 32 * 64), key_32.size_fixed);
+
+    // Keys with different sizes should not be equal
+    try testing.expect(!GlyphKey.eql(key_16, key_24));
+    try testing.expect(!GlyphKey.eql(key_16, key_32));
+    try testing.expect(!GlyphKey.eql(key_24, key_32));
+
+    // Same size should produce equal keys
+    const key_16_dup = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0);
+    try testing.expect(GlyphKey.eql(key_16, key_16_dup));
+}
+
+test "GlyphKey size hash distribution" {
+    const testing = std.testing;
+
+    // Different sizes should produce different hashes
+    const hash_14 = GlyphKey.initWithFontPtr(0x1234, 65, 14.0, 1.0, 0, 0).hash();
+    const hash_16 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0).hash();
+    const hash_18 = GlyphKey.initWithFontPtr(0x1234, 65, 18.0, 1.0, 0, 0).hash();
+
+    try testing.expect(hash_14 != hash_16);
+    try testing.expect(hash_16 != hash_18);
+    try testing.expect(hash_14 != hash_18);
+}
+
+test "GlyphKey subpixel variants" {
+    const testing = std.testing;
+
+    // Different subpixel positions should produce different keys
+    const key_sub0 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0);
+    const key_sub1 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 1, 0);
+    const key_sub2 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 2, 0);
+
+    try testing.expect(!GlyphKey.eql(key_sub0, key_sub1));
+    try testing.expect(!GlyphKey.eql(key_sub1, key_sub2));
+
+    // Different hashes
+    try testing.expect(key_sub0.hash() != key_sub1.hash());
+    try testing.expect(key_sub1.hash() != key_sub2.hash());
+}

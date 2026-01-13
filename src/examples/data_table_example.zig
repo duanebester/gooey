@@ -399,7 +399,7 @@ const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const theme = cx.builder().theme();
 
-        cx.hstack(.{ .gap = 8 }, .{
+        cx.render(ui.hstack(.{ .gap = 8 }, .{
             ui.text("DataTable Demo", .{
                 .size = 18,
                 .weight = .bold,
@@ -410,7 +410,7 @@ const Header = struct {
                 .size = 12,
                 .color = theme.muted,
             }),
-        });
+        }));
     }
 };
 
@@ -447,7 +447,7 @@ const StatsBar = struct {
         else
             "Sort: none";
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
             .background = theme.surface,
@@ -458,7 +458,7 @@ const StatsBar = struct {
             ui.text(rows_text, .{ .size = 12, .color = theme.muted }),
             ui.text(cells_text, .{ .size = 12, .color = theme.muted }),
             ui.text(sort_text, .{ .size = 12, .color = if (s.sort_col != null) theme.primary else theme.muted }),
-        });
+        }));
     }
 };
 
@@ -569,7 +569,7 @@ const DataTable = struct {
 
 const Controls = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 8 }, .{
+        cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Top",
                 .on_click_handler = cx.update(State, State.scrollToTop),
@@ -595,7 +595,7 @@ const Controls = struct {
                 .label = "Clear",
                 .on_click_handler = cx.update(State, State.clearSelection),
             },
-        });
+        }));
     }
 };
 
@@ -607,7 +607,7 @@ fn render(cx: *Cx) void {
     const size = cx.windowSize();
     const theme = cx.builder().theme();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = theme.bg,
@@ -619,7 +619,7 @@ fn render(cx: *Cx) void {
         StatsBar{},
         DataTable{},
         Controls{},
-    });
+    }));
 }
 
 // =============================================================================

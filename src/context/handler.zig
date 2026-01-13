@@ -18,9 +18,9 @@
 //!
 //! fn render(cx: *Cx) void {
 //!     const s = cx.state(AppState);
-//!     cx.box(.{}, .{
+//!     cx.render(ui.box(.{}, .{
 //!         Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
-//!     });
+//!     }));
 //! }
 //! ```
 

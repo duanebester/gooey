@@ -89,7 +89,7 @@ fn render(cx: *Cx) void {
         s.debug_logged = true;
     }
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 20 },
@@ -110,7 +110,7 @@ fn render(cx: *Cx) void {
         SampleText{},
 
         // Button to re-log debug
-        cx.box(.{ .gap = 12 }, .{
+        ui.box(.{ .gap = 12 }, .{
             Button{
                 .label = "Log Debug Info to Console",
                 .variant = .primary,
@@ -120,7 +120,7 @@ fn render(cx: *Cx) void {
 
         // Instructions
         Instructions{},
-    });
+    }));
 }
 
 // =============================================================================
@@ -129,7 +129,7 @@ fn render(cx: *Cx) void {
 
 const WordsDisplay = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .gap = 16,
             .direction = .row,
@@ -137,25 +137,38 @@ const WordsDisplay = struct {
             .corner_radius = 8,
         }, .{
             // Display each test word
-            inline for (TEST_WORDS) |word| {
-                cx.box(.{
-                    .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
-                    .background = ui.Color.rgb(0.2, 0.2, 0.25),
-                    .corner_radius = 4,
-                }, .{
-                    ui.text(word, .{
-                        .color = ui.Color.rgb(0.95, 0.95, 1.0),
-                        .size = 18,
-                    }),
-                });
-            },
-        });
+            WordBox{ .word = "Tell" },
+            WordBox{ .word = "Your" },
+            WordBox{ .word = "Hello" },
+            WordBox{ .word = "Well" },
+            WordBox{ .word = "fill" },
+            WordBox{ .word = "all" },
+            WordBox{ .word = "ell" },
+            WordBox{ .word = "ll" },
+        }));
+    }
+};
+
+const WordBox = struct {
+    word: []const u8,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
+            .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
+            .background = ui.Color.rgb(0.2, 0.2, 0.25),
+            .corner_radius = 4,
+        }, .{
+            ui.text(self.word, .{
+                .color = ui.Color.rgb(0.95, 0.95, 1.0),
+                .size = 18,
+            }),
+        }));
     }
 };
 
 const SampleText = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 24 },
             .gap = 16,
             .direction = .column,
@@ -179,13 +192,13 @@ const SampleText = struct {
                 .color = ui.Color.rgb(0.6, 0.6, 0.65),
                 .size = 14,
             }),
-        });
+        }));
     }
 };
 
 const Instructions = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .gap = 4,
             .direction = .column,
         }, .{
@@ -209,7 +222,7 @@ const Instructions = struct {
                 .color = ui.Color.rgb(0.5, 0.5, 0.55),
                 .size = 12,
             }),
-        });
+        }));
     }
 };
 

@@ -303,7 +303,7 @@ const TimerDisplay = struct {
         var time_buf: [8]u8 = undefined;
         const time_str = std.fmt.bufPrint(&time_buf, "{d:0>2}:{d:0>2}", .{ minutes, seconds }) catch "00:00";
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 32 },
             .background = ui.Color.rgba(1, 1, 1, 0.9),
             .corner_radius = 24,
@@ -322,16 +322,16 @@ const TimerDisplay = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.6, 0.6, 0.6),
             }),
-        });
+        }));
     }
 };
 
 const TimerControls = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             ControlButtons{},
             ResetButton{},
-        });
+        }));
     }
 };
 
@@ -340,9 +340,9 @@ const ResetButton = struct {
         const s = cx.stateConst(AppState);
 
         if (s.phase != .idle) {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.reset) },
-            });
+            }));
         }
     }
 };
@@ -353,29 +353,29 @@ const ControlButtons = struct {
 
         switch (s.phase) {
             .idle => {
-                cx.box(.{}, .{
+                cx.render(ui.box(.{}, .{
                     Button{ .label = "Start Focus", .on_click_handler = cx.update(AppState, AppState.startFocus) },
-                });
+                }));
             },
             .focus, .short_break, .long_break => {
                 if (s.time_remaining == 0) {
                     if (s.phase == .focus) {
-                        cx.box(.{}, .{
+                        cx.render(ui.box(.{}, .{
                             Button{ .label = "Take Break", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.startBreak) },
-                        });
+                        }));
                     } else {
-                        cx.box(.{}, .{
+                        cx.render(ui.box(.{}, .{
                             Button{ .label = "Start Focus", .on_click_handler = cx.update(AppState, AppState.startFocus) },
-                        });
+                        }));
                     }
                 } else if (s.is_running) {
-                    cx.box(.{}, .{
+                    cx.render(ui.box(.{}, .{
                         Button{ .label = "Pause", .variant = .danger, .on_click_handler = cx.update(AppState, AppState.pause) },
-                    });
+                    }));
                 } else {
-                    cx.box(.{}, .{
+                    cx.render(ui.box(.{}, .{
                         Button{ .label = "Resume", .on_click_handler = cx.update(AppState, AppState.resumeTimer) },
-                    });
+                    }));
                 }
             },
         }
@@ -386,7 +386,7 @@ const TaskInput = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             TextInput{
                 .id = "task-input",
                 .placeholder = "Add a task...",
@@ -401,7 +401,7 @@ const TaskInput = struct {
                 .corner_radius = 8,
             },
             Button{ .label = "Add", .on_click_handler = cx.command(AppState, AppState.addTask) },
-        });
+        }));
     }
 };
 
@@ -421,7 +421,7 @@ const TaskItem = struct {
         else
             ui.Color.rgb(0.2, 0.2, 0.2);
 
-        cx.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             Checkbox{
                 .id = checkbox_id,
                 .checked = data.completed,
@@ -433,13 +433,13 @@ const TaskItem = struct {
                 .color = text_color,
                 .strikethrough = data.completed,
             }),
-        });
+        }));
     }
 };
 
 const TaskList = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .all = 16 },
             .background = ui.Color.rgba(1, 1, 1, 0.8),
             .corner_radius = 12,
@@ -448,13 +448,13 @@ const TaskList = struct {
             .min_height = 150,
             .min_width = 320,
         }, .{
-            cx.hstack(.{ .gap = 8, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 8, .alignment = .center }, .{
                 ui.text("Tasks", .{ .size = 16, .color = ui.Color.rgb(0.3, 0.3, 0.3) }),
                 ui.spacer(),
                 ClearDoneButton{},
             }),
             TaskItems{},
-        });
+        }));
     }
 };
 
@@ -464,9 +464,9 @@ const ClearDoneButton = struct {
         const g = cx.gooey();
 
         if (s.completedCount(g) > 0) {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 Button{ .label = "Clear done", .size = .small, .variant = .secondary, .on_click_handler = cx.command(AppState, AppState.clearCompleted) },
-            });
+            }));
         }
     }
 };
@@ -476,15 +476,15 @@ const TaskItems = struct {
         const s = cx.stateConst(AppState);
 
         for (s.tasksSlice(), 0..) |entity, index| {
-            cx.box(.{ .padding = .{ .symmetric = .{ .x = 0, .y = 4 } } }, .{
+            cx.render(ui.box(.{ .padding = .{ .symmetric = .{ .x = 0, .y = 4 } } }, .{
                 TaskItem{ .task = entity, .index = index },
-            });
+            }));
         }
 
         if (s.task_count == 0) {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 ui.text("No tasks yet", .{ .size = 14, .color = ui.Color.rgb(0.6, 0.6, 0.6) }),
-            });
+            }));
         }
     }
 };
@@ -520,7 +520,7 @@ fn render(cx: *Cx) void {
 
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = ui.Color.rgb(0.12, 0.12, 0.15),
@@ -538,7 +538,7 @@ fn render(cx: *Cx) void {
         TimerControls{},
         TaskInput{},
         TaskList{},
-    });
+    }));
 }
 
 fn getTimestamp() i64 {

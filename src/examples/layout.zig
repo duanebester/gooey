@@ -58,7 +58,7 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
 
-    cx.box(.{
+    cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .background = ui.Color.rgb(0.95, 0.95, 0.95),
@@ -68,7 +68,7 @@ fn render(cx: *Cx) void {
     }, .{
         Header{},
         ContentArea{},
-    });
+    }));
 }
 
 // =============================================================================
@@ -77,7 +77,7 @@ fn render(cx: *Cx) void {
 
 const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 16 },
             .background = ui.Color.white,
@@ -87,7 +87,7 @@ const Header = struct {
         }, .{
             ui.text("Floating Dropdown Test", .{ .size = 24 }),
             DropdownTrigger{},
-        });
+        }));
     }
 };
 
@@ -96,13 +96,13 @@ const DropdownTrigger = struct {
         const s = cx.state(AppState);
 
         // The button acts as the anchor for the floating menu
-        cx.box(.{}, .{
+        cx.render(ui.box(.{}, .{
             Button{
                 .label = if (s.show_dropdown) "Close ▲" else "Menu ▼",
                 .on_click_handler = cx.update(AppState, AppState.toggleDropdown),
             },
             DropdownMenu{},
-        });
+        }));
     }
 };
 
@@ -111,7 +111,7 @@ const DropdownMenu = struct {
         const s = cx.state(AppState);
         if (!s.show_dropdown) return;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = 160,
             .padding = .{ .all = 8 },
             .background = ui.Color.white,
@@ -127,7 +127,7 @@ const DropdownMenu = struct {
             MenuItem{ .label = "Help" },
             MenuDivider{},
             MenuItem{ .label = "Logout" },
-        });
+        }));
     }
 };
 

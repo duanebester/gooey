@@ -54,18 +54,36 @@ pub fn renderText(
     baseline_y: f32,
     scale_factor: f32,
     color: Hsla,
+    font_size: f32,
     options: *RenderTextOptions,
 ) !f32 {
+    // Assertions: validate font_size and scale_factor
+    std.debug.assert(font_size > 0);
+    std.debug.assert(font_size < 1000); // Reasonable upper bound
+    std.debug.assert(scale_factor > 0);
+
     if (text.len == 0) return 0;
+
+    // Calculate size scale for shaping (base metrics → requested size)
+    // Shaped glyphs have advances/offsets at the base font size, scale them
+    const size_scale = if (text_system.getMetrics()) |metrics|
+        font_size / metrics.point_size
+    else
+        1.0;
 
     var shaped = try text_system.shapeText(text, options.stats);
     defer shaped.deinit(text_system.allocator);
 
     var pen_x = x;
     for (shaped.glyphs) |glyph| {
+        // Scale offsets and advances from base size to requested size
+        const scaled_x_offset = glyph.x_offset * size_scale;
+        const scaled_y_offset = glyph.y_offset * size_scale;
+        const scaled_advance = glyph.x_advance * size_scale;
+
         // Convert to device pixels
-        const device_x = (pen_x + glyph.x_offset) * scale_factor;
-        const device_y = (baseline_y + glyph.y_offset) * scale_factor;
+        const device_x = (pen_x + scaled_x_offset) * scale_factor;
+        const device_y = (baseline_y + scaled_y_offset) * scale_factor;
 
         // Extract fractional part for subpixel variant selection
         const frac_x = device_x - @floor(device_x);
@@ -73,9 +91,9 @@ pub fn renderText(
 
         // Get cached glyph - use fallback font if specified
         const cached = if (glyph.font_ref) |fallback_font|
-            try text_system.getGlyphFallback(fallback_font, glyph.glyph_id, subpixel_x, 0)
+            try text_system.getGlyphFallback(fallback_font, glyph.glyph_id, font_size, subpixel_x, 0)
         else
-            try text_system.getGlyphSubpixel(glyph.glyph_id, subpixel_x, 0);
+            try text_system.getGlyphSubpixel(glyph.glyph_id, font_size, subpixel_x, 0);
 
         if (cached.region.width > 0 and cached.region.height > 0) {
             const atlas = text_system.getAtlas();
@@ -100,14 +118,17 @@ pub fn renderText(
             }
         }
 
-        pen_x += glyph.x_advance;
+        pen_x += scaled_advance;
     }
+
+    // Scale total width for decorations and return value
+    const scaled_width = shaped.width * size_scale;
 
     // Render decorations if any
     if (options.decoration.hasAny()) {
         if (text_system.getMetrics()) |metrics| {
             const decoration_color = options.decoration_color orelse color;
-            const text_width = shaped.width;
+            const text_width = scaled_width;
 
             // Underline
             if (options.decoration.underline) {
@@ -155,5 +176,27 @@ pub fn renderText(
         }
     }
 
-    return shaped.width;
+    return scaled_width;
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "size_scale calculation" {
+    const testing = std.testing;
+
+    // Test the size_scale formula used in renderText
+    const base_size: f32 = 16.0;
+
+    // size_scale = font_size / base_size
+    const scale_for_24 = 24.0 / base_size;
+    const scale_for_32 = 32.0 / base_size;
+    const scale_for_12 = 12.0 / base_size;
+    const scale_for_16 = 16.0 / base_size; // Same as base = 1.0
+
+    try testing.expectApproxEqAbs(@as(f32, 1.5), scale_for_24, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 2.0), scale_for_32, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0.75), scale_for_12, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), scale_for_16, 0.001);
 }

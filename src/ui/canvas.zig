@@ -1191,6 +1191,7 @@ pub const DrawContext = struct {
                 baseline_y,
                 self.scale,
                 Hsla.fromColor(color),
+                font_size,
                 &render_opts,
             ) catch {
                 // Fallback on render error
@@ -1273,6 +1274,7 @@ pub const DrawContext = struct {
                 baseline_y,
                 self.scale,
                 Hsla.fromColor(color),
+                font_size,
                 &render_opts,
             ) catch {
                 // Fallback on render error
