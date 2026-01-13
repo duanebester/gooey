@@ -738,7 +738,7 @@ zig build wasm-images
 zig build wasm-file-dialog
 
 # Run with a local server
-python3 -m http.server 8080 -d zig-out/web            # showcase
+python3 -m http.server 8080 -d zig-out/web
 python3 -m http.server 8080 -d zig-out/web/counter
 python3 -m http.server 8080 -d zig-out/web/dynamic
 python3 -m http.server 8080 -d zig-out/web/pomodoro
@@ -903,15 +903,15 @@ zig fmt --check src/ charts/
 
 The project uses GitHub Actions for CI. Every push and pull request runs:
 
-| Job | Platform | Description |
-|-----|----------|-------------|
-| `test-linux` | Ubuntu | Unit tests on Linux |
-| `test-macos` | macOS | Unit tests on macOS |
-| `build-linux` | Ubuntu | Build all optimization levels (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall) |
-| `build-macos` | macOS | Build all optimization levels |
-| `build-wasm` | Ubuntu | WebAssembly targets |
-| `valgrind` | Ubuntu | Memory leak detection via valgrind |
-| `zig-fmt` | Ubuntu | Code formatting check |
+| Job           | Platform | Description                                                                   |
+| ------------- | -------- | ----------------------------------------------------------------------------- |
+| `test-linux`  | Ubuntu   | Unit tests on Linux                                                           |
+| `test-macos`  | macOS    | Unit tests on macOS                                                           |
+| `build-linux` | Ubuntu   | Build all optimization levels (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall) |
+| `build-macos` | macOS    | Build all optimization levels                                                 |
+| `build-wasm`  | Ubuntu   | WebAssembly targets                                                           |
+| `valgrind`    | Ubuntu   | Memory leak detection via valgrind                                            |
+| `zig-fmt`     | Ubuntu   | Code formatting check                                                         |
 
 ### Memory Leak Detection
 

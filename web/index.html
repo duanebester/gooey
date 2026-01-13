@@ -1238,10 +1238,12 @@
         ) => {
           const font = getFont(fontPtr, fontLen, size);
           textCtx.font = font;
-          const metrics = textCtx.measureText("Hg");
+          // Measure characters with ascenders (bdfhkl) and descenders (gyp) for accurate metrics
+          // This gives us ascender height (not just cap height from "Hg") matching CoreText behavior
+          const metrics = textCtx.measureText("bdfhklgyp");
           const ascent = metrics.actualBoundingBoxAscent;
           const descent = metrics.actualBoundingBoxDescent;
-          const lineHeight = ascent + descent + 4; // Add some padding
+          const lineHeight = ascent + descent;
 
           const mem = new DataView(wasmInstance.exports.memory.buffer);
           mem.setFloat32(outAscent, ascent, true);
