@@ -14,6 +14,7 @@ pub const Tab = @import("tabs.zig").Tab;
 pub const TabBar = @import("tabs.zig").TabBar;
 pub const Svg = @import("svg.zig").Svg;
 pub const Icons = @import("svg.zig").Icons;
+pub const Lucide = @import("svg.zig").Lucide;
 pub const Select = @import("select.zig").Select;
 pub const Image = @import("image.zig").Image;
 pub const AspectRatio = @import("image.zig").AspectRatio;

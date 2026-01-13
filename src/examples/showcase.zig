@@ -419,9 +419,7 @@ const ThemeToggle = struct {
             Svg{
                 .path = if (s.is_dark) Icons.visibility else Icons.visibility_off,
                 .size = 20,
-                .color = null,
-                .stroke_color = t.muted,
-                .stroke_width = 1,
+                .color = t.muted,
             },
         }));
     }
@@ -1619,7 +1617,7 @@ const IconsSection = struct {
 const BasicIconsCard = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const t = cx.theme();
-        const card = Card{ .title = "Basic Icons", .description = "Built-in icon set with stroke rendering" };
+        const card = Card{ .title = "Basic Icons", .description = "Built-in Material Design icon set" };
 
         card.render(cx, .{
             ui.hstack(.{ .gap = 20, .alignment = .center }, .{
@@ -1651,15 +1649,15 @@ const IconWithLabel = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const t = cx.theme();
-        const icon_color = self.color orelse t.text;
+        // Use subtext for default icon color - less harsh than full text color
+        const icon_color = self.color orelse t.subtext;
 
         cx.render(ui.box(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
+            // Material Design icons are filled shapes - use fill, not stroke
             Svg{
                 .path = self.icon,
                 .size = 24,
-                .color = null,
-                .stroke_color = icon_color,
-                .stroke_width = 2,
+                .color = icon_color,
             },
             ui.text(self.label, .{ .size = 11, .color = t.muted }),
         }));
@@ -1674,28 +1672,29 @@ const StyledIconsCard = struct {
         card.render(cx, .{
             ui.hstack(.{ .gap = 24, .alignment = .end }, .{
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
-                    Svg{ .path = Icons.star_outline, .size = 16, .color = null, .stroke_color = t.primary, .stroke_width = 1.5 },
+                    // Use no_fill = true for stroke-only rendering
+                    Svg{ .path = Icons.star_outline, .size = 16, .no_fill = true, .stroke_color = t.subtext, .stroke_width = 1.5 },
                     ui.text("16px", .{ .size = 11, .color = t.muted }),
                 }),
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
-                    Svg{ .path = Icons.star_outline, .size = 24, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
+                    Svg{ .path = Icons.star_outline, .size = 24, .no_fill = true, .stroke_color = t.subtext, .stroke_width = 2 },
                     ui.text("24px", .{ .size = 11, .color = t.muted }),
                 }),
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
-                    Svg{ .path = Icons.star_outline, .size = 32, .color = null, .stroke_color = t.primary, .stroke_width = 2 },
+                    Svg{ .path = Icons.star_outline, .size = 32, .no_fill = true, .stroke_color = t.subtext, .stroke_width = 2 },
                     ui.text("32px", .{ .size = 11, .color = t.muted }),
                 }),
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
-                    Svg{ .path = Icons.star_outline, .size = 48, .color = null, .stroke_color = t.primary, .stroke_width = 2.5 },
+                    Svg{ .path = Icons.star_outline, .size = 48, .no_fill = true, .stroke_color = t.subtext, .stroke_width = 2.5 },
                     ui.text("48px", .{ .size = 11, .color = t.muted }),
                 }),
             }),
             ui.hstack(.{ .gap = 24, .alignment = .center }, .{
-                // Filled star
+                // Filled star (use fill for solid icons)
                 Svg{ .path = Icons.star, .size = 32, .color = t.warning },
-                // Stroke only
-                Svg{ .path = Icons.star_outline, .size = 32, .color = null, .stroke_color = t.warning, .stroke_width = 2 },
-                // Fill + stroke
+                // Stroke only (use no_fill + stroke for outline icons)
+                Svg{ .path = Icons.star_outline, .size = 32, .no_fill = true, .stroke_color = t.warning, .stroke_width = 2 },
+                // Fill + stroke combo
                 Svg{ .path = Icons.favorite, .size = 32, .color = t.danger.withAlpha(0.3), .stroke_color = t.danger, .stroke_width = 2 },
             }),
         });

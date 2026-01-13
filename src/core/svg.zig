@@ -331,9 +331,14 @@ pub const PathParser = struct {
     }
 
     pub fn parse(self: *PathParser, path: *SvgPath, src: []const u8) !void {
+        path.clear();
+        try self.appendPath(path, src);
+    }
+
+    /// Parse path data and append to existing path (doesn't clear)
+    pub fn appendPath(self: *PathParser, path: *SvgPath, src: []const u8) !void {
         self.src = src;
         self.pos = 0;
-        path.clear();
 
         while (!self.atEnd()) {
             self.skipDelimiters();
@@ -542,6 +547,506 @@ pub const PathParser = struct {
 
     fn advance(self: *PathParser) void {
         self.pos += 1;
+    }
+};
+
+// ============================================================================
+// SVG Element Parser - Converts shape elements to path commands
+// ============================================================================
+
+/// Parses SVG elements (circle, rect, line, polyline, polygon, ellipse, path)
+/// and converts them to path commands. Enables support for Lucide icons and
+/// other SVGs that use shape primitives instead of just <path> elements.
+pub const SvgElementParser = struct {
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    pos: usize,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .src = "",
+            .pos = 0,
+        };
+    }
+
+    /// Parse SVG content (elements or raw path data) into an SvgPath.
+    /// Accepts:
+    /// - Raw path data: "M10 20 L30 40 Z"
+    /// - Single element: "<circle cx='12' cy='12' r='10'/>"
+    /// - Multiple elements: "<path d='M5 12h14'/><circle cx='12' cy='12' r='3'/>"
+    pub fn parse(self: *Self, path: *SvgPath, src: []const u8) !void {
+        self.src = src;
+        self.pos = 0;
+        path.clear();
+
+        self.skipWhitespace();
+        if (self.atEnd()) return;
+
+        // Check if this looks like SVG elements (starts with <) or raw path data
+        if (self.peek() == '<') {
+            // Parse SVG elements
+            while (!self.atEnd()) {
+                self.skipWhitespace();
+                if (self.atEnd()) break;
+
+                if (self.peek() == '<') {
+                    try self.parseElement(path);
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // Raw path data - delegate to PathParser
+            var path_parser = PathParser.init(self.allocator);
+            try path_parser.parse(path, src);
+        }
+    }
+
+    fn parseElement(self: *Self, path: *SvgPath) !void {
+        if (!self.consume('<')) return error.InvalidElement;
+
+        self.skipWhitespace();
+
+        // Get element name
+        const name_start = self.pos;
+        while (!self.atEnd() and !std.ascii.isWhitespace(self.peek()) and self.peek() != '>' and self.peek() != '/') {
+            self.advance();
+        }
+        const element_name = self.src[name_start..self.pos];
+
+        // Parse based on element type
+        if (std.mem.eql(u8, element_name, "circle")) {
+            try self.parseCircle(path);
+        } else if (std.mem.eql(u8, element_name, "ellipse")) {
+            try self.parseEllipse(path);
+        } else if (std.mem.eql(u8, element_name, "rect")) {
+            try self.parseRect(path);
+        } else if (std.mem.eql(u8, element_name, "line")) {
+            try self.parseLine(path);
+        } else if (std.mem.eql(u8, element_name, "polyline")) {
+            try self.parsePolyline(path, false);
+        } else if (std.mem.eql(u8, element_name, "polygon")) {
+            try self.parsePolyline(path, true);
+        } else if (std.mem.eql(u8, element_name, "path")) {
+            try self.parsePath(path);
+        } else {
+            // Unknown element - skip to end
+            self.skipToElementEnd();
+        }
+    }
+
+    fn parseCircle(self: *Self, path: *SvgPath) !void {
+        var cx: f32 = 0;
+        var cy: f32 = 0;
+        var r: f32 = 0;
+
+        // Parse attributes
+        while (!self.atEnd()) {
+            self.skipWhitespace();
+            const c = self.peek();
+            if (c == '/' or c == '>') break;
+
+            const attr = self.parseAttribute() orelse continue;
+            if (std.mem.eql(u8, attr.name, "cx")) {
+                cx = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "cy")) {
+                cy = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "r")) {
+                r = self.parseAttrFloat(attr.value);
+            }
+        }
+        self.skipToElementEnd();
+
+        if (r <= 0) return; // Invalid circle
+
+        // Circle as two arcs: M(cx+r, cy) A(r,r,0,1,1,cx-r,cy) A(r,r,0,1,1,cx+r,cy) Z
+        try path.commands.append(self.allocator, .move_to);
+        try path.data.appendSlice(self.allocator, &.{ cx + r, cy });
+
+        // First arc (top half)
+        try path.commands.append(self.allocator, .arc_to);
+        try path.data.appendSlice(self.allocator, &.{ r, r, 0, 1, 1, cx - r, cy });
+
+        // Second arc (bottom half)
+        try path.commands.append(self.allocator, .arc_to);
+        try path.data.appendSlice(self.allocator, &.{ r, r, 0, 1, 1, cx + r, cy });
+
+        try path.commands.append(self.allocator, .close_path);
+    }
+
+    fn parseEllipse(self: *Self, path: *SvgPath) !void {
+        var cx: f32 = 0;
+        var cy: f32 = 0;
+        var rx: f32 = 0;
+        var ry: f32 = 0;
+
+        while (!self.atEnd()) {
+            self.skipWhitespace();
+            const c = self.peek();
+            if (c == '/' or c == '>') break;
+
+            const attr = self.parseAttribute() orelse continue;
+            if (std.mem.eql(u8, attr.name, "cx")) {
+                cx = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "cy")) {
+                cy = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "rx")) {
+                rx = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "ry")) {
+                ry = self.parseAttrFloat(attr.value);
+            }
+        }
+        self.skipToElementEnd();
+
+        if (rx <= 0 or ry <= 0) return;
+
+        // Ellipse as two arcs
+        try path.commands.append(self.allocator, .move_to);
+        try path.data.appendSlice(self.allocator, &.{ cx + rx, cy });
+
+        try path.commands.append(self.allocator, .arc_to);
+        try path.data.appendSlice(self.allocator, &.{ rx, ry, 0, 1, 1, cx - rx, cy });
+
+        try path.commands.append(self.allocator, .arc_to);
+        try path.data.appendSlice(self.allocator, &.{ rx, ry, 0, 1, 1, cx + rx, cy });
+
+        try path.commands.append(self.allocator, .close_path);
+    }
+
+    fn parseRect(self: *Self, path: *SvgPath) !void {
+        var x: f32 = 0;
+        var y: f32 = 0;
+        var width: f32 = 0;
+        var height: f32 = 0;
+        var rx: f32 = 0;
+        var ry: f32 = 0;
+
+        while (!self.atEnd()) {
+            self.skipWhitespace();
+            const c = self.peek();
+            if (c == '/' or c == '>') break;
+
+            const attr = self.parseAttribute() orelse continue;
+            if (std.mem.eql(u8, attr.name, "x")) {
+                x = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "y")) {
+                y = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "width")) {
+                width = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "height")) {
+                height = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "rx")) {
+                rx = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "ry")) {
+                ry = self.parseAttrFloat(attr.value);
+            }
+        }
+        self.skipToElementEnd();
+
+        if (width <= 0 or height <= 0) return;
+
+        // If only one radius specified, use it for both
+        if (rx > 0 and ry == 0) ry = rx;
+        if (ry > 0 and rx == 0) rx = ry;
+
+        // Clamp radii to half dimensions
+        rx = @min(rx, width / 2);
+        ry = @min(ry, height / 2);
+
+        if (rx > 0 and ry > 0) {
+            // Rounded rectangle
+            try path.commands.append(self.allocator, .move_to);
+            try path.data.appendSlice(self.allocator, &.{ x + rx, y });
+
+            // Top edge
+            try path.commands.append(self.allocator, .line_to);
+            try path.data.appendSlice(self.allocator, &.{ x + width - rx, y });
+
+            // Top-right corner
+            try path.commands.append(self.allocator, .arc_to);
+            try path.data.appendSlice(self.allocator, &.{ rx, ry, 0, 0, 1, x + width, y + ry });
+
+            // Right edge
+            try path.commands.append(self.allocator, .line_to);
+            try path.data.appendSlice(self.allocator, &.{ x + width, y + height - ry });
+
+            // Bottom-right corner
+            try path.commands.append(self.allocator, .arc_to);
+            try path.data.appendSlice(self.allocator, &.{ rx, ry, 0, 0, 1, x + width - rx, y + height });
+
+            // Bottom edge
+            try path.commands.append(self.allocator, .line_to);
+            try path.data.appendSlice(self.allocator, &.{ x + rx, y + height });
+
+            // Bottom-left corner
+            try path.commands.append(self.allocator, .arc_to);
+            try path.data.appendSlice(self.allocator, &.{ rx, ry, 0, 0, 1, x, y + height - ry });
+
+            // Left edge
+            try path.commands.append(self.allocator, .line_to);
+            try path.data.appendSlice(self.allocator, &.{ x, y + ry });
+
+            // Top-left corner
+            try path.commands.append(self.allocator, .arc_to);
+            try path.data.appendSlice(self.allocator, &.{ rx, ry, 0, 0, 1, x + rx, y });
+
+            try path.commands.append(self.allocator, .close_path);
+        } else {
+            // Simple rectangle
+            try path.commands.append(self.allocator, .move_to);
+            try path.data.appendSlice(self.allocator, &.{ x, y });
+
+            try path.commands.append(self.allocator, .line_to);
+            try path.data.appendSlice(self.allocator, &.{ x + width, y });
+
+            try path.commands.append(self.allocator, .line_to);
+            try path.data.appendSlice(self.allocator, &.{ x + width, y + height });
+
+            try path.commands.append(self.allocator, .line_to);
+            try path.data.appendSlice(self.allocator, &.{ x, y + height });
+
+            try path.commands.append(self.allocator, .close_path);
+        }
+    }
+
+    fn parseLine(self: *Self, path: *SvgPath) !void {
+        var x1: f32 = 0;
+        var y1: f32 = 0;
+        var x2: f32 = 0;
+        var y2: f32 = 0;
+
+        while (!self.atEnd()) {
+            self.skipWhitespace();
+            const c = self.peek();
+            if (c == '/' or c == '>') break;
+
+            const attr = self.parseAttribute() orelse continue;
+            if (std.mem.eql(u8, attr.name, "x1")) {
+                x1 = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "y1")) {
+                y1 = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "x2")) {
+                x2 = self.parseAttrFloat(attr.value);
+            } else if (std.mem.eql(u8, attr.name, "y2")) {
+                y2 = self.parseAttrFloat(attr.value);
+            }
+        }
+        self.skipToElementEnd();
+
+        // Line: M(x1,y1) L(x2,y2)
+        try path.commands.append(self.allocator, .move_to);
+        try path.data.appendSlice(self.allocator, &.{ x1, y1 });
+
+        try path.commands.append(self.allocator, .line_to);
+        try path.data.appendSlice(self.allocator, &.{ x2, y2 });
+    }
+
+    fn parsePolyline(self: *Self, path: *SvgPath, close: bool) !void {
+        var points_str: []const u8 = "";
+
+        while (!self.atEnd()) {
+            self.skipWhitespace();
+            const c = self.peek();
+            if (c == '/' or c == '>') break;
+
+            const attr = self.parseAttribute() orelse continue;
+            if (std.mem.eql(u8, attr.name, "points")) {
+                points_str = attr.value;
+            }
+        }
+        self.skipToElementEnd();
+
+        if (points_str.len == 0) return;
+
+        // Parse points: "x1,y1 x2,y2 x3,y3 ..."
+        var points_parser = PointsParser.init(points_str);
+        var first = true;
+
+        while (points_parser.nextPoint()) |pt| {
+            if (first) {
+                try path.commands.append(self.allocator, .move_to);
+                first = false;
+            } else {
+                try path.commands.append(self.allocator, .line_to);
+            }
+            try path.data.appendSlice(self.allocator, &.{ pt.x, pt.y });
+        }
+
+        if (close and !first) {
+            try path.commands.append(self.allocator, .close_path);
+        }
+    }
+
+    fn parsePath(self: *Self, path: *SvgPath) !void {
+        var d_attr: []const u8 = "";
+
+        while (!self.atEnd()) {
+            self.skipWhitespace();
+            const c = self.peek();
+            if (c == '/' or c == '>') break;
+
+            const attr = self.parseAttribute() orelse continue;
+            if (std.mem.eql(u8, attr.name, "d")) {
+                d_attr = attr.value;
+            }
+        }
+        self.skipToElementEnd();
+
+        if (d_attr.len == 0) return;
+
+        // Record command count before parsing
+        const cmd_count_before = path.commands.items.len;
+
+        // Parse the path data using existing PathParser (append, don't clear!)
+        var path_parser = PathParser.init(self.allocator);
+        path_parser.appendPath(path, d_attr) catch {};
+
+        // Fix: Each <path> element starts a new subpath, so the first command
+        // should always be absolute. If it's a relative moveTo, convert to absolute.
+        // In SVG, a standalone <path d="m5 12..."> treats 'm' as relative to origin (0,0).
+        if (path.commands.items.len > cmd_count_before) {
+            if (path.commands.items[cmd_count_before] == .move_to_rel) {
+                path.commands.items[cmd_count_before] = .move_to;
+            }
+        }
+    }
+
+    const Attribute = struct {
+        name: []const u8,
+        value: []const u8,
+    };
+
+    fn parseAttribute(self: *Self) ?Attribute {
+        self.skipWhitespace();
+
+        // Get attribute name
+        const name_start = self.pos;
+        while (!self.atEnd()) {
+            const c = self.peek();
+            if (c == '=' or std.ascii.isWhitespace(c) or c == '/' or c == '>') break;
+            self.advance();
+        }
+        const name = self.src[name_start..self.pos];
+        if (name.len == 0) return null;
+
+        self.skipWhitespace();
+        if (!self.consume('=')) return null;
+        self.skipWhitespace();
+
+        // Get attribute value (quoted)
+        const quote = self.peek();
+        if (quote != '"' and quote != '\'') return null;
+        self.advance();
+
+        const value_start = self.pos;
+        while (!self.atEnd() and self.peek() != quote) {
+            self.advance();
+        }
+        const value = self.src[value_start..self.pos];
+
+        if (!self.atEnd()) self.advance(); // Skip closing quote
+
+        return .{ .name = name, .value = value };
+    }
+
+    fn parseAttrFloat(self: *Self, value: []const u8) f32 {
+        _ = self;
+        return std.fmt.parseFloat(f32, value) catch 0;
+    }
+
+    fn skipToElementEnd(self: *Self) void {
+        while (!self.atEnd()) {
+            const c = self.peek();
+            self.advance();
+            if (c == '>') break;
+        }
+    }
+
+    fn skipWhitespace(self: *Self) void {
+        while (!self.atEnd() and std.ascii.isWhitespace(self.peek())) {
+            self.advance();
+        }
+    }
+
+    fn consume(self: *Self, expected: u8) bool {
+        if (self.atEnd() or self.peek() != expected) return false;
+        self.advance();
+        return true;
+    }
+
+    fn atEnd(self: *const Self) bool {
+        return self.pos >= self.src.len;
+    }
+
+    fn peek(self: *const Self) u8 {
+        return self.src[self.pos];
+    }
+
+    fn advance(self: *Self) void {
+        self.pos += 1;
+    }
+};
+
+/// Helper to parse SVG points attribute format: "x1,y1 x2,y2 x3,y3 ..."
+const PointsParser = struct {
+    src: []const u8,
+    pos: usize,
+
+    fn init(src: []const u8) PointsParser {
+        return .{ .src = src, .pos = 0 };
+    }
+
+    fn nextPoint(self: *PointsParser) ?Vec2 {
+        self.skipDelimiters();
+        if (self.pos >= self.src.len) return null;
+
+        const x = self.parseFloat() orelse return null;
+        self.skipDelimiters();
+        const y = self.parseFloat() orelse return null;
+
+        return Vec2.init(x, y);
+    }
+
+    fn parseFloat(self: *PointsParser) ?f32 {
+        self.skipDelimiters();
+        if (self.pos >= self.src.len) return null;
+
+        const start = self.pos;
+
+        // Handle negative sign
+        if (self.pos < self.src.len and self.src[self.pos] == '-') {
+            self.pos += 1;
+        }
+
+        // Integer part
+        while (self.pos < self.src.len and std.ascii.isDigit(self.src[self.pos])) {
+            self.pos += 1;
+        }
+
+        // Decimal part
+        if (self.pos < self.src.len and self.src[self.pos] == '.') {
+            self.pos += 1;
+            while (self.pos < self.src.len and std.ascii.isDigit(self.src[self.pos])) {
+                self.pos += 1;
+            }
+        }
+
+        if (self.pos == start) return null;
+        return std.fmt.parseFloat(f32, self.src[start..self.pos]) catch null;
+    }
+
+    fn skipDelimiters(self: *PointsParser) void {
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (c == ' ' or c == ',' or c == '\t' or c == '\n' or c == '\r') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
     }
 };
 
@@ -958,4 +1463,287 @@ test "parse lucide arrow path" {
     try std.testing.expectEqual(@as(usize, 6), path.data.items.len);
     try std.testing.expectApproxEqAbs(@as(f32, -7), path.data.items[2], 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, -7), path.data.items[3], 0.01);
+}
+
+// ============================================================================
+// SVG Element Parser Tests
+// ============================================================================
+
+test "SvgElementParser parses raw path data" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    // Raw path data (no XML tags)
+    try parser.parse(&path, "M10 20 L30 40 Z");
+
+    try std.testing.expectEqual(@as(usize, 3), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[2]);
+}
+
+test "SvgElementParser parses circle element" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<circle cx=\"12\" cy=\"12\" r=\"10\"/>");
+
+    // Circle becomes: M, A, A, Z (move, two arcs, close)
+    try std.testing.expectEqual(@as(usize, 4), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[3]);
+
+    // Start point should be (cx + r, cy) = (22, 12)
+    try std.testing.expectApproxEqAbs(@as(f32, 22), path.data.items[0], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 12), path.data.items[1], 0.01);
+}
+
+test "SvgElementParser parses rect element" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\"/>");
+
+    // Simple rect becomes: M, L, L, L, Z
+    try std.testing.expectEqual(@as(usize, 5), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[3]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[4]);
+}
+
+test "SvgElementParser parses rounded rect" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/>");
+
+    // Rounded rect has: M, L, A, L, A, L, A, L, A, Z = 10 commands
+    try std.testing.expectEqual(@as(usize, 10), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[9]);
+}
+
+test "SvgElementParser parses line element" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<line x1=\"12\" y1=\"5\" x2=\"12\" y2=\"19\"/>");
+
+    // Line becomes: M, L
+    try std.testing.expectEqual(@as(usize, 2), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[1]);
+
+    // Check coordinates
+    try std.testing.expectApproxEqAbs(@as(f32, 12), path.data.items[0], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 5), path.data.items[1], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 12), path.data.items[2], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 19), path.data.items[3], 0.01);
+}
+
+test "SvgElementParser parses polyline element" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<polyline points=\"20 6 9 17 4 12\"/>");
+
+    // Polyline becomes: M, L, L (3 points, first is move, rest are lines)
+    try std.testing.expectEqual(@as(usize, 3), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[2]);
+}
+
+test "SvgElementParser parses polygon element" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<polygon points=\"20 6 9 17 4 12\"/>");
+
+    // Polygon becomes: M, L, L, Z (closed)
+    try std.testing.expectEqual(@as(usize, 4), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[3]);
+}
+
+test "SvgElementParser parses path element" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<path d=\"M5 12h14\"/>");
+
+    // Path with move and horizontal line (lowercase h = relative)
+    try std.testing.expectEqual(@as(usize, 2), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.horiz_line_to_rel, path.commands.items[1]);
+}
+
+test "SvgElementParser parses multiple elements" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    // Lucide-style: path + circle
+    try parser.parse(&path, "<path d=\"M5 12h14\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>");
+
+    // Path: M, h (2) + Circle: M, A, A, Z (4) = 6 commands (lowercase h = relative)
+    try std.testing.expectEqual(@as(usize, 6), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.horiz_line_to_rel, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[3]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[4]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[5]);
+}
+
+test "SvgElementParser parses ellipse element" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    try parser.parse(&path, "<ellipse cx=\"12\" cy=\"12\" rx=\"10\" ry=\"5\"/>");
+
+    // Ellipse becomes: M, A, A, Z
+    try std.testing.expectEqual(@as(usize, 4), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[3]);
+
+    // Start point should be (cx + rx, cy) = (22, 12)
+    try std.testing.expectApproxEqAbs(@as(f32, 22), path.data.items[0], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 12), path.data.items[1], 0.01);
+}
+
+test "SvgElementParser handles single quotes" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    // Single quotes are valid in SVG
+    try parser.parse(&path, "<circle cx='12' cy='12' r='10'/>");
+
+    try std.testing.expectEqual(@as(usize, 4), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+}
+
+test "SvgElementParser handles whitespace in elements" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    // Extra whitespace
+    try parser.parse(&path, "  <line  x1=\"0\"  y1=\"0\"  x2=\"10\"  y2=\"10\" />  ");
+
+    try std.testing.expectEqual(@as(usize, 2), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[1]);
+}
+
+test "SvgElementParser parses multiple path elements (Lucide X icon)" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    // Lucide X icon: two crossing lines as paths
+    try parser.parse(&path, "<path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/>");
+
+    // First path: M18,6 L6,18 (implicit L after M) = 2 commands
+    // Second path: m6,6 l12,12 = 2 commands (m converted to M since it's a new element)
+    // Total: 4 commands
+    try std.testing.expectEqual(@as(usize, 4), path.commands.items.len);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.line_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[2]); // m -> M for new element
+    try std.testing.expectEqual(PathCommand.line_to_rel, path.commands.items[3]);
+
+    // Verify data values for first line
+    try std.testing.expectEqual(@as(f32, 18), path.data.items[0]); // M x
+    try std.testing.expectEqual(@as(f32, 6), path.data.items[1]); // M y
+    try std.testing.expectEqual(@as(f32, 6), path.data.items[2]); // L x
+    try std.testing.expectEqual(@as(f32, 18), path.data.items[3]); // L y
+}
+
+test "SvgElementParser parses circle + path (check_circle icon)" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    // Lucide check_circle: circle + checkmark path
+    try parser.parse(&path, "<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/>");
+
+    // Circle: M, A, A, Z = 4 commands
+    // Path: m9,12 l2,2 l4,-4 = 3 commands (m converted to M + 2 implicit l's)
+    // Total: 7 commands
+    try std.testing.expectEqual(@as(usize, 7), path.commands.items.len);
+
+    // Circle commands
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[1]);
+    try std.testing.expectEqual(PathCommand.arc_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.close_path, path.commands.items[3]);
+
+    // Checkmark path commands (m -> M for new element)
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[4]);
+    try std.testing.expectEqual(PathCommand.line_to_rel, path.commands.items[5]);
+    try std.testing.expectEqual(PathCommand.line_to_rel, path.commands.items[6]);
+}
+
+test "SvgElementParser converts relative m to absolute M in second path (arrow_right)" {
+    const allocator = std.testing.allocator;
+    var parser = SvgElementParser.init(allocator);
+    var path = SvgPath.init(allocator);
+    defer path.deinit();
+
+    // Lucide arrow_right: line + arrowhead with relative m
+    try parser.parse(&path, "<path d=\"M5 12h14\"/><path d=\"m12 5 7 7-7 7\"/>");
+
+    // First path: M5,12 h14 = 2 commands
+    // Second path: m12,5 (->M) l7,7 l-7,7 = 3 commands
+    // Total: 5 commands
+    try std.testing.expectEqual(@as(usize, 5), path.commands.items.len);
+
+    // First path
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[0]);
+    try std.testing.expectEqual(PathCommand.horiz_line_to_rel, path.commands.items[1]);
+
+    // Second path - m should be converted to M (absolute)
+    try std.testing.expectEqual(PathCommand.move_to, path.commands.items[2]);
+    try std.testing.expectEqual(PathCommand.line_to_rel, path.commands.items[3]);
+    try std.testing.expectEqual(PathCommand.line_to_rel, path.commands.items[4]);
+
+    // Verify the second path starts at absolute (12, 5), not relative to end of first path
+    // First path data: M(5,12), h(14) = indices 0,1,2
+    // Second path data starts at index 3: M(12, 5)
+    try std.testing.expectEqual(@as(f32, 12), path.data.items[3]);
+    try std.testing.expectEqual(@as(f32, 5), path.data.items[4]);
 }

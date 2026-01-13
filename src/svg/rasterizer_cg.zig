@@ -456,8 +456,8 @@ pub fn rasterizeWithOptions(
     // Clear buffer (transparent black)
     @memset(buffer[0..required_size], 0);
 
-    // Parse SVG path
-    var parser = svg_mod.PathParser.init(allocator);
+    // Parse SVG path (supports both raw path data and SVG elements like circle, rect, etc.)
+    var parser = svg_mod.SvgElementParser.init(allocator);
     var path = svg_mod.SvgPath.init(allocator);
     defer path.deinit();
 
