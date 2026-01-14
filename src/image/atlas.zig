@@ -2,10 +2,13 @@
 //!
 //! Caches decoded images in a texture atlas, keyed by source hash and size.
 //! Supports PNG, JPEG, and raw pixel data sources.
+//! Thread-safe for multi-window scenarios where multiple DisplayLink threads
+//! may access the atlas concurrently.
 
 const std = @import("std");
 const Atlas = @import("../text/atlas.zig").Atlas;
 const Region = @import("../text/atlas.zig").Region;
+const UVCoords = @import("../text/atlas.zig").UVCoords;
 
 /// How the image should fit within its container
 pub const ObjectFit = enum {
@@ -148,6 +151,15 @@ pub const CachedImage = struct {
     rendered_height: u16,
     /// Last accessed frame number (for LRU eviction)
     last_accessed: u64 = 0,
+    /// Atlas size when this image was cached (for thread-safe UV calculation)
+    /// In multi-window scenarios, the atlas may grow between caching and
+    /// UV calculation; storing the size ensures correct UVs.
+    atlas_size: u32 = 0,
+
+    /// Calculate UV coordinates using the cached atlas size
+    pub fn uv(self: CachedImage) UVCoords {
+        return self.region.uv(self.atlas_size);
+    }
 };
 
 /// Image texture atlas with caching
@@ -161,6 +173,9 @@ pub const ImageAtlas = struct {
     scale_factor: f64,
     /// Current frame number (for LRU tracking)
     current_frame: u64 = 0,
+    /// Mutex for thread-safe access in multi-window scenarios.
+    /// Multiple DisplayLink threads may access the atlas concurrently.
+    mutex: std.Thread.Mutex = .{},
 
     const Self = @This();
 
@@ -202,7 +217,11 @@ pub const ImageAtlas = struct {
     }
 
     /// Get cached image if it exists (updates last_accessed for LRU)
+    /// Thread-safe: protected by mutex for multi-window scenarios.
     pub fn get(self: *Self, key: ImageKey) ?CachedImage {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         if (self.cache.getPtr(key)) |entry| {
             entry.last_accessed = self.current_frame;
             return entry.*;
@@ -211,11 +230,15 @@ pub const ImageAtlas = struct {
     }
 
     /// Cache decoded image data
+    /// Thread-safe: protected by mutex for multi-window scenarios.
     pub fn cacheImage(
         self: *Self,
         key: ImageKey,
         data: ImageData,
     ) !CachedImage {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         // Check if already cached
         if (self.cache.get(key)) |cached| {
             return cached;
@@ -252,6 +275,9 @@ pub const ImageAtlas = struct {
             try self.copyClipped(region, pixels, data.width, data.height, render_w, render_h);
         }
 
+        // Capture atlas size AFTER reservation (may have grown)
+        const current_atlas_size = self.atlas.size;
+
         const cached = CachedImage{
             .region = region,
             .source_width = @intCast(data.width),
@@ -259,6 +285,7 @@ pub const ImageAtlas = struct {
             .rendered_width = @intCast(render_w),
             .rendered_height = @intCast(render_h),
             .last_accessed = self.current_frame,
+            .atlas_size = current_atlas_size,
         };
 
         try self.cache.put(key, cached);
@@ -338,7 +365,24 @@ pub const ImageAtlas = struct {
             return err;
         };
 
+        // Growth succeeded - update atlas_size in all cached entries
+        // This is critical: cached images store atlas_size for UV calculation.
+        // When atlas grows, pixel positions stay the same but UVs change.
+        self.updateAtlasSizeInCache();
+
         return try self.atlas.reserve(width, height) orelse error.ImageTooLarge;
+    }
+
+    /// Update atlas_size in all cached entries after atlas growth.
+    /// When the atlas grows, pixel positions are preserved but UV coordinates
+    /// change (e.g., x=100 in 512px atlas is UV=0.195, but in 1024px is UV=0.098).
+    fn updateAtlasSizeInCache(self: *Self) void {
+        const new_size = self.atlas.size;
+
+        var it = self.cache.valueIterator();
+        while (it.next()) |cached| {
+            cached.atlas_size = new_size;
+        }
     }
 
     /// Evict images to make room for new ones.
@@ -362,7 +406,8 @@ pub const ImageAtlas = struct {
         self.atlas.clear();
     }
 
-    /// Get the underlying atlas for GPU upload
+    /// Get the underlying atlas for GPU upload.
+    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
     pub fn getAtlas(self: *const Self) *const Atlas {
         return &self.atlas;
     }
@@ -370,6 +415,20 @@ pub const ImageAtlas = struct {
     /// Get the current generation (for GPU sync)
     pub fn getGeneration(self: *const Self) u32 {
         return self.atlas.generation;
+    }
+
+    /// Thread-safe atlas access for GPU upload.
+    /// Holds the mutex while calling the callback, ensuring no other
+    /// thread can modify the atlas during the upload.
+    pub fn withAtlasLocked(
+        self: *Self,
+        comptime Ctx: type,
+        ctx: Ctx,
+        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return callback(ctx, &self.atlas);
     }
 
     /// Check if dimensions are suitable for atlasing

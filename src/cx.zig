@@ -223,7 +223,7 @@ pub const Cx = struct {
 
         const Wrapper = struct {
             fn invoke(g: *Gooey, _: EntityId) void {
-                const state_ptr = handler_mod.getRootState(State) orelse return;
+                const state_ptr = g.getRootState(State) orelse return;
                 method(state_ptr);
                 g.requestRender();
             }
@@ -260,7 +260,7 @@ pub const Cx = struct {
 
         const Wrapper = struct {
             fn invoke(g: *Gooey, packed_arg: EntityId) void {
-                const state_ptr = handler_mod.getRootState(State) orelse return;
+                const state_ptr = g.getRootState(State) orelse return;
                 const unpacked = unpackArg(Arg, packed_arg);
                 method(state_ptr, unpacked);
                 g.requestRender();
@@ -293,7 +293,7 @@ pub const Cx = struct {
 
         const Wrapper = struct {
             fn invoke(g: *Gooey, _: EntityId) void {
-                const state_ptr = handler_mod.getRootState(State) orelse return;
+                const state_ptr = g.getRootState(State) orelse return;
                 method(state_ptr, g);
                 g.requestRender();
             }
@@ -329,7 +329,7 @@ pub const Cx = struct {
 
         const Wrapper = struct {
             fn invoke(g: *Gooey, packed_arg: EntityId) void {
-                const state_ptr = handler_mod.getRootState(State) orelse return;
+                const state_ptr = g.getRootState(State) orelse return;
                 const unpacked = unpackArg(Arg, packed_arg);
                 method(state_ptr, g, unpacked);
                 g.requestRender();

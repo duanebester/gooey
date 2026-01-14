@@ -17,6 +17,8 @@ const input_view = @import("input_view.zig");
 const input = @import("../../input/events.zig");
 const display_link = @import("display_link.zig");
 const appkit = @import("appkit.zig");
+const interface_mod = @import("../interface.zig");
+const WindowId = interface_mod.WindowId;
 
 const NSRect = appkit.NSRect;
 const NSSize = appkit.NSSize;
@@ -38,7 +40,21 @@ pub const Window = struct {
     text_atlas: ?*const Atlas = null,
     svg_atlas: ?*const Atlas = null,
     image_atlas: ?*const Atlas = null,
+
+    /// Thread-safe atlas upload callbacks for multi-window scenarios.
+    /// These are set by WindowContext to hold the appropriate mutex during GPU upload,
+    /// preventing races where another window's DisplayLink modifies the atlas.
+    text_atlas_upload_ctx: ?*anyopaque = null,
+    text_atlas_upload_fn: ?*const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void = null,
+    svg_atlas_upload_ctx: ?*anyopaque = null,
+    svg_atlas_upload_fn: ?*const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void = null,
+    image_atlas_upload_ctx: ?*anyopaque = null,
+    image_atlas_upload_fn: ?*const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void = null,
     delegate: ?objc.Object = null,
+
+    /// Unique identifier for this window in the WindowRegistry.
+    /// Set by WindowRegistry.register() after creation.
+    window_id: WindowId = .invalid,
     // Custom shader animation flag
     custom_shader_animation: bool,
     // Glass effect support (macOS 26.0+ / fallback blur)
@@ -259,10 +275,6 @@ pub const Window = struct {
             self.ns_window.msgSend(void, "setStyleMask:", .{current_mask | full_size_content_mask});
         }
 
-        const window_delegate = @import("window_delegate.zig");
-        self.delegate = try window_delegate.create(self);
-        self.ns_window.msgSend(void, "setDelegate:", .{self.delegate.?.value});
-
         // Set window title
         self.setTitle(options.title);
 
@@ -288,6 +300,13 @@ pub const Window = struct {
         const view_frame: NSRect = self.ns_window.msgSend(NSRect, "contentLayoutRect", .{});
         self.ns_view = try input_view.create(view_frame, self);
         self.ns_window.msgSend(void, "setContentView:", .{self.ns_view.value});
+
+        // Set delegate AFTER ns_view is created to prevent crashes from early delegate callbacks
+        // (e.g., windowDidChangeBackingProperties can fire during center() and calls handleResize
+        // which needs ns_view)
+        const window_delegate = @import("window_delegate.zig");
+        self.delegate = try window_delegate.create(self);
+        self.ns_window.msgSend(void, "setDelegate:", .{self.delegate.?.value});
 
         // Setup glass/transparency effect if requested
         if (options.background_opacity < 1.0) {
@@ -408,6 +427,37 @@ pub const Window = struct {
         self.text_atlas = atlas;
     }
 
+    /// Set thread-safe text atlas upload callback for multi-window scenarios.
+    /// The callback is called with the appropriate mutex held during GPU upload.
+    pub fn setTextAtlasUploadCallback(
+        self: *Self,
+        ctx: *anyopaque,
+        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
+    ) void {
+        self.text_atlas_upload_ctx = ctx;
+        self.text_atlas_upload_fn = callback;
+    }
+
+    /// Set thread-safe SVG atlas upload callback for multi-window scenarios.
+    pub fn setSvgAtlasUploadCallback(
+        self: *Self,
+        ctx: *anyopaque,
+        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
+    ) void {
+        self.svg_atlas_upload_ctx = ctx;
+        self.svg_atlas_upload_fn = callback;
+    }
+
+    /// Set thread-safe image atlas upload callback for multi-window scenarios.
+    pub fn setImageAtlasUploadCallback(
+        self: *Self,
+        ctx: *anyopaque,
+        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
+    ) void {
+        self.image_atlas_upload_ctx = ctx;
+        self.image_atlas_upload_fn = callback;
+    }
+
     /// Set the scene (thread-safe)
     pub fn setScene(self: *Self, s: *const scene_mod.Scene) void {
         // Only lock if we're not already in a render (which holds the lock)
@@ -511,6 +561,11 @@ pub const Window = struct {
         return self.mouse_inside;
     }
 
+    /// Get the unique identifier for this window.
+    pub fn getWindowId(self: *const Self) WindowId {
+        return self.window_id;
+    }
+
     // =========================================================================
     // Window Lifecycle
     // =========================================================================
@@ -597,13 +652,26 @@ pub const Window = struct {
                 callback(self);
             }
 
-            if (self.text_atlas) |atlas| {
+            // Use thread-safe callbacks if available (multi-window scenarios)
+            if (self.text_atlas_upload_fn) |upload_fn| {
+                if (self.text_atlas_upload_ctx) |ctx| {
+                    upload_fn(ctx, &self.renderer) catch {};
+                }
+            } else if (self.text_atlas) |atlas| {
                 self.renderer.updateTextAtlas(atlas) catch {};
             }
-            if (self.svg_atlas) |atlas| {
+            if (self.svg_atlas_upload_fn) |upload_fn| {
+                if (self.svg_atlas_upload_ctx) |ctx| {
+                    upload_fn(ctx, &self.renderer) catch {};
+                }
+            } else if (self.svg_atlas) |atlas| {
                 self.renderer.prepareSvgAtlas(atlas);
             }
-            if (self.image_atlas) |atlas| {
+            if (self.image_atlas_upload_fn) |upload_fn| {
+                if (self.image_atlas_upload_ctx) |ctx| {
+                    upload_fn(ctx, &self.renderer) catch {};
+                }
+            } else if (self.image_atlas) |atlas| {
                 self.renderer.prepareImageAtlas(atlas);
             }
 
@@ -649,6 +717,26 @@ pub const Window = struct {
 
     pub fn isInLiveResize(self: *const Self) bool {
         return self.in_live_resize.load(.acquire);
+    }
+
+    // =========================================================================
+    // Window Operations
+    // =========================================================================
+
+    /// Focus this window (bring to front and make key window).
+    ///
+    /// Makes this window the key window and orders it to the front.
+    pub fn focus(self: *Self) void {
+        self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
+    }
+
+    /// Close this window programmatically.
+    ///
+    /// Triggers the close callback if set, allowing it to cancel.
+    /// If close proceeds, the window is destroyed.
+    pub fn close(self: *Self) void {
+        // Use performClose: to trigger the delegate and allow cancellation
+        self.ns_window.msgSend(void, "performClose:", .{@as(?*anyopaque, null)});
     }
 
     // =========================================================================
@@ -924,6 +1012,11 @@ pub const Window = struct {
                 win.deinit();
             }
 
+            fn getWindowIdFn(p: *anyopaque) WindowId {
+                const win: *const Self = @ptrCast(@alignCast(p));
+                return win.getWindowId();
+            }
+
             fn widthFn(p: *anyopaque) u32 {
                 const win: *const Self = @ptrCast(@alignCast(p));
                 return win.width();
@@ -981,6 +1074,7 @@ pub const Window = struct {
 
             const table = iface.WindowVTable.VTable{
                 .deinit = deinitFn,
+                .getWindowId = getWindowIdFn,
                 .width = widthFn,
                 .height = heightFn,
                 .getSize = getSizeFn,
@@ -1084,18 +1178,32 @@ fn displayLinkCallback(
         callback(window);
     }
 
-    // Update text atlas if set
-    if (window.text_atlas) |atlas| {
+    // Update text atlas if set - use thread-safe callback if available
+    // The callback holds the glyph_cache_mutex during upload, preventing races
+    // where another window's DisplayLink modifies the atlas concurrently.
+    if (window.text_atlas_upload_fn) |upload_fn| {
+        if (window.text_atlas_upload_ctx) |ctx| {
+            upload_fn(ctx, &window.renderer) catch {};
+        }
+    } else if (window.text_atlas) |atlas| {
         window.renderer.updateTextAtlas(atlas) catch {};
     }
 
-    // Update SVG atlas if set
-    if (window.svg_atlas) |atlas| {
+    // Update SVG atlas if set - use thread-safe callback if available
+    if (window.svg_atlas_upload_fn) |upload_fn| {
+        if (window.svg_atlas_upload_ctx) |ctx| {
+            upload_fn(ctx, &window.renderer) catch {};
+        }
+    } else if (window.svg_atlas) |atlas| {
         window.renderer.prepareSvgAtlas(atlas);
     }
 
-    // Update image atlas if set
-    if (window.image_atlas) |atlas| {
+    // Update image atlas if set - use thread-safe callback if available
+    if (window.image_atlas_upload_fn) |upload_fn| {
+        if (window.image_atlas_upload_ctx) |ctx| {
+            upload_fn(ctx, &window.renderer) catch {};
+        }
+    } else if (window.image_atlas) |atlas| {
         window.renderer.prepareImageAtlas(atlas);
     }
 

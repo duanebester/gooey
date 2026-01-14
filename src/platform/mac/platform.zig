@@ -9,6 +9,9 @@ const std = @import("std");
 const objc = @import("objc");
 const interface_mod = @import("../interface.zig");
 const file_dialog = @import("file_dialog.zig");
+const window_registry = @import("../window_registry.zig");
+const WindowId = window_registry.WindowId;
+const WindowRegistry = window_registry.WindowRegistry;
 
 // External Foundation constants - linked at runtime
 extern "c" var NSDefaultRunLoopMode: *anyopaque;
@@ -23,6 +26,12 @@ pub const MacPlatform = struct {
     app: objc.Object,
     delegate: ?objc.Object,
     running: bool,
+
+    /// Registry for tracking all windows by ID
+    window_registry: WindowRegistry,
+
+    /// Allocator for platform resources
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
@@ -44,6 +53,10 @@ pub const MacPlatform = struct {
     };
 
     pub fn init() !Self {
+        return initWithAllocator(std.heap.page_allocator);
+    }
+
+    pub fn initWithAllocator(allocator: std.mem.Allocator) !Self {
         // Get NSApplication class
         const NSApp = objc.getClass("NSApplication") orelse return error.ClassNotFound;
 
@@ -57,12 +70,48 @@ pub const MacPlatform = struct {
             .app = app,
             .delegate = null,
             .running = false,
+            .window_registry = WindowRegistry.init(allocator),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;
+        self.window_registry.deinit();
         // NSApplication is a singleton, don't release
+    }
+
+    // =========================================================================
+    // Window Registry
+    // =========================================================================
+
+    /// Register a window with the platform and return its ID.
+    pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
+        return self.window_registry.register(window);
+    }
+
+    /// Unregister a window by ID.
+    pub fn unregisterWindow(self: *Self, id: WindowId) void {
+        _ = self.window_registry.unregister(id);
+    }
+
+    /// Get a window by ID.
+    pub fn getWindow(self: *const Self, id: WindowId) ?*anyopaque {
+        return self.window_registry.get(id);
+    }
+
+    /// Get the active window ID.
+    pub fn getActiveWindow(self: *const Self) ?WindowId {
+        return self.window_registry.getActiveWindow();
+    }
+
+    /// Set the active window.
+    pub fn setActiveWindow(self: *Self, id: ?WindowId) void {
+        self.window_registry.setActiveWindow(id);
+    }
+
+    /// Get the number of registered windows.
+    pub fn windowCount(self: *const Self) u32 {
+        return self.window_registry.count();
     }
 
     /// Run the application event loop.

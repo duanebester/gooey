@@ -179,7 +179,7 @@ fn renderSvg(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         null;
 
     // Get from atlas (rasterizes if not cached)
-    const cached = gooey_ctx.svg_atlas.getOrRasterize(
+    const cached = gooey_ctx.svg_atlas.*.getOrRasterize(
         svg_data.path,
         svg_data.viewbox,
         @max(b.width, b.height),
@@ -189,9 +189,9 @@ fn renderSvg(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 
     if (cached.region.width == 0) return;
 
-    // Get UV coordinates from atlas
-    const atlas = gooey_ctx.svg_atlas.getAtlas();
-    const uv = cached.region.uv(atlas.size);
+    // Use cached atlas size for thread-safe UV calculation
+    // (atlas may grow between caching and UV calculation in multi-window scenarios)
+    const uv = cached.uv();
 
     // Snap to device pixel grid for crisp rendering
     const snapped = snapToPixelGrid(b.x, b.y, scale_factor);
@@ -248,7 +248,7 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         );
 
     // Check cache or load synchronously (URLs handled by async loader)
-    const cached = gooey_ctx.image_atlas.get(key) orelse blk: {
+    const cached = gooey_ctx.image_atlas.*.get(key) orelse blk: {
         if (is_url) return; // URLs handled by async loader
 
         var decoded = image_mod.loader.loadFromPath(
@@ -257,14 +257,14 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         ) catch return;
         defer decoded.deinit();
 
-        break :blk gooey_ctx.image_atlas.cacheImage(key, decoded.toImageData()) catch return;
+        break :blk gooey_ctx.image_atlas.*.cacheImage(key, decoded.toImageData()) catch return;
     };
 
     if (cached.region.width == 0) return;
 
-    // Get base UV coordinates from atlas region
-    const atlas = gooey_ctx.image_atlas.getAtlas();
-    const base_uv = cached.region.uv(atlas.size);
+    // Use cached atlas size for thread-safe UV calculation
+    // (atlas may grow between caching and UV calculation in multi-window scenarios)
+    const base_uv = cached.uv();
 
     // Calculate fit dimensions and UV adjustments
     const src_w: f32 = @floatFromInt(cached.source_width);

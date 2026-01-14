@@ -1,10 +1,13 @@
 //! SVG Atlas - Texture cache for rasterized SVG icons
 //!
 //! Caches rasterized SVGs in a texture atlas, keyed by path hash and size.
+//! Thread-safe for multi-window scenarios where multiple DisplayLink threads
+//! may access the atlas concurrently.
 
 const std = @import("std");
 const Atlas = @import("../text/atlas.zig").Atlas;
 const Region = @import("../text/atlas.zig").Region;
+const UVCoords = @import("../text/atlas.zig").UVCoords;
 const rasterizer = @import("rasterizer.zig");
 
 /// Cache key for SVG lookup
@@ -40,6 +43,15 @@ pub const CachedSvg = struct {
     /// Offset from logical position (device pixels)
     offset_x: i16,
     offset_y: i16,
+    /// Atlas size when this SVG was cached (for thread-safe UV calculation)
+    /// In multi-window scenarios, the atlas may grow between caching and
+    /// UV calculation; storing the size ensures correct UVs.
+    atlas_size: u32,
+
+    /// Calculate UV coordinates using the cached atlas size
+    pub fn uv(self: CachedSvg) UVCoords {
+        return self.region.uv(self.atlas_size);
+    }
 };
 
 /// SVG texture atlas with caching
@@ -54,6 +66,9 @@ pub const SvgAtlas = struct {
     render_buffer_size: u32,
     /// Current scale factor
     scale_factor: f64,
+    /// Mutex for thread-safe access in multi-window scenarios.
+    /// Multiple DisplayLink threads may access the atlas concurrently.
+    mutex: std.Thread.Mutex,
 
     const Self = @This();
     const MAX_ICON_SIZE: u32 = 256;
@@ -70,6 +85,7 @@ pub const SvgAtlas = struct {
             .render_buffer = render_buffer,
             .render_buffer_size = MAX_ICON_SIZE,
             .scale_factor = scale_factor,
+            .mutex = .{},
         };
     }
 
@@ -87,6 +103,7 @@ pub const SvgAtlas = struct {
     }
 
     /// Get cached SVG or rasterize and cache it
+    /// Thread-safe: protected by mutex for multi-window scenarios.
     pub fn getOrRasterize(
         self: *Self,
         path_data: []const u8,
@@ -95,6 +112,9 @@ pub const SvgAtlas = struct {
         has_fill: bool,
         stroke_width: ?f32,
     ) !CachedSvg {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const key = SvgKey.init(path_data, logical_size, self.scale_factor, has_fill, stroke_width);
 
         if (self.cache.get(key)) |cached| {
@@ -135,10 +155,14 @@ pub const SvgAtlas = struct {
         const pixel_count = rasterized.width * rasterized.height * 4;
         self.atlas.set(region, self.render_buffer[0..pixel_count]);
 
+        // Capture atlas size AFTER reservation (may have grown)
+        const current_atlas_size = self.atlas.size;
+
         const cached = CachedSvg{
             .region = region,
             .offset_x = rasterized.offset_x,
             .offset_y = rasterized.offset_y,
+            .atlas_size = current_atlas_size,
         };
 
         try self.cache.put(key, cached);
@@ -162,7 +186,24 @@ pub const SvgAtlas = struct {
             return err;
         };
 
+        // Growth succeeded - update atlas_size in all cached entries
+        // This is critical: cached SVGs store atlas_size for UV calculation.
+        // When atlas grows, pixel positions stay the same but UVs change.
+        self.updateAtlasSizeInCache();
+
         return try self.atlas.reserve(width, height) orelse error.IconTooLarge;
+    }
+
+    /// Update atlas_size in all cached entries after atlas growth.
+    /// When the atlas grows, pixel positions are preserved but UV coordinates
+    /// change (e.g., x=100 in 512px atlas is UV=0.195, but in 1024px is UV=0.098).
+    fn updateAtlasSizeInCache(self: *Self) void {
+        const new_size = self.atlas.size;
+
+        var it = self.cache.valueIterator();
+        while (it.next()) |cached| {
+            cached.atlas_size = new_size;
+        }
     }
 
     pub fn clear(self: *Self) void {
@@ -170,11 +211,27 @@ pub const SvgAtlas = struct {
         self.atlas.clear();
     }
 
+    /// Get the underlying atlas for GPU upload.
+    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
     pub fn getAtlas(self: *const Self) *const Atlas {
         return &self.atlas;
     }
 
     pub fn getGeneration(self: *const Self) u32 {
         return self.atlas.generation;
+    }
+
+    /// Thread-safe atlas access for GPU upload.
+    /// Holds the mutex while calling the callback, ensuring no other
+    /// thread can modify the atlas during the upload.
+    pub fn withAtlasLocked(
+        self: *Self,
+        comptime Ctx: type,
+        ctx: Ctx,
+        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return callback(ctx, &self.atlas);
     }
 };

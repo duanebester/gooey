@@ -138,7 +138,6 @@ pub fn WebApp(
 
     const web_imports = @import("platform/wgpu/web/imports.zig");
     const WebRenderer = @import("platform/wgpu/web/renderer.zig").WebRenderer;
-    const handler_mod = @import("context/handler.zig");
 
     return struct {
         const Self = @This();
@@ -210,8 +209,9 @@ pub fn WebApp(
             // Wire up builder to cx
             g_builder.?.cx_ptr = @ptrCast(&g_cx.?);
 
-            // Set root state for handler callbacks
-            handler_mod.setRootState(State, state);
+            // Set root state on this window's Gooey instance (not globally)
+            // This enables multi-window support where each window has its own state
+            g_gooey.?.setRootState(State, state);
 
             // Initialize GPU renderer
             // Heap-allocated with initInPlace to avoid ~1.15MB stack frame on WASM
@@ -237,7 +237,7 @@ pub fn WebApp(
 
             // Upload initial atlases
             g_renderer.?.uploadAtlas(g_gooey.?.text_system);
-            g_renderer.?.uploadSvgAtlas(&g_gooey.?.svg_atlas);
+            g_renderer.?.uploadSvgAtlas(g_gooey.?.svg_atlas);
 
             g_initialized = true;
 
@@ -325,8 +325,8 @@ pub fn WebApp(
 
             // Sync atlas textures if glyphs/icons/images were added
             g_renderer.?.syncAtlas(g_gooey.?.text_system);
-            g_renderer.?.syncSvgAtlas(&g_gooey.?.svg_atlas);
-            g_renderer.?.syncImageAtlas(&g_gooey.?.image_atlas);
+            g_renderer.?.syncSvgAtlas(g_gooey.?.svg_atlas);
+            g_renderer.?.syncImageAtlas(g_gooey.?.image_atlas);
 
             // Render to GPU
             const bg = w.background_color;

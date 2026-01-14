@@ -90,6 +90,9 @@ pub const ui = @import("ui/mod.zig");
 /// Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU)
 pub const platform = @import("platform/mod.zig");
 
+/// Runtime: event loop, frame rendering, input handling, window management
+pub const runtime = @import("runtime/mod.zig");
+
 /// Image loading and caching
 pub const image = @import("image/mod.zig");
 
@@ -243,6 +246,17 @@ pub const runCx = app.runCx;
 pub const WebApp = app.WebApp;
 /// Unified app generator (works for native and web)
 pub const App = app.App;
+
+// Window management (multi-window support)
+pub const WindowId = platform.WindowId;
+pub const WindowRegistry = platform.WindowRegistry;
+pub const WindowHandle = runtime.WindowHandle;
+pub const WindowContext = runtime.WindowContext;
+
+// Multi-window App (for apps with multiple windows sharing resources)
+pub const MultiWindowApp = runtime.MultiWindowApp;
+pub const AppWindowOptions = runtime.AppWindowOptions;
+pub const MAX_WINDOWS = runtime.MAX_WINDOWS;
 
 /// Configuration for runCx
 pub const CxConfig = app.CxConfig;

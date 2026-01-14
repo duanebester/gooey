@@ -8,6 +8,7 @@ const wayland = @import("wayland.zig");
 const VulkanRenderer = @import("vk_renderer.zig").VulkanRenderer;
 const LinuxPlatform = @import("platform.zig").LinuxPlatform;
 const interface_mod = @import("../interface.zig");
+const WindowId = interface_mod.WindowId;
 const geometry = @import("../../core/geometry.zig");
 const Size = geometry.Size(f64);
 const scene_mod = @import("../../scene/mod.zig");
@@ -67,6 +68,11 @@ pub const Window = struct {
     scale_factor: f64 = 1.0,
     configured: bool = false,
     closed: bool = false,
+
+    /// Unique identifier for this window in the WindowRegistry.
+    /// Set by WindowRegistry.register() after creation.
+    window_id: WindowId = .invalid,
+
     pending_resize: bool = false,
     pending_width: u32 = 0,
     pending_height: u32 = 0,
@@ -409,6 +415,36 @@ pub const Window = struct {
         }
     }
 
+    // =========================================================================
+    // Window Operations
+    // =========================================================================
+
+    /// Focus this window (bring to front).
+    ///
+    /// Note: On Wayland, window activation is controlled by the compositor.
+    /// This is a best-effort request that may be ignored depending on compositor policy.
+    pub fn focus(self: *Self) void {
+        // Wayland doesn't allow clients to forcibly grab focus.
+        // The best we can do is request a render which may prompt user attention.
+        // Some compositors support activation tokens, but that's more complex.
+        _ = self;
+        // TODO: Consider implementing xdg-activation-v1 protocol for proper focus requests
+    }
+
+    /// Close this window programmatically.
+    ///
+    /// Triggers the close callback if set, allowing it to cancel.
+    pub fn close(self: *Self) void {
+        // Call close callback first to allow cancellation
+        if (self.on_close) |callback| {
+            if (!callback(self)) {
+                return; // User prevented close
+            }
+        }
+        // Mark as closed - platform event loop will clean up
+        self.closed = true;
+    }
+
     pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
         self.background_color = color;
         self.requestRender();
@@ -423,6 +459,11 @@ pub const Window = struct {
 
     pub fn isMouseInside(self: *const Self) bool {
         return self.mouse_inside;
+    }
+
+    /// Get the unique identifier for this window.
+    pub fn getWindowId(self: *const Self) WindowId {
+        return self.window_id;
     }
 
     pub fn isClosed(self: *const Self) bool {
@@ -1007,6 +1048,11 @@ pub const Window = struct {
                 win.deinit();
             }
 
+            fn getWindowIdFn(p: *anyopaque) WindowId {
+                const win: *const Self = @ptrCast(@alignCast(p));
+                return win.getWindowId();
+            }
+
             fn widthFn(p: *anyopaque) u32 {
                 const win: *const Self = @ptrCast(@alignCast(p));
                 return win.getWidth();
@@ -1064,6 +1110,7 @@ pub const Window = struct {
 
             const table = interface_mod.WindowVTable.VTable{
                 .deinit = deinitFn,
+                .getWindowId = getWindowIdFn,
                 .width = widthFn,
                 .height = heightFn,
                 .getSize = getSizeFn,

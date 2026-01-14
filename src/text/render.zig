@@ -96,8 +96,9 @@ pub fn renderText(
             try text_system.getGlyphSubpixel(glyph.glyph_id, font_size, subpixel_x, 0);
 
         if (cached.region.width > 0 and cached.region.height > 0) {
-            const atlas = text_system.getAtlas();
-            const uv = cached.region.uv(atlas.size);
+            // Use cached atlas size for thread-safe UV calculation
+            // (atlas may grow between glyph caching and UV calculation in multi-window)
+            const uv = cached.uv();
 
             const glyph_w = @as(f32, @floatFromInt(cached.region.width)) / scale_factor;
             const glyph_h = @as(f32, @floatFromInt(cached.region.height)) / scale_factor;

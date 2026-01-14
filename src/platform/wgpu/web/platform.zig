@@ -4,9 +4,19 @@ const std = @import("std");
 const imports = @import("imports.zig");
 const interface_mod = @import("../../interface.zig");
 const file_dialog = @import("file_dialog.zig");
+const window_registry = @import("../../window_registry.zig");
+const WindowId = window_registry.WindowId;
+const WindowRegistry = window_registry.WindowRegistry;
 
 pub const WebPlatform = struct {
     running: bool = true,
+
+    /// Registry for tracking windows by ID.
+    /// Note: Web only supports a single window, but included for API consistency.
+    window_registry: WindowRegistry,
+
+    /// Allocator for platform resources
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
@@ -28,11 +38,55 @@ pub const WebPlatform = struct {
     };
 
     pub fn init() !Self {
-        return .{ .running = true };
+        return initWithAllocator(std.heap.page_allocator);
+    }
+
+    pub fn initWithAllocator(allocator: std.mem.Allocator) !Self {
+        return .{
+            .running = true,
+            .window_registry = WindowRegistry.init(allocator),
+            .allocator = allocator,
+        };
     }
 
     pub fn deinit(self: *Self) void {
+        self.window_registry.deinit();
         self.running = false;
+    }
+
+    // =========================================================================
+    // Window Registry (single window only on web)
+    // =========================================================================
+
+    /// Register a window with the platform and return its ID.
+    /// Note: Web only supports a single window.
+    pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
+        return self.window_registry.register(window);
+    }
+
+    /// Unregister a window by ID.
+    pub fn unregisterWindow(self: *Self, id: WindowId) void {
+        _ = self.window_registry.unregister(id);
+    }
+
+    /// Get a window by ID.
+    pub fn getWindow(self: *const Self, id: WindowId) ?*anyopaque {
+        return self.window_registry.get(id);
+    }
+
+    /// Get the active window ID.
+    pub fn getActiveWindowId(self: *const Self) ?WindowId {
+        return self.window_registry.getActiveWindow();
+    }
+
+    /// Set the active window by ID.
+    pub fn setActiveWindowId(self: *Self, id: ?WindowId) void {
+        self.window_registry.setActiveWindow(id);
+    }
+
+    /// Get the number of registered windows.
+    pub fn windowCount(self: *const Self) u32 {
+        return self.window_registry.count();
     }
 
     /// On web, run() kicks off the animation loop (non-blocking)

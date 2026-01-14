@@ -47,6 +47,17 @@ const geometry = @import("../core/geometry.zig");
 const scene_mod = @import("../scene/mod.zig");
 const input = @import("../input/mod.zig");
 const text_mod = @import("../text/mod.zig");
+const window_registry = @import("window_registry.zig");
+
+// =============================================================================
+// Window ID (re-exported from window_registry)
+// =============================================================================
+
+/// Unique identifier for windows, enabling cross-window references.
+pub const WindowId = window_registry.WindowId;
+
+/// Central registry for tracking windows by ID.
+pub const WindowRegistry = window_registry.WindowRegistry;
 
 // =============================================================================
 // Platform Interface
@@ -260,6 +271,9 @@ pub const WindowVTable = struct {
         // Lifecycle
         deinit: *const fn (ptr: *anyopaque) void,
 
+        // Identity
+        getWindowId: *const fn (ptr: *anyopaque) WindowId,
+
         // Properties
         width: *const fn (ptr: *anyopaque) u32,
         height: *const fn (ptr: *anyopaque) u32,
@@ -280,6 +294,10 @@ pub const WindowVTable = struct {
 
     pub fn deinit(self: WindowVTable) void {
         self.vtable.deinit(self.ptr);
+    }
+
+    pub fn getWindowId(self: WindowVTable) WindowId {
+        return self.vtable.getWindowId(self.ptr);
     }
 
     pub fn width(self: WindowVTable) u32 {

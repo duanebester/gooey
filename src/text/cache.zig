@@ -6,6 +6,7 @@
 //! Uses fixed-capacity hash table (no dynamic allocation after init).
 
 const std = @import("std");
+const atlas_mod = @import("atlas.zig");
 const builtin = @import("builtin");
 const types = @import("types.zig");
 const font_face_mod = @import("font_face.zig");
@@ -121,6 +122,15 @@ pub const CachedGlyph = struct {
     advance_x: f32,
     /// Whether this glyph uses the color atlas (emoji)
     is_color: bool,
+    /// Atlas size when this glyph was cached (for thread-safe UV calculation)
+    /// In multi-window scenarios, the atlas may grow between glyph caching and
+    /// UV calculation; storing the size ensures correct UVs.
+    atlas_size: u32,
+
+    /// Calculate UV coordinates using the cached atlas size
+    pub fn uv(self: CachedGlyph) atlas_mod.UVCoords {
+        return self.region.uv(self.atlas_size);
+    }
 };
 
 /// Entry in the glyph cache
@@ -352,8 +362,27 @@ pub const GlyphCache = struct {
             return err;
         };
 
+        // Growth succeeded - update atlas_size in all cached entries
+        // This is critical: cached glyphs store atlas_size for UV calculation.
+        // When atlas grows, pixel positions stay the same but UVs change.
+        self.updateAtlasSizeInCache();
+
         // Growth succeeded - try reserve again
         return try self.grayscale_atlas.reserve(width, height) orelse error.GlyphTooLarge;
+    }
+
+    /// Update atlas_size in all cached entries after atlas growth.
+    /// When the atlas grows, pixel positions are preserved but UV coordinates
+    /// change (e.g., x=100 in 512px atlas is UV=0.195, but in 1024px is UV=0.098).
+    /// This updates all cached glyphs to use the new atlas size for correct UVs.
+    fn updateAtlasSizeInCache(self: *Self) void {
+        const new_size = self.grayscale_atlas.size;
+
+        for (&self.entries) |*entry| {
+            if (entry.valid) {
+                entry.glyph.atlas_size = new_size;
+            }
+        }
     }
 
     /// Get a cached glyph with subpixel variant, or render and cache it
@@ -412,6 +441,7 @@ pub const GlyphCache = struct {
                 .offset_y = rasterized.offset_y,
                 .advance_x = rasterized.advance_x,
                 .is_color = rasterized.is_color,
+                .atlas_size = self.grayscale_atlas.size,
             };
         }
 
@@ -421,12 +451,16 @@ pub const GlyphCache = struct {
         // Copy rasterized data to atlas
         self.grayscale_atlas.set(region, self.render_buffer[0 .. rasterized.width * rasterized.height]);
 
+        // Capture atlas size AFTER reservation (may have grown)
+        const current_atlas_size = self.grayscale_atlas.size;
+
         return CachedGlyph{
             .region = region,
             .offset_x = rasterized.offset_x,
             .offset_y = rasterized.offset_y,
             .advance_x = rasterized.advance_x,
             .is_color = rasterized.is_color,
+            .atlas_size = current_atlas_size,
         };
     }
 
@@ -507,6 +541,7 @@ pub const GlyphCache = struct {
             );
         };
 
+        // Handle empty glyphs
         if (rasterized.width == 0 or rasterized.height == 0) {
             return CachedGlyph{
                 .region = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
@@ -514,13 +549,18 @@ pub const GlyphCache = struct {
                 .offset_y = rasterized.offset_y,
                 .advance_x = rasterized.advance_x,
                 .is_color = rasterized.is_color,
+                .atlas_size = self.grayscale_atlas.size,
             };
         }
 
         // Reserve space in atlas with eviction support
         const region = try self.reserveWithEviction(rasterized.width, rasterized.height);
 
+        // Copy rasterized data to atlas
         self.grayscale_atlas.set(region, self.render_buffer[0 .. rasterized.width * rasterized.height]);
+
+        // Capture atlas size AFTER reservation (may have grown)
+        const current_atlas_size = self.grayscale_atlas.size;
 
         return CachedGlyph{
             .region = region,
@@ -528,6 +568,7 @@ pub const GlyphCache = struct {
             .offset_y = rasterized.offset_y,
             .advance_x = rasterized.advance_x,
             .is_color = rasterized.is_color,
+            .atlas_size = current_atlas_size,
         };
     }
 

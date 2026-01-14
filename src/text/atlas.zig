@@ -7,6 +7,14 @@
 
 const std = @import("std");
 
+/// UV coordinates for texture sampling
+pub const UVCoords = struct {
+    u0: f32,
+    v0: f32,
+    u1: f32,
+    v1: f32,
+};
+
 /// A region within the atlas
 pub const Region = struct {
     x: u16,
@@ -14,7 +22,7 @@ pub const Region = struct {
     width: u16,
     height: u16,
 
-    pub fn uv(self: Region, atlas_size: u32) struct { u0: f32, v0: f32, u1: f32, v1: f32 } {
+    pub fn uv(self: Region, atlas_size: u32) UVCoords {
         const size_f: f32 = @floatFromInt(atlas_size);
         return .{
             .u0 = @as(f32, @floatFromInt(self.x)) / size_f,

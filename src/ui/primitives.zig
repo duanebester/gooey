@@ -64,10 +64,14 @@ pub fn text(content: []const u8, style: TextStyle) Text {
 }
 
 /// Rotating buffer pool for textFmt (allows multiple calls per frame)
-var fmt_buffers: [16][256]u8 = undefined;
-var fmt_buffer_index: usize = 0;
+/// Thread-local storage ensures each DisplayLink thread has its own buffers,
+/// preventing race conditions in multi-window scenarios where windows render
+/// concurrently on separate threads.
+threadlocal var fmt_buffers: [16][256]u8 = [_][256]u8{[_]u8{0} ** 256} ** 16;
+threadlocal var fmt_buffer_index: usize = 0;
 
 /// Create a formatted text element
+/// Thread-safe: uses thread-local buffers so concurrent render threads don't interfere.
 pub fn textFmt(comptime fmt: []const u8, args: anytype, style: TextStyle) Text {
     const buffer = &fmt_buffers[fmt_buffer_index];
     fmt_buffer_index = (fmt_buffer_index + 1) % fmt_buffers.len;

@@ -43,6 +43,12 @@ pub const WindowOptions = interface.WindowOptions;
 /// Renderer capabilities
 pub const RendererCapabilities = interface.RendererCapabilities;
 
+/// Unique identifier for windows
+pub const WindowId = interface.WindowId;
+
+/// Central registry for tracking windows by ID
+pub const WindowRegistry = interface.WindowRegistry;
+
 /// File dialog options (open)
 pub const PathPromptOptions = interface.PathPromptOptions;
 

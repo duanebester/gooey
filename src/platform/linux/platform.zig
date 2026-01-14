@@ -8,6 +8,9 @@ const posix = std.posix;
 const wayland = @import("wayland.zig");
 const interface_mod = @import("../interface.zig");
 const LinuxWindow = @import("window.zig").Window;
+const window_registry = @import("../window_registry.zig");
+const WindowId = window_registry.WindowId;
+const WindowRegistry = window_registry.WindowRegistry;
 const linux_input = @import("input.zig");
 const input = @import("../../input/events.zig");
 const clipboard = @import("clipboard.zig");
@@ -73,6 +76,12 @@ pub const LinuxPlatform = struct {
     running: bool = true,
     display: ?*wayland.Display = null,
 
+    /// Registry for tracking all windows by ID
+    window_registry: WindowRegistry,
+
+    /// Allocator for platform resources
+    allocator: std.mem.Allocator,
+
     // Global Wayland objects
     registry: ?*wayland.Registry = null,
     compositor: ?*wayland.Compositor = null,
@@ -136,11 +145,53 @@ pub const LinuxPlatform = struct {
         .graphics_backend = "Vulkan",
     };
 
+    // =========================================================================
+    // Window Registry
+    // =========================================================================
+
+    /// Register a window with the platform and return its ID.
+    pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
+        return self.window_registry.register(window);
+    }
+
+    /// Unregister a window by ID.
+    pub fn unregisterWindow(self: *Self, id: WindowId) void {
+        _ = self.window_registry.unregister(id);
+    }
+
+    /// Get a window by ID.
+    pub fn getWindow(self: *const Self, id: WindowId) ?*anyopaque {
+        return self.window_registry.get(id);
+    }
+
+    /// Get the active window ID.
+    pub fn getActiveWindowId(self: *const Self) ?WindowId {
+        return self.window_registry.getActiveWindow();
+    }
+
+    /// Set the active window by ID.
+    pub fn setActiveWindowId(self: *Self, id: ?WindowId) void {
+        self.window_registry.setActiveWindow(id);
+    }
+
+    /// Get the number of registered windows.
+    pub fn windowCount(self: *const Self) u32 {
+        return self.window_registry.count();
+    }
+
     /// Initialize platform - connects to Wayland and gets globals.
     /// IMPORTANT: After calling init(), you MUST call setupListeners() on the
     /// final memory location of the platform struct before using it.
     pub fn init() !Self {
-        var self = Self{};
+        return initWithAllocator(std.heap.page_allocator);
+    }
+
+    /// Initialize platform with a specific allocator.
+    pub fn initWithAllocator(allocator: std.mem.Allocator) !Self {
+        var self = Self{
+            .window_registry = WindowRegistry.init(allocator),
+            .allocator = allocator,
+        };
 
         // Connect to Wayland display
         self.display = wayland.wl_display_connect(null) orelse {
@@ -185,6 +236,9 @@ pub const LinuxPlatform = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Clean up window registry
+        self.window_registry.deinit();
+
         // Don't try to destroy Wayland objects if display is gone
         if (self.display == null) {
             self.running = false;

@@ -6,12 +6,19 @@ const geometry = @import("../../../core/geometry.zig");
 const scene_mod = @import("../../../scene/mod.zig");
 const shader_mod = @import("../../../core/shader.zig");
 const text_mod = @import("../../../text/mod.zig");
+const interface_mod = @import("../../interface.zig");
+const WindowId = interface_mod.WindowId;
 
 pub const WebWindow = struct {
     allocator: std.mem.Allocator,
     background_color: Color,
     size: Size,
     scale_factor: f64,
+
+    /// Unique identifier for this window in the WindowRegistry.
+    /// Set by WindowRegistry.register() after creation.
+    /// Note: Web only supports single window, but included for API compatibility.
+    window_id: WindowId = .invalid,
 
     const Self = @This();
 
@@ -107,6 +114,11 @@ pub const WebWindow = struct {
         return imports.isMouseInCanvas();
     }
 
+    /// Get the unique identifier for this window.
+    pub fn getWindowId(self: *const Self) WindowId {
+        return self.window_id;
+    }
+
     pub fn requestRender(_: *Self) void {
         // On web, rendering is driven by requestAnimationFrame
     }
@@ -117,6 +129,20 @@ pub const WebWindow = struct {
 
     pub fn setImeCursorRect(_: *Self, x: f32, y: f32, w: f32, h: f32) void {
         imports.setImeCursorPosition(x, y, w, h);
+    }
+
+    // =========================================================================
+    // Window Operations
+    // =========================================================================
+
+    /// Focus this window (no-op on web - single window only).
+    pub fn focus(_: *Self) void {
+        // Web has single window, always focused when page is active
+    }
+
+    /// Close this window (no-op on web - cannot close browser tab programmatically).
+    pub fn close(_: *Self) void {
+        // Web cannot close browser tab/window from script for security reasons
     }
 
     // =========================================================================

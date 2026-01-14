@@ -167,7 +167,7 @@ fn handleImageLoaded(index: usize, request_id: u32, result: ?wasm_loader.Decoded
             );
 
             // Cache the RGBA pixels in the atlas
-            _ = cx.gooey().image_atlas.cacheRgba(
+            _ = cx.gooey().image_atlas.*.cacheRgba(
                 key,
                 decoded.width,
                 decoded.height,

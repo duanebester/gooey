@@ -25,8 +25,19 @@ const Builder = ui_mod.Builder;
 // =============================================================================
 const MAX_RENDER_COMMANDS: usize = 65536;
 
-/// Render a single frame with Cx context
+/// Render a single frame with Cx context (comptime render function)
 pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
+    try renderFrameImpl(cx, render_fn);
+}
+
+/// Render a single frame with Cx context (runtime render function pointer)
+/// Used by WindowContext for per-window callbacks.
+pub fn renderFrameCxRuntime(cx: *Cx, render_fn: *const fn (*Cx) void) !void {
+    try renderFrameImpl(cx, render_fn);
+}
+
+/// Internal implementation shared by comptime and runtime variants
+fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Cache pointers at function start (avoids repeated method calls)
     const gooey = cx.gooey();
     const builder = cx.builder();

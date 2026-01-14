@@ -517,6 +517,13 @@ pub const TextSystem = struct {
     scale_factor: f32,
     /// Cache for shaped text runs (fixed capacity, pre-allocated)
     shape_cache: ShapedRunCache,
+    /// Mutex for thread-safe shape cache access in multi-window scenarios.
+    /// Multiple DisplayLink threads may call shapeText concurrently.
+    shape_cache_mutex: std.Thread.Mutex,
+    /// Mutex for thread-safe glyph cache/atlas access in multi-window scenarios.
+    /// Multiple DisplayLink threads may render glyphs concurrently, and the
+    /// atlas skyline data structure is not thread-safe.
+    glyph_cache_mutex: std.Thread.Mutex,
 
     const Self = @This();
 
@@ -535,6 +542,8 @@ pub const TextSystem = struct {
             .shaper = null,
             .scale_factor = scale,
             .shape_cache = ShapedRunCache.init(),
+            .shape_cache_mutex = .{},
+            .glyph_cache_mutex = .{},
         };
     }
 
@@ -554,6 +563,8 @@ pub const TextSystem = struct {
         // Initialize caches in-place to avoid large stack temporaries
         try self.cache.initInPlace(allocator, scale);
         self.shape_cache.initInPlace();
+        self.shape_cache_mutex = .{};
+        self.glyph_cache_mutex = .{};
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
@@ -637,13 +648,26 @@ pub const TextSystem = struct {
             undefined;
 
         if (use_cache) {
+            // Lock for thread-safe cache access (multiple DisplayLink threads in multi-window)
+            self.shape_cache_mutex.lock();
+            defer self.shape_cache_mutex.unlock();
+
             // Check font hasn't changed
             self.shape_cache.checkFont(font_ptr);
 
             // Check cache first
             if (self.shape_cache.get(cache_key)) |cached_run| {
                 if (stats) |s| s.recordShapeCacheHit();
-                return cached_run;
+                // Copy glyphs to owned memory to prevent use-after-free race.
+                // The cache entry may be evicted by another thread after we release
+                // shape_cache_mutex, so we must not return a slice pointing into cache memory.
+                const glyphs_copy = try self.allocator.alloc(types.ShapedGlyph, cached_run.glyphs.len);
+                @memcpy(glyphs_copy, cached_run.glyphs);
+                return types.ShapedRun{
+                    .glyphs = glyphs_copy,
+                    .width = cached_run.width,
+                    .owned = true,
+                };
             }
         }
 
@@ -674,6 +698,9 @@ pub const TextSystem = struct {
 
         // Cache the result for next time (reuse key computed earlier)
         if (use_cache) {
+            // Lock for thread-safe cache write
+            self.shape_cache_mutex.lock();
+            defer self.shape_cache_mutex.unlock();
             self.shape_cache.put(cache_key, result);
         }
 
@@ -681,9 +708,15 @@ pub const TextSystem = struct {
     }
 
     /// Get cached glyph with subpixel variant (renders if needed)
-    pub inline fn getGlyphSubpixel(self: *Self, glyph_id: u16, font_size: f32, subpixel_x: u8, subpixel_y: u8) !CachedGlyph {
+    /// Thread-safe: protected by glyph_cache_mutex for multi-window scenarios.
+    pub fn getGlyphSubpixel(self: *Self, glyph_id: u16, font_size: f32, subpixel_x: u8, subpixel_y: u8) !CachedGlyph {
         std.debug.assert(font_size > 0);
         const face = try self.getFontFace();
+
+        // Lock for thread-safe glyph cache/atlas access (multiple DisplayLink threads)
+        self.glyph_cache_mutex.lock();
+        defer self.glyph_cache_mutex.unlock();
+
         return self.cache.getOrRenderSubpixel(face, glyph_id, font_size, subpixel_x, subpixel_y);
     }
 
@@ -781,6 +814,7 @@ pub const TextSystem = struct {
     }
 
     /// Get the glyph atlas for GPU upload
+    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
     pub inline fn getAtlas(self: *const Self) *const Atlas {
         return self.cache.getAtlas();
     }
@@ -790,8 +824,32 @@ pub const TextSystem = struct {
         return self.cache.getGeneration();
     }
 
+    /// Thread-safe atlas access for GPU upload.
+    /// Holds the glyph_cache_mutex while calling the callback, ensuring no other
+    /// thread can modify the atlas (grow, reserve, etc.) during the upload.
+    /// Returns the callback's return value.
+    pub fn withAtlasLocked(self: *Self, comptime T: type, callback: *const fn (*const Atlas) T) T {
+        self.glyph_cache_mutex.lock();
+        defer self.glyph_cache_mutex.unlock();
+        return callback(self.cache.getAtlas());
+    }
+
+    /// Thread-safe atlas access with user data for GPU upload.
+    /// Holds the glyph_cache_mutex while calling the callback.
+    pub fn withAtlasLockedCtx(
+        self: *Self,
+        comptime Ctx: type,
+        ctx: Ctx,
+        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
+    ) !void {
+        self.glyph_cache_mutex.lock();
+        defer self.glyph_cache_mutex.unlock();
+        return callback(ctx, self.cache.getAtlas());
+    }
+
     /// Get cached glyph from a fallback font
-    pub inline fn getGlyphFallback(
+    /// Thread-safe: protected by glyph_cache_mutex for multi-window scenarios.
+    pub fn getGlyphFallback(
         self: *Self,
         font_ptr: *anyopaque,
         glyph_id: u16,
@@ -800,6 +858,11 @@ pub const TextSystem = struct {
         subpixel_y: u8,
     ) !CachedGlyph {
         std.debug.assert(font_size > 0);
+
+        // Lock for thread-safe glyph cache/atlas access (multiple DisplayLink threads)
+        self.glyph_cache_mutex.lock();
+        defer self.glyph_cache_mutex.unlock();
+
         return self.cache.getOrRenderFallback(font_ptr, glyph_id, font_size, subpixel_x, subpixel_y);
     }
 

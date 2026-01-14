@@ -123,8 +123,11 @@ pub const Gooey = struct {
     text_system: *TextSystem,
     text_system_owned: bool = false,
 
-    svg_atlas: svg_mod.SvgAtlas,
-    image_atlas: image_mod.ImageAtlas,
+    // SVG and Image atlases (pointers for resource sharing)
+    svg_atlas: *svg_mod.SvgAtlas,
+    svg_atlas_owned: bool = false,
+    image_atlas: *image_mod.ImageAtlas,
+    image_atlas_owned: bool = false,
 
     // Widgets (retained across frames)
     widgets: WidgetStore,
@@ -196,7 +199,41 @@ pub const Gooey = struct {
     /// Frame counter for periodic screen reader checks
     a11y_check_counter: u32 = 0,
 
+    // Per-window root state for handler callbacks (multi-window support)
+    /// Type-erased pointer to this window's root state
+    root_state_ptr: ?*anyopaque = null,
+    /// Type ID for runtime type checking of root state
+    root_state_type_id: usize = 0,
+
     const Self = @This();
+
+    /// Get the type ID for a given type (used for runtime type checking).
+    pub fn typeId(comptime T: type) usize {
+        const name_ptr: [*]const u8 = @typeName(T).ptr;
+        return @intFromPtr(name_ptr);
+    }
+
+    /// Set the root state pointer for this window's handler callbacks
+    pub fn setRootState(self: *Self, comptime State: type, state_ptr: *State) void {
+        self.root_state_ptr = @ptrCast(state_ptr);
+        self.root_state_type_id = typeId(State);
+    }
+
+    /// Clear the root state pointer
+    pub fn clearRootState(self: *Self) void {
+        self.root_state_ptr = null;
+        self.root_state_type_id = 0;
+    }
+
+    /// Get the root state pointer with type checking
+    pub fn getRootState(self: *Self, comptime State: type) ?*State {
+        if (self.root_state_ptr) |ptr| {
+            if (self.root_state_type_id == typeId(State)) {
+                return @ptrCast(@alignCast(ptr));
+            }
+        }
+        return null;
+    }
 
     /// Initialize Gooey creating and owning all resources
     pub fn initOwned(allocator: std.mem.Allocator, window: *Window) !Self {
@@ -241,6 +278,22 @@ pub const Gooey = struct {
         errdefer allocator.destroy(dispatch);
         dispatch.* = DispatchTree.init(allocator);
 
+        // Create SVG atlas (owned)
+        const svg_atlas = allocator.create(svg_mod.SvgAtlas) catch return error.OutOfMemory;
+        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor);
+        errdefer {
+            svg_atlas.deinit();
+            allocator.destroy(svg_atlas);
+        }
+
+        // Create image atlas (owned)
+        const image_atlas = allocator.create(image_mod.ImageAtlas) catch return error.OutOfMemory;
+        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor);
+        errdefer {
+            image_atlas.deinit();
+            allocator.destroy(image_atlas);
+        }
+
         var result: Self = .{
             .allocator = allocator,
             .layout = layout_engine,
@@ -253,8 +306,10 @@ pub const Gooey = struct {
             .focus = FocusManager.init(allocator),
             .text_system = text_system,
             .text_system_owned = true,
-            .svg_atlas = try svg_mod.SvgAtlas.init(allocator, window.scale_factor),
-            .image_atlas = try image_mod.ImageAtlas.init(allocator, window.scale_factor),
+            .svg_atlas = svg_atlas,
+            .svg_atlas_owned = true,
+            .image_atlas = image_atlas,
+            .image_atlas_owned = true,
             .widgets = WidgetStore.init(allocator),
             .window = window,
             .width = @floatCast(window.size.width),
@@ -347,8 +402,18 @@ pub const Gooey = struct {
         self.keymap = Keymap.init(allocator);
         self.focus = FocusManager.init(allocator);
         self.widgets = WidgetStore.init(allocator);
-        self.svg_atlas = try svg_mod.SvgAtlas.init(allocator, window.scale_factor);
-        self.image_atlas = try image_mod.ImageAtlas.init(allocator, window.scale_factor);
+
+        // Create SVG atlas (owned)
+        const svg_atlas = allocator.create(svg_mod.SvgAtlas) catch return error.OutOfMemory;
+        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor);
+        self.svg_atlas = svg_atlas;
+        self.svg_atlas_owned = true;
+
+        // Create image atlas (owned)
+        const image_atlas = allocator.create(image_mod.ImageAtlas) catch return error.OutOfMemory;
+        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor);
+        self.image_atlas = image_atlas;
+        self.image_atlas_owned = true;
 
         // Scalar fields
         self.width = @floatCast(window.size.width);
@@ -374,6 +439,183 @@ pub const Gooey = struct {
         self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
     }
 
+    /// Initialize Gooey with shared resources (text system, SVG atlas, image atlas).
+    /// Used by MultiWindowApp to share expensive resources across windows.
+    /// The caller retains ownership of the shared resources.
+    pub fn initWithSharedResources(
+        allocator: std.mem.Allocator,
+        window: *Window,
+        shared_text_system: *TextSystem,
+        shared_svg_atlas: *svg_mod.SvgAtlas,
+        shared_image_atlas: *image_mod.ImageAtlas,
+    ) !Self {
+        // Assertions: validate inputs
+        std.debug.assert(@intFromPtr(shared_text_system) != 0);
+        std.debug.assert(@intFromPtr(shared_svg_atlas) != 0);
+        std.debug.assert(@intFromPtr(shared_image_atlas) != 0);
+
+        // Create layout engine (owned)
+        const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
+        layout_engine.* = LayoutEngine.init(allocator);
+        errdefer {
+            layout_engine.deinit();
+            allocator.destroy(layout_engine);
+        }
+
+        // Create scene (owned)
+        const scene = allocator.create(Scene) catch return error.OutOfMemory;
+        scene.* = Scene.init(allocator);
+        errdefer {
+            scene.deinit();
+            allocator.destroy(scene);
+        }
+
+        // Enable viewport culling with initial window size
+        scene.setViewport(
+            @floatCast(window.size.width),
+            @floatCast(window.size.height),
+        );
+        scene.enableCulling();
+
+        // Set up text measurement callback using shared text system
+        layout_engine.setMeasureTextFn(measureTextCallback, shared_text_system);
+
+        // Create dispatch tree (owned)
+        const dispatch = try allocator.create(DispatchTree);
+        errdefer allocator.destroy(dispatch);
+        dispatch.* = DispatchTree.init(allocator);
+
+        var result: Self = .{
+            .allocator = allocator,
+            .layout = layout_engine,
+            .layout_owned = true,
+            .scene = scene,
+            .scene_owned = true,
+            .dispatch = dispatch,
+            .entities = EntityMap.init(allocator),
+            .keymap = Keymap.init(allocator),
+            .focus = FocusManager.init(allocator),
+            // Shared resources (not owned)
+            .text_system = shared_text_system,
+            .text_system_owned = false,
+            .svg_atlas = shared_svg_atlas,
+            .svg_atlas_owned = false,
+            .image_atlas = shared_image_atlas,
+            .image_atlas_owned = false,
+            .widgets = WidgetStore.init(allocator),
+            .window = window,
+            .width = @floatCast(window.size.width),
+            .height = @floatCast(window.size.height),
+            .scale_factor = @floatCast(window.scale_factor),
+            // Accessibility: static init, no allocations
+            .a11y_tree = a11y.Tree.init(),
+            .a11y_platform_bridge = undefined,
+            .a11y_bridge = undefined,
+        };
+
+        // Initialize platform-specific accessibility bridge
+        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
+
+        return result;
+    }
+
+    /// Initialize Gooey in-place with shared resources.
+    /// Used by MultiWindowApp on WASM to avoid stack overflow.
+    /// Marked noinline to prevent stack accumulation.
+    pub noinline fn initWithSharedResourcesPtr(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        window: *Window,
+        shared_text_system: *TextSystem,
+        shared_svg_atlas: *svg_mod.SvgAtlas,
+        shared_image_atlas: *image_mod.ImageAtlas,
+    ) !void {
+        // Assertions: validate inputs
+        std.debug.assert(@intFromPtr(shared_text_system) != 0);
+        std.debug.assert(@intFromPtr(shared_svg_atlas) != 0);
+        std.debug.assert(@intFromPtr(shared_image_atlas) != 0);
+
+        // Create layout engine (owned)
+        const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
+        layout_engine.* = LayoutEngine.init(allocator);
+        errdefer {
+            layout_engine.deinit();
+            allocator.destroy(layout_engine);
+        }
+
+        // Create scene (owned)
+        const scene = allocator.create(Scene) catch return error.OutOfMemory;
+        scene.* = Scene.init(allocator);
+        errdefer {
+            scene.deinit();
+            allocator.destroy(scene);
+        }
+
+        // Enable viewport culling with initial window size
+        scene.setViewport(
+            @floatCast(window.size.width),
+            @floatCast(window.size.height),
+        );
+        scene.enableCulling();
+
+        // Set up text measurement callback using shared text system
+        layout_engine.setMeasureTextFn(measureTextCallback, shared_text_system);
+
+        // Create dispatch tree (owned)
+        const dispatch = try allocator.create(DispatchTree);
+        errdefer allocator.destroy(dispatch);
+        dispatch.* = DispatchTree.init(allocator);
+
+        // Field-by-field init avoids stack temp from struct literal
+        self.allocator = allocator;
+        self.layout = layout_engine;
+        self.layout_owned = true;
+        self.scene = scene;
+        self.scene_owned = true;
+        self.dispatch = dispatch;
+
+        // Shared resources (not owned)
+        self.text_system = shared_text_system;
+        self.text_system_owned = false;
+        self.svg_atlas = shared_svg_atlas;
+        self.svg_atlas_owned = false;
+        self.image_atlas = shared_image_atlas;
+        self.image_atlas_owned = false;
+
+        self.window = window;
+
+        // Small structs
+        self.entities = EntityMap.init(allocator);
+        self.keymap = Keymap.init(allocator);
+        self.focus = FocusManager.init(allocator);
+        self.widgets = WidgetStore.init(allocator);
+
+        // Scalar fields
+        self.width = @floatCast(window.size.width);
+        self.height = @floatCast(window.size.height);
+        self.scale_factor = @floatCast(window.scale_factor);
+        self.frame_count = 0;
+        self.needs_render = false;
+        self.hovered_layout_id = null;
+        self.last_mouse_x = 0;
+        self.last_mouse_y = 0;
+        self.hovered_ancestor_count = 0;
+        self.hover_changed = false;
+        self.debugger = .{};
+
+        // Accessibility
+        self.a11y_tree.initInPlace();
+        self.a11y_enabled = false;
+        self.a11y_check_counter = 0;
+
+        // Platform-specific accessibility bridge
+        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
+    }
+
     pub fn deinit(self: *Self) void {
         // Clean up accessibility bridge
         self.a11y_bridge.deinit();
@@ -382,8 +624,14 @@ pub const Gooey = struct {
         self.focus.deinit();
         self.entities.deinit();
 
-        self.svg_atlas.deinit();
-        self.image_atlas.deinit();
+        if (self.svg_atlas_owned) {
+            self.svg_atlas.deinit();
+            self.allocator.destroy(self.svg_atlas);
+        }
+        if (self.image_atlas_owned) {
+            self.image_atlas.deinit();
+            self.allocator.destroy(self.image_atlas);
+        }
 
         // Clean up dispatch tree
         self.dispatch.deinit();
@@ -417,7 +665,7 @@ pub const Gooey = struct {
         self.frame_count += 1;
         self.widgets.beginFrame();
         self.focus.beginFrame();
-        self.image_atlas.beginFrame();
+        self.image_atlas.*.beginFrame();
 
         // Clear stale entity observations from last frame
         self.entities.beginFrame();
