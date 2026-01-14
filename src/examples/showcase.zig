@@ -362,7 +362,15 @@ const NavLogo = struct {
             .direction = .row,
             .alignment = .{ .cross = .center, .main = .center },
         }, .{
-            gooey.Image{ .src = "assets/gooey.png", .size = 28, .fit = .cover },
+            // Image component handles WASM async loading automatically!
+            // - On native: loads from file system directly
+            // - On WASM: fetches via browser, shows placeholder while loading
+            gooey.Image{
+                .src = "assets/gooey.png",
+                .size = 28,
+                .fit = .cover,
+                .placeholder = t.surface, // Shown while loading on WASM
+            },
             ui.text("Gooey", .{ .size = 24, .color = t.text }),
         }));
     }

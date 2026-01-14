@@ -257,6 +257,10 @@ pub const ImagePrimitive = struct {
     /// Opacity (0-1)
     opacity: f32 = 1,
 
+    /// Placeholder color shown while loading (WASM async loads)
+    /// If null, a default gray placeholder is shown
+    placeholder_color: ?Color = null,
+
     pub const primitive_type: PrimitiveType = .image;
 };
 

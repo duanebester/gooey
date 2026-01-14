@@ -2874,6 +2874,7 @@ pub const Builder = struct {
             .tint = prim.tint,
             .grayscale = prim.grayscale,
             .opacity = prim.opacity,
+            .placeholder_color = prim.placeholder_color,
         }) catch return;
     }
 

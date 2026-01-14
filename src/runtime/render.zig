@@ -13,6 +13,7 @@
 //! - Pixel snapping is applied for crisp rendering on retina displays
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // Core imports
 const gooey_mod = @import("../context/gooey.zig");
@@ -28,6 +29,92 @@ const Gooey = gooey_mod.Gooey;
 const Hsla = scene_mod.Hsla;
 const Quad = scene_mod.Quad;
 const Shadow = scene_mod.Shadow;
+const Color = @import("../ui/styles.zig").Color;
+
+// WASM async image loading
+const is_wasm = builtin.cpu.arch == .wasm32;
+const wasm_imports = if (is_wasm) @import("../platform/wgpu/web/imports.zig") else struct {
+    pub fn err(comptime _: []const u8, _: anytype) void {}
+    pub fn log(comptime _: []const u8, _: anytype) void {}
+};
+const wasm_loader = if (is_wasm)
+    @import("../platform/wgpu/web/image_loader.zig")
+else
+    struct {
+        pub const DecodedImage = struct {
+            width: u32,
+            height: u32,
+            pixels: []u8,
+            owned: bool,
+            pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
+        };
+        pub fn loadFromUrlAsync(_: []const u8, _: anytype) ?u32 {
+            return null;
+        }
+        pub fn init(_: std.mem.Allocator) void {}
+    };
+
+// =============================================================================
+// WASM Image Loading State
+// =============================================================================
+
+/// Loading status for async image loads
+const LoadStatus = enum {
+    not_started,
+    loading,
+    cached,
+    failed,
+};
+
+/// Pending load entry (keyed by ImageKey to avoid hash collisions)
+const PendingLoad = struct {
+    request_id: u32,
+    status: LoadStatus,
+};
+
+/// Maximum concurrent image loads (per CLAUDE.md: put a limit on everything)
+const MAX_PENDING_LOADS: usize = 64;
+
+/// Global state for WASM image loading (WASM is single-threaded, so this is safe)
+/// Uses ImageKey as map key to avoid hash collisions when same source is requested
+/// with different dimensions/scale factors
+var g_pending_loads: std.AutoHashMap(image_mod.ImageKey, PendingLoad) = undefined;
+var g_gooey_ctx: ?*Gooey = null;
+var g_allocator: ?std.mem.Allocator = null;
+var g_wasm_loader_initialized: bool = false;
+
+/// Initialize WASM image loading (called once at startup)
+pub fn initWasmImageLoader(allocator: std.mem.Allocator) void {
+    // Assert allocator is valid (has non-null vtable)
+    std.debug.assert(@intFromPtr(allocator.vtable) != 0);
+
+    if (g_wasm_loader_initialized) return;
+
+    if (is_wasm) {
+        wasm_loader.init(allocator);
+    }
+    g_pending_loads = std.AutoHashMap(image_mod.ImageKey, PendingLoad).init(allocator);
+    g_allocator = allocator;
+    g_wasm_loader_initialized = true;
+
+    // Assert initialization completed successfully
+    std.debug.assert(g_wasm_loader_initialized);
+}
+
+/// Deinitialize WASM image loader (for graceful shutdown)
+pub fn deinitWasmImageLoader() void {
+    if (!g_wasm_loader_initialized) return;
+
+    // Clear all pending loads
+    g_pending_loads.deinit();
+    g_gooey_ctx = null;
+    g_allocator = null;
+    g_wasm_loader_initialized = false;
+
+    // Assert cleanup completed
+    std.debug.assert(!g_wasm_loader_initialized);
+    std.debug.assert(g_gooey_ctx == null);
+}
 
 // =============================================================================
 // Main Entry Point
@@ -223,6 +310,7 @@ fn renderSvg(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 }
 
 /// Render image with atlas caching and fit modes
+/// On WASM, handles async loading transparently - shows placeholder while loading
 fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
     const img_data = cmd.data.image;
     const b = cmd.bounding_box;
@@ -247,9 +335,33 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
             scale_factor,
         );
 
+    // On WASM, handle async loading for non-URL sources (relative paths)
+    if (is_wasm and !is_url) {
+        // Check if already cached
+        if (gooey_ctx.image_atlas.*.get(key) == null) {
+            // Not cached - check/start async load
+            const status = ensureWasmImageLoading(img_data.source, key, gooey_ctx);
+
+            switch (status) {
+                .loading, .not_started => {
+                    // Show placeholder while loading
+                    try renderImagePlaceholder(gooey_ctx, cmd);
+                    return;
+                },
+                .failed => {
+                    // Show error placeholder
+                    try renderImageError(gooey_ctx, cmd);
+                    return;
+                },
+                .cached => {}, // Continue to normal rendering
+            }
+        }
+    }
+
     // Check cache or load synchronously (URLs handled by async loader)
     const cached = gooey_ctx.image_atlas.*.get(key) orelse blk: {
         if (is_url) return; // URLs handled by async loader
+        if (is_wasm) return; // WASM uses async loading above
 
         var decoded = image_mod.loader.loadFromPath(
             gooey_ctx.allocator,
@@ -366,6 +478,191 @@ inline fn snapToPixelGrid(x: f32, y: f32, scale_factor: f32) SnappedPosition {
         .x = @floor(device_x) / scale_factor,
         .y = @floor(device_y) / scale_factor,
     };
+}
+
+/// Render a placeholder box while image is loading
+fn renderImagePlaceholder(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+    const img_data = cmd.data.image;
+    const b = cmd.bounding_box;
+
+    // Use provided placeholder color or default gray
+    const placeholder_color = img_data.placeholder_color orelse Color.fromHex("#e0e0e0");
+
+    const quad = Quad{
+        .bounds_origin_x = b.x,
+        .bounds_origin_y = b.y,
+        .bounds_size_width = b.width,
+        .bounds_size_height = b.height,
+        .background = render_bridge.colorToHsla(placeholder_color),
+        .corner_radii = if (img_data.corner_radius) |cr| .{
+            .top_left = cr.top_left,
+            .top_right = cr.top_right,
+            .bottom_left = cr.bottom_left,
+            .bottom_right = cr.bottom_right,
+        } else .{},
+    };
+
+    if (gooey_ctx.scene.hasActiveClip()) {
+        try gooey_ctx.scene.insertQuadClipped(quad);
+    } else {
+        try gooey_ctx.scene.insertQuad(quad);
+    }
+}
+
+/// Render an error indicator when image fails to load
+fn renderImageError(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+    const img_data = cmd.data.image;
+    const b = cmd.bounding_box;
+
+    // Show a subtle red-tinted placeholder for errors
+    const error_color = Color.fromHex("#ffcccc");
+
+    const quad = Quad{
+        .bounds_origin_x = b.x,
+        .bounds_origin_y = b.y,
+        .bounds_size_width = b.width,
+        .bounds_size_height = b.height,
+        .background = render_bridge.colorToHsla(error_color),
+        // Respect corner radius for visual consistency with placeholder
+        .corner_radii = if (img_data.corner_radius) |cr| .{
+            .top_left = cr.top_left,
+            .top_right = cr.top_right,
+            .bottom_left = cr.bottom_left,
+            .bottom_right = cr.bottom_right,
+        } else .{},
+    };
+
+    if (gooey_ctx.scene.hasActiveClip()) {
+        try gooey_ctx.scene.insertQuadClipped(quad);
+    } else {
+        try gooey_ctx.scene.insertQuad(quad);
+    }
+}
+
+/// Maximum source path length (per CLAUDE.md: put a limit on everything)
+const MAX_SOURCE_PATH_LEN: usize = 4096;
+
+/// Ensure an image is loading on WASM (starts load if not already in progress)
+fn ensureWasmImageLoading(source: []const u8, key: image_mod.ImageKey, gooey_ctx: *Gooey) LoadStatus {
+    // Assert source validity (per CLAUDE.md: minimum 2 assertions per function)
+    std.debug.assert(source.len > 0); // Source must not be empty
+    std.debug.assert(source.len < MAX_SOURCE_PATH_LEN); // Source path must be reasonable length
+
+    if (!is_wasm) return .failed;
+
+    // Initialize if needed
+    if (!g_wasm_loader_initialized) {
+        initWasmImageLoader(gooey_ctx.allocator);
+    }
+
+    // Check if already cached in atlas
+    if (gooey_ctx.image_atlas.*.contains(key)) {
+        // Clean up any stale pending entry
+        _ = g_pending_loads.remove(key);
+        return .cached;
+    }
+
+    // Check pending loads (use full ImageKey to avoid hash collisions)
+    if (g_pending_loads.get(key)) |entry| {
+        return entry.status;
+    }
+
+    // Start new load (check capacity limit per CLAUDE.md)
+    if (g_pending_loads.count() >= MAX_PENDING_LOADS) {
+        wasm_imports.err("WASM image loader: max pending loads ({d}) reached", .{MAX_PENDING_LOADS});
+        return .failed;
+    }
+
+    // Store context for callback
+    g_gooey_ctx = gooey_ctx;
+
+    // Start async fetch
+    const request_id = wasm_loader.loadFromUrlAsync(source, onWasmImageLoaded) orelse {
+        wasm_imports.err("WASM image loader: failed to start load for {s}", .{source});
+        return .failed;
+    };
+
+    // Track the pending load (keyed by full ImageKey to avoid collisions)
+    g_pending_loads.put(key, .{
+        .request_id = request_id,
+        .status = .loading,
+    }) catch {
+        wasm_imports.err("WASM image loader: failed to track load for {s}", .{source});
+        return .failed;
+    };
+
+    return .loading;
+}
+
+/// Callback when WASM image load completes
+fn onWasmImageLoaded(request_id: u32, result: ?wasm_loader.DecodedImage) void {
+    // Assert loader is initialized (per CLAUDE.md: minimum 2 assertions per function)
+    std.debug.assert(g_wasm_loader_initialized);
+    std.debug.assert(g_allocator != null); // Allocator must be set during init
+
+    // Find the pending entry by request_id
+    var found_key: ?image_mod.ImageKey = null;
+
+    var iter = g_pending_loads.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.request_id == request_id) {
+            found_key = entry.key_ptr.*;
+            break;
+        }
+    }
+
+    if (found_key == null) {
+        // Request was cancelled or unknown - clean up decoded image
+        if (result) |decoded| {
+            if (g_allocator) |alloc| {
+                var mutable = decoded;
+                mutable.deinit(alloc);
+            }
+        }
+        return;
+    }
+
+    const key = found_key.?;
+
+    if (result) |decoded| {
+        // Assert decoded image has valid dimensions
+        std.debug.assert(decoded.width > 0);
+        std.debug.assert(decoded.height > 0);
+
+        // Cache the decoded image
+        var cache_success = false;
+        if (g_gooey_ctx) |gooey_ctx| {
+            cache_success = if (gooey_ctx.image_atlas.*.cacheRgba(
+                key,
+                decoded.width,
+                decoded.height,
+                decoded.pixels,
+            )) |_| true else |_| false;
+
+            // Request redraw to show the loaded image
+            if (cache_success) {
+                gooey_ctx.requestRender();
+            }
+        }
+
+        // Free decoded image memory
+        if (g_allocator) |alloc| {
+            var mutable = decoded;
+            mutable.deinit(alloc);
+        }
+
+        // Remove completed entry from pending loads
+        // Entry is no longer needed - image is cached or failed
+        _ = g_pending_loads.remove(key);
+
+        if (!cache_success) {
+            wasm_imports.err("WASM image loader: failed to cache image for request {d}", .{request_id});
+        }
+    } else {
+        // Load failed - remove from pending so it can be retried later
+        _ = g_pending_loads.remove(key);
+        wasm_imports.err("WASM image loader: load failed for request {d}", .{request_id});
+    }
 }
 
 /// Adjust UV coordinates based on fit result (for cropping in cover mode)

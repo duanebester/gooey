@@ -127,6 +127,8 @@ pub const ImageData = struct {
     grayscale: f32 = 0,
     /// Opacity (0.0 = transparent, 1.0 = opaque)
     opacity: f32 = 1,
+    /// Placeholder color for WASM async loading (null = default gray)
+    placeholder_color: ?Color = null,
 };
 
 /// Data for scissor/clip regions

@@ -213,6 +213,8 @@ pub const ImageData = struct {
     tint: ?Color = null,
     grayscale: f32 = 0,
     opacity: f32 = 1,
+    /// Placeholder color for WASM async loading (null = default gray)
+    placeholder_color: ?Color = null,
 };
 
 pub const ComputedLayout = struct {
@@ -476,6 +478,7 @@ pub const LayoutEngine = struct {
             .tint = data.tint,
             .grayscale = data.grayscale,
             .opacity = data.opacity,
+            .placeholder_color = data.placeholder_color,
         };
     }
 
@@ -1600,6 +1603,7 @@ pub const LayoutEngine = struct {
                 .tint = id.tint,
                 .grayscale = id.grayscale,
                 .opacity = id.opacity * opacity,
+                .placeholder_color = id.placeholder_color,
             } },
         });
     }

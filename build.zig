@@ -535,6 +535,9 @@ pub fn build(b: *std.Build) void {
             .dest_dir = .{ .override = .{ .custom = "web" } },
         }).step);
         wasm_step.dependOn(&b.addInstallFile(b.path("web/index.html"), "web/index.html").step);
+
+        // Copy assets for WASM builds (images need to be fetched via URL)
+        wasm_step.dependOn(&b.addInstallFile(b.path("assets/gooey.png"), "web/assets/gooey.png").step);
     }
 
     // Individual examples

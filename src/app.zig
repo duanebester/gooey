@@ -33,6 +33,7 @@ const platform = @import("platform/mod.zig");
 
 // Runtime module (handles frame rendering, input, event loop)
 const runtime = @import("runtime/mod.zig");
+const runtime_render = @import("runtime/render.zig");
 
 // Core imports
 const gooey_mod = @import("context/gooey.zig");
@@ -240,6 +241,9 @@ pub fn WebApp(
             g_renderer.?.uploadSvgAtlas(g_gooey.?.svg_atlas);
 
             g_initialized = true;
+
+            // Initialize WASM image loader for transparent async image loading
+            runtime_render.initWasmImageLoader(allocator);
 
             // Call user init callback if provided
             if (on_init) |init_fn| {

@@ -3,11 +3,19 @@
 //! Renders an image from a file path or embedded asset. Handles loading,
 //! caching, and GPU upload automatically - just pass the source and style.
 //!
+//! ## Cross-Platform Support
+//!
+//! The Image component works transparently on both native and WASM:
+//! - **Native**: Loads from file system synchronously
+//! - **WASM**: Fetches via browser APIs asynchronously, shows placeholder while loading
+//!
+//! No platform-specific code needed - it "just works"!
+//!
 //! ## Usage
 //! ```zig
 //! const gooey = @import("gooey");
 //!
-//! // Simple image from path
+//! // Simple image from path (works on native AND WASM)
 //! gooey.Image{ .src = "assets/logo.png" }
 //!
 //! // With explicit sizing
@@ -21,6 +29,9 @@
 //!
 //! // Grayscale + tinted
 //! gooey.Image{ .src = "icon.png", .grayscale = 1.0, .tint = gooey.Color.blue }
+//!
+//! // With placeholder color (shown while loading on WASM)
+//! gooey.Image{ .src = "assets/logo.png", .size = 28, .placeholder = theme.surface }
 //! ```
 
 const std = @import("std");
@@ -60,6 +71,10 @@ pub const Image = struct {
 
     /// Opacity (0.0 = transparent, 1.0 = opaque)
     opacity: f32 = 1,
+
+    /// Placeholder color shown while loading on WASM
+    /// If null, uses a default gray color
+    placeholder: ?Color = null,
 
     /// Alt text for accessibility - describes the image for screen readers
     /// If null, image is treated as decorative (presentation role)
@@ -118,6 +133,7 @@ pub const Image = struct {
                 .tint = self.tint,
                 .grayscale = self.grayscale,
                 .opacity = self.opacity,
+                .placeholder_color = self.placeholder,
             },
         });
     }
