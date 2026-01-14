@@ -537,7 +537,7 @@ pub fn build(b: *std.Build) void {
         wasm_step.dependOn(&b.addInstallFile(b.path("web/index.html"), "web/index.html").step);
 
         // Copy assets for WASM builds (images need to be fetched via URL)
-        wasm_step.dependOn(&b.addInstallFile(b.path("assets/gooey.png"), "web/assets/gooey.png").step);
+        wasm_step.dependOn(&b.addInstallFile(b.path("assets/gooey-logo-final.png"), "web/assets/gooey-logo-final.png").step);
     }
 
     // Individual examples

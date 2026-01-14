@@ -366,8 +366,9 @@ const NavLogo = struct {
             // - On native: loads from file system directly
             // - On WASM: fetches via browser, shows placeholder while loading
             gooey.Image{
-                .src = "assets/gooey.png",
-                .size = 28,
+                .src = "assets/gooey-logo-final.png",
+                .width = 32,
+                .height = 20,
                 .fit = .cover,
                 .placeholder = t.surface, // Shown while loading on WASM
             },

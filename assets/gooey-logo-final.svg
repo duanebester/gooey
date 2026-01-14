@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 320" width="512" height="320">
+  <!-- Gooey Logo - Brackets with circular G/refresh icon -->
+
+  <!-- Left bracket [ -->
+  <path fill="#f7a41d" d="
+    M 0,0
+    L 100,0
+    L 100,60
+    L 60,60
+    L 60,260
+    L 100,260
+    L 100,320
+    L 0,320
+    Z
+  "/>
+
+  <!-- Right bracket ] -->
+  <path fill="#f7a41d" d="
+    M 512,0
+    L 412,0
+    L 412,60
+    L 452,60
+    L 452,260
+    L 412,260
+    L 412,320
+    L 512,320
+    Z
+  "/>
+
+  <!-- Circular G body - centered between brackets -->
+  <path fill="#f7a41d" d="
+    M 360,50
+    L 360,100
+    L 300,100
+    C 215,100 170,125 170,160
+    C 170,195 215,220 300,220
+    L 300,180
+    L 345,180
+    L 345,270
+    L 276,270
+    C 160,270 125,215 125,160
+    C 125,105 170,50 276,50
+    Z
+  "/>
+
+  <!-- Arrow head pointing UP - connected to crossbar -->
+  <polygon fill="#f7a41d" points="322,110 372,180 272,180"/>
+</svg>

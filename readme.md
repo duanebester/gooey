@@ -4,9 +4,9 @@ A GPU-accelerated UI framework for Zig, targeting macOS (Metal), Linux (Vulkan/W
 
 Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
-<img src="https://github.com/duanebester/gooey/blob/main/assets/gooey.png" height="200px" />
+<img src="https://github.com/duanebester/gooey/blob/main/assets/gooey-final-logo.png" height="200px" />
 
-> ⚠️ **Early Development**: API is evolving.
+> **Early Development**: API is evolving.
 
 <table>
   <tr>
