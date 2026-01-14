@@ -3,6 +3,11 @@
 //! Platform initialization, window creation, and event loop management.
 //! This is the main entry point for running a gooey application.
 //!
+//! ## Window Lifecycle Callbacks
+//!
+//! - `on_close`: Called when window is about to close. Return false to prevent.
+//! - `on_resize`: Called when window size changes (after resize completes).
+//!
 //! ## Architecture Notes
 //!
 //! **Single-Window Limitation**: The current implementation uses static mutable
@@ -90,6 +95,10 @@ pub fn runCx(
         .height = config.height,
         .background_color = bg_color,
         .custom_shaders = config.custom_shaders,
+        // Size constraints
+        .min_size = config.min_size,
+        .max_size = config.max_size,
+        .centered = config.centered,
         // Glass/transparency options
         .background_opacity = config.background_opacity,
         .glass_style = @enumFromInt(@intFromEnum(config.glass_style)),
@@ -140,6 +149,8 @@ pub fn runCx(
     const CallbackState = struct {
         var g_cx: *Cx = undefined;
         var g_on_event: ?*const fn (*Cx, InputEvent) bool = null;
+        var g_on_close: ?*const fn (*Cx) bool = null;
+        var g_on_resize: ?*const fn (*Cx, f64, f64) void = null;
         var g_building: bool = false;
         var g_frame_count: u32 = 0;
 
@@ -176,14 +187,31 @@ pub fn runCx(
             _ = win;
             return input_handler.handleInputCx(g_cx, g_on_event, event);
         }
+
+        fn onClose(_: *Window) bool {
+            if (g_on_close) |callback| {
+                return callback(g_cx);
+            }
+            return true; // Allow close by default
+        }
+
+        fn onResize(_: *Window, width: f64, height: f64) void {
+            if (g_on_resize) |callback| {
+                callback(g_cx, width, height);
+            }
+        }
     };
 
     CallbackState.g_cx = &cx;
     CallbackState.g_on_event = config.on_event;
+    CallbackState.g_on_close = config.on_close;
+    CallbackState.g_on_resize = config.on_resize;
 
     // Set callbacks
     window.setRenderCallback(CallbackState.onRender);
     window.setInputCallback(CallbackState.onInput);
+    window.setCloseCallback(CallbackState.onClose);
+    window.setResizeCallback(CallbackState.onResize);
     window.setTextAtlas(gooey_ctx.text_system.getAtlas());
     window.setSvgAtlas(gooey_ctx.svg_atlas.getAtlas());
     window.setImageAtlas(gooey_ctx.image_atlas.getAtlas());
@@ -204,8 +232,27 @@ pub fn CxConfig(comptime State: type) type {
         height: f64 = 600,
         background_color: ?geometry_mod.Color = null,
 
+        // Window size constraints
+
+        /// Minimum window size (optional)
+        min_size: ?geometry_mod.Size(f64) = null,
+
+        /// Maximum window size (optional)
+        max_size: ?geometry_mod.Size(f64) = null,
+
+        /// Start window centered on screen
+        centered: bool = true,
+
+        // Event callbacks
+
         /// Optional event handler for raw input events
         on_event: ?*const fn (*Cx, InputEvent) bool = null,
+
+        /// Called when window is about to close. Return false to prevent close.
+        on_close: ?*const fn (*Cx) bool = null,
+
+        /// Called when window size changes (width, height in logical pixels)
+        on_resize: ?*const fn (*Cx, f64, f64) void = null,
 
         /// Custom shaders (cross-platform - MSL for macOS, WGSL for web)
         custom_shaders: []const shader_mod.CustomShader = &.{},

@@ -92,6 +92,12 @@ pub const Window = struct {
     /// Use this to rebuild your UI/scene before the frame is drawn.
     on_render: ?RenderCallback = null,
 
+    /// Called when window is about to close. Return false to prevent close.
+    on_close: ?CloseCallback = null,
+
+    /// Called when window size changes.
+    on_resize: ?ResizeCallback = null,
+
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
 
@@ -145,6 +151,12 @@ pub const Window = struct {
     /// Render callback: called each frame before drawing
     pub const RenderCallback = *const fn (*Window) void;
 
+    /// Close callback: called when window is about to close. Return false to prevent close.
+    pub const CloseCallback = *const fn (*Window) bool;
+
+    /// Resize callback: called when window size changes
+    pub const ResizeCallback = *const fn (*Window, f64, f64) void;
+
     /// Glass/blur effect style for transparent windows
     pub const GlassStyle = enum {
         /// No glass effect
@@ -175,6 +187,12 @@ pub const Window = struct {
         titlebar_transparent: bool = false,
         /// Extend content under titlebar (full bleed)
         full_size_content: bool = false,
+        /// Minimum window size (optional)
+        min_size: ?geometry.Size(f64) = null,
+        /// Maximum window size (optional)
+        max_size: ?geometry.Size(f64) = null,
+        /// Start window centered on screen
+        centered: bool = true,
     };
 
     const Self = @This();
@@ -248,6 +266,25 @@ pub const Window = struct {
         // Set window title
         self.setTitle(options.title);
 
+        // Set minimum window size constraint
+        if (options.min_size) |min| {
+            self.ns_window.msgSend(void, "setMinSize:", .{
+                NSSize{ .width = min.width, .height = min.height },
+            });
+        }
+
+        // Set maximum window size constraint
+        if (options.max_size) |max| {
+            self.ns_window.msgSend(void, "setMaxSize:", .{
+                NSSize{ .width = max.width, .height = max.height },
+            });
+        }
+
+        // Center window on screen
+        if (options.centered) {
+            self.ns_window.msgSend(void, "center", .{});
+        }
+
         const view_frame: NSRect = self.ns_window.msgSend(NSRect, "contentLayoutRect", .{});
         self.ns_view = try input_view.create(view_frame, self);
         self.ns_window.msgSend(void, "setContentView:", .{self.ns_view.value});
@@ -320,12 +357,22 @@ pub const Window = struct {
         self.on_input = callback;
     }
 
-    /// Set the render callback (called each frame before drawing)
+    /// Set the render callback
     pub fn setRenderCallback(self: *Self, callback: RenderCallback) void {
         self.on_render = callback;
     }
 
-    /// Set user data pointer accessible in callbacks
+    /// Set the close callback. Return false from callback to prevent window close.
+    pub fn setCloseCallback(self: *Self, callback: CloseCallback) void {
+        self.on_close = callback;
+    }
+
+    /// Set the resize callback
+    pub fn setResizeCallback(self: *Self, callback: ResizeCallback) void {
+        self.on_resize = callback;
+    }
+
+    /// Set the user data pointer
     pub fn setUserData(self: *Self, data: ?*anyopaque) void {
         self.user_data = data;
     }
@@ -494,8 +541,9 @@ pub const Window = struct {
     }
 
     /// Called by delegate when window is resized
-    /// Called by delegate when window is resized
     pub fn handleResize(self: *Self) void {
+        const old_width = self.size.width;
+        const old_height = self.size.height;
         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
 
         const new_width = bounds.size.width;
@@ -531,6 +579,14 @@ pub const Window = struct {
 
         self.requestRender();
 
+        // Notify user of resize if size actually changed
+        const size_changed = (old_width != new_width or old_height != new_height);
+        if (size_changed) {
+            if (self.on_resize) |callback| {
+                callback(self, new_width, new_height);
+            }
+        }
+
         // During live resize, render synchronously for smooth visuals
         if (self.in_live_resize.load(.acquire)) {
             const pool = createAutoreleasePool() orelse return;
@@ -559,10 +615,20 @@ pub const Window = struct {
         }
     }
 
-    pub fn handleClose(self: *Self) void {
+    /// Handle window close. Returns true if close should proceed, false to cancel.
+    pub fn handleClose(self: *Self) bool {
+        // Call user callback first - they can prevent close by returning false
+        if (self.on_close) |callback| {
+            if (!callback(self)) {
+                return false; // User prevented close
+            }
+        }
+
+        // Proceed with close
         if (self.display_link) |*dl| {
             dl.stop();
         }
+        return true;
     }
 
     pub fn handleFocusChange(self: *Self, focused: bool) void {

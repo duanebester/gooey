@@ -23,6 +23,9 @@ pub fn registerClass() !void {
     }
 
     // Add delegate methods
+    if (!cls.addMethod("windowShouldClose:", windowShouldClose)) {
+        return error.MethodAddFailed;
+    }
     if (!cls.addMethod("windowDidResize:", windowDidResize)) {
         return error.MethodAddFailed;
     }
@@ -89,9 +92,13 @@ fn windowDidChangeBackingProperties(self: objc.c.id, _: objc.c.SEL, _: objc.c.id
     window.handleResize(); // Scale factor may have changed
 }
 
-fn windowWillClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    const window = getWindow(self) orelse return;
-    window.handleClose();
+fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) bool {
+    const window = getWindow(self) orelse return true;
+    return window.handleClose();
+}
+
+fn windowWillClose(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+    // Window is definitely closing now - cleanup happens in handleClose via windowShouldClose
 }
 
 fn windowDidBecomeKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {

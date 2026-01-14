@@ -82,6 +82,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "animation", "src/examples/animation.zig", true);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "spaceship", "src/examples/spaceship.zig", true);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "glass", "src/examples/glass.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "window-features", "src/examples/window_features.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "counter", "src/examples/counter.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "layout", "src/examples/layout.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "select", "src/examples/select.zig", false);

@@ -138,6 +138,12 @@ pub const Window = struct {
     /// Called each frame when rendering is needed.
     on_render: ?RenderCallback = null,
 
+    /// Called when window is about to close. Return false to prevent close.
+    on_close: ?CloseCallback = null,
+
+    /// Called when window size changes.
+    on_resize: ?ResizeCallback = null,
+
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
 
@@ -146,6 +152,12 @@ pub const Window = struct {
 
     /// Render callback type: called each frame before drawing
     pub const RenderCallback = *const fn (*Self) void;
+
+    /// Close callback: called when window is about to close. Return false to prevent close.
+    pub const CloseCallback = *const fn (*Self) bool;
+
+    /// Resize callback: called when window size changes
+    pub const ResizeCallback = *const fn (*Self, f64, f64) void;
 
     /// Glass style (no-op on Linux, for API compatibility with macOS)
     pub const GlassStyle = enum(u8) {
@@ -513,6 +525,16 @@ pub const Window = struct {
         self.on_render = callback;
     }
 
+    /// Set the close callback. Return false from callback to prevent window close.
+    pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
+        self.on_close = callback;
+    }
+
+    /// Set the resize callback
+    pub fn setResizeCallback(self: *Self, callback: ?ResizeCallback) void {
+        self.on_resize = callback;
+    }
+
     /// Set user data pointer
     pub fn setUserData(self: *Self, data: ?*anyopaque) void {
         self.user_data = data;
@@ -662,6 +684,9 @@ pub const Window = struct {
 
         // Handle pending resize
         if (self.pending_resize) {
+            const old_width = self.size.width;
+            const old_height = self.size.height;
+
             self.width = self.pending_width;
             self.height = self.pending_height;
             self.size = .{
@@ -694,6 +719,14 @@ pub const Window = struct {
             self.renderer.resize(self.width, self.height, self.scale_factor);
             self.pending_resize = false;
             self.needs_redraw = true; // Ensure we redraw after resize
+
+            // Notify user of resize if size actually changed
+            const size_changed = (old_width != self.size.width or old_height != self.size.height);
+            if (size_changed) {
+                if (self.on_resize) |callback| {
+                    callback(self, self.size.width, self.size.height);
+                }
+            }
         }
 
         // Call render callback to let app update scene before drawing
@@ -882,6 +915,15 @@ pub const Window = struct {
         _ = xdg_toplevel;
         const self: *Self = @ptrCast(@alignCast(data));
         std.debug.print("Window close requested\n", .{});
+
+        // Call user callback first - they can prevent close by returning false
+        if (self.on_close) |callback| {
+            if (!callback(self)) {
+                std.debug.print("Window close prevented by callback\n", .{});
+                return; // User prevented close
+            }
+        }
+
         self.closed = true;
         self.platform.quit();
     }
