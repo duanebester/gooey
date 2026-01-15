@@ -117,6 +117,24 @@ fn handleScrollEvent(
         }
     }
 
+    // Check CodeEditors for scroll
+    for (builder.pending_code_editors.items) |pending| {
+        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        if (!pointInBounds(x, y, bounds)) continue;
+
+        const ce = gooey.codeEditor(pending.id) orelse continue;
+        const ta = &ce.text_area;
+        if (ta.line_height > 0 and ta.viewport_height > 0) {
+            const delta_y: f32 = @floatCast(scroll_ev.delta.y);
+            const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
+            const max_scroll: f32 = @max(0, content_height - ta.viewport_height);
+            const new_offset = ta.scroll_offset_y - delta_y * 20;
+            ta.scroll_offset_y = std.math.clamp(new_offset, 0, max_scroll);
+            cx.notify();
+            return true;
+        }
+    }
+
     // Check scroll containers
     for (builder.pending_scrolls.items) |pending| {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;

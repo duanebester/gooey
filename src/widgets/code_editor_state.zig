@@ -273,8 +273,8 @@ pub const CodeEditorState = struct {
         return self.text_area.getText();
     }
 
-    pub fn setText(self: *Self, text: []const u8) void {
-        self.text_area.setText(text);
+    pub fn setText(self: *Self, text: []const u8) !void {
+        try self.text_area.setText(text);
         // Clear highlights when text changes
         self.clearHighlights();
     }
