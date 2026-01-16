@@ -1019,7 +1019,7 @@ pub const Builder = struct {
     const UniformListState = uniform_list.UniformListState;
 
     /// Computed layout parameters for uniform list (avoids recomputation).
-    const UniformListLayout = struct {
+    pub const UniformListLayout = struct {
         layout_id: LayoutId,
         sizing: Sizing,
         padding: Padding,
@@ -1077,7 +1077,7 @@ pub const Builder = struct {
 
     /// Sync scroll state between UniformListState and retained ScrollContainer.
     /// Resolves PendingScrollRequest with accurate viewport dimensions to avoid jitter.
-    fn syncUniformListScroll(self: *Self, id: []const u8, state: *UniformListState) void {
+    pub fn syncUniformListScroll(self: *Self, id: []const u8, state: *UniformListState) void {
         const g = self.gooey orelse return;
         const sc = g.widgets.scrollContainer(id) orelse return;
 
@@ -1105,7 +1105,7 @@ pub const Builder = struct {
     }
 
     /// Compute all layout parameters for uniform list.
-    fn computeUniformListLayout(
+    pub fn computeUniformListLayout(
         id: []const u8,
         state: *const UniformListState,
         style: UniformListStyle,
@@ -1127,7 +1127,7 @@ pub const Builder = struct {
 
     /// Open the scroll viewport and content container elements.
     /// Returns the content_id, or null if layout failed.
-    fn openUniformListElements(
+    pub fn openUniformListElements(
         self: *Self,
         params: UniformListLayout,
         style: UniformListStyle,
@@ -1174,7 +1174,7 @@ pub const Builder = struct {
     }
 
     /// Render a spacer element of given height for uniform list virtualization.
-    fn renderUniformListSpacer(self: *Self, height: f32) void {
+    pub fn renderUniformListSpacer(self: *Self, height: f32) void {
         if (height <= 0) return;
 
         const spacer_id = self.generateId();
@@ -1194,7 +1194,7 @@ pub const Builder = struct {
     }
 
     /// Register scroll handling for the uniform list.
-    fn registerUniformListScroll(
+    pub fn registerUniformListScroll(
         self: *Self,
         id: []const u8,
         params: UniformListLayout,
@@ -1224,118 +1224,6 @@ pub const Builder = struct {
         };
     }
 
-    /// Render a virtualized uniform-height list.
-    /// Only renders visible items for O(1) layout regardless of total item count.
-    ///
-    /// The `render_item` callback is called once per visible item with:
-    /// - `index`: the item's index in the full list (0 to item_count-1)
-    /// - `builder`: the Builder to render children into
-    ///
-    /// IMPORTANT: The height of each rendered item MUST match `state.item_height_px`.
-    ///
-    /// Example:
-    /// ```zig
-    /// var list_state = UniformListState.init(@intCast(items.len), 32.0);
-    ///
-    /// b.uniformList("file-list", &list_state, .{ .height = 400 }, renderFileItem);
-    ///
-    /// fn renderFileItem(index: u32, builder: *Builder) void {
-    ///     const item = my_items[index];
-    ///     builder.box(.{ .height = 32 }, .{ text(item.name, .{}) });
-    /// }
-    /// ```
-    pub fn uniformList(
-        self: *Self,
-        id: []const u8,
-        state: *UniformListState,
-        style: UniformListStyle,
-        render_item: *const fn (index: u32, builder: *Self) void,
-    ) void {
-        // Sync gap from style to state for correct height calculations
-        state.gap_px = style.gap;
-
-        // Sync scroll state with retained ScrollContainer
-        self.syncUniformListScroll(id, state);
-
-        // Compute layout parameters
-        const params = computeUniformListLayout(id, state, style);
-
-        // Open viewport and content elements
-        const content_id = self.openUniformListElements(params, style, state.scroll_offset_px) orelse return;
-
-        // Top spacer (items above visible range)
-        self.renderUniformListSpacer(params.top_spacer_height);
-
-        // Render only visible items
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            render_item(i, self);
-        }
-
-        // Bottom spacer (items below visible range)
-        self.renderUniformListSpacer(params.bottom_spacer_height);
-
-        // Close content container and viewport
-        self.layout.closeElement();
-        self.layout.closeElement();
-
-        // Register for scroll handling
-        self.registerUniformListScroll(id, params, content_id, style);
-    }
-
-    /// Render a virtualized uniform-height list with context pointer.
-    /// Like uniformList, but passes a context pointer to the render callback
-    /// for accessing external data without globals.
-    ///
-    /// Example:
-    /// ```zig
-    /// b.uniformListWithContext("list", &list_state, .{ .height = 400 }, &my_state, renderItem);
-    ///
-    /// fn renderItem(index: u32, state: *MyState, builder: *Builder) void {
-    ///     const item = state.items[index];
-    ///     builder.box(.{ .height = 32 }, .{ text(item.name, .{}) });
-    /// }
-    /// ```
-    pub fn uniformListWithContext(
-        self: *Self,
-        id: []const u8,
-        state: *UniformListState,
-        style: UniformListStyle,
-        context: anytype,
-        render_item: *const fn (index: u32, ctx: @TypeOf(context), builder: *Self) void,
-    ) void {
-        // Sync gap from style to state for correct height calculations
-        state.gap_px = style.gap;
-
-        // Sync scroll state with retained ScrollContainer
-        self.syncUniformListScroll(id, state);
-
-        // Compute layout parameters
-        const params = computeUniformListLayout(id, state, style);
-
-        // Open viewport and content elements
-        const content_id = self.openUniformListElements(params, style, state.scroll_offset_px) orelse return;
-
-        // Top spacer (items above visible range)
-        self.renderUniformListSpacer(params.top_spacer_height);
-
-        // Render only visible items with context
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            render_item(i, context, self);
-        }
-
-        // Bottom spacer (items below visible range)
-        self.renderUniformListSpacer(params.bottom_spacer_height);
-
-        // Close content container and viewport
-        self.layout.closeElement();
-        self.layout.closeElement();
-
-        // Register for scroll handling
-        self.registerUniformListScroll(id, params, content_id, style);
-    }
-
     // =========================================================================
     // Virtual List (variable-height items)
     // =========================================================================
@@ -1344,7 +1232,7 @@ pub const Builder = struct {
     const VirtualListState = virtual_list.VirtualListState;
 
     /// Layout parameters for virtual list rendering
-    const VirtualListLayout = struct {
+    pub const VirtualListLayout = struct {
         layout_id: LayoutId,
         sizing: Sizing,
         padding: Padding,
@@ -1356,7 +1244,7 @@ pub const Builder = struct {
     };
 
     /// Sync scroll state between VirtualListState and retained ScrollContainer.
-    fn syncVirtualListScroll(self: *Self, id: []const u8, state: *VirtualListState) void {
+    pub fn syncVirtualListScroll(self: *Self, id: []const u8, state: *VirtualListState) void {
         const g = self.gooey orelse return;
         const sc = g.widgets.scrollContainer(id) orelse return;
 
@@ -1422,7 +1310,7 @@ pub const Builder = struct {
     }
 
     /// Compute all layout parameters for virtual list.
-    fn computeVirtualListLayout(
+    pub fn computeVirtualListLayout(
         id: []const u8,
         state: *const VirtualListState,
         style: VirtualListStyle,
@@ -1443,7 +1331,7 @@ pub const Builder = struct {
     }
 
     /// Open the scroll viewport and content container elements for virtual list.
-    fn openVirtualListElements(
+    pub fn openVirtualListElements(
         self: *Self,
         params: VirtualListLayout,
         style: VirtualListStyle,
@@ -1490,7 +1378,7 @@ pub const Builder = struct {
     }
 
     /// Render a spacer element for virtual list virtualization.
-    fn renderVirtualListSpacer(self: *Self, height: f32) void {
+    pub fn renderVirtualListSpacer(self: *Self, height: f32) void {
         if (height <= 0) return;
 
         const spacer_id = self.generateId();
@@ -1510,7 +1398,7 @@ pub const Builder = struct {
     }
 
     /// Register scroll handling for the virtual list.
-    fn registerVirtualListScroll(
+    pub fn registerVirtualListScroll(
         self: *Self,
         id: []const u8,
         params: VirtualListLayout,
@@ -1538,126 +1426,6 @@ pub const Builder = struct {
         self.pending_scrolls_by_layout_id.put(self.allocator, params.layout_id.id, index) catch {
             std.debug.assert(false); // Scroll map insertion failed
         };
-    }
-
-    /// Render a virtualized variable-height list.
-    ///
-    /// Unlike `uniformList` where all items have the same height, `virtualList`
-    /// supports items with different heights. The render callback must return
-    /// the actual height of each rendered item, which is cached for efficient
-    /// scroll calculations.
-    ///
-    /// IMPORTANT: The render callback MUST return the exact height of the
-    /// rendered item. This height is cached and used for scroll calculations.
-    ///
-    /// Example:
-    /// ```zig
-    /// var list_state = VirtualListState.init(100, 32.0); // count, default height
-    ///
-    /// b.virtualList("chat", &list_state, .{ .height = 400 }, renderMessage);
-    ///
-    /// fn renderMessage(index: u32, builder: *Builder) f32 {
-    ///     const msg = messages[index];
-    ///     const height: f32 = if (msg.has_image) 120.0 else 48.0;
-    ///     builder.box(.{ .height = height }, .{ text(msg.text, .{}) });
-    ///     return height; // Return actual height for caching
-    /// }
-    /// ```
-    pub fn virtualList(
-        self: *Self,
-        id: []const u8,
-        state: *VirtualListState,
-        style: VirtualListStyle,
-        render_item: *const fn (index: u32, builder: *Self) f32,
-    ) void {
-        // Sync gap from style to state for correct height calculations
-        state.gap_px = style.gap;
-
-        // Sync scroll state with retained ScrollContainer
-        self.syncVirtualListScroll(id, state);
-
-        // Compute layout parameters
-        const params = computeVirtualListLayout(id, state, style);
-
-        // Open viewport and content elements
-        const content_id = self.openVirtualListElements(params, style, state.scroll_offset_px) orelse return;
-
-        // Top spacer (items above visible range)
-        self.renderVirtualListSpacer(params.top_spacer_height);
-
-        // Render only visible items and cache their heights
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            const height = render_item(i, self);
-            state.setHeight(i, height);
-        }
-
-        // Bottom spacer (items below visible range)
-        self.renderVirtualListSpacer(params.bottom_spacer_height);
-
-        // Close content container and viewport
-        self.layout.closeElement();
-        self.layout.closeElement();
-
-        // Register for scroll handling
-        self.registerVirtualListScroll(id, params, content_id, style);
-    }
-
-    /// Render a virtualized variable-height list with context pointer.
-    /// Like virtualList, but passes a context pointer to the render callback
-    /// for accessing external data without globals.
-    ///
-    /// Example:
-    /// ```zig
-    /// const ctx = RenderContext{ .messages = &my_messages };
-    /// b.virtualListWithContext("chat", &list_state, .{}, ctx, renderMessage);
-    ///
-    /// fn renderMessage(index: u32, ctx: RenderContext, builder: *Builder) f32 {
-    ///     const msg = ctx.messages[index];
-    ///     const height: f32 = if (msg.expanded) 100.0 else 40.0;
-    ///     builder.box(.{ .height = height }, .{ text(msg.text, .{}) });
-    ///     return height;
-    /// }
-    /// ```
-    pub fn virtualListWithContext(
-        self: *Self,
-        id: []const u8,
-        state: *VirtualListState,
-        style: VirtualListStyle,
-        context: anytype,
-        render_item: *const fn (index: u32, ctx: @TypeOf(context), builder: *Self) f32,
-    ) void {
-        // Sync gap from style to state for correct height calculations
-        state.gap_px = style.gap;
-
-        // Sync scroll state with retained ScrollContainer
-        self.syncVirtualListScroll(id, state);
-
-        // Compute layout parameters
-        const params = computeVirtualListLayout(id, state, style);
-
-        // Open viewport and content elements
-        const content_id = self.openVirtualListElements(params, style, state.scroll_offset_px) orelse return;
-
-        // Top spacer (items above visible range)
-        self.renderVirtualListSpacer(params.top_spacer_height);
-
-        // Render only visible items with context and cache their heights
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            const height = render_item(i, context, self);
-            state.setHeight(i, height);
-        }
-
-        // Bottom spacer (items below visible range)
-        self.renderVirtualListSpacer(params.bottom_spacer_height);
-
-        // Close content container and viewport
-        self.layout.closeElement();
-        self.layout.closeElement();
-
-        // Register for scroll handling
-        self.registerVirtualListScroll(id, params, content_id, style);
     }
 
     // =========================================================================
@@ -1728,7 +1496,7 @@ pub const Builder = struct {
     }
 
     /// Sync scroll state between DataTableState and retained ScrollContainer
-    fn syncDataTableScroll(self: *Self, id: []const u8, state: *DataTableState) void {
+    pub fn syncDataTableScroll(self: *Self, id: []const u8, state: *DataTableState) void {
         const g = self.gooey orelse return;
         const sc = g.widgets.scrollContainer(id) orelse return;
 
@@ -1752,7 +1520,7 @@ pub const Builder = struct {
     }
 
     /// Compute all layout parameters for data table
-    fn computeDataTableLayout(
+    pub fn computeDataTableLayout(
         id: []const u8,
         state: *const DataTableState,
         style: DataTableStyle,
@@ -1775,7 +1543,7 @@ pub const Builder = struct {
     }
 
     /// Open the scroll viewport and content container elements for data table
-    fn openDataTableElements(
+    pub fn openDataTableElements(
         self: *Self,
         params: DataTableLayout,
         style: DataTableStyle,
@@ -1823,7 +1591,7 @@ pub const Builder = struct {
     }
 
     /// Render a spacer element for data table virtualization
-    fn renderDataTableSpacer(self: *Self, width: f32, height: f32) void {
+    pub fn renderDataTableSpacer(self: *Self, width: f32, height: f32) void {
         if (width <= 0 and height <= 0) return;
 
         const spacer_id = self.generateId();
@@ -1843,7 +1611,7 @@ pub const Builder = struct {
     }
 
     /// Register scroll handling for the data table
-    fn registerDataTableScroll(
+    pub fn registerDataTableScroll(
         self: *Self,
         id: []const u8,
         params: DataTableLayout,
@@ -1874,83 +1642,14 @@ pub const Builder = struct {
         };
     }
 
-    /// Render a virtualized data table.
-    /// Only renders visible cells for O(1) layout regardless of total size.
-    ///
-    /// The `render_cell` callback receives (row, col, builder) for each visible cell.
-    /// The `render_header` callback receives (col, builder) for each visible header cell.
-    ///
-    /// Example:
-    /// ```zig
-    /// var table = DataTableState.init(1000, 32.0);
-    /// table.addColumn(.{ .width_px = 200 }) catch unreachable;
-    ///
-    /// b.dataTable("users", &table, .{ .height = 400 }, renderCell, renderHeader);
-    /// ```
-    pub fn dataTable(
-        self: *Self,
-        id: []const u8,
-        state: *DataTableState,
-        style: DataTableStyle,
-        render_cell: *const fn (row: u32, col: u32, builder: *Self) void,
-        render_header: ?*const fn (col: u32, builder: *Self) void,
-    ) void {
-        // Sync gap from style to state
-        state.row_gap_px = style.row_gap;
-
-        // Sync scroll state
-        self.syncDataTableScroll(id, state);
-
-        // Compute layout parameters
-        const params = computeDataTableLayout(id, state, style);
-
-        // Open viewport and content elements
-        const content_id = self.openDataTableElements(
-            params,
-            style,
-            state.scroll_offset_x,
-            state.scroll_offset_y,
-        ) orelse return;
-
-        // Render header row if enabled
-        if (state.show_header) {
-            if (render_header) |header_fn| {
-                self.renderDataTableHeader(state, params, style, header_fn);
-            }
-        }
-
-        // Top spacer (rows above visible range)
-        if (params.top_spacer > 0) {
-            self.renderDataTableSpacer(params.content_width, params.top_spacer);
-        }
-
-        // Render visible rows
-        const range = params.visible_range;
-        var row = range.rows.start;
-        while (row < range.rows.end) : (row += 1) {
-            self.renderDataTableRow(state, row, range.cols, params, style, render_cell);
-        }
-
-        // Bottom spacer (rows below visible range)
-        if (params.bottom_spacer > 0) {
-            self.renderDataTableSpacer(params.content_width, params.bottom_spacer);
-        }
-
-        // Close content container and viewport
-        self.layout.closeElement();
-        self.layout.closeElement();
-
-        // Register for scroll handling
-        self.registerDataTableScroll(id, params, content_id, style);
-    }
-
-    /// Render header row for data table
-    fn renderDataTableHeader(
+    /// Render header cells with Cx callback
+    pub fn renderDataTableHeaderCx(
         self: *Self,
         state: *const DataTableState,
         params: DataTableLayout,
         style: DataTableStyle,
-        render_header: *const fn (col: u32, builder: *Self) void,
+        cx: anytype,
+        render_header: *const fn (u32, @TypeOf(cx)) void,
     ) void {
         // Open header row container
         self.layout.openElement(.{
@@ -1975,35 +1674,19 @@ pub const Builder = struct {
         var col = col_range.start;
         while (col < col_range.end) : (col += 1) {
             const col_width = state.columns[col].width_px;
-            const header_id = self.generateId();
-
-            // Push dispatch node for click handling
-            _ = self.dispatch.pushNode();
-            self.dispatch.setLayoutId(header_id.id);
 
             self.layout.openElement(.{
-                .id = header_id,
+                .id = self.generateId(),
                 .layout = .{
                     .sizing = .{
                         .width = SizingAxis.fixed(col_width),
                         .height = SizingAxis.fixed(state.header_height_px),
                     },
                 },
-            }) catch {
-                self.dispatch.popNode();
-                continue;
-            };
+            }) catch continue;
 
-            // Register header click handler if column is sortable
-            if (style.on_header_click) |callback| {
-                if (state.columns[col].sortable) {
-                    self.dispatch.onClickWithData(callback, col);
-                }
-            }
-
-            render_header(col, self);
+            render_header(col, cx);
             self.layout.closeElement();
-            self.dispatch.popNode();
         }
 
         // Right spacer
@@ -2014,19 +1697,20 @@ pub const Builder = struct {
         self.layout.closeElement(); // header row
     }
 
-    /// Render a single data row
-    fn renderDataTableRow(
+    /// Render a data row with Cx callback (default row container)
+    pub fn renderDataTableRowCx(
         self: *Self,
         state: *const DataTableState,
         row: u32,
         col_range: data_table.ColRange,
         params: DataTableLayout,
         style: DataTableStyle,
-        render_cell: *const fn (row: u32, col: u32, builder: *Self) void,
+        cx: anytype,
+        render_cell: *const fn (u32, u32, @TypeOf(cx)) void,
     ) void {
-        // Determine row background
         const is_selected = state.selection.isRowSelected(row);
         const is_alternate = row % 2 == 1;
+
         const bg = if (is_selected)
             style.row_selected_background
         else if (is_alternate)
@@ -2034,15 +1718,9 @@ pub const Builder = struct {
         else
             style.row_background;
 
-        const row_id = self.generateId();
-
-        // Push dispatch node for row click handling
-        _ = self.dispatch.pushNode();
-        self.dispatch.setLayoutId(row_id.id);
-
         // Open row container
         self.layout.openElement(.{
-            .id = row_id,
+            .id = self.generateId(),
             .layout = .{
                 .sizing = .{
                     .width = SizingAxis.fixed(params.content_width),
@@ -2051,15 +1729,7 @@ pub const Builder = struct {
                 .layout_direction = .left_to_right,
             },
             .background_color = bg,
-        }) catch {
-            self.dispatch.popNode();
-            return;
-        };
-
-        // Register row click handler
-        if (style.on_row_click) |callback| {
-            self.dispatch.onClickWithData(callback, row);
-        }
+        }) catch return;
 
         // Left spacer for columns before visible range
         if (params.left_spacer > 0) {
@@ -2081,7 +1751,7 @@ pub const Builder = struct {
                 },
             }) catch continue;
 
-            render_cell(row, col, self);
+            render_cell(row, col, cx);
             self.layout.closeElement();
         }
 
@@ -2091,210 +1761,6 @@ pub const Builder = struct {
         }
 
         self.layout.closeElement(); // row container
-        self.dispatch.popNode();
-    }
-
-    /// Render a virtualized data table with context pointer.
-    /// Like dataTable, but passes a context pointer to the render callbacks.
-    pub fn dataTableWithContext(
-        self: *Self,
-        id: []const u8,
-        state: *DataTableState,
-        style: DataTableStyle,
-        context: anytype,
-        render_cell: *const fn (row: u32, col: u32, ctx: @TypeOf(context), builder: *Self) void,
-        render_header: ?*const fn (col: u32, ctx: @TypeOf(context), builder: *Self) void,
-    ) void {
-        // Sync gap from style to state
-        state.row_gap_px = style.row_gap;
-
-        // Sync scroll state
-        self.syncDataTableScroll(id, state);
-
-        // Compute layout parameters
-        const params = computeDataTableLayout(id, state, style);
-
-        // Open viewport and content elements
-        const content_id = self.openDataTableElements(
-            params,
-            style,
-            state.scroll_offset_x,
-            state.scroll_offset_y,
-        ) orelse return;
-
-        // Render header row if enabled
-        if (state.show_header) {
-            if (render_header) |header_fn| {
-                self.renderDataTableHeaderWithContext(state, params, style, context, header_fn);
-            }
-        }
-
-        // Top spacer
-        if (params.top_spacer > 0) {
-            self.renderDataTableSpacer(params.content_width, params.top_spacer);
-        }
-
-        // Render visible rows
-        const range = params.visible_range;
-        var row = range.rows.start;
-        while (row < range.rows.end) : (row += 1) {
-            self.renderDataTableRowWithContext(state, row, range.cols, params, style, context, render_cell);
-        }
-
-        // Bottom spacer
-        if (params.bottom_spacer > 0) {
-            self.renderDataTableSpacer(params.content_width, params.bottom_spacer);
-        }
-
-        // Close elements
-        self.layout.closeElement();
-        self.layout.closeElement();
-
-        // Register for scroll handling
-        self.registerDataTableScroll(id, params, content_id, style);
-    }
-
-    /// Render header row with context
-    fn renderDataTableHeaderWithContext(
-        self: *Self,
-        state: *const DataTableState,
-        params: DataTableLayout,
-        style: DataTableStyle,
-        context: anytype,
-        render_header: *const fn (col: u32, ctx: @TypeOf(context), builder: *Self) void,
-    ) void {
-        self.layout.openElement(.{
-            .id = self.generateId(),
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.fixed(params.content_width),
-                    .height = SizingAxis.fixed(state.header_height_px),
-                },
-                .layout_direction = .left_to_right,
-            },
-            .background_color = style.header_background,
-        }) catch return;
-
-        if (params.left_spacer > 0) {
-            self.renderDataTableSpacer(params.left_spacer, state.header_height_px);
-        }
-
-        const col_range = params.visible_range.cols;
-        var col = col_range.start;
-        while (col < col_range.end) : (col += 1) {
-            const col_width = state.columns[col].width_px;
-            const header_id = self.generateId();
-
-            // Push dispatch node for click handling
-            _ = self.dispatch.pushNode();
-            self.dispatch.setLayoutId(header_id.id);
-
-            self.layout.openElement(.{
-                .id = header_id,
-                .layout = .{
-                    .sizing = .{
-                        .width = SizingAxis.fixed(col_width),
-                        .height = SizingAxis.fixed(state.header_height_px),
-                    },
-                },
-            }) catch {
-                self.dispatch.popNode();
-                continue;
-            };
-
-            // Register header click handler if column is sortable
-            if (style.on_header_click) |callback| {
-                if (state.columns[col].sortable) {
-                    self.dispatch.onClickWithData(callback, col);
-                }
-            }
-
-            render_header(col, context, self);
-            self.layout.closeElement();
-            self.dispatch.popNode();
-        }
-
-        if (params.right_spacer > 0) {
-            self.renderDataTableSpacer(params.right_spacer, state.header_height_px);
-        }
-
-        self.layout.closeElement();
-    }
-
-    /// Render data row with context
-    fn renderDataTableRowWithContext(
-        self: *Self,
-        state: *const DataTableState,
-        row: u32,
-        col_range: data_table.ColRange,
-        params: DataTableLayout,
-        style: DataTableStyle,
-        context: anytype,
-        render_cell: *const fn (row: u32, col: u32, ctx: @TypeOf(context), builder: *Self) void,
-    ) void {
-        const is_selected = state.selection.isRowSelected(row);
-        const is_alternate = row % 2 == 1;
-        const bg = if (is_selected)
-            style.row_selected_background
-        else if (is_alternate)
-            style.row_alternate_background
-        else
-            style.row_background;
-
-        const row_id = self.generateId();
-
-        // Push dispatch node for row click handling
-        _ = self.dispatch.pushNode();
-        self.dispatch.setLayoutId(row_id.id);
-
-        self.layout.openElement(.{
-            .id = row_id,
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.fixed(params.content_width),
-                    .height = SizingAxis.fixed(state.row_height_px),
-                },
-                .layout_direction = .left_to_right,
-            },
-            .background_color = bg,
-        }) catch {
-            self.dispatch.popNode();
-            return;
-        };
-
-        // Register row click handler
-        if (style.on_row_click) |callback| {
-            self.dispatch.onClickWithData(callback, row);
-        }
-
-        if (params.left_spacer > 0) {
-            self.renderDataTableSpacer(params.left_spacer, state.row_height_px);
-        }
-
-        var col = col_range.start;
-        while (col < col_range.end) : (col += 1) {
-            const col_width = state.columns[col].width_px;
-
-            self.layout.openElement(.{
-                .id = self.generateId(),
-                .layout = .{
-                    .sizing = .{
-                        .width = SizingAxis.fixed(col_width),
-                        .height = SizingAxis.fixed(state.row_height_px),
-                    },
-                },
-            }) catch continue;
-
-            render_cell(row, col, context, self);
-            self.layout.closeElement();
-        }
-
-        if (params.right_spacer > 0) {
-            self.renderDataTableSpacer(params.right_spacer, state.row_height_px);
-        }
-
-        self.layout.closeElement();
-        self.dispatch.popNode();
     }
 
     /// Register scroll container regions and update state

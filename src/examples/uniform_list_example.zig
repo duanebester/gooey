@@ -10,7 +10,6 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 
 const Cx = gooey.Cx;
-const Builder = gooey.Builder;
 const Color = gooey.Color;
 const UniformListState = gooey.UniformListState;
 const ScrollStrategy = gooey.ScrollStrategy;
@@ -71,6 +70,10 @@ const State = struct {
             self.selected_index = 0;
         }
     }
+
+    pub fn selectItem(self: *State, index: u32) void {
+        self.selected_index = index;
+    }
 };
 
 // =============================================================================
@@ -129,25 +132,12 @@ const StatsBar = struct {
     }
 };
 
-/// Context passed to item renderer - avoids global state access
-const ItemRenderContext = struct {
-    selected_index: ?u32,
-    theme: *const gooey.Theme,
-};
-
 const FileList = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(State);
-        var b = cx.builder();
-        const theme = b.theme();
+        const theme = cx.builder().theme();
 
-        // Create context for item rendering (avoids global state access)
-        const ctx = ItemRenderContext{
-            .selected_index = s.selected_index,
-            .theme = theme,
-        };
-
-        b.uniformListWithContext(
+        cx.uniformList(
             "file-list",
             &s.list_state,
             .{
@@ -157,16 +147,16 @@ const FileList = struct {
                 .corner_radius = 8,
                 .padding = .{ .all = 4 },
             },
-            ctx,
             renderItem,
         );
     }
 
-    fn renderItem(index: u32, ctx: ItemRenderContext, b: *Builder) void {
-        const theme = ctx.theme;
+    fn renderItem(index: u32, cx: *Cx) void {
+        const s = cx.stateConst(State);
+        const theme = cx.builder().theme();
 
-        // Check selection using context (no global access)
-        const is_selected = if (ctx.selected_index) |sel| sel == index else false;
+        // Check selection using state via cx
+        const is_selected = if (s.selected_index) |sel| sel == index else false;
         const is_even = index % 2 == 0;
 
         const bg_color = if (is_selected)
@@ -189,7 +179,7 @@ const FileList = struct {
         };
 
         // IMPORTANT: Height must match item_height_px (32.0)
-        b.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .height = ITEM_HEIGHT,
             .background = bg_color,
@@ -199,10 +189,11 @@ const FileList = struct {
             .direction = .row,
             .alignment = .{ .main = .start, .cross = .center },
             .gap = 16,
+            .on_click_handler = cx.updateWith(State, index, State.selectItem),
         }, .{
             // Name column
             ui.text(item_name, .{ .size = 14, .color = text_color }),
-        });
+        }));
     }
 };
 

@@ -20,7 +20,18 @@
 //! table_state.addColumn(.{ .width_px = 100, .sortable = true }) catch unreachable;
 //!
 //! // In your render function:
-//! b.dataTable("my-table", &table_state, .{ .height = 400 }, renderCell, renderHeader);
+//! cx.dataTable("my-table", &table_state, .{ .grow = true }, .{
+//!     .render_header = renderHeader,
+//!     .render_cell = renderCell,
+//! });
+//!
+//! fn renderHeader(col: u32, cx: *Cx) void {
+//!     cx.render(ui.text("Column", .{}));
+//! }
+//!
+//! fn renderCell(row: u32, col: u32, cx: *Cx) void {
+//!     cx.render(ui.text("Cell", .{}));
+//! }
 //! ```
 //!
 //! ## Memory: ~6KB per DataTableState (no per-cell allocation)

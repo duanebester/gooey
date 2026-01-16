@@ -84,6 +84,16 @@ const text_field_mod = @import("widgets/text_input_state.zig");
 const text_area_mod = @import("widgets/text_area_state.zig");
 const code_editor_mod = @import("widgets/code_editor_state.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
+const uniform_list_mod = @import("widgets/uniform_list.zig");
+const UniformListState = uniform_list_mod.UniformListState;
+const UniformListStyle = ui_mod.UniformListStyle;
+const virtual_list_mod = @import("widgets/virtual_list.zig");
+const VirtualListState = virtual_list_mod.VirtualListState;
+const VirtualListStyle = ui_mod.VirtualListStyle;
+const data_table_mod = @import("widgets/data_table.zig");
+const DataTableState = data_table_mod.DataTableState;
+const DataTableStyle = ui_mod.DataTableStyle;
+const ColRange = data_table_mod.ColRange;
 
 // Animation types (re-exported from root.zig for users)
 const animation_mod = @import("animation/mod.zig");
@@ -343,6 +353,63 @@ pub const Cx = struct {
     }
 
     // =========================================================================
+    // Deferred Commands - defer / deferWith
+    // =========================================================================
+
+    /// Schedule a state method to run after current event handling completes.
+    /// Useful for opening dialogs, avoiding re-entrancy, or deferring heavy work.
+    ///
+    /// The method signature is `fn(*State, *Gooey) void` - same as `command()`.
+    ///
+    /// Example:
+    /// ```
+    /// pub fn openFolder(self: *State, g: *Gooey) void {
+    ///     // Can't open modal dialog mid-event - defer it
+    ///     g.defer(State, State.openFolderDeferred);
+    /// }
+    ///
+    /// pub fn openFolderDeferred(self: *State, g: *Gooey) void {
+    ///     // Safe to open modal dialog here
+    ///     if (file_dialog.chooseFolder()) |path| {
+    ///         self.loadDirectory(path);
+    ///     }
+    /// }
+    /// ```
+    pub fn @"defer"(
+        self: *Self,
+        comptime State: type,
+        comptime method: fn (*State, *Gooey) void,
+    ) void {
+        self._gooey.deferCommand(State, method);
+    }
+
+    /// Schedule a state method with an argument to run after current event handling completes.
+    ///
+    /// The method signature is `fn(*State, *Gooey, ArgType) void`.
+    /// The argument must fit in 8 bytes (use a pointer or index for larger data).
+    ///
+    /// Example:
+    /// ```
+    /// pub fn openFile(self: *State, index: u32) void {
+    ///     // Defer the actual file opening
+    ///     g.deferWith(State, index, State.openFileDeferred);
+    /// }
+    ///
+    /// pub fn openFileDeferred(self: *State, g: *Gooey, index: u32) void {
+    ///     const path = self.files[index].path;
+    ///     // Open file dialog or load file...
+    /// }
+    /// ```
+    pub fn deferWith(
+        self: *Self,
+        comptime State: type,
+        arg: anytype,
+        comptime method: fn (*State, *Gooey, @TypeOf(arg)) void,
+    ) void {
+        self._gooey.deferCommandWith(State, @TypeOf(arg), arg, method);
+    }
+
+    // =========================================================================
     // Entity Operations
     // =========================================================================
 
@@ -591,6 +658,272 @@ pub const Cx = struct {
     ) AnimationHandle {
         const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
         return self._gooey.widgets.animateOn(id, trigger_hash, config);
+    }
+
+    // =========================================================================
+    // Uniform List API
+    // =========================================================================
+
+    /// Render a virtualized uniform-height list.
+    /// The render callback receives *Cx for full access to state and handlers.
+    ///
+    /// Example:
+    /// ```zig
+    /// cx.uniformList("my-list", &state.list_state, .{ .grow_height = true }, renderItem);
+    ///
+    /// fn renderItem(index: u32, cx: *Cx) void {
+    ///     const s = cx.stateConst(State);
+    ///     cx.render(ui.box(.{
+    ///         .height = 32,
+    ///         .on_click_handler = cx.updateWith(State, index, State.selectItem),
+    ///     }, .{ ui.text(s.items[index].name, .{}) }));
+    /// }
+    /// ```
+    pub fn uniformList(
+        self: *Self,
+        id: []const u8,
+        list_state: *UniformListState,
+        style: UniformListStyle,
+        comptime render_item: fn (index: u32, cx: *Self) void,
+    ) void {
+        const b = self._builder;
+
+        // Sync gap and scroll state
+        list_state.gap_px = style.gap;
+        b.syncUniformListScroll(id, list_state);
+
+        // Compute layout parameters
+        const params = Builder.computeUniformListLayout(id, list_state, style);
+
+        // Open viewport and content elements
+        const content_id = b.openUniformListElements(params, style, list_state.scroll_offset_px) orelse return;
+
+        // Top spacer (items above visible range)
+        b.renderUniformListSpacer(params.top_spacer_height);
+
+        // Render visible items with Cx access
+        var i = params.range.start;
+        while (i < params.range.end) : (i += 1) {
+            render_item(i, self);
+        }
+
+        // Bottom spacer (items below visible range)
+        b.renderUniformListSpacer(params.bottom_spacer_height);
+
+        // Close content container and viewport
+        b.layout.closeElement();
+        b.layout.closeElement();
+
+        // Register for scroll handling
+        b.registerUniformListScroll(id, params, content_id, style);
+    }
+
+    // =========================================================================
+    // Virtual List API
+    // =========================================================================
+
+    /// Render a virtualized variable-height list.
+    /// The render callback receives *Cx for full access to state and handlers,
+    /// and must return the actual height of the rendered item for caching.
+    ///
+    /// Example:
+    /// ```zig
+    /// cx.virtualList("my-list", &state.list_state, .{ .grow_height = true }, renderItem);
+    ///
+    /// fn renderItem(index: u32, cx: *Cx) f32 {
+    ///     const s = cx.stateConst(State);
+    ///     const item = s.items[index];
+    ///     const height: f32 = if (item.expanded) 100.0 else 40.0;
+    ///     cx.render(ui.box(.{
+    ///         .height = height,
+    ///         .on_click_handler = cx.updateWith(State, index, State.selectItem),
+    ///     }, .{ ui.text(item.description, .{}) }));
+    ///     return height;
+    /// }
+    /// ```
+    pub fn virtualList(
+        self: *Self,
+        id: []const u8,
+        list_state: *VirtualListState,
+        style: VirtualListStyle,
+        comptime render_item: fn (index: u32, cx: *Self) f32,
+    ) void {
+        const b = self._builder;
+
+        // Sync gap and scroll state
+        list_state.gap_px = style.gap;
+        b.syncVirtualListScroll(id, list_state);
+
+        // Compute layout parameters
+        const params = Builder.computeVirtualListLayout(id, list_state, style);
+
+        // Open viewport and content elements
+        const content_id = b.openVirtualListElements(params, style, list_state.scroll_offset_px) orelse return;
+
+        // Top spacer (items above visible range)
+        b.renderVirtualListSpacer(params.top_spacer_height);
+
+        // Render visible items with Cx access and cache their heights
+        var i = params.range.start;
+        while (i < params.range.end) : (i += 1) {
+            const height = render_item(i, self);
+            list_state.setHeight(i, height);
+        }
+
+        // Bottom spacer (items below visible range)
+        b.renderVirtualListSpacer(params.bottom_spacer_height);
+
+        // Close content container and viewport
+        b.layout.closeElement();
+        b.layout.closeElement();
+
+        // Register for scroll handling
+        b.registerVirtualListScroll(id, params, content_id, style);
+    }
+
+    // =========================================================================
+    // Data Table API
+    // =========================================================================
+
+    /// Callbacks for data table rendering.
+    /// All callbacks receive *Cx for full state/handler access.
+    pub fn DataTableCallbacks(comptime CxType: type) type {
+        return struct {
+            /// Render a header cell. Required.
+            render_header: *const fn (col: u32, cx: *CxType) void,
+
+            /// Render a data cell. Required.
+            render_cell: *const fn (row: u32, col: u32, cx: *CxType) void,
+
+            /// Optional: Custom row wrapper for row-level styling/click handling.
+            /// If null, framework renders a default row container.
+            ///
+            /// Parameters:
+            /// - row: The row index
+            /// - visible_cols: The range of visible columns to render
+            /// - cx: Context for state access and handlers
+            ///
+            /// User is responsible for:
+            /// 1. Opening a row container with b.layout.openElement()
+            /// 2. Iterating visible_cols and calling render_cell for each
+            /// 3. Closing the container with b.layout.closeElement()
+            render_row: ?*const fn (row: u32, visible_cols: ColRange, cx: *CxType) void = null,
+        };
+    }
+
+    /// Render a virtualized data table.
+    ///
+    /// Example:
+    /// ```zig
+    /// cx.dataTable("table", &state.table_state, .{ .grow = true }, .{
+    ///     .render_header = renderHeader,
+    ///     .render_cell = renderCell,
+    ///     .render_row = renderRow,  // Optional
+    /// });
+    ///
+    /// fn renderHeader(col: u32, cx: *Cx) void {
+    ///     const s = cx.stateConst(State);
+    ///     cx.render(ui.box(.{
+    ///         .on_click_handler = cx.updateWith(State, col, State.sortBy),
+    ///     }, .{ ui.text(s.columns[col].name, .{ .weight = .bold }) }));
+    /// }
+    ///
+    /// fn renderCell(row: u32, col: u32, cx: *Cx) void {
+    ///     const s = cx.stateConst(State);
+    ///     cx.render(ui.box(.{}, .{
+    ///         ui.text(s.getCellText(row, col), .{}),
+    ///     }));
+    /// }
+    ///
+    /// // Optional: custom row with click handler
+    /// fn renderRow(row: u32, visible_cols: ColRange, cx: *Cx) void {
+    ///     const s = cx.stateConst(State);
+    ///     const b = cx.builder();
+    ///     const is_selected = s.selected_row == row;
+    ///
+    ///     // Open custom row container
+    ///     b.layout.openElement(.{
+    ///         .layout = .{
+    ///             .sizing = .{ .width = .grow(), .height = .fixed(ROW_HEIGHT) },
+    ///             .layout_direction = .left_to_right,
+    ///         },
+    ///         .background_color = if (is_selected) theme.primary else null,
+    ///     }) catch return;
+    ///
+    ///     // Set up click handler on the row
+    ///     if (b.dispatch) |d| {
+    ///         d.onClickHandler(cx.updateWith(State, row, State.selectRow));
+    ///     }
+    ///
+    ///     // Render visible cells
+    ///     var col = visible_cols.start;
+    ///     while (col < visible_cols.end) : (col += 1) {
+    ///         renderCell(row, col, cx);
+    ///     }
+    ///
+    ///     b.layout.closeElement();
+    /// }
+    /// ```
+    pub fn dataTable(
+        self: *Self,
+        id: []const u8,
+        table_state: *DataTableState,
+        style: DataTableStyle,
+        comptime callbacks: DataTableCallbacks(Self),
+    ) void {
+        const b = self._builder;
+
+        // Sync gap from style to state
+        table_state.row_gap_px = style.row_gap;
+
+        // Sync scroll state
+        b.syncDataTableScroll(id, table_state);
+
+        // Compute layout parameters
+        const params = Builder.computeDataTableLayout(id, table_state, style);
+
+        // Open viewport and content elements
+        const content_id = b.openDataTableElements(
+            params,
+            style,
+            table_state.scroll_offset_x,
+            table_state.scroll_offset_y,
+        ) orelse return;
+
+        // Render header row if enabled
+        if (table_state.show_header) {
+            b.renderDataTableHeaderCx(table_state, params, style, self, callbacks.render_header);
+        }
+
+        // Top spacer (rows above visible range)
+        if (params.top_spacer > 0) {
+            b.renderDataTableSpacer(params.content_width, params.top_spacer);
+        }
+
+        // Render visible rows
+        const range = params.visible_range;
+        var row = range.rows.start;
+        while (row < range.rows.end) : (row += 1) {
+            if (callbacks.render_row) |render_row| {
+                // User controls row container - pass visible column range
+                render_row(row, range.cols, self);
+            } else {
+                // Default row container
+                b.renderDataTableRowCx(table_state, row, range.cols, params, style, self, callbacks.render_cell);
+            }
+        }
+
+        // Bottom spacer (rows below visible range)
+        if (params.bottom_spacer > 0) {
+            b.renderDataTableSpacer(params.content_width, params.bottom_spacer);
+        }
+
+        // Close content container and viewport
+        b.layout.closeElement();
+        b.layout.closeElement();
+
+        // Register for scroll handling
+        b.registerDataTableScroll(id, params, content_id, style);
     }
 };
 
@@ -1006,4 +1339,23 @@ test "toggle collection pattern" {
 
     sel.clearAll();
     try std.testing.expectEqual(@as(usize, 0), sel.selectedCount());
+}
+
+test "DataTableCallbacks type structure" {
+    // Verify that DataTableCallbacks can be instantiated with the expected fields
+    const TestCx = Cx;
+
+    const Callbacks = TestCx.DataTableCallbacks(TestCx);
+
+    // Verify the struct has the expected fields
+    const info = @typeInfo(Callbacks);
+    try std.testing.expectEqual(@as(usize, 3), info.@"struct".fields.len);
+
+    // Verify field names
+    try std.testing.expectEqualStrings("render_header", info.@"struct".fields[0].name);
+    try std.testing.expectEqualStrings("render_cell", info.@"struct".fields[1].name);
+    try std.testing.expectEqualStrings("render_row", info.@"struct".fields[2].name);
+
+    // Verify render_row has a default value (is optional)
+    try std.testing.expect(info.@"struct".fields[2].default_value_ptr != null);
 }

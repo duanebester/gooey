@@ -11,7 +11,6 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 
 const Cx = gooey.Cx;
-const Builder = gooey.Builder;
 const Color = gooey.Color;
 const DataTableState = gooey.DataTableState;
 const SortDirection = gooey.SortDirection;
@@ -300,26 +299,6 @@ fn siftDown(start: usize, end: usize, ascending: bool, comptime cmpFn: fn (u32, 
 }
 
 // =============================================================================
-// Event Callbacks (module-level for function pointer compatibility)
-// =============================================================================
-
-fn onHeaderClick(col: u32) void {
-    const dir = state.table_state.toggleSort(col);
-    state.sort_col = if (dir != null and dir.? != .none) col else null;
-    state.sort_dir = dir orelse .none;
-
-    // Actually sort the data
-    sortByColumn(col, state.sort_dir);
-
-    // Clear selection since row indices no longer map to the same data
-    state.table_state.clearSelection();
-}
-
-fn onRowClick(row: u32) void {
-    state.table_state.selectRow(row);
-}
-
-// =============================================================================
 // Application State
 // =============================================================================
 
@@ -382,6 +361,24 @@ const State = struct {
 
     pub fn clearSelection(self: *State) void {
         self.table_state.clearSelection();
+    }
+
+    /// Handler for header clicks - sorts by column
+    pub fn onHeaderClick(self: *State, col: u32) void {
+        const dir = self.table_state.toggleSort(col);
+        self.sort_col = if (dir != null and dir.? != .none) col else null;
+        self.sort_dir = dir orelse .none;
+
+        // Actually sort the data
+        sortByColumn(col, self.sort_dir);
+
+        // Clear selection since row indices no longer map to the same data
+        self.table_state.clearSelection();
+    }
+
+    /// Handler for row clicks - selects the row
+    pub fn onRowClick(self: *State, row: u32) void {
+        self.table_state.selectRow(row);
     }
 };
 
@@ -462,28 +459,12 @@ const StatsBar = struct {
     }
 };
 
-/// Context passed to cell/header renderers
-const TableRenderContext = struct {
-    selected_row: ?u32,
-    theme: *const gooey.Theme,
-    sort_col: ?u32,
-    sort_dir: SortDirection,
-};
-
 const DataTable = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(State);
-        var b = cx.builder();
-        const theme = b.theme();
+        const theme = cx.builder().theme();
 
-        const ctx = TableRenderContext{
-            .selected_row = s.table_state.selection.row,
-            .theme = theme,
-            .sort_col = s.sort_col,
-            .sort_dir = s.sort_dir,
-        };
-
-        b.dataTableWithContext(
+        cx.dataTable(
             "main-table",
             &s.table_state,
             .{
@@ -496,23 +477,23 @@ const DataTable = struct {
                 .row_alternate_background = Color.rgba(0, 0, 0, 0.02),
                 .row_selected_background = theme.primary,
                 .row_hover_background = theme.overlay,
-                .on_header_click = onHeaderClick,
-                .on_row_click = onRowClick,
             },
-            ctx,
-            renderCell,
-            renderHeader,
+            .{
+                .render_header = renderHeader,
+                .render_cell = renderCell,
+            },
         );
     }
 
-    fn renderHeader(col: u32, ctx: TableRenderContext, b: *Builder) void {
-        const theme = ctx.theme;
+    fn renderHeader(col: u32, cx: *Cx) void {
+        const s = cx.stateConst(State);
+        const theme = cx.builder().theme();
         const name = if (col < COLUMN_NAMES.len) COLUMN_NAMES[col] else "???";
 
         // Show sort indicator if this column is sorted
         var label_buf: [64]u8 = undefined;
-        const label = if (ctx.sort_col != null and ctx.sort_col.? == col)
-            switch (ctx.sort_dir) {
+        const label = if (s.sort_col != null and s.sort_col.? == col)
+            switch (s.sort_dir) {
                 .ascending => std.fmt.bufPrint(&label_buf, "{s} ▲", .{name}) catch name,
                 .descending => std.fmt.bufPrint(&label_buf, "{s} ▼", .{name}) catch name,
                 .none => name,
@@ -520,23 +501,26 @@ const DataTable = struct {
         else
             name;
 
-        b.box(.{
+        // Render header with click handler for sorting
+        cx.render(ui.box(.{
             .fill_width = true,
             .fill_height = true,
             .padding = .{ .symmetric = .{ .x = 8, .y = 0 } },
             .alignment = .{ .main = .center, .cross = .start },
+            .on_click_handler = cx.updateWith(State, col, State.onHeaderClick),
         }, .{
             ui.text(label, .{
                 .size = 13,
                 .weight = .semibold,
                 .color = theme.text,
             }),
-        });
+        }));
     }
 
-    fn renderCell(display_row: u32, col: u32, ctx: TableRenderContext, b: *Builder) void {
-        const theme = ctx.theme;
-        const is_selected = if (ctx.selected_row) |sel| sel == display_row else false;
+    fn renderCell(display_row: u32, col: u32, cx: *Cx) void {
+        const s = cx.stateConst(State);
+        const theme = cx.builder().theme();
+        const is_selected = if (s.table_state.selection.row) |sel| sel == display_row else false;
         const text_color = if (is_selected) Color.white else theme.text;
 
         // Get actual data row via sort index
@@ -553,7 +537,7 @@ const DataTable = struct {
             else => "—",
         };
 
-        b.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .fill_height = true,
             .padding = .{ .symmetric = .{ .x = 8, .y = 0 } },
@@ -563,7 +547,7 @@ const DataTable = struct {
                 .size = 13,
                 .color = text_color,
             }),
-        });
+        }));
     }
 };
 

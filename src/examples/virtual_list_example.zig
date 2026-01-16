@@ -11,7 +11,6 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 
 const Cx = gooey.Cx;
-const Builder = gooey.Builder;
 const Color = gooey.Color;
 const VirtualListState = gooey.VirtualListState;
 const ScrollStrategy = gooey.ScrollStrategy;
@@ -199,25 +198,13 @@ const StatsBar = struct {
     }
 };
 
-/// Context passed to item renderer
-const MessageRenderContext = struct {
-    selected_index: ?u32,
-    theme: *const gooey.Theme,
-};
-
 const ChatList = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(State);
-        var b = cx.builder();
-        const theme = b.theme();
+        const theme = cx.theme();
 
-        const ctx = MessageRenderContext{
-            .selected_index = s.selected_index,
-            .theme = theme,
-        };
-
-        // Use virtualListWithContext - render callback returns height
-        b.virtualListWithContext(
+        // Use cx.virtualList() - render callback receives *Cx and returns height
+        cx.virtualList(
             "chat-list",
             &s.list_state,
             .{
@@ -228,17 +215,17 @@ const ChatList = struct {
                 .padding = .{ .all = 8 },
                 .gap = 8,
             },
-            ctx,
             renderMessage,
         );
     }
 
     /// Render a single message - returns the actual height
-    fn renderMessage(index: u32, ctx: MessageRenderContext, b: *Builder) f32 {
-        const theme = ctx.theme;
+    fn renderMessage(index: u32, cx: *Cx) f32 {
+        const s = cx.stateConst(State);
+        const theme = cx.theme();
         const msg = &MESSAGES[index];
 
-        const is_selected = if (ctx.selected_index) |sel| sel == index else false;
+        const is_selected = if (s.selected_index) |sel| sel == index else false;
         const item_height = msg.height();
 
         // "Alice" is "me" - messages go on the right
@@ -261,18 +248,18 @@ const ChatList = struct {
         switch (msg.msg_type) {
             .system => {
                 // System messages - centered, smaller
-                b.box(.{
+                cx.render(ui.box(.{
                     .fill_width = true,
                     .height = item_height,
                     .direction = .row,
                     .alignment = .{ .main = .center, .cross = .center },
                 }, .{
                     ui.text(msg.content, .{ .size = 11, .color = muted_color }),
-                });
+                }));
             },
             .image => {
                 // Image messages - single box with fixed height
-                b.box(.{
+                cx.render(ui.box(.{
                     .fill_width = true,
                     .height = item_height,
                     .background = bubble_color,
@@ -281,11 +268,11 @@ const ChatList = struct {
                     .alignment = .{ .main = .center, .cross = .center },
                 }, .{
                     ui.text(msg.content, .{ .size = 12, .color = text_color }),
-                });
+                }));
             },
             else => {
                 // Regular text messages - chat bubble style
-                b.box(.{
+                cx.render(ui.box(.{
                     .fill_width = true,
                     .height = item_height,
                     .background = bubble_color,
@@ -300,7 +287,7 @@ const ChatList = struct {
                     }),
                     // Message content
                     ui.text(msg.content, .{ .size = 14, .color = text_color }),
-                });
+                }));
             },
         }
 

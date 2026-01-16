@@ -107,6 +107,14 @@ pub const DragState = drag_mod.DragState;
 const geometry = @import("../core/geometry.zig");
 const Point = geometry.Point;
 
+// Deferred command infrastructure
+const MAX_DEFERRED_COMMANDS = 32;
+
+const DeferredCommand = struct {
+    callback: *const fn (*Gooey, u64) void,
+    packed_arg: u64,
+};
+
 /// Gooey - unified UI context
 pub const Gooey = struct {
     allocator: std.mem.Allocator,
@@ -205,6 +213,10 @@ pub const Gooey = struct {
     /// Type ID for runtime type checking of root state
     root_state_type_id: usize = 0,
 
+    // Deferred command queue (for operations that must run after event handling)
+    deferred_commands: [MAX_DEFERRED_COMMANDS]DeferredCommand = undefined,
+    deferred_count: u8 = 0,
+
     const Self = @This();
 
     /// Get the type ID for a given type (used for runtime type checking).
@@ -233,6 +245,96 @@ pub const Gooey = struct {
             }
         }
         return null;
+    }
+
+    // =========================================================================
+    // Deferred Commands
+    // =========================================================================
+
+    /// Queue a callback to run after current event handling completes.
+    /// Used internally by Cx.defer().
+    pub fn deferCommand(
+        self: *Self,
+        comptime State: type,
+        comptime method: fn (*State, *Self) void,
+    ) void {
+        if (self.deferred_count >= MAX_DEFERRED_COMMANDS) {
+            std.log.warn("Deferred command queue full ({} commands) - dropping command", .{MAX_DEFERRED_COMMANDS});
+            return;
+        }
+
+        const Wrapper = struct {
+            fn invoke(g: *Self, _: u64) void {
+                const state_ptr = g.getRootState(State) orelse return;
+                method(state_ptr, g);
+                g.requestRender();
+            }
+        };
+
+        self.deferred_commands[self.deferred_count] = .{
+            .callback = Wrapper.invoke,
+            .packed_arg = 0,
+        };
+        self.deferred_count += 1;
+    }
+
+    /// Queue a callback with an argument to run after current event handling completes.
+    /// Used internally by Cx.deferWith().
+    ///
+    /// The argument is stored inline in the command struct (packed into u64),
+    /// so multiple deferred calls with the same signature work correctly.
+    pub fn deferCommandWith(
+        self: *Self,
+        comptime State: type,
+        comptime Arg: type,
+        arg: Arg,
+        comptime method: fn (*State, *Self, Arg) void,
+    ) void {
+        comptime {
+            if (@sizeOf(Arg) > @sizeOf(u64)) {
+                @compileError("deferWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 8 bytes. Use a pointer or index instead.");
+            }
+        }
+
+        if (self.deferred_count >= MAX_DEFERRED_COMMANDS) {
+            std.log.warn("Deferred command queue full ({} commands) - dropping command", .{MAX_DEFERRED_COMMANDS});
+            return;
+        }
+
+        // Pack arg into u64 using the same pattern as updateWith/commandWith
+        const handler_mod = @import("handler.zig");
+        const packed_value = handler_mod.packArg(Arg, arg).id;
+
+        const Wrapper = struct {
+            fn invoke(g: *Self, packed_arg: u64) void {
+                const state_ptr = g.getRootState(State) orelse return;
+                const unpacked = handler_mod.unpackArg(Arg, .{ .id = packed_arg });
+                method(state_ptr, g, unpacked);
+                g.requestRender();
+            }
+        };
+
+        self.deferred_commands[self.deferred_count] = .{
+            .callback = Wrapper.invoke,
+            .packed_arg = packed_value,
+        };
+        self.deferred_count += 1;
+    }
+
+    /// Execute all queued deferred commands.
+    /// Called by runtime after event handling completes.
+    pub fn flushDeferredCommands(self: *Self) void {
+        const count = self.deferred_count;
+        self.deferred_count = 0;
+
+        for (self.deferred_commands[0..count]) |cmd| {
+            cmd.callback(self, cmd.packed_arg);
+        }
+    }
+
+    /// Check if there are pending deferred commands.
+    pub fn hasDeferredCommands(self: *const Self) bool {
+        return self.deferred_count > 0;
     }
 
     /// Initialize Gooey creating and owning all resources
@@ -1230,4 +1332,145 @@ fn measureTextCallback(
         .width = @as(f32, @floatFromInt(text_content.len)) * 10,
         .height = 20,
     };
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "deferCommand queues command" {
+    const TestState = struct {
+        value: i32 = 0,
+
+        pub fn increment(self: *@This(), _: *Gooey) void {
+            self.value += 1;
+        }
+    };
+
+    // Create a minimal Gooey for testing deferred commands
+    var gooey: Gooey = undefined;
+    gooey.deferred_count = 0;
+    gooey.root_state_ptr = null;
+    gooey.root_state_type_id = 0;
+    gooey.needs_render = false;
+
+    var state = TestState{};
+    gooey.setRootState(TestState, &state);
+
+    // Queue a deferred command
+    gooey.deferCommand(TestState, TestState.increment);
+
+    // Should be queued but not executed yet
+    try std.testing.expectEqual(@as(u8, 1), gooey.deferred_count);
+    try std.testing.expectEqual(@as(i32, 0), state.value);
+
+    // Flush should execute the command
+    gooey.flushDeferredCommands();
+
+    try std.testing.expectEqual(@as(u8, 0), gooey.deferred_count);
+    try std.testing.expectEqual(@as(i32, 1), state.value);
+}
+
+test "deferCommandWith passes argument" {
+    const TestState = struct {
+        value: i32 = 0,
+
+        pub fn setValue(self: *@This(), _: *Gooey, val: i32) void {
+            self.value = val;
+        }
+    };
+
+    var gooey: Gooey = undefined;
+    gooey.deferred_count = 0;
+    gooey.root_state_ptr = null;
+    gooey.root_state_type_id = 0;
+    gooey.needs_render = false;
+
+    var state = TestState{};
+    gooey.setRootState(TestState, &state);
+
+    // Queue a deferred command with argument
+    gooey.deferCommandWith(TestState, i32, 42, TestState.setValue);
+
+    try std.testing.expectEqual(@as(u8, 1), gooey.deferred_count);
+    try std.testing.expectEqual(@as(i32, 0), state.value);
+
+    gooey.flushDeferredCommands();
+
+    try std.testing.expectEqual(@as(i32, 42), state.value);
+}
+
+test "multiple deferWith calls preserve their arguments" {
+    const TestState = struct {
+        sum: i32 = 0,
+
+        pub fn addValue(self: *@This(), _: *Gooey, val: i32) void {
+            self.sum += val;
+        }
+    };
+
+    var gooey: Gooey = undefined;
+    gooey.deferred_count = 0;
+    gooey.root_state_ptr = null;
+    gooey.root_state_type_id = 0;
+    gooey.needs_render = false;
+
+    var state = TestState{};
+    gooey.setRootState(TestState, &state);
+
+    // Queue multiple commands with different arguments
+    gooey.deferCommandWith(TestState, i32, 10, TestState.addValue);
+    gooey.deferCommandWith(TestState, i32, 20, TestState.addValue);
+    gooey.deferCommandWith(TestState, i32, 30, TestState.addValue);
+
+    try std.testing.expectEqual(@as(u8, 3), gooey.deferred_count);
+
+    gooey.flushDeferredCommands();
+
+    // All three should have executed with their own arguments
+    try std.testing.expectEqual(@as(i32, 60), state.sum);
+}
+
+test "deferred queue overflow is handled gracefully" {
+    const TestState = struct {
+        pub fn noop(_: *@This(), _: *Gooey) void {}
+    };
+
+    var gooey: Gooey = undefined;
+    gooey.deferred_count = 0;
+    gooey.root_state_ptr = null;
+    gooey.root_state_type_id = 0;
+    gooey.needs_render = false;
+
+    var state = TestState{};
+    gooey.setRootState(TestState, &state);
+
+    // Fill the queue
+    for (0..MAX_DEFERRED_COMMANDS) |_| {
+        gooey.deferCommand(TestState, TestState.noop);
+    }
+
+    try std.testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), gooey.deferred_count);
+
+    // This should not crash, just log a warning and drop the command
+    gooey.deferCommand(TestState, TestState.noop);
+
+    // Queue size should not exceed max
+    try std.testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), gooey.deferred_count);
+
+    // Clean up
+    gooey.flushDeferredCommands();
+}
+
+test "hasDeferredCommands returns correct state" {
+    var gooey: Gooey = undefined;
+    gooey.deferred_count = 0;
+
+    try std.testing.expect(!gooey.hasDeferredCommands());
+
+    gooey.deferred_count = 1;
+    try std.testing.expect(gooey.hasDeferredCommands());
+
+    gooey.deferred_count = 0;
+    try std.testing.expect(!gooey.hasDeferredCommands());
 }

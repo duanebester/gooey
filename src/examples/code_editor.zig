@@ -13,13 +13,8 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 const file_dialog = gooey.platform.mac.file_dialog;
 
-// GCD for deferred dispatch (avoids mutex deadlock with modal dialogs)
-const c = @cImport({
-    @cInclude("dispatch/dispatch.h");
-});
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Builder = gooey.Builder;
 const Color = gooey.Color;
 const Button = gooey.Button;
 const CodeEditor = gooey.CodeEditor;
@@ -191,30 +186,14 @@ const AppState = struct {
     }
 
     pub fn openDirectory(self: *AppState, g: *gooey.Gooey) void {
-        _ = g;
-        // Defer dialog opening to next run loop iteration to avoid mutex deadlock
-        // The modal dialog runs its own event loop which can trigger input events
-        // while we're still holding the render mutex from the click handler
-        const Context = struct {
-            state: *AppState,
-
-            fn run(context: ?*anyopaque) callconv(.c) void {
-                const ctx_ptr: *@This() = @ptrCast(@alignCast(context));
-                openDialogDeferred(ctx_ptr.state);
-                // Free the heap-allocated context
-                std.heap.page_allocator.destroy(ctx_ptr);
-            }
-        };
-
-        // Heap-allocate context so it survives until the async callback runs
-        const ctx = std.heap.page_allocator.create(Context) catch return;
-        ctx.* = .{ .state = self };
-
-        // Dispatch to main queue - will run after current event handling completes
-        c.dispatch_async_f(c.dispatch_get_main_queue(), @ptrCast(ctx), Context.run);
+        _ = self;
+        // Use deferCommand to run the dialog after current event handling completes.
+        // This avoids mutex deadlock since modal dialogs run their own event loop.
+        g.deferCommand(AppState, AppState.openDialogDeferred);
     }
 
-    fn openDialogDeferred(self: *AppState) void {
+    fn openDialogDeferred(self: *AppState, g: *gooey.Gooey) void {
+        _ = g;
         if (file_dialog.promptForPaths(std.heap.page_allocator, .{
             .files = false,
             .directories = true,
@@ -344,43 +323,13 @@ const clear = Color.rgba(0, 0, 0, 0);
 
 var state = AppState{};
 
-// Global pointers for click callbacks (needed because onClickWithData only passes u32)
-var g_state_ptr: ?*AppState = null;
-var g_gooey_ptr: ?*gooey.Gooey = null;
-
-fn onFileItemClick(index: u32) void {
-    if (g_state_ptr) |s| {
-        if (g_gooey_ptr) |g| {
-            s.selectFile(g, index);
-        }
-    }
-}
-
 // =============================================================================
 // Components
 // =============================================================================
 
-/// Context passed to file item renderer
-const FileItemContext = struct {
-    selected_index: ?u32,
-    state: *const AppState,
-    dispatch: *gooey.context.DispatchTree,
-};
-
 const FileSidebar = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
-        const b = cx.builder();
-
-        // Set global pointers for click callbacks
-        g_state_ptr = @constCast(s);
-        g_gooey_ptr = b.gooey;
-
-        const ctx = FileItemContext{
-            .selected_index = s.selected_file_index,
-            .state = s,
-            .dispatch = b.dispatch,
-        };
 
         cx.render(ui.box(.{
             .width = SIDEBAR_WIDTH,
@@ -411,20 +360,17 @@ const FileSidebar = struct {
                 .color = text_muted,
             }),
 
-            // File list
-            FileListContent{ .ctx = ctx },
+            // File list using cx.uniformList()
+            FileListContent{},
         }));
     }
 };
 
 const FileListContent = struct {
-    ctx: FileItemContext,
-
-    pub fn render(self: @This(), cx: *Cx) void {
+    pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
-        var b = cx.builder();
 
-        b.uniformListWithContext(
+        cx.uniformList(
             "file-list",
             &s.file_list_state,
             .{
@@ -432,14 +378,13 @@ const FileListContent = struct {
                 .grow_height = true,
                 .corner_radius = 4,
             },
-            self.ctx,
             renderFileItem,
         );
     }
 
-    fn renderFileItem(index: u32, ctx: FileItemContext, b: *Builder) void {
-        const s = ctx.state;
-        const is_selected = if (ctx.selected_index) |sel| sel == index else false;
+    fn renderFileItem(index: u32, cx: *Cx) void {
+        const s = cx.stateConst(AppState);
+        const is_selected = if (s.selected_file_index) |sel| sel == index else false;
 
         const bg_color = if (is_selected)
             Color.rgba(0.3, 0.5, 1.0, 0.4)
@@ -456,16 +401,7 @@ const FileListContent = struct {
         const is_dir = if (index < s.file_count) s.file_is_dir[index] else false;
         const icon = if (is_dir) "📁" else "📄";
 
-        // Generate a unique layout ID for this item
-        const layout_id = b.generateId();
-
-        // Push dispatch node and set the SAME layout ID
-        _ = ctx.dispatch.pushNode();
-        ctx.dispatch.setLayoutId(layout_id.id);
-        ctx.dispatch.onClickWithData(onFileItemClick, index);
-
-        // Use boxWithLayoutId to ensure the box uses the same ID
-        b.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box(.{
             .fill_width = true,
             .height = FILE_ITEM_HEIGHT,
             .background = bg_color,
@@ -475,12 +411,11 @@ const FileListContent = struct {
             .direction = .row,
             .alignment = .{ .main = .start, .cross = .center },
             .gap = 8,
+            .on_click_handler = cx.commandWith(AppState, index, AppState.selectFile),
         }, .{
             ui.text(icon, .{ .size = 12, .color = item_text_color }),
             ui.text(file_name, .{ .size = 13, .color = item_text_color }),
-        });
-
-        ctx.dispatch.popNode();
+        }));
     }
 };
 

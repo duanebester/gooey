@@ -67,6 +67,10 @@ zig build run-tooltip      # Tooltip component
 zig build run-modal        # Modal dialogs
 zig build run-images       # Image loading and styling
 zig build run-file-dialog  # Native file dialogs
+zig build run-uniform-list # Virtualized list (10k items)
+zig build run-virtual-list # Variable-height list
+zig build run-data-table   # Virtualized table (10k rows)
+zig build run-code-editor  # Code editor with syntax highlighting
 zig build test             # Run tests
 ```
 
@@ -185,11 +189,102 @@ fn render(cx: *Cx) void {
 | Method             | Signature                      | Use Case                           |
 | ------------------ | ------------------------------ | ---------------------------------- |
 | `cx.update()`      | `fn(*State) void`              | Pure state mutations               |
-| `cx.updateWith()`  | `fn(*State, Arg) void`         | Mutations with arguments           |
+| `cx.updateWith()`  | `fn(*State, Arg) void`         | Mutations with argument            |
 | `cx.command()`     | `fn(*State, *Gooey) void`      | Framework access (focus, entities) |
-| `cx.commandWith()` | `fn(*State, *Gooey, Arg) void` | Framework access with arguments    |
+| `cx.commandWith()` | `fn(*State, *Gooey, Arg) void` | Framework access with argument     |
+| `cx.defer()`       | `fn(*State, *Gooey) void`      | Run after current event completes  |
+| `cx.deferWith()`   | `fn(*State, *Gooey, Arg) void` | Deferred with argument             |
 
 > **Note:** The state type is passed explicitly: `cx.update(AppState, AppState.increment)`
+
+### Handlers with Arguments
+
+The `*With` variants (`updateWith`, `commandWith`, `deferWith`) let you pass data to your handler. The argument is captured at handler creation time and passed when invoked:
+
+```zig
+// In a list render callback - capture the index
+.on_click_handler = cx.updateWith(State, index, State.selectItem),
+
+// The handler receives the captured value
+pub fn selectItem(self: *State, index: u32) void {
+    self.selected = index;
+}
+```
+
+**The 8-byte limit:** Arguments are packed into a `u64` for zero-allocation storage. This means your argument must be ≤8 bytes. If it exceeds this, you'll get a compile error:
+
+```
+error: updateWith: argument type 'MyLargeStruct' exceeds 8 bytes. Use a pointer or index instead.
+```
+
+**What fits in 8 bytes:**
+
+| Type                                | Size     | ✓/✗ |
+| ----------------------------------- | -------- | --- |
+| `u8`, `i8`, `bool`                  | 1 byte   | ✓   |
+| `u16`, `i16`                        | 2 bytes  | ✓   |
+| `u32`, `i32`, `f32`                 | 4 bytes  | ✓   |
+| `u64`, `i64`, `f64`                 | 8 bytes  | ✓   |
+| `usize` (64-bit)                    | 8 bytes  | ✓   |
+| `*T` (any pointer)                  | 8 bytes  | ✓   |
+| `struct { x: u32, y: u32 }`         | 8 bytes  | ✓   |
+| `[2]u32`                            | 8 bytes  | ✓   |
+| `struct { a: u32, b: u32, c: u32 }` | 12 bytes | ✗   |
+
+**Workarounds for larger data:**
+
+```zig
+// Option 1: Use an index into your data
+.on_click_handler = cx.updateWith(State, row_index, State.selectRow),
+
+// Option 2: Use a pointer (if the data outlives the handler)
+.on_click_handler = cx.updateWith(State, &self.items[i], State.editItem),
+
+// Option 3: Store data in state, pass an ID
+pub fn openFile(self: *State, file_id: u32) void {
+    const file = self.files.get(file_id) orelse return;
+    // ... use file.path, file.name, etc.
+}
+```
+
+### Deferred Commands
+
+Use `defer` when you need to run code **after** the current event handler completes. This is essential for:
+
+- **Modal dialogs** - They run their own event loop, which would deadlock if called during event handling
+- **File pickers** - Same reason as modals
+- **Heavy operations** - Defer work to avoid blocking the current frame
+
+```zig
+// In a command handler, use g.deferCommand():
+pub fn openFolder(self: *State, g: *Gooey) void {
+    _ = self;
+    g.deferCommand(State, State.openFolderDeferred);
+}
+
+fn openFolderDeferred(self: *State, g: *Gooey) void {
+    _ = g;
+    // Safe to open modal dialog here - we're outside event handling
+    if (file_dialog.chooseFolder(.{})) |path| {
+        self.loadDirectory(path);
+    }
+}
+
+// With an argument (same 8-byte limit applies):
+pub fn deleteItem(self: *State, g: *Gooey, index: u32) void {
+    _ = self;
+    g.deferCommandWith(State, u32, index, State.confirmDelete);
+}
+
+fn confirmDelete(self: *State, g: *Gooey, index: u32) void {
+    _ = g;
+    if (dialog.confirm("Delete item?")) {
+        self.items.remove(index);
+    }
+}
+```
+
+The deferred command queue holds up to 32 commands and is flushed after each event cycle.
 
 ## Components
 
@@ -435,7 +530,7 @@ cx.render(ui.hstack(.{ .gap = 4 }, .{
 
 ### UniformList
 
-Virtualized list for efficiently rendering large datasets with uniform item heights. Only visible items are rendered, regardless of total count.
+Virtualized list for efficiently rendering large datasets with uniform item heights. Only visible items are rendered, regardless of total count. The render callback receives `*Cx` for full access to state and handlers.
 
 ```zig
 const State = struct {
@@ -449,22 +544,44 @@ const State = struct {
     pub fn scrollToMiddle(self: *State) void {
         self.list_state.scrollToItem(5000, .center);
     }
+
+    pub fn selectItem(self: *State, index: u32) void {
+        self.selected = index;
+    }
 };
 
 // In render function:
-cx.uniformList("my-list", &s.list_state, .{ .height = 400 }, struct {
-    fn render(b: *Builder, index: u32) void {
-        b.fmt("Item {d}", .{index});
-    }
-}.render);
+fn render(cx: *Cx) void {
+    const s = cx.state(State);
+    cx.uniformList("my-list", &s.list_state, .{
+        .fill_width = true,
+        .grow_height = true,
+    }, renderItem);
+}
 
-// With gaps between items:
-var list_state = UniformListState.initWithGap(1000, 32.0, 4.0);
+fn renderItem(index: u32, cx: *Cx) void {
+    const s = cx.stateConst(State);
+    const theme = cx.builder().theme();
+    const is_selected = if (s.selected) |sel| sel == index else false;
+
+    // Color is available via: const Color = gooey.Color;
+    const text_color = if (is_selected) Color.white else theme.text;
+
+    cx.render(ui.box(.{
+        .fill_width = true,
+        .height = 32,
+        .background = if (is_selected) theme.primary else null,
+        .hover_background = theme.overlay,
+        .on_click_handler = cx.updateWith(State, index, State.selectItem),
+    }, .{
+        ui.text("Item", .{ .color = text_color }),
+    }));
+}
 ```
 
 ### VirtualList
 
-Virtualized list supporting variable item heights. Heights are cached after rendering for efficient scroll calculations. Ideal for chat messages or expandable rows.
+Virtualized list supporting variable item heights. Heights are cached after rendering for efficient scroll calculations. Ideal for chat messages or expandable rows. The callback must return the rendered height.
 
 ```zig
 const State = struct {
@@ -472,19 +589,31 @@ const State = struct {
 };
 
 // In render function - callback returns item height:
-cx.virtualList("chat-list", &s.list_state, .{ .height = 400 }, struct {
-    fn render(b: *Builder, index: u32) f32 {
-        const msg = messages[index];
-        const height: f32 = if (msg.has_image) 120.0 else 48.0;
-        b.box(.{ .height = height }, .{ b.text(msg.text) });
-        return height; // Return actual rendered height
-    }
-}.render);
+fn render(cx: *Cx) void {
+    const s = cx.state(State);
+    cx.virtualList("chat-list", &s.list_state, .{ .grow_height = true }, renderMessage);
+}
+
+fn renderMessage(index: u32, cx: *Cx) f32 {
+    const s = cx.stateConst(State);
+    const msg = s.messages[index];
+    const height: f32 = if (msg.has_image) 120.0 else 48.0;
+
+    cx.render(ui.box(.{
+        .fill_width = true,
+        .height = height,
+        .on_click_handler = cx.updateWith(State, index, State.selectMessage),
+    }, .{
+        ui.text(msg.text, .{}),
+    }));
+
+    return height; // Return actual rendered height for caching
+}
 ```
 
 ### DataTable
 
-Virtualized 2D table with both vertical and horizontal virtualization. Supports column resizing, sorting, and selection.
+Virtualized 2D table with both vertical and horizontal virtualization. Supports column resizing, sorting, and selection. Uses a callbacks struct for header and cell rendering.
 
 ```zig
 const State = struct {
@@ -496,29 +625,66 @@ const State = struct {
         break :blk t;
     },
 
-    pub fn onSort(self: *State, col: u32) void {
+    pub fn onHeaderClick(self: *State, col: u32) void {
         _ = self.table_state.toggleSort(col);
         // Re-sort your data based on table_state.sort_column and direction
+    }
+
+    pub fn onRowClick(self: *State, row: u32) void {
+        self.table_state.selection.row = row;
     }
 };
 
 // In render function:
-cx.dataTable("my-table", &s.table_state, .{ .height = 400, .width = 600 },
-    renderCell,
-    renderHeader,
-);
-
-fn renderCell(b: *Builder, row: u32, col: u32) void {
-    switch (col) {
-        0 => b.fmt("{d}", .{row}),
-        1 => b.text(data[row].name),
-        2 => b.text(data[row].status),
-        else => {},
-    }
+fn render(cx: *Cx) void {
+    const s = cx.state(State);
+    const theme = cx.builder().theme();
+    cx.dataTable("my-table", &s.table_state, .{
+        .fill_width = true,
+        .grow_height = true,
+        .row_hover_background = theme.overlay,
+        .row_selected_background = theme.primary,
+    }, .{
+        .render_header = renderHeader,
+        .render_cell = renderCell,
+    });
 }
 
-fn renderHeader(b: *Builder, col: u32) void {
-    b.text(COLUMN_NAMES[col]);
+fn renderHeader(col: u32, cx: *Cx) void {
+    const s = cx.stateConst(State);
+    const theme = cx.builder().theme();
+
+    // Add sort indicator if this column is sorted
+    const name = COLUMN_NAMES[col];
+    const label = if (s.table_state.sort_column == col)
+        if (s.table_state.sort_direction == .ascending) name ++ " ▲" else name ++ " ▼"
+    else
+        name;
+
+    cx.render(ui.box(.{
+        .fill_width = true,
+        .fill_height = true,
+        .on_click_handler = cx.updateWith(State, col, State.onHeaderClick),
+    }, .{
+        ui.text(label, .{ .weight = .semibold, .color = theme.text }),
+    }));
+}
+
+fn renderCell(row: u32, col: u32, cx: *Cx) void {
+    const theme = cx.builder().theme();
+
+    cx.render(ui.box(.{
+        .fill_width = true,
+        .fill_height = true,
+        .padding = .{ .symmetric = .{ .x = 8, .y = 0 } },
+    }, .{
+        switch (col) {
+            0 => ui.textFmt("{d}", .{row}, .{ .color = theme.text }),
+            1 => ui.text(data[row].name, .{ .color = theme.text }),
+            2 => ui.text(data[row].status, .{ .color = theme.text }),
+            else => ui.text("—", .{}),
+        },
+    }));
 }
 ```
 
@@ -718,6 +884,10 @@ fn render(cx: *Cx) void {
 | A11y Demo        | `zig build run-a11y-demo`        | VoiceOver accessibility demo          |
 | Accessible Form  | `zig build run-accessible-form`  | Complete accessible form example      |
 | Drag & Drop      | `zig build run-drag-drop`        | Draggable items and drop targets      |
+| Uniform List     | `zig build run-uniform-list`     | Virtualized list with 10,000 items    |
+| Virtual List     | `zig build run-virtual-list`     | Variable-height virtualized list      |
+| Data Table       | `zig build run-data-table`       | Virtualized table with 10,000 rows    |
+| Code Editor      | `zig build run-code-editor`      | Code editor with syntax highlighting  |
 
 See [docs/accessibility.md](docs/accessibility.md) for comprehensive accessibility documentation.
 

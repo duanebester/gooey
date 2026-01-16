@@ -535,14 +535,6 @@ pub const DataTableStyle = struct {
     scrollbar_size: f32 = 8,
     track_color: ?Color = null,
     thumb_color: ?Color = null,
-
-    // Interaction callbacks
-    /// Called when a header column is clicked (for sorting)
-    on_header_click: ?*const fn (col: u32) void = null,
-    /// Called when a row is clicked (for selection)
-    on_row_click: ?*const fn (row: u32) void = null,
-    /// Called when a cell is clicked
-    on_cell_click: ?*const fn (row: u32, col: u32) void = null,
 };
 
 // =============================================================================

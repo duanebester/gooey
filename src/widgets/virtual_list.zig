@@ -19,12 +19,12 @@
 //! var list_state = VirtualListState.init(1000, 32.0); // count, default height
 //!
 //! // In your render function - callback returns item height:
-//! b.virtualList("chat-list", &list_state, .{ .height = 400 }, renderMessage);
+//! cx.virtualList("chat-list", &list_state, .{ .grow_height = true }, renderMessage);
 //!
-//! fn renderMessage(index: u32, b: *Builder) f32 {
+//! fn renderMessage(index: u32, cx: *Cx) f32 {
 //!     const msg = messages[index];
 //!     const height: f32 = if (msg.has_image) 120.0 else 48.0;
-//!     b.box(.{ .height = height }, .{ text(msg.text, .{}) });
+//!     cx.render(ui.box(.{ .height = height }, .{ ui.text(msg.text, .{}) }));
 //!     return height; // Return actual rendered height
 //! }
 //! ```
