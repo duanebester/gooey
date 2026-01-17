@@ -296,6 +296,13 @@ pub fn WindowContext(comptime State: type) type {
             return input_handler.handleInputCx(&self.cx, self.on_event, event);
         }
 
+        /// Post-input callback - called after input handling with mutex released.
+        /// Flushes deferred commands which may run nested event loops (modal dialogs).
+        pub fn onPostInput(window: *Window) void {
+            const self = window.getUserData(Self) orelse return;
+            self.gooey.flushDeferredCommands();
+        }
+
         /// Close callback - called when window is about to close.
         pub fn onClose(window: *Window) bool {
             const self = window.getUserData(Self) orelse return true;
@@ -332,6 +339,7 @@ pub fn WindowContext(comptime State: type) type {
             window.setInputCallback(Self.onInput);
             window.setCloseCallback(Self.onClose);
             window.setResizeCallback(Self.onResize);
+            window.setPostInputCallback(Self.onPostInput);
 
             // Set atlases and scene
             window.setTextAtlas(self.gooey.text_system.getAtlas());

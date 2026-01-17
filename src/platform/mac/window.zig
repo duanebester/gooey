@@ -114,6 +114,10 @@ pub const Window = struct {
     /// Called when window size changes.
     on_resize: ?ResizeCallback = null,
 
+    /// Called after input handling completes and mutex is released.
+    /// Use this for operations that may run nested event loops (e.g., modal dialogs).
+    on_post_input: ?PostInputCallback = null,
+
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
 
@@ -172,6 +176,10 @@ pub const Window = struct {
 
     /// Resize callback: called when window size changes
     pub const ResizeCallback = *const fn (*Window, f64, f64) void;
+
+    /// Post-input callback: called after input handling with mutex released.
+    /// Safe for operations that run nested event loops (modal dialogs, etc).
+    pub const PostInputCallback = *const fn (*Window) void;
 
     /// Glass/blur effect style for transparent windows
     pub const GlassStyle = enum {
@@ -391,6 +399,11 @@ pub const Window = struct {
         self.on_resize = callback;
     }
 
+    /// Set the post-input callback (called after mutex is released)
+    pub fn setPostInputCallback(self: *Self, callback: PostInputCallback) void {
+        self.on_post_input = callback;
+    }
+
     /// Set the user data pointer
     pub fn setUserData(self: *Self, data: ?*anyopaque) void {
         self.user_data = data;
@@ -544,8 +557,14 @@ pub const Window = struct {
             // Without this lock, the DisplayLink thread could be mid-render, mutating
             // layout/scene data while we read it, causing torn reads or crashes.
             self.render_mutex.lock();
-            defer self.render_mutex.unlock();
             handled = callback(self, event);
+            self.render_mutex.unlock();
+
+            // Call post-input callback AFTER mutex is released.
+            // This is safe for operations that run nested event loops (modal dialogs).
+            if (self.on_post_input) |post_callback| {
+                post_callback(self);
+            }
         }
         self.requestRender();
         return handled;

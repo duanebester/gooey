@@ -150,6 +150,10 @@ pub const Window = struct {
     /// Called when window size changes.
     on_resize: ?ResizeCallback = null,
 
+    /// Called after input handling completes.
+    /// Use this for operations that may run nested event loops (e.g., modal dialogs).
+    on_post_input: ?PostInputCallback = null,
+
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
 
@@ -164,6 +168,10 @@ pub const Window = struct {
 
     /// Resize callback: called when window size changes
     pub const ResizeCallback = *const fn (*Self, f64, f64) void;
+
+    /// Post-input callback: called after input handling.
+    /// Safe for operations that run nested event loops (modal dialogs, etc).
+    pub const PostInputCallback = *const fn (*Self) void;
 
     /// Glass style (no-op on Linux, for API compatibility with macOS)
     pub const GlassStyle = enum(u8) {
@@ -576,6 +584,11 @@ pub const Window = struct {
         self.on_resize = callback;
     }
 
+    /// Set the post-input callback (called after input handling completes)
+    pub fn setPostInputCallback(self: *Self, callback: ?PostInputCallback) void {
+        self.on_post_input = callback;
+    }
+
     /// Set user data pointer
     pub fn setUserData(self: *Self, data: ?*anyopaque) void {
         self.user_data = data;
@@ -632,6 +645,12 @@ pub const Window = struct {
         var handled = false;
         if (self.on_input) |callback| {
             handled = callback(self, event);
+        }
+
+        // Call post-input callback after input handling.
+        // This is safe for operations that run nested event loops (modal dialogs).
+        if (self.on_post_input) |post_callback| {
+            post_callback(self);
         }
 
         // Request redraw after input

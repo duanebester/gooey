@@ -153,16 +153,33 @@ const AppState = struct {
 
         self.selected_file_index = index;
 
-        // Don't try to load directories
-        if (self.file_is_dir[index]) return;
-
-        // Build full file path
-        const dir_path = self.getDirPath();
-        if (dir_path.len == 0) return;
-
         const file_name = self.getFileName(index);
         if (file_name.len == 0) return;
 
+        const dir_path = self.getDirPath();
+        if (dir_path.len == 0) return;
+
+        // Handle ".." parent directory navigation
+        if (std.mem.eql(u8, file_name, "..")) {
+            const parent_path = self.getParentPath();
+            if (parent_path.len > 0) {
+                // Copy to temp buffer to avoid aliasing (parent_path points into dir_path)
+                var parent_buf: [512]u8 = undefined;
+                @memcpy(parent_buf[0..parent_path.len], parent_path);
+                self.loadDirectory(parent_buf[0..parent_path.len]);
+            }
+            return;
+        }
+
+        // Navigate into directories
+        if (self.file_is_dir[index]) {
+            var path_buf: [640]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, file_name }) catch return;
+            self.loadDirectory(full_path);
+            return;
+        }
+
+        // Build full file path for regular files
         var path_buf: [640]u8 = undefined;
         const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, file_name }) catch return;
 
@@ -242,8 +259,32 @@ const AppState = struct {
         // Sort files: directories first, then alphabetically
         self.sortFiles();
 
+        // Add ".." parent directory entry at the beginning (if not at root)
+        if (path.len > 1) {
+            self.addParentDirEntry();
+        }
+
         // Update list state with new count
         self.file_list_state = UniformListState.init(self.file_count, FILE_ITEM_HEIGHT);
+    }
+
+    fn addParentDirEntry(self: *AppState) void {
+        if (self.file_count >= MAX_FILES) return;
+
+        // Shift all entries down by one
+        var i: u32 = self.file_count;
+        while (i > 0) : (i -= 1) {
+            self.file_names[i] = self.file_names[i - 1];
+            self.file_name_lens[i] = self.file_name_lens[i - 1];
+            self.file_is_dir[i] = self.file_is_dir[i - 1];
+        }
+
+        // Insert ".." at index 0
+        self.file_names[0][0] = '.';
+        self.file_names[0][1] = '.';
+        self.file_name_lens[0] = 2;
+        self.file_is_dir[0] = true;
+        self.file_count += 1;
     }
 
     fn sortFiles(self: *AppState) void {
@@ -304,6 +345,26 @@ const AppState = struct {
             }
         }
         return path;
+    }
+
+    pub fn getParentPath(self: *const AppState) []const u8 {
+        const path = self.getDirPath();
+        if (path.len <= 1) return ""; // At root or no path
+
+        // Find last path separator (excluding trailing slash)
+        var i: usize = path.len - 1;
+        // Skip trailing slash if present
+        if (path[i] == '/') i -= 1;
+
+        while (i > 0) : (i -= 1) {
+            if (path[i] == '/') {
+                // Return path up to but not including the last separator
+                // Unless it's the root, then include it
+                if (i == 0) return "/";
+                return path[0..i];
+            }
+        }
+        return "/"; // Default to root
     }
 };
 
@@ -399,7 +460,8 @@ const FileListContent = struct {
 
         // File icon based on type
         const is_dir = if (index < s.file_count) s.file_is_dir[index] else false;
-        const icon = if (is_dir) "📁" else "📄";
+        const is_parent = std.mem.eql(u8, file_name, "..");
+        const icon = if (is_parent) "⬆️" else if (is_dir) "📁" else "📄";
 
         cx.render(ui.box(.{
             .fill_width = true,

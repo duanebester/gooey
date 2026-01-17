@@ -160,6 +160,7 @@ pub const WebWindow = struct {
     pub fn setInputCallback(_: *Self, _: anytype) void {}
     pub fn setCloseCallback(_: *Self, _: anytype) void {}
     pub fn setResizeCallback(_: *Self, _: anytype) void {}
+    pub fn setPostInputCallback(_: *Self, _: anytype) void {}
     pub fn setUserData(_: *Self, _: ?*anyopaque) void {}
     pub fn getUserData(_: *Self, comptime T: type) ?*T {
         return null;

@@ -80,14 +80,9 @@ pub fn handleInputCx(
     // Let user's event handler run
     if (on_event) |handler| {
         if (handler(cx, event)) {
-            // Flush deferred commands even if event was handled
-            gooey.flushDeferredCommands();
             return true;
         }
     }
-
-    // Flush deferred commands after all event handling
-    gooey.flushDeferredCommands();
 
     return false;
 }
