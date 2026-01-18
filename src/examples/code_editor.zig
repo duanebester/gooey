@@ -874,7 +874,7 @@ const App = gooey.App(AppState, &state, render, .{
     // Glass effect
     .background_color = Color.init(0.08, 0.08, 0.12, 1.0),
     .background_opacity = 0.3,
-    .glass_style = .blur,
+    .glass_style = .glass_regular,
     .glass_corner_radius = 10.0,
     .titlebar_transparent = true,
     .full_size_content = false,
