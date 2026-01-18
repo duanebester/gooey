@@ -350,18 +350,72 @@ pub const CodeEditorState = struct {
     // =========================================================================
 
     pub fn handleEvent(self: *Self, input_event: InputEvent) EventResult {
-        // Check if click is in gutter (line number click - future: breakpoints)
-        if (input_event == .mouse_press) {
-            const press = input_event.mouse_press;
-            const x: f32 = @floatCast(press.x);
-            if (self.show_line_numbers and x < self.bounds.x + self.gutter_width) {
-                // Click in gutter - could select entire line in future
-                return .consumed;
+        // Check if click is in gutter (line number click -> select line)
+        if (input_event == .mouse_down) {
+            const press = input_event.mouse_down;
+            const x: f32 = @floatCast(press.position.x);
+            const y: f32 = @floatCast(press.position.y);
+
+            // Check if click is within the widget's inner bounds (not in padding/border)
+            const content_height = if (self.show_status_bar)
+                self.bounds.height - self.status_bar_height
+            else
+                self.bounds.height;
+
+            const in_gutter_x = self.show_line_numbers and
+                x >= self.bounds.x and
+                x < self.bounds.x + self.gutter_width;
+            const in_content_y = y >= self.bounds.y and
+                y < self.bounds.y + content_height;
+
+            if (in_gutter_x and in_content_y) {
+                const row = self.calcRowFromY(y);
+                self.selectLine(row);
+                self.text_area.focus();
+                return .handled;
+            }
+
+            // Check if click is in content area (not gutter)
+            const in_content_x = x >= self.bounds.x + (if (self.show_line_numbers) self.gutter_width else 0) and
+                x < self.bounds.x + self.bounds.width;
+
+            if (in_content_x and in_content_y) {
+                // Convert click position to text area coordinates
+                // The text area bounds start after the gutter
+                self.text_area.pending_click = .{ .x = x, .y = y };
+                self.text_area.selection_anchor = null;
+                self.text_area.focus();
+                return .handled;
             }
         }
 
-        // Delegate to text area
-        return self.text_area.handleEvent(input_event);
+        // Non-gutter clicks are handled by the caller (focus, etc.)
+        return .ignored;
+    }
+
+    /// Calculate which row (0-based) corresponds to a Y coordinate
+    fn calcRowFromY(self: *Self, y: f32) usize {
+        std.debug.assert(std.math.isFinite(y));
+        std.debug.assert(self.bounds.height >= 0);
+
+        const line_height = self.text_area.line_height;
+        if (line_height <= 0) return 0;
+
+        const scroll_y = self.text_area.scroll_offset_y;
+        const relative_y = y - self.bounds.y + scroll_y;
+
+        if (relative_y < 0) return 0;
+
+        const row: usize = @intFromFloat(@floor(relative_y / line_height));
+        const max_row = self.lineCount();
+        return if (max_row == 0) 0 else @min(row, max_row - 1);
+    }
+
+    /// Select an entire line by row number (0-based)
+    pub fn selectLine(self: *Self, row: usize) void {
+        const line_count = self.lineCount();
+        std.debug.assert(line_count == 0 or row <= line_count - 1);
+        self.text_area.selectLine(row);
     }
 
     pub fn insertText(self: *Self, text: []const u8) void {

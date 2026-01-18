@@ -150,6 +150,9 @@ pub const TextArea = struct {
     /// Cursor rect for IME candidate window positioning (set during render)
     cursor_rect: struct { x: f32 = 0, y: f32 = 0, width: f32 = 1.5, height: f32 = 20 } = .{},
 
+    /// Pending click position for cursor placement (processed during render when text_system is available)
+    pending_click: ?struct { x: f32, y: f32 } = null,
+
     const Self = @This();
 
     const BLINK_INTERVAL_MS: i64 = 530;
@@ -378,7 +381,9 @@ pub const TextArea = struct {
             .mouse_down => |e| {
                 if (self.bounds.contains(e.x, e.y)) {
                     self.focus();
-                    // TODO: Calculate click position to cursor byte
+                    // Store click position for processing during render (when text_system is available)
+                    self.pending_click = .{ .x = e.x, .y = e.y };
+                    self.selection_anchor = null; // Clear selection on click
                     return .consumed;
                 }
             },
@@ -737,6 +742,36 @@ pub const TextArea = struct {
         self.notifyChange();
     }
 
+    /// Select an entire line by row number (0-based)
+    /// Sets selection from line start to line end (including newline if present)
+    pub fn selectLine(self: *Self, row: usize) void {
+        const line_count = self.lineCount();
+        if (line_count == 0) return;
+
+        const clamped_row = @min(row, line_count - 1);
+        const start = self.lineStartOffset(clamped_row);
+
+        // Selection end includes the newline character if this isn't the last line
+        const end = if (clamped_row + 1 < line_count)
+            self.lineStartOffset(clamped_row + 1)
+        else
+            self.buffer.items.len;
+
+        // Assert offsets are valid within buffer bounds
+        std.debug.assert(start <= self.buffer.items.len);
+        std.debug.assert(end <= self.buffer.items.len);
+        std.debug.assert(start <= end);
+
+        // For line selection: anchor at end (including newline), cursor at start
+        // This way selection spans the full line but cursor stays on selected line
+        self.selection_anchor = end;
+        self.cursor_byte = start;
+        self.cursor_row = clamped_row;
+        self.cursor_col = 0;
+        self.preferred_column = null;
+        self.ensureCursorVisible();
+    }
+
     // =========================================================================
     // Visual State
     // =========================================================================
@@ -776,6 +811,14 @@ pub const TextArea = struct {
         const metrics = text_system.getMetrics() orelse return;
         self.line_height = metrics.line_height;
         self.viewport_height = self.bounds.height;
+
+        // Process pending click if any (needs text_system for measurement)
+        if (self.pending_click) |click| {
+            // Note: Error is intentionally ignored here - click positioning failure is recoverable
+            // (user can click again). We can't use std.log on WASM (freestanding) targets.
+            self.processPendingClick(click.x, click.y, text_system) catch {};
+            self.pending_click = null;
+        }
 
         // Calculate visible line range
         const first_visible_f = @floor(self.scroll_offset_y / self.line_height);
@@ -992,7 +1035,8 @@ pub const TextArea = struct {
             const sel_line_start = if (row == start_row) sel_start - line_start else 0;
             const sel_line_end = if (row == end_row) sel_end - line_start else line_end - line_start;
 
-            if (sel_line_start >= sel_line_end and row != end_row) continue;
+            // Skip if no actual selection content on this line
+            if (sel_line_start >= sel_line_end) continue;
 
             const line_content = self.lineContent(row);
             const line_y = self.bounds.y + @as(f32, @floatFromInt(row)) * self.line_height - self.scroll_offset_y;
@@ -1007,8 +1051,11 @@ pub const TextArea = struct {
             if (sel_line_end > 0 and sel_line_end <= line_content.len) {
                 end_x += try self.measureText(text_system, line_content[0..sel_line_end]);
             } else if (sel_line_end > line_content.len) {
-                // Selection extends past line end (to newline)
                 end_x += try self.measureText(text_system, line_content);
+            }
+
+            // Show newline extension for non-end rows (full line selected) or when selection extends past content
+            if (row != end_row or sel_line_end > line_content.len) {
                 end_x += 4; // Small extension to show selection includes newline
             }
 
@@ -1029,6 +1076,55 @@ pub const TextArea = struct {
         var shaped = try text_system.shapeText(text, null);
         defer shaped.deinit(text_system.allocator);
         return shaped.width;
+    }
+
+    /// Process a pending click to position cursor at the clicked location
+    fn processPendingClick(self: *Self, click_x: f32, click_y: f32, text_system: *TextSystem) !void {
+        std.debug.assert(std.math.isFinite(click_x) and std.math.isFinite(click_y));
+        std.debug.assert(text_system.getMetrics() != null);
+
+        if (self.line_height <= 0) return;
+
+        // Calculate which row was clicked
+        const relative_y = click_y - self.bounds.y + self.scroll_offset_y;
+        const row_f = @floor(relative_y / self.line_height);
+        const row: usize = if (row_f < 0) 0 else @intFromFloat(row_f);
+        const clamped_row = @min(row, if (self.lineCount() > 0) self.lineCount() - 1 else 0);
+
+        // Calculate which column was clicked using text measurement
+        const line_content = self.lineContent(clamped_row);
+        const line_start_x = self.bounds.x - self.scroll_offset_x;
+        const click_offset_x = click_x - line_start_x;
+
+        // Binary search for the closest character position
+        var best_col: usize = 0;
+        var best_distance: f32 = click_offset_x; // Distance if cursor at position 0
+
+        // Check each character position to find the closest one
+        var col: usize = 0;
+        while (col <= line_content.len) : (col += 1) {
+            const text_width = if (col > 0) try self.measureText(text_system, line_content[0..col]) else 0;
+            const distance = @abs(click_offset_x - text_width);
+
+            if (distance < best_distance) {
+                best_distance = distance;
+                best_col = col;
+            }
+
+            // Early exit if we've passed the click point
+            if (text_width > click_offset_x and col > 0) break;
+        }
+
+        // Set cursor position
+        const line_start = self.lineStartOffset(clamped_row);
+        self.cursor_byte = line_start + best_col;
+        self.cursor_row = clamped_row;
+        self.cursor_col = best_col;
+        self.preferred_column = null;
+        self.resetCursorBlink();
+
+        // Assert cursor is within valid bounds
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
     }
 
     fn ensureCursorVisible(self: *Self) void {

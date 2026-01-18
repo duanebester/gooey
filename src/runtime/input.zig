@@ -286,7 +286,7 @@ fn handleMouseDownEvent(
     if (handleTextAreaClick(cx, gooey, builder, x, y)) return true;
 
     // 3. Check if click is in a CodeEditor
-    if (handleCodeEditorClick(cx, gooey, builder, x, y)) return true;
+    if (handleCodeEditorClick(cx, gooey, builder, down_ev)) return true;
 
     // 4. Compute hit target once for both click-outside and click dispatch
     const hit_target = gooey.dispatch.hitTest(x, y);
@@ -398,15 +398,23 @@ fn handleCodeEditorClick(
     cx: *Cx,
     gooey: *Gooey,
     builder: *Builder,
-    x: f32,
-    y: f32,
+    down_ev: input_mod.MouseEvent,
 ) bool {
     std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
+
+    const x: f32 = @floatCast(down_ev.position.x);
+    const y: f32 = @floatCast(down_ev.position.y);
     std.debug.assert(std.math.isFinite(x) and std.math.isFinite(y));
 
     for (builder.pending_code_editors.items) |pending| {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (pointInBounds(x, y, bounds)) {
+            // Get the code editor widget and pass the event to it
+            if (gooey.codeEditor(pending.id)) |ce| {
+                // Pass mouse event to widget for gutter click handling
+                const input_event = InputEvent{ .mouse_down = down_ev };
+                _ = ce.handleEvent(input_event);
+            }
             gooey.focusCodeEditor(pending.id);
             cx.notify();
             return true;
