@@ -490,6 +490,44 @@ pub const VirtualListStyle = struct {
     thumb_color: ?Color = null,
 };
 
+/// Tree list styling options (virtualized hierarchical list)
+/// Use with TreeListState for expandable/collapsible tree views.
+pub const TreeListStyle = struct {
+    /// Fixed viewport width (optional - defaults to grow)
+    width: ?f32 = null,
+    /// Fixed viewport height (required for virtualization to work well)
+    height: ?f32 = null,
+
+    // Flexible sizing (like Box)
+    grow: bool = false, // Grow both axes
+    grow_width: bool = false, // Grow width only
+    grow_height: bool = false, // Grow height only
+    fill_width: bool = false, // 100% of parent width
+    fill_height: bool = false, // 100% of parent height
+
+    /// Padding inside the list area
+    padding: Box.PaddingValue = .{ .all = 0 },
+    /// Gap between items
+    gap: f32 = 0,
+    /// Background color
+    background: ?Color = null,
+    /// Corner radius
+    corner_radius: f32 = 0,
+
+    /// Pixels of indentation per depth level
+    indent_px: f32 = 16.0,
+
+    /// Show tree lines connecting nodes
+    show_tree_lines: bool = false,
+    /// Color for tree lines (uses theme muted if not set)
+    tree_line_color: ?Color = null,
+
+    /// Scrollbar styling
+    scrollbar_size: f32 = 8,
+    track_color: ?Color = null,
+    thumb_color: ?Color = null,
+};
+
 /// Data table styling options (virtualized 2D table)
 /// Use with DataTableState for O(1) layout with any number of rows/columns.
 pub const DataTableStyle = struct {

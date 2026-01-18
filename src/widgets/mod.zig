@@ -113,6 +113,22 @@ pub const MAX_VISIBLE_ROWS = data_table.MAX_VISIBLE_ROWS;
 pub const MAX_VISIBLE_COLUMNS = data_table.MAX_VISIBLE_COLUMNS;
 
 // =============================================================================
+// Tree List (Virtualized hierarchical list)
+// =============================================================================
+
+pub const tree_list = @import("tree_list.zig");
+
+pub const TreeListState = tree_list.TreeListState;
+pub const TreeNode = tree_list.TreeNode;
+pub const TreeEntry = tree_list.TreeEntry;
+pub const TreeLineChar = tree_list.TreeLineChar;
+pub const MAX_TREE_NODES = tree_list.MAX_TREE_NODES;
+pub const MAX_VISIBLE_ENTRIES = tree_list.MAX_VISIBLE_ENTRIES;
+pub const MAX_TREE_DEPTH = tree_list.MAX_TREE_DEPTH;
+pub const MAX_ROOT_NODES = tree_list.MAX_ROOT_NODES;
+pub const DEFAULT_INDENT_PX = tree_list.DEFAULT_INDENT_PX;
+
+// =============================================================================
 // Tests
 // =============================================================================
 

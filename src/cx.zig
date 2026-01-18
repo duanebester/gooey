@@ -94,6 +94,10 @@ const data_table_mod = @import("widgets/data_table.zig");
 const DataTableState = data_table_mod.DataTableState;
 const DataTableStyle = ui_mod.DataTableStyle;
 const ColRange = data_table_mod.ColRange;
+const tree_list_mod = @import("widgets/tree_list.zig");
+const TreeListState = tree_list_mod.TreeListState;
+const TreeEntry = tree_list_mod.TreeEntry;
+const TreeListStyle = ui_mod.TreeListStyle;
 
 // Animation types (re-exported from root.zig for users)
 const animation_mod = @import("animation/mod.zig");
@@ -716,6 +720,96 @@ pub const Cx = struct {
 
         // Register for scroll handling
         b.registerUniformListScroll(id, params, content_id, style);
+    }
+
+    // =========================================================================
+    // Tree List API
+    // =========================================================================
+
+    /// Render a virtualized tree list with expandable/collapsible nodes.
+    /// The render callback receives the TreeEntry and *Cx for full access.
+    ///
+    /// Example:
+    /// ```zig
+    /// cx.treeList("file-tree", &state.tree_state, .{ .grow_height = true }, renderNode);
+    ///
+    /// fn renderNode(entry: *const TreeEntry, cx: *Cx) void {
+    ///     const s = cx.stateConst(State);
+    ///     const indent = @as(f32, @floatFromInt(entry.depth)) * 16;
+    ///     cx.render(ui.hstack(.{ .padding = .{ .each = .{ .top = 0, .right = 0, .bottom = 0, .left = indent } } }, .{
+    ///         if (entry.is_folder)
+    ///             ui.text(if (entry.is_expanded) "▼" else "▶", .{})
+    ///         else
+    ///             ui.text("  ", .{}),
+    ///         ui.text(s.node_names[entry.node_index], .{}),
+    ///     }));
+    /// }
+    /// ```
+    pub fn treeList(
+        self: *Self,
+        id: []const u8,
+        tree_state: *TreeListState,
+        style: TreeListStyle,
+        comptime render_item: fn (entry: *const TreeEntry, cx: *Self) void,
+    ) void {
+        const b = self._builder;
+
+        // Rebuild flattened entries if needed
+        if (tree_state.needs_flatten) {
+            tree_state.rebuild();
+        }
+
+        // Sync indent from style
+        tree_state.indent_px = style.indent_px;
+
+        // Convert TreeListStyle to UniformListStyle for delegation
+        const list_style = UniformListStyle{
+            .width = style.width,
+            .height = style.height,
+            .grow = style.grow,
+            .grow_width = style.grow_width,
+            .grow_height = style.grow_height,
+            .fill_width = style.fill_width,
+            .fill_height = style.fill_height,
+            .padding = style.padding,
+            .gap = style.gap,
+            .background = style.background,
+            .corner_radius = style.corner_radius,
+            .scrollbar_size = style.scrollbar_size,
+            .track_color = style.track_color,
+            .thumb_color = style.thumb_color,
+        };
+
+        // Sync gap and scroll state
+        tree_state.list_state.gap_px = style.gap;
+        b.syncUniformListScroll(id, &tree_state.list_state);
+
+        // Compute layout parameters
+        const params = Builder.computeUniformListLayout(id, &tree_state.list_state, list_style);
+
+        // Open viewport and content elements
+        const content_id = b.openUniformListElements(params, list_style, tree_state.list_state.scroll_offset_px) orelse return;
+
+        // Top spacer (items above visible range)
+        b.renderUniformListSpacer(params.top_spacer_height);
+
+        // Render visible entries with Cx access
+        var i = params.range.start;
+        while (i < params.range.end) : (i += 1) {
+            if (i < tree_state.entry_count) {
+                render_item(&tree_state.entries[i], self);
+            }
+        }
+
+        // Bottom spacer (items below visible range)
+        b.renderUniformListSpacer(params.bottom_spacer_height);
+
+        // Close content container and viewport
+        b.layout.closeElement();
+        b.layout.closeElement();
+
+        // Register for scroll handling
+        b.registerUniformListScroll(id, params, content_id, list_style);
     }
 
     // =========================================================================

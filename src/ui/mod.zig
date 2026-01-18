@@ -118,6 +118,7 @@ pub const CenterStyle = styles.CenterStyle;
 pub const ScrollStyle = styles.ScrollStyle;
 pub const UniformListStyle = styles.UniformListStyle;
 pub const VirtualListStyle = styles.VirtualListStyle;
+pub const TreeListStyle = styles.TreeListStyle;
 pub const DataTableStyle = styles.DataTableStyle;
 pub const ButtonStyle = styles.ButtonStyle;
 pub const CheckboxStyle = styles.CheckboxStyle;

@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "uniform-list", "src/examples/uniform_list_example.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "virtual-list", "src/examples/virtual_list_example.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "data-table", "src/examples/data_table_example.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "tree-example", "src/examples/tree_example.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "a11y-demo", "src/examples/a11y_demo.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "accessible-form", "src/examples/accessible_form.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "drag-drop", "src/examples/drag_drop.zig", false);

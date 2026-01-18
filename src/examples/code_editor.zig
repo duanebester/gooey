@@ -1,7 +1,7 @@
 //! CodeEditor Example
 //!
 //! Demonstrates the CodeEditor component with:
-//! - File sidebar using UniformList
+//! - File sidebar using TreeList for hierarchical browsing
 //! - Liquid glass transparency effect
 //! - CRT shader post-processing
 //! - Native file dialog to open directories
@@ -18,15 +18,19 @@ const Cx = gooey.Cx;
 const Color = gooey.Color;
 const Button = gooey.Button;
 const CodeEditor = gooey.CodeEditor;
-const UniformListState = gooey.UniformListState;
+const TreeListState = gooey.TreeListState;
+const TreeEntry = gooey.TreeEntry;
+const Svg = gooey.Svg;
+const Lucide = gooey.components.Lucide;
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-const MAX_FILES: u32 = 500;
-const FILE_ITEM_HEIGHT: f32 = 28.0;
-const SIDEBAR_WIDTH: f32 = 220.0;
+const MAX_NODES: u32 = 2048;
+const FILE_ITEM_HEIGHT: f32 = 26.0;
+const SIDEBAR_WIDTH: f32 = 240.0;
+const INDENT_PX: f32 = 16.0;
 
 // =============================================================================
 // CRT Shader (MSL - macOS)
@@ -112,23 +116,59 @@ const crt_shader_wgsl =
 ;
 
 // =============================================================================
+// File Status
+// =============================================================================
+
+const FileStatus = enum {
+    displaying_code, // Normal text file
+    binary_file, // Can't display - binary/unknown
+    image_file, // Could display image (future)
+    file_too_large, // Exceeds size limit
+    no_file_selected, // Nothing selected
+
+    pub fn getMessage(self: FileStatus) []const u8 {
+        return switch (self) {
+            .displaying_code => "",
+            .binary_file => "Binary files cannot be displayed",
+            .image_file => "Image preview not yet supported",
+            .file_too_large => "File is too large to display (>1MB)",
+            .no_file_selected => "Select a file to view",
+        };
+    }
+
+    pub fn getIconPath(self: FileStatus) []const u8 {
+        return switch (self) {
+            .displaying_code => Lucide.file,
+            .binary_file => Lucide.alert_triangle,
+            .image_file => Lucide.image,
+            .file_too_large => Lucide.alert_circle,
+            .no_file_selected => Lucide.file,
+        };
+    }
+};
+
+// =============================================================================
 // Application State
 // =============================================================================
 
 const AppState = struct {
     source_code: []const u8 = sample_code,
-    file_list_state: UniformListState = UniformListState.init(0, FILE_ITEM_HEIGHT),
-    selected_file_index: ?u32 = null,
+    tree_state: TreeListState = TreeListState.initWithIndent(FILE_ITEM_HEIGHT, INDENT_PX),
+
+    // File display state
+    file_status: FileStatus = .displaying_code,
+    current_file_ext: [16]u8 = undefined,
+    current_file_ext_len: u8 = 0,
 
     // Directory state
     dir_path: [512]u8 = undefined,
     dir_path_len: usize = 0,
 
-    // File entries storage (fixed capacity)
-    file_names: [MAX_FILES][128]u8 = undefined,
-    file_name_lens: [MAX_FILES]u8 = [_]u8{0} ** MAX_FILES,
-    file_is_dir: [MAX_FILES]bool = [_]bool{false} ** MAX_FILES,
-    file_count: u32 = 0,
+    // Node data: store file paths for each node
+    node_paths: [MAX_NODES][512]u8 = undefined,
+    node_path_lens: [MAX_NODES]u16 = [_]u16{0} ** MAX_NODES,
+    node_names: [MAX_NODES][128]u8 = undefined,
+    node_name_lens: [MAX_NODES]u8 = [_]u8{0} ** MAX_NODES,
 
     const sample_code =
         \\const std = @import("std");
@@ -148,52 +188,114 @@ const AppState = struct {
         \\}
     ;
 
-    pub fn selectFile(self: *AppState, g: *gooey.Gooey, index: u32) void {
-        if (index >= self.file_count) return;
+    // =========================================================================
+    // Node Data Helpers
+    // =========================================================================
 
-        self.selected_file_index = index;
+    fn setNodePath(self: *AppState, idx: u32, path: []const u8) void {
+        const len = @min(path.len, 511);
+        @memcpy(self.node_paths[idx][0..len], path[0..len]);
+        self.node_path_lens[idx] = @intCast(len);
+    }
 
-        const file_name = self.getFileName(index);
-        if (file_name.len == 0) return;
+    fn setNodeName(self: *AppState, idx: u32, name: []const u8) void {
+        const len = @min(name.len, 127);
+        @memcpy(self.node_names[idx][0..len], name[0..len]);
+        self.node_name_lens[idx] = @intCast(len);
+    }
 
-        const dir_path = self.getDirPath();
-        if (dir_path.len == 0) return;
+    pub fn getNodePath(self: *const AppState, idx: u32) []const u8 {
+        if (idx >= MAX_NODES) return "";
+        return self.node_paths[idx][0..self.node_path_lens[idx]];
+    }
 
-        // Handle ".." parent directory navigation
-        if (std.mem.eql(u8, file_name, "..")) {
-            const parent_path = self.getParentPath();
-            if (parent_path.len > 0) {
-                // Copy to temp buffer to avoid aliasing (parent_path points into dir_path)
-                var parent_buf: [512]u8 = undefined;
-                @memcpy(parent_buf[0..parent_path.len], parent_path);
-                self.loadDirectory(parent_buf[0..parent_path.len]);
+    pub fn getNodeName(self: *const AppState, idx: u32) []const u8 {
+        if (idx >= MAX_NODES) return "";
+        return self.node_names[idx][0..self.node_name_lens[idx]];
+    }
+
+    // =========================================================================
+    // File Selection
+    // =========================================================================
+
+    pub fn onSelect(self: *AppState, entry_index: u32) void {
+        self.tree_state.selectIndex(entry_index);
+    }
+
+    pub fn onToggle(self: *AppState, entry_index: u32) void {
+        self.tree_state.toggleExpand(entry_index);
+    }
+
+    pub fn onItemClick(self: *AppState, g: *gooey.Gooey, entry_index: u32) void {
+        self.tree_state.selectIndex(entry_index);
+
+        // Get the selected entry
+        if (self.tree_state.getEntry(entry_index)) |entry| {
+            const node_idx = entry.node_index;
+            const is_folder = entry.is_folder;
+
+            if (is_folder) {
+                // Toggle folder expansion
+                self.tree_state.toggleExpand(entry_index);
+            } else {
+                // Open file
+                self.openFile(g, node_idx);
+            }
+        }
+    }
+
+    fn openFile(self: *AppState, g: *gooey.Gooey, node_idx: u32) void {
+        const path = self.getNodePath(node_idx);
+        if (path.len == 0) return;
+
+        // Store the extension for display
+        const ext = getFileExtension(path);
+        const ext_len: u8 = @intCast(@min(ext.len, 15));
+        @memcpy(self.current_file_ext[0..ext_len], ext[0..ext_len]);
+        self.current_file_ext_len = ext_len;
+
+        // Check if it's a binary/image file by extension
+        if (isBinaryExtension(ext)) {
+            if (isImageExtension(ext)) {
+                self.file_status = .image_file;
+            } else {
+                self.file_status = .binary_file;
+            }
+            // Clear the editor content
+            self.source_code = "";
+            if (g.codeEditor("source")) |editor| {
+                editor.setText("") catch {};
             }
             return;
         }
 
-        // Navigate into directories
-        if (self.file_is_dir[index]) {
-            var path_buf: [640]u8 = undefined;
-            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, file_name }) catch return;
-            self.loadDirectory(full_path);
-            return;
-        }
-
-        // Build full file path for regular files
-        var path_buf: [640]u8 = undefined;
-        const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, file_name }) catch return;
-
         // Read file contents
-        const file = std.fs.openFileAbsolute(full_path, .{}) catch return;
+        const file = std.fs.openFileAbsolute(path, .{}) catch return;
         defer file.close();
 
         const stat = file.stat() catch return;
-        if (stat.size > 1024 * 1024) return; // Skip files > 1MB
+        if (stat.size > 1024 * 1024) {
+            self.file_status = .file_too_large;
+            self.source_code = "";
+            if (g.codeEditor("source")) |editor| {
+                editor.setText("") catch {};
+            }
+            return;
+        }
 
-        // Use a static buffer for file contents (simple approach for demo)
         const content = file.readToEndAlloc(std.heap.page_allocator, 1024 * 1024) catch return;
 
-        // Store in state
+        // Validate UTF-8 before setting - this prevents crashes in the text shaper
+        if (!std.unicode.utf8ValidateSlice(content)) {
+            self.file_status = .binary_file;
+            self.source_code = "";
+            if (g.codeEditor("source")) |editor| {
+                editor.setText("") catch {};
+            }
+            return;
+        }
+
+        self.file_status = .displaying_code;
         self.source_code = content;
 
         // Update the code editor widget directly
@@ -202,10 +304,12 @@ const AppState = struct {
         }
     }
 
+    // =========================================================================
+    // Directory Operations
+    // =========================================================================
+
     pub fn openDirectory(self: *AppState, g: *gooey.Gooey) void {
         _ = self;
-        // Use deferCommand to run the dialog after current event handling completes.
-        // This avoids mutex deadlock since modal dialogs run their own event loop.
         g.deferCommand(AppState, AppState.openDialogDeferred);
     }
 
@@ -231,102 +335,110 @@ const AppState = struct {
         @memcpy(self.dir_path[0..path_len], path[0..path_len]);
         self.dir_path_len = path_len;
 
-        // Clear existing files
-        self.file_count = 0;
-        self.selected_file_index = null;
+        // Clear tree state
+        self.tree_state.clear();
 
-        // Open and read directory
-        var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch {
-            return;
-        };
+        // Build tree from directory
+        self.buildTreeFromDirectory(path, null);
+
+        // Rebuild flattened view
+        self.tree_state.rebuild();
+    }
+
+    const DirEntry = struct { name: [128]u8, len: u8 };
+
+    fn buildTreeFromDirectory(self: *AppState, path: []const u8, parent: ?u32) void {
+        var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch return;
         defer dir.close();
+
+        // Collect entries for sorting
+        var dirs: [256]DirEntry = undefined;
+        var files: [256]DirEntry = undefined;
+        var dir_count: u32 = 0;
+        var file_count: u32 = 0;
 
         var iter = dir.iterate();
         while (iter.next() catch null) |entry| {
-            if (self.file_count >= MAX_FILES) break;
-
             // Skip hidden files
             if (entry.name.len > 0 and entry.name[0] == '.') continue;
 
-            const idx = self.file_count;
             const name_len = @min(entry.name.len, 127);
-            @memcpy(self.file_names[idx][0..name_len], entry.name[0..name_len]);
-            self.file_name_lens[idx] = @intCast(name_len);
-            self.file_is_dir[idx] = entry.kind == .directory;
-            self.file_count += 1;
-        }
-
-        // Sort files: directories first, then alphabetically
-        self.sortFiles();
-
-        // Add ".." parent directory entry at the beginning (if not at root)
-        if (path.len > 1) {
-            self.addParentDirEntry();
-        }
-
-        // Update list state with new count
-        self.file_list_state = UniformListState.init(self.file_count, FILE_ITEM_HEIGHT);
-    }
-
-    fn addParentDirEntry(self: *AppState) void {
-        if (self.file_count >= MAX_FILES) return;
-
-        // Shift all entries down by one
-        var i: u32 = self.file_count;
-        while (i > 0) : (i -= 1) {
-            self.file_names[i] = self.file_names[i - 1];
-            self.file_name_lens[i] = self.file_name_lens[i - 1];
-            self.file_is_dir[i] = self.file_is_dir[i - 1];
-        }
-
-        // Insert ".." at index 0
-        self.file_names[0][0] = '.';
-        self.file_names[0][1] = '.';
-        self.file_name_lens[0] = 2;
-        self.file_is_dir[0] = true;
-        self.file_count += 1;
-    }
-
-    fn sortFiles(self: *AppState) void {
-        // Simple bubble sort (good enough for small file counts)
-        if (self.file_count <= 1) return;
-
-        var i: u32 = 0;
-        while (i < self.file_count - 1) : (i += 1) {
-            var j: u32 = 0;
-            while (j < self.file_count - i - 1) : (j += 1) {
-                const should_swap = blk: {
-                    // Directories come first
-                    if (self.file_is_dir[j] != self.file_is_dir[j + 1]) {
-                        break :blk !self.file_is_dir[j]; // swap if j is not dir but j+1 is
-                    }
-                    // Then sort alphabetically (case-insensitive)
-                    const name_a = self.file_names[j][0..self.file_name_lens[j]];
-                    const name_b = self.file_names[j + 1][0..self.file_name_lens[j + 1]];
-                    break :blk std.ascii.lessThanIgnoreCase(name_b, name_a);
-                };
-
-                if (should_swap) {
-                    // Swap entries
-                    const tmp_name = self.file_names[j];
-                    const tmp_len = self.file_name_lens[j];
-                    const tmp_is_dir = self.file_is_dir[j];
-
-                    self.file_names[j] = self.file_names[j + 1];
-                    self.file_name_lens[j] = self.file_name_lens[j + 1];
-                    self.file_is_dir[j] = self.file_is_dir[j + 1];
-
-                    self.file_names[j + 1] = tmp_name;
-                    self.file_name_lens[j + 1] = tmp_len;
-                    self.file_is_dir[j + 1] = tmp_is_dir;
+            if (entry.kind == .directory) {
+                if (dir_count < 256) {
+                    @memcpy(dirs[dir_count].name[0..name_len], entry.name[0..name_len]);
+                    dirs[dir_count].len = @intCast(name_len);
+                    dir_count += 1;
                 }
+            } else {
+                if (file_count < 256) {
+                    @memcpy(files[file_count].name[0..name_len], entry.name[0..name_len]);
+                    files[file_count].len = @intCast(name_len);
+                    file_count += 1;
+                }
+            }
+        }
+
+        // Sort directories alphabetically
+        self.sortEntries(dirs[0..dir_count]);
+        // Sort files alphabetically
+        self.sortEntries(files[0..file_count]);
+
+        // Add directories first
+        for (dirs[0..dir_count]) |d| {
+            const name = d.name[0..d.len];
+            const node_idx = if (parent) |p|
+                self.tree_state.addChild(p, true)
+            else
+                self.tree_state.addRoot(true);
+
+            if (node_idx) |idx| {
+                self.setNodeName(idx, name);
+
+                // Build full path
+                var full_path: [640]u8 = undefined;
+                const full_len = std.fmt.bufPrint(&full_path, "{s}/{s}", .{ path, name }) catch continue;
+                self.setNodePath(idx, full_len);
+
+                // Recursively add children (but don't expand by default)
+                self.buildTreeFromDirectory(full_len, idx);
+            }
+        }
+
+        // Add files
+        for (files[0..file_count]) |f| {
+            const name = f.name[0..f.len];
+            const node_idx = if (parent) |p|
+                self.tree_state.addChild(p, false)
+            else
+                self.tree_state.addRoot(false);
+
+            if (node_idx) |idx| {
+                self.setNodeName(idx, name);
+
+                // Build full path
+                var full_path: [640]u8 = undefined;
+                const full_len = std.fmt.bufPrint(&full_path, "{s}/{s}", .{ path, name }) catch continue;
+                self.setNodePath(idx, full_len);
             }
         }
     }
 
-    pub fn getFileName(self: *const AppState, index: u32) []const u8 {
-        if (index >= self.file_count) return "";
-        return self.file_names[index][0..self.file_name_lens[index]];
+    fn sortEntries(self: *AppState, entries: []DirEntry) void {
+        _ = self;
+        if (entries.len <= 1) return;
+
+        // Simple bubble sort (good enough for small counts)
+        for (0..entries.len - 1) |i| {
+            for (0..entries.len - i - 1) |j| {
+                const name_a = entries[j].name[0..entries[j].len];
+                const name_b = entries[j + 1].name[0..entries[j + 1].len];
+                if (std.ascii.lessThanIgnoreCase(name_b, name_a)) {
+                    const tmp = entries[j];
+                    entries[j] = entries[j + 1];
+                    entries[j + 1] = tmp;
+                }
+            }
+        }
     }
 
     pub fn getDirPath(self: *const AppState) []const u8 {
@@ -337,7 +449,6 @@ const AppState = struct {
     pub fn getDirName(self: *const AppState) []const u8 {
         const path = self.getDirPath();
         if (path.len == 0) return "No folder open";
-        // Find last path separator
         var i: usize = path.len;
         while (i > 0) : (i -= 1) {
             if (path[i - 1] == '/') {
@@ -347,26 +458,103 @@ const AppState = struct {
         return path;
     }
 
-    pub fn getParentPath(self: *const AppState) []const u8 {
-        const path = self.getDirPath();
-        if (path.len <= 1) return ""; // At root or no path
-
-        // Find last path separator (excluding trailing slash)
-        var i: usize = path.len - 1;
-        // Skip trailing slash if present
-        if (path[i] == '/') i -= 1;
-
-        while (i > 0) : (i -= 1) {
-            if (path[i] == '/') {
-                // Return path up to but not including the last separator
-                // Unless it's the root, then include it
-                if (i == 0) return "/";
-                return path[0..i];
+    pub fn getSelectedFileName(self: *const AppState) []const u8 {
+        if (self.tree_state.selected_index) |idx| {
+            if (self.tree_state.getEntry(idx)) |entry| {
+                return self.getNodeName(entry.node_index);
             }
         }
-        return "/"; // Default to root
+        return "No file selected";
+    }
+
+    // =========================================================================
+    // Tree Navigation
+    // =========================================================================
+
+    pub fn expandAll(self: *AppState) void {
+        self.tree_state.expandAll();
+        self.tree_state.rebuild();
+    }
+
+    pub fn collapseAll(self: *AppState) void {
+        self.tree_state.collapseAll();
+        self.tree_state.rebuild();
+    }
+
+    pub fn getCurrentExtension(self: *const AppState) []const u8 {
+        return self.current_file_ext[0..self.current_file_ext_len];
     }
 };
+
+// =============================================================================
+// File Type Detection Helpers
+// =============================================================================
+
+fn getFileExtension(path: []const u8) []const u8 {
+    var i = path.len;
+    while (i > 0) : (i -= 1) {
+        if (path[i - 1] == '.') {
+            return path[i..];
+        }
+        if (path[i - 1] == '/' or path[i - 1] == '\\') {
+            return "";
+        }
+    }
+    return "";
+}
+
+fn isBinaryExtension(ext: []const u8) bool {
+    const binary_exts = [_][]const u8{
+        // Images
+        "png",    "jpg",   "jpeg", "gif", "bmp",  "ico",   "webp", "tiff",  "tif",  "svg",
+        // Documents
+        "pdf",    "doc",   "docx", "xls", "xlsx", "ppt",   "pptx",
+        // Archives
+        "zip",   "tar",  "gz",
+        "7z",     "rar",   "bz2",  "xz",
+        // Executables/Libraries
+         "exe",  "dll",   "so",   "dylib", "o",    "a",
+        "lib",    "obj",
+        // Media
+          "mp3",  "mp4", "wav",  "avi",   "mov",  "mkv",   "flac", "ogg",
+        "m4a",    "m4v",
+        // Fonts
+          "ttf",  "otf", "woff", "woff2", "eot",
+        // Other binary
+         "bin",   "dat",  "db",
+        "sqlite", "class", "pyc",  "pyd",
+    };
+
+    // Convert to lowercase for comparison
+    var lower_buf: [16]u8 = undefined;
+    const len = @min(ext.len, 16);
+    for (0..len) |i| {
+        lower_buf[i] = std.ascii.toLower(ext[i]);
+    }
+    const lower_ext = lower_buf[0..len];
+
+    for (binary_exts) |bin_ext| {
+        if (std.mem.eql(u8, lower_ext, bin_ext)) return true;
+    }
+    return false;
+}
+
+fn isImageExtension(ext: []const u8) bool {
+    const img_exts = [_][]const u8{ "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "tif", "ico" };
+
+    // Convert to lowercase for comparison
+    var lower_buf: [16]u8 = undefined;
+    const len = @min(ext.len, 16);
+    for (0..len) |i| {
+        lower_buf[i] = std.ascii.toLower(ext[i]);
+    }
+    const lower_ext = lower_buf[0..len];
+
+    for (img_exts) |img_ext| {
+        if (std.mem.eql(u8, lower_ext, img_ext)) return true;
+    }
+    return false;
+}
 
 // =============================================================================
 // Colors
@@ -401,12 +589,37 @@ const FileSidebar = struct {
             .direction = .column,
             .gap = 8,
         }, .{
-            // Open folder button
-            Button{
-                .label = "📂 Open Folder",
-                .variant = .secondary,
-                .on_click_handler = cx.command(AppState, AppState.openDirectory),
-            },
+            // Header with buttons
+            ui.hstack(.{ .gap = 4 }, .{
+                Button{
+                    .label = "📂 Open",
+                    .variant = .secondary,
+                    .on_click_handler = cx.command(AppState, AppState.openDirectory),
+                },
+                ui.spacer(),
+                ui.when(s.dir_path_len > 0, .{
+                    ui.box(.{
+                        .width = 28,
+                        .height = 28,
+                        .corner_radius = 4,
+                        .alignment = .{ .main = .center, .cross = .center },
+                        .hover_background = Color.rgba(1, 1, 1, 0.1),
+                        .on_click_handler = cx.update(AppState, AppState.expandAll),
+                    }, .{
+                        Svg{ .path = Lucide.folder_open, .size = 16, .no_fill = true, .stroke_color = text_muted, .stroke_width = 1.5 },
+                    }),
+                    ui.box(.{
+                        .width = 28,
+                        .height = 28,
+                        .corner_radius = 4,
+                        .alignment = .{ .main = .center, .cross = .center },
+                        .hover_background = Color.rgba(1, 1, 1, 0.1),
+                        .on_click_handler = cx.update(AppState, AppState.collapseAll),
+                    }, .{
+                        Svg{ .path = Lucide.folder, .size = 16, .no_fill = true, .stroke_color = text_muted, .stroke_width = 1.5 },
+                    }),
+                }),
+            }),
 
             // Directory name header
             ui.text(s.getDirName(), .{
@@ -415,53 +628,59 @@ const FileSidebar = struct {
                 .color = text_color,
             }),
 
-            // File count
-            ui.textFmt("{d} items", .{s.file_count}, .{
+            // Node count
+            ui.textFmt("{d} items", .{s.tree_state.node_count}, .{
                 .size = 11,
                 .color = text_muted,
             }),
 
-            // File list using cx.uniformList()
-            FileListContent{},
+            // Tree list
+            TreeListContent{},
         }));
     }
 };
 
-const FileListContent = struct {
+const TreeListContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.uniformList(
-            "file-list",
-            &s.file_list_state,
+        cx.treeList(
+            "file-tree",
+            &s.tree_state,
             .{
                 .fill_width = true,
                 .grow_height = true,
                 .corner_radius = 4,
+                .indent_px = INDENT_PX,
             },
-            renderFileItem,
+            renderTreeItem,
         );
     }
 
-    fn renderFileItem(index: u32, cx: *Cx) void {
+    fn renderTreeItem(entry: *const TreeEntry, cx: *Cx) void {
         const s = cx.stateConst(AppState);
-        const is_selected = if (s.selected_file_index) |sel| sel == index else false;
 
+        // Find entry index
+        const entry_index = getEntryIndex(entry, s);
+        const is_selected = s.tree_state.selected_index == entry_index;
+
+        // Calculate indentation
+        const indent = @as(f32, @floatFromInt(entry.depth)) * INDENT_PX;
+
+        // Get label
+        const label = s.getNodeName(entry.node_index);
+
+        // Colors
         const bg_color = if (is_selected)
             Color.rgba(0.3, 0.5, 1.0, 0.4)
         else
-            Color.rgba(0, 0, 0, 0);
+            Color.transparent;
 
         const item_text_color = if (is_selected) text_color else text_muted;
+        const icon_color = if (is_selected) text_color else text_muted;
 
-        // Get actual file name from state
-        const file_name = s.getFileName(index);
-        if (file_name.len == 0) return;
-
-        // File icon based on type
-        const is_dir = if (index < s.file_count) s.file_is_dir[index] else false;
-        const is_parent = std.mem.eql(u8, file_name, "..");
-        const icon = if (is_parent) "⬆️" else if (is_dir) "📁" else "📄";
+        // Chevron for folders
+        const show_chevron = entry.is_folder;
 
         cx.render(ui.box(.{
             .fill_width = true,
@@ -469,15 +688,61 @@ const FileListContent = struct {
             .background = bg_color,
             .hover_background = Color.rgba(1, 1, 1, 0.1),
             .corner_radius = 4,
-            .padding = .{ .symmetric = .{ .x = 8, .y = 0 } },
+            .padding = .{ .each = .{ .top = 0, .right = 8, .bottom = 0, .left = 4 } },
             .direction = .row,
             .alignment = .{ .main = .start, .cross = .center },
-            .gap = 8,
-            .on_click_handler = cx.commandWith(AppState, index, AppState.selectFile),
+            .gap = 0,
+            .on_click_handler = cx.commandWith(AppState, entry_index, AppState.onItemClick),
         }, .{
-            ui.text(icon, .{ .size = 12, .color = item_text_color }),
-            ui.text(file_name, .{ .size = 13, .color = item_text_color }),
+            // Indent spacer
+            ui.box(.{ .width = indent, .height = FILE_ITEM_HEIGHT }, .{}),
+
+            // Chevron (clickable for folders)
+            ui.box(.{
+                .width = 16,
+                .height = FILE_ITEM_HEIGHT,
+                .alignment = .{ .main = .center, .cross = .center },
+            }, .{
+                ui.when(show_chevron, .{
+                    ui.when(entry.is_expanded, .{
+                        Svg{ .path = Lucide.chevron_down, .size = 12, .no_fill = true, .stroke_color = icon_color, .stroke_width = 1.5 },
+                    }),
+                    ui.when(!entry.is_expanded, .{
+                        Svg{ .path = Lucide.chevron_right, .size = 12, .no_fill = true, .stroke_color = icon_color, .stroke_width = 1.5 },
+                    }),
+                }),
+            }),
+
+            // File/folder icon
+            ui.box(.{
+                .width = 18,
+                .height = FILE_ITEM_HEIGHT,
+                .alignment = .{ .main = .center, .cross = .center },
+            }, .{
+                ui.when(!entry.is_folder, .{
+                    Svg{ .path = Lucide.file, .size = 14, .no_fill = true, .stroke_color = icon_color, .stroke_width = 1.5 },
+                }),
+                ui.when(entry.is_folder and entry.is_expanded, .{
+                    Svg{ .path = Lucide.folder_open, .size = 14, .no_fill = true, .stroke_color = Color.rgba(0.4, 0.7, 1.0, 1.0), .stroke_width = 1.5 },
+                }),
+                ui.when(entry.is_folder and !entry.is_expanded, .{
+                    Svg{ .path = Lucide.folder, .size = 14, .no_fill = true, .stroke_color = Color.rgba(0.4, 0.7, 1.0, 1.0), .stroke_width = 1.5 },
+                }),
+            }),
+
+            // Gap
+            ui.box(.{ .width = 4 }, .{}),
+
+            // File name
+            ui.text(label, .{ .size = 12, .color = item_text_color }),
         }));
+    }
+
+    fn getEntryIndex(entry: *const TreeEntry, s: *const AppState) u32 {
+        const entries_ptr = @intFromPtr(&s.tree_state.entries[0]);
+        const entry_ptr = @intFromPtr(entry);
+        const offset = entry_ptr - entries_ptr;
+        return @intCast(offset / @sizeOf(TreeEntry));
     }
 };
 
@@ -499,42 +764,70 @@ const EditorPanel = struct {
         }, .{
             // Editor header - show selected file name
             ui.hstack(.{ .gap = 8 }, .{
-                ui.text(if (s.selected_file_index) |idx| s.getFileName(idx) else "No file selected", .{
+                ui.text(s.getSelectedFileName(), .{
                     .size = 14,
                     .weight = .bold,
                     .color = text_color,
                 }),
                 ui.spacer(),
-                ui.text("Zig", .{
+                ui.text(if (s.file_status == .displaying_code) "Zig" else s.getCurrentExtension(), .{
                     .size = 12,
                     .color = text_muted,
                 }),
             }),
 
-            // Code editor
-            CodeEditor{
-                .id = "source",
-                .placeholder = "Enter your code here...",
-                .bind = @constCast(&s.source_code),
-                .width = self.editor_width - 16, // subtract padding
-                .height = self.editor_height - 50, // subtract header and padding
-                .show_line_numbers = true,
-                .gutter_width = 50,
-                .tab_size = 4,
-                .use_hard_tabs = false,
-                .show_status_bar = true,
-                .language_mode = "Zig",
-                .encoding = "UTF-8",
-                .current_line_background = Color.rgba(0.3, 0.5, 1.0, 0.08),
-                .background = clear,
-                .gutter_background = clear,
-                .status_bar_background = clear,
-                .text_color = Color.white,
-                .line_number_color = text_muted,
-                .current_line_number_color = Color.white,
-                .cursor_color = Color.white,
-                .status_bar_text_color = text_muted,
-            },
+            // Code editor (shown when displaying code)
+            ui.when(s.file_status == .displaying_code, .{
+                CodeEditor{
+                    .id = "source",
+                    .placeholder = "Enter your code here...",
+                    .bind = @constCast(&s.source_code),
+                    .width = self.editor_width - 16,
+                    .height = self.editor_height - 50,
+                    .show_line_numbers = true,
+                    .gutter_width = 50,
+                    .tab_size = 4,
+                    .use_hard_tabs = false,
+                    .show_status_bar = true,
+                    .language_mode = "Zig",
+                    .encoding = "UTF-8",
+                    .current_line_background = Color.rgba(0.3, 0.5, 1.0, 0.08),
+                    .background = clear,
+                    .gutter_background = clear,
+                    .status_bar_background = clear,
+                    .text_color = Color.white,
+                    .line_number_color = text_muted,
+                    .current_line_number_color = Color.white,
+                    .cursor_color = Color.white,
+                    .status_bar_text_color = text_muted,
+                },
+            }),
+
+            // Status message (shown when file cannot be displayed)
+            ui.when(s.file_status != .displaying_code, .{
+                ui.box(.{
+                    .width = self.editor_width - 16,
+                    .height = self.editor_height - 50,
+                    .background = Color.rgba(0, 0, 0, 0.2),
+                    .corner_radius = 8,
+                    .alignment = .{ .main = .center, .cross = .center },
+                }, .{
+                    ui.vstack(.{ .gap = 16, .alignment = .center }, .{
+                        Svg{
+                            .path = s.file_status.getIconPath(),
+                            .size = 48,
+                            .no_fill = true,
+                            .stroke_color = text_muted,
+                            .stroke_width = 1.5,
+                        },
+                        ui.text(s.file_status.getMessage(), .{
+                            .size = 16,
+                            .color = text_muted,
+                            .weight = .medium,
+                        }),
+                    }),
+                }),
+            }),
         }));
     }
 };
@@ -559,7 +852,7 @@ fn render(cx: *Cx) void {
         .direction = .row,
         .gap = gap,
     }, .{
-        // Left sidebar with file list
+        // Left sidebar with tree list
         FileSidebar{},
 
         // Main editor panel

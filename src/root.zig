@@ -226,6 +226,12 @@ pub const RowRange = widgets.RowRange;
 pub const ColRange = widgets.ColRange;
 pub const VisibleRange2D = widgets.VisibleRange2D;
 
+// Tree list (virtualized hierarchical list)
+pub const TreeListState = widgets.TreeListState;
+pub const TreeNode = widgets.TreeNode;
+pub const TreeEntry = widgets.TreeEntry;
+pub const TreeLineChar = widgets.TreeLineChar;
+
 // Focus system
 pub const FocusId = core.FocusId;
 pub const FocusHandle = core.FocusHandle;
@@ -302,6 +308,7 @@ pub const CenterStyle = ui.CenterStyle;
 pub const ScrollStyle = ui.ScrollStyle;
 pub const UniformListStyle = ui.UniformListStyle;
 pub const VirtualListStyle = ui.VirtualListStyle;
+pub const TreeListStyle = ui.TreeListStyle;
 pub const DataTableStyle = ui.DataTableStyle;
 pub const InputStyle = ui.InputStyle;
 pub const TextAreaStyle = ui.TextAreaStyle;
