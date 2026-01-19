@@ -304,11 +304,14 @@ test "CategoryPoint init" {
 }
 
 test "Series fromSlice" {
-    const series = Series.fromSlice("Revenue", &.{
-        .{ .x = 0, .y = 10 },
-        .{ .x = 1, .y = 20 },
-        .{ .x = 2, .y = 15 },
-    }, Color.hex(0xff0000));
+    // Heap-allocate Series (~304KB - too large for stack per CLAUDE.md)
+    const series = try std.testing.allocator.create(Series);
+    defer std.testing.allocator.destroy(series);
+
+    series.initInPlace("Revenue", Color.hex(0xff0000));
+    series.addPoint(DataPoint.init(0, 10));
+    series.addPoint(DataPoint.init(1, 20));
+    series.addPoint(DataPoint.init(2, 15));
 
     try std.testing.expectEqualStrings("Revenue", series.getName());
     try std.testing.expectEqual(@as(u32, 3), series.data_len);
@@ -319,11 +322,14 @@ test "Series fromSlice" {
 }
 
 test "CategorySeries fromSlice" {
-    const series = CategorySeries.fromSlice("Sales", &.{
-        .{ .label = "Q1", .value = 30 },
-        .{ .label = "Q2", .value = 45 },
-        .{ .label = "Q3", .value = 28 },
-    }, Color.hex(0x0000ff));
+    // Heap-allocate CategorySeries (~23KB - too large for stack per CLAUDE.md)
+    const series = try std.testing.allocator.create(CategorySeries);
+    defer std.testing.allocator.destroy(series);
+
+    series.initInPlace("Sales", Color.hex(0x0000ff));
+    series.addPoint(CategoryPoint.init("Q1", 30));
+    series.addPoint(CategoryPoint.init("Q2", 45));
+    series.addPoint(CategoryPoint.init("Q3", 28));
 
     try std.testing.expectEqualStrings("Sales", series.getName());
     try std.testing.expectEqual(@as(u32, 3), series.data_len);
@@ -356,7 +362,10 @@ test "struct sizes for stack safety" {
 }
 
 test "Series initInPlace" {
-    var series: Series = undefined;
+    // Heap-allocate Series (~304KB - too large for stack per CLAUDE.md)
+    const series = try std.testing.allocator.create(Series);
+    defer std.testing.allocator.destroy(series);
+
     series.initInPlace("Test", Color.hex(0xff0000));
 
     try std.testing.expectEqualStrings("Test", series.getName());
@@ -364,7 +373,10 @@ test "Series initInPlace" {
 }
 
 test "CategorySeries initInPlace" {
-    var series: CategorySeries = undefined;
+    // Heap-allocate CategorySeries (~23KB - too large for stack per CLAUDE.md)
+    const series = try std.testing.allocator.create(CategorySeries);
+    defer std.testing.allocator.destroy(series);
+
     series.initInPlace("Test", Color.hex(0x00ff00));
 
     try std.testing.expectEqualStrings("Test", series.getName());

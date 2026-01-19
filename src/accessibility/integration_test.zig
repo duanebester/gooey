@@ -18,12 +18,24 @@ const ElementConfig = a11y.ElementConfig;
 const PlatformBridge = a11y.PlatformBridge;
 const MacBridge = a11y.MacBridge;
 
+/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+fn createTree() !*Tree {
+    const tree = try std.testing.allocator.create(Tree);
+    tree.initInPlace();
+    return tree;
+}
+
+fn destroyTree(tree: *Tree) void {
+    std.testing.allocator.destroy(tree);
+}
+
 // ============================================================================
 // Tree Integration Tests
 // ============================================================================
 
 test "tree frame lifecycle" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Simulate frame 1
     tree.beginFrame();
@@ -45,7 +57,8 @@ test "tree frame lifecycle" {
 }
 
 test "tree with multiple elements" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
 
@@ -69,7 +82,8 @@ test "tree with multiple elements" {
 }
 
 test "tree nested structure" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
 
@@ -113,7 +127,8 @@ test "bridge syncFrame handles all operations" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
 
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Frame 1: create elements and announce
     tree.beginFrame();
@@ -122,7 +137,7 @@ test "bridge syncFrame handles all operations" {
     tree.announce("Button focused", .polite);
     tree.endFrame();
 
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 1), test_bridge.sync_count);
     try std.testing.expectEqual(@as(u32, 1), test_bridge.announce_count);
@@ -133,14 +148,15 @@ test "bridge respects active flag" {
     var test_bridge = TestBridge{ .active = false };
     const b = test_bridge.bridge();
 
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test" });
     tree.popElement();
     tree.endFrame();
 
     // Should early-out since not active
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 0), test_bridge.sync_count);
 }
@@ -148,7 +164,8 @@ test "bridge respects active flag" {
 test "null bridge is safe no-op" {
     const b = NullBridge.bridge();
 
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test" });
     tree.popElement();
@@ -156,7 +173,7 @@ test "null bridge is safe no-op" {
     tree.endFrame();
 
     // All operations should be no-ops
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
     try std.testing.expect(!b.isActive());
 }
 
@@ -168,7 +185,8 @@ test "element removal tracked across frames" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
 
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Frame 1: Two buttons
     tree.beginFrame();
@@ -178,7 +196,7 @@ test "element removal tracked across frames" {
     tree.popElement();
     tree.endFrame();
 
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
     test_bridge.reset();
 
     // Frame 2: Only one button (Button 2 removed)
@@ -187,7 +205,7 @@ test "element removal tracked across frames" {
     tree.popElement();
     tree.endFrame();
 
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
 
     // Should have 1 removal
     try std.testing.expectEqual(@as(u32, 1), test_bridge.remove_count);
@@ -199,7 +217,8 @@ test "element removal tracked across frames" {
 // ============================================================================
 
 test "announcements with different priorities" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
 
@@ -220,7 +239,8 @@ test "announcements with different priorities" {
 }
 
 test "off announcements are ignored" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
     tree.announce("Should be ignored", .off);
@@ -234,7 +254,8 @@ test "off announcements are ignored" {
 // ============================================================================
 
 test "state changes mark element dirty" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Frame 1: unchecked checkbox
     tree.beginFrame();
@@ -261,7 +282,8 @@ test "state changes mark element dirty" {
 }
 
 test "value changes mark element dirty" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Frame 1: initial value
     tree.beginFrame();
@@ -292,7 +314,8 @@ test "value changes mark element dirty" {
 // ============================================================================
 
 test "focus change detected" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Frame 1: no focus
     tree.beginFrame();
@@ -320,7 +343,8 @@ test "focus change detected" {
 // ============================================================================
 
 test "slider with value range" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
     _ = tree.pushElement(.{
@@ -340,7 +364,8 @@ test "slider with value range" {
 }
 
 test "list with position tracking" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .list, .name = "Menu" });
@@ -368,7 +393,8 @@ test "list with position tracking" {
 // ============================================================================
 
 test "tree respects element limit" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
 
@@ -387,7 +413,8 @@ test "tree respects element limit" {
 }
 
 test "tree respects depth limit" {
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     tree.beginFrame();
 
@@ -436,17 +463,18 @@ test "platform bridge creation" {
     const b = a11y.createPlatformBridge(&platform_bridge, null, null);
 
     // Bridge should be usable regardless of platform
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test" });
     tree.popElement();
     tree.endFrame();
 
     // These should all be safe no-ops when VoiceOver isn't running
-    b.syncDirty(&tree, tree.getDirtyElements());
+    b.syncDirty(tree, tree.getDirtyElements());
     b.removeElements(tree.getRemovedFingerprints());
     b.announce("Test announcement", .polite);
-    b.focusChanged(&tree, null);
+    b.focusChanged(tree, null);
     b.deinit();
 }
 
@@ -454,7 +482,8 @@ test "platform bridge with full frame sync" {
     var platform_bridge: PlatformBridge = undefined;
     const b = a11y.createPlatformBridge(&platform_bridge, null, null);
 
-    var tree = Tree.init();
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Frame 1: Create elements
     tree.beginFrame();
@@ -470,7 +499,7 @@ test "platform bridge with full frame sync" {
     tree.endFrame();
 
     // Sync to platform (no-op when screen reader inactive)
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
 
     // Frame 2: Remove an element
     tree.beginFrame();
@@ -482,7 +511,7 @@ test "platform bridge with full frame sync" {
     tree.popElement();
     tree.endFrame();
 
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
     b.deinit();
 }
 
@@ -562,7 +591,9 @@ test "macos bridge full lifecycle" {
     var mac_bridge = MacBridge.init(null, null);
     const b = mac_bridge.bridge();
 
-    var tree = Tree.init();
+    // Heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+    const tree = try createTree();
+    defer destroyTree(tree);
 
     // Simulate several frames
     for (0..3) |frame| {
@@ -582,7 +613,7 @@ test "macos bridge full lifecycle" {
         tree.endFrame();
 
         // Sync each frame
-        b.syncFrame(&tree);
+        b.syncFrame(tree);
     }
 
     b.deinit();

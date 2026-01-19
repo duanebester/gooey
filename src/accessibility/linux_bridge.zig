@@ -1001,6 +1001,17 @@ pub const LinuxBridge = struct {
 // Tests
 // ============================================================================
 
+/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+fn createTestTree() !*tree_mod.Tree {
+    const tree = try std.testing.allocator.create(tree_mod.Tree);
+    tree.initInPlace();
+    return tree;
+}
+
+fn destroyTestTree(tree: *tree_mod.Tree) void {
+    std.testing.allocator.destroy(tree);
+}
+
 test "linux bridge initialization" {
     var bridge_inst = LinuxBridge.init();
     defer bridge_inst.bridge().deinit();
@@ -1008,7 +1019,9 @@ test "linux bridge initialization" {
     // Bridge should be usable regardless of platform/D-Bus availability
     const b = bridge_inst.bridge();
 
-    var tree = tree_mod.Tree.init();
+    // Heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test" });
     tree.popElement();

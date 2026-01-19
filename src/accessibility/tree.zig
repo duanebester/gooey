@@ -672,8 +672,20 @@ comptime {
     std.debug.assert(FingerprintMap.BUCKET_COUNT & (FingerprintMap.BUCKET_COUNT - 1) == 0);
 }
 
+/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+fn createTestTree() !*Tree {
+    const tree = try std.testing.allocator.create(Tree);
+    tree.initInPlace();
+    return tree;
+}
+
+fn destroyTestTree(tree: *Tree) void {
+    std.testing.allocator.destroy(tree);
+}
+
 test "tree basic operations" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     const idx = tree.pushElement(.{
@@ -691,7 +703,8 @@ test "tree basic operations" {
 }
 
 test "tree parent-child relationships" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     const parent_idx = tree.pushElement(.{
@@ -730,7 +743,8 @@ test "tree parent-child relationships" {
 }
 
 test "tree dirty tracking" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: Create initial tree
     tree.beginFrame();
@@ -761,7 +775,8 @@ test "tree dirty tracking" {
 }
 
 test "tree removal tracking" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: Two buttons
     tree.beginFrame();
@@ -784,7 +799,8 @@ test "tree removal tracking" {
 }
 
 test "tree announcements" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     tree.announce("File saved", .polite);
@@ -803,7 +819,8 @@ test "tree announcements" {
 }
 
 test "tree focus tracking" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: No focus
     tree.beginFrame();
@@ -842,7 +859,8 @@ test "tree focus tracking" {
 }
 
 test "tree off announcements ignored" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     tree.announce("This should be ignored", .off);
@@ -851,7 +869,8 @@ test "tree off announcements ignored" {
 }
 
 test "tree fingerprint stability across frames" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Capture fingerprint from frame 1
     tree.beginFrame();
@@ -918,7 +937,8 @@ test "fingerprint map collision handling" {
 }
 
 test "tree dirty detection uses hash map" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: Create elements inside a parent (so they get unique positions)
     tree.beginFrame();
@@ -956,7 +976,8 @@ test "tree dirty detection uses hash map" {
 }
 
 test "live region auto-announcement on content change" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: Create a status live region
     tree.beginFrame();
@@ -989,7 +1010,8 @@ test "live region auto-announcement on content change" {
 }
 
 test "alert role auto-announces assertively" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: Create an alert
     tree.beginFrame();
@@ -1019,7 +1041,8 @@ test "alert role auto-announces assertively" {
 }
 
 test "explicit live property overrides role default" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: Create a group with explicit live=assertive
     tree.beginFrame();
@@ -1050,7 +1073,8 @@ test "explicit live property overrides role default" {
 }
 
 test "non-live regions do not auto-announce" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
 
     // Frame 1: Create a regular button
     tree.beginFrame();
@@ -1075,7 +1099,8 @@ test "non-live regions do not auto-announce" {
 }
 
 test "findElementByLayoutId returns correct index" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     const label_id = layout.LayoutId.fromString("name-label");
@@ -1118,7 +1143,8 @@ test "findElementByLayoutId returns correct index" {
 }
 
 test "relationship fields propagate correctly" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     // Create elements with all relationship types

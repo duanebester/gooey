@@ -264,20 +264,32 @@ comptime {
     std.debug.assert(@sizeOf(Bridge.VTable) == 6 * @sizeOf(usize));
 }
 
+/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+fn createTestTree() !*Tree {
+    const tree = try std.testing.allocator.create(Tree);
+    tree.initInPlace();
+    return tree;
+}
+
+fn destroyTestTree(tree: *Tree) void {
+    std.testing.allocator.destroy(tree);
+}
+
 test "null bridge is safe" {
     const b = NullBridge.bridge();
 
-    // All operations should be no-ops
-    var tree = Tree.init();
+    // All operations should be no-ops (heap-allocate Tree - ~500KB too large for stack)
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test" });
     tree.popElement();
     tree.endFrame();
 
-    b.syncDirty(&tree, tree.getDirtyElements());
+    b.syncDirty(tree, tree.getDirtyElements());
     b.removeElements(tree.getRemovedFingerprints());
     b.announce("Test", .polite);
-    b.focusChanged(&tree, null);
+    b.focusChanged(tree, null);
     try std.testing.expect(!b.isActive());
     b.deinit();
 }
@@ -286,7 +298,9 @@ test "test bridge records calls" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
 
-    var tree = Tree.init();
+    // Heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{
         .role = .button,
@@ -298,7 +312,7 @@ test "test bridge records calls" {
     tree.endFrame();
 
     // Sync frame (active = true)
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 1), test_bridge.sync_count);
     try std.testing.expectEqual(@as(u32, 1), test_bridge.announce_count);
@@ -311,14 +325,16 @@ test "test bridge respects active flag" {
     var test_bridge = TestBridge{ .active = false };
     const b = test_bridge.bridge();
 
-    var tree = Tree.init();
+    // Heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test" });
     tree.popElement();
     tree.endFrame();
 
     // syncFrame should early-out when not active
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 0), test_bridge.sync_count);
 }
@@ -327,8 +343,9 @@ test "bridge syncFrame handles all operations" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
 
-    // Frame 1: Create two elements
-    var tree = Tree.init();
+    // Frame 1: Create two elements (heap-allocate Tree - ~500KB too large for stack)
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Button 1" });
     tree.popElement();
@@ -336,7 +353,7 @@ test "bridge syncFrame handles all operations" {
     tree.popElement();
     tree.endFrame();
 
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
     try std.testing.expectEqual(@as(u32, 1), test_bridge.sync_count);
     try std.testing.expectEqual(@as(usize, 2), test_bridge.last_dirty_count);
 
@@ -348,7 +365,7 @@ test "bridge syncFrame handles all operations" {
     tree.popElement();
     tree.endFrame();
 
-    b.syncFrame(&tree);
+    b.syncFrame(tree);
     try std.testing.expectEqual(@as(u32, 1), test_bridge.remove_count);
     try std.testing.expectEqual(@as(usize, 1), test_bridge.last_removed_count);
 }

@@ -454,8 +454,20 @@ pub fn assertInvariants(tree: *const Tree) void {
 // Tests
 // =============================================================================
 
+/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+fn createTestTree() !*Tree {
+    const tree = try std.testing.allocator.create(Tree);
+    tree.initInPlace();
+    return tree;
+}
+
+fn destroyTestTree(tree: *Tree) void {
+    std.testing.allocator.destroy(tree);
+}
+
 test "stats collection" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     _ = tree.pushElement(.{ .role = .button, .name = "Button 1" });
@@ -469,14 +481,15 @@ test "stats collection" {
 
     tree.endFrame();
 
-    const stats = getStats(&tree);
+    const stats = getStats(tree);
     try std.testing.expectEqual(@as(usize, 3), stats.element_count);
     try std.testing.expectEqual(@as(usize, 2), stats.role_counts[@intFromEnum(Role.button)]);
     try std.testing.expectEqual(@as(usize, 1), stats.role_counts[@intFromEnum(Role.checkbox)]);
 }
 
 test "validation detects missing name" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     // Interactive element without name
@@ -485,14 +498,15 @@ test "validation detects missing name" {
 
     tree.endFrame();
 
-    const result = validate(&tree);
+    const result = validate(tree);
     try std.testing.expect(!result.is_valid);
     try std.testing.expect(result.issue_count > 0);
     try std.testing.expectEqual(ValidationIssue.IssueType.missing_name, result.issues[0].issue_type);
 }
 
 test "validation passes for valid tree" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     _ = tree.pushElement(.{ .role = .button, .name = "Submit" });
@@ -503,7 +517,7 @@ test "validation passes for valid tree" {
 
     tree.endFrame();
 
-    const result = validate(&tree);
+    const result = validate(tree);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(@as(usize, 0), result.issue_count);
 }
@@ -559,7 +573,8 @@ test "format state" {
 }
 
 test "find by name" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     _ = tree.pushElement(.{ .role = .button, .name = "First" });
@@ -570,16 +585,17 @@ test "find by name" {
 
     tree.endFrame();
 
-    const found = findByName(&tree, "Second");
+    const found = findByName(tree, "Second");
     try std.testing.expect(found != null);
     try std.testing.expectEqualStrings("Second", found.?.name.?);
 
-    const not_found = findByName(&tree, "Third");
+    const not_found = findByName(tree, "Third");
     try std.testing.expect(not_found == null);
 }
 
 test "count by role" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     _ = tree.pushElement(.{ .role = .button, .name = "B1" });
@@ -591,13 +607,14 @@ test "count by role" {
 
     tree.endFrame();
 
-    try std.testing.expectEqual(@as(usize, 2), countByRole(&tree, .button));
-    try std.testing.expectEqual(@as(usize, 1), countByRole(&tree, .checkbox));
-    try std.testing.expectEqual(@as(usize, 0), countByRole(&tree, .link));
+    try std.testing.expectEqual(@as(usize, 2), countByRole(tree, .button));
+    try std.testing.expectEqual(@as(usize, 1), countByRole(tree, .checkbox));
+    try std.testing.expectEqual(@as(usize, 0), countByRole(tree, .link));
 }
 
 test "assert invariants" {
-    var tree = Tree.init();
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
     tree.beginFrame();
 
     _ = tree.pushElement(.{ .role = .group, .name = "Parent" });
@@ -608,5 +625,5 @@ test "assert invariants" {
     tree.endFrame();
 
     // Should not panic
-    assertInvariants(&tree);
+    assertInvariants(tree);
 }

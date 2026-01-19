@@ -262,15 +262,16 @@ fn renderCodeEditors(gooey: *Gooey, builder: *const Builder) !void {
 
 /// Update IME cursor position for focused text widget
 fn updateImeCursorPosition(gooey: *Gooey) void {
+    const window = gooey.getWindow() orelse return;
     if (gooey.getFocusedTextInput()) |input| {
         const rect = input.cursor_rect;
-        gooey.getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+        window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     } else if (gooey.getFocusedTextArea()) |ta| {
         const rect = ta.cursor_rect;
-        gooey.getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+        window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     } else if (gooey.getFocusedCodeEditor()) |ce| {
         const rect = ce.getCursorRect();
-        gooey.getWindow().setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+        window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
 }
 

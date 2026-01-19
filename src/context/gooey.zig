@@ -180,7 +180,7 @@ pub const Gooey = struct {
     entities: EntityMap,
 
     // Platform
-    window: *Window,
+    window: ?*Window,
 
     // Frame state
     frame_count: u64 = 0,
@@ -773,9 +773,11 @@ pub const Gooey = struct {
         self.entities.beginFrame();
 
         // Update cached window dimensions
-        self.width = @floatCast(self.window.size.width);
-        self.height = @floatCast(self.window.size.height);
-        self.scale_factor = @floatCast(self.window.scale_factor);
+        if (self.window) |w| {
+            self.width = @floatCast(w.size.width);
+            self.height = @floatCast(w.size.height);
+            self.scale_factor = @floatCast(w.scale_factor);
+        }
 
         // Sync scale factor to text system for correct glyph rasterization
         // self.text_system.setScaleFactor(self.scale_factor);
@@ -1222,7 +1224,9 @@ pub const Gooey = struct {
     /// Mark that a re-render is needed
     pub fn requestRender(self: *Self) void {
         self.needs_render = true;
-        self.window.requestRender();
+        if (self.window) |w| {
+            w.requestRender();
+        }
     }
 
     /// Check and clear the needs_render flag
@@ -1253,15 +1257,17 @@ pub const Gooey = struct {
         return self.layout;
     }
 
-    pub fn getWindow(self: *Self) *Window {
+    pub fn getWindow(self: *Self) ?*Window {
         return self.window;
     }
 
     /// Set the accent color uniform for custom shaders
     /// The alpha channel can be used as a mode selector
     pub fn setAccentColor(self: *Gooey, r: f32, g: f32, b: f32, a: f32) void {
-        if (self.window.renderer.getPostProcess()) |pp| {
-            pp.uniforms.accent_color = .{ r, g, b, a };
+        if (self.window) |w| {
+            if (w.renderer.getPostProcess()) |pp| {
+                pp.uniforms.accent_color = .{ r, g, b, a };
+            }
         }
     }
 
@@ -1347,12 +1353,15 @@ test "deferCommand queues command" {
         }
     };
 
-    // Create a minimal Gooey for testing deferred commands
-    var gooey: Gooey = undefined;
+    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
+    const gooey = try std.testing.allocator.create(Gooey);
+    defer std.testing.allocator.destroy(gooey);
+
     gooey.deferred_count = 0;
     gooey.root_state_ptr = null;
     gooey.root_state_type_id = 0;
     gooey.needs_render = false;
+    gooey.window = null; // No window for tests
 
     var state = TestState{};
     gooey.setRootState(TestState, &state);
@@ -1380,11 +1389,15 @@ test "deferCommandWith passes argument" {
         }
     };
 
-    var gooey: Gooey = undefined;
+    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
+    const gooey = try std.testing.allocator.create(Gooey);
+    defer std.testing.allocator.destroy(gooey);
+
     gooey.deferred_count = 0;
     gooey.root_state_ptr = null;
     gooey.root_state_type_id = 0;
     gooey.needs_render = false;
+    gooey.window = null; // No window for tests
 
     var state = TestState{};
     gooey.setRootState(TestState, &state);
@@ -1409,11 +1422,15 @@ test "multiple deferWith calls preserve their arguments" {
         }
     };
 
-    var gooey: Gooey = undefined;
+    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
+    const gooey = try std.testing.allocator.create(Gooey);
+    defer std.testing.allocator.destroy(gooey);
+
     gooey.deferred_count = 0;
     gooey.root_state_ptr = null;
     gooey.root_state_type_id = 0;
     gooey.needs_render = false;
+    gooey.window = null; // No window for tests
 
     var state = TestState{};
     gooey.setRootState(TestState, &state);
@@ -1436,11 +1453,15 @@ test "deferred queue overflow is handled gracefully" {
         pub fn noop(_: *@This(), _: *Gooey) void {}
     };
 
-    var gooey: Gooey = undefined;
+    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
+    const gooey = try std.testing.allocator.create(Gooey);
+    defer std.testing.allocator.destroy(gooey);
+
     gooey.deferred_count = 0;
     gooey.root_state_ptr = null;
     gooey.root_state_type_id = 0;
     gooey.needs_render = false;
+    gooey.window = null; // No window for tests
 
     var state = TestState{};
     gooey.setRootState(TestState, &state);
@@ -1463,7 +1484,10 @@ test "deferred queue overflow is handled gracefully" {
 }
 
 test "hasDeferredCommands returns correct state" {
-    var gooey: Gooey = undefined;
+    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
+    const gooey = try std.testing.allocator.create(Gooey);
+    defer std.testing.allocator.destroy(gooey);
+
     gooey.deferred_count = 0;
 
     try std.testing.expect(!gooey.hasDeferredCommands());

@@ -53,7 +53,9 @@ const AppState = struct {
             .glass_regular => .glass_regular,
             .glass_clear => .glass_clear,
         };
-        g.window.setGlassStyle(win_style, self.opacity, self.corner_radius);
+        if (g.window) |w| {
+            w.setGlassStyle(win_style, self.opacity, self.corner_radius);
+        }
     }
 
     pub fn increaseRadius(self: *AppState) void {
