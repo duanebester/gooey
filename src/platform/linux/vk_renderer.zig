@@ -37,6 +37,8 @@ pub const MAX_GLYPHS: u32 = 8192;
 pub const MAX_SVGS: u32 = 2048;
 pub const MAX_IMAGES: u32 = 1024;
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
+pub const MAX_SURFACE_FORMATS: u32 = 128;
+pub const MAX_PRESENT_MODES: u32 = 16;
 
 // =============================================================================
 // GPU Types
@@ -1185,10 +1187,11 @@ pub const VulkanRenderer = struct {
         var format_count: u32 = 0;
         _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &format_count, null);
 
-        // Assert format count fits our fixed array - fail fast if assumption violated
-        std.debug.assert(format_count <= 64);
-        var formats: [64]vk.SurfaceFormatKHR = undefined;
-        var fmt_count: u32 = @min(format_count, 64);
+        // Use fixed buffer - we only need to find one suitable format.
+        // Some drivers report 99+ formats; we just use what fits since we're searching for
+        // a specific format anyway (B8G8R8A8_UNORM or B8G8R8A8_SRGB).
+        var formats: [MAX_SURFACE_FORMATS]vk.SurfaceFormatKHR = undefined;
+        var fmt_count: u32 = @min(format_count, MAX_SURFACE_FORMATS);
         _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &fmt_count, &formats);
 
         // Choose format - prefer UNORM since our colors are already in sRGB space
@@ -1222,10 +1225,9 @@ pub const VulkanRenderer = struct {
         var present_mode_count: u32 = 0;
         _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &present_mode_count, null);
 
-        // Assert present mode count fits our fixed array - fail fast if assumption violated
-        std.debug.assert(present_mode_count <= 16);
-        var present_modes: [16]c_uint = undefined;
-        var pm_count: u32 = @min(present_mode_count, 16);
+        // Use fixed buffer for present modes - typically only 4-6 modes exist.
+        var present_modes: [MAX_PRESENT_MODES]c_uint = undefined;
+        var pm_count: u32 = @min(present_mode_count, MAX_PRESENT_MODES);
         _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &pm_count, @ptrCast(&present_modes));
 
         // Choose present mode (prefer FIFO for vsync)
