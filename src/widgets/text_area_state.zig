@@ -32,6 +32,9 @@ const text_mod = @import("../text/mod.zig");
 const element_types = @import("../core/element_types.zig");
 const event = @import("../core/event.zig");
 const common = @import("text_common.zig");
+const history_mod = @import("edit_history.zig");
+const EditHistory = history_mod.EditHistory;
+const Edit = history_mod.Edit;
 
 const ElementId = element_types.ElementId;
 const Event = event.Event;
@@ -153,11 +156,16 @@ pub const TextArea = struct {
     /// Pending click position for cursor placement (processed during render when text_system is available)
     pending_click: ?struct { x: f32, y: f32 } = null,
 
+    /// Edit history for undo/redo (heap-allocated, ~512KB)
+    edit_history: ?*EditHistory = null,
+
     const Self = @This();
 
     const BLINK_INTERVAL_MS: i64 = 530;
 
-    pub fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
+    /// Initialize TextArea
+    /// Marked noinline to prevent stack accumulation
+    pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         const unique_id = struct {
             var next: u64 = 1;
             fn get() u64 {
@@ -178,10 +186,13 @@ pub const TextArea = struct {
             .line_starts = line_starts,
             .preedit_buffer = .{},
             .id = ElementId.int(unique_id),
+            .edit_history = EditHistory.create(allocator),
         };
     }
 
-    pub fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
+    /// Initialize TextArea with a string ID
+    /// Marked noinline to prevent stack accumulation
+    pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
         var line_starts = std.ArrayList(usize){};
         line_starts.append(allocator, 0) catch {};
 
@@ -193,6 +204,7 @@ pub const TextArea = struct {
             .line_starts = line_starts,
             .preedit_buffer = .{},
             .id = ElementId.named(id),
+            .edit_history = EditHistory.create(allocator),
         };
     }
 
@@ -200,6 +212,7 @@ pub const TextArea = struct {
         self.buffer.deinit(self.allocator);
         self.line_starts.deinit(self.allocator);
         self.preedit_buffer.deinit(self.allocator);
+        if (self.edit_history) |h| h.destroy(self.allocator);
     }
 
     // =========================================================================
@@ -461,10 +474,59 @@ pub const TextArea = struct {
     // =========================================================================
 
     pub fn insertText(self: *Self, text: []const u8) !void {
-        self.deleteSelection();
+        // Skip empty inserts
+        if (text.len == 0) return;
+
+        // Save state for history before any modifications
+        const cursor_before: u32 = @intCast(self.cursor_byte);
+        const anchor_before: ?u32 = if (self.selection_anchor) |a| @intCast(a) else null;
+        const insert_offset: u32 = @intCast(self.selectionStart());
+
+        // Handle selection replacement as a single compound edit
+        const had_selection = self.hasSelection();
+        var deleted_text_buf: [history_mod.MAX_EDIT_BYTES]u8 = undefined;
+        var deleted_len: usize = 0;
+
+        if (had_selection) {
+            // Save deleted text for compound edit before deleting
+            const start = self.selectionStart();
+            const end = self.selectionEnd();
+            deleted_len = end - start;
+            if (deleted_len <= history_mod.MAX_EDIT_BYTES) {
+                @memcpy(deleted_text_buf[0..deleted_len], self.buffer.items[start..end]);
+            }
+            // Delete without recording history (we'll record a compound replace instead)
+            self.deleteSelection();
+        }
 
         try self.buffer.insertSlice(self.allocator, self.cursor_byte, text);
         self.updateLineIndexAfterInsert(self.cursor_byte, text);
+
+        // Record in history
+        if (self.edit_history) |h| {
+            if (had_selection and deleted_len > 0 and deleted_len <= history_mod.MAX_EDIT_BYTES) {
+                // Compound replace edit (single undo step for delete + insert)
+                if (Edit.makeReplace(
+                    insert_offset,
+                    deleted_text_buf[0..deleted_len],
+                    text,
+                    cursor_before,
+                    anchor_before,
+                    getTimestamp(),
+                )) |edit| {
+                    h.push(edit);
+                }
+            } else if (!had_selection and text.len <= history_mod.MAX_EDIT_BYTES) {
+                // Simple insert
+                h.push(Edit.makeInsert(
+                    insert_offset,
+                    text,
+                    cursor_before,
+                    anchor_before,
+                    getTimestamp(),
+                ));
+            }
+        }
 
         self.cursor_byte += text.len;
         self.updateCursorPosition();
@@ -491,10 +553,25 @@ pub const TextArea = struct {
             .delete => {
                 // Backspace
                 if (self.hasSelection()) {
-                    self.deleteSelection();
+                    self.deleteSelectionWithHistory();
                 } else if (self.cursor_byte > 0) {
                     const prev = common.prevCharBoundary(self.buffer.items, self.cursor_byte);
                     const char_len = self.cursor_byte - prev;
+
+                    // Record in history before deleting
+                    const deleted_text = self.buffer.items[prev..self.cursor_byte];
+                    if (self.edit_history) |h| {
+                        if (deleted_text.len <= history_mod.MAX_EDIT_BYTES) {
+                            h.push(Edit.makeDelete(
+                                @intCast(prev),
+                                deleted_text,
+                                @intCast(self.cursor_byte),
+                                null,
+                                getTimestamp(),
+                            ));
+                        }
+                    }
+
                     for (0..char_len) |_| {
                         _ = self.buffer.orderedRemove(prev);
                     }
@@ -507,10 +584,25 @@ pub const TextArea = struct {
             },
             .forward_delete => {
                 if (self.hasSelection()) {
-                    self.deleteSelection();
+                    self.deleteSelectionWithHistory();
                 } else if (self.cursor_byte < self.buffer.items.len) {
                     const next = common.nextCharBoundary(self.buffer.items, self.cursor_byte);
                     const char_len = next - self.cursor_byte;
+
+                    // Record in history before deleting
+                    const deleted_text = self.buffer.items[self.cursor_byte..next];
+                    if (self.edit_history) |h| {
+                        if (deleted_text.len <= history_mod.MAX_EDIT_BYTES) {
+                            h.push(Edit.makeDelete(
+                                @intCast(self.cursor_byte),
+                                deleted_text,
+                                @intCast(self.cursor_byte),
+                                null,
+                                getTimestamp(),
+                            ));
+                        }
+                    }
+
                     for (0..char_len) |_| {
                         _ = self.buffer.orderedRemove(self.cursor_byte);
                     }
@@ -648,7 +740,16 @@ pub const TextArea = struct {
                     const end = self.selectionEnd();
                     const selected_text = self.buffer.items[start..end];
                     _ = clipboard.setText(selected_text);
-                    self.deleteSelection();
+                    self.deleteSelectionWithHistory();
+                }
+            },
+            .z => {
+                if (mods.cmd and !mods.shift) {
+                    // Undo
+                    self.applyUndo();
+                } else if (mods.cmd and mods.shift) {
+                    // Redo
+                    self.applyRedo();
                 }
             },
             .@"return" => {
@@ -723,12 +824,47 @@ pub const TextArea = struct {
         return self.cursor_byte;
     }
 
+    /// Delete selection without recording history (used internally)
     fn deleteSelection(self: *Self) void {
         if (!self.hasSelection()) return;
 
         const start = self.selectionStart();
         const end = self.selectionEnd();
         const len = end - start;
+
+        for (0..len) |_| {
+            _ = self.buffer.orderedRemove(start);
+        }
+
+        self.updateLineIndexAfterDelete(start, end);
+        self.cursor_byte = start;
+        self.updateCursorPosition();
+        self.selection_anchor = null;
+        self.preferred_column = null;
+        self.notifyChange();
+    }
+
+    /// Delete selection and record in history (used for standalone delete operations)
+    fn deleteSelectionWithHistory(self: *Self) void {
+        if (!self.hasSelection()) return;
+
+        const start = self.selectionStart();
+        const end = self.selectionEnd();
+        const len = end - start;
+
+        // Save deleted text for history before removing
+        const deleted_text = self.buffer.items[start..end];
+        if (self.edit_history) |h| {
+            if (deleted_text.len <= history_mod.MAX_EDIT_BYTES) {
+                h.push(Edit.makeDelete(
+                    @intCast(start),
+                    deleted_text,
+                    @intCast(self.cursor_byte),
+                    if (self.selection_anchor) |a| @intCast(a) else null,
+                    getTimestamp(),
+                ));
+            }
+        }
 
         for (0..len) |_| {
             _ = self.buffer.orderedRemove(start);
@@ -770,6 +906,180 @@ pub const TextArea = struct {
         self.cursor_col = 0;
         self.preferred_column = null;
         self.ensureCursorVisible();
+    }
+
+    // =========================================================================
+    // Undo/Redo
+    // =========================================================================
+
+    /// Apply an undo operation
+    fn applyUndo(self: *Self) void {
+        const h = self.edit_history orelse return;
+        const edit = h.undo() orelse return;
+
+        // Assertions: validate edit is applicable to current buffer state
+        std.debug.assert(edit.op == .insert or edit.op == .delete or edit.op == .replace);
+        std.debug.assert(edit.cursor_before <= self.buffer.items.len + edit.len); // cursor_before was valid
+
+        h.beginApply();
+        defer h.endApply();
+
+        switch (edit.op) {
+            .insert => {
+                // Undo insert = delete the inserted text
+                const start = edit.offset;
+                const len = edit.len;
+                const end = start + len;
+
+                // Assert buffer has the content we're about to delete
+                std.debug.assert(start + len <= self.buffer.items.len);
+
+                for (0..len) |_| {
+                    _ = self.buffer.orderedRemove(start);
+                }
+                self.updateLineIndexAfterDelete(start, end);
+            },
+            .delete => {
+                // Undo delete = reinsert the deleted text
+                const text = edit.getText();
+
+                // Assert offset is valid for insertion
+                std.debug.assert(edit.offset <= self.buffer.items.len);
+
+                self.buffer.insertSlice(self.allocator, edit.offset, text) catch {
+                    // Restore history state on allocation failure
+                    h.undoUndo();
+                    return;
+                };
+                self.updateLineIndexAfterInsert(edit.offset, text);
+            },
+            .replace => {
+                // Undo replace = delete inserted text, reinsert deleted text
+                const inserted_len = edit.len2;
+                const deleted_text = edit.getDeletedText();
+
+                // Assert buffer has the inserted content we're about to delete
+                std.debug.assert(edit.offset + inserted_len <= self.buffer.items.len);
+
+                // First, remove the inserted text
+                for (0..inserted_len) |_| {
+                    _ = self.buffer.orderedRemove(edit.offset);
+                }
+                self.updateLineIndexAfterDelete(edit.offset, edit.offset + inserted_len);
+
+                // Then, reinsert the deleted text
+                self.buffer.insertSlice(self.allocator, edit.offset, deleted_text) catch {
+                    // Partial failure: we deleted but couldn't reinsert
+                    // Restore history state - user can retry
+                    h.undoUndo();
+                    return;
+                };
+                self.updateLineIndexAfterInsert(edit.offset, deleted_text);
+            },
+        }
+
+        // Restore cursor and selection state
+        self.cursor_byte = edit.cursor_before;
+        self.selection_anchor = if (edit.getAnchor()) |a| @as(usize, a) else null;
+        self.updateCursorPosition();
+        self.preferred_column = null;
+        self.ensureCursorVisible();
+        self.resetCursorBlink();
+        self.notifyChange();
+    }
+
+    /// Apply a redo operation
+    fn applyRedo(self: *Self) void {
+        const h = self.edit_history orelse return;
+        const edit = h.redo() orelse return;
+
+        // Assertions: validate edit is applicable to current buffer state
+        std.debug.assert(edit.op == .insert or edit.op == .delete or edit.op == .replace);
+        std.debug.assert(edit.offset <= self.buffer.items.len);
+
+        h.beginApply();
+        defer h.endApply();
+
+        switch (edit.op) {
+            .insert => {
+                // Redo insert = reinsert the text
+                const text = edit.getText();
+
+                // Assert offset is valid for insertion
+                std.debug.assert(edit.offset <= self.buffer.items.len);
+
+                self.buffer.insertSlice(self.allocator, edit.offset, text) catch {
+                    // Restore history state on allocation failure
+                    h.undoRedo();
+                    return;
+                };
+                self.updateLineIndexAfterInsert(edit.offset, text);
+                self.cursor_byte = edit.offset + edit.len;
+            },
+            .delete => {
+                // Redo delete = delete the text again
+                const start = edit.offset;
+                const len = edit.len;
+                const end = start + len;
+
+                // Assert buffer has the content we're about to delete
+                std.debug.assert(start + len <= self.buffer.items.len);
+
+                for (0..len) |_| {
+                    _ = self.buffer.orderedRemove(start);
+                }
+                self.updateLineIndexAfterDelete(start, end);
+                self.cursor_byte = start;
+            },
+            .replace => {
+                // Redo replace = delete the deleted text, insert the inserted text
+                const deleted_len = edit.len;
+                const inserted_text = edit.getInsertedText();
+
+                // Assert buffer has the content we're about to delete
+                std.debug.assert(edit.offset + deleted_len <= self.buffer.items.len);
+
+                // First, remove the deleted text (which was restored by undo)
+                for (0..deleted_len) |_| {
+                    _ = self.buffer.orderedRemove(edit.offset);
+                }
+                self.updateLineIndexAfterDelete(edit.offset, edit.offset + deleted_len);
+
+                // Then, reinsert the inserted text
+                self.buffer.insertSlice(self.allocator, edit.offset, inserted_text) catch {
+                    // Partial failure: we deleted but couldn't reinsert
+                    // Restore history state - user can retry
+                    h.undoRedo();
+                    return;
+                };
+                self.updateLineIndexAfterInsert(edit.offset, inserted_text);
+                self.cursor_byte = edit.offset + @as(usize, edit.len2);
+            },
+        }
+
+        self.selection_anchor = null;
+        self.updateCursorPosition();
+        self.preferred_column = null;
+        self.ensureCursorVisible();
+        self.resetCursorBlink();
+        self.notifyChange();
+    }
+
+    /// Check if undo is available
+    pub fn canUndo(self: *const Self) bool {
+        const h = self.edit_history orelse return false;
+        return h.canUndo();
+    }
+
+    /// Check if redo is available
+    pub fn canRedo(self: *const Self) bool {
+        const h = self.edit_history orelse return false;
+        return h.canRedo();
+    }
+
+    /// Clear edit history (e.g., after loading new content)
+    pub fn clearHistory(self: *Self) void {
+        if (self.edit_history) |h| h.clear();
     }
 
     // =========================================================================

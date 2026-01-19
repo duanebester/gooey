@@ -53,6 +53,18 @@ pub const TextAreaStyle = text_area_state.Style;
 pub const text_common = @import("text_common.zig");
 
 // =============================================================================
+// Edit History (undo/redo for text widgets)
+// =============================================================================
+
+pub const edit_history = @import("edit_history.zig");
+
+pub const EditHistory = edit_history.EditHistory;
+pub const Edit = edit_history.Edit;
+pub const EditOp = edit_history.EditOp;
+pub const MAX_HISTORY_SIZE = edit_history.MAX_HISTORY_SIZE;
+pub const MAX_EDIT_BYTES = edit_history.MAX_EDIT_BYTES;
+
+// =============================================================================
 // Scroll Container
 // =============================================================================
 

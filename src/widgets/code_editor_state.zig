@@ -182,7 +182,9 @@ pub const CodeEditorState = struct {
     // Initialization
     // =========================================================================
 
-    pub fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
+    /// Initialize CodeEditorState
+    /// Marked noinline to prevent stack accumulation (struct is >50KB due to highlight_spans)
+    pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         std.debug.assert(bounds.width > 0);
         std.debug.assert(bounds.height > 0);
 
@@ -196,7 +198,9 @@ pub const CodeEditorState = struct {
         };
     }
 
-    pub fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
+    /// Initialize CodeEditorState with a string ID
+    /// Marked noinline to prevent stack accumulation (struct is >50KB due to highlight_spans)
+    pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
         std.debug.assert(bounds.width > 0);
         std.debug.assert(id.len > 0);
 
@@ -451,6 +455,25 @@ pub const CodeEditorState = struct {
         };
         self.text_area.handleKey(key_event) catch {};
         return true;
+    }
+
+    // =========================================================================
+    // Undo/Redo (delegated to TextArea)
+    // =========================================================================
+
+    /// Check if undo is available
+    pub fn canUndo(self: *const Self) bool {
+        return self.text_area.canUndo();
+    }
+
+    /// Check if redo is available
+    pub fn canRedo(self: *const Self) bool {
+        return self.text_area.canRedo();
+    }
+
+    /// Clear edit history (e.g., after loading new content)
+    pub fn clearHistory(self: *Self) void {
+        self.text_area.clearHistory();
     }
 
     // =========================================================================
