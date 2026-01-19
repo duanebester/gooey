@@ -1028,10 +1028,10 @@ test "linux bridge initialization" {
     tree.endFrame();
 
     // These should all be safe no-ops when AT-SPI isn't running
-    b.syncDirty(&tree, tree.getDirtyElements());
+    b.syncDirty(tree, tree.getDirtyElements());
     b.removeElements(tree.getRemovedFingerprints());
     b.announce("Test announcement", .polite);
-    b.focusChanged(&tree, null);
+    b.focusChanged(tree, null);
 }
 
 test "linux bridge object slot management" {
