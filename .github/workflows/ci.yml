@@ -56,7 +56,11 @@ jobs:
           else
             echo "result=success" >> $GITHUB_OUTPUT
           fi
-          echo "results=$results" >> $GITHUB_OUTPUT
+          {
+            echo 'results<<EOF'
+            echo "$results"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
 
       - name: Check for failed status
         if: steps.status.outputs.result != 'success'
