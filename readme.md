@@ -688,6 +688,204 @@ fn renderCell(row: u32, col: u32, cx: *Cx) void {
 }
 ```
 
+## Form Validation
+
+Gooey provides utilities for form validation with touched-state tracking:
+
+### Validation Utilities
+
+```zig
+const validation = gooey.validation;
+
+// Single validators
+const err = validation.required(value);           // Non-empty check
+const err = validation.email(value);              // Email format
+const err = validation.minLength(value, 8);       // Minimum length
+const err = validation.maxLength(value, 100);     // Maximum length
+const err = validation.numeric(value);            // Digits only
+const err = validation.alphanumeric(value);       // Letters and numbers
+const err = validation.matches(value, other);     // Values must match
+
+// Password strength
+const err = validation.hasUppercase(value);       // At least one uppercase
+const err = validation.hasLowercase(value);       // At least one lowercase
+const err = validation.hasDigit(value);           // At least one number
+const err = validation.hasSpecialChar(value);     // At least one special char
+
+// Chain multiple validators - returns first error or null
+const err = validation.all(password, .{
+    validation.required,
+    validation.minLengthValidator(8),
+    validation.hasUppercase,
+    validation.hasDigit,
+});
+```
+
+### Custom Messages (i18n)
+
+Create validators with custom messages for internationalization:
+
+```zig
+// Define a locale struct with custom validators
+const french = struct {
+    pub const required = validation.requiredMsg("Ce champ est requis");
+    pub const email = validation.emailMsg("Adresse e-mail invalide");
+    pub const minLength8 = validation.minLengthMsg(8, "Au moins 8 caractères");
+    pub const hasUppercase = validation.hasUppercaseMsg("Au moins une majuscule");
+};
+
+// Use in validation - works with all() combinator
+const err = validation.all(value, .{
+    french.required,
+    french.email,
+});
+
+// Available message factories:
+// validation.requiredMsg(msg)
+// validation.emailMsg(msg)
+// validation.minLengthMsg(min, msg)
+// validation.maxLengthMsg(max, msg)
+// validation.numericMsg(msg)
+// validation.alphanumericMsg(msg)
+// validation.hasUppercaseMsg(msg)
+// validation.hasLowercaseMsg(msg)
+// validation.hasDigitMsg(msg)
+// validation.hasSpecialCharMsg(msg)
+// validation.matchesMsg(msg)
+```
+
+### Error Codes (Programmatic Handling)
+
+Use error codes when you need to programmatically handle errors (e.g., focus first invalid field):
+
+```zig
+// Returns ?ErrorCode instead of ?[]const u8
+const code = validation.requiredCode(value);
+if (code == .required) {
+    cx.setFocus("username");  // Focus first invalid field
+}
+
+// Available error codes:
+// .required, .min_length, .max_length, .invalid_email,
+// .not_numeric, .not_alphanumeric, .mismatch,
+// .no_uppercase, .no_lowercase, .no_digit, .no_special_char
+
+// Find first invalid field - call individual *Code functions in sequence
+// (there's no allCode() combinator; this pattern keeps the API simple)
+pub fn getFirstInvalidField(s: *const State) ?[]const u8 {
+    if (validation.requiredCode(s.username) != null) return "username";
+    if (validation.emailCode(s.email) != null) return "email";
+    if (validation.minLengthCode(s.password, 8) != null) return "password";
+    return null;
+}
+```
+
+> **Note:** Unlike `all()` for error messages, there's no `allCode()` combinator.
+> For multi-field validation with error codes, call individual `*Code` functions
+> in sequence as shown above. This keeps the API simple while covering the
+> common "focus first invalid field" use case.
+
+### Structured Results (Full Accessibility Control)
+
+When you need different messages for visual display vs screen readers:
+
+```zig
+// Structured result with separate messages
+const result = validation.requiredResult(value, .{
+    .message = "Required",  // Terse for visual display
+    .accessible_message = "The email field is required. Please enter your email address.",
+});
+
+if (result) |r| {
+    r.code              // ErrorCode for programmatic handling
+    r.displayMessage()  // Message for visual display
+    r.screenReaderMessage()  // Message for screen readers (falls back to display)
+}
+
+// Use with ValidatedTextInput for full a11y control
+gooey.ValidatedTextInput{
+    .id = "email",
+    .error_result = validation.requiredResult(s.email, .{
+        .message = "Required",
+        .accessible_message = "The email address field is required",
+    }),
+    .show_error = s.touched_email,
+}
+```
+
+### ValidatedTextInput Component
+
+All-in-one form field with label, input, error display, and help text:
+
+```zig
+const State = struct {
+    email: []const u8 = "",
+    touched_email: bool = false,
+
+    pub fn validateEmail(self: *const State) ?[]const u8 {
+        return gooey.validation.all(self.email, .{
+            gooey.validation.required,
+            gooey.validation.email,
+        });
+    }
+
+    pub fn onEmailBlur(self: *State) void {
+        self.touched_email = true;
+    }
+};
+
+// In render:
+gooey.ValidatedTextInput{
+    .id = "email",
+    .label = "Email Address",
+    .required_indicator = true,        // Shows "*" after label
+    .placeholder = "you@example.com",
+    .bind = &s.email,
+    .error_message = s.validateEmail(),  // Simple string error
+    .show_error = s.touched_email,       // Only show after interaction
+    .help_text = "We'll never share your email",
+    .on_blur_handler = cx.update(State, State.onEmailBlur),
+    .width = 300,
+}
+
+// Or with structured result for different a11y messages:
+gooey.ValidatedTextInput{
+    .id = "email",
+    .label = "Email Address",
+    .error_result = validation.emailResult(s.email, .{
+        .message = "Invalid email",
+        .accessible_message = "Please enter a valid email address in the format name@example.com",
+    }),
+    .show_error = s.touched_email,
+}
+```
+
+### Form-Level Helpers
+
+```zig
+// Track errors for multiple fields
+var errors = validation.FormErrors(4).init();
+errors.set(0, validation.required(s.username));
+errors.set(1, validation.email(s.email));
+errors.set(2, validation.minLength(s.password, 8));
+errors.set(3, validation.matches(s.confirm, s.password));
+
+if (errors.isValid()) {
+    // Submit form
+} else {
+    // errors.firstErrorIndex() returns index of first invalid field
+}
+
+// Track touched state
+var touched = validation.TouchedFields(4).init();
+touched.touch(0);  // Mark field 0 as touched
+if (touched.isTouched(0)) { ... }
+touched.touchAll();  // Mark all on submit
+touched.reset();     // Clear on form reset
+```
+
+Run `zig build run-form-validation` for a complete example.
+
 ## Animation System
 
 Built-in animation support with easing functions:

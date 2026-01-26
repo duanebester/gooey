@@ -78,6 +78,9 @@ pub const debug = @import("debug/mod.zig");
 /// Layout engine (Clay-inspired)
 pub const layout = @import("layout/layout.zig");
 
+/// Form validation utilities (pure functions)
+pub const validation = @import("validation.zig");
+
 /// Accessibility (A11Y) - screen reader and assistive technology support
 pub const accessibility = @import("accessibility/accessibility.zig");
 
@@ -118,6 +121,7 @@ pub const Image = components.Image;
 pub const AspectRatio = components.AspectRatio;
 pub const Tooltip = components.Tooltip;
 pub const Modal = components.Modal;
+pub const ValidatedTextInput = components.ValidatedTextInput;
 
 // =============================================================================
 // App Entry Point (most common usage)

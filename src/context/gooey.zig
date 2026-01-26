@@ -1,4 +1,7 @@
-//! Gooey - Unified UI context
+//! Gooey - Unified UI Context
+//!
+//! Central context for the UI framework, managing layout, rendering, widgets,
+//! focus, and event dispatch.
 //!
 //! Single struct that holds everything needed for UI, replacing the
 //! App/Context/ViewContext complexity. Provides a clean API for:
@@ -99,6 +102,10 @@ const FocusId = focus_mod.FocusId;
 const FocusHandle = focus_mod.FocusHandle;
 const FocusEvent = focus_mod.FocusEvent;
 
+// Handler system
+const handler_mod = @import("handler.zig");
+const HandlerRef = handler_mod.HandlerRef;
+
 // Drag & Drop
 const drag_mod = @import("drag.zig");
 pub const DragState = drag_mod.DragState;
@@ -113,6 +120,14 @@ const MAX_DEFERRED_COMMANDS = 32;
 const DeferredCommand = struct {
     callback: *const fn (*Gooey, u64) void,
     packed_arg: u64,
+};
+
+// Blur handler infrastructure (fixed-capacity to avoid dynamic allocation)
+const MAX_BLUR_HANDLERS: usize = 64;
+
+const BlurHandlerEntry = struct {
+    id: []const u8,
+    handler: HandlerRef,
 };
 
 /// Gooey - unified UI context
@@ -217,6 +232,14 @@ pub const Gooey = struct {
     deferred_commands: [MAX_DEFERRED_COMMANDS]DeferredCommand = undefined,
     deferred_count: u8 = 0,
 
+    // Blur handlers for text fields (registered per frame from pending items)
+    // Fixed-capacity storage to avoid dynamic allocation during rendering
+    blur_handlers: [MAX_BLUR_HANDLERS]?BlurHandlerEntry = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
+    blur_handler_count: usize = 0,
+
+    // Guard to prevent double blur handler invocation within the same focus transition
+    blur_handlers_invoked_this_transition: bool = false,
+
     const Self = @This();
 
     /// Get the type ID for a given type (used for runtime type checking).
@@ -302,7 +325,6 @@ pub const Gooey = struct {
         }
 
         // Pack arg into u64 using the same pattern as updateWith/commandWith
-        const handler_mod = @import("handler.zig");
         const packed_value = handler_mod.packArg(Arg, arg).id;
 
         const Wrapper = struct {
@@ -421,6 +443,9 @@ pub const Gooey = struct {
             .a11y_tree = a11y.Tree.init(),
             .a11y_platform_bridge = undefined,
             .a11y_bridge = undefined, // Initialized below
+            // Blur handlers for text fields (fixed-capacity, no allocation needed)
+            .blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
+            .blur_handler_count = 0,
         };
 
         // Initialize platform-specific accessibility bridge (Phase 2)
@@ -530,6 +555,11 @@ pub const Gooey = struct {
         self.hover_changed = false;
         self.debugger = .{};
 
+        // Blur handlers for text fields (fixed-capacity, no allocation needed)
+        self.blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS;
+        self.blur_handler_count = 0;
+        self.blur_handlers_invoked_this_transition = false;
+
         // Accessibility (initInPlace avoids ~350KB stack temp)
         self.a11y_tree.initInPlace();
         self.a11y_enabled = false;
@@ -613,6 +643,9 @@ pub const Gooey = struct {
             .a11y_tree = a11y.Tree.init(),
             .a11y_platform_bridge = undefined,
             .a11y_bridge = undefined,
+            // Blur handlers for text fields (fixed-capacity, no allocation needed)
+            .blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
+            .blur_handler_count = 0,
         };
 
         // Initialize platform-specific accessibility bridge
@@ -707,6 +740,11 @@ pub const Gooey = struct {
         self.hover_changed = false;
         self.debugger = .{};
 
+        // Blur handlers for text fields (fixed-capacity, no allocation needed)
+        self.blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS;
+        self.blur_handler_count = 0;
+        self.blur_handlers_invoked_this_transition = false;
+
         // Accessibility
         self.a11y_tree.initInPlace();
         self.a11y_enabled = false;
@@ -721,6 +759,8 @@ pub const Gooey = struct {
     pub fn deinit(self: *Self) void {
         // Clean up accessibility bridge
         self.a11y_bridge.deinit();
+
+        // Blur handlers use fixed-capacity storage, no cleanup needed
 
         self.widgets.deinit();
         self.focus.deinit();
@@ -1107,8 +1147,12 @@ pub const Gooey = struct {
 
     /// Clear all focus
     pub fn blurAll(self: *Self) void {
+        // Invoke blur handlers for any focused text fields before blurring
+        self.invokeBlurHandlersForFocusedWidgets();
         self.focus.blur();
         self.widgets.blurAll();
+        // Reset guard after complete focus transition to allow subsequent focus changes
+        self.blur_handlers_invoked_this_transition = false;
         self.requestRender();
     }
 
@@ -1117,8 +1161,11 @@ pub const Gooey = struct {
         return self.focus.isFocusedByName(id);
     }
 
-    /// Sync widget focus state with FocusManager
+    /// Sync widget focus state with FocusManager.
+    /// Invokes blur handlers for the previously focused widget, then focuses the new one.
     fn syncWidgetFocus(self: *Self, id: []const u8) void {
+        // Invoke blur handlers for any focused text fields before blurring
+        self.invokeBlurHandlersForFocusedWidgets();
         // Blur all widgets first
         self.widgets.blurAll();
         // Focus the specific widget if it exists (check both TextInput and TextArea)
@@ -1126,6 +1173,105 @@ pub const Gooey = struct {
             input.focus();
         } else if (self.widgets.text_areas.get(id)) |ta| {
             ta.focus();
+        }
+        // Reset guard after complete focus transition to allow subsequent focus changes
+        self.blur_handlers_invoked_this_transition = false;
+    }
+
+    // =========================================================================
+    // Blur Handler Management
+    // =========================================================================
+
+    /// Register a blur handler for a text field ID.
+    /// Called during frame rendering to register handlers from pending items.
+    /// Uses fixed-capacity storage - logs warning if limit exceeded.
+    pub fn registerBlurHandler(self: *Self, id: []const u8, handler: HandlerRef) void {
+        std.debug.assert(id.len > 0); // ID must not be empty
+        std.debug.assert(id.len <= 256); // Reasonable ID length limit
+
+        // Check if already registered (update existing)
+        // Only iterate up to blur_handler_count - slots beyond are guaranteed null
+        for (self.blur_handlers[0..self.blur_handler_count]) |*slot| {
+            if (slot.*) |*entry| {
+                if (std.mem.eql(u8, entry.id, id)) {
+                    entry.handler = handler;
+                    return;
+                }
+            }
+        }
+
+        // Find empty slot
+        if (self.blur_handler_count < MAX_BLUR_HANDLERS) {
+            self.blur_handlers[self.blur_handler_count] = .{ .id = id, .handler = handler };
+            self.blur_handler_count += 1;
+        } else {
+            std.log.warn("Blur handler limit ({d}) exceeded - dropping handler for '{s}'", .{ MAX_BLUR_HANDLERS, id });
+        }
+    }
+
+    /// Clear all registered blur handlers.
+    /// Called at the start of each frame before processing pending items.
+    pub fn clearBlurHandlers(self: *Self) void {
+        // Only clear slots that were actually used
+        for (self.blur_handlers[0..self.blur_handler_count]) |*slot| {
+            slot.* = null;
+        }
+        self.blur_handler_count = 0;
+        self.blur_handlers_invoked_this_transition = false;
+    }
+
+    /// Look up a blur handler by field ID.
+    fn getBlurHandler(self: *const Self, id: []const u8) ?HandlerRef {
+        // Only search slots that are actually populated
+        for (self.blur_handlers[0..self.blur_handler_count]) |slot| {
+            if (slot) |entry| {
+                if (std.mem.eql(u8, entry.id, id)) {
+                    return entry.handler;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Invoke blur handlers for any currently focused text widgets.
+    /// Called before focus changes to notify the old focused element.
+    ///
+    /// The guard (`blur_handlers_invoked_this_frame`) prevents double invocation within
+    /// a single focus transition. For example, when `blurAll()` is called, it invokes
+    /// this function and then calls `widgets.blurAll()`. Without the guard, nested calls
+    /// could fire handlers twice. The guard is reset after each complete focus transition
+    /// in `syncWidgetFocus()` and `blurAll()`, allowing multiple focus changes per frame.
+    fn invokeBlurHandlersForFocusedWidgets(self: *Self) void {
+        // Guard against double invocation within a single focus transition
+        if (self.blur_handlers_invoked_this_transition) return;
+        self.blur_handlers_invoked_this_transition = true;
+
+        // Check TextInputs
+        var ti_it = self.widgets.text_inputs.iterator();
+        while (ti_it.next()) |entry| {
+            if (entry.value_ptr.*.isFocused()) {
+                if (self.getBlurHandler(entry.key_ptr.*)) |handler| {
+                    handler.invoke(self);
+                }
+            }
+        }
+        // Check TextAreas
+        var ta_it = self.widgets.text_areas.iterator();
+        while (ta_it.next()) |entry| {
+            if (entry.value_ptr.*.isFocused()) {
+                if (self.getBlurHandler(entry.key_ptr.*)) |handler| {
+                    handler.invoke(self);
+                }
+            }
+        }
+        // Check CodeEditors
+        var ce_it = self.widgets.code_editors.iterator();
+        while (ce_it.next()) |entry| {
+            if (entry.value_ptr.*.isFocused()) {
+                if (self.getBlurHandler(entry.key_ptr.*)) |handler| {
+                    handler.invoke(self);
+                }
+            }
         }
     }
 

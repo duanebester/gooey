@@ -24,6 +24,7 @@
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
+const HandlerRef = ui.HandlerRef;
 const layout_mod = @import("../layout/layout.zig");
 const LayoutId = layout_mod.LayoutId;
 
@@ -142,6 +143,12 @@ pub const CodeEditor = struct {
     tab_stop: bool = true,
 
     // =========================================================================
+    // Handlers
+    // =========================================================================
+
+    on_blur_handler: ?HandlerRef = null,
+
+    // =========================================================================
     // Accessibility overrides
     // =========================================================================
 
@@ -228,6 +235,7 @@ pub const CodeEditor = struct {
                 .encoding = self.encoding,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
+                .on_blur_handler = self.on_blur_handler,
             }),
         });
     }

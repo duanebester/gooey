@@ -264,6 +264,9 @@ pub const InputStyle = struct {
     // Binding
     bind: ?*[]const u8 = null,
 
+    // Handlers
+    on_blur_handler: ?HandlerRef = null,
+
     // Focus navigation
     tab_index: i32 = 0,
     tab_stop: bool = true,
@@ -291,6 +294,9 @@ pub const InputStyle = struct {
 pub const TextAreaStyle = struct {
     placeholder: []const u8 = "",
     bind: ?*[]const u8 = null,
+
+    // Handlers
+    on_blur_handler: ?HandlerRef = null,
 
     // Focus
     tab_index: i32 = 0,
@@ -325,6 +331,9 @@ pub const TextAreaStyle = struct {
 pub const CodeEditorStyle = struct {
     placeholder: []const u8 = "",
     bind: ?*[]const u8 = null,
+
+    // Handlers
+    on_blur_handler: ?HandlerRef = null,
 
     // Focus
     tab_index: i32 = 0,

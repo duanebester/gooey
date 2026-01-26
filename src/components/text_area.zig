@@ -9,6 +9,7 @@
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
+const HandlerRef = ui.HandlerRef;
 const layout_mod = @import("../layout/layout.zig");
 const LayoutId = layout_mod.LayoutId;
 
@@ -47,6 +48,9 @@ pub const TextArea = struct {
     // Focus navigation
     tab_index: i32 = 0,
     tab_stop: bool = true,
+
+    // Handlers
+    on_blur_handler: ?HandlerRef = null,
 
     // Accessibility overrides
     accessible_name: ?[]const u8 = null, // Label for screen readers
@@ -102,6 +106,7 @@ pub const TextArea = struct {
                 .scrollbar_thumb_color = scrollbar_thumb_color,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
+                .on_blur_handler = self.on_blur_handler,
             }),
         });
     }

@@ -47,6 +47,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     gooey.beginFrame();
 
+    // Clear blur handlers from previous frame
+    gooey.clearBlurHandlers();
+
     // Reset builder state
     builder.id_counter = 0;
     builder.pending_inputs.clearRetainingCapacity();
@@ -99,6 +102,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Canvas draw orders are reserved during this pass for correct z-ordering
     try renderCommands(gooey, @constCast(builder), commands);
 
+    // Register blur handlers from pending items
+    registerBlurHandlers(gooey, builder);
+
     // Render text inputs
     try renderTextInputs(gooey, builder);
 
@@ -129,6 +135,28 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 // =============================================================================
 // Internal Render Helpers
 // =============================================================================
+
+/// Register blur handlers from pending items
+fn registerBlurHandlers(gooey: *Gooey, builder: *const Builder) void {
+    // Register handlers from pending text inputs
+    for (builder.pending_inputs.items) |pending| {
+        if (pending.on_blur_handler) |handler| {
+            gooey.registerBlurHandler(pending.id, handler);
+        }
+    }
+    // Register handlers from pending text areas
+    for (builder.pending_text_areas.items) |pending| {
+        if (pending.on_blur_handler) |handler| {
+            gooey.registerBlurHandler(pending.id, handler);
+        }
+    }
+    // Register handlers from pending code editors
+    for (builder.pending_code_editors.items) |pending| {
+        if (pending.on_blur_handler) |handler| {
+            gooey.registerBlurHandler(pending.id, handler);
+        }
+    }
+}
 
 /// Render all layout commands
 fn renderCommands(gooey: *Gooey, builder: *Builder, commands: []const layout_mod.RenderCommand) !void {

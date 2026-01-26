@@ -205,6 +205,7 @@ pub const Builder = struct {
         style: InputStyle,
         inner_width: f32,
         inner_height: f32,
+        on_blur_handler: ?HandlerRef = null,
     };
 
     const PendingTextArea = struct {
@@ -213,6 +214,7 @@ pub const Builder = struct {
         style: TextAreaStyle,
         inner_width: f32,
         inner_height: f32,
+        on_blur_handler: ?HandlerRef = null,
     };
 
     pub const PendingCodeEditor = struct {
@@ -221,6 +223,7 @@ pub const Builder = struct {
         style: CodeEditorStyle,
         inner_width: f32,
         inner_height: f32,
+        on_blur_handler: ?HandlerRef = null,
     };
 
     pub const PendingScroll = struct {
@@ -872,6 +875,10 @@ pub const Builder = struct {
     pub fn scroll(self: *Self, id: []const u8, style: ScrollStyle, children: anytype) void {
         const layout_id = LayoutId.fromString(id);
 
+        // Push dispatch node for hit testing (must match layout structure)
+        _ = self.dispatch.pushNode();
+        self.dispatch.setLayoutId(layout_id.id);
+
         // Get scroll offset from retained widget
         var scroll_offset_x: f32 = 0;
         var scroll_offset_y: f32 = 0;
@@ -988,6 +995,9 @@ pub const Builder = struct {
 
         // Add to hashmap for O(1) lookup by layout_id
         self.pending_scrolls_by_layout_id.put(self.allocator, layout_id.id, index) catch {};
+
+        // Pop dispatch node (matches pushNode at function start)
+        self.dispatch.popNode();
     }
 
     /// Find a pending scroll by its layout ID (for rendering scrollbars inline with commands)
@@ -1989,6 +1999,7 @@ pub const Builder = struct {
             .style = inp.style,
             .inner_width = inner_width,
             .inner_height = inner_height,
+            .on_blur_handler = inp.style.on_blur_handler,
         }) catch {};
 
         // Register focus with FocusManager
@@ -2063,6 +2074,7 @@ pub const Builder = struct {
             .style = ta.style,
             .inner_width = inner_width,
             .inner_height = inner_height,
+            .on_blur_handler = ta.style.on_blur_handler,
         }) catch {};
 
         // Register focus with FocusManager
@@ -2140,6 +2152,7 @@ pub const Builder = struct {
             .style = ce.style,
             .inner_width = inner_width,
             .inner_height = inner_height,
+            .on_blur_handler = ce.style.on_blur_handler,
         }) catch {};
 
         // Register focus with FocusManager
