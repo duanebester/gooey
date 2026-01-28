@@ -141,6 +141,26 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_charts_tests.step);
 
         // =====================================================================
+        // Layout Benchmarks
+        // =====================================================================
+
+        const bench_exe = b.addExecutable(.{
+            .name = "layout-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/layout/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        const bench_step = b.step("bench", "Run layout engine benchmarks");
+        const bench_run = b.addRunArtifact(bench_exe);
+        bench_step.dependOn(&bench_run.step);
+
+        // =====================================================================
         // Hot Reload Watcher
         // =====================================================================
 

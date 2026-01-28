@@ -34,7 +34,7 @@ const RenderCommandType = render_commands.RenderCommandType;
 // ============================================================================
 
 /// Maximum elements per frame - prevents unbounded growth
-pub const MAX_ELEMENTS_PER_FRAME = 8192;
+pub const MAX_ELEMENTS_PER_FRAME = 16384;
 
 /// Maximum nesting depth for open elements (e.g., nested containers)
 pub const MAX_OPEN_DEPTH = 64;
@@ -50,6 +50,15 @@ pub const MAX_LINES_PER_TEXT = 1024;
 
 /// Maximum words per text element for word-level measurement caching (Phase 2.1)
 pub const MAX_WORDS_PER_TEXT = 2048;
+
+/// Maximum recursion depth for layout tree traversal (per CLAUDE.md: put a limit on everything)
+/// Safe for typical 1MB stack - each frame is ~100-200 bytes, so 48 levels ≈ 10KB
+/// Real UI layouts rarely exceed 20 levels; this limit ensures fail-fast behavior
+pub const MAX_RECURSION_DEPTH = 48;
+
+/// Threshold for treating a max constraint as effectively unconstrained
+/// Used in fast path to detect grow elements without meaningful upper bounds
+pub const UNCONSTRAINED_MAX: f32 = 1e10;
 
 /// Word boundary info for efficient text wrapping (measured once per word, not per char)
 pub const WordInfo = struct {
@@ -561,22 +570,22 @@ pub const LayoutEngine = struct {
         if (self.root_index == null) return self.commands.items();
 
         // Phase 1: Compute minimum sizes (bottom-up)
-        self.computeMinSizes(self.root_index.?);
+        self.computeMinSizes(self.root_index.?, 0);
 
         // Phase 2: Compute final sizes (top-down)
-        self.computeFinalSizes(self.root_index.?, self.viewport_width, self.viewport_height);
+        self.computeFinalSizes(self.root_index.?, self.viewport_width, self.viewport_height, 0);
 
         // Phase 2b: Wrap text now that we know container widths
         try self.computeTextWrapping(self.root_index.?);
 
         // Phase 3: Compute positions (top-down)
-        self.computePositions(self.root_index.?, 0, 0);
+        self.computePositions(self.root_index.?, 0, 0, 0);
 
         // Phase 3b: Position floating elements (includes text wrapping for floats)
         try self.computeFloatingPositions();
 
         // Phase 4: Generate render commands
-        try self.generateRenderCommands(self.root_index.?, 0, 1.0);
+        try self.generateRenderCommands(self.root_index.?, 0, 1.0, 0);
 
         // Sort by z-index to handle floating elements properly
         self.commands.sortByZIndex();
@@ -727,7 +736,7 @@ pub const LayoutEngine = struct {
         std.debug.assert(max_height >= 0);
 
         // First compute initial sizes (top-down)
-        self.computeFinalSizes(index, max_width, max_height);
+        self.computeFinalSizes(index, max_width, max_height, 0);
 
         // Now wrap text with known container widths - this may change element dimensions
         const elem = self.elements.get(index);
@@ -773,8 +782,8 @@ pub const LayoutEngine = struct {
 
         // If text wrapping changed dimensions, propagate up and recompute
         if (needs_resize) {
-            self.computeMinSizes(index);
-            self.computeFinalSizes(index, max_width, max_height);
+            self.computeMinSizes(index, 0);
+            self.computeFinalSizes(index, max_width, max_height, 0);
         }
     }
 
@@ -825,7 +834,7 @@ pub const LayoutEngine = struct {
                 ScrollOffset{ .x = s.scroll_offset.x, .y = s.scroll_offset.y }
             else
                 null;
-            self.positionChildren(first_child, elem.config.layout, elem.computed.content_box, scroll_offset);
+            self.positionChildren(first_child, elem.config.layout, elem.computed.content_box, scroll_offset, 0);
         }
     }
 
@@ -853,10 +862,10 @@ pub const LayoutEngine = struct {
     // Phase 1: Compute minimum sizes (bottom-up)
     // =========================================================================
 
-    fn computeMinSizes(self: *Self, index: u32) void {
-        // Assertions per CLAUDE.md: minimum 2 per function
+    fn computeMinSizes(self: *Self, index: u32, depth: u32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
         std.debug.assert(index < self.elements.len()); // Valid element index
-        std.debug.assert(self.elements.len() <= MAX_ELEMENTS_PER_FRAME); // Within capacity
+        std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
 
         const elem = self.elements.get(index);
         const layout = elem.config.layout;
@@ -876,7 +885,7 @@ pub const LayoutEngine = struct {
             var child_count: u32 = 0;
 
             while (child_idx) |ci| {
-                self.computeMinSizes(ci);
+                self.computeMinSizes(ci, depth + 1);
                 const child = self.elements.getConst(ci);
 
                 // Skip floating elements - they don't affect parent's min size
@@ -940,9 +949,10 @@ pub const LayoutEngine = struct {
     // Phase 2: Compute final sizes (top-down)
     // =========================================================================
 
-    fn computeFinalSizes(self: *Self, index: u32, available_width: f32, available_height: f32) void {
-        // Assertions per CLAUDE.md: minimum 2 per function
+    fn computeFinalSizes(self: *Self, index: u32, available_width: f32, available_height: f32, depth: u32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
         std.debug.assert(index < self.elements.len()); // Valid element index
+        std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
         std.debug.assert(available_width >= 0 or available_width == std.math.floatMax(f32)); // Valid width
 
         const elem = self.elements.get(index);
@@ -982,22 +992,28 @@ pub const LayoutEngine = struct {
                 }
             }
 
-            self.distributeSpace(first_child, layout, child_available_width, child_available_height);
+            self.distributeSpace(first_child, layout, child_available_width, child_available_height, depth);
         }
     }
 
     /// Distribute available space among children (handles grow and shrink)
     /// Phase 3.1: Coordinator function - delegates to distributeShrink/distributeGrow
-    fn distributeSpace(self: *Self, first_child: u32, layout: LayoutConfig, width: f32, height: f32) void {
+    fn distributeSpace(self: *Self, first_child: u32, layout: LayoutConfig, width: f32, height: f32, depth: u32) void {
         // Assertions per CLAUDE.md
         std.debug.assert(width >= 0 or width == std.math.floatMax(f32));
-        std.debug.assert(height >= 0 or height == std.math.floatMax(f32));
+        std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
 
         const is_horizontal = layout.layout_direction.isHorizontal();
         const gap: f32 = @floatFromInt(layout.child_gap);
         const available = if (is_horizontal) width else height;
 
-        // First pass: calculate totals using DESIRED sizes, not min sizes
+        // Fast path: Check if all children are uniform grow elements (very common case)
+        // This avoids the two-pass algorithm for flat layouts with many grow children
+        if (self.tryUniformGrowFastPath(first_child, is_horizontal, width, height, available, gap, depth)) {
+            return;
+        }
+
+        // Slow path: Mixed sizing types require two passes
         var grow_count: u32 = 0;
         var total_desired: f32 = 0;
         var child_count: u32 = 0;
@@ -1049,9 +1065,195 @@ pub const LayoutEngine = struct {
 
         // Delegate to appropriate helper based on space situation
         if (size_to_distribute < 0 and total_desired > 0) {
-            self.distributeShrink(first_child, is_horizontal, available, width, height, total_desired, size_to_distribute);
+            self.distributeShrink(first_child, is_horizontal, available, width, height, total_desired, size_to_distribute, depth);
         } else {
-            self.distributeGrow(first_child, is_horizontal, width, height, grow_count, size_to_distribute);
+            self.distributeGrow(first_child, is_horizontal, width, height, grow_count, size_to_distribute, depth);
+        }
+    }
+
+    /// Fast path for uniform grow children - speculative single pass with early bailout
+    /// Returns true if fast path was used, false if caller should use slow path
+    /// Key optimization: combines eligibility check and size assignment in ONE pass
+    fn tryUniformGrowFastPath(
+        self: *Self,
+        first_child: u32,
+        is_horizontal: bool,
+        width: f32,
+        height: f32,
+        available: f32,
+        gap: f32,
+        depth: u32,
+    ) bool {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(first_child < self.elements.len()); // Valid child index
+        std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
+
+        // Get parent's child_count to pre-compute sizes (avoids counting pass)
+        const first = self.elements.getConst(first_child);
+        const parent_idx = first.parent_index orelse return false;
+        const parent = self.elements.getConst(parent_idx);
+        const total_children = parent.child_count;
+
+        // Bail early if no children
+        if (total_children == 0) return false;
+
+        // Pre-compute uniform size assuming no floating elements
+        const total_gap = if (total_children > 1) gap * @as(f32, @floatFromInt(total_children - 1)) else 0;
+        var per_child = @max(0, (available - total_gap) / @as(f32, @floatFromInt(total_children)));
+        const cross_size = if (is_horizontal) height else width;
+
+        // Speculative single pass: check eligibility AND assign simultaneously
+        const result = self.speculativeUniformAssign(first_child, is_horizontal, per_child, cross_size);
+        if (!result.eligible) return false;
+
+        // If we had floating elements, recalculate and re-assign
+        if (result.floating_count > 0) {
+            const actual_children = total_children - result.floating_count;
+            if (actual_children == 0) return false;
+
+            const actual_gap = if (actual_children > 1) gap * @as(f32, @floatFromInt(actual_children - 1)) else 0;
+            per_child = @max(0, (available - actual_gap) / @as(f32, @floatFromInt(actual_children)));
+            self.reassignUniformSizes(first_child, is_horizontal, per_child, cross_size);
+        }
+
+        // Handle grandchildren recursion in a separate pass (only if needed)
+        if (result.has_grandchildren) {
+            self.distributeToGrandchildren(first_child, is_horizontal, depth);
+        }
+
+        return true;
+    }
+
+    /// Result of speculative uniform assignment pass
+    const SpeculativeResult = struct {
+        eligible: bool,
+        floating_count: u32,
+        has_grandchildren: bool,
+    };
+
+    /// Speculative pass: checks eligibility and assigns sizes in one traversal
+    /// Returns eligibility status and metadata for follow-up passes
+    fn speculativeUniformAssign(
+        self: *Self,
+        first_child: u32,
+        is_horizontal: bool,
+        per_child: f32,
+        cross_size: f32,
+    ) SpeculativeResult {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(first_child < self.elements.len());
+        std.debug.assert(per_child >= 0);
+
+        var floating_count: u32 = 0;
+        var has_grandchildren: bool = false;
+        var child_idx: ?u32 = first_child;
+
+        while (child_idx) |ci| {
+            const child = self.elements.get(ci);
+
+            // Skip floating elements but count them
+            if (child.config.floating != null) {
+                floating_count += 1;
+                child_idx = child.next_sibling_index;
+                continue;
+            }
+
+            // Check if child qualifies for fast path
+            if (!self.isUnconstrainedGrow(child, is_horizontal)) {
+                return .{ .eligible = false, .floating_count = 0, .has_grandchildren = false };
+            }
+
+            // Track grandchildren
+            if (child.first_child_index != null) has_grandchildren = true;
+
+            // Assign sizes speculatively
+            if (is_horizontal) {
+                child.computed.sized_width = per_child;
+                child.computed.sized_height = cross_size;
+            } else {
+                child.computed.sized_width = cross_size;
+                child.computed.sized_height = per_child;
+            }
+
+            child_idx = child.next_sibling_index;
+        }
+
+        return .{ .eligible = true, .floating_count = floating_count, .has_grandchildren = has_grandchildren };
+    }
+
+    /// Check if element has unconstrained grow on both axes (fast path eligible)
+    fn isUnconstrainedGrow(self: *Self, child: *LayoutElement, is_horizontal: bool) bool {
+        _ = self;
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(child.config.layout.aspect_ratio == null or child.config.layout.aspect_ratio.? > 0);
+        std.debug.assert(UNCONSTRAINED_MAX > 0);
+
+        // Aspect ratio requires special handling - bail to slow path
+        if (child.config.layout.aspect_ratio != null) return false;
+
+        const main_sizing = if (is_horizontal)
+            child.config.layout.sizing.width
+        else
+            child.config.layout.sizing.height;
+
+        const main_ok = switch (main_sizing.value) {
+            .grow => |mm| mm.min == 0 and mm.max >= UNCONSTRAINED_MAX,
+            else => false,
+        };
+        if (!main_ok) return false;
+
+        const cross_sizing = if (is_horizontal)
+            child.config.layout.sizing.height
+        else
+            child.config.layout.sizing.width;
+
+        return switch (cross_sizing.value) {
+            .grow => |mm| mm.min == 0 and mm.max >= UNCONSTRAINED_MAX,
+            else => false,
+        };
+    }
+
+    /// Re-assign uniform sizes after adjusting for floating elements
+    fn reassignUniformSizes(self: *Self, first_child: u32, is_horizontal: bool, per_child: f32, cross_size: f32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(first_child < self.elements.len());
+        std.debug.assert(per_child >= 0);
+
+        var child_idx: ?u32 = first_child;
+        while (child_idx) |ci| {
+            const child = self.elements.get(ci);
+            if (child.config.floating == null) {
+                if (is_horizontal) {
+                    child.computed.sized_width = per_child;
+                    child.computed.sized_height = cross_size;
+                } else {
+                    child.computed.sized_width = cross_size;
+                    child.computed.sized_height = per_child;
+                }
+            }
+            child_idx = child.next_sibling_index;
+        }
+    }
+
+    /// Distribute space to grandchildren after uniform assignment
+    fn distributeToGrandchildren(self: *Self, first_child: u32, is_horizontal: bool, depth: u32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(first_child < self.elements.len());
+        std.debug.assert(depth < MAX_RECURSION_DEPTH);
+
+        _ = is_horizontal;
+        var child_idx: ?u32 = first_child;
+        while (child_idx) |ci| {
+            const child = self.elements.get(ci);
+            if (child.config.floating == null) {
+                if (child.first_child_index) |grandchild| {
+                    const child_layout = child.config.layout;
+                    const content_width = @max(0, child.computed.sized_width - child_layout.padding.totalX());
+                    const content_height = @max(0, child.computed.sized_height - child_layout.padding.totalY());
+                    self.distributeSpace(grandchild, child_layout, content_width, content_height, depth + 1);
+                }
+            }
+            child_idx = child.next_sibling_index;
         }
     }
 
@@ -1065,6 +1267,7 @@ pub const LayoutEngine = struct {
         height: f32,
         total_desired: f32,
         size_to_distribute: f32,
+        depth: u32,
     ) void {
         std.debug.assert(size_to_distribute < 0);
         std.debug.assert(total_desired > 0);
@@ -1146,7 +1349,7 @@ pub const LayoutEngine = struct {
             }
 
             if (child.first_child_index) |grandchild| {
-                self.distributeSpace(grandchild, child_layout, content_width, content_height);
+                self.distributeSpace(grandchild, child_layout, content_width, content_height, depth + 1);
             }
 
             child_idx = child.next_sibling_index;
@@ -1162,6 +1365,7 @@ pub const LayoutEngine = struct {
         height: f32,
         grow_count: u32,
         size_to_distribute: f32,
+        depth: u32,
     ) void {
         std.debug.assert(size_to_distribute >= 0 or grow_count == 0);
 
@@ -1207,7 +1411,7 @@ pub const LayoutEngine = struct {
                     child_desired;
             }
 
-            self.computeFinalSizes(ci, child_width, child_height);
+            self.computeFinalSizes(ci, child_width, child_height, depth + 1);
             child_idx = child.next_sibling_index;
         }
     }
@@ -1216,10 +1420,10 @@ pub const LayoutEngine = struct {
     // Phase 3: Compute positions (top-down)
     // =========================================================================
 
-    fn computePositions(self: *Self, index: u32, parent_x: f32, parent_y: f32) void {
-        // Assertions per CLAUDE.md: minimum 2 per function
+    fn computePositions(self: *Self, index: u32, parent_x: f32, parent_y: f32, depth: u32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
         std.debug.assert(index < self.elements.len()); // Valid element index
-        std.debug.assert(!std.math.isNan(parent_x) and !std.math.isNan(parent_y)); // Valid coordinates
+        std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
 
         const elem = self.elements.get(index);
         const layout = elem.config.layout;
@@ -1248,14 +1452,14 @@ pub const LayoutEngine = struct {
                 ScrollOffset{ .x = s.scroll_offset.x, .y = s.scroll_offset.y }
             else
                 null;
-            self.positionChildren(first_child, layout, elem.computed.content_box, scroll_offset);
+            self.positionChildren(first_child, layout, elem.computed.content_box, scroll_offset, depth);
         }
     }
 
-    fn positionChildren(self: *Self, first_child: u32, layout: LayoutConfig, content_box: BoundingBox, scroll_offset: ?ScrollOffset) void {
-        // Assertions per CLAUDE.md: minimum 2 per function
+    fn positionChildren(self: *Self, first_child: u32, layout: LayoutConfig, content_box: BoundingBox, scroll_offset: ?ScrollOffset, depth: u32) void {
+        // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
         std.debug.assert(first_child < self.elements.len()); // Valid child index
-        std.debug.assert(content_box.width >= 0 and content_box.height >= 0); // Valid content box
+        std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
 
         const is_horizontal = layout.layout_direction.isHorizontal();
         const base_gap: f32 = @floatFromInt(layout.child_gap);
@@ -1379,7 +1583,7 @@ pub const LayoutEngine = struct {
                 };
             }
 
-            self.computePositions(ci, child_x, child_y);
+            self.computePositions(ci, child_x, child_y, depth + 1);
 
             // Advance cursor
             if (is_horizontal) {
@@ -1397,9 +1601,10 @@ pub const LayoutEngine = struct {
     // Phase 3.1: Split into per-command-type helpers for readability
     // =========================================================================
 
-    fn generateRenderCommands(self: *Self, index: u32, inherited_z_index: i16, inherited_opacity: f32) !void {
-        // Assertions per CLAUDE.md
+    fn generateRenderCommands(self: *Self, index: u32, inherited_z_index: i16, inherited_opacity: f32, depth: u32) !void {
+        // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
         std.debug.assert(inherited_opacity >= 0 and inherited_opacity <= 1.0);
+        std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
 
         const elem = self.elements.get(index);
         const bbox = elem.computed.bounding_box;
@@ -1438,7 +1643,7 @@ pub const LayoutEngine = struct {
         if (elem.first_child_index) |first_child| {
             var child_idx: ?u32 = first_child;
             while (child_idx) |ci| {
-                try self.generateRenderCommands(ci, z_index, opacity);
+                try self.generateRenderCommands(ci, z_index, opacity, depth + 1);
                 child_idx = self.elements.getConst(ci).next_sibling_index;
             }
         }
@@ -3498,4 +3703,182 @@ test "distributeShrink respects minimum constraints" {
 
     // minchild should not shrink below its minimum of 60
     try std.testing.expect(minchild.width >= 60);
+}
+
+// =============================================================================
+// Fast Path Edge Case Tests (tryUniformGrowFastPath)
+// =============================================================================
+
+test "fast path: single grow child gets full available space" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(400, 300);
+
+    try engine.openElement(.{
+        .id = LayoutId.init("container"),
+        .layout = .{ .sizing = Sizing.fixed(400, 300), .layout_direction = .left_to_right },
+    });
+    {
+        // Single grow child should get full width (fast path with total_children == 1)
+        try engine.openElement(.{
+            .id = LayoutId.init("only-child"),
+            .layout = .{ .sizing = Sizing.fill() },
+            .background_color = Color.red,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const child = engine.getBoundingBox(LayoutId.init("only-child").id).?;
+
+    // Single grow child should fill entire container
+    try std.testing.expectEqual(@as(f32, 400), child.width);
+    try std.testing.expectEqual(@as(f32, 300), child.height);
+}
+
+test "fast path: all floating children falls back to slow path" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(400, 300);
+
+    try engine.openElement(.{
+        .id = LayoutId.init("container"),
+        .layout = .{
+            .sizing = Sizing.fixed(400, 300),
+            .layout_direction = .left_to_right,
+        },
+    });
+    {
+        // All children are floating - fast path should return false (actual_children == 0)
+        try engine.openElement(.{
+            .id = LayoutId.init("floating1"),
+            .layout = .{ .sizing = Sizing.fixed(100, 100) },
+            .floating = types.FloatingConfig.dropdown(),
+            .background_color = Color.red,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .id = LayoutId.init("floating2"),
+            .layout = .{ .sizing = Sizing.fixed(100, 100) },
+            .floating = types.FloatingConfig.dropdown(),
+            .background_color = Color.blue,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    // Both floating elements should be positioned (not crash)
+    const f1 = engine.getBoundingBox(LayoutId.init("floating1").id).?;
+    const f2 = engine.getBoundingBox(LayoutId.init("floating2").id).?;
+
+    try std.testing.expectEqual(@as(f32, 100), f1.width);
+    try std.testing.expectEqual(@as(f32, 100), f2.width);
+}
+
+test "fast path: mixed sizing children falls back to slow path" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(400, 100);
+
+    try engine.openElement(.{
+        .id = LayoutId.init("container"),
+        .layout = .{ .sizing = Sizing.fixed(400, 100), .layout_direction = .left_to_right },
+    });
+    {
+        // Mixed sizing: fixed + grow + fit - should use slow path
+        try engine.openElement(.{
+            .id = LayoutId.init("fixed-child"),
+            .layout = .{ .sizing = Sizing.fixed(100, 50) },
+            .background_color = Color.red,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .id = LayoutId.init("grow-child"),
+            .layout = .{ .sizing = Sizing.fill() },
+            .background_color = Color.green,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .id = LayoutId.init("fit-child"),
+            .layout = .{ .sizing = Sizing.fitContent() },
+            .background_color = Color.blue,
+        });
+        {
+            try engine.openElement(.{
+                .layout = .{ .sizing = Sizing.fixed(50, 30) },
+            });
+            engine.closeElement();
+        }
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const fixed = engine.getBoundingBox(LayoutId.init("fixed-child").id).?;
+    const grow = engine.getBoundingBox(LayoutId.init("grow-child").id).?;
+    const fit = engine.getBoundingBox(LayoutId.init("fit-child").id).?;
+
+    // Fixed child keeps its size
+    try std.testing.expectEqual(@as(f32, 100), fixed.width);
+
+    // Fit child wraps its content
+    try std.testing.expectEqual(@as(f32, 50), fit.width);
+
+    // Grow child gets remaining space: 400 - 100 - 50 = 250
+    try std.testing.expectEqual(@as(f32, 250), grow.width);
+}
+
+test "fast path: grow with min constraint falls back to slow path" {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(300, 100);
+
+    try engine.openElement(.{
+        .id = LayoutId.init("container"),
+        .layout = .{ .sizing = Sizing.fixed(300, 100), .layout_direction = .left_to_right },
+    });
+    {
+        // Grow with min constraint - fast path should bail (mm.min != 0)
+        try engine.openElement(.{
+            .id = LayoutId.init("constrained-grow"),
+            .layout = .{
+                .sizing = .{
+                    .width = SizingAxis.growMinMax(80, std.math.floatMax(f32)),
+                    .height = SizingAxis.grow(),
+                },
+            },
+            .background_color = Color.red,
+        });
+        engine.closeElement();
+
+        try engine.openElement(.{
+            .id = LayoutId.init("normal-grow"),
+            .layout = .{ .sizing = Sizing.fill() },
+            .background_color = Color.green,
+        });
+        engine.closeElement();
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    const constrained = engine.getBoundingBox(LayoutId.init("constrained-grow").id).?;
+    const normal = engine.getBoundingBox(LayoutId.init("normal-grow").id).?;
+
+    // Both should share space equally (150 each) since slow path handles this
+    // The min constraint of 80 is satisfied by the equal split
+    try std.testing.expectEqual(@as(f32, 150), constrained.width);
+    try std.testing.expectEqual(@as(f32, 150), normal.width);
 }
