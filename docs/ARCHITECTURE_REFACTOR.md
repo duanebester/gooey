@@ -33,6 +33,8 @@ This document outlines a plan to refactor Gooey's architecture to:
 4. **Improve testability** - Mock implementations for all interfaces
 5. **Standardize platform code** - Consistent structure across macOS, Linux, Web
 
+**Naming Decision:** After surveying major UI frameworks (Iced, egui, GPUI, Slint, Flutter, Qt, GTK), we are **keeping `components/` and `widgets/`** as-is. `widgets/` is the dominant term in native/desktop frameworks, and `components/` is familiar to web developers. The originally proposed `primitives/` and `state/` names were rejected as too ambiguous.
+
 Note: Not every phase has been super deep dived - so there might be times to ask clarifying questions and or get confirmations. We are mostly refactoring, so we are not allowed to change or modify the code unless it's explicitly required by for the phase.
 
 ### Key Principles (from CLAUDE.md)
@@ -235,14 +237,14 @@ src/
 │
 ├── ui/                         # Layer 5: Declarative builder (unchanged)
 │
-├── primitives/                 # Layer 5: Stateless components (renamed from components/)
+├── components/                 # Layer 5: Stateless render functions (unchanged)
 │   ├── mod.zig
 │   ├── button.zig
 │   ├── checkbox.zig
 │   ├── text_input.zig
 │   └── ...
 │
-├── state/                      # Layer 5: Stateful widgets (renamed from widgets/)
+├── widgets/                    # Layer 5: Stateful widget implementations (unchanged)
 │   ├── mod.zig
 │   ├── text_input.zig
 │   ├── text_area.zig
@@ -444,11 +446,48 @@ Update `scene/mod.zig` to export these, and update `root.zig` re-exports accordi
 const input = @import("../input/events.zig");
 ```
 
-**Option A (Preferred):** Move the shared event types (`InputEvent`, etc.) from `input/events.zig` into `core/event.zig`, then have `input/` re-export from `core/`.
+**Dependency Audit Results:**
 
-**Option B:** Accept that `event.zig` is Layer 1 (uses input types) and document this exception.
+`event.zig` wraps `input.InputEvent` to add DOM-style capture/bubble phase semantics. It only uses `InputEvent` (the tagged union), not the specific event types directly. The `Event` struct with its phase tracking is really an **input event wrapper**, not a foundational type.
 
-For Option A, the dependency should flow: `core/event.zig` ← `input/mod.zig` (input re-exports from core).
+**Solution: Move `event.zig` to `input/`**
+
+The `Event` wrapper belongs with the input system, not in Layer 0:
+
+```bash
+mv src/core/event.zig src/input/event.zig
+```
+
+Update the import inside `event.zig`:
+
+```zig
+// src/input/event.zig (after move)
+const input = @import("events.zig");  // Was: "../input/events.zig"
+```
+
+Update `input/mod.zig` to export it:
+
+```zig
+// src/input/mod.zig
+pub const event = @import("event.zig");
+pub const Event = event.Event;
+pub const EventPhase = event.EventPhase;
+pub const EventResult = event.EventResult;
+```
+
+For backward compatibility, `core/mod.zig` re-exports from `input/`:
+
+```zig
+// src/core/mod.zig (backward compatibility)
+pub const event = @import("../input/event.zig");
+pub const Event = event.Event;
+pub const EventPhase = event.EventPhase;
+pub const EventResult = event.EventResult;
+```
+
+**Why not move `InputEvent` to core instead?**
+
+Moving `InputEvent` and all its constituent types (`MouseEvent`, `KeyEvent`, `ScrollEvent`, etc.) into `core/` would bloat the foundation layer with input-specific types. These are semantically input types, not geometry/math primitives.
 
 #### 1.6 Clean `core/mod.zig`
 
@@ -1237,45 +1276,39 @@ const web_imports = @import("web/imports.zig");
 
 ### Tasks
 
-#### 4.1 Rename `components/` to `primitives/`
+#### 4.1 Keep `components/` and `widgets/` (No Rename)
 
-Rationale: These are stateless render functions, not stateful components.
+**Decision:** After surveying major UI frameworks, we are keeping the existing directory names.
 
-```bash
-git mv src/components src/primitives
-```
+**Survey Results:**
 
-Update imports in `root.zig`:
+| Framework          | Language | Term          | Notes                       |
+| ------------------ | -------- | ------------- | --------------------------- |
+| **Iced**           | Rust     | `widget/`     | Flat crate with all widgets |
+| **egui**           | Rust     | `widgets/`    | Also has `containers/`      |
+| **GPUI** (Zed)     | Rust     | `elements/`   | Lower-level building blocks |
+| **gpui-component** | Rust     | Flat          | No subdirectory             |
+| **Slint**          | Rust/C++ | `widgets/`    | Organized by theme          |
+| **Flutter**        | Dart     | `widgets/`    | Everything is a Widget      |
+| **Qt**             | C++      | `widgets/`    | QWidget base class          |
+| **GTK**            | C        | `widgets/`    | GtkWidget base class        |
+| **React**          | JS       | `components/` | Community convention        |
 
-```zig
-pub const primitives = @import("primitives/mod.zig");
-pub const Button = primitives.Button;
-// ...
+**Key Insights:**
 
-// Backward compatibility alias
-pub const components = primitives;
-```
+1. **`widgets/`** is the dominant term in native/desktop frameworks (Qt, GTK, Iced, egui, Slint, Flutter)
+2. **`components/`** is familiar to anyone from the React/web ecosystem
+3. The proposed `primitives/` conflicts with "GPU primitives" and sounds lower-level than intended
+4. The proposed `state/` is too generic and could be confused with app state management
 
-#### 4.2 Rename `widgets/` to `state/`
+**Rationale for keeping current names:**
 
-Rationale: These are stateful widget implementations.
+- **`components/`** — Widely understood, especially for developers from web backgrounds
+- **`widgets/`** — Matches industry standard for native UI frameworks
 
-```bash
-git mv src/widgets src/state
-```
+The distinction between stateless render functions (`components/`) and stateful implementations (`widgets/`) is an _internal architectural concern_, not something that needs to be reflected in directory names. Users intuitively understand "components" as UI building blocks and "widgets" as interactive controls.
 
-Update imports:
-
-```zig
-pub const state = @import("state/mod.zig");
-pub const TextInputState = state.TextInputState;
-// ...
-
-// Backward compatibility alias
-pub const widgets = state;
-```
-
-#### 4.3 Add `accessibility/mod.zig`
+**No action required.** Existing imports remain valid.
 
 Currently `accessibility.zig` is the main entry point. Add a proper `mod.zig`:
 
@@ -1299,7 +1332,7 @@ pub const linux_bridge = @import("linux_bridge.zig");
 pub const web_bridge = @import("web_bridge.zig");
 ```
 
-#### 4.4 Reorganize `svg/` with Backends
+#### 4.3 Reorganize `svg/` with Backends
 
 ```bash
 mkdir -p src/svg/backends
@@ -1311,7 +1344,7 @@ rm src/svg/rasterizer_stub.zig  # Replace with NullRasterizer in interface
 
 Update `svg/rasterizer.zig` to use new paths.
 
-#### 4.5 Update `root.zig` Exports
+#### 4.4 Update `root.zig` Exports
 
 Ensure backward compatibility while exposing new structure:
 
@@ -1332,17 +1365,13 @@ pub const image = @import("image/mod.zig");
 pub const accessibility = @import("accessibility/mod.zig");
 pub const context = @import("context/mod.zig");
 pub const ui = @import("ui/mod.zig");
-pub const primitives = @import("primitives/mod.zig");
-pub const state = @import("state/mod.zig");
+pub const components = @import("components/mod.zig");
+pub const widgets = @import("widgets/mod.zig");
 pub const runtime = @import("runtime/mod.zig");
 pub const debug = @import("debug/mod.zig");
-
-// Backward compatibility aliases
-pub const components = primitives;
-pub const widgets = state;
 ```
 
-#### 4.6 Verification
+#### 4.5 Verification
 
 - [ ] All imports updated
 - [ ] Backward compatibility aliases work
@@ -1589,17 +1618,14 @@ No breaking changes to public API. Internal reorganization only.
 
 Root-level re-exports (`@import("gooey").svg`, etc.) remain unchanged.
 
-#### After Phase 4 (Module Renames)
+#### After Phase 4 (Module Reorganization)
 
-Old imports continue to work via aliases:
+No changes to `components/` or `widgets/` imports — these names are being kept as-is.
 
-```zig
-// Old (still works)
-const components = @import("gooey").components;
+The only changes in Phase 4 are internal reorganizations:
 
-// New (preferred)
-const primitives = @import("gooey").primitives;
-```
+- Adding `accessibility/mod.zig`
+- Reorganizing `svg/` backends
 
 #### After Phase 5 (Testing)
 
@@ -1640,10 +1666,12 @@ test "my feature" {
 
 **Phase 4 (Module Reorganization):**
 
-| Old                                          | New                                        |
-| -------------------------------------------- | ------------------------------------------ |
-| `@import("../components/button.zig")`        | `@import("../primitives/button.zig")`      |
-| `@import("../widgets/text_input_state.zig")` | `@import("../state/text_input_state.zig")` |
+No changes to `components/` or `widgets/` paths — keeping existing names.
+
+| Old                                      | New                                           |
+| ---------------------------------------- | --------------------------------------------- |
+| `@import("../svg/rasterizer_cg.zig")`    | `@import("../svg/backends/coregraphics.zig")` |
+| `@import("../svg/rasterizer_linux.zig")` | `@import("../svg/backends/cairo.zig")`        |
 
 #### New Interface Implementations
 
@@ -1673,7 +1701,7 @@ When adding a new platform backend:
 | Clean `core/mod.zig`             | Medium | Keep re-exports in `root.zig`                 |
 | Move files out of `core/`        | Medium | Update all imports, verify with grep          |
 | Fix `event.zig` input dependency | Medium | Option A (move types) preferred over Option B |
-| Rename directories               | Medium | Git mv preserves history, add aliases         |
+| Rename platform directories      | Medium | Git mv preserves history                      |
 | Platform restructure             | Medium | Test on all platforms before merge            |
 
 ### High Risk
@@ -1718,7 +1746,9 @@ Phases 4 and 5 can run in parallel after Phase 3 completes.
 - [ ] Move `gradient.zig` from `core/` to `scene/`
 - [ ] Move `path.zig` from `core/` to `scene/`
 - [ ] Move `svg.zig` from `core/` to `scene/`
-- [ ] Fix `event.zig` dependency on `input/events.zig`
+- [ ] Move `event.zig` from `core/` to `input/` (it's an input event wrapper)
+- [ ] Update `input/mod.zig` to export `Event`, `EventPhase`, `EventResult`
+- [ ] Add backward-compat re-exports in `core/mod.zig`
 - [ ] Clean `core/mod.zig` (remove all upward dependencies)
 - [ ] Update `root.zig` with convenience re-exports
 - [ ] Verify: `grep -r "@import.*\.\./scene" src/core/` returns empty
@@ -1757,12 +1787,10 @@ Phases 4 and 5 can run in parallel after Phase 3 completes.
 
 ### Phase 4: Module Reorganization
 
-- [ ] Rename `components/` to `primitives/`
-- [ ] Rename `widgets/` to `state/`
+- [x] **Keep `components/` and `widgets/`** (no rename — aligns with industry conventions)
 - [ ] Add `accessibility/mod.zig`
 - [ ] Reorganize `svg/` with backends/
 - [ ] Update `root.zig` exports
-- [ ] Add backward compatibility aliases
 - [ ] All tests pass
 
 ### Phase 5: Testing Infrastructure
