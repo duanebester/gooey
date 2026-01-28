@@ -1274,6 +1274,12 @@ pub const WebRenderer = struct {
                     point_cloud_offset += count;
                     batch_count += 1;
                 },
+                .colored_point_cloud => |colored_point_clouds| {
+                    // TODO: Implement colored point cloud rendering for WASM
+                    // For now, stub that skips rendering (API validation phase)
+                    if (colored_point_clouds.len == 0) continue;
+                    // Colored point clouds not yet implemented for WASM
+                },
             }
         }
 
@@ -1366,6 +1372,10 @@ pub const WebRenderer = struct {
                     if (self.point_cloud_bind_group != 0) {
                         self.renderPointCloudBatch(scene, batch_desc.start, batch_desc.count);
                     }
+                },
+                .colored_point_cloud => {
+                    // TODO: Implement colored point cloud rendering for WASM
+                    // For now, stub that skips rendering (API validation phase)
                 },
             }
         }

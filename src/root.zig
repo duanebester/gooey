@@ -52,6 +52,41 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+// =============================================================================
+// WASM-compatible logging
+// =============================================================================
+
+/// WASM-compatible log function for use with std_options.
+/// WASM executables should define in their root file:
+/// ```
+/// pub const std_options: std.Options = .{
+///     .logFn = gooey.wasmLogFn,
+/// };
+/// ```
+pub fn wasmLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    _ = scope;
+    const web_imports = @import("platform/wgpu/web/imports.zig");
+    const prefix = switch (level) {
+        .err => "[error] ",
+        .warn => "[warn] ",
+        .info => "[info] ",
+        .debug => "[debug] ",
+    };
+    var buf: [1024]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, prefix ++ format, args) catch return;
+    if (level == .err) {
+        web_imports.consoleError(msg.ptr, @intCast(msg.len));
+    } else {
+        web_imports.consoleLog(msg.ptr, @intCast(msg.len));
+    }
+}
 
 // =============================================================================
 // Module Namespaces (for explicit imports)

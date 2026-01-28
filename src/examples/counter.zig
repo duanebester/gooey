@@ -9,8 +9,15 @@
 //! - WebApp for browser support
 
 const std = @import("std");
+const builtin = @import("builtin");
 const gooey = @import("gooey");
 const platform = gooey.platform;
+
+/// WASM-compatible logging - redirect std.log to console.log via JS imports
+pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
+    .{ .logFn = gooey.wasmLogFn }
+else
+    .{};
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = gooey.Button;

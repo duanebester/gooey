@@ -3,7 +3,14 @@
 //! Simplified to debug floating dropdown behavior
 
 const std = @import("std");
+const builtin = @import("builtin");
 const gooey = @import("gooey");
+
+/// WASM-compatible logging - redirect std.log to console.log via JS imports
+pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
+    .{ .logFn = gooey.wasmLogFn }
+else
+    .{};
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;

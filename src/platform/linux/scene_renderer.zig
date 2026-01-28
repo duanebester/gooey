@@ -210,6 +210,13 @@ pub fn drawScene(
                     std.debug.print("POINT_CLOUD x{d} (stub - not rendered)\n", .{point_clouds.len});
                 }
             },
+            .colored_point_cloud => |colored_point_clouds| {
+                // TODO: Phase 6 - Implement colored point cloud GPU pipeline
+                // For now, stub that skips rendering (API validation phase)
+                if (DEBUG_BATCHES) {
+                    std.debug.print("COLORED_POINT_CLOUD x{d} (stub - not rendered)\n", .{colored_point_clouds.len});
+                }
+            },
         }
         batch_num += 1;
     }

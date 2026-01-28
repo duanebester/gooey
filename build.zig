@@ -524,6 +524,9 @@ pub fn build(b: *std.Build) void {
     gooey_wasm_module.addAnonymousImport("path_wgsl", .{
         .root_source_file = b.path("src/platform/wgpu/shaders/path.wgsl"),
     });
+    gooey_wasm_module.addAnonymousImport("solid_path_wgsl", .{
+        .root_source_file = b.path("src/platform/wgpu/shaders/path_solid.wgsl"),
+    });
     gooey_wasm_module.addAnonymousImport("polyline_wgsl", .{
         .root_source_file = b.path("src/platform/wgpu/shaders/polyline.wgsl"),
     });
