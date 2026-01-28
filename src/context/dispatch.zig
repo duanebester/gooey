@@ -188,7 +188,7 @@ pub const DispatchNode = struct {
 // Event Listeners
 // =============================================================================
 
-const event_mod = @import("../core/event.zig");
+const event_mod = @import("../input/event.zig");
 const input_mod = @import("../input/events.zig");
 
 pub const EventPhase = event_mod.EventPhase;

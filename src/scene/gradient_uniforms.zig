@@ -6,7 +6,7 @@
 //! Layout is carefully aligned for GPU float4 requirements.
 
 const std = @import("std");
-const gradient_mod = @import("../core/gradient.zig");
+const gradient_mod = @import("gradient.zig");
 const scene = @import("scene.zig");
 
 const GradientType = gradient_mod.GradientType;

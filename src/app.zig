@@ -137,8 +137,8 @@ pub fn WebApp(
         return struct {};
     }
 
-    const web_imports = @import("platform/wgpu/web/imports.zig");
-    const WebRenderer = @import("platform/wgpu/web/renderer.zig").WebRenderer;
+    const web_imports = @import("platform/web/imports.zig");
+    const WebRenderer = @import("platform/web/renderer.zig").WebRenderer;
 
     return struct {
         const Self = @This();
@@ -272,8 +272,8 @@ pub fn WebApp(
             // =========================================================
 
             // Import keyboard modules
-            const key_events_mod = @import("platform/wgpu/web/key_events.zig");
-            const text_buffer_mod = @import("platform/wgpu/web/text_buffer.zig");
+            const key_events_mod = @import("platform/web/key_events.zig");
+            const text_buffer_mod = @import("platform/web/text_buffer.zig");
 
             // 1. Process key events (navigation, shortcuts, modifiers)
             _ = key_events_mod.processEvents(struct {
@@ -290,7 +290,7 @@ pub fn WebApp(
             }.handler);
 
             // 2b. Process IME composition events (preedit text)
-            const composition_buffer_mod = @import("platform/wgpu/web/composition_buffer.zig");
+            const composition_buffer_mod = @import("platform/web/composition_buffer.zig");
             _ = composition_buffer_mod.processComposition(struct {
                 fn handler(event: InputEvent) bool {
                     return runtime.handleInputCx(&g_cx.?, on_event, event);
@@ -298,7 +298,7 @@ pub fn WebApp(
             }.handler);
 
             // 3. Process scroll events
-            const scroll_events_mod = @import("platform/wgpu/web/scroll_events.zig");
+            const scroll_events_mod = @import("platform/web/scroll_events.zig");
             _ = scroll_events_mod.processEvents(struct {
                 fn handler(event: InputEvent) bool {
                     return runtime.handleInputCx(&g_cx.?, on_event, event);
@@ -306,7 +306,7 @@ pub fn WebApp(
             }.handler);
 
             // 4. Process mouse events (new ring buffer approach)
-            const mouse_events_mod = @import("platform/wgpu/web/mouse_events.zig");
+            const mouse_events_mod = @import("platform/web/mouse_events.zig");
             _ = mouse_events_mod.processEvents(struct {
                 fn handler(event: InputEvent) bool {
                     return runtime.handleInputCx(&g_cx.?, on_event, event);

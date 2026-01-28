@@ -4,7 +4,7 @@
 //! This is a simple append buffer for text input from JavaScript.
 //! Supports emoji, CJK, dead keys, IME composition - any valid UTF-8.
 
-const input = @import("../../../input/events.zig");
+const input = @import("../../input/events.zig");
 
 pub const BUFFER_SIZE = 256; // Handles most input; long paste can chunk
 

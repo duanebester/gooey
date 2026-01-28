@@ -8,7 +8,7 @@
 //! from rendering internals.
 
 const std = @import("std");
-const scene = @import("../scene/mod.zig");
+const scene = @import("mod.zig");
 const layout_types = @import("../layout/types.zig");
 const render_commands = @import("../layout/render_commands.zig");
 

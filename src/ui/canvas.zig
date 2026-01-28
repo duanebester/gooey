@@ -32,8 +32,8 @@ const builtin = @import("builtin");
 
 // Internal imports
 const scene_mod = @import("../scene/mod.zig");
-const path_mod = @import("../core/path.zig");
-const gradient_mod = @import("../core/gradient.zig");
+const path_mod = @import("../scene/path.zig");
+const gradient_mod = @import("../scene/gradient.zig");
 const styles = @import("styles.zig");
 const builder_mod = @import("builder.zig");
 

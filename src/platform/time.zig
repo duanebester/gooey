@@ -13,7 +13,7 @@ pub const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 /// Works on both native platforms (via std.time) and WASM (via JS Date.now()).
 pub fn milliTimestamp() i64 {
     if (is_wasm) {
-        const web_imports = @import("wgpu/web/imports.zig");
+        const web_imports = @import("web/imports.zig");
         return @intFromFloat(web_imports.getTimestampMillis());
     } else {
         return std.time.milliTimestamp();

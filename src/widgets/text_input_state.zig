@@ -29,7 +29,7 @@ const platform = @import("../platform/mod.zig");
 const clipboard = if (builtin.os.tag == .macos)
     @import("../platform/mac/clipboard.zig")
 else if (builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
-    @import("../platform/wgpu/web/clipboard.zig")
+    @import("../platform/web/clipboard.zig")
 else if (builtin.os.tag == .linux)
     @import("../platform/linux/clipboard.zig")
 else
@@ -53,7 +53,7 @@ const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
 const element_types = @import("../core/element_types.zig");
-const event = @import("../core/event.zig");
+const event = @import("../input/event.zig");
 const geometry = @import("../core/geometry.zig");
 
 const ElementId = element_types.ElementId;

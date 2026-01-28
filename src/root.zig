@@ -72,7 +72,7 @@ pub fn wasmLogFn(
     args: anytype,
 ) void {
     _ = scope;
-    const web_imports = @import("platform/wgpu/web/imports.zig");
+    const web_imports = @import("platform/web/imports.zig");
     const prefix = switch (level) {
         .err => "[error] ",
         .warn => "[warn] ",
@@ -181,23 +181,23 @@ pub const Edges = core.Edges;
 pub const Corners = core.Corners;
 pub const Pixels = core.Pixels;
 
-// Input events (types from core for convenience)
-pub const InputEvent = core.InputEvent;
-pub const KeyEvent = core.KeyEvent;
-pub const KeyCode = core.KeyCode;
-pub const MouseEvent = core.MouseEvent;
-pub const MouseButton = core.MouseButton;
-pub const Modifiers = core.Modifiers;
+// Input events (from input module)
+pub const InputEvent = input.InputEvent;
+pub const KeyEvent = input.KeyEvent;
+pub const KeyCode = input.KeyCode;
+pub const MouseEvent = input.MouseEvent;
+pub const MouseButton = input.MouseButton;
+pub const Modifiers = input.Modifiers;
 
-// Scene primitives
-pub const Scene = core.Scene;
-pub const Quad = core.Quad;
-pub const Shadow = core.Shadow;
-pub const Hsla = core.Hsla;
-pub const GlyphInstance = core.GlyphInstance;
+// Scene primitives (from scene module)
+pub const Scene = scene.Scene;
+pub const Quad = scene.Quad;
+pub const Shadow = scene.Shadow;
+pub const Hsla = scene.Hsla;
+pub const GlyphInstance = scene.GlyphInstance;
 
-// SVG support
-pub const svg = core.svg;
+// SVG support (from scene module)
+pub const svg = scene.svg;
 
 // Image support
 pub const ImageAtlas = image.ImageAtlas;
@@ -207,7 +207,7 @@ pub const ObjectFit = image.ObjectFit;
 
 // WASM async image loader (only available on WASM targets)
 pub const wasm_image_loader = if (platform.is_wasm)
-    @import("platform/wgpu/web/image_loader.zig")
+    @import("platform/web/image_loader.zig")
 else
     struct {
         pub const DecodedImage = struct {
@@ -227,20 +227,20 @@ else
         }
     };
 
-// Render bridge
-pub const render_bridge = core.render_bridge;
+// Render bridge (from scene module)
+pub const render_bridge = scene.render_bridge;
 
-// Event system
-pub const Event = core.Event;
-pub const EventPhase = core.EventPhase;
-pub const EventResult = core.EventResult;
+// Event system (from input module)
+pub const Event = input.Event;
+pub const EventPhase = input.EventPhase;
+pub const EventResult = input.EventResult;
 
 // Element types
 pub const ElementId = core.ElementId;
 
-// Gooey context
-pub const Gooey = core.Gooey;
-pub const WidgetStore = core.WidgetStore;
+// Gooey context (from context module)
+pub const Gooey = context.Gooey;
+pub const WidgetStore = context.WidgetStore;
 
 // Layout (commonly used types)
 pub const LayoutEngine = layout.LayoutEngine;
@@ -271,11 +271,11 @@ pub const TreeNode = widgets.TreeNode;
 pub const TreeEntry = widgets.TreeEntry;
 pub const TreeLineChar = widgets.TreeLineChar;
 
-// Focus system
-pub const FocusId = core.FocusId;
-pub const FocusHandle = core.FocusHandle;
-pub const FocusManager = core.FocusManager;
-pub const FocusEvent = core.FocusEvent;
+// Focus system (from context module)
+pub const FocusId = context.FocusId;
+pub const FocusHandle = context.FocusHandle;
+pub const FocusManager = context.FocusManager;
+pub const FocusEvent = context.FocusEvent;
 
 // =============================================================================
 // Cx API (Unified Context - Recommended)
@@ -309,15 +309,15 @@ pub const CxConfig = app.CxConfig;
 // Custom shaders
 pub const CustomShader = core.CustomShader;
 
-// Entity system
-pub const Entity = core.Entity;
-pub const EntityId = core.EntityId;
-pub const EntityMap = core.EntityMap;
-pub const EntityContext = core.EntityContext;
-pub const isView = core.isView;
+// Entity system (from context module)
+pub const Entity = context.Entity;
+pub const EntityId = context.EntityId;
+pub const EntityMap = context.EntityMap;
+pub const EntityContext = context.EntityContext;
+pub const isView = context.isView;
 
-// Handler system
-pub const HandlerRef = core.HandlerRef;
+// Handler system (from context module)
+pub const HandlerRef = context.HandlerRef;
 pub const typeId = context.typeId;
 
 // Animation system (types from animation module for convenience)

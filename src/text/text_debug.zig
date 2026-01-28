@@ -25,7 +25,7 @@ pub const platform_name: []const u8 = if (is_wasm) "web" else "native";
 /// Debug log function that works on both platforms
 fn debugLog(comptime fmt: []const u8, args: anytype) void {
     if (is_wasm) {
-        const imports = @import("../platform/wgpu/web/imports.zig");
+        const imports = @import("../platform/web/imports.zig");
         imports.log(fmt, args);
     } else {
         std.debug.print(fmt ++ "\n", args);

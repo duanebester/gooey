@@ -9,8 +9,8 @@
 //! handle events that children didn't consume (bubble).
 
 const std = @import("std");
-const input = @import("../input/events.zig");
-const element_types = @import("element_types.zig");
+const input = @import("events.zig");
+const element_types = @import("../core/element_types.zig");
 
 pub const ElementId = element_types.ElementId;
 

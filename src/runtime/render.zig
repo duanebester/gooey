@@ -18,7 +18,7 @@ const builtin = @import("builtin");
 // Core imports
 const gooey_mod = @import("../context/gooey.zig");
 const scene_mod = @import("../scene/mod.zig");
-const render_bridge = @import("../core/render_bridge.zig");
+const render_bridge = @import("../scene/render_bridge.zig");
 const layout_mod = @import("../layout/layout.zig");
 const text_mod = @import("../text/mod.zig");
 const svg_instance_mod = @import("../scene/svg_instance.zig");
@@ -33,12 +33,12 @@ const Color = @import("../ui/styles.zig").Color;
 
 // WASM async image loading
 const is_wasm = builtin.cpu.arch == .wasm32;
-const wasm_imports = if (is_wasm) @import("../platform/wgpu/web/imports.zig") else struct {
+const wasm_imports = if (is_wasm) @import("../platform/web/imports.zig") else struct {
     pub fn err(comptime _: []const u8, _: anytype) void {}
     pub fn log(comptime _: []const u8, _: anytype) void {}
 };
 const wasm_loader = if (is_wasm)
-    @import("../platform/wgpu/web/image_loader.zig")
+    @import("../platform/web/image_loader.zig")
 else
     struct {
         pub const DecodedImage = struct {

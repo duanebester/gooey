@@ -15,7 +15,7 @@ const platform = @import("../platform/mod.zig");
 const clipboard = if (builtin.os.tag == .macos)
     @import("../platform/mac/clipboard.zig")
 else if (builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
-    @import("../platform/wgpu/web/clipboard.zig")
+    @import("../platform/web/clipboard.zig")
 else
     struct {
         pub fn getText(_: std.mem.Allocator) ?[]const u8 {
@@ -30,7 +30,7 @@ const scene_mod = @import("../scene/mod.zig");
 const input_mod = @import("../input/events.zig");
 const text_mod = @import("../text/mod.zig");
 const element_types = @import("../core/element_types.zig");
-const event = @import("../core/event.zig");
+const event = @import("../input/event.zig");
 const common = @import("text_common.zig");
 const history_mod = @import("edit_history.zig");
 const EditHistory = history_mod.EditHistory;

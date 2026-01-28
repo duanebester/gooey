@@ -77,7 +77,7 @@ pub const time = @import("time.zig");
 pub const is_linux = builtin.os.tag == .linux;
 
 pub const backend = if (is_wasm)
-    @import("wgpu/web/mod.zig")
+    @import("web/mod.zig")
 else switch (builtin.os.tag) {
     .macos => @import("mac/platform.zig"),
     .linux => @import("linux/mod.zig"),
@@ -140,10 +140,10 @@ pub const linux = if (is_linux) struct {
 } else struct {};
 
 pub const web = if (is_wasm) struct {
-    pub const platform = @import("wgpu/web/platform.zig");
-    pub const window = @import("wgpu/web/window.zig");
-    pub const imports = @import("wgpu/web/imports.zig");
-    pub const file_dialog = @import("wgpu/web/file_dialog.zig");
+    pub const platform = @import("web/platform.zig");
+    pub const window = @import("web/window.zig");
+    pub const imports = @import("web/imports.zig");
+    pub const file_dialog = @import("web/file_dialog.zig");
 } else struct {};
 
 // =============================================================================

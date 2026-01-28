@@ -43,7 +43,7 @@ pub const PathMesh = path_mesh_mod.PathMesh;
 pub const PathVertex = path_mesh_mod.PathVertex;
 const gradient_uniforms_mod = @import("gradient_uniforms.zig");
 pub const GradientUniforms = gradient_uniforms_mod.GradientUniforms;
-const gradient_mod = @import("../core/gradient.zig");
+const gradient_mod = @import("gradient.zig");
 pub const LinearGradient = gradient_mod.LinearGradient;
 pub const RadialGradient = gradient_mod.RadialGradient;
 

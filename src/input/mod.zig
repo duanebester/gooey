@@ -36,6 +36,15 @@ pub const ActionTypeId = actions.ActionTypeId;
 pub const actionTypeId = actions.actionTypeId;
 
 // =============================================================================
+// Event Wrapper (capture/bubble phase support)
+// =============================================================================
+
+pub const event = @import("event.zig");
+pub const Event = event.Event;
+pub const EventPhase = event.EventPhase;
+pub const EventResult = event.EventResult;
+
+// =============================================================================
 // Tests
 // =============================================================================
 

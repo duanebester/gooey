@@ -4,7 +4,7 @@
 //! This buffer stores the composing text that appears with underlines
 //! before the user commits their input (e.g., typing Chinese pinyin).
 
-const input = @import("../../../input/events.zig");
+const input = @import("../../input/events.zig");
 
 pub const BUFFER_SIZE = 256;
 

@@ -27,7 +27,7 @@ const TextSystem = text_mod.TextSystem;
 const element_types = @import("../core/element_types.zig");
 const ElementId = element_types.ElementId;
 
-const event = @import("../core/event.zig");
+const event = @import("../input/event.zig");
 const Event = event.Event;
 const EventResult = event.EventResult;
 

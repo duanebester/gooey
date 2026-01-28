@@ -25,7 +25,7 @@
 
 const std = @import("std");
 const imports = @import("imports.zig");
-const interface_mod = @import("../../interface.zig");
+const interface_mod = @import("../interface.zig");
 
 // ============================================================================
 // Types

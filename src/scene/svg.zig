@@ -4,7 +4,7 @@
 //! Adapted from cosmic graphics for the gooey rendering pipeline.
 
 const std = @import("std");
-const scene = @import("../scene/mod.zig");
+const scene = @import("mod.zig");
 
 /// 2D Vector for path operations
 pub const Vec2 = struct {

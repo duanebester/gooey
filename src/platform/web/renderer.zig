@@ -5,19 +5,20 @@
 
 const std = @import("std");
 const imports = @import("imports.zig");
-const unified = @import("../unified.zig");
-const scene_mod = @import("../../../scene/mod.zig");
+const unified = @import("../wgpu/unified.zig");
+const interface_verify = @import("../../core/interface_verify.zig");
+const scene_mod = @import("../../scene/mod.zig");
 const GradientUniforms = scene_mod.GradientUniforms;
-const batch_iter = @import("../../../scene/batch_iterator.zig");
-const text_mod = @import("../../../text/mod.zig");
-const svg_mod = @import("../../../svg/mod.zig");
-const image_mod = @import("../../../image/mod.zig");
+const batch_iter = @import("../../scene/batch_iterator.zig");
+const text_mod = @import("../../text/mod.zig");
+const svg_mod = @import("../../svg/mod.zig");
+const image_mod = @import("../../image/mod.zig");
 const custom_shader = @import("custom_shader.zig");
-const path_mesh_mod = @import("../../../scene/path_mesh.zig");
-const path_instance_mod = @import("../../../scene/path_instance.zig");
-const mesh_pool_mod = @import("../../../scene/mesh_pool.zig");
-const polyline_mod = @import("../../../scene/polyline.zig");
-const point_cloud_mod = @import("../../../scene/point_cloud.zig");
+const path_mesh_mod = @import("../../scene/path_mesh.zig");
+const path_instance_mod = @import("../../scene/path_instance.zig");
+const mesh_pool_mod = @import("../../scene/mesh_pool.zig");
+const polyline_mod = @import("../../scene/polyline.zig");
+const point_cloud_mod = @import("../../scene/point_cloud.zig");
 
 const Scene = scene_mod.Scene;
 const SvgInstance = scene_mod.SvgInstance;
@@ -495,6 +496,11 @@ const ClipBatch = struct {
 };
 
 pub const WebRenderer = struct {
+    // Compile-time interface verification
+    comptime {
+        interface_verify.verifyRendererInterface(@This());
+    }
+
     allocator: std.mem.Allocator,
 
     // Primitives (quads, shadows)

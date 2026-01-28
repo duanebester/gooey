@@ -8,6 +8,8 @@ Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
 > **Early Development**: API is evolving.
 
+[![CI](https://github.com/duanebester/gooey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/duanebester/gooey/actions/workflows/ci.yml)
+
 <table>
   <tr>
     <td><img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/gooey-light.png" height="300px" /></td>

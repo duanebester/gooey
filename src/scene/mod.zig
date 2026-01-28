@@ -138,6 +138,40 @@ pub const PrimitiveBatch = batch_iterator.PrimitiveBatch;
 pub const PrimitiveKind = batch_iterator.PrimitiveKind;
 
 // =============================================================================
+// Render Bridge (layout → scene conversion)
+// =============================================================================
+
+pub const render_bridge = @import("render_bridge.zig");
+pub const colorToHsla = render_bridge.colorToHsla;
+pub const renderCommandsToScene = render_bridge.renderCommandsToScene;
+
+// =============================================================================
+// Gradients
+// =============================================================================
+
+pub const gradient = @import("gradient.zig");
+pub const Gradient = gradient.Gradient;
+pub const GradientType = gradient.GradientType;
+pub const GradientStop = gradient.GradientStop;
+pub const LinearGradient = gradient.LinearGradient;
+pub const RadialGradient = gradient.RadialGradient;
+
+// =============================================================================
+// Path Building
+// =============================================================================
+
+pub const path = @import("path.zig");
+pub const Path = path.Path;
+pub const PathCommand = path.Command;
+pub const PathError = path.PathError;
+
+// =============================================================================
+// SVG Parsing
+// =============================================================================
+
+pub const svg = @import("svg.zig");
+
+// =============================================================================
 // Tests
 // =============================================================================
 

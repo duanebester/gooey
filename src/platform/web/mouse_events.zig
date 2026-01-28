@@ -11,7 +11,7 @@
 //! - Keyboard modifiers on mouse events
 //! - Drag events (mouse_moved vs mouse_dragged)
 
-const input = @import("../../../input/events.zig");
+const input = @import("../../input/events.zig");
 
 /// Packed mouse event - exactly 24 bytes
 /// Layout matches JavaScript writer:

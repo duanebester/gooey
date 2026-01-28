@@ -18,10 +18,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const triangulator = @import("triangulator.zig");
-const path_mesh = @import("../scene/path_mesh.zig");
-const mesh_pool = @import("../scene/mesh_pool.zig");
-const stroke_mod = @import("stroke.zig");
+const triangulator = @import("../core/triangulator.zig");
+const path_mesh = @import("path_mesh.zig");
+const mesh_pool = @import("mesh_pool.zig");
+const stroke_mod = @import("../core/stroke.zig");
 
 const Vec2 = triangulator.Vec2;
 const FixedArray = triangulator.FixedArray;

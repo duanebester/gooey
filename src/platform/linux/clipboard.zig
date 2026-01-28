@@ -12,6 +12,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const wayland = @import("wayland.zig");
+const interface_verify = @import("../../core/interface_verify.zig");
 
 // =============================================================================
 // Wayland Data Device Protocol Types
@@ -291,6 +292,11 @@ const MAX_MIME_TYPES = 16;
 
 /// Clipboard state - managed by the platform
 pub const ClipboardState = struct {
+    // Compile-time interface verification
+    comptime {
+        interface_verify.verifyClipboardInterface(@This());
+    }
+
     // Wayland objects
     data_device_manager: ?*WlDataDeviceManager = null,
     data_device: ?*WlDataDevice = null,

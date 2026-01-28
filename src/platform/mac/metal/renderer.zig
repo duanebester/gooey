@@ -3,6 +3,7 @@
 const std = @import("std");
 const objc = @import("objc");
 
+const interface_verify = @import("../../../core/interface_verify.zig");
 const geometry = @import("../../../core/geometry.zig");
 const scene_mod = @import("../../../scene/mod.zig");
 const mtl = @import("api.zig");
@@ -29,6 +30,11 @@ pub const Vertex = extern struct {
 pub const ScissorRect = scissor.ScissorRect;
 
 pub const Renderer = struct {
+    // Compile-time interface verification
+    comptime {
+        interface_verify.verifyRendererInterface(@This());
+    }
+
     device: objc.Object,
     command_queue: objc.Object,
     layer: objc.Object,

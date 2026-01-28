@@ -31,7 +31,7 @@ const verbose_init_logging = false;
 // WASM debug logging (no-op on native, or when verbose logging disabled)
 const wasm_log = if (builtin.os.tag == .freestanding and verbose_init_logging)
     struct {
-        const web_imports = @import("../platform/wgpu/web/imports.zig");
+        const web_imports = @import("../platform/web/imports.zig");
         pub fn log(comptime fmt: []const u8, args: anytype) void {
             web_imports.log(fmt, args);
         }

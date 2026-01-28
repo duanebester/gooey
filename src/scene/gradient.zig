@@ -19,7 +19,7 @@
 //! ```
 
 const std = @import("std");
-const scene = @import("../scene/scene.zig");
+const scene = @import("scene.zig");
 
 // =============================================================================
 // Constants (per CLAUDE.md: "put a limit on everything")

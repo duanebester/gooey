@@ -2,9 +2,9 @@
 
 const std = @import("std");
 const imports = @import("imports.zig");
-const interface_mod = @import("../../interface.zig");
+const interface_mod = @import("../interface.zig");
 const file_dialog = @import("file_dialog.zig");
-const window_registry = @import("../../window_registry.zig");
+const window_registry = @import("../window_registry.zig");
 const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
 

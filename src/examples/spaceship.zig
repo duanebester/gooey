@@ -1196,7 +1196,7 @@ const NeonButton = struct {
     label: []const u8,
     color: ui.Color = Colors.cyan,
     icon: ?[]const u8 = null,
-    handler: ?gooey.core.handler.HandlerRef = null,
+    handler: ?gooey.context.handler.HandlerRef = null,
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Subtle idle pulse for interactive buttons

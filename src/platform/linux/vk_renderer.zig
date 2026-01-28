@@ -6,6 +6,7 @@
 const std = @import("std");
 const vk = @import("vulkan.zig");
 const wayland = @import("wayland.zig");
+const interface_verify = @import("../../core/interface_verify.zig");
 const unified = @import("../wgpu/unified.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
@@ -212,6 +213,11 @@ pub const GpuImage = extern struct {
 // =============================================================================
 
 pub const VulkanRenderer = struct {
+    // Compile-time interface verification
+    comptime {
+        interface_verify.verifyRendererInterface(@This());
+    }
+
     allocator: Allocator,
 
     // Wayland display reference (for roundtrip during cleanup)

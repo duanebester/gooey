@@ -9,7 +9,7 @@
 const std = @import("std");
 const scene = @import("scene.zig");
 const MeshRef = @import("mesh_pool.zig").MeshRef;
-const gradient_mod = @import("../core/gradient.zig");
+const gradient_mod = @import("gradient.zig");
 
 // =============================================================================
 // PathInstance - GPU-compatible instance data

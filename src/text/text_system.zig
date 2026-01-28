@@ -728,7 +728,7 @@ pub const TextSystem = struct {
             // This avoids N boundary crossings for N characters
             const face = self.current_face orelse return error.NoFontLoaded;
             const font_name = face.font_name_buf[0..face.font_name_len];
-            const web_imports = @import("../platform/wgpu/web/imports.zig");
+            const web_imports = @import("../platform/web/imports.zig");
             return web_imports.measureText(
                 font_name.ptr,
                 @intCast(font_name.len),

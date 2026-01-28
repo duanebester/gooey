@@ -5,7 +5,7 @@
 //! for keyboard events. JavaScript writes to the buffer, Zig reads from it.
 //! No JS↔WASM calls needed during frame processing.
 
-const input = @import("../../../input/events.zig");
+const input = @import("../../input/events.zig");
 
 /// Packed key event - exactly 8 bytes
 /// Layout matches JavaScript writer:

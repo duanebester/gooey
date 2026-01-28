@@ -2,11 +2,11 @@
 
 const std = @import("std");
 const imports = @import("imports.zig");
-const geometry = @import("../../../core/geometry.zig");
-const scene_mod = @import("../../../scene/mod.zig");
-const shader_mod = @import("../../../core/shader.zig");
-const text_mod = @import("../../../text/mod.zig");
-const interface_mod = @import("../../interface.zig");
+const geometry = @import("../../core/geometry.zig");
+const scene_mod = @import("../../scene/mod.zig");
+const shader_mod = @import("../../core/shader.zig");
+const text_mod = @import("../../text/mod.zig");
+const interface_mod = @import("../interface.zig");
 const WindowId = interface_mod.WindowId;
 
 pub const WebWindow = struct {

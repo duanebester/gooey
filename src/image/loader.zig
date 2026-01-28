@@ -238,7 +238,7 @@ fn unpremultiplyAlpha(pixels: []u8, width: usize, height: usize) void {
 /// Use the async API instead:
 ///
 /// ```
-/// const wasm_loader = @import("platform/wgpu/web/image_loader.zig");
+/// const wasm_loader = @import("platform/web/image_loader.zig");
 ///
 /// // Initialize once at startup
 /// wasm_loader.init(allocator);
@@ -258,7 +258,7 @@ fn unpremultiplyAlpha(pixels: []u8, width: usize, height: usize) void {
 fn loadFromMemoryWasm(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImage {
     // Synchronous image decoding is not possible on WASM.
     // The browser's image decoding APIs (createImageBitmap) are async.
-    // Use the async API in src/platform/wgpu/web/image_loader.zig instead.
+    // Use the async API in src/platform/web/image_loader.zig instead.
     _ = allocator;
     _ = data;
     return LoadError.UnsupportedSource;
