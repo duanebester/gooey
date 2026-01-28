@@ -61,8 +61,10 @@ pub const PieChart = struct {
     inner_radius_ratio: f32 = 0,
 
     // Styling
-    /// Gap between slices in pixels (creates parallel edges for consistent visual spacing).
-    /// When set, takes precedence over pad_angle. Recommended: 2-4 pixels.
+    /// Gap between slices in pixels. Recommended: 2-4 pixels.
+    /// - For donuts: creates parallel edges for consistent visual spacing.
+    /// - For full pies: creates an "exploded" effect where slices are offset outward.
+    /// When set, takes precedence over pad_angle.
     gap_pixels: ?f32 = null,
     /// Gap between slices in radians (0.02 ≈ 1 degree). Only used if gap_pixels is null.
     /// Note: Angular gaps appear narrower near center and wider at edge.
@@ -203,18 +205,21 @@ pub const PieChart = struct {
         total: f32,
     ) void {
         std.debug.assert(total > 0);
-        std.debug.assert(outer_radius > inner_radius);
+        std.debug.assert(outer_radius >= inner_radius);
 
         var current_angle = self.start_angle;
+        const is_donut = inner_radius > 0.5;
 
-        // Calculate half-gap offsets at each radius for parallel edges.
-        // For pixel-based gaps: offset = gap / (2 * radius)
-        // For angular gaps: same offset at both radii (traditional, non-parallel)
+        // For donuts: use parallel edge gaps (different angular offset at inner vs outer)
+        // For full pies: use exploded effect (offset slice center along bisector)
         const half_pad_outer: f32 = if (self.gap_pixels) |gap| gap / (2.0 * outer_radius) else self.pad_angle / 2.0;
-        const half_pad_inner: f32 = if (self.gap_pixels) |gap| blk: {
-            // For full pies (inner_radius ≈ 0), use outer offset to avoid division issues
-            break :blk if (inner_radius > 1.0) gap / (2.0 * inner_radius) else half_pad_outer;
-        } else self.pad_angle / 2.0;
+        const half_pad_inner: f32 = if (is_donut)
+            (if (self.gap_pixels) |gap| gap / (2.0 * inner_radius) else self.pad_angle / 2.0)
+        else
+            half_pad_outer; // Not used for full pies
+
+        // Explode offset for full pies (half the gap on each side = full gap between slices)
+        const explode_offset: f32 = if (!is_donut and self.gap_pixels != null) self.gap_pixels.? else 0;
 
         for (self.data, 0..) |point, idx| {
             if (point.value <= 0) continue;
@@ -232,12 +237,17 @@ pub const PieChart = struct {
             const color = point.color orelse
                 (if (self.chart_theme) |t| t.paletteColor(idx) else default_palette[idx % default_palette.len]);
 
-            // Draw the slice with parallel edges (different offsets at inner vs outer radius)
+            // Calculate exploded center for full pies
+            const bisector = current_angle + slice_angle / 2.0;
+            const slice_cx = cx + explode_offset * @cos(bisector);
+            const slice_cy = cy + explode_offset * @sin(bisector);
+
+            // Draw the slice
             self.drawSlice(
                 ctx,
-                cx,
-                cy,
-                outer_radius,
+                slice_cx,
+                slice_cy,
+                outer_radius - explode_offset, // Reduce radius to keep overall size
                 inner_radius,
                 current_angle,
                 slice_angle,
@@ -266,7 +276,7 @@ pub const PieChart = struct {
         half_pad_inner: f32,
         color: Color,
     ) void {
-        _ = half_pad_inner; // Only used for actual donuts, not full pies with gap_pixels
+        _ = self;
 
         std.debug.assert(!std.math.isNan(base_angle) and !std.math.isNan(slice_angle));
         std.debug.assert(outer_r >= inner_r);
@@ -289,8 +299,8 @@ pub const PieChart = struct {
         if (inner_r > 0.5) {
             // Donut slice: draw as quad strip with parallel edges
             // Inner and outer arcs use different angle ranges for uniform gap width
-            const inner_start = base_angle + (if (self.gap_pixels) |gap| gap / (2.0 * inner_r) else half_pad_outer);
-            const inner_end = base_angle + slice_angle - (if (self.gap_pixels) |gap| gap / (2.0 * inner_r) else half_pad_outer);
+            const inner_start = base_angle + half_pad_inner;
+            const inner_end = base_angle + slice_angle - half_pad_inner;
 
             const outer_step = (outer_end - outer_start) / @as(f32, @floatFromInt(segments));
             const inner_step = (inner_end - inner_start) / @as(f32, @floatFromInt(segments));
@@ -323,12 +333,7 @@ pub const PieChart = struct {
             }
         } else {
             // Full pie slice: triangle fan from center
-            // For gap_pixels, offset the center point along bisector for consistent gaps
-            const bisector_angle = base_angle + slice_angle / 2.0;
-            const center_offset: f32 = if (self.gap_pixels) |gap| gap * 0.5 else 0;
-            const slice_cx = cx + center_offset * @cos(bisector_angle);
-            const slice_cy = cy + center_offset * @sin(bisector_angle);
-
+            // Note: For exploded pies, cx/cy are already offset by caller
             const outer_step = (outer_end - outer_start) / @as(f32, @floatFromInt(segments));
 
             var i: u32 = 0;
@@ -344,12 +349,12 @@ pub const PieChart = struct {
                 const x2 = cx + outer_r * @cos(a2);
                 const y2 = cy + outer_r * @sin(a2);
 
-                ctx.fillTriangle(slice_cx, slice_cy, x1, y1, x2, y2, color);
+                ctx.fillTriangle(cx, cy, x1, y1, x2, y2, color);
             }
         }
     }
 
-    /// Draw labels for all slices.
+    /// Draw labels for pie slices.
     fn drawLabels(
         self: *const PieChart,
         ctx: *DrawContext,

@@ -22,6 +22,30 @@ pub const GradientType = enum(u32) {
     radial = 2,
 };
 
+/// Clip bounds for batching paths with matching clip regions
+/// Used for Phase 1 optimization: group consecutive same-clip paths
+pub const ClipBounds = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+
+    const Self = @This();
+
+    /// Compare two clip bounds for equality (exact match)
+    pub fn equals(self: Self, other: Self) bool {
+        return self.x == other.x and
+            self.y == other.y and
+            self.w == other.w and
+            self.h == other.h;
+    }
+
+    /// Create from ContentMask.ClipBounds
+    pub fn fromContentMask(clip: scene.ContentMask.ClipBounds) Self {
+        return .{ .x = clip.x, .y = clip.y, .w = clip.width, .h = clip.height };
+    }
+};
+
 /// GPU-ready instance data for path rendering
 /// Layout carefully aligned for Metal/WebGPU float4 requirements
 pub const PathInstance = extern struct {
@@ -226,6 +250,17 @@ pub const PathInstance = extern struct {
         return self.gradient_type != 0 and self.gradient_stop_count >= 2;
     }
 
+    /// Get clip bounds as a comparable struct for batch grouping
+    /// Used for Phase 1 optimization: group consecutive paths with matching clips
+    pub fn getClipBounds(self: Self) ClipBounds {
+        return .{
+            .x = self.clip_x,
+            .y = self.clip_y,
+            .w = self.clip_width,
+            .h = self.clip_height,
+        };
+    }
+
     /// Set position offset
     pub fn withOffset(self: Self, x: f32, y: f32) Self {
         std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
@@ -418,4 +453,49 @@ test "PathInstance hasGradient" {
     // Color clears gradient
     const cleared = grad.withColor(scene.Hsla.blue);
     try std.testing.expect(!cleared.hasGradient());
+}
+
+test "PathInstance getClipBounds" {
+    const ref = MeshRef{ .persistent = 0 };
+    const inst = PathInstance.init(ref, 0, 0, scene.Hsla.black)
+        .withClip(10, 20, 100, 200);
+
+    const clip = inst.getClipBounds();
+    try std.testing.expectEqual(@as(f32, 10), clip.x);
+    try std.testing.expectEqual(@as(f32, 20), clip.y);
+    try std.testing.expectEqual(@as(f32, 100), clip.w);
+    try std.testing.expectEqual(@as(f32, 200), clip.h);
+}
+
+test "ClipBounds equals" {
+    const a = ClipBounds{ .x = 10, .y = 20, .w = 100, .h = 200 };
+    const b = ClipBounds{ .x = 10, .y = 20, .w = 100, .h = 200 };
+    const c = ClipBounds{ .x = 10, .y = 20, .w = 100, .h = 201 };
+
+    try std.testing.expect(a.equals(b));
+    try std.testing.expect(!a.equals(c));
+}
+
+test "ClipBounds batch grouping scenario" {
+    // Simulate grouping consecutive paths with same clip
+    const ref = MeshRef{ .persistent = 0 };
+    const instances = [_]PathInstance{
+        PathInstance.init(ref, 0, 0, scene.Hsla.red).withClip(0, 0, 100, 100),
+        PathInstance.init(ref, 10, 10, scene.Hsla.blue).withClip(0, 0, 100, 100), // Same clip
+        PathInstance.init(ref, 20, 20, scene.Hsla.green).withClip(50, 50, 200, 200), // Different clip
+        PathInstance.init(ref, 30, 30, scene.Hsla.white).withClip(50, 50, 200, 200), // Same as previous
+    };
+
+    // Count batch transitions (should be 2: one batch of 2, then one batch of 2)
+    var batch_count: u32 = 1;
+    var current_clip = instances[0].getClipBounds();
+    for (instances[1..]) |inst| {
+        const clip = inst.getClipBounds();
+        if (!clip.equals(current_clip)) {
+            batch_count += 1;
+            current_clip = clip;
+        }
+    }
+
+    try std.testing.expectEqual(@as(u32, 2), batch_count);
 }

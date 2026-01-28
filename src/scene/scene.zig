@@ -33,6 +33,8 @@ const polyline_mod = @import("polyline.zig");
 pub const Polyline = polyline_mod.Polyline;
 const point_cloud_mod = @import("point_cloud.zig");
 pub const PointCloud = point_cloud_mod.PointCloud;
+const colored_point_cloud_mod = @import("colored_point_cloud.zig");
+pub const ColoredPointCloud = colored_point_cloud_mod.ColoredPointCloud;
 const mesh_pool_mod = @import("mesh_pool.zig");
 pub const MeshPool = mesh_pool_mod.MeshPool;
 pub const MeshRef = mesh_pool_mod.MeshRef;
@@ -74,6 +76,10 @@ pub const MAX_POLYLINES_PER_FRAME = 4096;
 /// Maximum point clouds per frame - fail fast if exceeded
 /// Point clouds are for efficient scatter plot / marker rendering
 pub const MAX_POINT_CLOUDS_PER_FRAME = 4096;
+
+/// Maximum colored point clouds per frame - fail fast if exceeded
+/// Colored point clouds have per-point colors for heat maps, particle effects, etc.
+pub const MAX_COLORED_POINT_CLOUDS_PER_FRAME = 4096;
 
 /// Maximum clip stack depth - fail fast if exceeded
 pub const MAX_CLIP_STACK_DEPTH = 32;
@@ -143,6 +149,34 @@ pub const Hsla = extern struct {
     /// Convert from geometry.Color to Hsla
     pub fn fromColor(c: geometry.Color) Hsla {
         return fromRgba(c.r, c.g, c.b, c.a);
+    }
+
+    /// Convert from HSLA to geometry.Color (RGB)
+    pub fn toColor(self: Hsla) geometry.Color {
+        if (self.s == 0) {
+            // Achromatic (gray)
+            return geometry.Color.rgba(self.l, self.l, self.l, self.a);
+        }
+
+        const q = if (self.l < 0.5) self.l * (1 + self.s) else self.l + self.s - self.l * self.s;
+        const p = 2 * self.l - q;
+
+        return geometry.Color.rgba(
+            hueToRgb(p, q, self.h + 1.0 / 3.0),
+            hueToRgb(p, q, self.h),
+            hueToRgb(p, q, self.h - 1.0 / 3.0),
+            self.a,
+        );
+    }
+
+    fn hueToRgb(p: f32, q: f32, t_in: f32) f32 {
+        var t = t_in;
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1.0 / 6.0) return p + (q - p) * 6 * t;
+        if (t < 1.0 / 2.0) return q;
+        if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6;
+        return p;
     }
 
     // Common colors
@@ -505,6 +539,8 @@ pub const Scene = struct {
     polylines: std.ArrayListUnmanaged(Polyline),
     /// Point clouds for efficient scatter plot/marker rendering
     point_clouds: std.ArrayListUnmanaged(PointCloud),
+    /// Colored point clouds for efficient rendering with per-point colors
+    colored_point_clouds: std.ArrayListUnmanaged(ColoredPointCloud),
     mesh_pool: MeshPool,
     next_order: DrawOrder,
     // Clip mask stack for nested clipping regions
@@ -518,6 +554,7 @@ pub const Scene = struct {
     needs_sort_paths: bool,
     needs_sort_polylines: bool,
     needs_sort_point_clouds: bool,
+    needs_sort_colored_point_clouds: bool,
 
     // Viewport culling
     viewport_width: f32,
@@ -543,6 +580,7 @@ pub const Scene = struct {
             .path_gradients = .{},
             .polylines = .{},
             .point_clouds = .{},
+            .colored_point_clouds = .{},
             .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .{},
@@ -554,6 +592,7 @@ pub const Scene = struct {
             .needs_sort_paths = false,
             .needs_sort_polylines = false,
             .needs_sort_point_clouds = false,
+            .needs_sort_colored_point_clouds = false,
             // Viewport culling - disabled by default (0 = no culling)
             .viewport_width = 0,
             .viewport_height = 0,
@@ -577,6 +616,7 @@ pub const Scene = struct {
             .path_gradients = .{},
             .polylines = .{},
             .point_clouds = .{},
+            .colored_point_clouds = .{},
             .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .{},
@@ -588,6 +628,7 @@ pub const Scene = struct {
             .needs_sort_paths = false,
             .needs_sort_polylines = false,
             .needs_sort_point_clouds = false,
+            .needs_sort_colored_point_clouds = false,
             .viewport_width = 0,
             .viewport_height = 0,
             .culling_enabled = false,
@@ -604,6 +645,7 @@ pub const Scene = struct {
         try self.path_gradients.ensureTotalCapacity(allocator, MAX_PATHS_PER_FRAME);
         try self.polylines.ensureTotalCapacity(allocator, MAX_POLYLINES_PER_FRAME);
         try self.point_clouds.ensureTotalCapacity(allocator, MAX_POINT_CLOUDS_PER_FRAME);
+        try self.colored_point_clouds.ensureTotalCapacity(allocator, MAX_COLORED_POINT_CLOUDS_PER_FRAME);
         try self.clip_stack.ensureTotalCapacity(allocator, MAX_CLIP_STACK_DEPTH);
 
         return self;
@@ -619,6 +661,7 @@ pub const Scene = struct {
         self.path_gradients.deinit(self.allocator);
         self.polylines.deinit(self.allocator);
         self.point_clouds.deinit(self.allocator);
+        self.colored_point_clouds.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
         self.mesh_pool.deinit();
     }
@@ -633,6 +676,7 @@ pub const Scene = struct {
         self.path_gradients.clearRetainingCapacity();
         self.polylines.clearRetainingCapacity();
         self.point_clouds.clearRetainingCapacity();
+        self.colored_point_clouds.clearRetainingCapacity();
         self.mesh_pool.resetFrame();
         self.clip_stack.clearRetainingCapacity();
         self.next_order = 0;
@@ -644,6 +688,7 @@ pub const Scene = struct {
         self.needs_sort_paths = false;
         self.needs_sort_polylines = false;
         self.needs_sort_point_clouds = false;
+        self.needs_sort_colored_point_clouds = false;
     }
 
     // ========================================================================
@@ -1192,6 +1237,56 @@ pub const Scene = struct {
 
     pub fn getPointClouds(self: *const Self) []const PointCloud {
         return self.point_clouds.items;
+    }
+
+    // ========================================================================
+    // Colored Point Cloud Primitives (instanced circles with per-point colors)
+    // ========================================================================
+
+    /// Insert a colored point cloud for instanced circle rendering with per-point colors.
+    /// Positions and colors should be pre-allocated (e.g., from scene.allocator or frame arena).
+    pub fn insertColoredPointCloud(self: *Self, cloud: ColoredPointCloud) !void {
+        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
+        std.debug.assert(self.colored_point_clouds.items.len < MAX_COLORED_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(cloud.count >= 1); // Need at least 1 point
+
+        var cpc = cloud;
+        cpc.order = self.next_order;
+        self.next_order += 1;
+        try self.colored_point_clouds.append(self.allocator, cpc);
+    }
+
+    /// Insert a colored point cloud with the current clip mask applied.
+    /// Positions and colors should be pre-allocated (e.g., from scene.allocator or frame arena).
+    pub fn insertColoredPointCloudClipped(self: *Self, cloud: ColoredPointCloud) !void {
+        std.debug.assert(self.colored_point_clouds.items.len < MAX_COLORED_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(cloud.count >= 1);
+
+        const clip = self.currentClip();
+        var cpc = cloud.withClipBounds(clip);
+        cpc.order = self.next_order;
+        self.next_order += 1;
+        try self.colored_point_clouds.append(self.allocator, cpc);
+    }
+
+    /// Insert a colored point cloud with a pre-reserved draw order.
+    /// Use when interleaving colored point clouds with other primitives at specific z-orders.
+    pub fn insertColoredPointCloudWithOrder(self: *Self, cloud: ColoredPointCloud, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
+        std.debug.assert(self.colored_point_clouds.items.len < MAX_COLORED_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(cloud.count >= 1);
+
+        var cpc = cloud.withClipBounds(clip);
+        cpc.order = order;
+        self.needs_sort_colored_point_clouds = true; // Out-of-order insert requires sorting
+        try self.colored_point_clouds.append(self.allocator, cpc);
+    }
+
+    pub fn coloredPointCloudCount(self: *const Self) usize {
+        return self.colored_point_clouds.items.len;
+    }
+
+    pub fn getColoredPointClouds(self: *const Self) []const ColoredPointCloud {
+        return self.colored_point_clouds.items;
     }
 
     // ========================================================================

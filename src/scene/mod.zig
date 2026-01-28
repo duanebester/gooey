@@ -84,6 +84,15 @@ pub const PointCloud = point_cloud.PointCloud;
 pub const MAX_POINTS_PER_CLOUD = point_cloud.MAX_POINTS_PER_CLOUD;
 
 // =============================================================================
+// Colored Point Cloud (instanced circles with per-point colors)
+// =============================================================================
+
+pub const colored_point_cloud = @import("colored_point_cloud.zig");
+pub const ColoredPointCloud = colored_point_cloud.ColoredPointCloud;
+pub const ColoredPoint = colored_point_cloud.ColoredPoint;
+pub const MAX_POINTS_PER_COLORED_CLOUD = colored_point_cloud.MAX_POINTS_PER_COLORED_CLOUD;
+
+// =============================================================================
 // Path Mesh
 // =============================================================================
 

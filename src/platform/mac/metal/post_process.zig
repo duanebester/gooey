@@ -62,6 +62,7 @@ pub fn renderFullPipeline(
             .path = null,
             .polyline = null,
             .point_cloud = null,
+            .colored_point_cloud = null,
             .mesh_pool = null,
             .unit_vertex_buffer = unit_vertex_buffer,
         }, viewport_size);

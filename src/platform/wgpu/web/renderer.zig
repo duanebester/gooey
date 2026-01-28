@@ -27,7 +27,9 @@ const ImageAtlas = image_mod.ImageAtlas;
 const ImageInstance = scene_mod.ImageInstance;
 const PostProcessState = custom_shader.PostProcessState;
 const PathInstance = path_instance_mod.PathInstance;
+const ClipBounds = path_instance_mod.ClipBounds;
 const PathVertex = path_mesh_mod.PathVertex;
+const SolidPathVertex = path_mesh_mod.SolidPathVertex;
 const MeshPool = mesh_pool_mod.MeshPool;
 const Polyline = polyline_mod.Polyline;
 const PointCloud = point_cloud_mod.PointCloud;
@@ -47,9 +49,18 @@ pub const MAX_IMAGES: u32 = 512;
 //
 // Per-path limit: 512 vertices, 1530 indices (from triangulator.zig)
 // Batch capacity: ~32 max-size paths (16384 / 512)
-pub const MAX_PATHS: u32 = 256;
-pub const MAX_PATH_VERTICES: u32 = 16384;
-pub const MAX_PATH_INDICES: u32 = 49152;
+pub const MAX_PATHS = 256;
+pub const MAX_PATH_VERTICES = 16384;
+pub const MAX_PATH_INDICES = 49152;
+
+// Phase 4: Gradient path batching - storage buffer for instance + gradient data
+pub const MAX_GRADIENT_BATCH_PATHS = 64;
+pub const MAX_GRADIENT_BATCH_VERTICES = 8192;
+pub const MAX_GRADIENT_BATCH_INDICES = MAX_GRADIENT_BATCH_VERTICES * 3;
+
+// Phase 2: Solid path batching limits (static allocation per CLAUDE.md)
+pub const MAX_SOLID_BATCH_VERTICES: u32 = path_mesh_mod.MAX_SOLID_BATCH_VERTICES;
+pub const MAX_SOLID_BATCH_INDICES: u32 = MAX_SOLID_BATCH_VERTICES * 3; // Worst case: 3 indices per vertex
 
 // Polyline buffer limits - expanded quads (4 vertices per segment)
 // Supports ~4000 line segments per batch
@@ -308,6 +319,87 @@ pub const DrawCallInfo = struct {
     instance_index: u32,
 };
 
+// =============================================================================
+// Phase 2: Solid Path Batching GPU Types
+// =============================================================================
+
+/// GPU-ready solid path vertex for batched rendering (32 bytes)
+/// Transform and color baked in at upload time - matches SolidPathVertex in path_solid.wgsl
+pub const GpuSolidPathVertex = extern struct {
+    x: f32 = 0, // Already transformed screen position
+    y: f32 = 0,
+    u: f32 = 0, // UV (preserved for future use)
+    v: f32 = 0,
+    color_h: f32 = 0, // HSLA color baked in
+    color_s: f32 = 0,
+    color_l: f32 = 0,
+    color_a: f32 = 1,
+
+    /// Create from a base PathVertex with transform and color baked in
+    pub fn fromPathVertex(
+        pv: PathVertex,
+        offset_x: f32,
+        offset_y: f32,
+        scale_x: f32,
+        scale_y: f32,
+        color_h: f32,
+        color_s: f32,
+        color_l: f32,
+        color_a: f32,
+    ) GpuSolidPathVertex {
+        return .{
+            // Bake transform into position: scale then translate
+            .x = pv.x * scale_x + offset_x,
+            .y = pv.y * scale_y + offset_y,
+            .u = pv.u,
+            .v = pv.v,
+            .color_h = color_h,
+            .color_s = color_s,
+            .color_l = color_l,
+            .color_a = color_a,
+        };
+    }
+};
+
+// Verify GpuSolidPathVertex size (32 bytes)
+comptime {
+    if (@sizeOf(GpuSolidPathVertex) != 32) {
+        @compileError(std.fmt.comptimePrint(
+            "GpuSolidPathVertex must be 32 bytes, got {}",
+            .{@sizeOf(GpuSolidPathVertex)},
+        ));
+    }
+}
+
+/// GPU-ready clip bounds for solid path shader (16 bytes)
+/// Uniform shared by entire batch - matches ClipBounds in path_solid.wgsl
+pub const GpuClipBounds = extern struct {
+    x: f32 = 0,
+    y: f32 = 0,
+    width: f32 = 99999,
+    height: f32 = 99999,
+
+    /// Create from scene ClipBounds
+    pub fn fromClipBounds(cb: ClipBounds) GpuClipBounds {
+        return .{
+            .x = cb.x,
+            .y = cb.y,
+            .width = cb.w,
+            .height = cb.h,
+        };
+    }
+};
+
+// Verify GpuClipBounds size (16 bytes)
+comptime {
+    if (@sizeOf(GpuClipBounds) != 16) {
+        @compileError(std.fmt.comptimePrint(
+            "GpuClipBounds must be 16 bytes, got {}",
+            .{@sizeOf(GpuClipBounds)},
+        ));
+    }
+}
+
 /// GPU-ready polyline vertex (8 bytes)
 /// Matches PolylineVertex in polyline.wgsl
 pub const GpuPolylineVertex = extern struct {
@@ -387,6 +479,21 @@ const BatchDesc = struct {
 
 const MAX_BATCHES: u32 = 256;
 
+// Phase 1 batching: max clip regions per frame (per CLAUDE.md: put a limit on everything)
+const MAX_CLIP_BATCHES: u32 = 64;
+
+/// Clip batch info for Phase 1 optimization
+/// Tracks a contiguous range of paths sharing the same clip bounds
+const ClipBatch = struct {
+    clip: ClipBounds,
+    start_index: u32,
+    end_index: u32, // exclusive
+
+    pub fn count(self: ClipBatch) u32 {
+        return self.end_index - self.start_index;
+    }
+};
+
 pub const WebRenderer = struct {
     allocator: std.mem.Allocator,
 
@@ -435,6 +542,13 @@ pub const WebRenderer = struct {
     path_gradient_buffer: u32 = 0,
     path_bind_group: u32 = 0,
 
+    // Phase 2: Solid path rendering (batched, no gradients)
+    solid_path_pipeline: u32 = 0,
+    solid_path_vertex_buffer: u32 = 0,
+    solid_path_index_buffer: u32 = 0,
+    solid_path_clip_buffer: u32 = 0,
+    solid_path_bind_group: u32 = 0,
+
     // Polyline rendering (for efficient chart lines)
     polyline_pipeline: u32 = 0,
     polyline_vertex_buffer: u32 = 0,
@@ -480,6 +594,17 @@ pub const WebRenderer = struct {
     /// Draw call parameters for each path in the batch
     staging_draw_calls: [MAX_PATHS]DrawCallInfo = undefined,
 
+    // =========================================================================
+    // Phase 2: Solid Path Batching - Staging Buffers
+    // =========================================================================
+    // These staging buffers hold baked (transformed + colored) vertices for
+    // solid paths, enabling single draw call per clip region.
+
+    /// Staging buffer for solid path vertices (32 bytes each, transform/color baked)
+    staging_solid_vertices: [MAX_SOLID_BATCH_VERTICES]GpuSolidPathVertex = undefined,
+    /// Staging buffer for solid path indices
+    staging_solid_indices: [MAX_SOLID_BATCH_INDICES]u32 = undefined,
+
     const Self = @This();
 
     const unified_shader = @embedFile("unified_wgsl");
@@ -487,6 +612,7 @@ pub const WebRenderer = struct {
     const svg_shader = @embedFile("svg_wgsl");
     const image_shader = @embedFile("image_wgsl");
     const path_shader = @embedFile("path_wgsl");
+    const solid_path_shader = @embedFile("solid_path_wgsl");
     const polyline_shader = @embedFile("polyline_wgsl");
     const point_cloud_shader = @embedFile("point_cloud_wgsl");
 
@@ -495,6 +621,7 @@ pub const WebRenderer = struct {
     const svg_wgsl = "../shaders/svg.wgsl";
     const image_wgsl = "../shaders/image.wgsl";
     const path_wgsl = "../shaders/path.wgsl";
+    const solid_path_wgsl = "../shaders/path_solid.wgsl";
     const polyline_wgsl = "../shaders/polyline.wgsl";
     const point_cloud_wgsl = "../shaders/point_cloud.wgsl";
 
@@ -532,6 +659,11 @@ pub const WebRenderer = struct {
         self.path_instance_buffer = 0;
         self.path_gradient_buffer = 0;
         self.path_bind_group = 0;
+        self.solid_path_pipeline = 0;
+        self.solid_path_vertex_buffer = 0;
+        self.solid_path_index_buffer = 0;
+        self.solid_path_clip_buffer = 0;
+        self.solid_path_bind_group = 0;
         self.polyline_pipeline = 0;
         self.polyline_vertex_buffer = 0;
         self.polyline_index_buffer = 0;
@@ -560,6 +692,7 @@ pub const WebRenderer = struct {
         const svg_module = imports.createShaderModule(svg_shader.ptr, svg_shader.len);
         const image_module = imports.createShaderModule(image_shader.ptr, image_shader.len);
         const path_module = imports.createShaderModule(path_shader.ptr, path_shader.len);
+        const solid_path_module = imports.createShaderModule(solid_path_shader.ptr, solid_path_shader.len);
         const polyline_module = imports.createShaderModule(polyline_shader.ptr, polyline_shader.len);
         const point_cloud_module = imports.createShaderModule(point_cloud_shader.ptr, point_cloud_shader.len);
 
@@ -572,6 +705,8 @@ pub const WebRenderer = struct {
             self.image_pipeline = imports.createMSAARenderPipeline(image_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             // Path shader outputs premultiplied alpha
             self.path_pipeline = imports.createPathPipeline(path_module, "vs_main", 7, "fs_main", 7, self.sample_count);
+            // Phase 2: Solid path shader outputs premultiplied alpha
+            self.solid_path_pipeline = imports.createPathPipeline(solid_path_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             // Polyline and point cloud shaders output premultiplied alpha
             self.polyline_pipeline = imports.createPathPipeline(polyline_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             self.point_cloud_pipeline = imports.createPathPipeline(point_cloud_module, "vs_main", 7, "fs_main", 7, self.sample_count);
@@ -584,6 +719,8 @@ pub const WebRenderer = struct {
             self.image_pipeline = imports.createRenderPipeline(image_module, "vs_main", 7, "fs_main", 7);
             // Path shader outputs premultiplied alpha (fallback non-MSAA)
             self.path_pipeline = imports.createPremultipliedAlphaPipeline(path_module, "vs_main", 7, "fs_main", 7);
+            // Phase 2: Solid path shader outputs premultiplied alpha (fallback non-MSAA)
+            self.solid_path_pipeline = imports.createPremultipliedAlphaPipeline(solid_path_module, "vs_main", 7, "fs_main", 7);
             // Polyline and point cloud shaders output premultiplied alpha (fallback non-MSAA)
             self.polyline_pipeline = imports.createPremultipliedAlphaPipeline(polyline_module, "vs_main", 7, "fs_main", 7);
             self.point_cloud_pipeline = imports.createPremultipliedAlphaPipeline(point_cloud_module, "vs_main", 7, "fs_main", 7);
@@ -604,6 +741,11 @@ pub const WebRenderer = struct {
         self.path_index_buffer = imports.createBuffer(@sizeOf(u32) * MAX_PATH_INDICES, storage_copy);
         self.path_instance_buffer = imports.createBuffer(@sizeOf(GpuPathInstance), uniform_copy);
         self.path_gradient_buffer = imports.createBuffer(@sizeOf(GpuGradientUniforms), uniform_copy);
+
+        // Phase 2: Solid path buffers - larger capacity, 32-byte vertices with baked transform/color
+        self.solid_path_vertex_buffer = imports.createBuffer(@sizeOf(GpuSolidPathVertex) * MAX_SOLID_BATCH_VERTICES, storage_copy);
+        self.solid_path_index_buffer = imports.createBuffer(@sizeOf(u32) * MAX_SOLID_BATCH_INDICES, storage_copy);
+        self.solid_path_clip_buffer = imports.createBuffer(@sizeOf(GpuClipBounds), uniform_copy);
 
         // Polyline buffers - vertex storage, index storage, uniform
         self.polyline_vertex_buffer = imports.createBuffer(@sizeOf(GpuPolylineVertex) * MAX_POLYLINE_VERTICES, storage_copy);
@@ -628,6 +770,15 @@ pub const WebRenderer = struct {
             self.path_instance_buffer,
             self.uniform_buffer,
             self.path_gradient_buffer,
+        );
+
+        // Phase 2: Solid path bind group: vertex buffer, clip buffer, uniform buffer
+        self.solid_path_bind_group = imports.createPathBindGroup(
+            self.solid_path_pipeline,
+            0,
+            self.solid_path_vertex_buffer,
+            self.solid_path_clip_buffer,
+            self.uniform_buffer,
         );
 
         // Polyline bind group: vertex buffer, uniform buffer, viewport uniform buffer
@@ -1244,8 +1395,50 @@ pub const WebRenderer = struct {
         const paths = all_paths[start..end];
         const gradients = all_gradients[start..@min(start + count, @as(u32, @intCast(all_gradients.len)))];
 
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(paths.len > 0);
+        std.debug.assert(paths.len <= MAX_PATHS);
+
         // =====================================================================
-        // Phase 1: Calculate totals and validate capacity
+        // Phase 1a: Build clip batches (group consecutive same-clip paths)
+        // Important: We group consecutive paths, NOT sort, to preserve draw order
+        // =====================================================================
+        var clip_batches: [MAX_CLIP_BATCHES]ClipBatch = undefined;
+        var clip_batch_count: u32 = 0;
+
+        {
+            var batch_start: u32 = 0;
+            var current_clip = paths[0].getClipBounds();
+
+            for (paths[1..], 1..) |inst, i| {
+                const clip = inst.getClipBounds();
+                if (!clip.equals(current_clip)) {
+                    // End current batch, start new one
+                    if (clip_batch_count < MAX_CLIP_BATCHES) {
+                        clip_batches[clip_batch_count] = .{
+                            .clip = current_clip,
+                            .start_index = batch_start,
+                            .end_index = @intCast(i),
+                        };
+                        clip_batch_count += 1;
+                    }
+                    batch_start = @intCast(i);
+                    current_clip = clip;
+                }
+            }
+            // Final batch
+            if (clip_batch_count < MAX_CLIP_BATCHES) {
+                clip_batches[clip_batch_count] = .{
+                    .clip = current_clip,
+                    .start_index = batch_start,
+                    .end_index = @intCast(paths.len),
+                };
+                clip_batch_count += 1;
+            }
+        }
+
+        // =====================================================================
+        // Phase 1b: Calculate totals and validate capacity
         // =====================================================================
         var total_vertices: u32 = 0;
         var total_indices: u32 = 0;
@@ -1355,7 +1548,9 @@ pub const WebRenderer = struct {
         // would address this by moving to storage buffers with instance_index lookup.
 
         // =====================================================================
-        // Phase 4: Issue draw calls (N API calls - unavoidable without multi-draw)
+        // Phase 4: Issue draw calls grouped by clip batches
+        // Each clip batch shares the same clip bounds - draw paths within each batch
+        // This reduces state transitions when many paths share the same clip region
         // =====================================================================
         imports.setPipeline(self.path_pipeline);
         imports.setBindGroup(0, self.path_bind_group);
@@ -1368,24 +1563,30 @@ pub const WebRenderer = struct {
             total_indices * @sizeOf(u32),
         );
 
-        for (self.staging_draw_calls[0..draw_call_count]) |dc| {
-            // Upload per-instance data (still needed - shader uses uniform, not storage)
-            imports.writeBuffer(
-                self.path_instance_buffer,
-                0,
-                @as([*]const u8, @ptrCast(&self.staging_instances[dc.instance_index])),
-                @sizeOf(GpuPathInstance),
-            );
+        // Draw grouped by clip batches (Phase 1 optimization)
+        for (clip_batches[0..clip_batch_count]) |batch| {
+            // Draw all paths in this clip batch
+            for (batch.start_index..batch.end_index) |i| {
+                const dc = self.staging_draw_calls[i];
 
-            imports.writeBuffer(
-                self.path_gradient_buffer,
-                0,
-                @as([*]const u8, @ptrCast(&self.staging_gradients[dc.instance_index])),
-                @sizeOf(GpuGradientUniforms),
-            );
+                // Upload per-instance data (still needed - shader uses uniform, not storage)
+                imports.writeBuffer(
+                    self.path_instance_buffer,
+                    0,
+                    @as([*]const u8, @ptrCast(&self.staging_instances[dc.instance_index])),
+                    @sizeOf(GpuPathInstance),
+                );
 
-            // Draw this path's triangles from the merged index buffer
-            imports.drawIndexed(dc.index_count, 1, dc.index_offset, 0, 0);
+                imports.writeBuffer(
+                    self.path_gradient_buffer,
+                    0,
+                    @as([*]const u8, @ptrCast(&self.staging_gradients[dc.instance_index])),
+                    @sizeOf(GpuGradientUniforms),
+                );
+
+                // Draw this path's triangles from the merged index buffer
+                imports.drawIndexed(dc.index_count, 1, dc.index_offset, 0, 0);
+            }
         }
     }
 
@@ -1493,6 +1694,394 @@ pub const WebRenderer = struct {
 
             imports.setIndexBuffer(self.path_index_buffer, imports.IndexFormat.uint32, 0, @intCast(index_count * @sizeOf(u32)));
             imports.drawIndexed(@intCast(index_count), 1, 0, 0, 0);
+        }
+    }
+
+    /// Phase 2: Render solid-color paths with single draw call per clip region
+    /// Transform and color are baked into vertices at upload time
+    /// This is the main optimization - reduces N draw calls to 1 for solid paths sharing a clip
+    fn renderSolidPathBatch(
+        self: *Self,
+        instances: []const PathInstance,
+        mesh_pool: *const MeshPool,
+        clip_bounds: ClipBounds,
+    ) void {
+        if (instances.len == 0) return;
+
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(instances.len <= 256);
+        std.debug.assert(clip_bounds.w > 0 and clip_bounds.h > 0);
+
+        // =====================================================================
+        // Phase 1: Calculate totals and validate capacity
+        // =====================================================================
+        var total_vertices: u32 = 0;
+        var total_indices: u32 = 0;
+
+        for (instances) |*instance| {
+            const mesh = mesh_pool.getMesh(instance.getMeshRef());
+            if (mesh.isEmpty()) continue;
+
+            const vert_count: u32 = @intCast(mesh.vertices.len);
+            const idx_count: u32 = @intCast(mesh.indices.len);
+
+            // Check capacity limits (static allocation per CLAUDE.md)
+            if (total_vertices + vert_count > MAX_SOLID_BATCH_VERTICES or
+                total_indices + idx_count > MAX_SOLID_BATCH_INDICES)
+            {
+                // Batch is full - render what we have, skip the rest
+                break;
+            }
+
+            total_vertices += vert_count;
+            total_indices += idx_count;
+        }
+
+        if (total_vertices == 0 or total_indices == 0) return;
+
+        // Assertions per CLAUDE.md: validate buffer capacity
+        std.debug.assert(total_vertices <= MAX_SOLID_BATCH_VERTICES);
+        std.debug.assert(total_indices <= MAX_SOLID_BATCH_INDICES);
+
+        // =====================================================================
+        // Phase 2: Bake transforms and colors into vertices
+        // =====================================================================
+        var vertex_offset: u32 = 0;
+        var index_offset: u32 = 0;
+
+        for (instances) |*instance| {
+            const mesh = mesh_pool.getMesh(instance.getMeshRef());
+            if (mesh.isEmpty()) continue;
+
+            const vert_count: u32 = @intCast(mesh.vertices.len);
+            const idx_count: u32 = @intCast(mesh.indices.len);
+
+            // Check if we'd exceed capacity (stop if so)
+            if (vertex_offset + vert_count > MAX_SOLID_BATCH_VERTICES or
+                index_offset + idx_count > MAX_SOLID_BATCH_INDICES)
+            {
+                break;
+            }
+
+            // Bake transform and color into each vertex
+            for (mesh.vertices.constSlice(), 0..) |src_v, j| {
+                self.staging_solid_vertices[vertex_offset + @as(u32, @intCast(j))] = GpuSolidPathVertex.fromPathVertex(
+                    src_v,
+                    instance.offset_x,
+                    instance.offset_y,
+                    instance.scale_x,
+                    instance.scale_y,
+                    instance.fill_color.h,
+                    instance.fill_color.s,
+                    instance.fill_color.l,
+                    instance.fill_color.a,
+                );
+            }
+
+            // Copy indices with vertex offset adjustment
+            for (mesh.indices.constSlice(), 0..) |src_idx, j| {
+                self.staging_solid_indices[index_offset + @as(u32, @intCast(j))] = src_idx + vertex_offset;
+            }
+
+            vertex_offset += vert_count;
+            index_offset += idx_count;
+        }
+
+        // =====================================================================
+        // Phase 3: Upload and issue SINGLE draw call
+        // =====================================================================
+        // Upload baked vertex buffer
+        imports.writeBuffer(
+            self.solid_path_vertex_buffer,
+            0,
+            @as([*]const u8, @ptrCast(&self.staging_solid_vertices)),
+            total_vertices * @sizeOf(GpuSolidPathVertex),
+        );
+
+        // Upload index buffer
+        imports.writeBuffer(
+            self.solid_path_index_buffer,
+            0,
+            @as([*]const u8, @ptrCast(&self.staging_solid_indices)),
+            total_indices * @sizeOf(u32),
+        );
+
+        // Upload clip bounds uniform (shared by entire batch)
+        const gpu_clip = GpuClipBounds.fromClipBounds(clip_bounds);
+        imports.writeBuffer(
+            self.solid_path_clip_buffer,
+            0,
+            @as([*]const u8, @ptrCast(&gpu_clip)),
+            @sizeOf(GpuClipBounds),
+        );
+
+        // Set solid path pipeline and bind group
+        imports.setPipeline(self.solid_path_pipeline);
+        imports.setBindGroup(0, self.solid_path_bind_group);
+
+        // Set index buffer
+        imports.setIndexBuffer(
+            self.solid_path_index_buffer,
+            imports.IndexFormat.uint32,
+            0,
+            total_indices * @sizeOf(u32),
+        );
+
+        // ONE draw call for entire batch - this is the main optimization!
+        imports.drawIndexed(index_offset, 1, 0, 0, 0);
+    }
+
+    /// Phase 2+3: Optimized batch rendering with solid/gradient partitioning
+    /// Partitions paths by gradient type, then renders:
+    ///   - Solid paths: batched by clip region (1 draw call per clip)
+    ///   - Gradient paths: individual draw calls (existing approach)
+    /// This is the main entry point for optimized path rendering.
+    fn renderPathBatchOptimized(self: *Self, scene: *const Scene, start: u32, count: u32) void {
+        if (count == 0) return;
+
+        const all_paths = scene.getPathInstances();
+        const all_gradients = scene.getPathGradients();
+        const mesh_pool = scene.getMeshPool();
+
+        // Slice to the batch we're rendering
+        const end = @min(start + count, @as(u32, @intCast(all_paths.len)));
+        if (start >= end) return;
+
+        const paths = all_paths[start..end];
+        const gradients = all_gradients[start..@min(start + count, @as(u32, @intCast(all_gradients.len)))];
+
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(paths.len > 0);
+        std.debug.assert(paths.len <= MAX_PATHS);
+
+        // =====================================================================
+        // Phase 3a: Partition paths into solid vs gradient
+        // Use existing hasGradient() method from PathInstance
+        // =====================================================================
+        var solid_instances: [256]PathInstance = undefined;
+        var gradient_instances: [256]PathInstance = undefined;
+        var gradient_uniforms: [256]GradientUniforms = undefined;
+        var solid_count: u32 = 0;
+        var gradient_count: u32 = 0;
+
+        for (paths, 0..) |inst, i| {
+            if (inst.hasGradient()) {
+                gradient_instances[gradient_count] = inst;
+                gradient_uniforms[gradient_count] = if (i < gradients.len) gradients[i] else GradientUniforms.none();
+                gradient_count += 1;
+            } else {
+                solid_instances[solid_count] = inst;
+                solid_count += 1;
+            }
+        }
+
+        // Assertion per CLAUDE.md: verify partition is complete
+        std.debug.assert(solid_count + gradient_count == paths.len);
+
+        // =====================================================================
+        // Phase 3b: Render solid paths (batched by clip region)
+        // Group consecutive same-clip paths for single draw call each
+        // =====================================================================
+        if (solid_count > 0) {
+            const solid_slice = solid_instances[0..solid_count];
+
+            // Build clip batches for solid paths
+            var clip_batches: [MAX_CLIP_BATCHES]ClipBatch = undefined;
+            var clip_batch_count: u32 = 0;
+
+            var batch_start: u32 = 0;
+            var current_clip = solid_slice[0].getClipBounds();
+
+            for (solid_slice[1..], 1..) |inst, i| {
+                const clip = inst.getClipBounds();
+                if (!clip.equals(current_clip)) {
+                    // End current batch, start new one
+                    if (clip_batch_count < MAX_CLIP_BATCHES) {
+                        clip_batches[clip_batch_count] = .{
+                            .clip = current_clip,
+                            .start_index = batch_start,
+                            .end_index = @intCast(i),
+                        };
+                        clip_batch_count += 1;
+                    }
+                    batch_start = @intCast(i);
+                    current_clip = clip;
+                }
+            }
+            // Final batch
+            if (clip_batch_count < MAX_CLIP_BATCHES) {
+                clip_batches[clip_batch_count] = .{
+                    .clip = current_clip,
+                    .start_index = batch_start,
+                    .end_index = solid_count,
+                };
+                clip_batch_count += 1;
+            }
+
+            // Render each clip batch with a single draw call
+            for (clip_batches[0..clip_batch_count]) |batch| {
+                self.renderSolidPathBatch(
+                    solid_slice[batch.start_index..batch.end_index],
+                    mesh_pool,
+                    batch.clip,
+                );
+            }
+        }
+
+        // =====================================================================
+        // Phase 3c: Render gradient paths (individual draw calls)
+        // Uses existing renderPathBatch approach for gradient paths
+        // =====================================================================
+        if (gradient_count > 0) {
+            // Use the existing path rendering infrastructure for gradients
+            self.renderGradientPathsOnly(gradient_instances[0..gradient_count], gradient_uniforms[0..gradient_count], mesh_pool);
+        }
+    }
+
+    /// Phase 4: Batched gradient path rendering
+    /// Uploads all vertices and indices ONCE, then issues draws with offset tracking.
+    /// This reduces writeBuffer calls from 4×N to 2 + 2×N (eliminating per-path vertex/index uploads).
+    fn renderGradientPathsOnly(
+        self: *Self,
+        paths: []const PathInstance,
+        gradients: []const GradientUniforms,
+        mesh_pool: *const MeshPool,
+    ) void {
+        if (paths.len == 0) return;
+
+        // Assertions per CLAUDE.md: minimum 2 per function
+        std.debug.assert(paths.len <= MAX_GRADIENT_BATCH_PATHS);
+        std.debug.assert(gradients.len <= paths.len or gradients.len == 0);
+
+        // =====================================================================
+        // Phase 1: Calculate totals and build offset table
+        // =====================================================================
+        const OffsetInfo = struct {
+            vertex_offset: u32,
+            index_offset: u32,
+            index_count: u32,
+        };
+        var offsets: [MAX_GRADIENT_BATCH_PATHS]OffsetInfo = undefined;
+
+        var total_vertices: u32 = 0;
+        var total_indices: u32 = 0;
+        var valid_count: u32 = 0;
+
+        for (paths, 0..) |path_inst, i| {
+            const mesh = mesh_pool.getMesh(path_inst.getMeshRef());
+            if (mesh.isEmpty()) {
+                offsets[i] = .{ .vertex_offset = 0, .index_offset = 0, .index_count = 0 };
+                continue;
+            }
+
+            const vert_count: u32 = @intCast(mesh.vertices.len);
+            const idx_count: u32 = @intCast(mesh.indices.len);
+
+            // Check capacity limits
+            if (total_vertices + vert_count > MAX_PATH_VERTICES or
+                total_indices + idx_count > MAX_PATH_INDICES)
+            {
+                // Would exceed buffer capacity - mark remaining as empty
+                offsets[i] = .{ .vertex_offset = 0, .index_offset = 0, .index_count = 0 };
+                continue;
+            }
+
+            offsets[i] = .{
+                .vertex_offset = total_vertices,
+                .index_offset = total_indices,
+                .index_count = idx_count,
+            };
+
+            total_vertices += vert_count;
+            total_indices += idx_count;
+            valid_count += 1;
+        }
+
+        if (valid_count == 0) return;
+
+        // Assertions per CLAUDE.md: validate buffer capacity
+        std.debug.assert(total_vertices <= MAX_PATH_VERTICES);
+        std.debug.assert(total_indices <= MAX_PATH_INDICES);
+
+        // =====================================================================
+        // Phase 2: Merge all mesh data into staging buffers
+        // =====================================================================
+        for (paths, 0..) |path_inst, i| {
+            const info = offsets[i];
+            if (info.index_count == 0) continue;
+
+            const mesh = mesh_pool.getMesh(path_inst.getMeshRef());
+            const vert_count: u32 = @intCast(mesh.vertices.len);
+
+            // Copy vertices directly (no transform - gradient shader handles it)
+            for (mesh.vertices.constSlice(), 0..) |src_v, j| {
+                self.staging_vertices[info.vertex_offset + @as(u32, @intCast(j))] = src_v;
+            }
+
+            // Copy indices with vertex offset adjustment
+            for (mesh.indices.constSlice(), 0..) |src_idx, j| {
+                self.staging_indices[info.index_offset + @as(u32, @intCast(j))] = src_idx + info.vertex_offset;
+            }
+
+            _ = vert_count;
+        }
+
+        // =====================================================================
+        // Phase 3: Upload merged buffers ONCE (main optimization)
+        // =====================================================================
+        imports.writeBuffer(
+            self.path_vertex_buffer,
+            0,
+            @as([*]const u8, @ptrCast(&self.staging_vertices)),
+            total_vertices * @sizeOf(PathVertex),
+        );
+
+        imports.writeBuffer(
+            self.path_index_buffer,
+            0,
+            @as([*]const u8, @ptrCast(&self.staging_indices)),
+            total_indices * @sizeOf(u32),
+        );
+
+        // =====================================================================
+        // Phase 4: Issue draw calls with per-path instance/gradient uniforms
+        // =====================================================================
+        imports.setPipeline(self.path_pipeline);
+        imports.setBindGroup(0, self.path_bind_group);
+
+        for (paths, 0..) |path_inst, path_idx| {
+            const info = offsets[path_idx];
+            if (info.index_count == 0) continue;
+
+            // Upload instance data for this path
+            const gpu_instance = GpuPathInstance.fromScene(path_inst);
+            imports.writeBuffer(
+                self.path_instance_buffer,
+                0,
+                @as([*]const u8, @ptrCast(&gpu_instance)),
+                @sizeOf(GpuPathInstance),
+            );
+
+            // Upload gradient data for this path
+            const scene_gradient = if (path_idx < gradients.len) gradients[path_idx] else GradientUniforms.none();
+            const gpu_gradient = GpuGradientUniforms.fromScene(scene_gradient);
+            imports.writeBuffer(
+                self.path_gradient_buffer,
+                0,
+                @as([*]const u8, @ptrCast(&gpu_gradient)),
+                @sizeOf(GpuGradientUniforms),
+            );
+
+            // Set index buffer with offset for this path's indices
+            imports.setIndexBuffer(
+                self.path_index_buffer,
+                imports.IndexFormat.uint32,
+                info.index_offset * @sizeOf(u32),
+                info.index_count * @sizeOf(u32),
+            );
+
+            // Draw this path
+            imports.drawIndexed(info.index_count, 1, 0, 0, 0);
         }
     }
 

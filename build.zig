@@ -102,6 +102,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "form-validation", "src/examples/form_validation.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "drag-drop", "src/examples/drag_drop.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "canvas-demo", "src/examples/canvas_demo.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "canvas-drawing", "src/examples/canvas_drawing.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "lucide-demo", "src/examples/lucide_demo.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "new-api-demo", "src/examples/new_api_demo.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "code-editor", "src/examples/code_editor.zig", false);

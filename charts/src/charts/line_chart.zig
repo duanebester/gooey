@@ -472,76 +472,70 @@ pub const LineChart = struct {
         }
     }
 
-    /// Draw point markers for all series.
-    fn drawPoints(self: *const LineChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
-        for (self.data, 0..) |*series, series_idx| {
-            const color = self.getSeriesColor(series, series_idx);
-            self.drawSeriesPoints(ctx, series, x_scale, y_scale, color);
-        }
-    }
-
-    /// Draw point markers for a single series using pointCloud API (instanced rendering).
-    /// This is much more efficient than N fillCircle calls:
-    /// - Before: N draw calls, N path tessellations
-    /// - After: 1 draw call, instanced GPU rendering
+    /// Draw point markers for ALL series in a single batched draw call.
+    /// OPTIMIZED: Uses pointCloudColoredArrays to render all points across all series
+    /// in ONE GPU draw call using instanced rendering.
+    /// Before: N series = N draw calls
+    /// After:  1 draw call for all points with per-point colors
     ///
-    /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation to reduce
+    /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation per series to reduce
     /// point count while preserving visual shape.
-    fn drawSeriesPoints(
-        self: *const LineChart,
-        ctx: *DrawContext,
-        series: *const Series,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-        color: Color,
-    ) void {
-        if (series.data_len == 0) return;
+    fn drawPoints(self: *const LineChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
+        std.debug.assert(self.data.len > 0);
 
-        // Check if LOD decimation is needed
-        const use_lod = self.enable_lod and series.data_len > self.lod_target_points;
-
-        // Build centers array (stack allocation is fine - just f32 pairs, ~32KB max)
         var centers: [MAX_DATA_POINTS][2]f32 = undefined;
-        var count: usize = 0;
+        var colors: [MAX_DATA_POINTS]Color = undefined;
+        var total_count: usize = 0;
 
-        if (use_lod) {
-            // Apply LTTB decimation for large datasets
-            var input_points: [MAX_DATA_POINTS]DecimationPoint = undefined;
-            var decimated: [MAX_DATA_POINTS]DecimationPoint = undefined;
+        for (self.data, 0..) |*series, series_idx| {
+            if (series.data_len == 0) continue;
 
-            // Convert to decimation format
-            var i: u32 = 0;
-            while (i < series.data_len and i < MAX_DATA_POINTS) : (i += 1) {
-                input_points[i] = .{ .x = series.data[i].x, .y = series.data[i].y };
-            }
+            const color = self.getSeriesColor(series, series_idx);
 
-            // Decimate using LTTB algorithm
-            const decimated_count = util.decimateLTTB(
-                input_points[0..series.data_len],
-                series.data_len,
-                &decimated,
-                self.lod_target_points,
-            );
+            // Check if LOD decimation is needed for this series
+            const use_lod = self.enable_lod and series.data_len > self.lod_target_points;
 
-            // Scale decimated points
-            var j: u32 = 0;
-            while (j < decimated_count) : (j += 1) {
-                centers[count] = .{ x_scale.scale(decimated[j].x), y_scale.scale(decimated[j].y) };
-                count += 1;
-            }
-        } else {
-            // Use all points directly
-            var i: u32 = 0;
-            while (i < series.data_len and count < MAX_DATA_POINTS) : (i += 1) {
-                const point = &series.data[i];
-                centers[count] = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
-                count += 1;
+            if (use_lod) {
+                // Apply LTTB decimation for large datasets
+                var input_points: [MAX_DATA_POINTS]DecimationPoint = undefined;
+                var decimated: [MAX_DATA_POINTS]DecimationPoint = undefined;
+
+                // Convert to decimation format
+                var i: u32 = 0;
+                while (i < series.data_len and i < MAX_DATA_POINTS) : (i += 1) {
+                    input_points[i] = .{ .x = series.data[i].x, .y = series.data[i].y };
+                }
+
+                // Decimate using LTTB algorithm
+                const decimated_count = util.decimateLTTB(
+                    input_points[0..series.data_len],
+                    series.data_len,
+                    &decimated,
+                    self.lod_target_points,
+                );
+
+                // Scale decimated points and add to batch
+                var j: u32 = 0;
+                while (j < decimated_count and total_count < MAX_DATA_POINTS) : (j += 1) {
+                    centers[total_count] = .{ x_scale.scale(decimated[j].x), y_scale.scale(decimated[j].y) };
+                    colors[total_count] = color;
+                    total_count += 1;
+                }
+            } else {
+                // Use all points directly
+                var i: u32 = 0;
+                while (i < series.data_len and total_count < MAX_DATA_POINTS) : (i += 1) {
+                    const point = &series.data[i];
+                    centers[total_count] = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
+                    colors[total_count] = color;
+                    total_count += 1;
+                }
             }
         }
 
-        // Single draw call for all points (instanced rendering)
-        if (count >= 1) {
-            ctx.pointCloud(centers[0..count], self.point_radius, color);
+        // Single draw call for ALL points across ALL series (instanced rendering)
+        if (total_count >= 1) {
+            ctx.pointCloudColoredArrays(centers[0..total_count], colors[0..total_count], self.point_radius);
         }
     }
 

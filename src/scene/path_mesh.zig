@@ -19,6 +19,20 @@ pub const MAX_MESH_VERTICES: u32 = triangulator.MAX_PATH_VERTICES;
 /// Maximum indices per mesh
 pub const MAX_MESH_INDICES: u32 = triangulator.MAX_PATH_INDICES;
 
+/// Maximum vertices in a single solid-path batch (Phase 2 batching)
+/// This bounds the staging buffer size for baked vertices
+pub const MAX_SOLID_BATCH_VERTICES: u32 = 65536;
+
+/// Memory budget for solid vertex staging buffer (CLAUDE.md compliance)
+/// 32 bytes per SolidPathVertex × MAX_SOLID_BATCH_VERTICES = 2MB
+pub const MAX_SOLID_VERTEX_BYTES: usize = MAX_SOLID_BATCH_VERTICES * 32;
+
+comptime {
+    // Verify memory budget is reasonable (per CLAUDE.md static allocation rules)
+    const MAX_VERTEX_BUDGET_MB = 8; // 8MB max for vertex data
+    std.debug.assert(MAX_SOLID_VERTEX_BYTES <= MAX_VERTEX_BUDGET_MB * 1024 * 1024);
+}
+
 // =============================================================================
 // Errors
 // =============================================================================
@@ -29,10 +43,10 @@ pub const PathMeshError = error{
 } || triangulator.TriangulationError;
 
 // =============================================================================
-// PathVertex - GPU vertex format
+// PathVertex - GPU vertex format (16 bytes)
 // =============================================================================
 
-/// GPU-ready vertex for path rendering
+/// GPU-ready vertex for path rendering (gradient paths)
 /// Layout: position (x, y) + UV for gradients (u, v)
 pub const PathVertex = extern struct {
     /// X position in screen coordinates
@@ -61,6 +75,68 @@ comptime {
     std.debug.assert(@sizeOf(PathVertex) == 16);
     // Verify alignment for GPU buffers
     std.debug.assert(@alignOf(PathVertex) == 4);
+}
+
+// =============================================================================
+// SolidPathVertex - Batched solid color vertex format (32 bytes)
+// =============================================================================
+
+/// GPU-ready vertex for batched solid color path rendering (Phase 2)
+/// Layout: transformed position (x, y) + UV (u, v) + baked HSLA color (h, s, l, a)
+/// Transform and color are baked in at upload time, enabling single draw call per clip region
+pub const SolidPathVertex = extern struct {
+    /// X position in screen coordinates (already transformed)
+    x: f32,
+    /// Y position in screen coordinates (already transformed)
+    y: f32,
+    /// U texture coordinate (preserved for potential future use)
+    u: f32,
+    /// V texture coordinate (preserved for potential future use)
+    v: f32,
+    /// Hue component of fill color (0-1)
+    color_h: f32,
+    /// Saturation component of fill color (0-1)
+    color_s: f32,
+    /// Lightness component of fill color (0-1)
+    color_l: f32,
+    /// Alpha component of fill color (0-1)
+    color_a: f32,
+
+    /// Create a solid vertex from a base PathVertex with transform and color baked in
+    pub fn fromPathVertex(
+        v: PathVertex,
+        offset_x: f32,
+        offset_y: f32,
+        scale_x: f32,
+        scale_y: f32,
+        color_h: f32,
+        color_s: f32,
+        color_l: f32,
+        color_a: f32,
+    ) SolidPathVertex {
+        // Assertions per CLAUDE.md: validate inputs
+        std.debug.assert(!std.math.isNan(v.x) and !std.math.isNan(v.y));
+        std.debug.assert(!std.math.isNan(offset_x) and !std.math.isNan(offset_y));
+
+        return .{
+            // Bake transform into position: scale then translate
+            .x = v.x * scale_x + offset_x,
+            .y = v.y * scale_y + offset_y,
+            .u = v.u,
+            .v = v.v,
+            .color_h = color_h,
+            .color_s = color_s,
+            .color_l = color_l,
+            .color_a = color_a,
+        };
+    }
+};
+
+comptime {
+    // Verify GPU-friendly size (per CLAUDE.md assertion requirement)
+    std.debug.assert(@sizeOf(SolidPathVertex) == 32);
+    // Verify alignment for GPU buffers
+    std.debug.assert(@alignOf(SolidPathVertex) == 4);
 }
 
 // =============================================================================
@@ -236,6 +312,37 @@ pub const PathMesh = struct {
 
 test "PathVertex size is 16 bytes" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(PathVertex));
+}
+
+test "SolidPathVertex size is 32 bytes" {
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(SolidPathVertex));
+}
+
+test "SolidPathVertex fromPathVertex bakes transform and color" {
+    const base = PathVertex.withUV(10.0, 20.0, 0.5, 0.75);
+    const solid = SolidPathVertex.fromPathVertex(
+        base,
+        100.0, // offset_x
+        200.0, // offset_y
+        2.0, // scale_x
+        3.0, // scale_y
+        0.5, // color_h
+        0.8, // color_s
+        0.6, // color_l
+        1.0, // color_a
+    );
+
+    // Position should be transformed: (10 * 2 + 100, 20 * 3 + 200) = (120, 260)
+    try std.testing.expectEqual(@as(f32, 120.0), solid.x);
+    try std.testing.expectEqual(@as(f32, 260.0), solid.y);
+    // UV should be preserved
+    try std.testing.expectEqual(@as(f32, 0.5), solid.u);
+    try std.testing.expectEqual(@as(f32, 0.75), solid.v);
+    // Color should be baked in
+    try std.testing.expectEqual(@as(f32, 0.5), solid.color_h);
+    try std.testing.expectEqual(@as(f32, 0.8), solid.color_s);
+    try std.testing.expectEqual(@as(f32, 0.6), solid.color_l);
+    try std.testing.expectEqual(@as(f32, 1.0), solid.color_a);
 }
 
 test "PathMesh from square" {

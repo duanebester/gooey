@@ -18,6 +18,7 @@ const image_pipeline = @import("image_pipeline.zig");
 const path_pipeline = @import("path_pipeline.zig");
 const polyline_pipeline = @import("polyline_pipeline.zig");
 const point_cloud_pipeline = @import("point_cloud_pipeline.zig");
+const colored_point_cloud_pipeline = @import("colored_point_cloud_pipeline.zig");
 const Atlas = @import("../../../text/mod.zig").Atlas;
 
 pub const Vertex = extern struct {
@@ -41,6 +42,7 @@ pub const Renderer = struct {
     path_pipeline_state: ?path_pipeline.PathPipeline,
     polyline_pipeline_state: ?polyline_pipeline.PolylinePipeline,
     point_cloud_pipeline_state: ?point_cloud_pipeline.PointCloudPipeline,
+    colored_point_cloud_pipeline_state: ?colored_point_cloud_pipeline.ColoredPointCloudPipeline,
 
     quad_unit_vertex_buffer: ?objc.Object,
     msaa_texture: ?objc.Object,
@@ -82,6 +84,7 @@ pub const Renderer = struct {
             .path_pipeline_state = null,
             .polyline_pipeline_state = null,
             .point_cloud_pipeline_state = null,
+            .colored_point_cloud_pipeline_state = null,
             .quad_unit_vertex_buffer = null,
             .msaa_texture = null,
             .sample_count = sample_count,
@@ -124,6 +127,9 @@ pub const Renderer = struct {
         // Initialize Point Cloud pipeline (for efficient scatter plot rendering)
         self.point_cloud_pipeline_state = point_cloud_pipeline.PointCloudPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
 
+        // Initialize Colored Point Cloud pipeline (for per-point colored circles)
+        self.colored_point_cloud_pipeline_state = colored_point_cloud_pipeline.ColoredPointCloudPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
         return self;
     }
 
@@ -137,6 +143,7 @@ pub const Renderer = struct {
         if (self.path_pipeline_state) |*pp| pp.deinit();
         if (self.polyline_pipeline_state) |*plp| plp.deinit();
         if (self.point_cloud_pipeline_state) |*pcp| pcp.deinit();
+        if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.deinit();
         if (self.post_process_state) |*pp| pp.deinit();
         self.command_queue.msgSend(void, "release", .{});
         self.device.msgSend(void, "release", .{});
@@ -300,6 +307,7 @@ pub const Renderer = struct {
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
         if (self.polyline_pipeline_state) |*plp| plp.nextFrame();
         if (self.point_cloud_pipeline_state) |*pcp| pcp.nextFrame();
+        if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.nextFrame();
 
         const shadows = scene.getShadows();
         const quads = scene.getQuads();
@@ -344,6 +352,7 @@ pub const Renderer = struct {
             .path = if (self.path_pipeline_state) |*pp| pp else null,
             .polyline = if (self.polyline_pipeline_state) |*plp| plp else null,
             .point_cloud = if (self.point_cloud_pipeline_state) |*pcp| pcp else null,
+            .colored_point_cloud = if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp else null,
             .mesh_pool = &scene.mesh_pool,
             .unit_vertex_buffer = unit_verts,
         }, viewport_size);

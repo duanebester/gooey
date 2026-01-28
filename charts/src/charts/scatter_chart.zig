@@ -346,17 +346,92 @@ pub const ScatterChart = struct {
     fn drawAllPoints(self: *const ScatterChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
         std.debug.assert(self.data.len > 0);
 
+        // OPTIMIZATION: Use point cloud batched rendering for circles with uniform radius
+        // This renders ALL points across ALL series in ONE GPU draw call using instanced rendering
+        // Before: N series × M points = N×M draw calls, N×M×64 vertices (tessellated circles)
+        // After:  1 draw call, total_points × 4 vertices (quads with SDF)
+        const can_batch = self.point_shape == .circle and self.size_data == null;
+
+        if (can_batch) {
+            self.drawAllPointsBatched(ctx, x_scale, y_scale);
+        } else {
+            // Fall back to individual drawing for non-circle shapes or variable sizes
+            for (self.data, 0..) |*series, series_idx| {
+                const color = self.getSeriesColor(series, series_idx);
+                const alpha_color = Color.rgba(color.r, color.g, color.b, self.point_opacity);
+
+                // Get size data for this series if available
+                const size_slice: ?[]const f32 = if (self.size_data) |sd|
+                    if (series_idx < sd.len) sd[series_idx] else null
+                else
+                    null;
+
+                self.drawSeriesPoints(ctx, series, series_idx, x_scale, y_scale, alpha_color, size_slice);
+            }
+        }
+    }
+
+    /// Draw ALL points from ALL series in a single batched draw call.
+    /// Uses pointCloudColoredArrays for multi-series with different colors.
+    /// Applies LTTB decimation for large datasets when LOD is enabled.
+    fn drawAllPointsBatched(self: *const ScatterChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
+        std.debug.assert(self.data.len > 0);
+        std.debug.assert(self.point_shape == .circle); // Only circles can be batched
+
+        var centers: [MAX_DATA_POINTS][2]f32 = undefined;
+        var colors: [MAX_DATA_POINTS]Color = undefined;
+        var total_count: usize = 0;
+
         for (self.data, 0..) |*series, series_idx| {
+            if (series.data_len == 0) continue;
+
             const color = self.getSeriesColor(series, series_idx);
             const alpha_color = Color.rgba(color.r, color.g, color.b, self.point_opacity);
 
-            // Get size data for this series if available
-            const size_slice: ?[]const f32 = if (self.size_data) |sd|
-                if (series_idx < sd.len) sd[series_idx] else null
-            else
-                null;
+            // Check if LOD decimation is needed for this series
+            const use_lod = self.enable_lod and series.data_len > self.lod_target_points;
 
-            self.drawSeriesPoints(ctx, series, series_idx, x_scale, y_scale, alpha_color, size_slice);
+            if (use_lod) {
+                // Apply LTTB decimation for large datasets
+                var input_points: [MAX_DATA_POINTS]DecimationPoint = undefined;
+                var decimated: [MAX_DATA_POINTS]DecimationPoint = undefined;
+
+                // Convert to decimation format
+                var i: u32 = 0;
+                while (i < series.data_len and i < MAX_DATA_POINTS) : (i += 1) {
+                    input_points[i] = .{ .x = series.data[i].x, .y = series.data[i].y };
+                }
+
+                // Decimate using LTTB algorithm
+                const decimated_count = util.decimateLTTB(
+                    input_points[0..series.data_len],
+                    series.data_len,
+                    &decimated,
+                    self.lod_target_points,
+                );
+
+                // Scale decimated points and add to batch
+                var j: u32 = 0;
+                while (j < decimated_count and total_count < MAX_DATA_POINTS) : (j += 1) {
+                    centers[total_count] = .{ x_scale.scale(decimated[j].x), y_scale.scale(decimated[j].y) };
+                    colors[total_count] = alpha_color;
+                    total_count += 1;
+                }
+            } else {
+                // Use all points directly
+                var i: u32 = 0;
+                while (i < series.data_len and total_count < MAX_DATA_POINTS) : (i += 1) {
+                    const point = &series.data[i];
+                    centers[total_count] = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
+                    colors[total_count] = alpha_color;
+                    total_count += 1;
+                }
+            }
+        }
+
+        // Single draw call for ALL points across ALL series (instanced rendering)
+        if (total_count >= 1) {
+            ctx.pointCloudColoredArrays(centers[0..total_count], colors[0..total_count], self.point_radius);
         }
     }
 
