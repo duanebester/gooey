@@ -851,13 +851,13 @@ zig build test
 - [x] `zig build -Dtarget=wasm32-freestanding` passes
 - [x] `zig build test` passes
 
-### Day 4: Flatten web/
+### Day 4: Flatten web/ ✅
 
-- [ ] Move `platform/wgpu/web/` to `platform/web/`
-- [ ] Update `platform/mod.zig`
-- [ ] Update `platform/time.zig`
-- [ ] Update any other imports
-- [ ] `zig build` passes (all targets)
+- [x] Move `platform/wgpu/web/` to `platform/web/`
+- [x] Update `platform/mod.zig`
+- [x] Update `platform/time.zig`
+- [x] Update any other imports
+- [x] `zig build` passes (all targets)
 
 ### Day 5: Testing Infrastructure
 
