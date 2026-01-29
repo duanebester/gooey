@@ -13,7 +13,7 @@ const platform = @import("../platform/mod.zig");
 
 // Clipboard support (platform-specific)
 const clipboard = if (builtin.os.tag == .macos)
-    @import("../platform/mac/clipboard.zig")
+    @import("../platform/macos/clipboard.zig")
 else if (builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
     @import("../platform/web/clipboard.zig")
 else

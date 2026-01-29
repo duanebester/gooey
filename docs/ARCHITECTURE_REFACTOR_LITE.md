@@ -859,13 +859,13 @@ zig build test
 - [x] Update any other imports
 - [x] `zig build` passes (all targets)
 
-### Day 5: Testing Infrastructure
+### Day 5: Testing Infrastructure ✅
 
-- [ ] Create `testing/mod.zig`
-- [ ] Create `testing/mock_renderer.zig`
-- [ ] Add test helpers
-- [ ] Add `testing` export to `root.zig`
-- [ ] `zig build test` passes
+- [x] Create `testing/mod.zig`
+- [x] Create `testing/mock_renderer.zig`
+- [x] Add test helpers
+- [x] Add `testing` export to `root.zig`
+- [x] `zig build test` passes
 
 ---
 

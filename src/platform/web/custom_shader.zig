@@ -1,7 +1,7 @@
 //! Custom Shader Support for WebGPU
 //!
 //! Provides Shadertoy-compatible custom post-processing shaders for web targets.
-//! Mirrors the Metal implementation in platform/mac/metal/custom_shader.zig.
+//! Mirrors the Metal implementation in platform/macos/metal/custom_shader.zig.
 //!
 //! User shaders implement a mainImage function that receives:
 //! - fragCoord: pixel coordinates

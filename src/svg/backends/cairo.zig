@@ -4,7 +4,7 @@
 //! Output format: R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke)
 
 const std = @import("std");
-const svg_mod = @import("../scene/svg.zig");
+const svg_mod = @import("../../scene/svg.zig");
 
 pub const RasterizedSvg = struct {
     width: u32,

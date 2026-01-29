@@ -117,7 +117,7 @@ pub const layout = @import("layout/layout.zig");
 pub const validation = @import("validation.zig");
 
 /// Accessibility (A11Y) - screen reader and assistive technology support
-pub const accessibility = @import("accessibility/accessibility.zig");
+pub const accessibility = @import("accessibility/mod.zig");
 
 /// Text rendering system with backend abstraction
 pub const text = @import("text/mod.zig");
@@ -367,6 +367,17 @@ pub const RendererCapabilities = platform.RendererCapabilities;
 pub const PathPromptOptions = platform.PathPromptOptions;
 pub const PathPromptResult = platform.PathPromptResult;
 pub const SavePromptOptions = platform.SavePromptOptions;
+
+// =============================================================================
+// Testing Utilities (only available in test builds)
+// =============================================================================
+
+/// Testing utilities and mock implementations
+/// Only compiled when running tests to avoid bloating production builds
+pub const testing = if (builtin.is_test)
+    @import("testing/mod.zig")
+else
+    struct {};
 
 // =============================================================================
 // Tests

@@ -11,11 +11,11 @@ const interface_verify = @import("../core/interface_verify.zig");
 const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 
 const backend = if (is_wasm)
-    @import("rasterizer_web.zig")
+    @import("backends/canvas.zig")
 else switch (builtin.os.tag) {
-    .macos => @import("rasterizer_cg.zig"),
-    .linux => @import("rasterizer_linux.zig"),
-    else => @import("rasterizer_stub.zig"),
+    .macos => @import("backends/coregraphics.zig"),
+    .linux => @import("backends/cairo.zig"),
+    else => @import("backends/null.zig"),
 };
 
 // Compile-time interface verification

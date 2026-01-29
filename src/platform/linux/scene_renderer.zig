@@ -10,7 +10,7 @@ const builtin = @import("builtin");
 const DEBUG_BATCHES = builtin.mode == .Debug and false;
 
 const vk = @import("vulkan.zig");
-const unified = @import("../wgpu/unified.zig");
+const unified = @import("../unified.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const batch_iter = @import("../../scene/batch_iterator.zig");
 const SvgInstance = @import("../../scene/svg_instance.zig").SvgInstance;

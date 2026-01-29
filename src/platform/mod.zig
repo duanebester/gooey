@@ -79,7 +79,7 @@ pub const is_linux = builtin.os.tag == .linux;
 pub const backend = if (is_wasm)
     @import("web/mod.zig")
 else switch (builtin.os.tag) {
-    .macos => @import("mac/platform.zig"),
+    .macos => @import("macos/mod.zig"),
     .linux => @import("linux/mod.zig"),
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
@@ -98,7 +98,7 @@ pub const Window = if (is_wasm)
 else if (is_linux)
     backend.Window
 else
-    @import("mac/window.zig").Window;
+    backend.Window;
 
 /// DisplayLink for vsync (native only, not available on Linux)
 pub const DisplayLink = if (is_wasm)
@@ -106,21 +106,16 @@ pub const DisplayLink = if (is_wasm)
 else if (is_linux)
     void // Linux uses Wayland frame callbacks
 else
-    @import("mac/display_link.zig").DisplayLink;
+    backend.DisplayLink;
 
 // =============================================================================
 // Platform-specific modules (for advanced usage)
 // =============================================================================
 
-pub const mac = if (!is_wasm and !is_linux) struct {
-    pub const platform = @import("mac/platform.zig");
-    pub const window = @import("mac/window.zig");
-    pub const display_link = @import("mac/display_link.zig");
-    pub const appkit = @import("mac/appkit.zig");
-    pub const metal = @import("mac/metal/metal.zig");
-    pub const clipboard = @import("mac/clipboard.zig");
-    pub const file_dialog = @import("mac/file_dialog.zig");
-} else struct {};
+pub const macos = if (!is_wasm and !is_linux) @import("macos/mod.zig") else struct {};
+
+// Legacy alias for backwards compatibility
+pub const mac = macos;
 
 pub const linux = if (is_linux) struct {
     pub const platform = @import("linux/platform.zig");
@@ -128,7 +123,7 @@ pub const linux = if (is_linux) struct {
     pub const wayland = @import("linux/wayland.zig");
     pub const vulkan = @import("linux/vulkan.zig");
     pub const vk_renderer = @import("linux/vk_renderer.zig");
-    pub const unified = @import("wgpu/unified.zig");
+    pub const unified = @import("unified.zig");
     pub const clipboard = @import("linux/clipboard.zig");
     pub const dbus = @import("linux/dbus.zig");
     pub const file_dialog = @import("linux/file_dialog.zig");

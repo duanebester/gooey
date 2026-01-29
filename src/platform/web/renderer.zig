@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const imports = @import("imports.zig");
-const unified = @import("../wgpu/unified.zig");
+const unified = @import("../unified.zig");
 const interface_verify = @import("../../core/interface_verify.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const GradientUniforms = scene_mod.GradientUniforms;

@@ -213,7 +213,7 @@ fn configureBlending(attachment: objc.Object) void {
 
 /// Setup unified quad+shadow rendering pipeline
 pub fn setupUnifiedPipeline(device: objc.Object, sample_count: u32) !objc.Object {
-    const unified_shader = @import("unified.zig");
+    const unified_shader = @import("../../unified.zig");
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,

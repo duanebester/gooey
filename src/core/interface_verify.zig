@@ -15,6 +15,15 @@ const std = @import("std");
 ///   - deinit(*Self) void
 ///   - renderScene or render (at least one)
 ///
+/// NOTE: The render/renderScene flexibility is intentional. Platform renderers
+/// have legitimately different signatures:
+///   - Metal: render(clear_color), renderScene(scene, clear_color) — has internal scene state
+///   - Vulkan: render(scene) — stateless, scene passed in
+///   - Web: render(scene, viewport_w, viewport_h, r, g, b, a) — needs viewport info
+///
+/// The verification only checks that *some* render capability exists, not the
+/// exact signature, because platform-specific calling code handles the differences.
+///
 /// Optional methods (platform-dependent):
 ///   - resize(*Self, ...) - native platforms; web handles resize via canvas
 ///   - beginFrame/endFrame - if using explicit frame boundaries
@@ -79,6 +88,25 @@ pub fn verifyImageLoaderInterface(comptime T: type) void {
     }
 }
 
+/// Verify a module implements the ImageLoader interface (module-level functions)
+///
+/// Required exports:
+///   - load or loadFromMemory fn
+///   - DecodedImage type
+///   - LoadError type
+pub fn verifyImageLoaderModule(comptime M: type) void {
+    comptime {
+        // Required function exports
+        if (!@hasDecl(M, "load") and !@hasDecl(M, "loadFromMemory")) {
+            @compileError("ImageLoader module must export load or loadFromMemory function");
+        }
+
+        // Required type exports
+        assertHasDecl(M, "DecodedImage", "ImageLoader module");
+        assertHasDecl(M, "LoadError", "ImageLoader module");
+    }
+}
+
 /// Verify a type implements the Clipboard interface
 ///
 /// Required methods:
@@ -112,6 +140,18 @@ pub fn verifyWindowInterface(comptime T: type) void {
     comptime {
         assertHasDecl(T, "getSize", "Window");
         assertHasDecl(T, "setTitle", "Window");
+    }
+}
+
+/// Verify a type implements the FileDialog interface
+///
+/// Required methods:
+///   - promptForPaths(*Self, Allocator, PathPromptOptions) ?PathPromptResult
+///   - promptForNewPath(*Self, Allocator, SavePromptOptions) ?[]const u8
+pub fn verifyFileDialogInterface(comptime T: type) void {
+    comptime {
+        assertHasDecl(T, "promptForPaths", "FileDialog");
+        assertHasDecl(T, "promptForNewPath", "FileDialog");
     }
 }
 
@@ -229,5 +269,49 @@ test "verifySvgRasterizerModule with mock" {
     // Should not cause compile error
     comptime {
         verifySvgRasterizerModule(MockSvgModule);
+    }
+}
+
+test "verifyFileDialogInterface with mock" {
+    const MockFileDialog = struct {
+        pub fn promptForPaths(_: *@This(), _: std.mem.Allocator, _: anytype) ?void {
+            return null;
+        }
+        pub fn promptForNewPath(_: *@This(), _: std.mem.Allocator, _: anytype) ?[]const u8 {
+            return null;
+        }
+    };
+
+    // Should not cause compile error
+    comptime {
+        verifyFileDialogInterface(MockFileDialog);
+    }
+}
+
+test "verifyImageLoaderModule with mock" {
+    const MockImageLoaderModule = struct {
+        pub const DecodedImage = struct {
+            width: u32,
+            height: u32,
+            pixels: []u8,
+        };
+
+        pub const LoadError = error{
+            InvalidFormat,
+            OutOfMemory,
+        };
+
+        pub fn load(_: std.mem.Allocator, _: anytype) LoadError!DecodedImage {
+            return LoadError.InvalidFormat;
+        }
+
+        pub fn loadFromMemory(_: std.mem.Allocator, _: []const u8) LoadError!DecodedImage {
+            return LoadError.InvalidFormat;
+        }
+    };
+
+    // Should not cause compile error
+    comptime {
+        verifyImageLoaderModule(MockImageLoaderModule);
     }
 }

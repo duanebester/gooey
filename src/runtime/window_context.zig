@@ -62,7 +62,7 @@ const SvgAtlas = svg_mod.SvgAtlas;
 const image_mod = @import("../image/mod.zig");
 
 // Metal renderer for macOS thread-safe atlas upload
-const MetalRenderer = if (is_mac) @import("../platform/mac/metal/metal.zig").Renderer else void;
+const MetalRenderer = if (is_mac) @import("../platform/macos/metal/metal.zig").Renderer else void;
 const ImageAtlas = image_mod.ImageAtlas;
 
 /// Per-window context that replaces static CallbackState.

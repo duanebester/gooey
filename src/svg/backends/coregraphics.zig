@@ -8,7 +8,7 @@
 //! bezier curves for native CoreGraphics rendering with optimal anti-aliasing.
 
 const std = @import("std");
-const svg_mod = @import("../scene/svg.zig");
+const svg_mod = @import("../../scene/svg.zig");
 
 const cg = @cImport({
     @cInclude("CoreGraphics/CoreGraphics.h");

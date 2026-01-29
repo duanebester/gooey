@@ -1,5 +1,5 @@
 // Unified shader for rendering quads and shadows in a single draw call
-// Port of gooey/src/platform/mac/metal/unified.zig
+// Zig types defined in gooey/src/platform/unified.zig
 
 const PRIM_QUAD: u32 = 0u;
 const PRIM_SHADOW: u32 = 1u;
