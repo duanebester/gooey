@@ -581,7 +581,6 @@ pub fn build(b: *std.Build) void {
     addWasmExample(b, gooey_wasm_module, wasm_target, "drag-drop", "src/examples/drag_drop.zig", "web/drag-drop");
 }
 
-/// Helper to add a native macOS example with minimal boilerplate.
 fn addNativeExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
