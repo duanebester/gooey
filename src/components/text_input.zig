@@ -22,9 +22,13 @@ pub const TextInput = struct {
     secure: bool = false,
     bind: ?*[]const u8 = null,
 
+    // State
+    disabled: bool = false,
+
     // Layout
     width: ?f32 = null,
     height: ?f32 = null, // null = auto-size based on font metrics + padding
+    fill_width: bool = false,
     padding: f32 = 8,
 
     // Visual styling (null = use theme)
@@ -84,13 +88,15 @@ pub const TextInput = struct {
         });
         defer if (a11y_pushed) b.accessibleEnd();
 
-        b.box(.{}, .{
+        b.box(.{ .fill_width = self.fill_width }, .{
             ui.input(self.id, .{
                 .placeholder = self.placeholder,
                 .secure = self.secure,
+                .disabled = self.disabled,
                 .bind = self.bind,
                 .width = self.width,
                 .height = self.height,
+                .fill_width = self.fill_width,
                 .padding = self.padding,
                 .background = background,
                 .border_color = border_color,

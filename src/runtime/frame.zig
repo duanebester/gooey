@@ -206,15 +206,29 @@ fn renderTextInputs(gooey: *Gooey, builder: *const Builder) !void {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         const input_widget = gooey.textInput(pending.id) orelse continue;
 
+        // If disabled and currently focused, blur it
+        if (pending.style.disabled and input_widget.isFocused()) {
+            input_widget.blur();
+        }
+
         const inset = pending.style.padding + pending.style.border_width;
+        // Compute inner_width from layout bounds when fill_width is true
+        const inner_width = if (pending.style.fill_width)
+            bounds.width - (inset * 2)
+        else
+            pending.inner_width;
         input_widget.bounds = .{
             .x = bounds.x + inset,
             .y = bounds.y + inset,
-            .width = pending.inner_width,
+            .width = inner_width,
             .height = pending.inner_height,
         };
         input_widget.setPlaceholder(pending.style.placeholder);
-        input_widget.style.text_color = render_bridge.colorToHsla(pending.style.text_color);
+        // Use muted color for disabled inputs
+        input_widget.style.text_color = if (pending.style.disabled)
+            render_bridge.colorToHsla(pending.style.placeholder_color)
+        else
+            render_bridge.colorToHsla(pending.style.text_color);
         input_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
         input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);

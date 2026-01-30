@@ -261,6 +261,9 @@ pub const InputStyle = struct {
     placeholder: []const u8 = "",
     secure: bool = false,
 
+    // State
+    disabled: bool = false,
+
     // Binding
     bind: ?*[]const u8 = null,
 
@@ -274,6 +277,7 @@ pub const InputStyle = struct {
     // Layout
     width: ?f32 = null,
     height: ?f32 = null,
+    fill_width: bool = false,
     padding: f32 = 8,
 
     // Visual chrome (rendered by component)

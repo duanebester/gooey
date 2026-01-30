@@ -1944,12 +1944,16 @@ pub const Builder = struct {
         _ = self.dispatch.pushNode();
         self.dispatch.setLayoutId(layout_id.id);
 
-        // Register as focusable
-        const focus_id = FocusId.init(inp.id);
-        self.dispatch.setFocusable(focus_id);
+        // Register as focusable (only if not disabled)
+        if (!inp.style.disabled) {
+            const focus_id = FocusId.init(inp.id);
+            self.dispatch.setFocusable(focus_id);
+        }
 
-        // Check if this input is focused (for border color)
-        const is_focused = if (self.gooey) |g|
+        // Check if this input is focused (for border color) - disabled inputs are never focused
+        const is_focused = if (inp.style.disabled)
+            false
+        else if (self.gooey) |g|
             if (g.textInput(inp.id)) |ti| ti.isFocused() else false
         else
             false;
@@ -1967,7 +1971,8 @@ pub const Builder = struct {
 
         // Calculate inner content size (text area)
         const input_width = inp.style.width orelse 200;
-        const inner_width = input_width - chrome;
+        // When fill_width is true, inner_width will be computed at render time from layout bounds
+        const inner_width = if (inp.style.fill_width) 0 else input_width - chrome;
         const inner_height = input_height - chrome;
 
         // Create the outer box with chrome
@@ -1975,7 +1980,7 @@ pub const Builder = struct {
             .id = layout_id,
             .layout = .{
                 .sizing = .{
-                    .width = SizingAxis.fixed(input_width),
+                    .width = if (inp.style.fill_width) SizingAxis.percent(1.0) else SizingAxis.fixed(input_width),
                     .height = SizingAxis.fixed(input_height),
                 },
                 .padding = Padding.all(@intFromFloat(inp.style.padding + inp.style.border_width)),
@@ -2002,11 +2007,13 @@ pub const Builder = struct {
             .on_blur_handler = inp.style.on_blur_handler,
         }) catch {};
 
-        // Register focus with FocusManager
-        if (self.gooey) |g| {
-            g.focus.register(FocusHandle.init(inp.id)
-                .tabIndex(inp.style.tab_index)
-                .tabStop(inp.style.tab_stop));
+        // Register focus with FocusManager (only if not disabled)
+        if (!inp.style.disabled) {
+            if (self.gooey) |g| {
+                g.focus.register(FocusHandle.init(inp.id)
+                    .tabIndex(inp.style.tab_index)
+                    .tabStop(inp.style.tab_stop));
+            }
         }
 
         self.dispatch.popNode();
