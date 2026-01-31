@@ -222,6 +222,13 @@ pub const Gooey = struct {
     /// Frame counter for periodic screen reader checks
     a11y_check_counter: u32 = 0,
 
+    // Thread Dispatcher (Phase 5: Gooey owns dispatcher)
+    /// Thread dispatcher for cross-thread callbacks to main thread.
+    /// Null on WASM (no threads). Initialized automatically on native platforms.
+    /// Owned by Gooey - automatically cleaned up in deinit().
+    thread_dispatcher: if (platform.is_wasm) void else ?*platform.Dispatcher =
+        if (platform.is_wasm) {} else null,
+
     // Per-window root state for handler callbacks (multi-window support)
     /// Type-erased pointer to this window's root state
     root_state_ptr: ?*anyopaque = null,
@@ -455,6 +462,19 @@ pub const Gooey = struct {
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
 
+        // Initialize thread dispatcher (native only, Phase 5)
+        if (!platform.is_wasm) {
+            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
+            errdefer allocator.destroy(dispatcher_ptr);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
+            result.thread_dispatcher = dispatcher_ptr;
+
+            // Wire to platform on Linux (automatic, no user action needed)
+            if (platform.is_linux) {
+                window.platform.setDispatcher(dispatcher_ptr);
+            }
+        }
+
         return result;
     }
 
@@ -569,6 +589,19 @@ pub const Gooey = struct {
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
+
+        // Initialize thread dispatcher (native only, Phase 5)
+        if (!platform.is_wasm) {
+            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
+            errdefer allocator.destroy(dispatcher_ptr);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
+            self.thread_dispatcher = dispatcher_ptr;
+
+            // Wire to platform on Linux (automatic, no user action needed)
+            if (platform.is_linux) {
+                window.platform.setDispatcher(dispatcher_ptr);
+            }
+        }
     }
 
     /// Initialize Gooey with shared resources (text system, SVG atlas, image atlas).
@@ -652,6 +685,19 @@ pub const Gooey = struct {
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
+
+        // Initialize thread dispatcher (native only, Phase 5)
+        if (!platform.is_wasm) {
+            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
+            errdefer allocator.destroy(dispatcher_ptr);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
+            result.thread_dispatcher = dispatcher_ptr;
+
+            // Wire to platform on Linux (automatic, no user action needed)
+            if (platform.is_linux) {
+                window.platform.setDispatcher(dispatcher_ptr);
+            }
+        }
 
         return result;
     }
@@ -754,9 +800,30 @@ pub const Gooey = struct {
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
+
+        // Initialize thread dispatcher (native only, Phase 5)
+        if (!platform.is_wasm) {
+            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
+            errdefer allocator.destroy(dispatcher_ptr);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
+            self.thread_dispatcher = dispatcher_ptr;
+
+            // Wire to platform on Linux (automatic, no user action needed)
+            if (platform.is_linux) {
+                window.platform.setDispatcher(dispatcher_ptr);
+            }
+        }
     }
 
     pub fn deinit(self: *Self) void {
+        // Clean up thread dispatcher (native only, Phase 5)
+        if (!platform.is_wasm) {
+            if (self.thread_dispatcher) |d| {
+                d.deinit();
+                self.allocator.destroy(d);
+            }
+        }
+
         // Clean up accessibility bridge
         self.a11y_bridge.deinit();
 
@@ -793,6 +860,73 @@ pub const Gooey = struct {
             self.layout.deinit();
             self.allocator.destroy(self.layout);
         }
+    }
+
+    // =========================================================================
+    // Thread Dispatcher API (Phase 5)
+    // =========================================================================
+
+    /// Dispatch a callback to run on the main thread.
+    /// Safe to call from any thread. Returns error on WASM (single-threaded).
+    ///
+    /// Usage:
+    /// ```
+    /// const Ctx = struct { app: *MyApp };
+    /// try gooey.dispatchOnMainThread(Ctx, .{ .app = self }, struct {
+    ///     fn handler(ctx: *Ctx) void {
+    ///         ctx.app.handleOnMain();
+    ///     }
+    /// }.handler);
+    /// ```
+    pub fn dispatchOnMainThread(
+        self: *Self,
+        comptime Context: type,
+        context: Context,
+        comptime callback: fn (*Context) void,
+    ) !void {
+        if (platform.is_wasm) return error.NotSupported;
+        if (self.thread_dispatcher) |d| {
+            try d.dispatchOnMainThread(Context, context, callback);
+        } else {
+            return error.NotInitialized;
+        }
+    }
+
+    /// Dispatch a callback to run on the main thread after a delay.
+    /// Safe to call from any thread. Returns error on WASM (single-threaded).
+    ///
+    /// Usage:
+    /// ```
+    /// // Run after 100ms
+    /// try gooey.dispatchAfter(100_000_000, Ctx, .{ .app = self }, handler);
+    /// ```
+    pub fn dispatchAfter(
+        self: *Self,
+        delay_ns: u64,
+        comptime Context: type,
+        context: Context,
+        comptime callback: fn (*Context) void,
+    ) !void {
+        if (platform.is_wasm) return error.NotSupported;
+        if (self.thread_dispatcher) |d| {
+            try d.dispatchAfter(delay_ns, Context, context, callback);
+        } else {
+            return error.NotInitialized;
+        }
+    }
+
+    /// Check if current thread is the main/UI thread.
+    /// Always returns true on WASM (single-threaded).
+    pub fn isMainThread() bool {
+        if (platform.is_wasm) return true;
+        return platform.Dispatcher.isMainThread();
+    }
+
+    /// Get the underlying dispatcher for advanced usage.
+    /// Returns null on WASM or if not initialized.
+    pub fn getDispatcher(self: *Self) ?*platform.Dispatcher {
+        if (platform.is_wasm) return null;
+        return self.thread_dispatcher;
     }
 
     // =========================================================================

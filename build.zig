@@ -203,8 +203,14 @@ pub fn build(b: *std.Build) void {
         // =========================================================================
         // Shader Compilation (GLSL -> SPIR-V)
         // =========================================================================
-        // Compiles shaders to source tree so @embedFile can find them.
-        // Pre-committed .spv files mean this only needs to run when shaders change.
+        // Automatically compiles shaders when GLSL sources change.
+        // Writes directly to source tree so @embedFile can find them.
+        // Requires glslc (from vulkan-tools, shaderc, or Vulkan SDK).
+        //
+        // Install glslc:
+        //   Ubuntu/Debian: sudo apt install glslc
+        //   Arch: sudo pacman -S shaderc
+        //   Or install Vulkan SDK from https://vulkan.lunarg.com/
 
         const compile_shaders_step = b.step("compile-shaders", "Compile GLSL shaders to SPIR-V (requires glslc)");
 
@@ -220,15 +226,17 @@ pub fn build(b: *std.Build) void {
             .{ .source = "image.frag", .output = "image.frag.spv", .stage = "fragment" },
         };
 
+        // Create shader compilation commands
+        // Writes output directly to source tree for @embedFile compatibility
         inline for (shaders) |shader| {
             const compile_cmd = b.addSystemCommand(&.{
                 "glslc",
                 "-fshader-stage=" ++ shader.stage,
-                "-O", // Optimize for release
                 "-o",
                 shader_dir ++ "/" ++ shader.output,
-                shader_dir ++ "/" ++ shader.source,
             });
+            // Track input file - triggers recompilation when source changes
+            compile_cmd.addFileArg(b.path(shader_dir ++ "/" ++ shader.source));
             compile_shaders_step.dependOn(&compile_cmd.step);
         }
 
@@ -281,6 +289,9 @@ pub fn build(b: *std.Build) void {
 
         b.installArtifact(exe);
 
+        // Ensure shaders are compiled before building executables that @embedFile them
+        exe.step.dependOn(compile_shaders_step);
+
         // Run step
         const run_step = b.step("run", "Run the showcase demo");
         const run_cmd = b.addRunArtifact(exe);
@@ -318,6 +329,7 @@ pub fn build(b: *std.Build) void {
         basic_exe.linkLibC();
 
         b.installArtifact(basic_exe);
+        basic_exe.step.dependOn(compile_shaders_step);
 
         const run_basic_step = b.step("run-basic", "Run the basic Linux demo (simple Wayland + Vulkan test)");
         const run_basic_cmd = b.addRunArtifact(basic_exe);
@@ -351,6 +363,7 @@ pub fn build(b: *std.Build) void {
         text_exe.linkLibC();
 
         b.installArtifact(text_exe);
+        text_exe.step.dependOn(compile_shaders_step);
 
         const run_text_step = b.step("run-text", "Run the Linux text demo");
         const run_text_cmd = b.addRunArtifact(text_exe);
@@ -384,6 +397,7 @@ pub fn build(b: *std.Build) void {
         file_dialog_exe.linkLibC();
 
         b.installArtifact(file_dialog_exe);
+        file_dialog_exe.step.dependOn(compile_shaders_step);
 
         const run_file_dialog_step = b.step("run-file-dialog", "Run the Linux file dialog demo");
         const run_file_dialog_cmd = b.addRunArtifact(file_dialog_exe);
@@ -417,6 +431,7 @@ pub fn build(b: *std.Build) void {
         drag_drop_exe.linkLibC();
 
         b.installArtifact(drag_drop_exe);
+        drag_drop_exe.step.dependOn(compile_shaders_step);
 
         const run_drag_drop_step = b.step("run-drag-drop", "Run the Linux drag & drop demo");
         const run_drag_drop_cmd = b.addRunArtifact(drag_drop_exe);
@@ -439,6 +454,7 @@ pub fn build(b: *std.Build) void {
         mod_tests.linkSystemLibrary("png");
         mod_tests.linkSystemLibrary("dbus-1");
         mod_tests.linkLibC();
+        mod_tests.step.dependOn(compile_shaders_step);
 
         const run_mod_tests = b.addRunArtifact(mod_tests);
 
@@ -476,6 +492,7 @@ pub fn build(b: *std.Build) void {
         valgrind_tests.linkSystemLibrary("png");
         valgrind_tests.linkSystemLibrary("dbus-1");
         valgrind_tests.linkLibC();
+        valgrind_tests.step.dependOn(compile_shaders_step);
 
         const test_valgrind_step = b.step("test-valgrind", "Run tests under valgrind");
         const valgrind_run = b.addSystemCommand(&.{

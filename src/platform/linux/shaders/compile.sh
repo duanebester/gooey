@@ -1,6 +1,13 @@
 #!/bin/bash
 # Compile GLSL shaders to SPIR-V for Vulkan
 # Requires glslc (from Vulkan SDK or shaderc package)
+#
+# NOTE: This script is provided for manual shader compilation and debugging.
+# The main build system (zig build) automatically compiles shaders as a
+# dependency, so you typically don't need to run this script manually.
+#
+# The build.zig shader compilation is triggered automatically when building
+# any Linux executable that @embedFile's the .spv files.
 
 set -e
 
@@ -18,14 +25,18 @@ if ! command -v glslc &> /dev/null; then
     exit 1
 fi
 
-# Compile unified shader
+# Note: We intentionally don't use -O (optimization) flag to match build.zig behavior.
+# Some GPU drivers have issues with optimized SPIR-V, and the performance difference
+# is negligible for these simple shaders.
+
+# Compile unified shader (quads and shadows)
 echo "  unified.vert -> unified.vert.spv"
 glslc -fshader-stage=vertex -o unified.vert.spv unified.vert
 
 echo "  unified.frag -> unified.frag.spv"
 glslc -fshader-stage=fragment -o unified.frag.spv unified.frag
 
-# Compile text shader
+# Compile text shader (glyph rendering)
 echo "  text.vert -> text.vert.spv"
 glslc -fshader-stage=vertex -o text.vert.spv text.vert
 

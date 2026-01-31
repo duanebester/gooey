@@ -108,6 +108,17 @@ else if (is_linux)
 else
     backend.DisplayLink;
 
+/// Thread dispatcher for cross-thread task dispatch
+/// - macOS: GCD-based dispatcher
+/// - Linux: eventfd-based dispatcher
+/// - WASM: void (single-threaded, no dispatcher needed)
+pub const Dispatcher = if (is_wasm)
+    void // WASM is single-threaded
+else if (is_linux)
+    backend.dispatcher.Dispatcher
+else
+    backend.dispatcher.Dispatcher;
+
 // =============================================================================
 // Platform-specific modules (for advanced usage)
 // =============================================================================
@@ -127,11 +138,13 @@ pub const linux = if (is_linux) struct {
     pub const clipboard = @import("linux/clipboard.zig");
     pub const dbus = @import("linux/dbus.zig");
     pub const file_dialog = @import("linux/file_dialog.zig");
+    pub const dispatcher = @import("linux/dispatcher.zig");
 
     // Type aliases
     pub const LinuxPlatform = platform.LinuxPlatform;
     pub const Window = window.Window;
     pub const VulkanRenderer = vk_renderer.VulkanRenderer;
+    pub const Dispatcher = dispatcher.Dispatcher;
 } else struct {};
 
 pub const web = if (is_wasm) struct {

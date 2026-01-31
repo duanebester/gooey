@@ -45,6 +45,9 @@ pub const file_dialog = @import("file_dialog.zig");
 // Low-level bindings
 pub const wayland = @import("wayland.zig");
 
+// Thread dispatcher (eventfd-based, mirrors macOS GCD API)
+pub const dispatcher = @import("dispatcher.zig");
+
 // Input handling
 pub const input = @import("input.zig");
 
