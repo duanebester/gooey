@@ -1225,6 +1225,7 @@ sudo dnf install \
 sudo pacman -S \
     wayland \
     vulkan-icd-loader \
+    vulkan-headers \
     freetype2 \
     harfbuzz \
     fontconfig \
