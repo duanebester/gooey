@@ -95,6 +95,11 @@ pub const Dispatcher = struct {
         return .{ .allocator = allocator };
     }
 
+    pub fn deinit(self: *Self) void {
+        // GCD manages its own resources, nothing to clean up
+        _ = self;
+    }
+
     /// Dispatch a task to a background queue (high priority)
     ///
     /// The callback will run on a background thread. The context is
