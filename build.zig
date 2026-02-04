@@ -207,37 +207,45 @@ pub fn build(b: *std.Build) void {
         // Writes directly to source tree so @embedFile can find them.
         // Requires glslc (from vulkan-tools, shaderc, or Vulkan SDK).
         //
+        // Pre-compiled .spv files are checked into the repo, so this step
+        // can be skipped in CI or when glslc is not available.
+        //
         // Install glslc:
         //   Ubuntu/Debian: sudo apt install glslc
         //   Arch: sudo pacman -S shaderc
         //   Or install Vulkan SDK from https://vulkan.lunarg.com/
 
+        // Option to skip shader compilation (useful for CI where glslc isn't available)
+        const skip_shader_compile = b.option(bool, "skip-shader-compile", "Skip shader compilation (use pre-compiled .spv files)") orelse false;
+
         const compile_shaders_step = b.step("compile-shaders", "Compile GLSL shaders to SPIR-V (requires glslc)");
 
-        const shader_dir = "src/platform/linux/shaders";
-        const shaders = [_]struct { source: []const u8, output: []const u8, stage: []const u8 }{
-            .{ .source = "unified.vert", .output = "unified.vert.spv", .stage = "vertex" },
-            .{ .source = "unified.frag", .output = "unified.frag.spv", .stage = "fragment" },
-            .{ .source = "text.vert", .output = "text.vert.spv", .stage = "vertex" },
-            .{ .source = "text.frag", .output = "text.frag.spv", .stage = "fragment" },
-            .{ .source = "svg.vert", .output = "svg.vert.spv", .stage = "vertex" },
-            .{ .source = "svg.frag", .output = "svg.frag.spv", .stage = "fragment" },
-            .{ .source = "image.vert", .output = "image.vert.spv", .stage = "vertex" },
-            .{ .source = "image.frag", .output = "image.frag.spv", .stage = "fragment" },
-        };
+        if (!skip_shader_compile) {
+            const shader_dir = "src/platform/linux/shaders";
+            const shaders = [_]struct { source: []const u8, output: []const u8, stage: []const u8 }{
+                .{ .source = "unified.vert", .output = "unified.vert.spv", .stage = "vertex" },
+                .{ .source = "unified.frag", .output = "unified.frag.spv", .stage = "fragment" },
+                .{ .source = "text.vert", .output = "text.vert.spv", .stage = "vertex" },
+                .{ .source = "text.frag", .output = "text.frag.spv", .stage = "fragment" },
+                .{ .source = "svg.vert", .output = "svg.vert.spv", .stage = "vertex" },
+                .{ .source = "svg.frag", .output = "svg.frag.spv", .stage = "fragment" },
+                .{ .source = "image.vert", .output = "image.vert.spv", .stage = "vertex" },
+                .{ .source = "image.frag", .output = "image.frag.spv", .stage = "fragment" },
+            };
 
-        // Create shader compilation commands
-        // Writes output directly to source tree for @embedFile compatibility
-        inline for (shaders) |shader| {
-            const compile_cmd = b.addSystemCommand(&.{
-                "glslc",
-                "-fshader-stage=" ++ shader.stage,
-                "-o",
-                shader_dir ++ "/" ++ shader.output,
-            });
-            // Track input file - triggers recompilation when source changes
-            compile_cmd.addFileArg(b.path(shader_dir ++ "/" ++ shader.source));
-            compile_shaders_step.dependOn(&compile_cmd.step);
+            // Create shader compilation commands
+            // Writes output directly to source tree for @embedFile compatibility
+            inline for (shaders) |shader| {
+                const compile_cmd = b.addSystemCommand(&.{
+                    "glslc",
+                    "-fshader-stage=" ++ shader.stage,
+                    "-o",
+                    shader_dir ++ "/" ++ shader.output,
+                });
+                // Track input file - triggers recompilation when source changes
+                compile_cmd.addFileArg(b.path(shader_dir ++ "/" ++ shader.source));
+                compile_shaders_step.dependOn(&compile_cmd.step);
+            }
         }
 
         // Create the gooey module for Linux
@@ -290,7 +298,10 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
 
         // Ensure shaders are compiled before building executables that @embedFile them
-        exe.step.dependOn(compile_shaders_step);
+        // (only if shader compilation is enabled)
+        if (!skip_shader_compile) {
+            exe.step.dependOn(compile_shaders_step);
+        }
 
         // Run step
         const run_step = b.step("run", "Run the showcase demo");
@@ -329,7 +340,9 @@ pub fn build(b: *std.Build) void {
         basic_exe.linkLibC();
 
         b.installArtifact(basic_exe);
-        basic_exe.step.dependOn(compile_shaders_step);
+        if (!skip_shader_compile) {
+            basic_exe.step.dependOn(compile_shaders_step);
+        }
 
         const run_basic_step = b.step("run-basic", "Run the basic Linux demo (simple Wayland + Vulkan test)");
         const run_basic_cmd = b.addRunArtifact(basic_exe);
@@ -363,7 +376,9 @@ pub fn build(b: *std.Build) void {
         text_exe.linkLibC();
 
         b.installArtifact(text_exe);
-        text_exe.step.dependOn(compile_shaders_step);
+        if (!skip_shader_compile) {
+            text_exe.step.dependOn(compile_shaders_step);
+        }
 
         const run_text_step = b.step("run-text", "Run the Linux text demo");
         const run_text_cmd = b.addRunArtifact(text_exe);
@@ -397,7 +412,9 @@ pub fn build(b: *std.Build) void {
         file_dialog_exe.linkLibC();
 
         b.installArtifact(file_dialog_exe);
-        file_dialog_exe.step.dependOn(compile_shaders_step);
+        if (!skip_shader_compile) {
+            file_dialog_exe.step.dependOn(compile_shaders_step);
+        }
 
         const run_file_dialog_step = b.step("run-file-dialog", "Run the Linux file dialog demo");
         const run_file_dialog_cmd = b.addRunArtifact(file_dialog_exe);
@@ -431,7 +448,9 @@ pub fn build(b: *std.Build) void {
         drag_drop_exe.linkLibC();
 
         b.installArtifact(drag_drop_exe);
-        drag_drop_exe.step.dependOn(compile_shaders_step);
+        if (!skip_shader_compile) {
+            drag_drop_exe.step.dependOn(compile_shaders_step);
+        }
 
         const run_drag_drop_step = b.step("run-drag-drop", "Run the Linux drag & drop demo");
         const run_drag_drop_cmd = b.addRunArtifact(drag_drop_exe);
@@ -454,7 +473,9 @@ pub fn build(b: *std.Build) void {
         mod_tests.linkSystemLibrary("png");
         mod_tests.linkSystemLibrary("dbus-1");
         mod_tests.linkLibC();
-        mod_tests.step.dependOn(compile_shaders_step);
+        if (!skip_shader_compile) {
+            mod_tests.step.dependOn(compile_shaders_step);
+        }
 
         const run_mod_tests = b.addRunArtifact(mod_tests);
 
@@ -492,7 +513,9 @@ pub fn build(b: *std.Build) void {
         valgrind_tests.linkSystemLibrary("png");
         valgrind_tests.linkSystemLibrary("dbus-1");
         valgrind_tests.linkLibC();
-        valgrind_tests.step.dependOn(compile_shaders_step);
+        if (!skip_shader_compile) {
+            valgrind_tests.step.dependOn(compile_shaders_step);
+        }
 
         const test_valgrind_step = b.step("test-valgrind", "Run tests under valgrind");
         const valgrind_run = b.addSystemCommand(&.{

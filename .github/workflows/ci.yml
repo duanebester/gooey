@@ -109,7 +109,7 @@ jobs:
             zig-cache-linux-
 
       - name: Run tests
-        run: zig build test
+        run: zig build test -Dskip-shader-compile=true
 
   # ==========================================================================
   # macOS Tests
@@ -183,7 +183,7 @@ jobs:
             zig-cache-linux-
 
       - name: Build (${{ matrix.optimize }})
-        run: zig build -Doptimize=${{ matrix.optimize }}
+        run: zig build -Doptimize=${{ matrix.optimize }} -Dskip-shader-compile=true
 
   # ==========================================================================
   # macOS Build (Multiple Optimization Levels)
@@ -305,7 +305,7 @@ jobs:
             zig-cache-linux-
 
       - name: Run tests under valgrind
-        run: zig build test-valgrind
+        run: zig build test-valgrind -Dskip-shader-compile=true
 
   # ==========================================================================
   # Code Formatting
