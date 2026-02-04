@@ -91,7 +91,7 @@ pub const Dispatcher = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator) !Self {
         return .{ .allocator = allocator };
     }
 

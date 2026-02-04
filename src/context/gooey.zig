@@ -466,7 +466,7 @@ pub const Gooey = struct {
         if (!platform.is_wasm) {
             const dispatcher_ptr = try allocator.create(platform.Dispatcher);
             errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = platform.Dispatcher.init(allocator);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
             result.thread_dispatcher = dispatcher_ptr;
 
             // Wire to platform on Linux (automatic, no user action needed)
@@ -594,7 +594,7 @@ pub const Gooey = struct {
         if (!platform.is_wasm) {
             const dispatcher_ptr = try allocator.create(platform.Dispatcher);
             errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = platform.Dispatcher.init(allocator);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
             self.thread_dispatcher = dispatcher_ptr;
 
             // Wire to platform on Linux (automatic, no user action needed)
@@ -690,7 +690,7 @@ pub const Gooey = struct {
         if (!platform.is_wasm) {
             const dispatcher_ptr = try allocator.create(platform.Dispatcher);
             errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = platform.Dispatcher.init(allocator);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
             result.thread_dispatcher = dispatcher_ptr;
 
             // Wire to platform on Linux (automatic, no user action needed)
@@ -805,7 +805,7 @@ pub const Gooey = struct {
         if (!platform.is_wasm) {
             const dispatcher_ptr = try allocator.create(platform.Dispatcher);
             errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = platform.Dispatcher.init(allocator);
+            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
             self.thread_dispatcher = dispatcher_ptr;
 
             // Wire to platform on Linux (automatic, no user action needed)
