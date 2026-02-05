@@ -242,10 +242,17 @@ fn renderTextAreas(gooey: *Gooey, builder: *const Builder) !void {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         const ta_widget = gooey.textArea(pending.id) orelse continue;
 
+        const inset = pending.style.padding + pending.style.border_width;
+        // Compute inner_width from layout bounds when fill_width is true
+        const inner_width = if (pending.style.fill_width)
+            bounds.width - (inset * 2)
+        else
+            pending.inner_width;
+
         ta_widget.bounds = .{
-            .x = bounds.x + pending.style.padding + pending.style.border_width,
-            .y = bounds.y + pending.style.padding + pending.style.border_width,
-            .width = pending.inner_width,
+            .x = bounds.x + inset,
+            .y = bounds.y + inset,
+            .width = inner_width,
             .height = pending.inner_height,
         };
         ta_widget.style.text_color = render_bridge.colorToHsla(pending.style.text_color);

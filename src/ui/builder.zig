@@ -2049,7 +2049,8 @@ pub const Builder = struct {
 
         // Calculate dimensions
         const textarea_width = ta.style.width orelse 300;
-        const inner_width = textarea_width - chrome;
+        // When fill_width is true, inner_width will be computed at render time from layout bounds
+        const inner_width = if (ta.style.fill_width) 0 else textarea_width - chrome;
         const inner_height = textarea_height - chrome;
 
         // Create the outer box with chrome
@@ -2057,7 +2058,7 @@ pub const Builder = struct {
             .id = layout_id,
             .layout = .{
                 .sizing = .{
-                    .width = SizingAxis.fixed(textarea_width),
+                    .width = if (ta.style.fill_width) SizingAxis.percent(1.0) else SizingAxis.fixed(textarea_width),
                     .height = SizingAxis.fixed(textarea_height),
                 },
                 .padding = Padding.all(@intFromFloat(ta.style.padding + ta.style.border_width)),

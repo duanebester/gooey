@@ -334,6 +334,24 @@ pub const GlyphCache = struct {
         std.debug.assert(false); // Should not happen with proper sizing
     }
 
+    /// Try to reserve space, clearing atlas on SkylineFull error.
+    /// Returns region on success, null if no space, or propagates other errors.
+    fn reserveOrClearOnSkylineFull(self: *Self, width: u32, height: u32) !?Region {
+        return self.grayscale_atlas.reserve(width, height) catch |err| {
+            if (err == error.SkylineFull) {
+                // Too many skyline nodes - clear atlas and retry
+                self.clear();
+
+                // Assert atlas is truly empty after clear
+                std.debug.assert(self.entry_count == 0);
+                std.debug.assert(self.grayscale_atlas.node_count == 1);
+
+                return try self.grayscale_atlas.reserve(width, height);
+            }
+            return err;
+        };
+    }
+
     /// Reserve space in the atlas, with eviction on overflow.
     /// When the atlas is at max size and can't fit the glyph,
     /// clears the entire cache and tries again.
@@ -342,7 +360,7 @@ pub const GlyphCache = struct {
         std.debug.assert(height > 0);
 
         // First attempt: try to reserve directly
-        if (try self.grayscale_atlas.reserve(width, height)) |region| {
+        if (try self.reserveOrClearOnSkylineFull(width, height)) |region| {
             return region;
         }
 
@@ -368,7 +386,7 @@ pub const GlyphCache = struct {
         self.updateAtlasSizeInCache();
 
         // Growth succeeded - try reserve again
-        return try self.grayscale_atlas.reserve(width, height) orelse error.GlyphTooLarge;
+        return try self.reserveOrClearOnSkylineFull(width, height) orelse error.GlyphTooLarge;
     }
 
     /// Update atlas_size in all cached entries after atlas growth.

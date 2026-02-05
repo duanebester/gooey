@@ -25,6 +25,7 @@ pub const TextArea = struct {
     width: ?f32 = null,
     height: ?f32 = null, // null = auto-size based on rows
     rows: usize = 4, // Default visible rows (used when height is null)
+    fill_width: bool = false,
     padding: f32 = 8,
 
     // Visual styling (null = use theme)
@@ -84,13 +85,14 @@ pub const TextArea = struct {
         });
         defer if (a11y_pushed) b.accessibleEnd();
 
-        b.box(.{}, .{
+        b.box(.{ .fill_width = self.fill_width }, .{
             ui.textArea(self.id, .{
                 .placeholder = self.placeholder,
                 .bind = self.bind,
                 .width = self.width,
                 .height = self.height,
                 .rows = self.rows,
+                .fill_width = self.fill_width,
                 .padding = self.padding,
                 .background = background,
                 .border_color = border_color,

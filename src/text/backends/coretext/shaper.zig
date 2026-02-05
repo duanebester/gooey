@@ -33,7 +33,7 @@ pub const CoreTextShaper = struct {
     const Self = @This();
 
     /// Maximum glyphs per CTRun (covers most text scenarios)
-    const MAX_GLYPHS_PER_RUN: usize = 512;
+    const MAX_GLYPHS_PER_RUN: usize = 1024;
     /// Maximum UTF-16 units for cluster mapping (~2KB UTF-8 text)
     const MAX_CLUSTER_MAP: usize = 2048;
 

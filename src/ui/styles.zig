@@ -309,6 +309,7 @@ pub const TextAreaStyle = struct {
     // Layout
     width: ?f32 = null,
     height: ?f32 = null, // null = auto-size based on rows
+    fill_width: bool = false,
     rows: usize = 4, // Default visible rows (used when height is null)
     padding: f32 = 8,
 

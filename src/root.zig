@@ -151,6 +151,7 @@ pub const Tab = components.Tab;
 pub const TabBar = components.TabBar;
 pub const Svg = components.Svg;
 pub const Icons = components.Icons;
+pub const Lucide = components.Lucide;
 pub const Select = components.Select;
 pub const Image = components.Image;
 pub const AspectRatio = components.AspectRatio;
