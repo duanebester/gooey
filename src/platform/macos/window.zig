@@ -790,6 +790,24 @@ pub const Window = struct {
         self.requestRender();
     }
 
+    /// Set the window appearance (light or dark mode)
+    /// This affects the titlebar text color and other system UI elements
+    pub fn setAppearance(self: *Self, dark: bool) void {
+        const NSAppearance = objc.getClass("NSAppearance") orelse return;
+        const NSString = objc.getClass("NSString") orelse return;
+
+        // NSAppearanceNameAqua for light, NSAppearanceNameDarkAqua for dark
+        // Create NSString from null-terminated C string literal
+        const appearance_name: [*:0]const u8 = if (dark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua";
+        const ns_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{appearance_name});
+        const appearance_ptr = NSAppearance.msgSend(?*anyopaque, "appearanceNamed:", .{ns_name.value});
+
+        if (appearance_ptr) |ptr| {
+            const appearance = objc.Object.fromId(ptr);
+            self.ns_window.msgSend(void, "setAppearance:", .{appearance.value});
+        }
+    }
+
     /// Change the glass effect style at runtime
     pub fn setGlassStyle(self: *Self, style: GlassStyle, opacity: f64, corner_radius: f64) void {
         // Remove existing glass effect if any
@@ -1066,6 +1084,11 @@ pub const Window = struct {
                 win.setBackgroundColor(color);
             }
 
+            fn setAppearanceFn(p: *anyopaque, dark: bool) void {
+                const win: *Self = @ptrCast(@alignCast(p));
+                win.setAppearance(dark);
+            }
+
             fn getMousePositionFn(p: *anyopaque) geometry.Point(f64) {
                 const win: *const Self = @ptrCast(@alignCast(p));
                 return win.getMousePosition();
@@ -1100,6 +1123,7 @@ pub const Window = struct {
                 .getScaleFactor = getScaleFactorFn,
                 .setTitle = setTitleFn,
                 .setBackgroundColor = setBackgroundColorFn,
+                .setAppearance = setAppearanceFn,
                 .getMousePosition = getMousePositionFn,
                 .isMouseInside = isMouseInsideFn,
                 .requestRender = requestRenderFn,

@@ -281,6 +281,7 @@ pub const WindowVTable = struct {
         getScaleFactor: *const fn (ptr: *anyopaque) f64,
         setTitle: *const fn (ptr: *anyopaque, title: []const u8) void,
         setBackgroundColor: *const fn (ptr: *anyopaque, color: geometry.Color) void,
+        setAppearance: *const fn (ptr: *anyopaque, dark: bool) void,
 
         // Input
         getMousePosition: *const fn (ptr: *anyopaque) geometry.Point(f64),
@@ -322,6 +323,10 @@ pub const WindowVTable = struct {
 
     pub fn setBackgroundColor(self: WindowVTable, color: geometry.Color) void {
         self.vtable.setBackgroundColor(self.ptr, color);
+    }
+
+    pub fn setAppearance(self: WindowVTable, dark: bool) void {
+        self.vtable.setAppearance(self.ptr, dark);
     }
 
     pub fn getMousePosition(self: WindowVTable) geometry.Point(f64) {

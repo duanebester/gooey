@@ -519,6 +519,18 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
         return true;
     }
 
+    // Escape to blur focused text widgets (TextInput, TextArea, CodeEditor)
+    if (k.key == .escape) {
+        const has_focused_widget = gooey.getFocusedTextInput() != null or
+            gooey.getFocusedTextArea() != null or
+            gooey.getFocusedCodeEditor() != null;
+        if (has_focused_widget) {
+            gooey.blurAll();
+            cx.notify();
+            return true;
+        }
+    }
+
     // Debugger toggle: Cmd+Shift+I (macOS) or Ctrl+Shift+I
     if (debugger_mod.Debugger.isToggleShortcut(k.key, k.modifiers)) {
         gooey.debugger.toggle();

@@ -153,6 +153,7 @@ pub const WebWindow = struct {
         self.background_color = color;
     }
     pub fn setGlassStyle(_: *Self, _: GlassStyle, _: f64, _: f64) void {}
+    pub fn setAppearance(_: *Self, _: bool) void {}
     pub fn performClose(_: *Self) void {}
 
     // Callbacks (no-op - web uses @export instead)

@@ -1102,6 +1102,10 @@ pub const Window = struct {
                 win.setBackgroundColor(color);
             }
 
+            fn setAppearanceFn(_: *anyopaque, _: bool) void {
+                // No-op on Linux - appearance is controlled by the desktop environment
+            }
+
             fn getMousePositionFn(p: *anyopaque) geometry.Point(f64) {
                 const win: *const Self = @ptrCast(@alignCast(p));
                 return win.getMousePosition();
@@ -1136,6 +1140,7 @@ pub const Window = struct {
                 .getScaleFactor = getScaleFactorFn,
                 .setTitle = setTitleFn,
                 .setBackgroundColor = setBackgroundColorFn,
+                .setAppearance = setAppearanceFn,
                 .getMousePosition = getMousePositionFn,
                 .isMouseInside = isMouseInsideFn,
                 .requestRender = requestRenderFn,

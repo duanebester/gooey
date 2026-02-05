@@ -1509,6 +1509,14 @@ pub const Gooey = struct {
         }
     }
 
+    /// Set the window appearance (light or dark mode)
+    /// This affects the titlebar text color and other system UI elements (macOS)
+    pub fn setAppearance(self: *Self, dark: bool) void {
+        if (self.window) |w| {
+            w.setAppearance(dark);
+        }
+    }
+
     /// Check and clear the needs_render flag
     pub fn checkAndClearRenderFlag(self: *Self) bool {
         const result = self.needs_render;

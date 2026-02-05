@@ -16,6 +16,8 @@ const clipboard = if (builtin.os.tag == .macos)
     @import("../platform/macos/clipboard.zig")
 else if (builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
     @import("../platform/web/clipboard.zig")
+else if (builtin.os.tag == .linux)
+    @import("../platform/linux/clipboard.zig")
 else
     struct {
         pub fn getText(_: std.mem.Allocator) ?[]const u8 {
