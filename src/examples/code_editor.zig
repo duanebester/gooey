@@ -139,9 +139,9 @@ const FileStatus = enum {
     pub fn getIconPath(self: FileStatus) []const u8 {
         return switch (self) {
             .displaying_code => Lucide.file,
-            .binary_file => Lucide.alert_triangle,
+            .binary_file => Lucide.triangle_alert,
             .image_file => Lucide.image,
-            .file_too_large => Lucide.alert_circle,
+            .file_too_large => Lucide.circle_alert,
             .no_file_selected => Lucide.file,
         };
     }

@@ -1,7 +1,8 @@
-//! Lucide Icons Demo
+//! Lucide Icons Demo — All Icons Showcase
 //!
-//! Demonstrates Lucide icons rendering with SVG shape elements (circle, rect, line, polyline).
-//! These icons use stroke-based design and are automatically converted to path commands.
+//! Displays all Lucide icons in a virtualized, scrollable grid.
+//! Uses UniformList for O(1) layout — only visible rows are rendered.
+//! Each icon is 24x24 in a 32x32 cell, 16 icons per row.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -10,13 +11,71 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Svg = gooey.components.Svg;
 const Lucide = gooey.components.Lucide;
+const UniformListState = gooey.UniformListState;
+
+// =============================================================================
+// Grid Layout Constants
+// =============================================================================
+
+/// Icons per row in the grid.
+const COLS: u32 = 16;
+
+/// Cell dimensions (pixels). Icons are centered within cells.
+const CELL_SIZE: f32 = 32;
+
+/// Lucide canonical icon size (pixels).
+const ICON_SIZE: f32 = 24;
+
+/// Vertical gap between rows (pixels).
+const ROW_GAP: f32 = 4;
+
+/// Horizontal gap between cells (pixels).
+const COL_GAP: f32 = 4;
+
+// =============================================================================
+// Comptime Icon Lookup Table
+// =============================================================================
+
+const IconEntry = struct {
+    name: []const u8,
+    path: []const u8,
+};
+
+/// All Lucide icon entries, generated at comptime from struct declarations.
+/// Enables runtime indexing into comptime icon data for virtualized rendering.
+const icon_entries = blk: {
+    @setEvalBranchQuota(20000);
+    const decls = @typeInfo(Lucide).@"struct".decls;
+    var entries: [decls.len]IconEntry = undefined;
+    for (decls, 0..) |decl, i| {
+        entries[i] = .{
+            .name = decl.name,
+            .path = @field(Lucide, decl.name),
+        };
+    }
+    break :blk entries;
+};
+
+const TOTAL_ICONS: u32 = icon_entries.len;
+const TOTAL_ROWS: u32 = (TOTAL_ICONS + COLS - 1) / COLS;
+
+comptime {
+    std.debug.assert(TOTAL_ICONS > 0);
+    std.debug.assert(TOTAL_ROWS > 0);
+    std.debug.assert(COLS > 0);
+    std.debug.assert(CELL_SIZE >= ICON_SIZE);
+}
 
 // =============================================================================
 // Application State
 // =============================================================================
 
 const AppState = struct {
-    frame: u32 = 0,
+    list_state: UniformListState = UniformListState.initWithGap(
+        TOTAL_ROWS,
+        CELL_SIZE,
+        ROW_GAP,
+    ),
 };
 
 // =============================================================================
@@ -26,9 +85,9 @@ const AppState = struct {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
-    .title = "Lucide Icons Demo",
+    .title = "Lucide Icons — All " ++ std.fmt.comptimePrint("{d}", .{TOTAL_ICONS}) ++ " Icons",
     .width = 700,
-    .height = 650,
+    .height = 850,
 });
 
 comptime {
@@ -41,162 +100,113 @@ pub fn main() !void {
 }
 
 // =============================================================================
-// Icon Card Component
+// Row Content Component
 // =============================================================================
 
-const IconCard = struct {
-    path: []const u8,
-    label: []const u8,
+/// Renders a horizontal slice of icon cells [start, end).
+/// Used inside each uniform-list row to emit the actual SVGs.
+const RowContent = struct {
+    start: u32,
+    end: u32,
 
-    pub fn render(self: IconCard, b: *ui.Builder) void {
-        b.box(.{
-            .width = 70,
-            .height = 70,
-            .padding = .{ .all = 6 },
-            .gap = 4,
-            .direction = .column,
-            .alignment = .{ .main = .center, .cross = .center },
-            .corner_radius = 8,
-            .background = ui.Color.hex(0x1e293b),
-        }, .{
-            Svg{
-                .path = self.path,
-                .size = 24,
-                .no_fill = true,
-                .stroke_color = ui.Color.hex(0xe2e8f0),
-                .stroke_width = 2,
-            },
-            ui.text(self.label, .{
-                .size = 9,
-                .color = ui.Color.hex(0x64748b),
-            }),
-        });
+    pub fn render(self: RowContent, b: *ui.Builder) void {
+        std.debug.assert(self.start <= self.end);
+        std.debug.assert(self.end <= TOTAL_ICONS);
+
+        var i = self.start;
+        while (i < self.end) : (i += 1) {
+            b.box(.{
+                .width = CELL_SIZE,
+                .height = CELL_SIZE,
+                .alignment = .{ .main = .center, .cross = .center },
+                .corner_radius = 4,
+                .background = ui.Color.hex(0x1e293b),
+                .hover_background = ui.Color.hex(0x334155),
+            }, .{
+                Svg{
+                    .path = icon_entries[i].path,
+                    .size = ICON_SIZE,
+                    .no_fill = true,
+                    .stroke_color = ui.Color.hex(0xe2e8f0),
+                    .stroke_width = 1.5,
+                },
+            });
+        }
     }
 };
 
 // =============================================================================
-// Section Header Component
+// Icon Grid Component (virtualized)
 // =============================================================================
 
-const SectionHeader = struct {
-    title: []const u8,
+const IconGrid = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        std.debug.assert(TOTAL_ROWS > 0);
+        std.debug.assert(state.list_state.item_count == TOTAL_ROWS);
 
-    pub fn render(self: SectionHeader, b: *ui.Builder) void {
-        b.box(.{
-            .padding = .{ .all = 4 },
-        }, .{
-            ui.text(self.title, .{
-                .size = 14,
-                .color = ui.Color.hex(0x60a5fa),
-                .weight = .semibold,
-            }),
-        });
+        cx.uniformList("icon-grid", &state.list_state, .{
+            .fill_width = true,
+            .grow_height = true,
+            .background = ui.Color.hex(0x0f172a),
+            .padding = .{ .all = 0 },
+            .gap = ROW_GAP,
+        }, renderRow);
     }
 };
 
+/// Callback for UniformList — renders a single row of icons.
+fn renderRow(row_index: u32, cx: *Cx) void {
+    std.debug.assert(row_index < TOTAL_ROWS);
+
+    const start = row_index * COLS;
+    const end: u32 = @min(start + COLS, TOTAL_ICONS);
+    std.debug.assert(start < end);
+
+    cx.render(ui.box(.{
+        .height = CELL_SIZE,
+        .direction = .row,
+        .gap = COL_GAP,
+        .alignment = .{ .main = .start, .cross = .center },
+    }, .{
+        RowContent{ .start = start, .end = end },
+    }));
+}
+
 // =============================================================================
-// Render Function
+// Main Render
 // =============================================================================
 
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
+    std.debug.assert(size.width > 0);
+    std.debug.assert(size.height > 0);
 
     cx.render(ui.box(.{
         .width = size.width,
         .height = size.height,
         .padding = .{ .all = 24 },
-        .gap = 16,
+        .gap = 12,
         .direction = .column,
         .background = ui.Color.hex(0x0f172a),
     }, .{
-        // Header
-        ui.text("Lucide Icons Demo", .{
-            .size = 28,
+        // Title
+        ui.text("Lucide Icons", .{
+            .size = 24,
             .color = ui.Color.white,
             .weight = .bold,
         }),
-        ui.text("Stroke-based icons using SVG shape elements (circle, rect, line, polyline)", .{
-            .size = 13,
-            .color = ui.Color.hex(0x94a3b8),
-        }),
 
-        // Navigation Section
-        SectionHeader{ .title = "Navigation" },
-        ui.box(.{ .gap = 8, .direction = .row }, .{
-            IconCard{ .path = Lucide.arrow_left, .label = "arrow_left" },
-            IconCard{ .path = Lucide.arrow_right, .label = "arrow_right" },
-            IconCard{ .path = Lucide.arrow_up, .label = "arrow_up" },
-            IconCard{ .path = Lucide.arrow_down, .label = "arrow_down" },
-            IconCard{ .path = Lucide.chevron_left, .label = "chevron_left" },
-            IconCard{ .path = Lucide.chevron_right, .label = "chevron_right" },
-            IconCard{ .path = Lucide.menu, .label = "menu" },
-            IconCard{ .path = Lucide.x, .label = "x" },
-        }),
+        // Subtitle with icon count
+        ui.text(
+            std.fmt.comptimePrint("All {d} icons - 24x24 stroke-based SVGs from lucide.dev", .{TOTAL_ICONS}),
+            .{
+                .size = 12,
+                .color = ui.Color.hex(0x94a3b8),
+            },
+        ),
 
-        // Actions Section
-        SectionHeader{ .title = "Actions" },
-        ui.box(.{ .gap = 8, .direction = .row }, .{
-            IconCard{ .path = Lucide.check, .label = "check" },
-            IconCard{ .path = Lucide.plus, .label = "plus" },
-            IconCard{ .path = Lucide.minus, .label = "minus" },
-            IconCard{ .path = Lucide.search, .label = "search" },
-            IconCard{ .path = Lucide.pencil, .label = "pencil" },
-            IconCard{ .path = Lucide.trash, .label = "trash" },
-            IconCard{ .path = Lucide.copy, .label = "copy" },
-            IconCard{ .path = Lucide.settings, .label = "settings" },
-        }),
-
-        // Status Section
-        SectionHeader{ .title = "Status & Feedback" },
-        ui.box(.{ .gap = 8, .direction = .row }, .{
-            IconCard{ .path = Lucide.check_circle, .label = "check_circle" },
-            IconCard{ .path = Lucide.alert_circle, .label = "alert_circle" },
-            IconCard{ .path = Lucide.alert_triangle, .label = "alert_tri" },
-            IconCard{ .path = Lucide.info, .label = "info" },
-            IconCard{ .path = Lucide.x_circle, .label = "x_circle" },
-            IconCard{ .path = Lucide.bell, .label = "bell" },
-            IconCard{ .path = Lucide.eye, .label = "eye" },
-            IconCard{ .path = Lucide.lock, .label = "lock" },
-        }),
-
-        // Media Section
-        SectionHeader{ .title = "Media & Communication" },
-        ui.box(.{ .gap = 8, .direction = .row }, .{
-            IconCard{ .path = Lucide.play, .label = "play" },
-            IconCard{ .path = Lucide.pause, .label = "pause" },
-            IconCard{ .path = Lucide.skip_forward, .label = "skip_fwd" },
-            IconCard{ .path = Lucide.skip_back, .label = "skip_back" },
-            IconCard{ .path = Lucide.mail, .label = "mail" },
-            IconCard{ .path = Lucide.send, .label = "send" },
-            IconCard{ .path = Lucide.user, .label = "user" },
-            IconCard{ .path = Lucide.users, .label = "users" },
-        }),
-
-        // Files Section
-        SectionHeader{ .title = "Files & UI" },
-        ui.box(.{ .gap = 8, .direction = .row }, .{
-            IconCard{ .path = Lucide.file, .label = "file" },
-            IconCard{ .path = Lucide.folder, .label = "folder" },
-            IconCard{ .path = Lucide.download, .label = "download" },
-            IconCard{ .path = Lucide.upload, .label = "upload" },
-            IconCard{ .path = Lucide.home, .label = "home" },
-            IconCard{ .path = Lucide.star, .label = "star" },
-            IconCard{ .path = Lucide.heart, .label = "heart" },
-            IconCard{ .path = Lucide.calendar, .label = "calendar" },
-        }),
-
-        // Dev Section
-        SectionHeader{ .title = "Development" },
-        ui.box(.{ .gap = 8, .direction = .row }, .{
-            IconCard{ .path = Lucide.code, .label = "code" },
-            IconCard{ .path = Lucide.terminal, .label = "terminal" },
-            IconCard{ .path = Lucide.github, .label = "github" },
-            IconCard{ .path = Lucide.link, .label = "link" },
-            IconCard{ .path = Lucide.external_link, .label = "ext_link" },
-            IconCard{ .path = Lucide.zap, .label = "zap" },
-            IconCard{ .path = Lucide.grid, .label = "grid" },
-            IconCard{ .path = Lucide.clock, .label = "clock" },
-        }),
+        // Scrollable virtualized icon grid
+        IconGrid{},
     }));
 }
 
@@ -204,7 +214,27 @@ fn render(cx: *Cx) void {
 // Tests
 // =============================================================================
 
-test "AppState" {
+test "icon_entries populated" {
+    try std.testing.expect(icon_entries.len > 1600);
+    try std.testing.expect(icon_entries.len < 2000);
+}
+
+test "grid dimensions" {
+    try std.testing.expect(TOTAL_ROWS > 0);
+    try std.testing.expectEqual(TOTAL_ROWS, (TOTAL_ICONS + COLS - 1) / COLS);
+}
+
+test "last row partial or full" {
+    const last_row_start = (TOTAL_ROWS - 1) * COLS;
+    const last_row_count = TOTAL_ICONS - last_row_start;
+    try std.testing.expect(last_row_start < TOTAL_ICONS);
+    try std.testing.expect(last_row_count >= 1);
+    try std.testing.expect(last_row_count <= COLS);
+}
+
+test "AppState defaults valid" {
     const s = AppState{};
-    try std.testing.expectEqual(@as(u32, 0), s.frame);
+    try std.testing.expectEqual(s.list_state.item_count, TOTAL_ROWS);
+    try std.testing.expect(s.list_state.item_height_px == CELL_SIZE);
+    try std.testing.expect(s.list_state.gap_px == ROW_GAP);
 }
