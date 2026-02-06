@@ -458,6 +458,10 @@ pub const Window = struct {
         self.requestRender();
     }
 
+    /// Set the window appearance (light or dark mode).
+    /// No-op on Linux - appearance is controlled by the desktop environment.
+    pub fn setAppearance(_: *Self, _: bool) void {}
+
     pub fn getMousePosition(self: *const Self) geometry.Point(f64) {
         return .{
             .x = self.mouse_x,
