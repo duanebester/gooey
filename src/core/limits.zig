@@ -43,28 +43,31 @@ const std = @import("std");
 // =============================================================================
 
 /// Maximum quads per frame (rectangles, backgrounds)
-pub const MAX_QUADS_PER_FRAME: u32 = 16384;
+pub const MAX_QUADS_PER_FRAME: u32 = 65536;
 
 /// Maximum glyphs per frame (text characters)
 pub const MAX_GLYPHS_PER_FRAME: u32 = 65536;
 
 /// Maximum shadows per frame
-pub const MAX_SHADOWS_PER_FRAME: u32 = 1024;
+pub const MAX_SHADOWS_PER_FRAME: u32 = 4096;
 
 /// Maximum SVG instances per frame
-pub const MAX_SVGS_PER_FRAME: u32 = 512;
+pub const MAX_SVGS_PER_FRAME: u32 = 8192;
 
 /// Maximum images per frame
-pub const MAX_IMAGES_PER_FRAME: u32 = 256;
+pub const MAX_IMAGES_PER_FRAME: u32 = 4096;
 
 /// Maximum path instances per frame
 pub const MAX_PATHS_PER_FRAME: u32 = 4096;
 
 /// Maximum polylines per frame
-pub const MAX_POLYLINES_PER_FRAME: u32 = 256;
+pub const MAX_POLYLINES_PER_FRAME: u32 = 4096;
 
 /// Maximum point clouds per frame
-pub const MAX_POINT_CLOUDS_PER_FRAME: u32 = 64;
+pub const MAX_POINT_CLOUDS_PER_FRAME: u32 = 4096;
+
+/// Maximum colored point clouds per frame (per-point colors for heat maps, particle effects)
+pub const MAX_COLORED_POINT_CLOUDS_PER_FRAME: u32 = 4096;
 
 /// Maximum clip stack depth (nested clips)
 pub const MAX_CLIP_STACK_DEPTH: u32 = 32;
@@ -193,7 +196,7 @@ pub const ESTIMATED_GLYPH_MEMORY: u32 = MAX_GLYPHS_PER_FRAME * GLYPH_INSTANCE_SI
 
 /// Estimated memory for quads
 pub const QUAD_SIZE: u32 = 128; // bytes per Quad (with all fields)
-pub const ESTIMATED_QUAD_MEMORY: u32 = MAX_QUADS_PER_FRAME * QUAD_SIZE;
+pub const ESTIMATED_QUAD_MEMORY: u32 = MAX_QUADS_PER_FRAME * QUAD_SIZE; // 8MB at 65536 quads
 
 /// Per-path memory (at MAX_PATH_VERTICES=512):
 ///   - PathMesh: ~14KB (512 vertices × 16B + 1530 indices × 4B)
@@ -247,8 +250,8 @@ test "memory estimates are reasonable" {
     // Glyph memory should be under 4MB
     try std.testing.expect(ESTIMATED_GLYPH_MEMORY < 4 * 1024 * 1024);
 
-    // Quad memory should be under 4MB
-    try std.testing.expect(ESTIMATED_QUAD_MEMORY < 4 * 1024 * 1024);
+    // Quad memory should be under 16MB
+    try std.testing.expect(ESTIMATED_QUAD_MEMORY < 16 * 1024 * 1024);
 
     // Total mesh pool memory should be under 16MB
     const total_mesh_memory = ESTIMATED_PERSISTENT_MESH_MEMORY + ESTIMATED_FRAME_MESH_MEMORY;

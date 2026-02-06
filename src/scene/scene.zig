@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const geometry = @import("../core/geometry.zig");
+const limits = @import("../core/limits.zig");
 const svg_instance_mod = @import("svg_instance.zig");
 pub const SvgInstance = svg_instance_mod.SvgInstance;
 const image_instance_mod = @import("image_instance.zig");
@@ -48,41 +49,19 @@ pub const LinearGradient = gradient_mod.LinearGradient;
 pub const RadialGradient = gradient_mod.RadialGradient;
 
 // ============================================================================
-// Hard Limits (static memory allocation policy)
+// Hard Limits (imported from limits.zig - single source of truth)
 // ============================================================================
 
-/// Maximum quads per frame - fail fast if exceeded
-pub const MAX_QUADS_PER_FRAME = 65536;
-
-/// Maximum glyphs per frame - fail fast if exceeded
-pub const MAX_GLYPHS_PER_FRAME = 65536;
-
-/// Maximum shadows per frame - fail fast if exceeded
-pub const MAX_SHADOWS_PER_FRAME = 4096;
-
-/// Maximum SVG instances per frame - fail fast if exceeded
-pub const MAX_SVGS_PER_FRAME = 8192;
-
-/// Maximum image instances per frame - fail fast if exceeded
-pub const MAX_IMAGES_PER_FRAME = 4096;
-
-/// Maximum path instances per frame - fail fast if exceeded
-pub const MAX_PATHS_PER_FRAME = 4096;
-
-/// Maximum polylines per frame - fail fast if exceeded
-/// Polylines are for efficient chart rendering (thousands of connected points)
-pub const MAX_POLYLINES_PER_FRAME = 4096;
-
-/// Maximum point clouds per frame - fail fast if exceeded
-/// Point clouds are for efficient scatter plot / marker rendering
-pub const MAX_POINT_CLOUDS_PER_FRAME = 4096;
-
-/// Maximum colored point clouds per frame - fail fast if exceeded
-/// Colored point clouds have per-point colors for heat maps, particle effects, etc.
-pub const MAX_COLORED_POINT_CLOUDS_PER_FRAME = 4096;
-
-/// Maximum clip stack depth - fail fast if exceeded
-pub const MAX_CLIP_STACK_DEPTH = 32;
+pub const MAX_QUADS_PER_FRAME = limits.MAX_QUADS_PER_FRAME;
+pub const MAX_GLYPHS_PER_FRAME = limits.MAX_GLYPHS_PER_FRAME;
+pub const MAX_SHADOWS_PER_FRAME = limits.MAX_SHADOWS_PER_FRAME;
+pub const MAX_SVGS_PER_FRAME = limits.MAX_SVGS_PER_FRAME;
+pub const MAX_IMAGES_PER_FRAME = limits.MAX_IMAGES_PER_FRAME;
+pub const MAX_PATHS_PER_FRAME = limits.MAX_PATHS_PER_FRAME;
+pub const MAX_POLYLINES_PER_FRAME = limits.MAX_POLYLINES_PER_FRAME;
+pub const MAX_POINT_CLOUDS_PER_FRAME = limits.MAX_POINT_CLOUDS_PER_FRAME;
+pub const MAX_COLORED_POINT_CLOUDS_PER_FRAME = limits.MAX_COLORED_POINT_CLOUDS_PER_FRAME;
+pub const MAX_CLIP_STACK_DEPTH = limits.MAX_CLIP_STACK_DEPTH;
 
 pub const DrawOrder = u32;
 
