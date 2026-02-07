@@ -1826,6 +1826,11 @@ pub const Builder = struct {
             inline for (children) |child| {
                 self.processChild(child);
             }
+        } else if (type_info == .array) {
+            // Handle fixed-size arrays of components (e.g., [N]StaggeredRow from stagger)
+            for (children) |child| {
+                self.processChild(child);
+            }
         } else {
             self.processChild(children);
         }

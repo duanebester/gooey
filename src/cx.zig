@@ -104,6 +104,21 @@ const animation_mod = @import("animation/mod.zig");
 const Animation = animation_mod.AnimationConfig;
 const AnimationHandle = animation_mod.AnimationHandle;
 
+// Spring types
+const spring_mod = @import("animation/spring.zig");
+const SpringConfig = spring_mod.SpringConfig;
+const SpringHandle = spring_mod.SpringHandle;
+
+// Stagger types
+const stagger_mod = @import("animation/stagger.zig");
+const StaggerConfig = stagger_mod.StaggerConfig;
+
+// Motion types
+const motion_mod = @import("animation/motion.zig");
+const MotionConfig = motion_mod.MotionConfig;
+const MotionHandle = motion_mod.MotionHandle;
+const SpringMotionConfig = motion_mod.SpringMotionConfig;
+
 // Handler types (re-exported from root.zig for users)
 const HandlerRef = handler_mod.HandlerRef;
 pub const typeId = handler_mod.typeId;
@@ -682,6 +697,116 @@ pub const Cx = struct {
     ) AnimationHandle {
         const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
         return self._gooey.widgets.animateOn(id, trigger_hash, config);
+    }
+
+    // =========================================================================
+    // Spring API
+    // =========================================================================
+
+    /// Declarative spring animation. Set the target every frame;
+    /// the spring smoothly tracks it, inheriting velocity on interruption.
+    ///
+    /// ```zig
+    /// const s = cx.spring("panel-height", .{
+    ///     .target = if (expanded) 1.0 else 0.0,
+    ///     .stiffness = 200,
+    ///     .damping = 20,
+    /// });
+    /// const height = lerp(0.0, 300.0, s.clamped());
+    /// ```
+    pub fn springComptime(self: *Self, comptime id: []const u8, config: SpringConfig) SpringHandle {
+        const spring_id = comptime animation_mod.hashString(id);
+        return self._gooey.widgets.springById(spring_id, config);
+    }
+
+    /// Runtime string spring API (for dynamic IDs).
+    pub fn spring(self: *Self, id: []const u8, config: SpringConfig) SpringHandle {
+        return self._gooey.widgets.spring(id, config);
+    }
+
+    // =========================================================================
+    // Stagger API
+    // =========================================================================
+
+    /// Staggered animation for list items. Each item gets its own animation
+    /// with a computed delay based on its index and the stagger direction.
+    ///
+    /// ```zig
+    /// for (items, 0..) |item, i| {
+    ///     const anim = cx.stagger("list-enter", @intCast(i), @intCast(items.len), .list);
+    ///     cx.render(ui.box(.{
+    ///         .background = Color.white.withAlpha(anim.progress),
+    ///     }, .{ ui.text(item.name, .{}) }));
+    /// }
+    /// ```
+    pub fn staggerComptime(
+        self: *Self,
+        comptime id: []const u8,
+        index: u32,
+        total_count: u32,
+        config: StaggerConfig,
+    ) AnimationHandle {
+        const base_id = comptime animation_mod.hashString(id);
+        return self._gooey.widgets.staggerById(base_id, index, total_count, config);
+    }
+
+    /// Runtime string stagger API (for dynamic IDs).
+    pub fn stagger(
+        self: *Self,
+        id: []const u8,
+        index: u32,
+        total_count: u32,
+        config: StaggerConfig,
+    ) AnimationHandle {
+        return self._gooey.widgets.stagger(id, index, total_count, config);
+    }
+
+    // =========================================================================
+    // Motion API (tween-based)
+    // =========================================================================
+
+    /// Tween-based motion container. Manages enter/exit lifecycle.
+    ///
+    /// ```zig
+    /// const m = cx.motion("panel", show_panel, .fade);
+    /// if (m.visible) {
+    ///     cx.render(ui.box(.{
+    ///         .background = Color.blue.withAlpha(m.progress),
+    ///     }, .{ /* ... */ }));
+    /// }
+    /// ```
+    pub fn motionComptime(self: *Self, comptime id: []const u8, show: bool, config: MotionConfig) MotionHandle {
+        const mid = comptime animation_mod.hashString(id);
+        return self._gooey.widgets.motionById(mid, show, config);
+    }
+
+    /// Runtime string motion API (for dynamic IDs).
+    pub fn motion(self: *Self, id: []const u8, show: bool, config: MotionConfig) MotionHandle {
+        return self._gooey.widgets.motion(id, show, config);
+    }
+
+    // =========================================================================
+    // Spring Motion API
+    // =========================================================================
+
+    /// Spring-based motion container. Interruptible enter/exit.
+    ///
+    /// ```zig
+    /// const m = cx.springMotion("modal", show_modal, .bouncy);
+    /// if (m.visible) {
+    ///     cx.render(ui.box(.{
+    ///         .width = lerp(0.0, 400.0, m.progress),
+    ///     }, .{ /* ... */ }));
+    /// }
+    /// ```
+    pub fn springMotionComptime(self: *Self, comptime id: []const u8, show: bool, config: SpringMotionConfig) MotionHandle {
+        const mid = comptime animation_mod.hashString(id);
+        return self._gooey.widgets.springMotionById(mid, show, config);
+    }
+
+    /// Runtime string spring motion API (for dynamic IDs).
+    pub fn springMotion(self: *Self, id: []const u8, show: bool, config: SpringMotionConfig) MotionHandle {
+        return self._gooey.widgets.springMotion(id, show, config);
     }
 
     // =========================================================================

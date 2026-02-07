@@ -16,6 +16,9 @@ const std = @import("std");
 // =============================================================================
 
 pub const animation = @import("animation.zig");
+pub const spring = @import("spring.zig");
+pub const stagger = @import("stagger.zig");
+pub const motion = @import("motion.zig");
 
 // =============================================================================
 // Core Types
@@ -42,6 +45,32 @@ pub const EasingFn = animation.EasingFn;
 pub const lerp = animation.lerp;
 pub const lerpInt = animation.lerpInt;
 pub const lerpColor = animation.lerpColor;
+
+// =============================================================================
+// Spring Physics
+// =============================================================================
+
+pub const SpringConfig = spring.SpringConfig;
+pub const SpringHandle = spring.SpringHandle;
+pub const SpringState = spring.SpringState;
+
+// =============================================================================
+// Stagger Animations
+// =============================================================================
+
+pub const StaggerConfig = stagger.StaggerConfig;
+pub const StaggerDirection = stagger.StaggerDirection;
+
+// =============================================================================
+// Motion Containers
+// =============================================================================
+
+pub const MotionConfig = motion.MotionConfig;
+pub const MotionHandle = motion.MotionHandle;
+pub const MotionPhase = motion.MotionPhase;
+pub const MotionState = motion.MotionState;
+pub const SpringMotionConfig = motion.SpringMotionConfig;
+pub const SpringMotionState = motion.SpringMotionState;
 
 // =============================================================================
 // Internal

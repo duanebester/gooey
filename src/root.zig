@@ -330,6 +330,23 @@ pub const lerp = animation.lerp;
 pub const lerpInt = animation.lerpInt;
 pub const lerpColor = animation.lerpColor;
 
+// Spring physics (from animation module)
+pub const spring_mod = @import("animation/spring.zig");
+pub const SpringConfig = spring_mod.SpringConfig;
+pub const SpringHandle = spring_mod.SpringHandle;
+
+// Stagger animations (from animation module)
+pub const stagger_mod = @import("animation/stagger.zig");
+pub const StaggerConfig = stagger_mod.StaggerConfig;
+pub const StaggerDirection = stagger_mod.StaggerDirection;
+
+// Motion containers (from animation module)
+pub const motion_mod = @import("animation/motion.zig");
+pub const MotionConfig = motion_mod.MotionConfig;
+pub const MotionHandle = motion_mod.MotionHandle;
+pub const MotionPhase = motion_mod.MotionPhase;
+pub const SpringMotionConfig = motion_mod.SpringMotionConfig;
+
 // Text system
 pub const TextSystem = text.TextSystem;
 pub const FontFace = text.FontFace;

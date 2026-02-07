@@ -243,6 +243,10 @@ pub const AnimationState = struct {
     generation: u32,
     /// Trigger hash for animateOn (embedded to eliminate separate HashMap)
     trigger_hash: u64,
+    /// Frame counter at last query. Used to detect re-appearance: if a completed
+    /// animation wasn't queried last frame (component was hidden), restart it
+    /// on the next query so mount/stagger animations replay on re-show.
+    last_queried_frame: u64 = 0,
 
     const Self = @This();
 

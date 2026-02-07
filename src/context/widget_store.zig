@@ -15,6 +15,20 @@ const AnimationState = animation.AnimationState;
 const AnimationConfig = animation.AnimationConfig;
 const AnimationHandle = animation.AnimationHandle;
 const AnimationId = animation.AnimationId;
+const spring_mod = @import("../animation/spring.zig");
+const SpringState = spring_mod.SpringState;
+const SpringConfig = spring_mod.SpringConfig;
+const SpringHandle = spring_mod.SpringHandle;
+const stagger_mod = @import("../animation/stagger.zig");
+const StaggerConfig = stagger_mod.StaggerConfig;
+const motion_mod = @import("../animation/motion.zig");
+const MotionConfig = motion_mod.MotionConfig;
+const MotionHandle = motion_mod.MotionHandle;
+const MotionPhase = motion_mod.MotionPhase;
+const MotionState = motion_mod.MotionState;
+const SpringMotionConfig = motion_mod.SpringMotionConfig;
+const SpringMotionState = motion_mod.SpringMotionState;
+const hashString = @import("../animation/animation.zig").hashString;
 
 pub const WidgetStore = struct {
     allocator: std.mem.Allocator,
@@ -27,6 +41,16 @@ pub const WidgetStore = struct {
     // u32-keyed animation storage
     animations: std.AutoArrayHashMap(u32, AnimationState),
     active_animation_count: u32 = 0,
+    frame_counter: u64 = 1,
+
+    // u32-keyed spring storage
+    springs: std.AutoArrayHashMap(u32, SpringState),
+    active_spring_count: u32 = 0,
+
+    // u32-keyed motion storage (tween-based and spring-based)
+    motions: std.AutoArrayHashMap(u32, MotionState),
+    spring_motions: std.AutoArrayHashMap(u32, SpringMotionState),
+    active_motion_count: u32 = 0,
 
     default_text_input_bounds: Bounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 },
     default_text_area_bounds: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 },
@@ -43,6 +67,9 @@ pub const WidgetStore = struct {
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
             .accessed_this_frame = std.StringHashMap(void).init(allocator),
             .animations = std.AutoArrayHashMap(u32, AnimationState).init(allocator),
+            .springs = std.AutoArrayHashMap(u32, SpringState).init(allocator),
+            .motions = std.AutoArrayHashMap(u32, MotionState).init(allocator),
+            .spring_motions = std.AutoArrayHashMap(u32, SpringMotionState).init(allocator),
         };
     }
 
@@ -86,6 +113,13 @@ pub const WidgetStore = struct {
         // Clean up animation keys
         self.animations.deinit();
 
+        // Clean up springs
+        self.springs.deinit();
+
+        // Clean up motions
+        self.motions.deinit();
+        self.spring_motions.deinit();
+
         self.accessed_this_frame.deinit();
     }
 
@@ -101,6 +135,16 @@ pub const WidgetStore = struct {
 
         if (!gop.found_existing) {
             gop.value_ptr.* = AnimationState.init(config);
+            gop.value_ptr.last_queried_frame = self.frame_counter;
+        } else if (!gop.value_ptr.running and self.frame_counter > gop.value_ptr.last_queried_frame + 1) {
+            // Animation completed AND wasn't queried last frame (component was hidden).
+            // Restart so mount/stagger animations replay on re-appearance.
+            const gen = gop.value_ptr.generation +% 1;
+            gop.value_ptr.* = AnimationState.init(config);
+            gop.value_ptr.generation = gen;
+            gop.value_ptr.last_queried_frame = self.frame_counter;
+        } else {
+            gop.value_ptr.last_queried_frame = self.frame_counter;
         }
 
         const handle = animation.calculateProgress(gop.value_ptr);
@@ -124,6 +168,7 @@ pub const WidgetStore = struct {
 
         // Always reset the animation state (whether existing or new)
         gop.value_ptr.* = AnimationState.init(config);
+        gop.value_ptr.last_queried_frame = self.frame_counter;
 
         // If it was existing, preserve generation continuity
         if (gop.found_existing) {
@@ -162,11 +207,13 @@ pub const WidgetStore = struct {
                 gop.value_ptr.generation +%= 1;
                 gop.value_ptr.trigger_hash = trigger_hash;
             }
+            gop.value_ptr.last_queried_frame = self.frame_counter;
         } else {
             // New animation - start in settled/idle state (not running).
             // This prevents components like modals from briefly appearing
             // on the first frame before any state change has occurred.
             gop.value_ptr.* = AnimationState.initSettled(config, trigger_hash);
+            gop.value_ptr.last_queried_frame = self.frame_counter;
         }
 
         const handle = animation.calculateProgress(gop.value_ptr);
@@ -215,18 +262,218 @@ pub const WidgetStore = struct {
         self.removeAnimationById(animation.hashString(id));
     }
 
-    /// Check if any animations are active this frame
+    /// Check if any animations or springs are active this frame
     pub fn hasActiveAnimations(self: *const Self) bool {
-        return self.active_animation_count > 0;
+        return self.active_animation_count > 0 or self.active_spring_count > 0 or self.active_motion_count > 0;
     }
 
     // =========================================================================
     // Frame Lifecycle
     // =========================================================================
 
+    // =========================================================================
+    // Spring Methods
+    // =========================================================================
+
+    /// Get or create a spring by hashed ID. The target is declarative:
+    /// set it every frame, and the spring smoothly tracks it.
+    pub fn springById(self: *Self, spring_id: u32, config: SpringConfig) SpringHandle {
+        // Enforce pool limit
+        if (self.springs.count() >= spring_mod.MAX_SPRINGS) {
+            if (self.springs.getPtr(spring_id) == null) {
+                // New spring but pool is full — return settled at target
+                return .{
+                    .value = config.target,
+                    .velocity = 0.0,
+                    .at_rest = true,
+                    .state = null,
+                };
+            }
+        }
+
+        const gop = self.springs.getOrPut(spring_id) catch {
+            return SpringHandle.one;
+        };
+
+        if (!gop.found_existing) {
+            gop.value_ptr.* = SpringState.init(config);
+        } else {
+            // Update target — this is the interruptibility mechanism.
+            // Position and velocity are preserved; only the destination changes.
+            // Wake the spring if target changed (critical: at_rest springs skip physics).
+            const target_changed = gop.value_ptr.target != config.target;
+            gop.value_ptr.target = config.target;
+            // Allow runtime config changes (e.g., stiffer spring when urgent)
+            gop.value_ptr.stiffness = config.stiffness;
+            gop.value_ptr.damping = config.damping;
+            gop.value_ptr.mass = config.mass;
+
+            if (target_changed and gop.value_ptr.at_rest) {
+                gop.value_ptr.at_rest = false;
+                // Reset timestamp so first dt after wake is reasonable
+                // (will be clamped to MAX_DT by stepSpring if stale)
+                gop.value_ptr.last_time_ms = @import("../platform/mod.zig").time.milliTimestamp();
+            }
+        }
+
+        const handle = spring_mod.tickSpring(gop.value_ptr);
+        if (!handle.at_rest) {
+            self.active_spring_count += 1;
+        }
+        return handle;
+    }
+
+    /// String-based spring API (hashes at call site).
+    pub fn spring(self: *Self, id: []const u8, config: SpringConfig) SpringHandle {
+        return self.springById(hashString(id), config);
+    }
+
+    // =========================================================================
+    // Stagger Methods
+    // =========================================================================
+
+    /// Animate a single item within a stagger group.
+    /// Call once per item per frame inside a list render loop.
+    /// Each staggered item becomes a normal animation with a computed delay.
+    pub fn staggerById(
+        self: *Self,
+        base_id: u32,
+        index: u32,
+        total_count: u32,
+        config: StaggerConfig,
+    ) AnimationHandle {
+        std.debug.assert(index < total_count);
+        std.debug.assert(total_count <= stagger_mod.MAX_STAGGER_ITEMS);
+
+        const item_id = stagger_mod.staggerItemId(base_id, index);
+        const delay = stagger_mod.computeStaggerDelay(index, total_count, config);
+
+        var item_config = config.animation_config;
+        item_config.delay_ms = config.animation_config.delay_ms + delay;
+
+        return self.animateById(item_id, item_config);
+    }
+
+    /// String-based stagger API (hashes at call site).
+    pub fn stagger(
+        self: *Self,
+        id: []const u8,
+        index: u32,
+        total_count: u32,
+        config: StaggerConfig,
+    ) AnimationHandle {
+        return self.staggerById(hashString(id), index, total_count, config);
+    }
+
+    // =========================================================================
+    // Motion Methods (tween-based)
+    // =========================================================================
+
+    /// Tween-based motion container. Manages enter/exit lifecycle automatically.
+    /// Returns a MotionHandle with progress (0→1 on enter, 1→0 on exit) and
+    /// a visible flag to gate rendering.
+    pub fn motionById(self: *Self, motion_id: u32, show: bool, config: MotionConfig) MotionHandle {
+        // Enforce pool limit
+        if (self.motions.count() >= motion_mod.MAX_MOTIONS) {
+            if (self.motions.getPtr(motion_id) == null) {
+                return if (show) MotionHandle.shown else MotionHandle.hidden;
+            }
+        }
+
+        const gop = self.motions.getOrPut(motion_id) catch {
+            return if (show) MotionHandle.shown else MotionHandle.hidden;
+        };
+
+        if (!gop.found_existing) {
+            const initial_phase: MotionPhase = if (config.start_visible) .entered else if (show) .entering else .exited;
+            const enter_config = config.enter;
+            const exit_config = config.exitConfig();
+            gop.value_ptr.* = .{
+                .phase = initial_phase,
+                .last_show = if (config.start_visible) true else show,
+                .enter_state = if (initial_phase == .entering)
+                    AnimationState.init(enter_config)
+                else
+                    AnimationState.initSettled(enter_config, 0),
+                .exit_state = AnimationState.initSettled(exit_config, 0),
+                .enter_config = enter_config,
+                .exit_config = exit_config,
+            };
+            // If entering on first mount, tick it immediately
+            if (initial_phase == .entering) {
+                const handle = motion_mod.tickMotion(gop.value_ptr, show);
+                if (handle.phase == .entering or handle.phase == .exiting) {
+                    self.active_motion_count += 1;
+                }
+                return handle;
+            }
+            return if (config.start_visible) MotionHandle.shown else MotionHandle.hidden;
+        }
+
+        const handle = motion_mod.tickMotion(gop.value_ptr, show);
+        if (handle.phase == .entering or handle.phase == .exiting) {
+            self.active_motion_count += 1;
+        }
+        return handle;
+    }
+
+    /// String-based tween motion API (hashes at call site).
+    pub fn motion(self: *Self, id: []const u8, show: bool, config: MotionConfig) MotionHandle {
+        return self.motionById(hashString(id), show, config);
+    }
+
+    // =========================================================================
+    // Spring Motion Methods
+    // =========================================================================
+
+    /// Spring-based motion container. Interruptible enter/exit with velocity
+    /// preservation. Target is set to 1.0 (show) or 0.0 (hide) automatically.
+    pub fn springMotionById(self: *Self, motion_id: u32, show: bool, config: SpringMotionConfig) MotionHandle {
+        // Enforce pool limit
+        if (self.spring_motions.count() >= motion_mod.MAX_MOTIONS) {
+            if (self.spring_motions.getPtr(motion_id) == null) {
+                return if (show) MotionHandle.shown else MotionHandle.hidden;
+            }
+        }
+
+        const gop = self.spring_motions.getOrPut(motion_id) catch {
+            return if (show) MotionHandle.shown else MotionHandle.hidden;
+        };
+
+        if (!gop.found_existing) {
+            const initial_target: f32 = if (config.start_visible) 1.0 else if (show) 1.0 else 0.0;
+            var spring_config = config.spring;
+            spring_config.target = initial_target;
+            spring_config.initial_position = if (config.start_visible) 1.0 else 0.0;
+
+            gop.value_ptr.* = .{
+                .phase = if (config.start_visible) .entered else .exited,
+                .last_show = if (config.start_visible) true else show,
+                .spring_state = if (config.start_visible)
+                    spring_mod.SpringState.initSettled(spring_config)
+                else
+                    spring_mod.SpringState.init(spring_config),
+            };
+        }
+
+        const handle = motion_mod.tickSpringMotion(gop.value_ptr, show);
+        if (handle.phase == .entering or handle.phase == .exiting) {
+            self.active_motion_count += 1;
+        }
+        return handle;
+    }
+
+    /// String-based spring motion API (hashes at call site).
+    pub fn springMotion(self: *Self, id: []const u8, show: bool, config: SpringMotionConfig) MotionHandle {
+        return self.springMotionById(hashString(id), show, config);
+    }
+
     pub fn beginFrame(self: *Self) void {
         self.accessed_this_frame.clearRetainingCapacity();
         self.active_animation_count = 0; // Reset - will be incremented as animations are queried
+        self.active_spring_count = 0; // Reset - will be incremented as springs are queried
+        self.active_motion_count = 0; // Reset - will be incremented as motions are queried
+        self.frame_counter +%= 1;
     }
 
     pub fn endFrame(_: *Self) void {}
