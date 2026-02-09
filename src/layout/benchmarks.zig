@@ -120,6 +120,56 @@ fn runBenchmark(
     };
 }
 
+/// Full-frame benchmark: times tree construction (beginFrame + buildFn) AND layout (endFrame)
+/// together. This captures the cost of element creation, sibling linking, and ID tracking
+/// in addition to layout computation.
+fn runFullFrameBenchmark(
+    allocator: std.mem.Allocator,
+    comptime name: []const u8,
+    comptime buildFn: fn (*LayoutEngine) anyerror!u32,
+) BenchmarkResult {
+    var engine = LayoutEngine.init(allocator);
+    defer engine.deinit();
+
+    // First pass to get node count for adaptive iterations
+    engine.beginFrame(1000, 1000);
+    const node_count = buildFn(&engine) catch unreachable;
+    _ = engine.endFrame() catch unreachable;
+
+    const warmup_iters = getWarmupIterations(node_count);
+    const min_sample_iters = getMinSampleIterations(node_count);
+
+    // Warmup
+    var warmup_count: u32 = 0;
+    while (warmup_count < warmup_iters) : (warmup_count += 1) {
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+        _ = engine.endFrame() catch unreachable;
+    }
+
+    // Sample - measure entire frame: beginFrame + tree build + endFrame
+    var total_time: u64 = 0;
+    var iterations: u32 = 0;
+
+    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+        const start = std.time.Instant.now() catch unreachable;
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+        _ = engine.endFrame() catch unreachable;
+        const end = std.time.Instant.now() catch unreachable;
+
+        total_time += end.since(start);
+        iterations += 1;
+    }
+
+    return .{
+        .name = name,
+        .node_count = node_count,
+        .total_time_ns = total_time,
+        .iterations = iterations,
+    };
+}
+
 // =============================================================================
 // Quick Validation (for test mode - just check node counts)
 // =============================================================================
@@ -695,7 +745,7 @@ pub fn main() !void {
 
     std.debug.print("\n", .{});
     std.debug.print("=" ** 90 ++ "\n", .{});
-    std.debug.print("Gooey Layout Engine Benchmarks\n", .{});
+    std.debug.print("Gooey Layout Engine Benchmarks — Layout Only (endFrame)\n", .{});
     std.debug.print("=" ** 90 ++ "\n", .{});
     std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
         "Test",
@@ -721,8 +771,35 @@ pub fn main() !void {
     runBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights).print();
 
     std.debug.print("=" ** 90 ++ "\n", .{});
-    std.debug.print("\nNote: Times shown are for layout computation only (endFrame).\n", .{});
-    std.debug.print("Tree construction time is excluded from measurements.\n", .{});
+
+    // Full frame benchmarks (tree construction + layout)
+    std.debug.print("\n", .{});
+    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print("Gooey Layout Engine Benchmarks — Full Frame (build + layout)\n", .{});
+    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
+        "Test",
+        "Nodes",
+        "Avg Time",
+        "Time/Node",
+    });
+    std.debug.print("-" ** 90 ++ "\n", .{});
+
+    runFullFrameBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew).print();
+    runFullFrameBenchmark(allocator, "deep_nesting", buildDeepNesting).print();
+    runFullFrameBenchmark(allocator, "space_distribution", buildSpaceDistribution).print();
+    runFullFrameBenchmark(allocator, "percentage_sizing", buildPercentageSizing).print();
+    runFullFrameBenchmark(allocator, "shrink_overflow", buildShrinkOverflow).print();
+    runFullFrameBenchmark(allocator, "expand_with_max_constraint", buildExpandWithMaxConstraint).print();
+    runFullFrameBenchmark(allocator, "expand_with_min_constraint", buildExpandWithMinConstraint).print();
+    runFullFrameBenchmark(allocator, "mixed_layout", buildMixedLayout).print();
+    runFullFrameBenchmark(allocator, "nested_vertical_stack", buildNestedVerticalStack).print();
+    runFullFrameBenchmark(allocator, "percentage_and_ratio", buildPercentageAndRatio).print();
+    runFullFrameBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights).print();
+    runFullFrameBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights).print();
+
+    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print("\nLayout Only = endFrame() only. Full Frame = beginFrame + tree build + endFrame.\n", .{});
     std.debug.print("Iterations are adaptive based on node count (fewer for large tests).\n", .{});
     std.debug.print("\nCurrent MAX_ELEMENTS_PER_FRAME = {d}\n", .{layout.engine.MAX_ELEMENTS_PER_FRAME});
     std.debug.print("PanGui benchmarks use up to 100k+ nodes for comparison.\n", .{});
