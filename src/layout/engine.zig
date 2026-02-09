@@ -242,6 +242,7 @@ pub const LayoutElement = struct {
     config: ElementDeclaration,
     parent_index: ?u32 = null,
     first_child_index: ?u32 = null,
+    last_child_index: ?u32 = null,
     next_sibling_index: ?u32 = null,
     child_count: u32 = 0,
     computed: ComputedLayout = .{},
@@ -261,10 +262,13 @@ pub const ElementList = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
-        return .{
+        var list = Self{
             .allocator = allocator,
             .elements = .{},
         };
+        // Pre-allocate per CLAUDE.md: static memory allocation at startup
+        list.elements.ensureTotalCapacity(allocator, MAX_ELEMENTS_PER_FRAME) catch {};
+        return list;
     }
 
     pub fn deinit(self: *Self) void {
@@ -380,7 +384,9 @@ pub const LayoutEngine = struct {
         self.commands.clear();
         self.open_element_stack.len = 0; // BoundedArray: just reset length
         self.floating_roots.len = 0; // BoundedArray: just reset length
-        self.seen_ids.clearRetainingCapacity();
+        if (comptime builtin.mode == .Debug) {
+            self.seen_ids.clearRetainingCapacity();
+        }
         self.id_to_index.clearRetainingCapacity();
         self.root_index = null;
         self.viewport_width = width;
@@ -393,9 +399,8 @@ pub const LayoutEngine = struct {
     }
 
     pub fn closeElement(self: *Self) void {
-        if (self.open_element_stack.len > 0) {
-            _ = self.open_element_stack.pop();
-        }
+        std.debug.assert(self.open_element_stack.len > 0); // Underflow: more closeElement() calls than openElement()
+        _ = self.open_element_stack.pop();
     }
 
     /// Add a text element (leaf node)
@@ -497,20 +502,20 @@ pub const LayoutEngine = struct {
         std.debug.assert(self.elements.len() < MAX_ELEMENTS_PER_FRAME); // Prevent unbounded growth
         std.debug.assert(elem_type != .container or self.open_element_stack.len < MAX_OPEN_DEPTH); // Depth check for containers
 
-        // Check for ID collisions (skip if ID is none/0)
-        // NOTE: Runs in all build modes - ID collisions cause subtle bugs
-        if (decl.id.id != 0) {
-            const result = self.seen_ids.getOrPut(decl.id.id) catch unreachable;
-            if (result.found_existing) {
-                if (builtin.mode == .Debug) {
+        // Check for ID collisions in debug builds only — the HashMap probe per element
+        // is measurable overhead in release and the warning is only logged in debug anyway.
+        if (comptime builtin.mode == .Debug) {
+            if (decl.id.id != 0) {
+                const result = self.seen_ids.getOrPut(decl.id.id) catch unreachable;
+                if (result.found_existing) {
                     std.log.warn("Layout ID collision detected! ID hash {d} used by both \"{?s}\" and \"{?s}\"", .{
                         decl.id.id,
                         result.value_ptr.*,
                         decl.id.string_id,
                     });
+                } else {
+                    result.value_ptr.* = decl.id.string_id;
                 }
-            } else {
-                result.value_ptr.* = decl.id.string_id;
             }
         }
 
@@ -546,17 +551,15 @@ pub const LayoutEngine = struct {
         }
 
         // Link to parent (floating elements still have a parent for reference)
+        // O(1) append using last_child_index (avoids O(n) sibling walk)
         if (parent_index) |pi| {
             const parent = self.elements.get(pi);
             if (parent.first_child_index == null) {
                 parent.first_child_index = index;
             } else {
-                var sibling_idx = parent.first_child_index.?;
-                while (self.elements.get(sibling_idx).next_sibling_index) |next| {
-                    sibling_idx = next;
-                }
-                self.elements.get(sibling_idx).next_sibling_index = index;
+                self.elements.get(parent.last_child_index.?).next_sibling_index = index;
             }
+            parent.last_child_index = index;
             parent.child_count += 1;
         } else {
             self.root_index = index;
@@ -587,8 +590,11 @@ pub const LayoutEngine = struct {
         // Phase 4: Generate render commands
         try self.generateRenderCommands(self.root_index.?, 0, 1.0, 0);
 
-        // Sort by z-index to handle floating elements properly
-        self.commands.sortByZIndex();
+        // Sort by z-index only when floating elements exist (they're the only source of non-zero z_index).
+        // Skipping the sort saves ~O(n log n) work on frames with no dropdowns/tooltips/modals.
+        if (self.floating_roots.len > 0) {
+            self.commands.sortByZIndex();
+        }
 
         return self.commands.items();
     }
@@ -1159,7 +1165,7 @@ pub const LayoutEngine = struct {
             }
 
             // Check if child qualifies for fast path
-            if (!self.isUnconstrainedGrow(child, is_horizontal)) {
+            if (!isUnconstrainedGrow(child, is_horizontal)) {
                 return .{ .eligible = false, .floating_count = 0, .has_grandchildren = false };
             }
 
@@ -1182,8 +1188,7 @@ pub const LayoutEngine = struct {
     }
 
     /// Check if element has unconstrained grow on both axes (fast path eligible)
-    fn isUnconstrainedGrow(self: *Self, child: *LayoutElement, is_horizontal: bool) bool {
-        _ = self;
+    fn isUnconstrainedGrow(child: *const LayoutElement, is_horizontal: bool) bool {
         // Assertions per CLAUDE.md: minimum 2 per function
         std.debug.assert(child.config.layout.aspect_ratio == null or child.config.layout.aspect_ratio.? > 0);
         std.debug.assert(UNCONSTRAINED_MAX > 0);
@@ -1855,8 +1860,7 @@ pub const LayoutEngine = struct {
         // =========================================================================
         var words: FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT) = .{};
 
-        const word_result = findWordBoundaries(text_str, measure_fn, config, self.measure_text_user_data, &words);
-        _ = word_result; // words array is populated
+        _ = findWordBoundaries(text_str, measure_fn, config, self.measure_text_user_data, &words);
 
         // =========================================================================
         // PASS 2: Accumulate words onto lines until overflow
@@ -1971,6 +1975,10 @@ pub const LayoutEngine = struct {
         var byte_pos: u32 = 0;
         var in_word = false;
 
+        // Cache space width — constant for a given font_id/font_size, avoids redundant
+        // measure calls per word boundary (typically 100s of calls per text block).
+        const cached_space_width = measure_fn(" ", config.font_id, config.font_size, null, user_data).width;
+
         // Use UTF-8 view for proper multi-byte character handling
         const utf8_view = std.unicode.Utf8View.initUnchecked(text_str);
         var iter = utf8_view.iterator();
@@ -2011,7 +2019,7 @@ pub const LayoutEngine = struct {
                     // End of word - measure it
                     const word_text = text_str[word_start..byte_pos];
                     const word_width = measure_fn(word_text, config.font_id, config.font_size, null, user_data).width;
-                    const space_width = measure_fn(codepoint_slice, config.font_id, config.font_size, null, user_data).width;
+                    const space_width = cached_space_width;
                     words.append(.{
                         .start = word_start,
                         .end = byte_pos,

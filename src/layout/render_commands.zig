@@ -155,12 +155,19 @@ pub const RenderCommandList = struct {
 
     const Self = @This();
 
+    /// Pre-allocated capacity for render commands per frame.
+    /// Each element may emit multiple commands (shadow, rectangle, border, text, etc.)
+    const INITIAL_CAPACITY = 32768;
+
     pub fn init(allocator: std.mem.Allocator) Self {
-        return .{
+        var list = Self{
             .allocator = allocator,
             .commands = .{},
             .next_order = 0,
         };
+        // Pre-allocate per CLAUDE.md: static memory allocation at startup
+        list.commands.ensureTotalCapacity(allocator, INITIAL_CAPACITY) catch {};
+        return list;
     }
 
     pub fn deinit(self: *Self) void {
