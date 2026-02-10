@@ -14,7 +14,10 @@ const DrawCommand = @import("draw_command.zig").DrawCommand;
 const MAX_DRAW_COMMANDS = @import("draw_command.zig").MAX_DRAW_COMMANDS;
 const TextPool = @import("text_pool.zig").TextPool;
 const Color = @import("../core/geometry.zig").Color;
+const ThemeColor = @import("theme_color.zig").ThemeColor;
+const SemanticToken = @import("theme_color.zig").SemanticToken;
 const ui = @import("../ui/mod.zig");
+const Theme = ui.Theme;
 
 // =============================================================================
 // AiCanvas
@@ -36,7 +39,9 @@ pub const AiCanvas = struct {
     canvas_height: f32 = 600,
 
     /// Default background color applied before any commands replay.
-    background_color: Color = Color.hex(0x1a1a2e),
+    /// Uses `ThemeColor` so it can reference a semantic token (e.g. `.bg`)
+    /// that adapts to the active theme automatically.
+    background_color: ThemeColor = ThemeColor.fromLiteral(Color.hex(0x1a1a2e)),
 
     const Self = @This();
 
@@ -119,10 +124,15 @@ pub const AiCanvas = struct {
     /// This is the bridge between the AI command buffer and Gooey's
     /// rendering pipeline. Called once per frame from the paint callback.
     ///
+    /// The `theme` parameter enables semantic `ThemeColor` tokens (e.g.
+    /// "primary", "surface") to resolve to concrete colors at render time.
+    /// This means AI-drawn content automatically adapts to light/dark mode
+    /// and custom themes without re-parsing commands.
+    ///
     /// Parameter order inconsistencies in DrawContext are handled here —
     /// each arm maps DrawCommand's consistent field names to the actual
     /// DrawContext method signature. See the mapping table in AI_NATIVE_IMPL.md.
-    pub fn replay(self: *const Self, ctx: *ui.DrawContext) void {
+    pub fn replay(self: *const Self, ctx: *ui.DrawContext, theme: *const Theme) void {
         // CLAUDE.md #3: assert invariants at entry.
         std.debug.assert(self.command_count <= MAX_DRAW_COMMANDS);
 
@@ -133,11 +143,13 @@ pub const AiCanvas = struct {
         std.debug.assert(w >= 0 and h >= 0);
 
         // Background fill — always first so commands draw on top.
-        ctx.fillRect(0, 0, w, h, self.background_color);
+        // Resolve ThemeColor against the active theme.
+        const bg = self.background_color.resolve(theme);
+        ctx.fillRect(0, 0, w, h, bg);
 
         // Replay every command via exhaustive switch.
         for (self.commands[0..self.command_count]) |cmd| {
-            self.replayOne(ctx, cmd, w, h);
+            self.replayOne(ctx, cmd, w, h, theme);
         }
     }
 
@@ -150,32 +162,33 @@ pub const AiCanvas = struct {
         cmd: DrawCommand,
         canvas_w: f32,
         canvas_h: f32,
+        theme: *const Theme,
     ) void {
         // CLAUDE.md #3: assert context validity.
         std.debug.assert(canvas_w >= 0 and canvas_h >= 0);
 
         switch (cmd) {
             // === Fills ===
-            .fill_rect => |c| ctx.fillRect(c.x, c.y, c.w, c.h, c.color),
-            .fill_rounded_rect => |c| ctx.fillRoundedRect(c.x, c.y, c.w, c.h, c.radius, c.color),
-            .fill_circle => |c| ctx.fillCircle(c.cx, c.cy, c.radius, c.color),
-            .fill_ellipse => |c| ctx.fillEllipse(c.cx, c.cy, c.rx, c.ry, c.color),
-            .fill_triangle => |c| ctx.fillTriangle(c.x1, c.y1, c.x2, c.y2, c.x3, c.y3, c.color),
+            .fill_rect => |c| ctx.fillRect(c.x, c.y, c.w, c.h, c.color.resolve(theme)),
+            .fill_rounded_rect => |c| ctx.fillRoundedRect(c.x, c.y, c.w, c.h, c.radius, c.color.resolve(theme)),
+            .fill_circle => |c| ctx.fillCircle(c.cx, c.cy, c.radius, c.color.resolve(theme)),
+            .fill_ellipse => |c| ctx.fillEllipse(c.cx, c.cy, c.rx, c.ry, c.color.resolve(theme)),
+            .fill_triangle => |c| ctx.fillTriangle(c.x1, c.y1, c.x2, c.y2, c.x3, c.y3, c.color.resolve(theme)),
 
             // === Strokes / Lines ===
             // NOTE: strokeRect takes (x, y, w, h, color, width) — color BEFORE width
-            .stroke_rect => |c| ctx.strokeRect(c.x, c.y, c.w, c.h, c.color, c.width),
+            .stroke_rect => |c| ctx.strokeRect(c.x, c.y, c.w, c.h, c.color.resolve(theme), c.width),
             // NOTE: strokeCircle takes (cx, cy, radius, width, color) — width BEFORE color
-            .stroke_circle => |c| ctx.strokeCircle(c.cx, c.cy, c.radius, c.width, c.color),
+            .stroke_circle => |c| ctx.strokeCircle(c.cx, c.cy, c.radius, c.width, c.color.resolve(theme)),
             // NOTE: line takes (x1, y1, x2, y2, width, color) — width BEFORE color
-            .line => |c| ctx.line(c.x1, c.y1, c.x2, c.y2, c.width, c.color),
+            .line => |c| ctx.line(c.x1, c.y1, c.x2, c.y2, c.width, c.color.resolve(theme)),
 
             // === Text ===
-            .draw_text => |c| self.replayDrawText(ctx, c),
-            .draw_text_centered => |c| self.replayDrawTextCentered(ctx, c),
+            .draw_text => |c| self.replayDrawText(ctx, c, theme),
+            .draw_text_centered => |c| self.replayDrawTextCentered(ctx, c, theme),
 
             // === Control ===
-            .set_background => |c| ctx.fillRect(0, 0, canvas_w, canvas_h, c.color),
+            .set_background => |c| ctx.fillRect(0, 0, canvas_w, canvas_h, c.color.resolve(theme)),
         }
     }
 
@@ -185,11 +198,12 @@ pub const AiCanvas = struct {
         self: *const Self,
         ctx: *ui.DrawContext,
         c: DrawCommand.DrawText,
+        theme: *const Theme,
     ) void {
         // CLAUDE.md #3 + #11: assert text_idx is valid before pool lookup.
         std.debug.assert(c.text_idx < self.texts.entryCount());
         const text = self.texts.get(c.text_idx);
-        _ = ctx.drawText(text, c.x, c.y, c.color, c.font_size);
+        _ = ctx.drawText(text, c.x, c.y, c.color.resolve(theme), c.font_size);
     }
 
     /// Replay a draw_text_centered command.
@@ -197,11 +211,12 @@ pub const AiCanvas = struct {
         self: *const Self,
         ctx: *ui.DrawContext,
         c: DrawCommand.DrawTextCentered,
+        theme: *const Theme,
     ) void {
         // CLAUDE.md #3 + #11: assert text_idx is valid before pool lookup.
         std.debug.assert(c.text_idx < self.texts.entryCount());
         const text = self.texts.get(c.text_idx);
-        _ = ctx.drawTextVCentered(text, c.x, c.y_center, c.color, c.font_size);
+        _ = ctx.drawTextVCentered(text, c.x, c.y_center, c.color.resolve(theme), c.font_size);
     }
 };
 
@@ -211,7 +226,7 @@ pub const AiCanvas = struct {
 
 comptime {
     // Size budget: AiCanvas must stay under 300KB.
-    // commands (4096 × 64B = 256KB) + TextPool (~17KB) + fields (~20B) ≈ 273KB
+    // commands (4096 × ≤64B ≈ 256KB) + TextPool (~17KB) + fields (~20B) ≈ 273KB
     std.debug.assert(@sizeOf(AiCanvas) < 300 * 1024);
 
     // Sanity: AiCanvas must be larger than its command buffer alone.
@@ -241,7 +256,7 @@ test "AiCanvas default state" {
 
 test "AiCanvas pushCommand increments count" {
     var canvas = AiCanvas{};
-    const red = Color.hex(0xFF0000);
+    const red = ThemeColor.fromLiteral(Color.hex(0xFF0000));
 
     const ok = canvas.pushCommand(.{ .fill_rect = .{
         .x = 10,
@@ -258,7 +273,7 @@ test "AiCanvas pushCommand increments count" {
 
 test "AiCanvas pushCommand stores correct data" {
     var canvas = AiCanvas{};
-    const blue = Color.hex(0x0000FF);
+    const blue = ThemeColor.fromLiteral(Color.hex(0x0000FF));
 
     _ = canvas.pushCommand(.{ .fill_circle = .{
         .cx = 50,
@@ -280,7 +295,7 @@ test "AiCanvas pushCommand stores correct data" {
 
 test "AiCanvas multiple commands maintain order" {
     var canvas = AiCanvas{};
-    const white = Color.hex(0xFFFFFF);
+    const white = ThemeColor.fromLiteral(Color.hex(0xFFFFFF));
 
     _ = canvas.pushCommand(.{ .fill_rect = .{ .x = 0, .y = 0, .w = 10, .h = 10, .color = white } });
     _ = canvas.pushCommand(.{ .fill_circle = .{ .cx = 5, .cy = 5, .radius = 3, .color = white } });
@@ -305,7 +320,7 @@ test "AiCanvas multiple commands maintain order" {
 
 test "AiCanvas clearAll resets everything" {
     var canvas = AiCanvas{};
-    const green = Color.hex(0x00FF00);
+    const green = ThemeColor.fromLiteral(Color.hex(0x00FF00));
 
     _ = canvas.pushText("hello");
     _ = canvas.pushCommand(.{ .fill_rect = .{ .x = 0, .y = 0, .w = 1, .h = 1, .color = green } });
@@ -323,7 +338,7 @@ test "AiCanvas clearAll resets everything" {
 
 test "AiCanvas clearAll allows reuse" {
     var canvas = AiCanvas{};
-    const red = Color.hex(0xFF0000);
+    const red = ThemeColor.fromLiteral(Color.hex(0xFF0000));
 
     _ = canvas.pushCommand(.{ .fill_rect = .{ .x = 0, .y = 0, .w = 1, .h = 1, .color = red } });
     canvas.clearAll();
@@ -341,7 +356,7 @@ test "AiCanvas clearAll allows reuse" {
 
 test "AiCanvas overflow returns false" {
     var canvas = AiCanvas{};
-    const white = Color.hex(0xFFFFFF);
+    const white = ThemeColor.fromLiteral(Color.hex(0xFFFFFF));
 
     // Fill to capacity.
     var i: usize = 0;
@@ -374,7 +389,7 @@ test "AiCanvas pushText roundtrip" {
 
 test "AiCanvas text command integration" {
     var canvas = AiCanvas{};
-    const white = Color.hex(0xFFFFFF);
+    const white = ThemeColor.fromLiteral(Color.hex(0xFFFFFF));
 
     // Push text first, then reference it in a command.
     const idx = canvas.pushText("Score: 42").?;
@@ -401,7 +416,7 @@ test "AiCanvas text command integration" {
 
 test "AiCanvas text centered command integration" {
     var canvas = AiCanvas{};
-    const black = Color.hex(0x000000);
+    const black = ThemeColor.fromLiteral(Color.hex(0x000000));
 
     const idx = canvas.pushText("Centered!").?;
     _ = canvas.pushCommand(.{ .draw_text_centered = .{
@@ -424,7 +439,7 @@ test "AiCanvas text centered command integration" {
 
 test "AiCanvas all 11 command variants push successfully" {
     var canvas = AiCanvas{};
-    const c = Color.hex(0xABCDEF);
+    const c = ThemeColor.fromLiteral(Color.hex(0xABCDEF));
 
     const text_idx = canvas.pushText("test").?;
 
@@ -450,11 +465,88 @@ test "AiCanvas all 11 command variants push successfully" {
     try std.testing.expectEqual(@as(usize, 11), canvas.commandCount());
 }
 
-test "AiCanvas background_color default" {
+test "AiCanvas background_color default is literal" {
     const canvas = AiCanvas{};
-    // Default background is 0x1a1a2e (dark blue-grey).
-    const bg = canvas.background_color;
+    // Default background is a literal 0x1a1a2e (dark blue-grey).
+    try std.testing.expect(canvas.background_color.isLiteral());
+    const bg = canvas.background_color.getLiteral().?;
     try std.testing.expectApproxEqAbs(@as(f32, 0x1a) / 255.0, bg.r, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 0x1a) / 255.0, bg.g, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 0x2e) / 255.0, bg.b, 0.01);
+}
+
+test "AiCanvas background_color can be theme token" {
+    var canvas = AiCanvas{};
+    canvas.background_color = ThemeColor.fromToken(.bg);
+
+    try std.testing.expect(canvas.background_color.isToken());
+    try std.testing.expectEqual(SemanticToken.bg, canvas.background_color.getToken().?);
+
+    // Resolve against dark theme.
+    const resolved = canvas.background_color.resolve(&Theme.dark);
+    try std.testing.expectEqual(Theme.dark.bg, resolved);
+
+    // Resolve against light theme — should be different.
+    const resolved_light = canvas.background_color.resolve(&Theme.light);
+    try std.testing.expectEqual(Theme.light.bg, resolved_light);
+    try std.testing.expect(resolved.r != resolved_light.r);
+}
+
+test "AiCanvas commands with theme tokens" {
+    var canvas = AiCanvas{};
+
+    // Push commands using theme tokens.
+    _ = canvas.pushCommand(.{ .set_background = .{ .color = ThemeColor.fromToken(.bg) } });
+    _ = canvas.pushCommand(.{ .fill_rect = .{
+        .x = 10,
+        .y = 20,
+        .w = 100,
+        .h = 50,
+        .color = ThemeColor.fromToken(.primary),
+    } });
+    _ = canvas.pushCommand(.{ .fill_circle = .{
+        .cx = 50,
+        .cy = 50,
+        .radius = 25,
+        .color = ThemeColor.fromToken(.accent),
+    } });
+
+    try std.testing.expectEqual(@as(usize, 3), canvas.commandCount());
+
+    // Verify tokens are stored correctly.
+    try std.testing.expect(canvas.commands[0].getColor().isToken());
+    try std.testing.expectEqual(SemanticToken.bg, canvas.commands[0].getColor().getToken().?);
+    try std.testing.expect(canvas.commands[1].getColor().isToken());
+    try std.testing.expectEqual(SemanticToken.primary, canvas.commands[1].getColor().getToken().?);
+    try std.testing.expect(canvas.commands[2].getColor().isToken());
+    try std.testing.expectEqual(SemanticToken.accent, canvas.commands[2].getColor().getToken().?);
+}
+
+test "AiCanvas mixed literal and token commands" {
+    var canvas = AiCanvas{};
+
+    // Mix of literal hex colors and semantic tokens.
+    _ = canvas.pushCommand(.{ .set_background = .{ .color = ThemeColor.fromToken(.bg) } });
+    _ = canvas.pushCommand(.{ .fill_rect = .{
+        .x = 0,
+        .y = 0,
+        .w = 100,
+        .h = 50,
+        .color = ThemeColor.fromLiteral(Color.hex(0xFF6B35)),
+    } });
+    _ = canvas.pushCommand(.{ .stroke_rect = .{
+        .x = 0,
+        .y = 0,
+        .w = 100,
+        .h = 50,
+        .width = 2,
+        .color = ThemeColor.fromToken(.border),
+    } });
+
+    try std.testing.expectEqual(@as(usize, 3), canvas.commandCount());
+
+    // First is token, second is literal, third is token.
+    try std.testing.expect(canvas.commands[0].getColor().isToken());
+    try std.testing.expect(canvas.commands[1].getColor().isLiteral());
+    try std.testing.expect(canvas.commands[2].getColor().isToken());
 }

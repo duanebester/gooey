@@ -10,12 +10,21 @@
 //! The JSON parser handles the reverse mapping. This is the one place
 //! where internal representation and external schema intentionally diverge.
 //!
+//! **Theme colors:** Color fields use `ThemeColor` internally (a tagged
+//! union of `Color | SemanticToken`). In the external schema they remain
+//! `"type": "string"` — the description lists all valid semantic token
+//! names alongside the hex format, derived at comptime from the
+//! `SemanticToken` enum so they cannot drift from the Theme struct.
+//!
 //! Zero runtime cost, zero allocation — the schema is a comptime string literal
 //! baked into the binary.
 
 const std = @import("std");
 const DrawCommand = @import("draw_command.zig").DrawCommand;
 const Color = @import("../core/geometry.zig").Color;
+const ThemeColor = @import("theme_color.zig").ThemeColor;
+const SemanticToken = @import("theme_color.zig").SemanticToken;
+const semantic_token_list = @import("theme_color.zig").semantic_token_list;
 
 // =============================================================================
 // Public API
@@ -79,8 +88,6 @@ fn emitToolObject(comptime name: []const u8, comptime Payload: type) []const u8 
     }
 }
 
-/// Emit the parameters block for a payload struct.
-/// Each struct field becomes a JSON schema property with type and description.
 fn emitParameters(comptime Payload: type) []const u8 {
     comptime {
         const param_fields = std.meta.fields(Payload);
@@ -139,7 +146,7 @@ fn fieldExternalName(comptime name: []const u8) []const u8 {
 
 /// Map a field to its JSON schema type string.
 /// - `f32` → `"number"`
-/// - `Color` → `"string"` (hex color)
+/// - `ThemeColor` → `"string"` (hex color or semantic theme token)
 /// - `text_idx: u16` → `"string"` (schema aliasing: pool index → text)
 /// - `u16` (non-aliased) → `"number"`
 fn fieldJsonType(comptime name: []const u8, comptime T: type) []const u8 {
@@ -149,13 +156,22 @@ fn fieldJsonType(comptime name: []const u8, comptime T: type) []const u8 {
         return "string";
     }
     if (T == f32) return "number";
-    if (T == Color) return "string";
+    if (T == ThemeColor) return "string";
     if (T == u16) return "number";
     @compileError("unsupported field type for schema generation");
 }
 
 /// Map field name to a human-readable parameter description.
+///
+/// The `"color"` description is generated at comptime from the `SemanticToken`
+/// enum — if a new token is added to Theme/SemanticToken, the schema
+/// description updates automatically. Single source of truth, zero drift.
 fn fieldDescription(comptime name: []const u8) []const u8 {
+    // Color description: derived from SemanticToken enum at comptime.
+    if (std.mem.eql(u8, name, "color")) {
+        return "Hex color (e.g. 'FF6B35') or theme token: " ++ semantic_token_list;
+    }
+
     const descriptions = .{
         .{ "x", "X position (pixels from left)" },
         .{ "y", "Y position (pixels from top)" },
@@ -167,7 +183,6 @@ fn fieldDescription(comptime name: []const u8) []const u8 {
         .{ "ry", "Vertical radius in pixels" },
         .{ "radius", "Radius in pixels" },
         .{ "width", "Stroke width in pixels" },
-        .{ "color", "Hex color e.g. FF6B35" },
         .{ "text_idx", "The text content to render" },
         .{ "font_size", "Font size in pixels" },
         .{ "x1", "First point X" },
@@ -235,6 +250,12 @@ comptime {
     // "text_idx" does NOT appear anywhere in the schema.
     std.debug.assert(comptimeCountSubstring(tool_schema, "\"text\":") >= 2); // draw_text + draw_text_centered
     std.debug.assert(comptimeCountSubstring(tool_schema, "text_idx") == 0);
+
+    // Verify semantic token names appear in the schema (via color descriptions).
+    // "primary" must appear at least once (it's in every color description).
+    std.debug.assert(comptimeCountSubstring(tool_schema, "primary") >= 1);
+    // "theme token" must appear in color descriptions.
+    std.debug.assert(comptimeCountSubstring(tool_schema, "theme token") >= 1);
 }
 
 // =============================================================================
@@ -356,6 +377,37 @@ test "color fields are typed as string in schema" {
         const type_val = color_param.object.get("type").?;
         try std.testing.expect(type_val == .string);
         try std.testing.expectEqualStrings("string", type_val.string);
+    }
+}
+
+test "color description contains theme token names" {
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        tool_schema,
+        .{},
+    );
+    defer parsed.deinit();
+
+    // Check that color descriptions mention semantic tokens.
+    for (parsed.value.array.items) |tool| {
+        const params = tool.object.get("parameters").?.object;
+        const color_param = params.get("color") orelse continue;
+        const desc = color_param.object.get("description").?.string;
+
+        // Must mention hex format.
+        try std.testing.expect(std.mem.indexOf(u8, desc, "FF6B35") != null);
+
+        // Must mention theme tokens.
+        try std.testing.expect(std.mem.indexOf(u8, desc, "theme token") != null);
+
+        // Must list specific token names from SemanticToken enum.
+        try std.testing.expect(std.mem.indexOf(u8, desc, "primary") != null);
+        try std.testing.expect(std.mem.indexOf(u8, desc, "surface") != null);
+        try std.testing.expect(std.mem.indexOf(u8, desc, "bg") != null);
+        try std.testing.expect(std.mem.indexOf(u8, desc, "text") != null);
+        try std.testing.expect(std.mem.indexOf(u8, desc, "danger") != null);
+        try std.testing.expect(std.mem.indexOf(u8, desc, "border_focus") != null);
     }
 }
 

@@ -7,12 +7,14 @@
 //! Phase 2: Replay engine (AiCanvas)
 //! Phase 3: JSON parser (parseCommand)
 //! Phase 4: Schema generation (tool_schema)
+//! Phase 5: Theme-aware colors (ThemeColor, SemanticToken)
 
 const draw_command = @import("draw_command.zig");
 const text_pool = @import("text_pool.zig");
 const ai_canvas = @import("ai_canvas.zig");
 const json_parser = @import("json_parser.zig");
 const schema = @import("schema.zig");
+const theme_color = @import("theme_color.zig");
 
 /// Tagged union mapping 1:1 to DrawContext methods (11 variants).
 pub const DrawCommand = draw_command.DrawCommand;
@@ -51,6 +53,21 @@ pub const tool_schema = schema.tool_schema;
 
 /// Number of tools in the generated schema (matches DrawCommand variant count).
 pub const TOOL_COUNT = schema.TOOL_COUNT;
+
+/// A color that is either a concrete RGBA literal or a semantic theme
+/// reference (e.g. "primary", "surface"). Theme tokens resolve against
+/// the active `Theme` at replay time — AI-drawn content automatically
+/// adapts to light/dark mode and custom themes.
+pub const ThemeColor = theme_color.ThemeColor;
+
+/// Enum of semantic color slots mirroring `Theme` struct fields 1:1.
+/// Used inside `ThemeColor.token` variants and for parsing color strings
+/// like `"primary"` from JSON commands.
+pub const SemanticToken = theme_color.SemanticToken;
+
+/// Comptime-generated comma-separated list of all semantic token names.
+/// Useful for building prompts or documentation that enumerate valid tokens.
+pub const semantic_token_list = theme_color.semantic_token_list;
 
 test {
     @import("std").testing.refAllDecls(@This());
