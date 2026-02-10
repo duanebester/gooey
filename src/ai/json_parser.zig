@@ -2,12 +2,18 @@
 //!
 //! Parses a single JSON object (one per line) into a `DrawCommand`, handling
 //! the `"tool"` discriminator, numeric field extraction, hex color parsing,
-//! and the `"text"` → `text_idx` asymmetry for text commands.
+//! semantic theme token resolution, and the `"text"` → `text_idx` asymmetry
+//! for text commands.
 //!
 //! Input format (JSON-lines, one object per line):
 //!
 //!   {"tool":"fill_rect","x":10,"y":20,"w":100,"h":50,"color":"FF6B35"}
-//!   {"tool":"draw_text","text":"Hello","x":10,"y":20,"color":"FFFFFF","font_size":16}
+//!   {"tool":"fill_rect","x":10,"y":20,"w":100,"h":50,"color":"primary"}
+//!   {"tool":"draw_text","text":"Hello","x":10,"y":20,"color":"text","font_size":16}
+//!
+//! Color fields accept either a hex string (e.g. "FF6B35", "#FF6B35") or a
+//! semantic theme token (e.g. "primary", "surface", "text"). Theme tokens are
+//! tried first via `SemanticToken.fromString`; on miss, hex parsing kicks in.
 //!
 //! Uses `std.json.parseFromSlice` (Zig 0.15 std lib) for parsing. The
 //! allocator is temporary — the parsed tree is freed before returning.
@@ -19,6 +25,8 @@ const Allocator = std.mem.Allocator;
 const DrawCommand = @import("draw_command.zig").DrawCommand;
 const TextPool = @import("text_pool.zig").TextPool;
 const Color = @import("../core/geometry.zig").Color;
+const ThemeColor = @import("theme_color.zig").ThemeColor;
+const SemanticToken = @import("theme_color.zig").SemanticToken;
 
 // =============================================================================
 // Constants
@@ -40,6 +48,9 @@ const TOOL_COUNT: usize = 11;
 /// is pushed into `texts` and the resulting index is stored as `text_idx` in
 /// the command. This is the "schema aliasing" — external `"text": "string"`
 /// maps to internal `text_idx: u16`.
+///
+/// Color fields accept hex strings ("FF6B35") or semantic theme tokens
+/// ("primary", "surface", etc.). Tokens are tried first; hex is the fallback.
 ///
 /// Returns `null` on any error: malformed JSON, unknown tool, missing fields,
 /// oversized input. Fail-fast, no crash (CLAUDE.md rule #11).
@@ -127,7 +138,7 @@ fn parseFillRect(obj: std.json.ObjectMap) ?DrawCommand {
     const y = getFloat(obj, "y") orelse return null;
     const w = getFloat(obj, "w") orelse return null;
     const h = getFloat(obj, "h") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .fill_rect = .{ .x = x, .y = y, .w = w, .h = h, .color = color } };
 }
 
@@ -137,7 +148,7 @@ fn parseFillRoundedRect(obj: std.json.ObjectMap) ?DrawCommand {
     const w = getFloat(obj, "w") orelse return null;
     const h = getFloat(obj, "h") orelse return null;
     const radius = getFloat(obj, "radius") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .fill_rounded_rect = .{
         .x = x,
         .y = y,
@@ -152,7 +163,7 @@ fn parseFillCircle(obj: std.json.ObjectMap) ?DrawCommand {
     const cx = getFloat(obj, "cx") orelse return null;
     const cy = getFloat(obj, "cy") orelse return null;
     const radius = getFloat(obj, "radius") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .fill_circle = .{ .cx = cx, .cy = cy, .radius = radius, .color = color } };
 }
 
@@ -161,7 +172,7 @@ fn parseFillEllipse(obj: std.json.ObjectMap) ?DrawCommand {
     const cy = getFloat(obj, "cy") orelse return null;
     const rx = getFloat(obj, "rx") orelse return null;
     const ry = getFloat(obj, "ry") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .fill_ellipse = .{ .cx = cx, .cy = cy, .rx = rx, .ry = ry, .color = color } };
 }
 
@@ -172,7 +183,7 @@ fn parseFillTriangle(obj: std.json.ObjectMap) ?DrawCommand {
     const y2 = getFloat(obj, "y2") orelse return null;
     const x3 = getFloat(obj, "x3") orelse return null;
     const y3 = getFloat(obj, "y3") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .fill_triangle = .{
         .x1 = x1,
         .y1 = y1,
@@ -190,7 +201,7 @@ fn parseStrokeRect(obj: std.json.ObjectMap) ?DrawCommand {
     const w = getFloat(obj, "w") orelse return null;
     const h = getFloat(obj, "h") orelse return null;
     const width = getFloat(obj, "width") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .stroke_rect = .{
         .x = x,
         .y = y,
@@ -206,7 +217,7 @@ fn parseStrokeCircle(obj: std.json.ObjectMap) ?DrawCommand {
     const cy = getFloat(obj, "cy") orelse return null;
     const radius = getFloat(obj, "radius") orelse return null;
     const width = getFloat(obj, "width") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .stroke_circle = .{
         .cx = cx,
         .cy = cy,
@@ -222,7 +233,7 @@ fn parseLine(obj: std.json.ObjectMap) ?DrawCommand {
     const x2 = getFloat(obj, "x2") orelse return null;
     const y2 = getFloat(obj, "y2") orelse return null;
     const width = getFloat(obj, "width") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .line = .{
         .x1 = x1,
         .y1 = y1,
@@ -239,7 +250,7 @@ fn parseDrawText(obj: std.json.ObjectMap, texts: *TextPool) ?DrawCommand {
     const text = getString(obj, "text") orelse return null;
     const x = getFloat(obj, "x") orelse return null;
     const y = getFloat(obj, "y") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     const font_size = getFloat(obj, "font_size") orelse return null;
 
     // Push text into pool — may return null if pool is full.
@@ -259,7 +270,7 @@ fn parseDrawTextCentered(obj: std.json.ObjectMap, texts: *TextPool) ?DrawCommand
     const text = getString(obj, "text") orelse return null;
     const x = getFloat(obj, "x") orelse return null;
     const y_center = getFloat(obj, "y_center") orelse return null;
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     const font_size = getFloat(obj, "font_size") orelse return null;
 
     // Push text into pool — may return null if pool is full.
@@ -275,17 +286,15 @@ fn parseDrawTextCentered(obj: std.json.ObjectMap, texts: *TextPool) ?DrawCommand
 }
 
 fn parseSetBackground(obj: std.json.ObjectMap) ?DrawCommand {
-    const color = getColor(obj, "color") orelse return null;
+    const color = getThemeColor(obj, "color") orelse return null;
     return .{ .set_background = .{ .color = color } };
 }
 
 // =============================================================================
-// Field Extraction Helpers
+// Field Extractors
 // =============================================================================
 
-/// Extract a float value from a JSON object field.
-/// Handles both JSON integer and float representations — AI models may
-/// send `"x": 10` (integer) or `"x": 10.0` (float) interchangeably.
+/// Extract a numeric value from a JSON object field, coercing int → f32.
 fn getFloat(obj: std.json.ObjectMap, key: []const u8) ?f32 {
     const val = obj.get(key) orelse return null;
     return switch (val) {
@@ -304,17 +313,34 @@ fn getString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     };
 }
 
-/// Extract a hex color string from a JSON object field and parse it.
+/// Extract a color from a JSON object field.
+///
+/// Tries semantic theme token first (e.g. "primary", "surface", "text"),
+/// then falls back to hex color parsing (e.g. "FF6B35", "#FF6B35").
+///
 /// Accepts both `"FF6B35"` and `"#FF6B35"` formats (with or without `#`
 /// prefix), as well as alpha variants like `"FF6B35CC"` / `"#RRGGBBAA"`.
-/// Delegates to `Color.fromHex` which already handles all these formats.
-fn getColor(obj: std.json.ObjectMap, key: []const u8) ?Color {
+///
+/// Returns a `ThemeColor` — either `.token` for semantic references or
+/// `.literal` for concrete hex colors.
+fn getThemeColor(obj: std.json.ObjectMap, key: []const u8) ?ThemeColor {
     const color_str = getString(obj, key) orelse return null;
-    // CLAUDE.md #3: assert color string is reasonable length.
+
+    // CLAUDE.md #3: assert color string is non-empty.
+    std.debug.assert(color_str.len > 0);
+    if (color_str.len == 0) return null;
+
+    // Try semantic token first. Token names are pure lowercase alpha +
+    // underscore (e.g. "primary", "border_focus"), so there's no ambiguity
+    // with hex strings which are alphanumeric with optional '#' prefix.
+    if (SemanticToken.fromString(color_str)) |token| {
+        return ThemeColor.fromToken(token);
+    }
+
+    // Fall back to hex color parsing.
     // Valid formats: RGB(3), RGBA(4), RRGGBB(6), RRGGBBAA(8), plus optional '#'.
-    std.debug.assert(color_str.len <= 9);
-    if (color_str.len == 0 or color_str.len > 9) return null;
-    return Color.fromHex(color_str);
+    if (color_str.len > 9) return null;
+    return ThemeColor.fromLiteral(Color.fromHex(color_str));
 }
 
 // =============================================================================
@@ -336,7 +362,7 @@ comptime {
 // Tests
 // =============================================================================
 
-test "parse fill_rect" {
+test "parse fill_rect with hex color" {
     const input = "{\"tool\":\"fill_rect\",\"x\":10,\"y\":20,\"w\":100,\"h\":50,\"color\":\"FF6B35\"}";
     var texts = TextPool{};
     const cmd = parseCommand(std.testing.allocator, input, &texts) orelse
@@ -348,11 +374,32 @@ test "parse fill_rect" {
             try std.testing.expectApproxEqAbs(@as(f32, 20), c.y, 0.001);
             try std.testing.expectApproxEqAbs(@as(f32, 100), c.w, 0.001);
             try std.testing.expectApproxEqAbs(@as(f32, 50), c.h, 0.001);
+            // Must be a literal color.
+            try std.testing.expect(c.color.isLiteral());
+            const lit = c.color.getLiteral().?;
             // FF = 255, 6B = 107, 35 = 53
-            try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.color.r, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 107.0 / 255.0), c.color.g, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 53.0 / 255.0), c.color.b, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.color.a, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 1.0), lit.r, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 107.0 / 255.0), lit.g, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 53.0 / 255.0), lit.b, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 1.0), lit.a, 0.01);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse fill_rect with theme token" {
+    const input = "{\"tool\":\"fill_rect\",\"x\":10,\"y\":20,\"w\":100,\"h\":50,\"color\":\"primary\"}";
+    var texts = TextPool{};
+    const cmd = parseCommand(std.testing.allocator, input, &texts) orelse
+        return error.TestUnexpectedResult;
+
+    switch (cmd) {
+        .fill_rect => |c| {
+            try std.testing.expectApproxEqAbs(@as(f32, 10), c.x, 0.001);
+            try std.testing.expectApproxEqAbs(@as(f32, 50), c.h, 0.001);
+            // Must be a theme token.
+            try std.testing.expect(c.color.isToken());
+            try std.testing.expectEqual(SemanticToken.primary, c.color.getToken().?);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -439,7 +486,9 @@ test "parse stroke_rect" {
     switch (cmd) {
         .stroke_rect => |c| {
             try std.testing.expectApproxEqAbs(@as(f32, 2), c.width, 0.001);
-            try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.color.r, 0.01);
+            try std.testing.expect(c.color.isLiteral());
+            const lit = c.color.getLiteral().?;
+            try std.testing.expectApproxEqAbs(@as(f32, 1.0), lit.r, 0.01);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -491,6 +540,21 @@ test "parse draw_text pushes to TextPool" {
     try std.testing.expectEqual(@as(u16, 1), texts.entryCount());
 }
 
+test "parse draw_text with theme token color" {
+    const input = "{\"tool\":\"draw_text\",\"text\":\"Themed\",\"x\":10,\"y\":20,\"color\":\"text\",\"font_size\":16}";
+    var texts = TextPool{};
+    const cmd = parseCommand(std.testing.allocator, input, &texts).?;
+
+    switch (cmd) {
+        .draw_text => |c| {
+            try std.testing.expect(c.color.isToken());
+            try std.testing.expectEqual(SemanticToken.text, c.color.getToken().?);
+            try std.testing.expectEqualStrings("Themed", texts.get(c.text_idx));
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "parse draw_text_centered pushes to TextPool" {
     const input = "{\"tool\":\"draw_text_centered\",\"text\":\"Centered\",\"x\":100,\"y_center\":300,\"color\":\"000000\",\"font_size\":24}";
     var texts = TextPool{};
@@ -506,17 +570,33 @@ test "parse draw_text_centered pushes to TextPool" {
     }
 }
 
-test "parse set_background" {
+test "parse set_background with hex" {
     const input = "{\"tool\":\"set_background\",\"color\":\"87CEEB\"}";
     var texts = TextPool{};
     const cmd = parseCommand(std.testing.allocator, input, &texts).?;
 
     switch (cmd) {
         .set_background => |c| {
+            try std.testing.expect(c.color.isLiteral());
+            const lit = c.color.getLiteral().?;
             // 87 = 135, CE = 206, EB = 235
-            try std.testing.expectApproxEqAbs(@as(f32, 135.0 / 255.0), c.color.r, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 206.0 / 255.0), c.color.g, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 235.0 / 255.0), c.color.b, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 135.0 / 255.0), lit.r, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 206.0 / 255.0), lit.g, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 235.0 / 255.0), lit.b, 0.01);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse set_background with theme token" {
+    const input = "{\"tool\":\"set_background\",\"color\":\"bg\"}";
+    var texts = TextPool{};
+    const cmd = parseCommand(std.testing.allocator, input, &texts).?;
+
+    switch (cmd) {
+        .set_background => |c| {
+            try std.testing.expect(c.color.isToken());
+            try std.testing.expectEqual(SemanticToken.bg, c.color.getToken().?);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -529,9 +609,11 @@ test "color parsing with hash prefix" {
 
     switch (cmd) {
         .fill_circle => |c| {
-            try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.color.r, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 107.0 / 255.0), c.color.g, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 53.0 / 255.0), c.color.b, 0.01);
+            try std.testing.expect(c.color.isLiteral());
+            const lit = c.color.getLiteral().?;
+            try std.testing.expectApproxEqAbs(@as(f32, 1.0), lit.r, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 107.0 / 255.0), lit.g, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 53.0 / 255.0), lit.b, 0.01);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -544,10 +626,12 @@ test "color parsing with alpha" {
 
     switch (cmd) {
         .set_background => |c| {
-            try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.color.r, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 107.0 / 255.0), c.color.g, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 53.0 / 255.0), c.color.b, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 204.0 / 255.0), c.color.a, 0.01);
+            try std.testing.expect(c.color.isLiteral());
+            const lit = c.color.getLiteral().?;
+            try std.testing.expectApproxEqAbs(@as(f32, 1.0), lit.r, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 107.0 / 255.0), lit.g, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 53.0 / 255.0), lit.b, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 204.0 / 255.0), lit.a, 0.01);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -560,10 +644,42 @@ test "color parsing with hash and alpha" {
 
     switch (cmd) {
         .set_background => |c| {
-            try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.color.r, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 204.0 / 255.0), c.color.a, 0.01);
+            try std.testing.expect(c.color.isLiteral());
+            const lit = c.color.getLiteral().?;
+            try std.testing.expectApproxEqAbs(@as(f32, 1.0), lit.r, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 204.0 / 255.0), lit.a, 0.01);
         },
         else => return error.TestUnexpectedResult,
+    }
+}
+
+test "all 14 semantic tokens parse correctly" {
+    const token_names = [_][]const u8{
+        "bg",      "surface",      "overlay",
+        "primary", "secondary",    "accent",
+        "success", "warning",      "danger",
+        "text",    "subtext",      "muted",
+        "border",  "border_focus",
+    };
+
+    // CLAUDE.md #3: assert we're testing all tokens.
+    std.debug.assert(token_names.len == SemanticToken.COUNT);
+
+    for (token_names) |token_name| {
+        // Build a set_background command with this token.
+        var buf: [128]u8 = undefined;
+        const json = std.fmt.bufPrint(&buf, "{{\"tool\":\"set_background\",\"color\":\"{s}\"}}", .{token_name}) catch unreachable;
+
+        var texts = TextPool{};
+        const cmd = parseCommand(std.testing.allocator, json, &texts) orelse
+            return error.TestUnexpectedResult;
+
+        switch (cmd) {
+            .set_background => |c| {
+                try std.testing.expect(c.color.isToken());
+            },
+            else => return error.TestUnexpectedResult,
+        }
     }
 }
 
@@ -664,6 +780,32 @@ test "parse all 11 tool types successfully" {
     try std.testing.expectEqual(@as(usize, 11), parsed_count);
 }
 
+test "parse all 11 tool types with theme tokens" {
+    var texts = TextPool{};
+    const inputs = [_][]const u8{
+        "{\"tool\":\"fill_rect\",\"x\":0,\"y\":0,\"w\":1,\"h\":1,\"color\":\"primary\"}",
+        "{\"tool\":\"fill_rounded_rect\",\"x\":0,\"y\":0,\"w\":1,\"h\":1,\"radius\":4,\"color\":\"surface\"}",
+        "{\"tool\":\"fill_circle\",\"cx\":0,\"cy\":0,\"radius\":1,\"color\":\"accent\"}",
+        "{\"tool\":\"fill_ellipse\",\"cx\":0,\"cy\":0,\"rx\":1,\"ry\":2,\"color\":\"success\"}",
+        "{\"tool\":\"fill_triangle\",\"x1\":0,\"y1\":0,\"x2\":1,\"y2\":0,\"x3\":0,\"y3\":1,\"color\":\"warning\"}",
+        "{\"tool\":\"stroke_rect\",\"x\":0,\"y\":0,\"w\":1,\"h\":1,\"width\":2,\"color\":\"danger\"}",
+        "{\"tool\":\"stroke_circle\",\"cx\":0,\"cy\":0,\"radius\":1,\"width\":2,\"color\":\"border\"}",
+        "{\"tool\":\"line\",\"x1\":0,\"y1\":0,\"x2\":1,\"y2\":1,\"width\":1,\"color\":\"muted\"}",
+        "{\"tool\":\"draw_text\",\"text\":\"a\",\"x\":0,\"y\":0,\"color\":\"text\",\"font_size\":12}",
+        "{\"tool\":\"draw_text_centered\",\"text\":\"b\",\"x\":0,\"y_center\":0,\"color\":\"subtext\",\"font_size\":12}",
+        "{\"tool\":\"set_background\",\"color\":\"bg\"}",
+    };
+
+    var parsed_count: usize = 0;
+    for (inputs) |input| {
+        const cmd = parseCommand(std.testing.allocator, input, &texts) orelse continue;
+        // Every parsed command should have a theme token color.
+        try std.testing.expect(cmd.getColor().isToken());
+        parsed_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 11), parsed_count);
+}
+
 test "house example from design doc" {
     // Reproduces the Python "draw a house" example from AI_NATIVE.md
     var texts = TextPool{};
@@ -701,6 +843,26 @@ test "house example from design doc" {
     }
 }
 
+test "themed house example" {
+    // Same house but using theme tokens for coherent styling.
+    var texts = TextPool{};
+    const commands_json = [_][]const u8{
+        "{\"tool\":\"set_background\",\"color\":\"bg\"}",
+        "{\"tool\":\"fill_rect\",\"x\":200,\"y\":250,\"w\":200,\"h\":150,\"color\":\"surface\"}",
+        "{\"tool\":\"fill_triangle\",\"x1\":180,\"y1\":250,\"x2\":300,\"y2\":120,\"x3\":420,\"y3\":250,\"color\":\"danger\"}",
+        "{\"tool\":\"fill_rect\",\"x\":270,\"y\":320,\"w\":60,\"h\":80,\"color\":\"secondary\"}",
+        "{\"tool\":\"fill_circle\",\"cx\":250,\"cy\":300,\"radius\":20,\"color\":\"primary\"}",
+        "{\"tool\":\"draw_text\",\"text\":\"Home\",\"x\":260,\"y\":410,\"color\":\"text\",\"font_size\":20}",
+    };
+
+    for (commands_json) |json_line| {
+        const cmd = parseCommand(std.testing.allocator, json_line, &texts) orelse
+            return error.TestUnexpectedResult;
+        // All commands should have theme token colors.
+        try std.testing.expect(cmd.getColor().isToken());
+    }
+}
+
 test "extra fields are ignored gracefully" {
     // AI models may send extra fields — they should not cause a parse failure.
     const input = "{\"tool\":\"fill_rect\",\"x\":10,\"y\":20,\"w\":100,\"h\":50,\"color\":\"FF0000\",\"label\":\"my rect\",\"id\":42}";
@@ -730,4 +892,33 @@ test "negative coordinate values" {
 test "tool count matches DrawCommand variant count" {
     try std.testing.expectEqual(@as(usize, 11), TOOL_COUNT);
     try std.testing.expectEqual(TOOL_COUNT, std.meta.fields(DrawCommand).len);
+}
+
+test "mixed hex and token colors in batch" {
+    var texts = TextPool{};
+
+    // Background with theme token.
+    const cmd1 = parseCommand(
+        std.testing.allocator,
+        "{\"tool\":\"set_background\",\"color\":\"bg\"}",
+        &texts,
+    ).?;
+    try std.testing.expect(cmd1.getColor().isToken());
+
+    // Rect with hex color.
+    const cmd2 = parseCommand(
+        std.testing.allocator,
+        "{\"tool\":\"fill_rect\",\"x\":0,\"y\":0,\"w\":100,\"h\":50,\"color\":\"FF6B35\"}",
+        &texts,
+    ).?;
+    try std.testing.expect(cmd2.getColor().isLiteral());
+
+    // Circle with theme token.
+    const cmd3 = parseCommand(
+        std.testing.allocator,
+        "{\"tool\":\"fill_circle\",\"cx\":50,\"cy\":50,\"radius\":20,\"color\":\"accent\"}",
+        &texts,
+    ).?;
+    try std.testing.expect(cmd3.getColor().isToken());
+    try std.testing.expectEqual(SemanticToken.accent, cmd3.getColor().getToken().?);
 }

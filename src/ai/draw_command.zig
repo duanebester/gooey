@@ -5,6 +5,12 @@
 //! string slices — slices contain pointers which are not serializable and
 //! break the "no allocation" rule.
 //!
+//! Color fields use `ThemeColor` instead of raw `Color`. This allows AI
+//! commands to reference semantic theme tokens (e.g. "primary", "surface")
+//! that resolve against the active theme at replay time, ensuring coherent
+//! visuals across light/dark modes and custom themes. Literal hex colors
+//! still work — `ThemeColor` is a tagged union of `Color | SemanticToken`.
+//!
 //! The tagged union enables:
 //! - Exhaustive switch in replay (compiler forces handling every variant)
 //! - Fixed size per command (largest variant determines union size)
@@ -13,13 +19,15 @@
 
 const std = @import("std");
 const Color = @import("../core/geometry.zig").Color;
+const ThemeColor = @import("theme_color.zig").ThemeColor;
+const SemanticToken = @import("theme_color.zig").SemanticToken;
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/// Hard cap on draw commands per frame/batch. At 64 bytes per command this is
-/// 256KB of command data — well within L2 cache on modern hardware.
+/// Hard cap on draw commands per frame/batch. At ≤64 bytes per command this is
+/// ≤256KB of command data — well within L2 cache on modern hardware.
 pub const MAX_DRAW_COMMANDS: usize = 4096;
 
 // =============================================================================
@@ -55,7 +63,7 @@ pub const DrawCommand = union(enum) {
         y: f32,
         w: f32,
         h: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const FillRoundedRect = struct {
@@ -64,14 +72,14 @@ pub const DrawCommand = union(enum) {
         w: f32,
         h: f32,
         radius: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const FillCircle = struct {
         cx: f32,
         cy: f32,
         radius: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const FillEllipse = struct {
@@ -79,7 +87,7 @@ pub const DrawCommand = union(enum) {
         cy: f32,
         rx: f32,
         ry: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const FillTriangle = struct {
@@ -89,7 +97,7 @@ pub const DrawCommand = union(enum) {
         y2: f32,
         x3: f32,
         y3: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const StrokeRect = struct {
@@ -98,7 +106,7 @@ pub const DrawCommand = union(enum) {
         w: f32,
         h: f32,
         width: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const StrokeCircle = struct {
@@ -106,7 +114,7 @@ pub const DrawCommand = union(enum) {
         cy: f32,
         radius: f32,
         width: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const Line = struct {
@@ -115,14 +123,14 @@ pub const DrawCommand = union(enum) {
         x2: f32,
         y2: f32,
         width: f32,
-        color: Color,
+        color: ThemeColor,
     };
 
     pub const DrawText = struct {
         text_idx: u16,
         x: f32,
         y: f32,
-        color: Color,
+        color: ThemeColor,
         font_size: f32,
     };
 
@@ -130,12 +138,12 @@ pub const DrawCommand = union(enum) {
         text_idx: u16,
         x: f32,
         y_center: f32,
-        color: Color,
+        color: ThemeColor,
         font_size: f32,
     };
 
     pub const SetBackground = struct {
-        color: Color,
+        color: ThemeColor,
     };
 
     // =========================================================================
@@ -159,8 +167,8 @@ pub const DrawCommand = union(enum) {
         };
     }
 
-    /// Returns the color for any command variant.
-    pub fn getColor(self: DrawCommand) Color {
+    /// Returns the ThemeColor for any command variant.
+    pub fn getColor(self: DrawCommand) ThemeColor {
         return switch (self) {
             .fill_rect => |v| v.color,
             .fill_rounded_rect => |v| v.color,
@@ -208,7 +216,7 @@ test "DrawCommand has exactly 11 variants" {
 }
 
 test "DrawCommand fill_rect roundtrip" {
-    const color = Color.hex(0xFF0000);
+    const color = ThemeColor.fromLiteral(Color.hex(0xFF0000));
     const cmd = DrawCommand{ .fill_rect = .{ .x = 10, .y = 20, .w = 100, .h = 50, .color = color } };
 
     try std.testing.expect(!cmd.hasTextRef());
@@ -226,7 +234,7 @@ test "DrawCommand fill_rect roundtrip" {
 }
 
 test "DrawCommand fill_triangle is largest variant" {
-    // fill_triangle: 6 floats (24 bytes) + Color (16 bytes) = 40 bytes payload.
+    // fill_triangle: 6 floats (24 bytes) + ThemeColor (≤20 bytes) = ≤44 bytes payload.
     // This should be the largest or tied for largest variant.
     const triangle_size = @sizeOf(DrawCommand.FillTriangle);
     const rect_size = @sizeOf(DrawCommand.FillRect);
@@ -238,7 +246,7 @@ test "DrawCommand text commands reference text pool" {
         .text_idx = 42,
         .x = 10,
         .y = 20,
-        .color = Color.hex(0xFFFFFF),
+        .color = ThemeColor.fromLiteral(Color.hex(0xFFFFFF)),
         .font_size = 16,
     } };
     try std.testing.expect(text_cmd.hasTextRef());
@@ -248,15 +256,15 @@ test "DrawCommand text commands reference text pool" {
         .text_idx = 7,
         .x = 100,
         .y_center = 50,
-        .color = Color.hex(0x000000),
+        .color = ThemeColor.fromLiteral(Color.hex(0x000000)),
         .font_size = 24,
     } };
     try std.testing.expect(centered_cmd.hasTextRef());
     try std.testing.expectEqual(@as(u16, 7), centered_cmd.textIdx().?);
 }
 
-test "DrawCommand getColor works for all variants" {
-    const red = Color.hex(0xFF0000);
+test "DrawCommand getColor works for all variants with literals" {
+    const red = ThemeColor.fromLiteral(Color.hex(0xFF0000));
 
     const commands = [_]DrawCommand{
         .{ .fill_rect = .{ .x = 0, .y = 0, .w = 1, .h = 1, .color = red } },
@@ -274,12 +282,24 @@ test "DrawCommand getColor works for all variants" {
 
     for (commands) |cmd| {
         const c = cmd.getColor();
-        try std.testing.expectApproxEqAbs(red.r, c.r, 0.001);
+        try std.testing.expect(c.isLiteral());
+        const lit = c.getLiteral().?;
+        try std.testing.expectApproxEqAbs(Color.hex(0xFF0000).r, lit.r, 0.001);
     }
 }
 
+test "DrawCommand getColor works with theme tokens" {
+    const primary = ThemeColor.fromToken(.primary);
+
+    const cmd = DrawCommand{ .fill_rect = .{ .x = 0, .y = 0, .w = 100, .h = 50, .color = primary } };
+    const tc = cmd.getColor();
+
+    try std.testing.expect(tc.isToken());
+    try std.testing.expectEqual(SemanticToken.primary, tc.getToken().?);
+}
+
 test "DrawCommand non-text commands have no text ref" {
-    const white = Color.hex(0xFFFFFF);
+    const white = ThemeColor.fromLiteral(Color.hex(0xFFFFFF));
     const non_text = [_]DrawCommand{
         .{ .fill_rect = .{ .x = 0, .y = 0, .w = 1, .h = 1, .color = white } },
         .{ .fill_circle = .{ .cx = 0, .cy = 0, .radius = 1, .color = white } },
@@ -291,4 +311,28 @@ test "DrawCommand non-text commands have no text ref" {
         try std.testing.expect(!cmd.hasTextRef());
         try std.testing.expect(cmd.textIdx() == null);
     }
+}
+
+test "DrawCommand with mixed literal and token colors" {
+    const literal_red = ThemeColor.fromLiteral(Color.hex(0xFF0000));
+    const token_primary = ThemeColor.fromToken(.primary);
+    const token_bg = ThemeColor.fromToken(.bg);
+
+    // Mix of literal and token colors in a command sequence.
+    const commands = [_]DrawCommand{
+        .{ .set_background = .{ .color = token_bg } },
+        .{ .fill_rect = .{ .x = 0, .y = 0, .w = 100, .h = 50, .color = token_primary } },
+        .{ .fill_circle = .{ .cx = 50, .cy = 50, .radius = 25, .color = literal_red } },
+    };
+
+    // First is a token.
+    try std.testing.expect(commands[0].getColor().isToken());
+    try std.testing.expectEqual(SemanticToken.bg, commands[0].getColor().getToken().?);
+
+    // Second is a token.
+    try std.testing.expect(commands[1].getColor().isToken());
+    try std.testing.expectEqual(SemanticToken.primary, commands[1].getColor().getToken().?);
+
+    // Third is a literal.
+    try std.testing.expect(commands[2].getColor().isLiteral());
 }

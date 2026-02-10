@@ -219,7 +219,7 @@ Owns the command buffer and text pool. Provides mutation API (for the parser) an
 - `texts: TextPool = .{}`
 - `canvas_width: f32 = 800`
 - `canvas_height: f32 = 600`
-- `background_color: Color = Color.hex(0x1a1a2e)`
+- `background_color: ThemeColor = ThemeColor.fromLiteral(Color.hex(0x1a1a2e))`
 
 **Mutation API:**
 
@@ -229,9 +229,11 @@ Owns the command buffer and text pool. Provides mutation API (for the parser) an
 
 **Replay API:**
 
-- `replay(ctx: *DrawContext) void` — the core function. Iterates `commands[0..command_count]`, switches on each variant, calls the corresponding `DrawContext` method.
+- `replay(ctx: *DrawContext, theme: *const Theme) void` — the core function. Iterates `commands[0..command_count]`, switches on each variant, resolves `ThemeColor` against the provided theme, then calls the corresponding `DrawContext` method with concrete colors.
 
 **Replay parameter mapping (watch the inconsistencies):**
+
+In the table below, `color` means `c.color.resolve(theme)` — every `ThemeColor` is resolved to a concrete `Color` at replay time:
 
 | DrawCommand variant   | DrawContext call                                             | Parameter order notes |
 | --------------------- | ------------------------------------------------------------ | --------------------- |
@@ -267,7 +269,10 @@ Parses a single JSON line into a `DrawCommand` (plus optional text pool mutation
 
 ```
 {"tool":"fill_rect","x":10,"y":20,"w":100,"h":50,"color":"FF6B35"}
+{"tool":"fill_rect","x":10,"y":20,"w":100,"h":50,"color":"primary"}
 ```
+
+Color fields accept hex strings (`"FF6B35"`) or semantic theme tokens (`"primary"`, `"surface"`, `"text"`, etc.).
 
 **Approach — `std.json.parseFromSlice` into `std.json.Value`, then manual field extraction:**
 
@@ -278,7 +283,7 @@ Parses a single JSON line into a `DrawCommand` (plus optional text pool mutation
 - `parseCommand(json_line: []const u8, texts: *TextPool) ?DrawCommand`
   - Returns null on malformed input (fail-fast, log, don't crash)
   - For `draw_text` / `draw_text_centered`: extracts `"text"` string field, pushes into `TextPool`, stores resulting `text_idx` in the command
-  - For `"color"` fields: calls `Color.fromHex(color_str)`
+  - For `"color"` fields: tries `SemanticToken.fromString` first, falls back to `Color.fromHex`
 
 **Constants:**
 
@@ -292,11 +297,12 @@ Parses a single JSON line into a `DrawCommand` (plus optional text pool mutation
 **Color parsing flow:**
 
 ```
-JSON "color": "FF6B35"  →  Color.fromHex("FF6B35")  →  Color{ .r=1.0, .g=0.42, .b=0.21, .a=1.0 }
-JSON "color": "#FF6B35" →  Color.fromHex("#FF6B35")  →  same result (# stripped internally)
+JSON "color": "primary"  →  SemanticToken.fromString("primary")  →  ThemeColor{ .token = .primary }
+JSON "color": "FF6B35"   →  SemanticToken miss → Color.fromHex("FF6B35")  →  ThemeColor{ .literal = Color{...} }
+JSON "color": "#FF6B35"  →  SemanticToken miss → Color.fromHex("#FF6B35") →  ThemeColor{ .literal = Color{...} }
 ```
 
-No new code needed — `Color.fromHex` already handles both formats, including `#RRGGBBAA` for alpha.
+Semantic tokens are tried first via `std.meta.stringToEnum`. Token names are pure lowercase alpha + underscore (e.g. `"primary"`, `"border_focus"`), so there's no ambiguity with hex strings. `Color.fromHex` handles `#RRGGBBAA` for alpha.
 
 ---
 
@@ -427,12 +433,13 @@ If the writer is faster than the renderer (multiple batches between frames), the
 
 ```
 src/ai/
-├── mod.zig              # Public exports: AiCanvas, DrawCommand, TextPool, parseCommand, tool_schema
+├── mod.zig              # Public exports: AiCanvas, DrawCommand, ThemeColor, SemanticToken, etc.
 ├── draw_command.zig     # DrawCommand tagged union + MAX_DRAW_COMMANDS
+├── theme_color.zig      # ThemeColor union + SemanticToken enum + semantic_token_list
 ├── text_pool.zig        # TextPool fixed-capacity string arena
-├── ai_canvas.zig        # AiCanvas state struct + replay logic
-├── json_parser.zig      # JSON line → DrawCommand parser (via std.json)
-└── schema.zig           # Comptime tool schema generation
+├── ai_canvas.zig        # AiCanvas state struct + replay logic (takes *const Theme)
+├── json_parser.zig      # JSON line → DrawCommand parser (via std.json, theme-aware)
+└── schema.zig           # Comptime tool schema generation (color desc from SemanticToken)
 
 src/examples/
 └── ai_canvas.zig        # Example app: AI-driven canvas with stdin transport
@@ -444,6 +451,9 @@ build.zig                # MODIFIED — add one addNativeExample() call for ai-c
 
 ```
 pub const DrawCommand = draw_command.DrawCommand;
+pub const ThemeColor = theme_color.ThemeColor;
+pub const SemanticToken = theme_color.SemanticToken;
+pub const semantic_token_list = theme_color.semantic_token_list;
 pub const TextPool = text_pool.TextPool;
 pub const AiCanvas = ai_canvas.AiCanvas;
 pub const parseCommand = json_parser.parseCommand;
@@ -475,11 +485,13 @@ addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "ai-canvas",
 
 Per CLAUDE.md rules #2 (static allocation) and #14 (WASM stack budget):
 
-| Struct        | Estimated Size                                                        | Comptime Assert | Lives In           |
-| ------------- | --------------------------------------------------------------------- | --------------- | ------------------ |
-| `DrawCommand` | ~48-64 bytes (largest variant: `fill_triangle` with 7 floats + color) | `<= 64`         | Array in AiCanvas  |
-| `TextPool`    | ~17KB (16KB buffer + 1KB indices)                                     | `< 20 * 1024`   | Field in AiCanvas  |
-| `AiCanvas`    | ~280KB (4096 × 64B commands + 17KB text)                              | `< 300 * 1024`  | Global `var state` |
+| Struct          | Estimated Size                                                             | Comptime Assert | Lives In                          |
+| --------------- | -------------------------------------------------------------------------- | --------------- | --------------------------------- |
+| `ThemeColor`    | ≤20 bytes (tagged union: `literal: Color` or `token: SemanticToken`)       | `<= 20`         | Field in each DrawCommand variant |
+| `SemanticToken` | 1 byte (enum(u8), 14 variants)                                             | `== 1`          | Inside ThemeColor `.token`        |
+| `DrawCommand`   | ~48-64 bytes (largest variant: `fill_triangle` with 7 floats + ThemeColor) | `<= 64`         | Array in AiCanvas                 |
+| `TextPool`      | ~17KB (16KB buffer + 1KB indices)                                          | `< 20 * 1024`   | Field in AiCanvas                 |
+| `AiCanvas`      | ~280KB (4096 × ≤64B commands + 17KB text)                                  | `< 300 * 1024`  | Global `var state`                |
 
 **Total global memory footprint:**
 

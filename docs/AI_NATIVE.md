@@ -1,6 +1,6 @@
 # AI Native Canvas — Design Document
 
-> Expose Gooey's drawing primitives as AI-callable "tools" so an LLM can draw on a canvas, render text, and build visual artifacts at runtime.
+> Expose Gooey's drawing primitives as AI-callable "tools" so an LLM can draw on a canvas, render text, and build visual artifacts at runtime. Color fields accept hex strings or semantic theme tokens that resolve at render time.
 
 **Status:** v1 Complete  
 **Created:** 2025-07-14
@@ -162,23 +162,23 @@ const MAX_DRAW_COMMANDS: usize = 4096;
 
 const DrawCommand = union(enum) {
     // === Fills ===
-    fill_rect: struct { x: f32, y: f32, w: f32, h: f32, color: Color },
-    fill_rounded_rect: struct { x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color },
-    fill_circle: struct { cx: f32, cy: f32, radius: f32, color: Color },
-    fill_ellipse: struct { cx: f32, cy: f32, rx: f32, ry: f32, color: Color },
-    fill_triangle: struct { x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, color: Color },
+    fill_rect: struct { x: f32, y: f32, w: f32, h: f32, color: ThemeColor },
+    fill_rounded_rect: struct { x: f32, y: f32, w: f32, h: f32, radius: f32, color: ThemeColor },
+    fill_circle: struct { cx: f32, cy: f32, radius: f32, color: ThemeColor },
+    fill_ellipse: struct { cx: f32, cy: f32, rx: f32, ry: f32, color: ThemeColor },
+    fill_triangle: struct { x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, color: ThemeColor },
 
     // === Strokes / Lines ===
-    stroke_rect: struct { x: f32, y: f32, w: f32, h: f32, width: f32, color: Color },
-    stroke_circle: struct { cx: f32, cy: f32, radius: f32, width: f32, color: Color },
-    line: struct { x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color },
+    stroke_rect: struct { x: f32, y: f32, w: f32, h: f32, width: f32, color: ThemeColor },
+    stroke_circle: struct { cx: f32, cy: f32, radius: f32, width: f32, color: ThemeColor },
+    line: struct { x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: ThemeColor },
 
     // === Text ===
-    draw_text: struct { text_idx: u16, x: f32, y: f32, color: Color, font_size: f32 },
-    draw_text_centered: struct { text_idx: u16, x: f32, y_center: f32, color: Color, font_size: f32 },
+    draw_text: struct { text_idx: u16, x: f32, y: f32, color: ThemeColor, font_size: f32 },
+    draw_text_centered: struct { text_idx: u16, x: f32, y_center: f32, color: ThemeColor, font_size: f32 },
 
     // === Control ===
-    set_background: struct { color: Color },
+    set_background: struct { color: ThemeColor },
 };
 
 // Compile-time size budget — keep the union compact for cache-friendly replay
@@ -186,6 +186,8 @@ comptime {
     std.debug.assert(@sizeOf(DrawCommand) <= 64); // Largest variant must stay under 64 bytes
 }
 ```
+
+**`ThemeColor`** is a tagged union: `literal: Color | token: SemanticToken`. Literal wraps a concrete RGBA color (from hex strings like `"FF6B35"`). Token holds a semantic reference (from strings like `"primary"`, `"surface"`, `"text"`) that resolves against the active `Theme` at replay time. Both fit in ≤20 bytes, keeping the union well under the 64-byte cache line cap.
 
 ### Why a tagged union?
 
@@ -271,7 +273,7 @@ const AiCanvas = struct {
     texts: TextPool = .{},
     canvas_width: f32 = 800,
     canvas_height: f32 = 600,
-    background_color: Color = Color.hex(0x1a1a2e),
+    background_color: ThemeColor = ThemeColor.fromLiteral(Color.hex(0x1a1a2e)),
 
     const Self = @This();
 
@@ -298,33 +300,33 @@ const AiCanvas = struct {
 
     // --- Replay (called by the comptime paint callback) ---
 
-    pub fn replay(self: *const Self, ctx: *ui.DrawContext) void {
+    pub fn replay(self: *const Self, ctx: *ui.DrawContext, theme: *const Theme) void {
         const w = ctx.width();
         const h = ctx.height();
 
-        // Background fill
-        ctx.fillRect(0, 0, w, h, self.background_color);
+        // Background fill — resolve ThemeColor against active theme
+        ctx.fillRect(0, 0, w, h, self.background_color.resolve(theme));
 
-        // Replay every command
+        // Replay every command, resolving ThemeColor tokens at render time
         for (self.commands[0..self.command_count]) |cmd| {
             switch (cmd) {
-                .fill_rect => |c| ctx.fillRect(c.x, c.y, c.w, c.h, c.color),
-                .fill_rounded_rect => |c| ctx.fillRoundedRect(c.x, c.y, c.w, c.h, c.radius, c.color),
-                .fill_circle => |c| ctx.fillCircle(c.cx, c.cy, c.radius, c.color),
-                .fill_ellipse => |c| ctx.fillEllipse(c.cx, c.cy, c.rx, c.ry, c.color),
-                .fill_triangle => |c| ctx.fillTriangle(c.x1, c.y1, c.x2, c.y2, c.x3, c.y3, c.color),
-                .stroke_rect => |c| ctx.strokeRect(c.x, c.y, c.w, c.h, c.color, c.width),
-                .stroke_circle => |c| ctx.strokeCircle(c.cx, c.cy, c.radius, c.width, c.color),
-                .line => |c| ctx.line(c.x1, c.y1, c.x2, c.y2, c.width, c.color),
+                .fill_rect => |c| ctx.fillRect(c.x, c.y, c.w, c.h, c.color.resolve(theme)),
+                .fill_rounded_rect => |c| ctx.fillRoundedRect(c.x, c.y, c.w, c.h, c.radius, c.color.resolve(theme)),
+                .fill_circle => |c| ctx.fillCircle(c.cx, c.cy, c.radius, c.color.resolve(theme)),
+                .fill_ellipse => |c| ctx.fillEllipse(c.cx, c.cy, c.rx, c.ry, c.color.resolve(theme)),
+                .fill_triangle => |c| ctx.fillTriangle(c.x1, c.y1, c.x2, c.y2, c.x3, c.y3, c.color.resolve(theme)),
+                .stroke_rect => |c| ctx.strokeRect(c.x, c.y, c.w, c.h, c.color.resolve(theme), c.width),
+                .stroke_circle => |c| ctx.strokeCircle(c.cx, c.cy, c.radius, c.width, c.color.resolve(theme)),
+                .line => |c| ctx.line(c.x1, c.y1, c.x2, c.y2, c.width, c.color.resolve(theme)),
                 .draw_text => |c| {
                     const text = self.texts.get(c.text_idx);
-                    _ = ctx.drawText(text, c.x, c.y, c.color, c.font_size);
+                    _ = ctx.drawText(text, c.x, c.y, c.color.resolve(theme), c.font_size);
                 },
                 .draw_text_centered => |c| {
                     const text = self.texts.get(c.text_idx);
-                    _ = ctx.drawTextVCentered(text, c.x, c.y_center, c.color, c.font_size);
+                    _ = ctx.drawTextVCentered(text, c.x, c.y_center, c.color.resolve(theme), c.font_size);
                 },
-                .set_background => |c| ctx.fillRect(0, 0, w, h, c.color),
+                .set_background => |c| ctx.fillRect(0, 0, w, h, c.color.resolve(theme)),
             }
         }
     }
@@ -363,9 +365,12 @@ var ai_canvas: AiCanvas = .{};  // ~280KB in global state
 The paint function is comptime (it's a function pointer known at compile time). But it delegates entirely to runtime state:
 
 ```zig
+// Module-level theme pointer — set by render(), read by paint callback
+var active_theme: *const Theme = &Theme.dark;
+
 // Native: paint from the display buffer (renderer owns it exclusively)
 fn paintAiCanvas(ctx: *ui.DrawContext) void {
-    buffers[display_idx].replay(ctx);
+    buffers[display_idx].replay(ctx, active_theme);
 }
 
 // WASM: paint from the single buffer (single-threaded, no contention)
@@ -415,7 +420,7 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
         "h": { "type": "number", "description": "Height in pixels" },
         "color": {
           "type": "string",
-          "description": "Hex color, e.g. 'FF6B35' or '#FF6B35'"
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, secondary, accent, success, warning, danger, text, subtext, muted, border, border_focus"
         }
       }
     },
@@ -437,7 +442,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
           "type": "number",
           "description": "Corner radius in pixels"
         },
-        "color": { "type": "string", "description": "Hex color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     },
     {
@@ -447,7 +455,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
         "cx": { "type": "number", "description": "Center X" },
         "cy": { "type": "number", "description": "Center Y" },
         "radius": { "type": "number", "description": "Radius in pixels" },
-        "color": { "type": "string", "description": "Hex color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     },
     {
@@ -461,7 +472,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
           "description": "Horizontal radius in pixels"
         },
         "ry": { "type": "number", "description": "Vertical radius in pixels" },
-        "color": { "type": "string", "description": "Hex color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     },
     {
@@ -474,7 +488,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
         "y2": { "type": "number", "description": "Vertex 2 Y" },
         "x3": { "type": "number", "description": "Vertex 3 X" },
         "y3": { "type": "number", "description": "Vertex 3 Y" },
-        "color": { "type": "string", "description": "Hex color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     },
     {
@@ -492,7 +509,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
         "w": { "type": "number", "description": "Width in pixels" },
         "h": { "type": "number", "description": "Height in pixels" },
         "width": { "type": "number", "description": "Stroke width in pixels" },
-        "color": { "type": "string", "description": "Hex color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     },
     {
@@ -503,7 +523,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
         "cy": { "type": "number", "description": "Center Y" },
         "radius": { "type": "number", "description": "Radius in pixels" },
         "width": { "type": "number", "description": "Stroke width in pixels" },
-        "color": { "type": "string", "description": "Hex color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     },
     {
@@ -515,7 +538,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
         "x2": { "type": "number", "description": "End X" },
         "y2": { "type": "number", "description": "End Y" },
         "width": { "type": "number", "description": "Line width in pixels" },
-        "color": { "type": "string", "description": "Hex color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     },
     {
@@ -528,7 +554,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
         },
         "x": { "type": "number", "description": "X position" },
         "y": { "type": "number", "description": "Y position (top of text)" },
-        "color": { "type": "string", "description": "Hex color" },
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        },
         "font_size": { "type": "number", "description": "Font size in pixels" }
       }
     },
@@ -545,7 +574,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
           "type": "number",
           "description": "Y position to vertically center text on"
         },
-        "color": { "type": "string", "description": "Hex color" },
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        },
         "font_size": { "type": "number", "description": "Font size in pixels" }
       }
     },
@@ -553,7 +585,10 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
       "name": "set_background",
       "description": "Fill the entire canvas with a background color (typically the first command in a batch)",
       "parameters": {
-        "color": { "type": "string", "description": "Hex background color" }
+        "color": {
+          "type": "string",
+          "description": "Hex color (e.g. 'FF6B35') or theme token: bg, surface, overlay, primary, ..."
+        }
       }
     }
   ]
@@ -562,7 +597,12 @@ From the AI's perspective, it receives a set of tools it can call. This is the *
 
 11 tools, mapping 1:1 to `DrawCommand` variants → 1:1 to `DrawContext` methods. Clean, auditable chain.
 
-**Color format:** Hex strings are the most natural for AI models. The parser accepts both `"FF6B35"` and `"#FF6B35"` (leading `#` is stripped if present). Converted to `ui.Color` on parse.
+**Color format:** Every `color` parameter accepts two formats:
+
+- **Hex strings** — `"FF6B35"`, `"#FF6B35"`, `"FF6B35CC"` (with alpha). Parsed into `ThemeColor{ .literal = <Color> }`.
+- **Semantic theme tokens** — `"primary"`, `"surface"`, `"text"`, `"bg"`, etc. (14 total, mirroring the `Theme` struct fields). Parsed into `ThemeColor{ .token = .primary }` and resolved against the active theme at replay time.
+
+Token names are derived from the `SemanticToken` enum at comptime and listed in every color parameter's description, so the LLM always sees what's available. Theme tokens automatically adapt to light/dark mode.
 
 **Coordinate system:** Top-left origin, matching `DrawContext` and what web-trained models expect. X increases rightward, Y increases downward.
 
@@ -627,14 +667,14 @@ import json, subprocess
 
 proc = subprocess.Popen(["./gooey-ai-canvas"], stdin=subprocess.PIPE)
 
-# Draw a house (note: set_background first, then back-to-front order)
+# Draw a house — theme tokens for coherent styling, hex for custom colors
 commands = [
-    {"tool": "set_background", "color": "87CEEB"},
-    {"tool": "fill_rect", "x": 200, "y": 250, "w": 200, "h": 150, "color": "8B4513"},
-    {"tool": "fill_triangle", "x1": 180, "y1": 250, "x2": 300, "y2": 120, "x3": 420, "y3": 250, "color": "CC3333"},
-    {"tool": "fill_rect", "x": 270, "y": 320, "w": 60, "h": 80, "color": "654321"},
-    {"tool": "fill_circle", "cx": 250, "cy": 300, "radius": 20, "color": "#4A90D9"},
-    {"tool": "draw_text", "text": "Home", "x": 260, "y": 410, "color": "FFFFFF", "font_size": 20},
+    {"tool": "set_background", "color": "bg"},
+    {"tool": "fill_rect", "x": 200, "y": 250, "w": 200, "h": 150, "color": "surface"},
+    {"tool": "fill_triangle", "x1": 180, "y1": 250, "x2": 300, "y2": 120, "x3": 420, "y3": 250, "color": "danger"},
+    {"tool": "fill_rect", "x": 270, "y": 320, "w": 60, "h": 80, "color": "654321"},  # hex works too
+    {"tool": "fill_circle", "cx": 250, "cy": 300, "radius": 20, "color": "primary"},
+    {"tool": "draw_text", "text": "Home", "x": 260, "y": 410, "color": "text", "font_size": 20},
 ]
 
 for cmd in commands:
@@ -651,7 +691,7 @@ HTTP is the obvious "production" transport, but stdin has advantages for a POC:
 - No port binding, no CORS, no firewall issues
 - Works identically on macOS, Linux, and (with minor adaptation) WASM
 - Natural fit for subprocess-based AI tool calling (Anthropic's MCP, OpenAI function calling, etc.)
-- Easy to test: `echo '{"tool":"fill_rect",...}' | ./gooey-ai-canvas`
+- Easy to test: `echo '{"tool":"fill_rect","x":0,"y":0,"w":100,"h":50,"color":"primary"}' | ./gooey-ai-canvas`
 
 ---
 
@@ -663,11 +703,12 @@ Following CLAUDE.md rule #12 (zero dependencies) and the precedent set by `gooey
 src/
 ├── ai/                          # NEW — optional AI integration module
 │   ├── mod.zig                  # Public exports
-│   ├── draw_command.zig         # DrawCommand union type
+│   ├── draw_command.zig         # DrawCommand union type (uses ThemeColor)
+│   ├── theme_color.zig          # ThemeColor union + SemanticToken enum
 │   ├── text_pool.zig            # TextPool fixed-capacity string storage
-│   ├── ai_canvas.zig            # AiCanvas state + replay logic
-│   ├── json_parser.zig          # JSON → DrawCommand parser
-│   └── schema.zig               # Comptime tool schema generation
+│   ├── ai_canvas.zig            # AiCanvas state + replay logic (takes *const Theme)
+│   ├── json_parser.zig          # JSON → DrawCommand parser (theme-aware colors)
+│   └── schema.zig               # Comptime tool schema generation (token list from enum)
 │
 ├── examples/
 │   ├── ai_canvas.zig            # NEW — example app: AI-driven canvas
@@ -676,14 +717,15 @@ src/
 
 ### What Goes Where
 
-| Component               | Location                  | Rationale                                           |
-| ----------------------- | ------------------------- | --------------------------------------------------- |
-| `DrawCommand`           | `src/ai/draw_command.zig` | Core type, no dependencies beyond `ui.Color`        |
-| `TextPool`              | `src/ai/text_pool.zig`    | Self-contained, tested independently                |
-| `AiCanvas`              | `src/ai/ai_canvas.zig`    | Depends on `DrawCommand`, `TextPool`, `DrawContext` |
-| `json_parser`           | `src/ai/json_parser.zig`  | JSON → `DrawCommand`, uses only `std.json`          |
-| `schema`                | `src/ai/schema.zig`       | Comptime schema gen from `DrawCommand` type         |
-| Transport (stdin, HTTP) | Example-level or separate | Keeps core transport-agnostic                       |
+| Component               | Location                  | Rationale                                                    |
+| ----------------------- | ------------------------- | ------------------------------------------------------------ |
+| `DrawCommand`           | `src/ai/draw_command.zig` | Core type, depends on `ThemeColor`                           |
+| `ThemeColor`            | `src/ai/theme_color.zig`  | Tagged union (`Color` or `SemanticToken`), mirrors `Theme`   |
+| `TextPool`              | `src/ai/text_pool.zig`    | Self-contained, tested independently                         |
+| `AiCanvas`              | `src/ai/ai_canvas.zig`    | Depends on `DrawCommand`, `TextPool`, `DrawContext`, `Theme` |
+| `json_parser`           | `src/ai/json_parser.zig`  | JSON → `DrawCommand`, uses `std.json` + `SemanticToken`      |
+| `schema`                | `src/ai/schema.zig`       | Comptime schema gen from `DrawCommand` + `SemanticToken`     |
+| Transport (stdin, HTTP) | Example-level or separate | Keeps core transport-agnostic                                |
 
 ### What Does NOT Change
 
@@ -792,14 +834,14 @@ var ai_canvas: AiCanvas = .{};
 ```javascript
 // JS side — send commands to WASM
 const commands = [
-  { tool: "set_background", color: "1a1a2e" },
-  { tool: "fill_rect", x: 10, y: 20, w: 100, h: 50, color: "FF6B35" },
+  { tool: "set_background", color: "bg" },
+  { tool: "fill_rect", x: 10, y: 20, w: 100, h: 50, color: "primary" },
   {
     tool: "draw_text",
     text: "Hello AI",
     x: 50,
     y: 100,
-    color: "#FFFFFF",
+    color: "text",
     font_size: 24,
   },
 ];
@@ -860,7 +902,7 @@ These were open questions during the design phase, now resolved:
 
 1. **Batching semantics** — Default to **`set_background` + full redraw** each batch. The AI sends a complete scene every time — stateless, easy to reason about. With 4,096 commands the replay cost is negligible. Incremental append is supported (just don't send `set_background`), but full redraw is the recommended default.
 
-2. **Color format** — **Hex strings**, with or without `#` prefix. Both `"FF6B35"` and `"#FF6B35"` are accepted (leading `#` stripped on parse). Hex is the most natural format for AI models. Converted to `ui.Color` internally.
+2. **Color format** — **Hex strings or semantic theme tokens.** Hex: both `"FF6B35"` and `"#FF6B35"` are accepted (leading `#` stripped on parse). Theme tokens: `"primary"`, `"surface"`, `"text"`, `"bg"`, etc. (14 total, mirroring `Theme` struct fields). Theme tokens resolve against the active `Theme` at replay time via `ThemeColor.resolve(theme)`, so the same commands automatically adapt to light/dark mode. Hex and tokens can be freely mixed in a single batch. Stored internally as `ThemeColor` (tagged union: `literal: Color | token: SemanticToken`).
 
 3. **Coordinate system** — **Top-left origin**. X increases rightward, Y increases downward. Matches `DrawContext` and what web-trained models expect.
 

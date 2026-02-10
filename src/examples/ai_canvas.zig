@@ -31,6 +31,7 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const ai = gooey.ai;
 const AiCanvas = ai.AiCanvas;
+const Theme = ui.Theme;
 
 /// WASM-compatible logging — redirect std.log to console.log via JS imports.
 pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
@@ -104,6 +105,12 @@ var total_batches_committed: u32 = 0;
 
 // --- WASM single-buffer global ---
 var wasm_canvas: AiCanvas = .{};
+
+/// Active theme for AI canvas replay. Theme tokens in draw commands resolve
+/// against this at paint time. Defaults to dark (matches the app background).
+/// Set by the render function so the paint callback can access it without
+/// changing the `fn (*DrawContext) void` paint signature.
+var active_theme: *const Theme = &Theme.dark;
 
 // =============================================================================
 // Application State (minimal — most state is in the global buffers)
@@ -222,9 +229,9 @@ fn paintAiCanvas(ctx: *ui.DrawContext) void {
     if (is_native) {
         // CLAUDE.md #3: assert display_idx is in range.
         std.debug.assert(display_idx < 3);
-        buffers[display_idx].replay(ctx);
+        buffers[display_idx].replay(ctx, active_theme);
     } else {
-        wasm_canvas.replay(ctx);
+        wasm_canvas.replay(ctx, active_theme);
     }
 }
 
