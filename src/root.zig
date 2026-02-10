@@ -119,6 +119,9 @@ pub const validation = @import("validation.zig");
 /// Accessibility (A11Y) - screen reader and assistive technology support
 pub const accessibility = @import("accessibility/mod.zig");
 
+/// AI integration: canvas command buffer for LLM-driven drawing
+pub const ai = @import("ai/mod.zig");
+
 /// Text rendering system with backend abstraction
 pub const text = @import("text/mod.zig");
 

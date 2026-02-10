@@ -107,6 +107,8 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "new-api-demo", "src/examples/new_api_demo.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "code-editor", "src/examples/code_editor.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "multi-window", "src/examples/multi_window.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "ai-canvas-spike", "src/examples/ai_canvas_spike.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "ai-canvas", "src/examples/ai_canvas.zig", false);
 
         // =========================================================================
         // Charts Examples
