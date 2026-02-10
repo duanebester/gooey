@@ -265,7 +265,7 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
     const commands = try engine.endFrame();
 
-    // Query element positions for hit-testing
+    // Query element positions for hit-testing (getBoundingBox takes a u32 ID hash)
     if (engine.getBoundingBox(LayoutId.init("submit_btn").id)) |bbox| {
         // bbox.x, bbox.y, bbox.width, bbox.height
     }
@@ -276,29 +276,41 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
 ### LayoutEngine
 
-| Method                            | Description                            |
-| --------------------------------- | -------------------------------------- |
-| `init(allocator)`                 | Create a new layout engine             |
-| `deinit()`                        | Free resources                         |
-| `setMeasureTextFn(fn, user_data)` | Set text measurement callback          |
-| `beginFrame(width, height)`       | Start a new frame                      |
-| `openElement(decl)`               | Open a container element               |
-| `closeElement()`                  | Close the current element              |
-| `text(content, config)`           | Add a text leaf element                |
-| `endFrame()`                      | Compute layout, return render commands |
-| `getBoundingBox(id)`              | Get computed bounds for an element     |
+| Method                            | Description                                       |
+| --------------------------------- | ------------------------------------------------- |
+| `init(allocator)`                 | Create a new layout engine                        |
+| `deinit()`                        | Free resources                                    |
+| `setMeasureTextFn(fn, user_data)` | Set text measurement callback                     |
+| `beginFrame(width, height)`       | Start a new frame                                 |
+| `openElement(decl)`               | Open a container element                          |
+| `closeElement()`                  | Close the current element                         |
+| `text(content, config)`           | Add a text leaf element                           |
+| `svg(id, width, height, data)`    | Add an SVG leaf element                           |
+| `image(id, width, height, data)`  | Add an image leaf element                         |
+| `endFrame()`                      | Compute layout, return render commands            |
+| `getBoundingBox(id: u32)`         | Get computed bounding box for an element          |
+| `getContentBox(id: u32)`          | Get computed content box (inside padding)         |
+| `getZIndex(id: u32)`              | Get z-index for an element (cached during render) |
+
+> **Note:** `getBoundingBox`, `getContentBox`, and `getZIndex` take a raw `u32` ID hash,
+> not a `LayoutId`. Extract it with `.id`: `engine.getBoundingBox(LayoutId.init("foo").id)`.
 
 ### ElementDeclaration
 
-| Field              | Type            | Default | Description               |
-| ------------------ | --------------- | ------- | ------------------------- |
-| `id`               | `LayoutId`      | `.none` | Unique element identifier |
-| `layout`           | `LayoutConfig`  | `{}`    | Sizing and positioning    |
-| `background_color` | `?Color`        | `null`  | Fill color                |
-| `corner_radius`    | `CornerRadius`  | `{}`    | Rounded corners           |
-| `border`           | `?BorderConfig` | `null`  | Border styling            |
-| `scroll`           | `?ScrollConfig` | `null`  | Scrollable container      |
-| `user_data`        | `?*anyopaque`   | `null`  | Custom data pointer       |
+| Field              | Type              | Default | Description                                  |
+| ------------------ | ----------------- | ------- | -------------------------------------------- |
+| `id`               | `LayoutId`        | `.none` | Unique element identifier                    |
+| `layout`           | `LayoutConfig`    | `{}`    | Sizing and positioning                       |
+| `background_color` | `?Color`          | `null`  | Fill color                                   |
+| `corner_radius`    | `CornerRadius`    | `{}`    | Rounded corners                              |
+| `border`           | `?BorderConfig`   | `null`  | Border styling                               |
+| `shadow`           | `?ShadowConfig`   | `null`  | Box shadow                                   |
+| `scroll`           | `?ScrollConfig`   | `null`  | Scrollable container                         |
+| `floating`         | `?FloatingConfig` | `null`  | Floating positioning (see FloatingConfig)    |
+| `user_data`        | `?*anyopaque`     | `null`  | Custom data pointer                          |
+| `opacity`          | `f32`             | `1.0`   | Subtree opacity (0.0 transparent–1.0 opaque) |
+| `source_location`  | `SourceLoc`       | `{}`    | Debug source location                        |
+| `is_canvas`        | `bool`            | `false` | Whether this is a canvas element             |
 
 ### LayoutConfig
 
@@ -319,7 +331,7 @@ Floating elements are positioned relative to a parent but don't affect sibling l
 ```zig
 .floating = .{
     .offset = Offset2D.init(10, 20),     // Position offset
-    .z_index = 100,                       // Render order
+    .z_index = 100,                       // Render order (i16)
     .attach_to_parent = true,             // Use direct parent
     .parent_id = LayoutId.init("target").id,  // Or reference by ID
     .element_attach = .left_top,          // Anchor point on this element
@@ -338,15 +350,18 @@ FloatingConfig.modal()     // Centered on viewport
 
 ### TextConfig
 
+All fields use integer types for deterministic layout. `line_height` is a percentage
+of `font_size` (e.g., 120 = 1.2×), not a float multiplier.
+
 ```zig
 try engine.text("Hello, World!", .{
     .color = Color.black,
-    .font_id = 0,
-    .font_size = 16,
-    .line_height = 1.2,           // Multiplier of font_size
-    .letter_spacing = 0,
-    .wrap_mode = .words,          // .none, .words, .newlines
-    .alignment = .left,           // .left, .center, .right
+    .font_id = 0,              // u16, default 0
+    .font_size = 16,           // u16 in pixels, default 14
+    .line_height = 120,        // u16 percentage of font_size (120 = 1.2×), default 120
+    .letter_spacing = 0,       // i16, default 0
+    .wrap_mode = .words,       // .none (default), .words, .newlines
+    .alignment = .left,        // .left (default), .center, .right
     .decoration = .{ .underline = false, .strikethrough = false },
 });
 ```
@@ -366,7 +381,7 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
 
 | Constant                 | Value | Description                         |
 | ------------------------ | ----- | ----------------------------------- |
-| `MAX_ELEMENTS_PER_FRAME` | 8192  | Maximum elements in a single frame  |
+| `MAX_ELEMENTS_PER_FRAME` | 16384 | Maximum elements in a single frame  |
 | `MAX_OPEN_DEPTH`         | 64    | Maximum nesting depth               |
 | `MAX_FLOATING_ROOTS`     | 256   | Maximum floating elements per frame |
 | `MAX_TRACKED_IDS`        | 4096  | Maximum elements with IDs           |
@@ -382,7 +397,7 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
 - The layout algorithm runs in these phases:
   1. **Min sizes** (bottom-up) - compute minimum content sizes
   2. **Final sizes** (top-down) - distribute available space
-  3. **Text wrapping** - wrap text using word-level measurement for performance
-  4. **Positions** (top-down) - compute final bounding boxes
-  5. **Floating elements** - position floating elements relative to parents
-  6. **Render commands** - generate drawing instructions sorted by z-index
+     - **2b. Text wrapping** - wrap text now that container widths are known; propagate height changes back up to fit-content parents
+  3. **Positions** (top-down) - compute final bounding boxes
+     - **3b. Floating elements** - position floating elements relative to parents (includes text wrapping for floats)
+  4. **Render commands** - generate drawing instructions, then sort by z-index
