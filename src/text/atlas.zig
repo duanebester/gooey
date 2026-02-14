@@ -33,6 +33,15 @@ pub const Region = struct {
     }
 };
 
+/// Bounding box of modified atlas pixels for partial GPU uploads.
+/// Tracked cumulatively — grows with each `set()` call, resets on `grow()`/`clear()`.
+pub const DirtyRegion = struct {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+};
+
 /// Skyline node for bin packing
 const SkylineNode = struct {
     x: u16,
@@ -72,6 +81,15 @@ pub const Atlas = struct {
     generation: u32,
     /// Padding between glyphs (prevents texture bleeding)
     padding: u8,
+
+    /// Dirty region tracking for partial GPU uploads (CLAUDE.md Rule #1 — solve correctly first time).
+    /// Bounding box of all pixel modifications since last atlas reset (grow/clear).
+    /// Only grows — never shrinks until the atlas is grown or cleared.
+    dirty_min_x: u16 = 0,
+    dirty_min_y: u16 = 0,
+    dirty_max_x: u16 = 0,
+    dirty_max_y: u16 = 0,
+    has_dirty: bool = false,
 
     const Self = @This();
 
@@ -300,6 +318,7 @@ pub const Atlas = struct {
             );
         }
 
+        self.expandDirtyRegion(region);
         self.generation += 1;
     }
 
@@ -347,6 +366,7 @@ pub const Atlas = struct {
         }
 
         self.generation += 1;
+        self.markFullDirty();
 
         std.debug.assert(self.size == new_size);
     }
@@ -360,6 +380,7 @@ pub const Atlas = struct {
         self.node_count = 1;
 
         self.generation += 1;
+        self.markFullDirty();
 
         std.debug.assert(self.node_count == 1);
     }
@@ -382,6 +403,55 @@ pub const Atlas = struct {
     /// Get current skyline node count (for debugging)
     pub fn getSkylineNodeCount(self: *const Self) u16 {
         return self.node_count;
+    }
+
+    // =========================================================================
+    // Dirty region tracking — partial GPU upload support
+    // =========================================================================
+
+    /// Get the bounding box of all pixel modifications since last atlas reset.
+    /// Returns null if no pixels have been modified.
+    pub fn getDirtyRegion(self: *const Self) ?DirtyRegion {
+        if (!self.has_dirty) return null;
+        std.debug.assert(self.dirty_max_x > self.dirty_min_x);
+        std.debug.assert(self.dirty_max_y > self.dirty_min_y);
+        return .{
+            .x = self.dirty_min_x,
+            .y = self.dirty_min_y,
+            .width = self.dirty_max_x - self.dirty_min_x,
+            .height = self.dirty_max_y - self.dirty_min_y,
+        };
+    }
+
+    /// Expand the dirty bounding box to include the given region.
+    /// Called by `set()` on every pixel write.
+    fn expandDirtyRegion(self: *Self, region: Region) void {
+        std.debug.assert(region.width > 0 and region.height > 0);
+        std.debug.assert(region.x + region.width <= self.size);
+        if (self.has_dirty) {
+            self.dirty_min_x = @min(self.dirty_min_x, region.x);
+            self.dirty_min_y = @min(self.dirty_min_y, region.y);
+            self.dirty_max_x = @max(self.dirty_max_x, region.x + region.width);
+            self.dirty_max_y = @max(self.dirty_max_y, region.y + region.height);
+        } else {
+            self.dirty_min_x = region.x;
+            self.dirty_min_y = region.y;
+            self.dirty_max_x = region.x + region.width;
+            self.dirty_max_y = region.y + region.height;
+            self.has_dirty = true;
+        }
+    }
+
+    /// Mark the entire atlas as dirty. Called after `grow()` and `clear()`.
+    fn markFullDirty(self: *Self) void {
+        const s: u16 = @intCast(self.size);
+        std.debug.assert(s > 0);
+        std.debug.assert(s <= MAX_SIZE);
+        self.dirty_min_x = 0;
+        self.dirty_min_y = 0;
+        self.dirty_max_x = s;
+        self.dirty_max_y = s;
+        self.has_dirty = true;
     }
 };
 
@@ -422,4 +492,96 @@ test "atlas skyline node limit" {
     try std.testing.expect(count > 0);
     // Skyline node count should be within limits
     try std.testing.expect(atlas.getSkylineNodeCount() <= Atlas.MAX_SKYLINE_NODES);
+}
+
+test "dirty region: no dirty after init" {
+    var atlas = try Atlas.init(std.testing.allocator, .grayscale);
+    defer atlas.deinit();
+
+    try std.testing.expect(atlas.getDirtyRegion() == null);
+    try std.testing.expect(!atlas.has_dirty);
+}
+
+test "dirty region: reserve without set has no dirty" {
+    var atlas = try Atlas.init(std.testing.allocator, .grayscale);
+    defer atlas.deinit();
+
+    const region = try atlas.reserve(16, 16);
+    try std.testing.expect(region != null);
+    // reserve() does NOT mark dirty — only set() does
+    try std.testing.expect(atlas.getDirtyRegion() == null);
+}
+
+test "dirty region: set marks exact region dirty" {
+    var atlas = try Atlas.init(std.testing.allocator, .grayscale);
+    defer atlas.deinit();
+
+    const region = (try atlas.reserve(10, 12)).?;
+    var pixels: [10 * 12]u8 = undefined;
+    @memset(&pixels, 0xFF);
+    atlas.set(region, &pixels);
+
+    const dirty = atlas.getDirtyRegion().?;
+    try std.testing.expectEqual(@as(u16, region.x), dirty.x);
+    try std.testing.expectEqual(@as(u16, region.y), dirty.y);
+    try std.testing.expectEqual(@as(u16, 10), dirty.width);
+    try std.testing.expectEqual(@as(u16, 12), dirty.height);
+}
+
+test "dirty region: multiple sets expand bounding box" {
+    var atlas = try Atlas.init(std.testing.allocator, .grayscale);
+    defer atlas.deinit();
+
+    // First glyph at top-left area
+    const r1 = (try atlas.reserve(8, 8)).?;
+    var px1: [8 * 8]u8 = undefined;
+    @memset(&px1, 0xAA);
+    atlas.set(r1, &px1);
+
+    // Second glyph — placed to the right by skyline packer
+    const r2 = (try atlas.reserve(8, 8)).?;
+    var px2: [8 * 8]u8 = undefined;
+    @memset(&px2, 0xBB);
+    atlas.set(r2, &px2);
+
+    const dirty = atlas.getDirtyRegion().?;
+    // Bounding box must contain both regions
+    try std.testing.expect(dirty.x <= r1.x);
+    try std.testing.expect(dirty.y <= r1.y);
+    try std.testing.expect(dirty.x + dirty.width >= r2.x + r2.width);
+    try std.testing.expect(dirty.y + dirty.height >= r2.y + r2.height);
+}
+
+test "dirty region: grow marks full atlas dirty" {
+    var atlas = try Atlas.initWithSize(std.testing.allocator, .grayscale, 64);
+    defer atlas.deinit();
+
+    // Set a small region first
+    const r = (try atlas.reserve(4, 4)).?;
+    var px: [4 * 4]u8 = undefined;
+    @memset(&px, 0xFF);
+    atlas.set(r, &px);
+
+    // Grow the atlas — should mark entire new size dirty
+    try atlas.grow();
+    try std.testing.expectEqual(@as(u32, 128), atlas.size);
+
+    const dirty = atlas.getDirtyRegion().?;
+    try std.testing.expectEqual(@as(u16, 0), dirty.x);
+    try std.testing.expectEqual(@as(u16, 0), dirty.y);
+    try std.testing.expectEqual(@as(u16, 128), dirty.width);
+    try std.testing.expectEqual(@as(u16, 128), dirty.height);
+}
+
+test "dirty region: clear marks full atlas dirty" {
+    var atlas = try Atlas.init(std.testing.allocator, .grayscale);
+    defer atlas.deinit();
+
+    atlas.clear();
+
+    const dirty = atlas.getDirtyRegion().?;
+    try std.testing.expectEqual(@as(u16, 0), dirty.x);
+    try std.testing.expectEqual(@as(u16, 0), dirty.y);
+    try std.testing.expectEqual(@as(u16, @intCast(atlas.size)), dirty.width);
+    try std.testing.expectEqual(@as(u16, @intCast(atlas.size)), dirty.height);
 }

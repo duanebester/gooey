@@ -41,7 +41,6 @@ pub const SyncObjects = struct {
     image_available_semaphores: [FRAME_COUNT]vk.Semaphore,
     render_finished_semaphores: [FRAME_COUNT]vk.Semaphore,
     in_flight_fences: [FRAME_COUNT]vk.Fence,
-    transfer_fence: vk.Fence,
 
     /// Destroy all sync objects. Safe to call with null entries.
     pub fn destroy(self: *SyncObjects, device: vk.Device) void {
@@ -54,14 +53,11 @@ pub const SyncObjects = struct {
             if (self.in_flight_fences[i]) |fence| vk.vkDestroyFence(device, fence, null);
             self.in_flight_fences[i] = null;
         }
-        if (self.transfer_fence) |fence| vk.vkDestroyFence(device, fence, null);
-        self.transfer_fence = null;
     }
 };
 
 pub const CommandBuffers = struct {
     render: [FRAME_COUNT]vk.CommandBuffer,
-    transfer: vk.CommandBuffer,
 };
 
 // =============================================================================
@@ -386,10 +382,9 @@ pub fn createCommandPool(
     return pool;
 }
 
-/// Allocate render command buffers (one per frame in flight) plus a dedicated
-/// transfer command buffer for atlas uploads.
-///
-/// The transfer buffer is separate to avoid race conditions with render buffers.
+/// Allocate render command buffers (one per frame in flight).
+/// Atlas transfers are recorded directly into per-frame render command buffers,
+/// so no dedicated transfer buffer is needed.
 pub fn allocateCommandBuffers(
     device: vk.Device,
     command_pool: vk.CommandPool,
@@ -399,7 +394,6 @@ pub fn allocateCommandBuffers(
 
     var result: CommandBuffers = .{
         .render = [_]vk.CommandBuffer{null} ** FRAME_COUNT,
-        .transfer = null,
     };
 
     // Allocate render command buffers (one per frame in flight)
@@ -413,18 +407,6 @@ pub fn allocateCommandBuffers(
 
     const render_res = vk.vkAllocateCommandBuffers(device, &render_alloc, &result.render);
     if (!vk.succeeded(render_res)) return CommandBufferError.CommandBufferAllocationFailed;
-
-    // Allocate dedicated transfer command buffer
-    const transfer_alloc = vk.CommandBufferAllocateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .pNext = null,
-        .commandPool = command_pool,
-        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-
-    const transfer_res = vk.vkAllocateCommandBuffers(device, &transfer_alloc, &result.transfer);
-    if (!vk.succeeded(transfer_res)) return CommandBufferError.CommandBufferAllocationFailed;
 
     return result;
 }
@@ -445,7 +427,6 @@ pub fn createSyncObjects(device: vk.Device) SyncError!SyncObjects {
         .image_available_semaphores = [_]vk.Semaphore{null} ** FRAME_COUNT,
         .render_finished_semaphores = [_]vk.Semaphore{null} ** FRAME_COUNT,
         .in_flight_fences = [_]vk.Fence{null} ** FRAME_COUNT,
-        .transfer_fence = null,
     };
     errdefer result.destroy(device);
 
@@ -472,11 +453,6 @@ pub fn createSyncObjects(device: vk.Device) SyncError!SyncObjects {
         if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
     }
 
-    // Dedicated fence for transfer operations (signaled so first wait succeeds)
-    const transfer_res = vk.vkCreateFence(device, &fence_info, null, &result.transfer_fence);
-    if (!vk.succeeded(transfer_res)) return SyncError.SyncObjectCreationFailed;
-
-    std.debug.assert(result.transfer_fence != null);
     return result;
 }
 

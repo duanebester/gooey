@@ -43,7 +43,11 @@ pub const DebugMode = enum {
 pub const FrameSnapshot = struct {
     frame_time_ns: u64 = 0,
     layout_time_ns: u64 = 0,
+    tree_build_ns: u64 = 0,
+    dispatch_sync_ns: u64 = 0,
     render_time_ns: u64 = 0,
+    gpu_submit_ns: u64 = 0,
+    atlas_upload_ns: u64 = 0,
     quads_rendered: u32 = 0,
     glyphs_rendered: u32 = 0,
     draw_calls: u32 = 0,
@@ -93,7 +97,11 @@ pub const Debugger = struct {
     overlay_count: u32 = 0,
     selected_element_info: ElementInfo = .{},
     layout_time_ns: u64 = 0,
+    tree_build_ns: u64 = 0,
+    dispatch_sync_ns: u64 = 0,
     render_time_ns: u64 = 0,
+    gpu_submit_ns: u64 = 0,
+    atlas_upload_ns: u64 = 0,
     frame_time_ns: u64 = 0,
     frame_history: [FRAME_HISTORY_SIZE]FrameSnapshot = [_]FrameSnapshot{.{}} ** FRAME_HISTORY_SIZE,
     frame_history_index: u32 = 0,
@@ -102,6 +110,8 @@ pub const Debugger = struct {
     fps_frame_count: u32 = 0,
     current_fps: f32 = 0.0,
     layout_start_ns: u64 = 0,
+    tree_build_start_ns: u64 = 0,
+    dispatch_sync_start_ns: u64 = 0,
     render_start_ns: u64 = 0,
     frame_start_ns: u64 = 0,
     fmt_buffers: [FMT_BUFFER_COUNT][FMT_BUFFER_SIZE]u8 = [_][FMT_BUFFER_SIZE]u8{[_]u8{0} ** FMT_BUFFER_SIZE} ** FMT_BUFFER_COUNT,
@@ -118,7 +128,7 @@ pub const Debugger = struct {
     const PANEL_PADDING: f32 = 12;
     const PANEL_MARGIN: f32 = 16;
     const PROFILER_WIDTH: f32 = 320;
-    const PROFILER_HEIGHT: f32 = 220;
+    const PROFILER_HEIGHT: f32 = 320;
     const GRAPH_HEIGHT: f32 = 80;
 
     const COLOR_HOVER = Hsla.init(0.55, 0.9, 0.5, 0.25);
@@ -137,7 +147,11 @@ pub const Debugger = struct {
     const BORDER_WIDTH: f32 = 2.0;
     const COLOR_FRAME_TIME = Hsla.init(0.55, 0.8, 0.6, 0.9);
     const COLOR_LAYOUT_TIME = Hsla.init(0.3, 0.8, 0.5, 0.9);
+    const COLOR_TREE_BUILD = Hsla.init(0.45, 0.7, 0.55, 0.9);
+    const COLOR_DISPATCH_SYNC = Hsla.init(0.75, 0.6, 0.55, 0.9);
     const COLOR_RENDER_TIME = Hsla.init(0.08, 0.8, 0.5, 0.9);
+    const COLOR_GPU_SUBMIT = Hsla.init(0.6, 0.8, 0.45, 0.9);
+    const COLOR_ATLAS_UPLOAD = Hsla.init(0.12, 0.7, 0.5, 0.9);
     const COLOR_TARGET_LINE = Hsla.init(0.0, 0.0, 0.5, 0.5);
     const COLOR_GOOD_FPS = Hsla.init(0.3, 0.8, 0.6, 1.0);
     const COLOR_OK_FPS = Hsla.init(0.15, 0.8, 0.5, 1.0);
@@ -180,6 +194,24 @@ pub const Debugger = struct {
         self.layout_time_ns = now - self.layout_start_ns;
     }
 
+    pub fn beginTreeBuild(self: *Self) void {
+        self.tree_build_start_ns = @intCast(platform_time.nanoTimestamp());
+    }
+
+    pub fn endTreeBuild(self: *Self) void {
+        const now: u64 = @intCast(platform_time.nanoTimestamp());
+        self.tree_build_ns = now - self.tree_build_start_ns;
+    }
+
+    pub fn beginDispatchSync(self: *Self) void {
+        self.dispatch_sync_start_ns = @intCast(platform_time.nanoTimestamp());
+    }
+
+    pub fn endDispatchSync(self: *Self) void {
+        const now: u64 = @intCast(platform_time.nanoTimestamp());
+        self.dispatch_sync_ns = now - self.dispatch_sync_start_ns;
+    }
+
     pub fn beginRender(self: *Self) void {
         self.render_start_ns = @intCast(platform_time.nanoTimestamp());
     }
@@ -187,6 +219,14 @@ pub const Debugger = struct {
     pub fn endRender(self: *Self) void {
         const now: u64 = @intCast(platform_time.nanoTimestamp());
         self.render_time_ns = now - self.render_start_ns;
+    }
+
+    /// Report GPU-side timings from the previous frame.
+    /// Called at the start of the current frame since GPU work
+    /// happens after finalizeFrame in the window's renderFrame().
+    pub fn reportGpuTimings(self: *Self, gpu_submit_ns: u64, atlas_upload_ns: u64) void {
+        self.gpu_submit_ns = gpu_submit_ns;
+        self.atlas_upload_ns = atlas_upload_ns;
     }
 
     pub fn endFrame(self: *Self, stats: ?*const render_stats.RenderStats) void {
@@ -197,7 +237,11 @@ pub const Debugger = struct {
         const snapshot = FrameSnapshot{
             .frame_time_ns = self.frame_time_ns,
             .layout_time_ns = self.layout_time_ns,
+            .tree_build_ns = self.tree_build_ns,
+            .dispatch_sync_ns = self.dispatch_sync_ns,
             .render_time_ns = self.render_time_ns,
+            .gpu_submit_ns = self.gpu_submit_ns,
+            .atlas_upload_ns = self.atlas_upload_ns,
             .quads_rendered = if (stats) |s| s.quads_rendered else 0,
             .glyphs_rendered = if (stats) |s| s.glyphs_rendered else 0,
             .draw_calls = if (stats) |s| s.draw_calls else 0,
@@ -499,6 +543,14 @@ pub const Debugger = struct {
         try renderTextSimple(s, text_renderer, "ms", x_left + 110, y1, TEXT_SECONDARY, scale_factor, metrics);
         row += 1;
 
+        // --- CPU-side breakdown ---
+        const tree_build_ms = @as(f32, @floatFromInt(self.tree_build_ns)) / 1_000_000.0;
+        const yt = panel_y + PANEL_PADDING + row * row_height;
+        try renderTextSimple(s, text_renderer, "Build:", x_left, yt, TEXT_SECONDARY, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, self.fmtFloat(tree_build_ms), x_left + 60, yt, COLOR_TREE_BUILD, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, "ms", x_left + 110, yt, TEXT_SECONDARY, scale_factor, metrics);
+        row += 1;
+
         const layout_ms = @as(f32, @floatFromInt(self.layout_time_ns)) / 1_000_000.0;
         const y2 = panel_y + PANEL_PADDING + row * row_height;
         try renderTextSimple(s, text_renderer, "Layout:", x_left, y2, TEXT_SECONDARY, scale_factor, metrics);
@@ -506,11 +558,33 @@ pub const Debugger = struct {
         try renderTextSimple(s, text_renderer, "ms", x_left + 110, y2, TEXT_SECONDARY, scale_factor, metrics);
         row += 1;
 
+        const dispatch_ms = @as(f32, @floatFromInt(self.dispatch_sync_ns)) / 1_000_000.0;
+        const yd = panel_y + PANEL_PADDING + row * row_height;
+        try renderTextSimple(s, text_renderer, "Dispatch:", x_left, yd, TEXT_SECONDARY, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, self.fmtFloat(dispatch_ms), x_left + 60, yd, COLOR_DISPATCH_SYNC, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, "ms", x_left + 110, yd, TEXT_SECONDARY, scale_factor, metrics);
+        row += 1;
+
         const render_ms = @as(f32, @floatFromInt(self.render_time_ns)) / 1_000_000.0;
         const y3 = panel_y + PANEL_PADDING + row * row_height;
         try renderTextSimple(s, text_renderer, "Render:", x_left, y3, TEXT_SECONDARY, scale_factor, metrics);
         try renderTextSimple(s, text_renderer, self.fmtFloat(render_ms), x_left + 60, y3, COLOR_RENDER_TIME, scale_factor, metrics);
         try renderTextSimple(s, text_renderer, "ms", x_left + 110, y3, TEXT_SECONDARY, scale_factor, metrics);
+        row += 1;
+
+        // --- GPU-side (previous frame) ---
+        const atlas_ms = @as(f32, @floatFromInt(self.atlas_upload_ns)) / 1_000_000.0;
+        const ya = panel_y + PANEL_PADDING + row * row_height;
+        try renderTextSimple(s, text_renderer, "Atlas:", x_left, ya, TEXT_SECONDARY, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, self.fmtFloat(atlas_ms), x_left + 60, ya, COLOR_ATLAS_UPLOAD, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, "ms", x_left + 110, ya, TEXT_SECONDARY, scale_factor, metrics);
+        row += 1;
+
+        const gpu_ms = @as(f32, @floatFromInt(self.gpu_submit_ns)) / 1_000_000.0;
+        const yg = panel_y + PANEL_PADDING + row * row_height;
+        try renderTextSimple(s, text_renderer, "GPU:", x_left, yg, TEXT_SECONDARY, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, self.fmtFloat(gpu_ms), x_left + 60, yg, COLOR_GPU_SUBMIT, scale_factor, metrics);
+        try renderTextSimple(s, text_renderer, "ms", x_left + 110, yg, TEXT_SECONDARY, scale_factor, metrics);
         row += 1;
 
         const last_snapshot = self.frame_history[(self.frame_history_index + FRAME_HISTORY_SIZE - 1) % FRAME_HISTORY_SIZE];

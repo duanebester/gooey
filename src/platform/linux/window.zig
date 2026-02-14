@@ -6,6 +6,7 @@
 const std = @import("std");
 const wayland = @import("wayland.zig");
 const VulkanRenderer = @import("vk_renderer.zig").VulkanRenderer;
+const vk_atlas = @import("vk_atlas.zig");
 const LinuxPlatform = @import("platform.zig").LinuxPlatform;
 const interface_mod = @import("../interface.zig");
 const WindowId = interface_mod.WindowId;
@@ -156,6 +157,15 @@ pub const Window = struct {
 
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
+
+    // =========================================================================
+    // GPU Timing (reported to profiler at start of next frame)
+    // =========================================================================
+
+    /// Time spent in Vulkan command recording + submit + present (ns)
+    last_gpu_submit_ns: u64 = 0,
+    /// Time spent uploading atlas textures to GPU (ns)
+    last_atlas_upload_ns: u64 = 0,
 
     /// Input callback type: return true if the event was handled
     pub const InputCallback = *const fn (*Self, input.InputEvent) bool;
@@ -798,40 +808,15 @@ pub const Window = struct {
             callback(self);
         }
 
-        // Upload text atlas if changed
-        if (self.text_atlas) |atlas| {
-            if (atlas.generation != self.last_atlas_generation) {
-                self.renderer.uploadAtlas(atlas.data, atlas.size, atlas.size) catch |err| {
-                    std.log.err("Failed to upload text atlas: {}", .{err});
-                };
-                self.last_atlas_generation = atlas.generation;
-            }
-        }
+        // Stage atlas uploads — stores data pointers only, no memcpy.
+        // Actual staging + GPU transfer happens inside render() after
+        // the frame fence wait, eliminating the synchronous GPU stall.
+        self.stageAtlasUploads();
 
-        // Upload SVG atlas if changed
-        // Note: We also upload on first frame when atlas_view is null
-        if (self.svg_atlas) |atlas| {
-            const needs_upload = (atlas.generation != self.last_svg_atlas_generation) or
-                (self.last_svg_atlas_generation == 0 and self.renderer.svg_atlas.view == null);
-            if (needs_upload) {
-                self.renderer.uploadSvgAtlas(atlas.data, atlas.size, atlas.size) catch |err| {
-                    std.log.err("Failed to upload SVG atlas: {}", .{err});
-                };
-                self.last_svg_atlas_generation = atlas.generation;
-            }
-        }
-
-        // Upload Image atlas if changed
-        if (self.image_atlas) |atlas| {
-            const needs_upload = (atlas.generation != self.last_image_atlas_generation) or
-                (self.last_image_atlas_generation == 0 and self.renderer.image_atlas.view == null);
-            if (needs_upload) {
-                self.renderer.uploadImageAtlas(atlas.data, atlas.size, atlas.size) catch |err| {
-                    std.log.err("Failed to upload Image atlas: {}", .{err});
-                };
-                self.last_image_atlas_generation = atlas.generation;
-            }
-        }
+        // Time GPU command recording + atlas transfers + submit + present.
+        // Atlas transfers are now folded into the render command buffer,
+        // so this timing covers everything.
+        const gpu_start = std.time.Instant.now() catch unreachable;
 
         // Render scene if available
         if (self.scene) |scene| {
@@ -843,12 +828,67 @@ pub const Window = struct {
             self.renderer.render(&empty_scene);
         }
 
+        const gpu_end = std.time.Instant.now() catch unreachable;
+        self.last_gpu_submit_ns = gpu_end.since(gpu_start);
+        self.last_atlas_upload_ns = 0; // Atlas transfers are now async (inside render cmd buf)
+
         self.needs_redraw = false;
     }
 
     // =========================================================================
     // Wayland Callbacks
     // =========================================================================
+
+    /// Stage all pending atlas uploads to the renderer. Only stores data
+    /// pointers and dirty regions — the actual memcpy + GPU transfer is
+    /// deferred to render() after the frame fence wait.
+    fn stageAtlasUploads(self: *Self) void {
+        // Text atlas — R8 format, dirty region from skyline packer
+        if (self.text_atlas) |atlas| {
+            if (atlas.generation != self.last_atlas_generation) {
+                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
+                    .x = @as(u32, d.x),
+                    .y = @as(u32, d.y),
+                    .width = @as(u32, d.width),
+                    .height = @as(u32, d.height),
+                } else null;
+                self.renderer.stageTextAtlas(atlas.data, atlas.size, atlas.size, dirty);
+                self.last_atlas_generation = atlas.generation;
+            }
+        }
+
+        // SVG atlas — RGBA format; also upload on first frame when view is null
+        if (self.svg_atlas) |atlas| {
+            const needs_upload = (atlas.generation != self.last_svg_atlas_generation) or
+                (self.last_svg_atlas_generation == 0 and self.renderer.svg_atlas.view == null);
+            if (needs_upload) {
+                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
+                    .x = @as(u32, d.x),
+                    .y = @as(u32, d.y),
+                    .width = @as(u32, d.width),
+                    .height = @as(u32, d.height),
+                } else null;
+                self.renderer.stageSvgAtlas(atlas.data, atlas.size, atlas.size, dirty);
+                self.last_svg_atlas_generation = atlas.generation;
+            }
+        }
+
+        // Image atlas — RGBA format; also upload on first frame when view is null
+        if (self.image_atlas) |atlas| {
+            const needs_upload = (atlas.generation != self.last_image_atlas_generation) or
+                (self.last_image_atlas_generation == 0 and self.renderer.image_atlas.view == null);
+            if (needs_upload) {
+                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
+                    .x = @as(u32, d.x),
+                    .y = @as(u32, d.y),
+                    .width = @as(u32, d.width),
+                    .height = @as(u32, d.height),
+                } else null;
+                self.renderer.stageImageAtlas(atlas.data, atlas.size, atlas.size, dirty);
+                self.last_image_atlas_generation = atlas.generation;
+            }
+        }
+    }
 
     fn surfaceEnter(
         data: ?*anyopaque,

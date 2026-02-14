@@ -990,8 +990,7 @@ pub const Gooey = struct {
             self.scene.setViewport(self.width, self.height);
         }
 
-        // Begin layout pass
-        self.debugger.beginLayout();
+        // Begin layout pass (timer moved to endFrame to cover only actual layout compute)
         self.layout.beginFrame(self.width, self.height);
 
         // Clear hover_changed flag at frame start
@@ -1027,7 +1026,8 @@ pub const Gooey = struct {
             self.requestRender();
         }
 
-        // End layout and get render commands
+        // End layout and get render commands — time only the actual layout compute
+        self.debugger.beginLayout();
         const commands = try self.layout.endFrame();
         self.debugger.endLayout();
 

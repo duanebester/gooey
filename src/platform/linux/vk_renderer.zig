@@ -65,6 +65,37 @@ pub const GpuSvg = vk_types.GpuSvg;
 pub const GpuImage = vk_types.GpuImage;
 
 // =============================================================================
+// Pending Atlas Upload (deferred staging for async transfers)
+// =============================================================================
+
+/// Deferred atlas upload request. Populated by `stageTextAtlas()` etc.,
+/// consumed by `render()` after the frame fence wait.
+///
+/// Stores a *pointer* to the atlas pixel data — no memcpy until render().
+/// The pointer must remain valid for the duration of `renderFrame()`.
+const PendingUpload = struct {
+    data: []const u8 = &.{},
+    width: u32 = 0,
+    height: u32 = 0,
+    format: vk_atlas.AtlasFormat = .r8,
+    /// Dirty sub-region to upload, or null for full upload.
+    dirty: ?vk_atlas.DirtyRegion = null,
+    /// Whether this pending upload is active.
+    active: bool = false,
+};
+
+/// Info needed to record a single atlas transfer into the render command buffer.
+const AtlasTransferRecord = struct {
+    image: vk.Image,
+    staging_offset: vk.DeviceSize,
+    dirty: vk_atlas.DirtyRegion,
+    preserve_contents: bool,
+};
+
+/// Maximum atlas transfers per frame (text + SVG + image).
+const MAX_ATLAS_TRANSFERS: u32 = 3;
+
+// =============================================================================
 // Per-Frame Resources (triple-buffered)
 // =============================================================================
 
@@ -175,10 +206,7 @@ pub const VulkanRenderer = struct {
 
     // Command pool (shared — frees all command buffers on destruction)
     command_pool: vk.CommandPool = null,
-    transfer_command_buffer: vk.CommandBuffer = null,
 
-    // Transfer synchronization (shared across frames)
-    transfer_fence: vk.Fence = null,
     current_frame: u32 = 0,
     swapchain_needs_recreate: bool = false,
 
@@ -198,10 +226,11 @@ pub const VulkanRenderer = struct {
     image_atlas: vk_atlas.AtlasResources = .{},
     atlas_sampler: vk.Sampler = null,
 
-    // Atlas dirty flags for batched upload (improvement #2)
-    text_atlas_dirty: bool = false,
-    svg_atlas_dirty: bool = false,
-    image_atlas_dirty: bool = false,
+    // Pending atlas uploads — populated by stageXxxAtlas(), consumed by render().
+    // Stores data pointers valid for the duration of renderFrame().
+    pending_text: PendingUpload = .{},
+    pending_svg: PendingUpload = .{},
+    pending_image: PendingUpload = .{},
 
     // Descriptors (layouts + pool shared; per-frame sets live in FrameResources)
     unified_descriptor_layout: vk.DescriptorSetLayout = null,
@@ -224,12 +253,8 @@ pub const VulkanRenderer = struct {
 
     const Self = @This();
 
-    // Staging region offsets for batched atlas uploads.
-    // Each atlas type gets a non-overlapping region within the pre-allocated
-    // staging buffer so all three can be staged simultaneously.
-    const STAGING_REGION_TEXT: vk.DeviceSize = 0;
-    const STAGING_REGION_SVG: vk.DeviceSize = vk_atlas.TEXT_STAGING_BYTES;
-    const STAGING_REGION_IMAGE: vk.DeviceSize = vk_atlas.TEXT_STAGING_BYTES + vk_atlas.RGBA_STAGING_BYTES;
+    /// Atlas type identifier for descriptor set routing.
+    const AtlasKind = enum { text, svg, image };
 
     // Embedded SPIR-V shaders (compiled from GLSL)
     // Force 4-byte alignment as required by Vulkan for SPIR-V code
@@ -260,10 +285,6 @@ pub const VulkanRenderer = struct {
 
         // Host memory pool (frees the single backing VkDeviceMemory for all frame buffers)
         self.host_memory_pool.destroy(self.device);
-
-        // Transfer fence (shared, not in FrameResources)
-        if (self.transfer_fence) |fence| vk.vkDestroyFence(self.device, fence, null);
-        self.transfer_fence = null;
 
         // Command pool (frees command buffers implicitly)
         if (self.command_pool) |pool| {
@@ -572,11 +593,9 @@ pub const VulkanRenderer = struct {
             self.command_pool = null;
         }
         const cmd_bufs = try vk_buffers.allocateCommandBuffers(self.device, self.command_pool);
-        self.transfer_command_buffer = cmd_bufs.transfer;
 
         // ---- Synchronization objects (vk_buffers) ----
         const sync = try vk_buffers.createSyncObjects(self.device);
-        self.transfer_fence = sync.transfer_fence;
 
         // Distribute per-frame sync objects and command buffers
         for (0..FRAME_COUNT) |i| {
@@ -585,11 +604,7 @@ pub const VulkanRenderer = struct {
             self.frames[i].render_finished_semaphore = sync.render_finished_semaphores[i];
             self.frames[i].command_buffer = cmd_bufs.render[i];
         }
-        errdefer {
-            self.destroyFrameResources();
-            if (self.transfer_fence) |f| vk.vkDestroyFence(self.device, f, null);
-            self.transfer_fence = null;
-        }
+        errdefer self.destroyFrameResources();
 
         // ---- Host memory pool (vk_buffers — 1 vkAllocateMemory instead of ~15) ----
         self.host_memory_pool = try vk_buffers.MemoryPool.init(
@@ -922,200 +937,212 @@ pub const VulkanRenderer = struct {
     }
 
     // =========================================================================
-    // Atlas Upload — thin wrappers delegating to vk_atlas module
-    // (Phase 3: replaces 6 upload + 3 descriptor update methods with 3 wrappers)
+    // Atlas Upload — async partial transfers (no synchronous fence)
+    //
+    // Flow: stageXxxAtlas() stores data pointers → render() waits frame fence
+    // → processAtlasUploads() stages dirty rects into per-frame lane →
+    // recordAtlasTransfers() records barriers+copies into the render cmd buf.
+    //
+    // Eliminates the synchronous GPU round-trip that was the #1 perf bottleneck.
+    // Per-frame staging lanes (48MB each) prevent CPU/GPU races without extra
+    // fences. Partial uploads (dirty rects only) reduce transfer bandwidth
+    // from 64MB to typically <1MB per atlas-dirty frame.
     // =========================================================================
 
-    /// Build a TransferContext from VulkanRenderer fields.
-    /// Constructed on the stack at each call site — no heap allocation.
-    fn makeTransferContext(self: *Self) vk_atlas.TransferContext {
-        std.debug.assert(self.device != null);
-        std.debug.assert(self.transfer_command_buffer != null);
-        return .{
-            .staging_buffer = &self.staging_buffer,
-            .staging_memory = &self.staging_memory,
-            .staging_mapped = &self.staging_mapped,
-            .staging_size = &self.staging_size,
-            .transfer_command_buffer = self.transfer_command_buffer,
-            .transfer_fence = self.transfer_fence,
-            .graphics_queue = self.graphics_queue,
-            .device = self.device,
-            .mem_properties = &self.mem_properties,
-        };
+    /// Notify renderer that the text atlas has new data. Call before render().
+    /// The data pointer must remain valid until render() returns.
+    pub fn stageTextAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
+        std.debug.assert(data.len == @as(usize, width) * @as(usize, height));
+        std.debug.assert(width > 0 and height > 0);
+        self.pending_text = .{ .data = data, .width = width, .height = height, .format = .r8, .dirty = dirty, .active = true };
     }
 
-    /// Stage text atlas data for batched upload (R8 format).
-    /// Pixel data is copied into a staging region; the actual GPU transfer
-    /// happens in `flushAtlasUploads` (called at the start of `render`).
-    pub fn uploadAtlas(self: *Self, data: []const u8, width: u32, height: u32) !void {
-        if (!self.initialized) return error.NotInitialized;
-        std.debug.assert(data.len == @as(usize, width) * @as(usize, height));
+    /// Notify renderer that the SVG atlas has new data. Call before render().
+    pub fn stageSvgAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
+        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
+        std.debug.assert(width > 0 and height > 0);
+        self.pending_svg = .{ .data = data, .width = width, .height = height, .format = .rgba8, .dirty = dirty, .active = true };
+    }
 
-        var transfer = self.makeTransferContext();
-        const image_recreated = try vk_atlas.prepareAtlasUpload(
-            &self.text_atlas,
-            data,
-            width,
-            height,
-            .r8,
-            &transfer,
-            STAGING_REGION_TEXT,
-        );
+    /// Notify renderer that the image atlas has new data. Call before render().
+    pub fn stageImageAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
+        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
+        std.debug.assert(width > 0 and height > 0);
+        self.pending_image = .{ .data = data, .width = width, .height = height, .format = .rgba8, .dirty = dirty, .active = true };
+    }
 
-        self.text_atlas_dirty = true;
+    /// Process all pending atlas uploads: (re)create VkImages if dimensions
+    /// changed, stage dirty pixel data into the current frame's staging lane.
+    ///
+    /// Must be called AFTER vkWaitForFences(current_frame) — the staging lane
+    /// is only safe to write once the previous use of this frame slot is done.
+    fn processAtlasUploads(
+        self: *Self,
+        transfers: *[MAX_ATLAS_TRANSFERS]AtlasTransferRecord,
+        count: *u32,
+    ) void {
+        std.debug.assert(self.staging_mapped != null);
+        std.debug.assert(count.* == 0);
+
+        const lane_start = @as(vk.DeviceSize, self.current_frame) * vk_atlas.STAGING_LANE_SIZE;
+        var cursor = lane_start;
+
+        self.processSingleUpload(&self.pending_text, &self.text_atlas, .text, &cursor, transfers, count);
+        self.processSingleUpload(&self.pending_svg, &self.svg_atlas, .svg, &cursor, transfers, count);
+        self.processSingleUpload(&self.pending_image, &self.image_atlas, .image, &cursor, transfers, count);
+
+        // Assert we stayed within this frame's staging lane
+        std.debug.assert(cursor - lane_start <= vk_atlas.STAGING_LANE_SIZE);
+    }
+
+    /// Process a single pending atlas upload. Handles VkImage (re)creation,
+    /// descriptor set updates, and dirty-region staging.
+    fn processSingleUpload(
+        self: *Self,
+        pending: *PendingUpload,
+        resources: *vk_atlas.AtlasResources,
+        kind: AtlasKind,
+        cursor: *vk.DeviceSize,
+        transfers: *[MAX_ATLAS_TRANSFERS]AtlasTransferRecord,
+        count: *u32,
+    ) void {
+        if (!pending.active) return;
+        defer pending.active = false;
+
+        std.debug.assert(pending.width > 0 and pending.height > 0);
+        std.debug.assert(count.* < MAX_ATLAS_TRANSFERS);
+
+        // (Re)create VkImage if dimensions changed or image doesn't exist
+        const image_recreated = vk_atlas.ensureAtlasImage(
+            resources,
+            pending.width,
+            pending.height,
+            pending.format,
+            self.device,
+            &self.mem_properties,
+        ) catch |err| {
+            std.log.err("Atlas image creation failed: {}", .{err});
+            return;
+        };
 
         if (image_recreated) {
-            // Update ALL frames' descriptor sets — any frame could render next
-            for (&self.frames) |*frame| {
-                vk_atlas.updateAtlasDescriptorSet(
+            // Other frames may still reference old descriptor sets — wait for them.
+            // Current frame's fence was already waited by the caller.
+            self.waitOtherFrameFences();
+            self.updateAllDescriptorSets(kind, resources);
+        }
+
+        // Full upload on (re)creation to initialize entire VkImage;
+        // dirty-rect-only otherwise. Skip if no dirty region and no resize.
+        const dirty: vk_atlas.DirtyRegion = if (image_recreated)
+            .{ .x = 0, .y = 0, .width = pending.width, .height = pending.height }
+        else
+            (pending.dirty orelse return);
+
+        // Stage dirty rows into per-frame staging lane
+        const staging_ptr: [*]u8 = @ptrCast(self.staging_mapped orelse return);
+        const bytes = vk_atlas.stageDirtyRegion(
+            staging_ptr,
+            cursor.*,
+            pending.data,
+            pending.width,
+            pending.format,
+            dirty,
+        );
+
+        transfers[count.*] = .{
+            .image = resources.image,
+            .staging_offset = cursor.*,
+            .dirty = dirty,
+            .preserve_contents = !image_recreated,
+        };
+        count.* += 1;
+        cursor.* += bytes;
+    }
+
+    /// Record atlas transfer commands (barrier → copy → barrier) into a
+    /// command buffer. Called after vkBeginCommandBuffer, before vkCmdBeginRenderPass.
+    /// Pipeline barriers guarantee transfers complete before fragment shaders read.
+    fn recordAtlasTransfers(self: *const Self, cmd: vk.CommandBuffer, transfers: []const AtlasTransferRecord) void {
+        std.debug.assert(cmd != null);
+        for (transfers) |t| {
+            std.debug.assert(t.image != null);
+            vk_atlas.recordPartialAtlasTransfer(
+                cmd,
+                t.image,
+                self.staging_buffer,
+                t.staging_offset,
+                t.dirty,
+                t.preserve_contents,
+            );
+        }
+    }
+
+    /// Wait for all frame fences EXCEPT the current frame (already waited).
+    /// Needed when (re)creating a VkImage — descriptor sets for all frames
+    /// must be updated, so all frames must be idle.
+    fn waitOtherFrameFences(self: *Self) void {
+        std.debug.assert(self.device != null);
+        for (0..FRAME_COUNT) |i| {
+            if (i != self.current_frame) {
+                _ = vk.vkWaitForFences(self.device, 1, &self.frames[i].fence, vk.TRUE, std.math.maxInt(u64));
+            }
+        }
+    }
+
+    /// Update all frames' descriptor sets for a given atlas kind.
+    /// Called after VkImage (re)creation — the new image view must be bound.
+    fn updateAllDescriptorSets(self: *Self, kind: AtlasKind, resources: *const vk_atlas.AtlasResources) void {
+        std.debug.assert(self.device != null);
+        std.debug.assert(resources.view != null);
+        for (&self.frames) |*frame| {
+            switch (kind) {
+                .text => vk_atlas.updateAtlasDescriptorSet(
                     self.device,
                     frame.text_descriptor_set,
                     frame.glyph_buffer,
                     @sizeOf(GpuGlyph) * MAX_GLYPHS,
                     frame.uniform_buffer,
-                    self.text_atlas.view,
+                    resources.view,
                     self.atlas_sampler,
-                );
-            }
-        }
-    }
-
-    /// Stage SVG atlas data for batched upload (RGBA format).
-    pub fn uploadSvgAtlas(self: *Self, data: []const u8, width: u32, height: u32) !void {
-        if (!self.initialized) return error.NotInitialized;
-        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
-
-        var transfer = self.makeTransferContext();
-        const image_recreated = try vk_atlas.prepareAtlasUpload(
-            &self.svg_atlas,
-            data,
-            width,
-            height,
-            .rgba8,
-            &transfer,
-            STAGING_REGION_SVG,
-        );
-
-        self.svg_atlas_dirty = true;
-
-        if (image_recreated) {
-            for (&self.frames) |*frame| {
-                vk_atlas.updateAtlasDescriptorSet(
+                ),
+                .svg => vk_atlas.updateAtlasDescriptorSet(
                     self.device,
                     frame.svg_descriptor_set,
                     frame.svg_buffer,
                     @sizeOf(GpuSvg) * MAX_SVGS,
                     frame.uniform_buffer,
-                    self.svg_atlas.view,
+                    resources.view,
                     self.atlas_sampler,
-                );
-            }
-        }
-    }
-
-    /// Stage image atlas data for batched upload (RGBA format).
-    pub fn uploadImageAtlas(self: *Self, data: []const u8, width: u32, height: u32) !void {
-        if (!self.initialized) return error.NotInitialized;
-        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
-
-        var transfer = self.makeTransferContext();
-        const image_recreated = try vk_atlas.prepareAtlasUpload(
-            &self.image_atlas,
-            data,
-            width,
-            height,
-            .rgba8,
-            &transfer,
-            STAGING_REGION_IMAGE,
-        );
-
-        self.image_atlas_dirty = true;
-
-        if (image_recreated) {
-            for (&self.frames) |*frame| {
-                vk_atlas.updateAtlasDescriptorSet(
+                ),
+                .image => vk_atlas.updateAtlasDescriptorSet(
                     self.device,
                     frame.image_descriptor_set,
                     frame.image_buffer,
                     @sizeOf(GpuImage) * MAX_IMAGES,
                     frame.uniform_buffer,
-                    self.image_atlas.view,
+                    resources.view,
                     self.atlas_sampler,
-                );
+                ),
             }
         }
-    }
-
-    /// Flush all pending atlas uploads in a single GPU submission.
-    ///
-    /// Records barrier → copy → barrier for each dirty atlas into one command
-    /// buffer, then submits once and waits on one fence. This replaces up to 3
-    /// sequential submit+wait cycles with a single round-trip.
-    fn flushAtlasUploads(self: *Self) void {
-        if (!self.text_atlas_dirty and !self.svg_atlas_dirty and !self.image_atlas_dirty) return;
-
-        std.debug.assert(self.transfer_command_buffer != null);
-        std.debug.assert(self.transfer_fence != null);
-        std.debug.assert(self.staging_buffer != null);
-
-        const cmd = self.transfer_command_buffer;
-        _ = vk.vkResetCommandBuffer(cmd, 0);
-
-        const begin_info = vk.CommandBufferBeginInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .pNext = null,
-            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            .pInheritanceInfo = null,
-        };
-        _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
-
-        if (self.text_atlas_dirty) {
-            vk_atlas.recordAtlasTransfer(cmd, self.text_atlas.image, self.staging_buffer, STAGING_REGION_TEXT, self.text_atlas.width, self.text_atlas.height);
-            self.text_atlas_dirty = false;
-        }
-        if (self.svg_atlas_dirty) {
-            vk_atlas.recordAtlasTransfer(cmd, self.svg_atlas.image, self.staging_buffer, STAGING_REGION_SVG, self.svg_atlas.width, self.svg_atlas.height);
-            self.svg_atlas_dirty = false;
-        }
-        if (self.image_atlas_dirty) {
-            vk_atlas.recordAtlasTransfer(cmd, self.image_atlas.image, self.staging_buffer, STAGING_REGION_IMAGE, self.image_atlas.width, self.image_atlas.height);
-            self.image_atlas_dirty = false;
-        }
-
-        _ = vk.vkEndCommandBuffer(cmd);
-
-        // Single submit, single fence wait
-        _ = vk.vkResetFences(self.device, 1, &self.transfer_fence);
-        const submit_info = vk.SubmitInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .pNext = null,
-            .waitSemaphoreCount = 0,
-            .pWaitSemaphores = null,
-            .pWaitDstStageMask = null,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-            .signalSemaphoreCount = 0,
-            .pSignalSemaphores = null,
-        };
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.transfer_fence);
-        _ = vk.vkWaitForFences(self.device, 1, &self.transfer_fence, vk.TRUE, std.math.maxInt(u64));
     }
 
     // =========================================================================
     // Render
     // =========================================================================
 
-    /// Render a frame using batched scene renderer for proper z-ordering
+    /// Render a frame: atlas transfers + scene draw in a single command buffer.
+    ///
+    /// Atlas transfers (barrier → copy → barrier) are recorded BEFORE the
+    /// render pass. Pipeline barriers guarantee the copies complete before
+    /// fragment shaders read from the atlas textures — no extra fence needed.
     pub fn render(self: *Self, scene: *const Scene) void {
         if (!self.initialized) return;
-
-        // Flush any pending atlas uploads (batched — single GPU round-trip)
-        self.flushAtlasUploads();
 
         // Check if swapchain needs recreation from previous frame
         if (self.swapchain_needs_recreate) {
             self.swapchain_needs_recreate = false;
-            // Wait only for our frames — not ALL GPU work (improvement #4)
             for (0..FRAME_COUNT) |i| {
                 _ = vk.vkWaitForFences(self.device, 1, &self.frames[i].fence, vk.TRUE, std.math.maxInt(u64));
             }
@@ -1127,48 +1154,83 @@ pub const VulkanRenderer = struct {
 
         const frame = &self.frames[self.current_frame];
 
-        // Wait only for THIS frame's fence — the other frames are free
+        // Wait only for THIS frame's fence — GPU is done reading this
+        // frame's staging lane and command buffer.
         _ = vk.vkWaitForFences(self.device, 1, &frame.fence, vk.TRUE, std.math.maxInt(u64));
         _ = vk.vkResetFences(self.device, 1, &frame.fence);
 
-        // Acquire next image
+        // Stage pending atlas dirty rects into per-frame staging lane.
+        // MUST happen after frame fence wait — the lane is only safe to
+        // overwrite once the previous GPU read from it is complete.
+        var transfer_count: u32 = 0;
+        var transfers: [MAX_ATLAS_TRANSFERS]AtlasTransferRecord = undefined;
+        self.processAtlasUploads(&transfers, &transfer_count);
+
+        // Acquire swapchain image
         var image_index: u32 = 0;
-        const acquire_result = vk.vkAcquireNextImageKHR(
+        switch (self.acquireNextImage(frame, &image_index)) {
+            .ok => {},
+            .out_of_date => return,
+            .fatal => unreachable,
+        }
+
+        // Record command buffer: atlas transfers → render pass → draw
+        const cmd = frame.command_buffer;
+        self.recordFrame(cmd, frame, scene, image_index, transfers[0..transfer_count]);
+
+        // Submit + present
+        self.submitAndPresent(cmd, frame, image_index);
+
+        self.current_frame = (self.current_frame + 1) % FRAME_COUNT;
+    }
+
+    const AcquireResult = enum { ok, out_of_date, fatal };
+
+    /// Acquire the next swapchain image. Returns `.out_of_date` if the
+    /// swapchain needs recreation (caller should skip this frame).
+    fn acquireNextImage(self: *Self, frame: *const FrameResources, image_index: *u32) AcquireResult {
+        const result = vk.vkAcquireNextImageKHR(
             self.device,
             self.swapchain,
             std.math.maxInt(u64),
             frame.image_available_semaphore,
             null,
-            &image_index,
+            image_index,
         );
-
-        // Handle acquire result exhaustively
-        switch (acquire_result) {
-            vk.SUCCESS => {},
+        switch (result) {
+            vk.SUCCESS => return .ok,
             vk.SUBOPTIMAL_KHR => {
                 self.swapchain_needs_recreate = true;
+                return .ok;
             },
             vk.ERROR_OUT_OF_DATE_KHR => {
                 self.swapchain_needs_recreate = true;
-                return;
+                return .out_of_date;
             },
             vk.TIMEOUT, vk.NOT_READY => {
                 std.debug.print("vkAcquireNextImageKHR returned unexpected timeout/not_ready\n", .{});
-                return;
+                return .out_of_date;
             },
             else => {
-                std.debug.print("vkAcquireNextImageKHR failed with unexpected result: {}\n", .{acquire_result});
-                unreachable;
+                std.debug.print("vkAcquireNextImageKHR failed: {}\n", .{result});
+                return .fatal;
             },
         }
+    }
 
-        // Assert image index is valid
+    /// Record the full frame command buffer: atlas transfers + render pass + scene draw.
+    fn recordFrame(
+        self: *Self,
+        cmd: vk.CommandBuffer,
+        frame: *const FrameResources,
+        scene: *const Scene,
+        image_index: u32,
+        transfers: []const AtlasTransferRecord,
+    ) void {
+        std.debug.assert(cmd != null);
         std.debug.assert(image_index < self.swapchain_image_count);
 
-        // Record command buffer
-        const cmd = frame.command_buffer;
         _ = vk.vkResetCommandBuffer(cmd, 0);
-
         const begin_info = vk.CommandBufferBeginInfo{
             .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .pNext = null,
@@ -1176,6 +1238,11 @@ pub const VulkanRenderer = struct {
             .pInheritanceInfo = null,
         };
         _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
+
+        // Atlas transfers: barrier → copy → barrier BEFORE render pass.
+        // VK_PIPELINE_STAGE_TRANSFER_BIT → VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+        // guarantees the copy finishes before any fragment shader reads.
+        self.recordAtlasTransfers(cmd, transfers);
 
         // Begin render pass
         const clear_value = vk.clearColor(0.1, 0.1, 0.12, 1.0);
@@ -1191,21 +1258,18 @@ pub const VulkanRenderer = struct {
             .clearValueCount = 1,
             .pClearValues = &clear_value,
         };
-
         vk.vkCmdBeginRenderPass(cmd, &render_pass_info, vk.VK_SUBPASS_CONTENTS_INLINE);
 
-        // Set viewport and scissor
+        // Viewport + scissor
         const viewport = vk.makeViewport(
             @floatFromInt(self.swapchain_extent.width),
             @floatFromInt(self.swapchain_extent.height),
         );
         vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
-
         const scissor = vk.makeScissor(self.swapchain_extent.width, self.swapchain_extent.height);
         vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        // Use batched scene renderer for proper z-ordering.
-        // Per-frame descriptor sets and buffer pointers ensure no CPU/GPU contention.
+        // Draw scene with per-frame descriptor sets and buffer pointers
         const pipelines = scene_renderer.Pipelines{
             .unified_pipeline = self.unified_pipeline,
             .unified_pipeline_layout = self.unified_pipeline_layout,
@@ -1227,13 +1291,17 @@ pub const VulkanRenderer = struct {
             .svg_atlas_view = self.svg_atlas.view,
             .image_atlas_view = self.image_atlas.view,
         };
-
         _ = scene_renderer.drawScene(cmd, scene, pipelines);
 
         vk.vkCmdEndRenderPass(cmd);
         _ = vk.vkEndCommandBuffer(cmd);
+    }
 
-        // Submit
+    /// Submit the recorded command buffer and present the frame.
+    fn submitAndPresent(self: *Self, cmd: vk.CommandBuffer, frame: *const FrameResources, image_index: u32) void {
+        std.debug.assert(cmd != null);
+        std.debug.assert(self.graphics_queue != null);
+
         const wait_stages = [_]u32{vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         const submit_info = vk.SubmitInfo{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1246,10 +1314,8 @@ pub const VulkanRenderer = struct {
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &frame.render_finished_semaphore,
         };
-
         _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, frame.fence);
 
-        // Present
         const present_info = vk.PresentInfoKHR{
             .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = null,
@@ -1260,24 +1326,16 @@ pub const VulkanRenderer = struct {
             .pImageIndices = &image_index,
             .pResults = null,
         };
-
         const present_result = vk.vkQueuePresentKHR(self.present_queue, &present_info);
-
-        // Handle present result exhaustively
         switch (present_result) {
             vk.SUCCESS => {},
-            vk.SUBOPTIMAL_KHR => {
-                self.swapchain_needs_recreate = true;
-            },
-            vk.ERROR_OUT_OF_DATE_KHR => {
+            vk.SUBOPTIMAL_KHR, vk.ERROR_OUT_OF_DATE_KHR => {
                 self.swapchain_needs_recreate = true;
             },
             else => {
-                std.debug.print("vkQueuePresentKHR failed with unexpected result: {}\n", .{present_result});
+                std.debug.print("vkQueuePresentKHR failed: {}\n", .{present_result});
                 unreachable;
             },
         }
-
-        self.current_frame = (self.current_frame + 1) % FRAME_COUNT;
     }
 };
