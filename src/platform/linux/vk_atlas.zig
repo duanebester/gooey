@@ -19,22 +19,23 @@ const vk = @import("vulkan.zig");
 // Limits (CLAUDE.md Rule #4)
 // =============================================================================
 
-/// Maximum atlas dimension in either axis (4096×4096 = 64MB RGBA).
-pub const MAX_ATLAS_DIMENSION: u32 = 8192;
+/// Maximum atlas dimension in either axis.
+/// 4096×4096 supports ~16M pixels per atlas — plenty for UI workloads.
+/// Back-of-envelope (CLAUDE.md Rule #7): 4096² × 4 = 64MB per RGBA atlas.
+pub const MAX_ATLAS_DIMENSION: u32 = 4096;
 
-/// Maximum staging size for a single atlas region (RGBA at max dimension).
-pub const MAX_SINGLE_ATLAS_BYTES: vk.DeviceSize = MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 4;
+/// Staging size for the text atlas region (R8 = 1 byte/pixel).
+/// 4096 × 4096 × 1 = 16MB.
+pub const TEXT_STAGING_BYTES: vk.DeviceSize = MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 1;
 
-/// Number of atlas staging regions (text, SVG, image).
-pub const STAGING_REGION_COUNT: u32 = 3;
+/// Staging size for an RGBA atlas region (SVG or image, 4 bytes/pixel).
+/// 4096 × 4096 × 4 = 64MB.
+pub const RGBA_STAGING_BYTES: vk.DeviceSize = MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 4;
 
-/// Total staging buffer size: 3 regions so batched uploads can stage all atlases
-/// simultaneously without clobbering (CLAUDE.md Rule #4 — put a limit on everything).
+/// Total staging buffer size: text (R8) + SVG (RGBA) + image (RGBA).
+/// 16MB + 64MB + 64MB = 144MB (down from 768MB with uniform 8192² × 4 × 3).
 /// Each `vkCmdCopyBufferToImage` reads from a non-overlapping region.
-pub const MAX_STAGING_BYTES: vk.DeviceSize = MAX_SINGLE_ATLAS_BYTES * STAGING_REGION_COUNT;
-
-/// Legacy alias used by ensureStagingCapacity for single-shot uploads.
-const MAX_STAGING_BYTES_SINGLE: vk.DeviceSize = MAX_SINGLE_ATLAS_BYTES;
+pub const MAX_STAGING_BYTES: vk.DeviceSize = TEXT_STAGING_BYTES + 2 * RGBA_STAGING_BYTES;
 
 // =============================================================================
 // Public Types
@@ -482,7 +483,7 @@ fn uploadAtlasData(
 /// Ensure staging buffer can hold `required_bytes`. Recreates if too small.
 fn ensureStagingCapacity(transfer: *TransferContext, required_bytes: vk.DeviceSize) AtlasError!void {
     std.debug.assert(required_bytes > 0);
-    std.debug.assert(required_bytes <= MAX_STAGING_BYTES_SINGLE);
+    std.debug.assert(required_bytes <= RGBA_STAGING_BYTES);
 
     if (transfer.staging_buffer.* != null and transfer.staging_size.* >= required_bytes) {
         return; // Already big enough

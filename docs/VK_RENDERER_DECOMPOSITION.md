@@ -874,9 +874,9 @@ All seven items from the original priority matrix are complete. The following op
 
 | Priority | Opportunity                              | Effort   | Impact                                      | Category   |
 | -------- | ---------------------------------------- | -------- | ------------------------------------------- | ---------- |
-| 8        | Pipeline cache (`VkPipelineCache`)       | Trivial  | Faster cold starts on subsequent launches   | Init-time  |
-| 9        | Shared pipeline layouts (4 → 2 handles)  | Small    | 2 fewer Vulkan objects, simpler teardown    | Cleanup    |
-| 10       | Right-size staging buffer (768 → ≤192MB) | Small    | ~500MB less host-visible memory at init     | Memory     |
+| ✅ Done   | Pipeline cache (`VkPipelineCache`)       | Trivial  | Faster cold starts on subsequent launches   | Init-time  |
+| ✅ Done   | Shared pipeline layouts (4 → 2 handles)  | Small    | 2 fewer Vulkan objects, simpler teardown    | Cleanup    |
+| ✅ Done   | Right-size staging buffer (768 → 144MB)  | Small    | ~624MB less host-visible memory at init     | Memory     |
 | 11       | Device-local memory pool                 | Medium   | Fewer `vkAllocateMemory` calls on resize    | Resize     |
 | 12       | Incremental atlas uploads                | Medium   | Less staging memcpy + GPU bandwidth per frame | Frame time |
 | 13       | Separate upload/record passes            | Medium   | Better CPU cache utilization during render  | Frame time |
@@ -884,7 +884,7 @@ All seven items from the original priority matrix are complete. The following op
 
 ---
 
-## 8. Pipeline Cache (`VkPipelineCache`)
+## 8. Pipeline Cache (`VkPipelineCache`) ✅ Complete
 
 ### The Problem
 
@@ -899,7 +899,7 @@ const result = vk.vkCreateGraphicsPipelines(device, null, 1, &pipeline_info, nul
 
 On some drivers (especially Intel and AMD), shader compilation dominates pipeline creation time. A pipeline cache lets the driver skip redundant compilation on second-and-subsequent launches.
 
-### The Fix
+### The Fix ✅ Implemented
 
 1. Add a `VkPipelineCache` parameter to `createGraphicsPipeline` in `vk_pipelines.zig`.
 2. Create the cache in `initWithWaylandSurface`, before `createAllPipelines`.
@@ -915,18 +915,24 @@ pub fn createGraphicsPipeline(
     sample_count: c_uint,
     config: PipelineConfig,
     pipeline_cache: vk.PipelineCache,  // nullable — null = no cache
-) PipelineError!PipelineResult {
+) PipelineError!vk.Pipeline {
     ...
     const result = vk.vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pipeline_info, null, &pipeline);
     ...
 }
 ```
 
+**Implementation notes:**
+- `vk_pipelines.createPipelineCache()` creates an empty in-memory cache at init.
+- All 4 `createGraphicsPipeline` calls share the same cache handle, so the driver can reuse compiled shader fragments across pipelines within a session.
+- Disk serialization via `vkGetPipelineCacheData` → `$XDG_CACHE_HOME/gooey/pipeline_cache.bin` is marked TODO for a future pass.
+- `vulkan.zig` gained `PipelineCache` type, `PipelineCacheCreateInfo` struct, and `vkCreatePipelineCache`/`vkDestroyPipelineCache`/`vkGetPipelineCacheData` function aliases.
+
 **Risk:** Near zero. A null or invalid cache falls back to uncached creation.
 
 ---
 
-## 9. Shared Pipeline Layouts (4 → 2 Handles)
+## 9. Shared Pipeline Layouts (4 → 2 Handles) ✅ Complete
 
 ### The Problem
 
@@ -942,7 +948,7 @@ image_pipeline_layout: vk.PipelineLayout = null,      // uses textured_descripto
 
 The three textured layouts are created from the same `VkDescriptorSetLayout` with zero push constant ranges — they produce identical `VkPipelineLayout` objects. That's 2 unnecessary Vulkan handles and 2 unnecessary `vkDestroyPipelineLayout` calls in teardown.
 
-### The Fix
+### The Fix ✅ Implemented
 
 Create the `VkPipelineLayout` for each distinct descriptor layout **once**, then pass it into pipeline creation instead of creating it inside:
 
@@ -952,17 +958,19 @@ const textured_pipeline_layout = try vk_pipelines.createPipelineLayout(device, s
 // Pass to all three textured pipeline creations
 ```
 
-This requires either:
-- Exposing `createPipelineLayout` as public in `vk_pipelines.zig` and adding an optional `PipelineLayout` field to `PipelineConfig`, or
-- Adding a `createGraphicsPipelineWithLayout` variant that accepts an existing layout.
+**Implementation notes:**
+- `createPipelineLayout` is now public in `vk_pipelines.zig`. The coordinator pre-creates 2 layouts in `createAllPipelines`.
+- `PipelineConfig` now takes `pipeline_layout: vk.PipelineLayout` instead of `descriptor_layout: vk.DescriptorSetLayout`.
+- `createGraphicsPipeline` returns `vk.Pipeline` directly (no `PipelineResult` wrapper needed since the layout is caller-owned).
+- `destroyPipeline` only destroys the pipeline handle; layouts are destroyed separately in `destroyAllPipelines`.
+- `scene_renderer.zig` `Pipelines` struct is unchanged — all three textured layout fields receive `self.textured_pipeline_layout`.
+- `VulkanRenderer` fields: removed `text_pipeline_layout`, `svg_pipeline_layout`, `image_pipeline_layout`; added `textured_pipeline_layout`.
 
-The `PipelineResult` would then only return the `VkPipeline`, not the layout. The renderer stores 2 layouts (`unified_pipeline_layout`, `textured_pipeline_layout`) and 4 pipelines.
-
-**Risk:** Low. The `scene_renderer.zig` `Pipelines` struct already passes layouts per-pipeline — it would pass the shared layout for text/svg/image.
+**Risk:** Low. Verified via clean `zig build`.
 
 ---
 
-## 10. Right-Size Staging Buffer (768MB → ≤192MB)
+## 10. Right-Size Staging Buffer (768MB → 144MB) ✅ Complete
 
 ### The Problem
 
@@ -983,31 +991,31 @@ pub const MAX_STAGING_BYTES = MAX_SINGLE_ATLAS_BYTES * STAGING_REGION_COUNT;    
 
 Even at 4096×4096 max, the three regions total 192MB (4096² × 4 × 3). On integrated GPUs (Intel UHD, AMD APU) where host-visible memory is system RAM, 768MB is a meaningful chunk.
 
-### The Fix
+### The Fix ✅ Implemented (Option A + B combined)
 
 **Option A — Reduce `MAX_ATLAS_DIMENSION` to 4096:**
 
 ```zig
 pub const MAX_ATLAS_DIMENSION = 4096;
-// MAX_SINGLE_ATLAS_BYTES = 4096 * 4096 * 4 = 64MB
-// MAX_STAGING_BYTES = 64MB * 3 = 192MB
 ```
 
-4096×4096 supports ~16 million RGBA pixels per atlas — plenty for UI workloads. If a future use case needs 8K atlases, bump it then.
-
-**Option B — Per-format staging regions:**
-
-The text atlas is R8 (1 byte/pixel), not RGBA (4 bytes/pixel). Currently all three regions are sized for RGBA. Sizing the text region for R8 saves 75% of that region:
+**Per-format staging regions (Option B):**
 
 ```zig
-const TEXT_STAGING_SIZE = MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 1;    // R8
-const RGBA_STAGING_SIZE = MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 4;    // RGBA
-const MAX_STAGING_BYTES = TEXT_STAGING_SIZE + 2 * RGBA_STAGING_SIZE;        // ~576MB at 8K, ~144MB at 4K
+pub const TEXT_STAGING_BYTES = MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 1;    // R8: 16MB
+pub const RGBA_STAGING_BYTES = MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 4;    // RGBA: 64MB
+pub const MAX_STAGING_BYTES = TEXT_STAGING_BYTES + 2 * RGBA_STAGING_BYTES;       // 144MB total
 ```
 
-**Option A + B combined** at 4096: `4096² × 1 + 2 × 4096² × 4 = 16MB + 128MB = 144MB`.
+**Implementation notes:**
+- `MAX_ATLAS_DIMENSION` reduced from 8192 to 4096 in `vk_atlas.zig`.
+- Removed `MAX_SINGLE_ATLAS_BYTES` and `STAGING_REGION_COUNT` (uniform sizing). Replaced with `TEXT_STAGING_BYTES` (16MB, R8) and `RGBA_STAGING_BYTES` (64MB, RGBA).
+- Total staging: `16MB + 64MB + 64MB = 144MB` (down from 768MB — a **5.3× reduction**).
+- Staging region offsets in `vk_renderer.zig` updated: `STAGING_REGION_TEXT = 0`, `STAGING_REGION_SVG = TEXT_STAGING_BYTES`, `STAGING_REGION_IMAGE = TEXT_STAGING_BYTES + RGBA_STAGING_BYTES`.
+- `ensureStagingCapacity` assert updated to use `RGBA_STAGING_BYTES` (the largest single-region size).
+- Existing assert `width <= MAX_ATLAS_DIMENSION` in `prepareAtlasUpload` catches any dimension violation at upload time.
 
-**Risk:** Low. Assert on actual atlas dimensions at upload time catches any violation.
+**Risk:** Low. 4096×4096 supports ~16M pixels per atlas — generous for UI workloads.
 
 ---
 

@@ -160,14 +160,17 @@ pub const VulkanRenderer = struct {
     render_pass: vk.RenderPass = null,
     framebuffers: [8]vk.Framebuffer = [_]vk.Framebuffer{null} ** 8,
 
-    // Pipelines
+    // Pipeline layouts (2 shared — improvement #9: 4 → 2 handles)
     unified_pipeline_layout: vk.PipelineLayout = null,
+    textured_pipeline_layout: vk.PipelineLayout = null, // shared by text, SVG, image
+
+    // Pipeline cache (improvement #8 — amortizes shader compilation)
+    pipeline_cache: vk.PipelineCache = null,
+
+    // Pipelines
     unified_pipeline: vk.Pipeline = null,
-    text_pipeline_layout: vk.PipelineLayout = null,
     text_pipeline: vk.Pipeline = null,
-    svg_pipeline_layout: vk.PipelineLayout = null,
     svg_pipeline: vk.Pipeline = null,
-    image_pipeline_layout: vk.PipelineLayout = null,
     image_pipeline: vk.Pipeline = null,
 
     // Command pool (shared — frees all command buffers on destruction)
@@ -225,8 +228,8 @@ pub const VulkanRenderer = struct {
     // Each atlas type gets a non-overlapping region within the pre-allocated
     // staging buffer so all three can be staged simultaneously.
     const STAGING_REGION_TEXT: vk.DeviceSize = 0;
-    const STAGING_REGION_SVG: vk.DeviceSize = vk_atlas.MAX_SINGLE_ATLAS_BYTES;
-    const STAGING_REGION_IMAGE: vk.DeviceSize = vk_atlas.MAX_SINGLE_ATLAS_BYTES * 2;
+    const STAGING_REGION_SVG: vk.DeviceSize = vk_atlas.TEXT_STAGING_BYTES;
+    const STAGING_REGION_IMAGE: vk.DeviceSize = vk_atlas.TEXT_STAGING_BYTES + vk_atlas.RGBA_STAGING_BYTES;
 
     // Embedded SPIR-V shaders (compiled from GLSL)
     // Force 4-byte alignment as required by Vulkan for SPIR-V code
@@ -420,17 +423,28 @@ pub const VulkanRenderer = struct {
         self.textured_descriptor_layout = null;
     }
 
-    fn destroyPipelinePair(self: *Self, pipeline: *vk.Pipeline, layout: *vk.PipelineLayout) void {
-        vk_pipelines.destroyPipeline(self.device, pipeline.*, layout.*);
-        pipeline.* = null;
-        layout.* = null;
-    }
-
     fn destroyAllPipelines(self: *Self) void {
-        self.destroyPipelinePair(&self.unified_pipeline, &self.unified_pipeline_layout);
-        self.destroyPipelinePair(&self.text_pipeline, &self.text_pipeline_layout);
-        self.destroyPipelinePair(&self.svg_pipeline, &self.svg_pipeline_layout);
-        self.destroyPipelinePair(&self.image_pipeline, &self.image_pipeline_layout);
+        // Destroy pipeline handles first (they reference layouts)
+        vk_pipelines.destroyPipeline(self.device, self.unified_pipeline);
+        self.unified_pipeline = null;
+        vk_pipelines.destroyPipeline(self.device, self.text_pipeline);
+        self.text_pipeline = null;
+        vk_pipelines.destroyPipeline(self.device, self.svg_pipeline);
+        self.svg_pipeline = null;
+        vk_pipelines.destroyPipeline(self.device, self.image_pipeline);
+        self.image_pipeline = null;
+
+        // Destroy shared pipeline layouts (improvement #9: 2 instead of 4)
+        if (self.unified_pipeline_layout) |l| vk.vkDestroyPipelineLayout(self.device, l, null);
+        self.unified_pipeline_layout = null;
+        if (self.textured_pipeline_layout) |l| vk.vkDestroyPipelineLayout(self.device, l, null);
+        self.textured_pipeline_layout = null;
+
+        // Destroy pipeline cache (improvement #8)
+        // TODO: serialize cache to $XDG_CACHE_HOME/gooey/pipeline_cache.bin
+        // before destroying for cross-session shader compilation reuse.
+        if (self.pipeline_cache) |cache| vk.vkDestroyPipelineCache(self.device, cache, null);
+        self.pipeline_cache = null;
     }
 
     // =========================================================================
@@ -760,39 +774,49 @@ pub const VulkanRenderer = struct {
     fn createAllPipelines(self: *Self) !void {
         std.debug.assert(self.device != null);
         std.debug.assert(self.render_pass != null);
+        std.debug.assert(self.unified_descriptor_layout != null);
+        std.debug.assert(self.textured_descriptor_layout != null);
 
-        const unified_result = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        // Create pipeline cache (improvement #8 — in-memory for now).
+        // TODO: load initial data from $XDG_CACHE_HOME/gooey/pipeline_cache.bin
+        // for cross-session shader compilation reuse.
+        self.pipeline_cache = try vk_pipelines.createPipelineCache(self.device, null);
+
+        // Create shared pipeline layouts (improvement #9: 4 → 2 handles).
+        // Unified pipeline uses its own layout; text/SVG/image share one.
+        self.unified_pipeline_layout = try vk_pipelines.createPipelineLayout(
+            self.device,
+            self.unified_descriptor_layout,
+        );
+        self.textured_pipeline_layout = try vk_pipelines.createPipelineLayout(
+            self.device,
+            self.textured_descriptor_layout,
+        );
+
+        self.unified_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
             .vert_spv = unified_vert_spv,
             .frag_spv = unified_frag_spv,
-            .descriptor_layout = self.unified_descriptor_layout,
-        });
-        self.unified_pipeline = unified_result.pipeline;
-        self.unified_pipeline_layout = unified_result.layout;
+            .pipeline_layout = self.unified_pipeline_layout,
+        }, self.pipeline_cache);
 
-        const text = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        self.text_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
             .vert_spv = text_vert_spv,
             .frag_spv = text_frag_spv,
-            .descriptor_layout = self.textured_descriptor_layout,
-        });
-        self.text_pipeline = text.pipeline;
-        self.text_pipeline_layout = text.layout;
+            .pipeline_layout = self.textured_pipeline_layout,
+        }, self.pipeline_cache);
 
-        const svg = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        self.svg_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
             .vert_spv = svg_vert_spv,
             .frag_spv = svg_frag_spv,
-            .descriptor_layout = self.textured_descriptor_layout,
+            .pipeline_layout = self.textured_pipeline_layout,
             .blend_mode = .premultiplied, // SVG shader outputs pre-multiplied RGB
-        });
-        self.svg_pipeline = svg.pipeline;
-        self.svg_pipeline_layout = svg.layout;
+        }, self.pipeline_cache);
 
-        const image = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        self.image_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
             .vert_spv = image_vert_spv,
             .frag_spv = image_frag_spv,
-            .descriptor_layout = self.textured_descriptor_layout,
-        });
-        self.image_pipeline = image.pipeline;
-        self.image_pipeline_layout = image.layout;
+            .pipeline_layout = self.textured_pipeline_layout,
+        }, self.pipeline_cache);
     }
 
     fn updateUniformBuffer(self: *Self, width: u32, height: u32) void {
@@ -1186,11 +1210,11 @@ pub const VulkanRenderer = struct {
             .unified_pipeline = self.unified_pipeline,
             .unified_pipeline_layout = self.unified_pipeline_layout,
             .text_pipeline = self.text_pipeline,
-            .text_pipeline_layout = self.text_pipeline_layout,
+            .text_pipeline_layout = self.textured_pipeline_layout,
             .svg_pipeline = self.svg_pipeline,
-            .svg_pipeline_layout = self.svg_pipeline_layout,
+            .svg_pipeline_layout = self.textured_pipeline_layout,
             .image_pipeline = self.image_pipeline,
-            .image_pipeline_layout = self.image_pipeline_layout,
+            .image_pipeline_layout = self.textured_pipeline_layout,
             .unified_descriptor_set = frame.unified_descriptor_set,
             .text_descriptor_set = frame.text_descriptor_set,
             .svg_descriptor_set = frame.svg_descriptor_set,

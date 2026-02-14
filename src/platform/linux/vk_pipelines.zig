@@ -2,14 +2,23 @@
 //!
 //! Replaces four copy-pasted pipeline creation functions (createUnifiedPipeline,
 //! createTextPipeline, createSvgPipeline, createImagePipeline) with a single
-//! generic helper parameterized by shader SPV, descriptor layout, and blend mode.
+//! generic helper parameterized by shader SPV, pipeline layout, and blend mode.
 //!
 //! Axes of variation across the four original functions:
 //!   1. Shader SPIR-V bytecode (vert + frag)
-//!   2. Descriptor set layout
+//!   2. Pipeline layout (caller pre-creates from descriptor set layout)
 //!   3. Blend mode — only SVG uses premultiplied; the rest use standard SRC_ALPHA
 //!
 //! Everything else (vertex input, topology, rasterizer, dynamic state) is identical.
+//!
+//! Pipeline cache support (improvement #8): callers pass a `VkPipelineCache`
+//! handle to amortize shader compilation across pipelines within a session and
+//! across sessions when the cache is serialized to disk.
+//!
+//! Shared pipeline layouts (improvement #9): `createPipelineLayout` is public
+//! so the coordinator can pre-create layouts once and share them across
+//! pipelines that use the same descriptor set layout (e.g. text/SVG/image
+//! all share `textured_pipeline_layout`).
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
@@ -28,18 +37,14 @@ pub const BlendMode = enum {
 pub const PipelineConfig = struct {
     vert_spv: []align(4) const u8,
     frag_spv: []align(4) const u8,
-    descriptor_layout: vk.DescriptorSetLayout,
+    pipeline_layout: vk.PipelineLayout,
     blend_mode: BlendMode = .standard,
-};
-
-pub const PipelineResult = struct {
-    pipeline: vk.Pipeline,
-    layout: vk.PipelineLayout,
 };
 
 pub const PipelineError = error{
     ShaderModuleCreationFailed,
     PipelineLayoutCreationFailed,
+    PipelineCacheCreationFailed,
     PipelineCreationFailed,
 };
 
@@ -47,19 +52,78 @@ pub const PipelineError = error{
 // Public API
 // =============================================================================
 
-/// Create a complete graphics pipeline and its layout from a config.
+/// Create a `VkPipelineLayout` from a single descriptor set layout.
+///
+/// Exposed publicly so the coordinator can pre-create shared layouts
+/// (improvement #9: 4 layouts → 2 by sharing across text/SVG/image).
+/// Caller owns the returned handle and must destroy it via
+/// `vkDestroyPipelineLayout` when no longer needed.
+pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorSetLayout) PipelineError!vk.PipelineLayout {
+    std.debug.assert(device != null);
+    std.debug.assert(descriptor_layout != null);
+
+    const layouts = [_]vk.DescriptorSetLayout{descriptor_layout};
+    const layout_info = vk.PipelineLayoutCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pNext = null,
+        .flags = 0,
+        .setLayoutCount = 1,
+        .pSetLayouts = &layouts,
+        .pushConstantRangeCount = 0,
+        .pPushConstantRanges = null,
+    };
+
+    var layout: vk.PipelineLayout = null;
+    const result = vk.vkCreatePipelineLayout(device, &layout_info, null, &layout);
+    if (!vk.succeeded(result)) return PipelineError.PipelineLayoutCreationFailed;
+
+    std.debug.assert(layout != null);
+    return layout;
+}
+
+/// Create an empty `VkPipelineCache`.
+///
+/// If `initial_data` is provided (e.g. loaded from disk), the driver will
+/// attempt to use it. If the data is missing, corrupt, or from an incompatible
+/// driver, Vulkan silently ignores it and creates an empty cache — zero risk.
+pub fn createPipelineCache(
+    device: vk.Device,
+    initial_data: ?[]const u8,
+) PipelineError!vk.PipelineCache {
+    std.debug.assert(device != null);
+
+    const create_info = vk.PipelineCacheCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .pNext = null,
+        .flags = 0,
+        .initialDataSize = if (initial_data) |d| d.len else 0,
+        .pInitialData = if (initial_data) |d| d.ptr else null,
+    };
+
+    var cache: vk.PipelineCache = null;
+    const result = vk.vkCreatePipelineCache(device, &create_info, null, &cache);
+    if (!vk.succeeded(result)) return PipelineError.PipelineCacheCreationFailed;
+
+    std.debug.assert(cache != null);
+    return cache;
+}
+
+/// Create a complete graphics pipeline from a config and pre-created layout.
 ///
 /// One call replaces what was previously four 160-line copy-pasted functions.
-/// Caller owns both returned handles and must destroy them (via `destroyPipeline`
-/// or individually) when no longer needed.
+/// The caller provides both the pipeline layout (via `config.pipeline_layout`)
+/// and an optional pipeline cache. The caller owns the layout and cache;
+/// this function only creates and returns the `VkPipeline` handle.
 pub fn createGraphicsPipeline(
     device: vk.Device,
     render_pass: vk.RenderPass,
     sample_count: c_uint,
     config: PipelineConfig,
-) PipelineError!PipelineResult {
+    pipeline_cache: vk.PipelineCache,
+) PipelineError!vk.Pipeline {
     std.debug.assert(device != null);
     std.debug.assert(render_pass != null);
+    std.debug.assert(config.pipeline_layout != null);
     std.debug.assert(config.vert_spv.len > 0);
     std.debug.assert(config.frag_spv.len > 0);
 
@@ -81,15 +145,12 @@ pub fn createGraphicsPipeline(
     const dynamic_states = [_]c_uint{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
     const dynamic_state = dynamicState(&dynamic_states);
 
-    // Create pipeline layout (owns the handle on success)
-    const layout = try createPipelineLayout(device, config.descriptor_layout);
-    errdefer vk.vkDestroyPipelineLayout(device, layout, null);
-
-    // Create the pipeline itself
+    // Create the pipeline
     const pipeline = try createPipeline(
         device,
         render_pass,
-        layout,
+        config.pipeline_layout,
+        pipeline_cache,
         &stages,
         &vertex_input,
         &input_assembly,
@@ -100,14 +161,14 @@ pub fn createGraphicsPipeline(
         &dynamic_state,
     );
 
-    return .{ .pipeline = pipeline, .layout = layout };
+    return pipeline;
 }
 
-/// Destroy a pipeline and its associated layout. Safe to call with null handles.
-pub fn destroyPipeline(device: vk.Device, pipeline: vk.Pipeline, layout: vk.PipelineLayout) void {
+/// Destroy a pipeline handle. Safe to call with null.
+/// Does NOT destroy the pipeline layout — the caller owns that separately.
+pub fn destroyPipeline(device: vk.Device, pipeline: vk.Pipeline) void {
     std.debug.assert(device != null);
     if (pipeline) |p| vk.vkDestroyPipeline(device, p, null);
-    if (layout) |l| vk.vkDestroyPipelineLayout(device, l, null);
 }
 
 // =============================================================================
@@ -134,33 +195,11 @@ fn createShaderModule(device: vk.Device, code: []align(4) const u8) PipelineErro
     return module;
 }
 
-fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorSetLayout) PipelineError!vk.PipelineLayout {
-    std.debug.assert(device != null);
-    std.debug.assert(descriptor_layout != null);
-
-    const layouts = [_]vk.DescriptorSetLayout{descriptor_layout};
-    const layout_info = vk.PipelineLayoutCreateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .pNext = null,
-        .flags = 0,
-        .setLayoutCount = 1,
-        .pSetLayouts = &layouts,
-        .pushConstantRangeCount = 0,
-        .pPushConstantRanges = null,
-    };
-
-    var layout: vk.PipelineLayout = null;
-    const result = vk.vkCreatePipelineLayout(device, &layout_info, null, &layout);
-    if (!vk.succeeded(result)) return PipelineError.PipelineLayoutCreationFailed;
-
-    std.debug.assert(layout != null);
-    return layout;
-}
-
 fn createPipeline(
     device: vk.Device,
     render_pass: vk.RenderPass,
     layout: vk.PipelineLayout,
+    pipeline_cache: vk.PipelineCache,
     stages: *const [2]vk.PipelineShaderStageCreateInfo,
     vertex_input: *const vk.PipelineVertexInputStateCreateInfo,
     input_assembly: *const vk.PipelineInputAssemblyStateCreateInfo,
@@ -196,7 +235,8 @@ fn createPipeline(
     };
 
     var pipeline: vk.Pipeline = null;
-    const result = vk.vkCreateGraphicsPipelines(device, null, 1, &pipeline_info, null, &pipeline);
+    // pipeline_cache may be null — Vulkan handles this gracefully (no caching).
+    const result = vk.vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pipeline_info, null, &pipeline);
     if (!vk.succeeded(result)) return PipelineError.PipelineCreationFailed;
 
     std.debug.assert(pipeline != null);
