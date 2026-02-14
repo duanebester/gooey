@@ -303,12 +303,16 @@ fn renderPolygonsFill(
             const x0_f = active_edges.items[pair_idx].x;
             const x1_f = active_edges.items[pair_idx + 1].x;
 
-            // Expand bounds to include partial coverage pixels
-            const x_start: i32 = @max(0, @as(i32, @intFromFloat(@floor(x0_f))));
-            const x_end: i32 = @min(size, @as(i32, @intFromFloat(@ceil(x1_f))));
+            // Clamp bounds in float space first to avoid @intFromFloat panics
+            // on NaN/Inf/out-of-range values, then convert to integer.
+            const size_f: f32 = @floatFromInt(size);
+            const x_start_f = @max(@as(f32, 0.0), @floor(x0_f));
+            const x_end_f = @min(size_f, @ceil(x1_f));
 
-            if (x_start < x_end) {
-                for (@as(usize, @intCast(x_start))..@as(usize, @intCast(x_end))) |x| {
+            if (x_start_f < x_end_f) {
+                const x_start: usize = @intFromFloat(x_start_f);
+                const x_end: usize = @intFromFloat(x_end_f);
+                for (x_start..x_end) |x| {
                     const x_f: f32 = @floatFromInt(x);
 
                     // Calculate coverage: how much of pixel [x, x+1] is covered by [x0_f, x1_f]
@@ -353,6 +357,8 @@ fn renderPolygonsStroke(
     const size_u: u32 = @intCast(size);
     const half_width = stroke_width * 0.5;
 
+    const size_f: f32 = @floatFromInt(size);
+
     for (polygons.items) |poly| {
         const start = poly.start;
         const end = poly.end;
@@ -360,7 +366,13 @@ fn renderPolygonsStroke(
 
         const pts = points.items[start..end];
 
-        for (0..pts.len) |i| {
+        // For closed subpaths (explicit Z command), draw all N segments
+        // including the closing segment from last point back to first.
+        // For open subpaths (arcs, curves without Z), draw only N-1
+        // segments — do NOT connect the endpoints.
+        const segment_count: usize = if (poly.closed) pts.len else pts.len -| 1;
+
+        for (0..segment_count) |i| {
             const p0 = pts[i];
             const p1 = pts[(i + 1) % pts.len];
 
@@ -368,6 +380,12 @@ fn renderPolygonsStroke(
             const y0 = p0.y * scale;
             const x1 = p1.x * scale;
             const y1 = p1.y * scale;
+
+            // Skip lines with NaN/Inf coordinates or entirely outside the buffer
+            if (!std.math.isFinite(x0) or !std.math.isFinite(y0) or
+                !std.math.isFinite(x1) or !std.math.isFinite(y1)) continue;
+            if (@min(x0, x1) > size_f + half_width or @max(x0, x1) < -half_width) continue;
+            if (@min(y0, y1) > size_f + half_width or @max(y0, y1) < -half_width) continue;
 
             drawThickLine(buffer, size_u, x0, y0, x1, y1, half_width);
         }
@@ -396,13 +414,33 @@ fn drawThickLine(
 
     // Expand bounds by half_width + 1 for anti-aliasing
     const expand = half_width + 1.0;
-    const min_x = @max(0, @as(i32, @intFromFloat(@floor(@min(x0, x1) - expand))));
-    const max_x = @min(@as(i32, @intCast(size)), @as(i32, @intFromFloat(@ceil(@max(x0, x1) + expand))));
-    const min_y = @max(0, @as(i32, @intFromFloat(@floor(@min(y0, y1) - expand))));
-    const max_y = @min(@as(i32, @intCast(size)), @as(i32, @intFromFloat(@ceil(@max(y0, y1) + expand))));
+    const size_f: f32 = @floatFromInt(size);
 
-    for (@as(usize, @intCast(min_y))..@as(usize, @intCast(max_y))) |py_usize| {
-        for (@as(usize, @intCast(min_x))..@as(usize, @intCast(max_x))) |px_usize| {
+    // Clamp all four bounds to [0, size] using floats first.
+    // This prevents negative values from ever reaching @intFromFloat → usize,
+    // which was the source of the integer overflow crash.
+    const min_x_f = @max(@as(f32, 0.0), @floor(@min(x0, x1) - expand));
+    const max_x_f = @min(size_f, @ceil(@max(x0, x1) + expand));
+    const min_y_f = @max(@as(f32, 0.0), @floor(@min(y0, y1) - expand));
+    const max_y_f = @min(size_f, @ceil(@max(y0, y1) + expand));
+
+    // Early exit when bounding box is empty or any coordinate is NaN.
+    // Using negated comparisons so NaN (which fails all ordered comparisons)
+    // correctly triggers the early return.
+    if (!(min_x_f < max_x_f) or !(min_y_f < max_y_f)) return;
+
+    const min_x: usize = @intFromFloat(min_x_f);
+    const max_x: usize = @intFromFloat(max_x_f);
+    const min_y: usize = @intFromFloat(min_y_f);
+    const max_y: usize = @intFromFloat(max_y_f);
+
+    std.debug.assert(min_x < max_x);
+    std.debug.assert(min_y < max_y);
+    std.debug.assert(max_x <= size);
+    std.debug.assert(max_y <= size);
+
+    for (min_y..max_y) |py_usize| {
+        for (min_x..max_x) |px_usize| {
             const px: f32 = @as(f32, @floatFromInt(px_usize)) + 0.5;
             const py: f32 = @as(f32, @floatFromInt(py_usize)) + 0.5;
 

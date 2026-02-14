@@ -288,6 +288,47 @@ fn confirmDelete(self: *State, g: *Gooey, index: u32) void {
 
 The deferred command queue holds up to 32 commands and is flushed after each event cycle.
 
+## Fonts
+
+By default, Gooey uses the platform's system sans-serif font (e.g., DejaVu Sans on Linux, SF Pro on macOS, system-ui on web). You can set a custom font at app init or switch fonts at runtime.
+
+### App-Level Font
+
+Set `.font` in your app config to use any font installed on the system:
+
+```zig
+const App = gooey.App(AppState, &state, render, .{
+    .title = "My App",
+    .font = "Inter",
+    .font_size = 16.0,   // optional, defaults to 16.0
+});
+```
+
+Omitting `.font` uses the platform default. On Linux, any font discoverable by Fontconfig works — install fonts via your package manager (e.g., `sudo apt install fonts-inter`) or drop `.ttf`/`.otf` files into `~/.local/share/fonts/`.
+
+### Runtime Font Switching
+
+Change the font on the fly from any event handler:
+
+```zig
+fn onSettingsChanged(cx: *Cx) void {
+    const s = cx.state(AppState);
+    cx.setFont(s.font_name, s.font_size) catch {};
+}
+```
+
+This clears the glyph and shape caches and triggers a re-render automatically. All text in the UI updates immediately.
+
+### Platform Details
+
+| Platform | Font Discovery | System Sans-Serif |
+| -------- | -------------- | ----------------- |
+| Linux    | Fontconfig     | `sans-serif` (typically DejaVu Sans or Noto Sans) |
+| macOS    | CoreText       | SF Pro |
+| Web      | CSS font stack | `system-ui, -apple-system, sans-serif` |
+
+> **Note:** Gooey currently uses a single global font. Per-component font families (e.g., mixing a serif body font with a monospace code font) are not yet supported — components expose `font_size` but not `font_family`.
+
 ## Components
 
 Gooey includes ready-to-use components:

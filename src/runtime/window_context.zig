@@ -25,6 +25,7 @@ const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .m
 // Core imports
 const gooey_mod = @import("../context/gooey.zig");
 const Gooey = gooey_mod.Gooey;
+const FontConfig = gooey_mod.FontConfig;
 const cx_mod = @import("../cx.zig");
 const Cx = cx_mod.Cx;
 const ui_mod = @import("../ui/mod.zig");
@@ -115,6 +116,7 @@ pub fn WindowContext(comptime State: type) type {
             window: *Window,
             state: *State,
             render_fn: *const fn (*Cx) void,
+            font_config: FontConfig,
         ) !*Self {
             // Assertions: validate inputs (pointers must not be null-equivalent)
             std.debug.assert(@intFromPtr(state) != 0);
@@ -127,7 +129,7 @@ pub fn WindowContext(comptime State: type) type {
             // Initialize Gooey with owned resources (single-window mode)
             const gooey = try allocator.create(Gooey);
             errdefer allocator.destroy(gooey);
-            gooey.* = try Gooey.initOwned(allocator, window);
+            gooey.* = try Gooey.initOwned(allocator, window, font_config);
             errdefer gooey.deinit();
 
             // Initialize UI Builder

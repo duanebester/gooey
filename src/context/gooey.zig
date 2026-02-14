@@ -130,6 +130,20 @@ const BlurHandlerEntry = struct {
     handler: HandlerRef,
 };
 
+/// Font configuration for app initialization.
+/// Pass to `initOwned` / `initOwnedPtr` to control the default font.
+pub const FontConfig = struct {
+    /// Font family name (e.g., "Inter", "JetBrains Mono").
+    /// When null, uses the platform's default sans-serif font.
+    font_name: ?[]const u8 = null,
+
+    /// Font size in points.
+    font_size: f32 = 16.0,
+
+    /// Default config — system sans-serif at 16pt.
+    pub const default = FontConfig{};
+};
+
 /// Gooey - unified UI context
 pub const Gooey = struct {
     allocator: std.mem.Allocator,
@@ -367,7 +381,7 @@ pub const Gooey = struct {
     }
 
     /// Initialize Gooey creating and owning all resources
-    pub fn initOwned(allocator: std.mem.Allocator, window: *Window) !Self {
+    pub fn initOwned(allocator: std.mem.Allocator, window: *Window, font_config: FontConfig) !Self {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -399,8 +413,12 @@ pub const Gooey = struct {
             allocator.destroy(text_system);
         }
 
-        // Load default font - use system monospace for proper SF Mono behavior
-        try text_system.loadSystemFont(.sans_serif, 16.0);
+        // Load font from config (named font or system default)
+        if (font_config.font_name) |name| {
+            try text_system.loadFont(name, font_config.font_size);
+        } else {
+            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
+        }
 
         // Set up text measurement callback
         layout_engine.setMeasureTextFn(measureTextCallback, text_system);
@@ -489,7 +507,7 @@ pub const Gooey = struct {
     /// ```
     /// Marked noinline to prevent stack accumulation in WASM builds.
     /// Without this, the compiler inlines all sub-functions creating a 2MB+ stack frame.
-    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *Window) !void {
+    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *Window, font_config: FontConfig) !void {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -521,8 +539,12 @@ pub const Gooey = struct {
             allocator.destroy(text_system);
         }
 
-        // Load default font - use system monospace for proper SF Mono behavior
-        try text_system.loadSystemFont(.sans_serif, 16.0);
+        // Load font from config (named font or system default)
+        if (font_config.font_name) |name| {
+            try text_system.loadFont(name, font_config.font_size);
+        } else {
+            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
+        }
 
         // Set up text measurement callback
         layout_engine.setMeasureTextFn(measureTextCallback, text_system);
@@ -1538,6 +1560,16 @@ pub const Gooey = struct {
     // =========================================================================
     // Render Control
     // =========================================================================
+
+    /// Change the font at runtime. Clears glyph and shape caches.
+    /// Triggers a re-render so the new font takes effect immediately.
+    pub fn setFont(self: *Self, name: []const u8, size: f32) !void {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(size > 0 and size < 1000);
+
+        try self.text_system.loadFont(name, size);
+        self.requestRender();
+    }
 
     /// Mark that a re-render is needed
     pub fn requestRender(self: *Self) void {

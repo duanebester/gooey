@@ -737,8 +737,15 @@ pub const TextSystem = struct {
                 @intCast(text.len),
             );
         } else {
-            const face = try self.getFontFace();
-            return shaper_mod.measureSimple(face, text);
+            // Use the complex shaper for measurement so kerning/GPOS features
+            // match what HarfBuzz (Linux) or CoreText (macOS) produce at render
+            // time. measureSimple sums raw glyph advances without kerning,
+            // causing measured_width > rendered_width — which shifts centered
+            // text to the left by an amount that grows with string length.
+            if (text.len == 0) return 0;
+            var shaped = try self.shapeTextComplex(text, null);
+            defer shaped.deinit(self.allocator);
+            return shaped.width;
         }
     }
 
@@ -756,10 +763,11 @@ pub const TextSystem = struct {
         return base_width;
     }
 
-    /// Extended text measurement with wrapping support
+    /// Extended text measurement with wrapping support.
+    /// Uses the complex shaper (HarfBuzz/CoreText) so kerning matches rendering.
     pub fn measureTextEx(self: *Self, text: []const u8, max_width: ?f32) !TextMeasurement {
         const face = try self.getFontFace();
-        var run = try shaper_mod.shapeSimple(self.allocator, face, text);
+        var run = try self.shapeTextComplex(text, null);
         defer run.deinit(self.allocator);
 
         if (max_width == null or run.width <= max_width.?) {

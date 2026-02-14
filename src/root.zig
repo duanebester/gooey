@@ -310,6 +310,9 @@ pub const MAX_WINDOWS = runtime.MAX_WINDOWS;
 /// Configuration for runCx
 pub const CxConfig = app.CxConfig;
 
+/// Font configuration for app initialization
+pub const FontConfig = context.FontConfig;
+
 // Custom shaders
 pub const CustomShader = core.CustomShader;
 

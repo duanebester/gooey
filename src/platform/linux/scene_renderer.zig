@@ -20,10 +20,10 @@ const ImageInstance = @import("../../scene/image_instance.zig").ImageInstance;
 pub const BatchIterator = batch_iter.BatchIterator;
 pub const PrimitiveBatch = batch_iter.PrimitiveBatch;
 
-/// GPU types from vk_renderer
-const GpuGlyph = @import("vk_renderer.zig").GpuGlyph;
-const GpuSvg = @import("vk_renderer.zig").GpuSvg;
-const GpuImage = @import("vk_renderer.zig").GpuImage;
+/// GPU types from vk_types (canonical source)
+const GpuGlyph = @import("vk_types.zig").GpuGlyph;
+const GpuSvg = @import("vk_types.zig").GpuSvg;
+const GpuImage = @import("vk_types.zig").GpuImage;
 
 /// Maximum batch sizes (must match vk_renderer limits)
 pub const MAX_PRIMITIVES_PER_BATCH = 4096;
