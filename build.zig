@@ -318,6 +318,7 @@ pub fn build(b: *std.Build) void {
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "file-dialog", "src/examples/linux_file_dialog.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "drag-drop", "src/examples/drag_drop.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "lucide-demo", "src/examples/lucide_demo.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "animation", "src/examples/animation.zig");
 
         // =====================================================================
         // Tests
