@@ -171,7 +171,7 @@ pub const TextPipeline = struct {
             return error.ShaderCompileFailed;
         }
         const library = objc.Object.fromId(library_ptr);
-        defer library.msgSend(void, "release", .{});
+        defer library.release();
 
         // Get shader functions
         const vert_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"text_vertex"});
@@ -186,15 +186,15 @@ pub const TextPipeline = struct {
         }
         const vert_fn = objc.Object.fromId(vert_fn_ptr);
         const frag_fn = objc.Object.fromId(frag_fn_ptr);
-        defer vert_fn.msgSend(void, "release", .{});
-        defer frag_fn.msgSend(void, "release", .{});
+        defer vert_fn.release();
+        defer frag_fn.release();
 
         // Create pipeline descriptor
         const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
             return error.ClassNotFound;
         const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "init", .{});
-        defer desc.msgSend(void, "release", .{});
+        defer desc.release();
 
         desc.msgSend(void, "setVertexFunction:", .{vert_fn.value});
         desc.msgSend(void, "setFragmentFunction:", .{frag_fn.value});
@@ -255,7 +255,7 @@ pub const TextPipeline = struct {
             return error.ClassNotFound;
         const sampler_desc = MTLSamplerDescriptor.msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "init", .{});
-        defer sampler_desc.msgSend(void, "release", .{});
+        defer sampler_desc.release();
 
         sampler_desc.msgSend(void, "setMinFilter:", .{@as(c_ulong, 1)}); // linear
         sampler_desc.msgSend(void, "setMagFilter:", .{@as(c_ulong, 1)}); // linear
@@ -279,13 +279,13 @@ pub const TextPipeline = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.pipeline_state.msgSend(void, "release", .{});
-        self.unit_vertex_buffer.msgSend(void, "release", .{});
+        self.pipeline_state.release();
+        self.unit_vertex_buffer.release();
         for (self.instance_buffers) |buf| {
-            buf.msgSend(void, "release", .{});
+            buf.release();
         }
-        self.sampler_state.msgSend(void, "release", .{});
-        if (self.atlas_texture) |tex| tex.msgSend(void, "release", .{});
+        self.sampler_state.release();
+        if (self.atlas_texture) |tex| tex.release();
         self.* = undefined;
     }
 
@@ -303,7 +303,7 @@ pub const TextPipeline = struct {
 
         // Release old texture
         if (self.atlas_texture) |tex| {
-            tex.msgSend(void, "release", .{});
+            tex.release();
             self.atlas_texture = null;
         }
 
@@ -312,7 +312,7 @@ pub const TextPipeline = struct {
             return error.ClassNotFound;
         const tex_desc = MTLTextureDescriptor.msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "init", .{});
-        defer tex_desc.msgSend(void, "release", .{});
+        defer tex_desc.release();
 
         tex_desc.msgSend(void, "setTextureType:", .{@intFromEnum(mtl.MTLTextureType.type_2d)});
         tex_desc.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.r8unorm)});
@@ -428,7 +428,7 @@ pub const TextPipeline = struct {
             .{ @as(c_ulong, new_size), @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)) },
         ) orelse return error.BufferCreationFailed;
 
-        self.instance_buffers[idx].msgSend(void, "release", .{});
+        self.instance_buffers[idx].release();
         self.instance_buffers[idx] = objc.Object.fromId(new_buffer_ptr);
         self.instance_capacities[idx] = new_capacity;
     }

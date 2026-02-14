@@ -203,7 +203,7 @@ fn createNSString(str: []const u8) ?objc.Object {
     const ns_string_id: objc.c.id = NSString.msgSend(objc.c.id, "alloc", .{});
     if (ns_string_id == null) return null;
 
-    const ns_string = objc.Object{ .value = ns_string_id };
+    const ns_string = objc.Object.fromId(ns_string_id);
     const initialized_id: objc.c.id = ns_string.msgSend(
         objc.c.id,
         "initWithBytes:length:encoding:",
@@ -215,7 +215,7 @@ fn createNSString(str: []const u8) ?objc.Object {
     );
     if (initialized_id == null) return null;
 
-    return objc.Object{ .value = initialized_id };
+    return objc.Object.fromId(initialized_id);
 }
 
 /// Create NSURL from file path

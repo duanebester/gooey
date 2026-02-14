@@ -118,11 +118,9 @@ pub const MacPlatform = struct {
     /// This blocks until quit() is called or the app terminates.
     /// Rendering happens on the DisplayLink thread, not here.
     pub fn run(self: *Self) void {
-        // Create autorelease pool
-        const NSAutoreleasePoolClass = objc.getClass("NSAutoreleasePool") orelse return;
-        const pool = NSAutoreleasePoolClass.msgSend(objc.Object, "alloc", .{});
-        const pool_init = pool.msgSend(objc.Object, "init", .{});
-        defer pool_init.msgSend(void, "drain", .{});
+        // Create autorelease pool (modern runtime API: objc_autoreleasePoolPush/Pop)
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
 
         self.running = true;
 
@@ -135,9 +133,8 @@ pub const MacPlatform = struct {
         // Run the event loop - BLOCKING on events
         while (self.running) {
             // Create an inner autorelease pool for each iteration
-            const inner_pool = NSAutoreleasePoolClass.msgSend(objc.Object, "alloc", .{});
-            const inner_pool_init = inner_pool.msgSend(objc.Object, "init", .{});
-            defer inner_pool_init.msgSend(void, "drain", .{});
+            const inner_pool = objc.AutoreleasePool.init();
+            defer inner_pool.deinit();
 
             // Block waiting for events (CPU efficient!)
             const event = self.app.msgSend(

@@ -249,7 +249,7 @@ pub const MacBridge = struct {
         // Collect all top-level elements (parent == null in tree)
         const root_children_id: objc.c.id = NSMutableArray.msgSend(objc.c.id, "array", .{});
         if (root_children_id == null) return;
-        const root_children = objc.Object{ .value = root_children_id };
+        const root_children = objc.Object.fromId(root_children_id);
 
         // Iterate through all elements and add top-level ones to root's children
         var i: u16 = 0;
@@ -291,7 +291,7 @@ pub const MacBridge = struct {
 
         const children_id: objc.c.id = NSMutableArray.msgSend(objc.c.id, "array", .{});
         if (children_id == null) return;
-        const children = objc.Object{ .value = children_id };
+        const children = objc.Object.fromId(children_id);
 
         // Walk through children via linked list
         var child_idx = elem.first_child;
@@ -474,10 +474,10 @@ fn createNSAccessibilityElement() ?objc.Object {
     // Standard Objective-C pattern: [[NSAccessibilityElement alloc] init]
     const alloc_id: objc.c.id = cls.msgSend(objc.c.id, "alloc", .{});
     if (alloc_id == null) return null;
-    const alloc_obj = objc.Object{ .value = alloc_id };
+    const alloc_obj = objc.Object.fromId(alloc_id);
     const elem_id: objc.c.id = alloc_obj.msgSend(objc.c.id, "init", .{});
     if (elem_id == null) return null;
-    return objc.Object{ .value = elem_id };
+    return objc.Object.fromId(elem_id);
 }
 
 fn setAccessibilityRole(elem: objc.Object, role: types.Role) void {
@@ -679,7 +679,7 @@ fn createNSString(str: []const u8) ?objc.Object {
         .{str.ptr},
     );
     if (ns_id == null) return null;
-    return objc.Object{ .value = ns_id };
+    return objc.Object.fromId(ns_id);
 }
 
 fn createNSStringFromSlice(str: []const u8) ?objc.Object {
@@ -689,7 +689,7 @@ fn createNSStringFromSlice(str: []const u8) ?objc.Object {
     const alloc_id: objc.c.id = NSString.msgSend(objc.c.id, "alloc", .{});
     if (alloc_id == null) return null;
 
-    const ns = objc.Object{ .value = alloc_id };
+    const ns = objc.Object.fromId(alloc_id);
     const init_id: objc.c.id = ns.msgSend(
         objc.c.id,
         "initWithBytes:length:encoding:",
@@ -697,12 +697,12 @@ fn createNSStringFromSlice(str: []const u8) ?objc.Object {
     );
     if (init_id == null) return null;
 
-    return objc.Object{ .value = init_id };
+    return objc.Object.fromId(init_id);
 }
 
 fn releaseNSObject(obj: objc.Object) void {
     if (obj.value != null) {
-        obj.msgSend(void, "release", .{});
+        obj.release();
     }
 }
 

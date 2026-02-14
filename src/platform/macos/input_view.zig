@@ -85,7 +85,7 @@ pub fn create(frame: NSRect, window: *Window) !objc.Object {
         .msgSend(objc.Object, "initWithFrame:", .{frame});
 
     // Store the Zig window pointer
-    const window_obj = objc.Object{ .value = @ptrCast(window) };
+    const window_obj = objc.Object.fromId(@as(objc.c.id, @ptrCast(window)));
     view.setInstanceVariable("_gooeyWindow", window_obj);
 
     return view;
@@ -96,7 +96,7 @@ pub fn create(frame: NSRect, window: *Window) !objc.Object {
 // =============================================================================
 
 inline fn getWindow(self: objc.c.id) ?*Window {
-    const view = objc.Object{ .value = self };
+    const view = objc.Object.fromId(self);
     const ptr = view.getInstanceVariable("_gooeyWindow");
     return @ptrCast(@alignCast(ptr.value));
 }
@@ -112,8 +112,8 @@ fn parseModifiers(flags: c_ulong) input.Modifiers {
 }
 
 fn parseMouseEvent(self: objc.c.id, event_id: objc.c.id, comptime kind: std.meta.Tag(input.InputEvent)) input.InputEvent {
-    const view = objc.Object{ .value = self };
-    const event = objc.Object{ .value = event_id };
+    const view = objc.Object.fromId(self);
+    const event = objc.Object.fromId(event_id);
 
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
     const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
@@ -136,8 +136,8 @@ fn parseMouseEvent(self: objc.c.id, event_id: objc.c.id, comptime kind: std.meta
 }
 
 fn parseEnterExitEvent(self_id: objc.c.id, event_id: objc.c.id) input.MouseEvent {
-    const view = objc.Object{ .value = self_id };
-    const event = objc.Object{ .value = event_id };
+    const view = objc.Object.fromId(self_id);
+    const event = objc.Object.fromId(event_id);
 
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
     const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
@@ -153,7 +153,7 @@ fn parseEnterExitEvent(self_id: objc.c.id, event_id: objc.c.id) input.MouseEvent
 
 /// Extract UTF-8 string from NSString or NSAttributedString
 fn extractString(text_id: objc.c.id) ?[]const u8 {
-    const text = objc.Object{ .value = text_id };
+    const text = objc.Object.fromId(text_id);
 
     // Check if it's an NSAttributedString
     const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
@@ -226,8 +226,8 @@ fn rightMouseUp(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) v
 
 fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
-    const view = objc.Object{ .value = self };
-    const event = objc.Object{ .value = event_id };
+    const view = objc.Object.fromId(self);
+    const event = objc.Object.fromId(event_id);
 
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
     const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
@@ -249,7 +249,7 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
 
 fn keyDown(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
-    const view = objc.Object{ .value = self };
+    const view = objc.Object.fromId(self);
 
     // Always send key_down event first (for shortcuts, navigation, etc.)
     if (parseKeyEvent(event_id)) |key_event| {
@@ -273,7 +273,7 @@ fn keyDown(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) voi
 
 fn keyUp(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
-    const event = objc.Object{ .value = event_id };
+    const event = objc.Object.fromId(event_id);
 
     const key_code = event.msgSend(u16, "keyCode", .{});
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
@@ -292,13 +292,13 @@ fn keyUp(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void 
 
 fn flagsChanged(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
-    const ns_event = objc.Object{ .value = event };
+    const ns_event = objc.Object.fromId(event);
     const modifier_flags = ns_event.msgSend(c_ulong, "modifierFlags", .{});
     _ = window.handleInput(.{ .modifiers_changed = parseModifiers(modifier_flags) });
 }
 
 fn parseKeyEvent(event_id: objc.c.id) ?input.KeyEvent {
-    const event = objc.Object{ .value = event_id };
+    const event = objc.Object.fromId(event_id);
 
     const key_code = event.msgSend(u16, "keyCode", .{});
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
@@ -321,7 +321,7 @@ fn getCharacters(event: objc.Object) ?[]const u8 {
     const ns_string_id: objc.c.id = event.msgSend(objc.c.id, "characters", .{});
     if (ns_string_id == null) return null;
 
-    const ns_string = objc.Object{ .value = ns_string_id };
+    const ns_string = objc.Object.fromId(ns_string_id);
     // Check length first - UTF8String on empty/special strings can be problematic
     const length: c_ulong = ns_string.msgSend(c_ulong, "length", .{});
     if (length == 0) return null;
@@ -337,7 +337,7 @@ fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
     const ns_string_id: objc.c.id = event.msgSend(objc.c.id, "charactersIgnoringModifiers", .{});
     if (ns_string_id == null) return null;
 
-    const ns_string = objc.Object{ .value = ns_string_id };
+    const ns_string = objc.Object.fromId(ns_string_id);
     // Check length first - UTF8String on empty/special strings can be problematic
     const length: c_ulong = ns_string.msgSend(c_ulong, "length", .{});
     if (length == 0) return null;
@@ -373,7 +373,7 @@ fn selectedRange(_: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
 
 fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) bool {
     const window = getWindow(self) orelse return false;
-    const event = objc.Object{ .value = event_id };
+    const event = objc.Object.fromId(event_id);
 
     const key_code = event.msgSend(u16, "keyCode", .{});
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
@@ -469,7 +469,7 @@ fn firstRectForCharacterRange(
     _: NSRange, // range
     _: *NSRange, // actual_range
 ) callconv(.c) NSRect {
-    const view = objc.Object{ .value = self };
+    const view = objc.Object.fromId(self);
     const window = getWindow(self) orelse {
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
     };

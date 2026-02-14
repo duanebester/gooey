@@ -198,10 +198,10 @@ pub const PointCloudPipeline = struct {
 
     pub fn deinit(self: *Self) void {
         for (0..FRAME_COUNT) |i| {
-            self.vertex_buffers[i].msgSend(void, "release", .{});
-            self.index_buffers[i].msgSend(void, "release", .{});
+            self.vertex_buffers[i].release();
+            self.index_buffers[i].release();
         }
-        self.pipeline_state.msgSend(void, "release", .{});
+        self.pipeline_state.release();
     }
 
     /// Advance to next frame (call at start of frame)
@@ -358,14 +358,14 @@ pub const PointCloudPipeline = struct {
 
     fn growVertexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
         const new_capacity = @max(min_capacity, self.vertex_capacities[frame] * 2);
-        self.vertex_buffers[frame].msgSend(void, "release", .{});
+        self.vertex_buffers[frame].release();
         self.vertex_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(PointVertex));
         self.vertex_capacities[frame] = new_capacity;
     }
 
     fn growIndexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
         const new_capacity = @max(min_capacity, self.index_capacities[frame] * 2);
-        self.index_buffers[frame].msgSend(void, "release", .{});
+        self.index_buffers[frame].release();
         self.index_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(u32));
         self.index_capacities[frame] = new_capacity;
     }
@@ -401,7 +401,7 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
     }
 
     const library = objc.Object.fromId(library_ptr);
-    defer library.msgSend(void, "release", .{});
+    defer library.release();
 
     const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"point_cloud_vertex"});
     const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"point_cloud_fragment"});
@@ -415,14 +415,14 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     const vertex_fn = objc.Object.fromId(vertex_fn_ptr);
     const fragment_fn = objc.Object.fromId(fragment_fn_ptr);
-    defer vertex_fn.msgSend(void, "release", .{});
-    defer fragment_fn.msgSend(void, "release", .{});
+    defer vertex_fn.release();
+    defer fragment_fn.release();
 
     const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
         return error.ClassNotFound;
     const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "init", .{});
-    defer desc.msgSend(void, "release", .{});
+    defer desc.release();
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});

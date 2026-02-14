@@ -494,13 +494,13 @@ pub const PathPipeline = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.pipeline_state.msgSend(void, "release", .{});
-        self.solid_pipeline_state.msgSend(void, "release", .{});
-        for (&self.vertex_buffers) |buf| buf.msgSend(void, "release", .{});
-        for (&self.index_buffers) |buf| buf.msgSend(void, "release", .{});
-        for (&self.gradient_buffers) |buf| buf.msgSend(void, "release", .{});
-        for (&self.solid_vertex_buffers) |buf| buf.msgSend(void, "release", .{});
-        for (&self.solid_index_buffers) |buf| buf.msgSend(void, "release", .{});
+        self.pipeline_state.release();
+        self.solid_pipeline_state.release();
+        for (&self.vertex_buffers) |buf| buf.release();
+        for (&self.index_buffers) |buf| buf.release();
+        for (&self.gradient_buffers) |buf| buf.release();
+        for (&self.solid_vertex_buffers) |buf| buf.release();
+        for (&self.solid_index_buffers) |buf| buf.release();
     }
 
     /// Advance to next frame (call at frame start)
@@ -1247,7 +1247,7 @@ pub const PathPipeline = struct {
             @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
         }) orelse return error.BufferCreationFailed;
 
-        self.vertex_buffers[idx].msgSend(void, "release", .{});
+        self.vertex_buffers[idx].release();
         self.vertex_buffers[idx] = objc.Object.fromId(new_ptr);
         self.vertex_capacities[idx] = new_capacity;
     }
@@ -1261,7 +1261,7 @@ pub const PathPipeline = struct {
             @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
         }) orelse return error.BufferCreationFailed;
 
-        self.index_buffers[idx].msgSend(void, "release", .{});
+        self.index_buffers[idx].release();
         self.index_buffers[idx] = objc.Object.fromId(new_ptr);
         self.index_capacities[idx] = new_capacity;
     }
@@ -1278,19 +1278,19 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
     if (library_ptr == null) return error.ShaderCompilationFailed;
 
     const library = objc.Object.fromId(library_ptr);
-    defer library.msgSend(void, "release", .{});
+    defer library.release();
 
     const vert_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"path_vertex"});
     const frag_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"path_fragment"});
 
     const vert_fn = objc.Object.fromId(library.msgSend(?*anyopaque, "newFunctionWithName:", .{vert_name.value}) orelse return error.ShaderFunctionNotFound);
     const frag_fn = objc.Object.fromId(library.msgSend(?*anyopaque, "newFunctionWithName:", .{frag_name.value}) orelse return error.ShaderFunctionNotFound);
-    defer vert_fn.msgSend(void, "release", .{});
-    defer frag_fn.msgSend(void, "release", .{});
+    defer vert_fn.release();
+    defer frag_fn.release();
 
     const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse return error.ClassNotFound;
     const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
-    defer desc.msgSend(void, "release", .{});
+    defer desc.release();
 
     desc.msgSend(void, "setVertexFunction:", .{vert_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{frag_fn.value});
@@ -1325,19 +1325,19 @@ fn createSolidPipeline(device: objc.Object, sample_count: u32) !objc.Object {
     if (library_ptr == null) return error.ShaderCompilationFailed;
 
     const library = objc.Object.fromId(library_ptr);
-    defer library.msgSend(void, "release", .{});
+    defer library.release();
 
     const vert_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"solid_path_vertex"});
     const frag_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"solid_path_fragment"});
 
     const vert_fn = objc.Object.fromId(library.msgSend(?*anyopaque, "newFunctionWithName:", .{vert_name.value}) orelse return error.ShaderFunctionNotFound);
     const frag_fn = objc.Object.fromId(library.msgSend(?*anyopaque, "newFunctionWithName:", .{frag_name.value}) orelse return error.ShaderFunctionNotFound);
-    defer vert_fn.msgSend(void, "release", .{});
-    defer frag_fn.msgSend(void, "release", .{});
+    defer vert_fn.release();
+    defer frag_fn.release();
 
     const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse return error.ClassNotFound;
     const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
-    defer desc.msgSend(void, "release", .{});
+    defer desc.release();
 
     desc.msgSend(void, "setVertexFunction:", .{vert_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{frag_fn.value});

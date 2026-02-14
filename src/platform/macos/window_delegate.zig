@@ -64,7 +64,7 @@ pub fn create(window: *Window) !objc.Object {
 
     // Store the Zig window pointer in the delegate's ivar
     // Wrap the raw pointer as an objc.Object (it's just stored as an id)
-    const window_obj = objc.Object{ .value = @ptrCast(window) };
+    const window_obj = objc.Object.fromId(@as(objc.c.id, @ptrCast(window)));
     delegate.setInstanceVariable("_gooeyWindow", window_obj);
 
     return delegate;
@@ -72,7 +72,7 @@ pub fn create(window: *Window) !objc.Object {
 
 /// Get the Zig Window from a delegate instance
 inline fn getWindow(self: objc.c.id) ?*Window {
-    const delegate = objc.Object{ .value = self };
+    const delegate = objc.Object.fromId(self);
     const ptr = delegate.getInstanceVariable("_gooeyWindow");
     return @ptrCast(@alignCast(ptr.value));
 }

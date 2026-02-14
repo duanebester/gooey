@@ -452,6 +452,7 @@ pub const Window = struct {
     /// Close this window programmatically.
     ///
     /// Triggers the close callback if set, allowing it to cancel.
+    /// If close proceeds, signals the platform event loop to stop.
     pub fn close(self: *Self) void {
         // Call close callback first to allow cancellation
         if (self.on_close) |callback| {
@@ -459,8 +460,9 @@ pub const Window = struct {
                 return; // User prevented close
             }
         }
-        // Mark as closed - platform event loop will clean up
+        // Mark as closed and signal platform to stop event loop
         self.closed = true;
+        self.platform.quit();
     }
 
     pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {

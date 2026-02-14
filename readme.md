@@ -188,14 +188,14 @@ fn render(cx: *Cx) void {
 
 ## Handler Types
 
-| Method             | Signature                      | Use Case                           |
-| ------------------ | ------------------------------ | ---------------------------------- |
-| `cx.update()`      | `fn(*State) void`              | Pure state mutations               |
-| `cx.updateWith()`  | `fn(*State, Arg) void`         | Mutations with argument            |
-| `cx.command()`     | `fn(*State, *Gooey) void`      | Framework access (focus, entities) |
-| `cx.commandWith()` | `fn(*State, *Gooey, Arg) void` | Framework access with argument     |
-| `cx.defer()`       | `fn(*State, *Gooey) void`      | Run after current event completes  |
-| `cx.deferWith()`   | `fn(*State, *Gooey, Arg) void` | Deferred with argument             |
+| Method             | Signature                      | Use Case                                 |
+| ------------------ | ------------------------------ | ---------------------------------------- |
+| `cx.update()`      | `fn(*State) void`              | Pure state mutations                     |
+| `cx.updateWith()`  | `fn(*State, Arg) void`         | Mutations with argument                  |
+| `cx.command()`     | `fn(*State, *Gooey) void`      | Framework access (focus, quit, entities) |
+| `cx.commandWith()` | `fn(*State, *Gooey, Arg) void` | Framework access with argument           |
+| `cx.defer()`       | `fn(*State, *Gooey) void`      | Run after current event completes        |
+| `cx.deferWith()`   | `fn(*State, *Gooey, Arg) void` | Deferred with argument                   |
 
 > **Note:** The state type is passed explicitly: `cx.update(AppState, AppState.increment)`
 
@@ -321,11 +321,11 @@ This clears the glyph and shape caches and triggers a re-render automatically. A
 
 ### Platform Details
 
-| Platform | Font Discovery | System Sans-Serif |
-| -------- | -------------- | ----------------- |
+| Platform | Font Discovery | System Sans-Serif                                 |
+| -------- | -------------- | ------------------------------------------------- |
 | Linux    | Fontconfig     | `sans-serif` (typically DejaVu Sans or Noto Sans) |
-| macOS    | CoreText       | SF Pro |
-| Web      | CSS font stack | `system-ui, -apple-system, sans-serif` |
+| macOS    | CoreText       | SF Pro                                            |
+| Web      | CSS font stack | `system-ui, -apple-system, sans-serif`            |
 
 > **Note:** Gooey currently uses a single global font. Per-component font families (e.g., mixing a serif body font with a monospace code font) are not yet supported — components expose `font_size` but not `font_family`.
 
@@ -1100,6 +1100,50 @@ fn render(cx: *Cx) void {
         // Scoped context
         ui.keyContext("Editor"),
         ui.onAction(Save, doSave),
+    }));
+}
+```
+
+### Quitting the App
+
+Use `g.quit()` from a `cx.command()` handler to quit portably across macOS, Linux, and WASM (no-op).
+
+Both `ui.onActionHandler` and `Button.on_click_handler` accept a `HandlerRef`, so the same `cx.command()` handler works for both the keybinding and the button:
+
+```zig
+const QuitApp = struct {};
+
+const AppState = struct {
+    initialized: bool = false,
+
+    fn quitApp(_: *AppState, g: *gooey.Gooey) void {
+        g.quit();
+    }
+};
+
+fn setupKeymap(cx: *Cx) void {
+    const s = cx.state(AppState);
+    if (s.initialized) return;
+    s.initialized = true;
+
+    cx.gooey().keymap.bind(QuitApp, "cmd-q", null);
+}
+
+fn render(cx: *Cx) void {
+    setupKeymap(cx);
+
+    const quit_handler = cx.command(AppState, AppState.quitApp);
+
+    cx.render(ui.box(.{ .padding = .{ .all = 24 }, .gap = 16 }, .{
+        // cmd+q triggers quitApp via the action system
+        ui.onActionHandler(QuitApp, quit_handler),
+
+        // Button triggers the same handler on click
+        Button{
+            .label = "Quit",
+            .variant = .danger,
+            .on_click_handler = quit_handler,
+        },
     }));
 }
 ```

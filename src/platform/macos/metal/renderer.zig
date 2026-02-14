@@ -140,9 +140,9 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.msaa_texture) |tex| tex.msgSend(void, "release", .{});
-        if (self.unified_pipeline_state) |ps| ps.msgSend(void, "release", .{});
-        if (self.quad_unit_vertex_buffer) |vb| vb.msgSend(void, "release", .{});
+        if (self.msaa_texture) |tex| tex.release();
+        if (self.unified_pipeline_state) |ps| ps.release();
+        if (self.quad_unit_vertex_buffer) |vb| vb.release();
         if (self.text_pipeline_state) |*tp| tp.deinit();
         if (self.svg_pipeline_state) |*sp| sp.deinit();
         if (self.image_pipeline_state) |*ip| ip.deinit();
@@ -151,8 +151,8 @@ pub const Renderer = struct {
         if (self.point_cloud_pipeline_state) |*pcp| pcp.deinit();
         if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.deinit();
         if (self.post_process_state) |*pp| pp.deinit();
-        self.command_queue.msgSend(void, "release", .{});
-        self.device.msgSend(void, "release", .{});
+        self.command_queue.release();
+        self.device.release();
     }
 
     pub fn clear(self: *Self, color: geometry.Color) void {
@@ -243,7 +243,7 @@ pub const Renderer = struct {
             .height = size.height * scale_factor,
         }});
 
-        if (self.msaa_texture) |tex| tex.msgSend(void, "release", .{});
+        if (self.msaa_texture) |tex| tex.release();
         self.msaa_texture = pipelines.createMSAATexture(
             self.device,
             size.width,

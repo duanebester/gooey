@@ -1520,6 +1520,44 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
+    // Application Lifecycle
+    // =========================================================================
+
+    /// Quit the application.
+    ///
+    /// Portable across all platforms:
+    /// - macOS: calls NSApp terminate:
+    /// - Linux: signals the platform event loop to stop
+    /// - WASM: no-op (browser tabs can't be closed programmatically)
+    ///
+    /// Use from a `command` handler:
+    /// ```zig
+    /// fn quitApp(_: *AppState, g: *Gooey) void {
+    ///     g.quit();
+    /// }
+    /// // In render:
+    /// Button{ .on_click_handler = cx.command(AppState, AppState.quitApp) }
+    /// ```
+    pub fn quit(self: *Self) void {
+        if (comptime platform.is_wasm) {
+            // No-op on web - can't quit browser
+        } else if (comptime platform.is_linux) {
+            if (self.window) |w| {
+                w.closed = true;
+                w.platform.quit();
+            } else {
+                std.process.exit(0);
+            }
+        } else {
+            // macOS: call NSApp terminate:
+            const objc = @import("objc");
+            const NSApp = objc.getClass("NSApplication") orelse return;
+            const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});
+            app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
+        }
+    }
+
+    // =========================================================================
     // Render Control
     // =========================================================================
 
