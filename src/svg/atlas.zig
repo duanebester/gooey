@@ -3,6 +3,13 @@
 //! Caches rasterized SVGs in a texture atlas, keyed by path hash and size.
 //! Thread-safe for multi-window scenarios where multiple DisplayLink threads
 //! may access the atlas concurrently.
+//!
+//! **Per-frame rasterization budget**: Software SVG rasterization is expensive
+//! (~0.5–2ms per icon). When many uncached icons appear at once (e.g. scrolling
+//! a grid of 1600+ icons), rasterizing them all in one frame blows the 16.67ms
+//! budget. Instead, we cap rasterizations per frame and progressively load the
+//! rest over subsequent frames. The caller should check `hasDeferredWork()` after
+//! rendering and request a redraw if true.
 
 const std = @import("std");
 const Atlas = @import("../text/atlas.zig").Atlas;
@@ -70,8 +77,29 @@ pub const SvgAtlas = struct {
     /// Multiple DisplayLink threads may access the atlas concurrently.
     mutex: std.Thread.Mutex,
 
+    // =========================================================================
+    // Per-frame rasterization budget
+    // =========================================================================
+
+    /// Number of software rasterizations performed this frame.
+    rasterizations_this_frame: u32 = 0,
+
+    /// Set when a cache miss was skipped due to budget exhaustion.
+    /// Caller should check this via `hasDeferredWork()` and request a redraw.
+    deferred_this_frame: bool = false,
+
     const Self = @This();
     const MAX_ICON_SIZE: u32 = 256;
+
+    /// Maximum software rasterizations allowed per frame.
+    ///
+    /// Each rasterization costs ~0.5–2ms (parse SVG path, flatten curves,
+    /// per-pixel stroke rendering at 48×48 device pixels). At 4 per frame
+    /// that's ~2–8ms, leaving headroom for layout, GPU upload, and draw.
+    ///
+    /// A row of 16 icons progressively loads over 4 frames (~67ms) instead
+    /// of stalling a single frame for 8–32ms of pure rasterization.
+    const MAX_RASTERIZATIONS_PER_FRAME: u32 = 4;
 
     pub fn init(allocator: std.mem.Allocator, scale_factor: f64) !Self {
         // Buffer for largest possible icon (256x256 RGBA)
@@ -86,6 +114,8 @@ pub const SvgAtlas = struct {
             .render_buffer_size = MAX_ICON_SIZE,
             .scale_factor = scale_factor,
             .mutex = .{},
+            .rasterizations_this_frame = 0,
+            .deferred_this_frame = false,
         };
     }
 
@@ -102,8 +132,35 @@ pub const SvgAtlas = struct {
         }
     }
 
-    /// Get cached SVG or rasterize and cache it
+    // =========================================================================
+    // Frame budget API
+    // =========================================================================
+
+    /// Reset the per-frame rasterization counter. Call at the start of each
+    /// frame before any `getOrRasterize` calls.
+    pub fn resetFrameBudget(self: *Self) void {
+        self.rasterizations_this_frame = 0;
+        self.deferred_this_frame = false;
+    }
+
+    /// Returns true if any SVGs were skipped this frame due to budget limits.
+    /// When true, the caller should request another render so the remaining
+    /// icons can be progressively rasterized.
+    pub fn hasDeferredWork(self: *const Self) bool {
+        return self.deferred_this_frame;
+    }
+
+    // =========================================================================
+    // Core API
+    // =========================================================================
+
+    /// Get cached SVG or rasterize and cache it.
+    ///
     /// Thread-safe: protected by mutex for multi-window scenarios.
+    ///
+    /// If the per-frame rasterization budget is exhausted, returns
+    /// `error.RasterizationDeferred` — the icon won't render this frame
+    /// but will be picked up on the next frame.
     pub fn getOrRasterize(
         self: *Self,
         path_data: []const u8,
@@ -119,6 +176,14 @@ pub const SvgAtlas = struct {
 
         if (self.cache.get(key)) |cached| {
             return cached;
+        }
+
+        // Cache miss — check per-frame budget before doing expensive work.
+        // This prevents a single frame from stalling on dozens of software
+        // rasterizations when many uncached icons scroll into view at once.
+        if (self.rasterizations_this_frame >= MAX_RASTERIZATIONS_PER_FRAME) {
+            self.deferred_this_frame = true;
+            return error.RasterizationDeferred;
         }
 
         // Rasterize
@@ -147,6 +212,8 @@ pub const SvgAtlas = struct {
                 .width = device_stroke_width,
             },
         );
+
+        self.rasterizations_this_frame += 1;
 
         // Reserve atlas space
         const region = try self.reserveWithEviction(rasterized.width, rasterized.height);

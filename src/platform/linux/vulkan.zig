@@ -58,6 +58,7 @@ pub const DescriptorSetLayout = c.VkDescriptorSetLayout;
 pub const DescriptorPool = c.VkDescriptorPool;
 pub const DescriptorSet = c.VkDescriptorSet;
 pub const Sampler = c.VkSampler;
+pub const PipelineCache = c.VkPipelineCache;
 pub const DebugUtilsMessengerEXT = c.VkDebugUtilsMessengerEXT;
 
 // =============================================================================
@@ -104,6 +105,7 @@ pub const VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO = c.VK_STRUCTURE_
 pub const VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 pub const VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 pub const VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+pub const VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 pub const VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
 pub const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 pub const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -242,6 +244,9 @@ pub const VK_INDEX_TYPE_UINT32 = c.VK_INDEX_TYPE_UINT32;
 // Command buffer level
 pub const VK_COMMAND_BUFFER_LEVEL_PRIMARY = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 pub const VK_COMMAND_BUFFER_LEVEL_SECONDARY = c.VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+
+// Command buffer usage flags
+pub const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
 // Subpass contents
 pub const VK_SUBPASS_CONTENTS_INLINE = c.VK_SUBPASS_CONTENTS_INLINE;
@@ -385,6 +390,7 @@ pub const WriteDescriptorSet = c.VkWriteDescriptorSet;
 pub const SamplerCreateInfo = c.VkSamplerCreateInfo;
 pub const ImageMemoryBarrier = c.VkImageMemoryBarrier;
 pub const BufferImageCopy = c.VkBufferImageCopy;
+pub const PipelineCacheCreateInfo = c.VkPipelineCacheCreateInfo;
 pub const DebugUtilsMessengerCreateInfoEXT = c.VkDebugUtilsMessengerCreateInfoEXT;
 pub const DebugUtilsMessengerCallbackDataEXT = c.VkDebugUtilsMessengerCallbackDataEXT;
 
@@ -494,6 +500,9 @@ pub const vkCreateRenderPass = c.vkCreateRenderPass;
 pub const vkDestroyRenderPass = c.vkDestroyRenderPass;
 pub const vkCreateGraphicsPipelines = c.vkCreateGraphicsPipelines;
 pub const vkDestroyPipeline = c.vkDestroyPipeline;
+pub const vkCreatePipelineCache = c.vkCreatePipelineCache;
+pub const vkDestroyPipelineCache = c.vkDestroyPipelineCache;
+pub const vkGetPipelineCacheData = c.vkGetPipelineCacheData;
 
 // =============================================================================
 // Vulkan Functions - Framebuffer
