@@ -33,6 +33,8 @@ pub const window = @import("window.zig");
 
 // Vulkan renderer (direct Vulkan, no wgpu dependency)
 pub const vk_renderer = @import("vk_renderer.zig");
+pub const vk_types = @import("vk_types.zig");
+pub const vk_pipelines = @import("vk_pipelines.zig");
 pub const vulkan = @import("vulkan.zig");
 pub const scene_renderer = @import("scene_renderer.zig");
 

@@ -286,14 +286,7 @@ pub fn build(b: *std.Build) void {
         });
 
         // Link system libraries (Vulkan + Wayland + text rendering)
-        exe.linkSystemLibrary("vulkan");
-        exe.linkSystemLibrary("wayland-client");
-        exe.linkSystemLibrary("freetype");
-        exe.linkSystemLibrary("harfbuzz");
-        exe.linkSystemLibrary("fontconfig");
-        exe.linkSystemLibrary("png");
-        exe.linkSystemLibrary("dbus-1");
-        exe.linkLibC();
+        linkLinuxLibraries(exe);
 
         b.installArtifact(exe);
 
@@ -315,148 +308,14 @@ pub fn build(b: *std.Build) void {
         }
 
         // =========================================================================
-        // Linux Basic Demo (Simple Wayland + Vulkan test)
+        // Linux Native Examples
         // =========================================================================
 
-        const basic_exe = b.addExecutable(.{
-            .name = "gooey-basic",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/linux_demo.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                },
-            }),
-        });
-
-        basic_exe.linkSystemLibrary("vulkan");
-        basic_exe.linkSystemLibrary("wayland-client");
-        basic_exe.linkSystemLibrary("freetype");
-        basic_exe.linkSystemLibrary("harfbuzz");
-        basic_exe.linkSystemLibrary("fontconfig");
-        basic_exe.linkSystemLibrary("png");
-        basic_exe.linkSystemLibrary("dbus-1");
-        basic_exe.linkLibC();
-
-        b.installArtifact(basic_exe);
-        if (!skip_shader_compile) {
-            basic_exe.step.dependOn(compile_shaders_step);
-        }
-
-        const run_basic_step = b.step("run-basic", "Run the basic Linux demo (simple Wayland + Vulkan test)");
-        const run_basic_cmd = b.addRunArtifact(basic_exe);
-        run_basic_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
-        run_basic_step.dependOn(&run_basic_cmd.step);
-        run_basic_cmd.step.dependOn(b.getInstallStep());
-
-        // =========================================================================
-        // Linux Text Demo (uses full UI framework with text rendering)
-        // =========================================================================
-
-        const text_exe = b.addExecutable(.{
-            .name = "gooey-text",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/linux_text_demo.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                },
-            }),
-        });
-
-        text_exe.linkSystemLibrary("vulkan");
-        text_exe.linkSystemLibrary("wayland-client");
-        text_exe.linkSystemLibrary("freetype");
-        text_exe.linkSystemLibrary("harfbuzz");
-        text_exe.linkSystemLibrary("fontconfig");
-        text_exe.linkSystemLibrary("png");
-        text_exe.linkSystemLibrary("dbus-1");
-        text_exe.linkLibC();
-
-        b.installArtifact(text_exe);
-        if (!skip_shader_compile) {
-            text_exe.step.dependOn(compile_shaders_step);
-        }
-
-        const run_text_step = b.step("run-text", "Run the Linux text demo");
-        const run_text_cmd = b.addRunArtifact(text_exe);
-        run_text_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
-        run_text_step.dependOn(&run_text_cmd.step);
-        run_text_cmd.step.dependOn(b.getInstallStep());
-
-        // =========================================================================
-        // Linux File Dialog Demo
-        // =========================================================================
-
-        const file_dialog_exe = b.addExecutable(.{
-            .name = "gooey-file-dialog",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/linux_file_dialog.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                },
-            }),
-        });
-
-        file_dialog_exe.linkSystemLibrary("vulkan");
-        file_dialog_exe.linkSystemLibrary("wayland-client");
-        file_dialog_exe.linkSystemLibrary("freetype");
-        file_dialog_exe.linkSystemLibrary("harfbuzz");
-        file_dialog_exe.linkSystemLibrary("fontconfig");
-        file_dialog_exe.linkSystemLibrary("png");
-        file_dialog_exe.linkSystemLibrary("dbus-1");
-        file_dialog_exe.linkLibC();
-
-        b.installArtifact(file_dialog_exe);
-        if (!skip_shader_compile) {
-            file_dialog_exe.step.dependOn(compile_shaders_step);
-        }
-
-        const run_file_dialog_step = b.step("run-file-dialog", "Run the Linux file dialog demo");
-        const run_file_dialog_cmd = b.addRunArtifact(file_dialog_exe);
-        run_file_dialog_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
-        run_file_dialog_step.dependOn(&run_file_dialog_cmd.step);
-        run_file_dialog_cmd.step.dependOn(b.getInstallStep());
-
-        // =========================================================================
-        // Linux Drag & Drop Demo
-        // =========================================================================
-
-        const drag_drop_exe = b.addExecutable(.{
-            .name = "gooey-drag-drop",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/drag_drop.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                },
-            }),
-        });
-
-        drag_drop_exe.linkSystemLibrary("vulkan");
-        drag_drop_exe.linkSystemLibrary("wayland-client");
-        drag_drop_exe.linkSystemLibrary("freetype");
-        drag_drop_exe.linkSystemLibrary("harfbuzz");
-        drag_drop_exe.linkSystemLibrary("fontconfig");
-        drag_drop_exe.linkSystemLibrary("png");
-        drag_drop_exe.linkSystemLibrary("dbus-1");
-        drag_drop_exe.linkLibC();
-
-        b.installArtifact(drag_drop_exe);
-        if (!skip_shader_compile) {
-            drag_drop_exe.step.dependOn(compile_shaders_step);
-        }
-
-        const run_drag_drop_step = b.step("run-drag-drop", "Run the Linux drag & drop demo");
-        const run_drag_drop_cmd = b.addRunArtifact(drag_drop_exe);
-        run_drag_drop_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
-        run_drag_drop_step.dependOn(&run_drag_drop_cmd.step);
-        run_drag_drop_cmd.step.dependOn(b.getInstallStep());
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "basic", "src/examples/linux_demo.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "text", "src/examples/linux_text_demo.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "file-dialog", "src/examples/linux_file_dialog.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "drag-drop", "src/examples/drag_drop.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "lucide-demo", "src/examples/lucide_demo.zig");
 
         // =====================================================================
         // Tests
@@ -465,14 +324,7 @@ pub fn build(b: *std.Build) void {
         const mod_tests = b.addTest(.{
             .root_module = mod,
         });
-        mod_tests.linkSystemLibrary("vulkan");
-        mod_tests.linkSystemLibrary("wayland-client");
-        mod_tests.linkSystemLibrary("freetype");
-        mod_tests.linkSystemLibrary("harfbuzz");
-        mod_tests.linkSystemLibrary("fontconfig");
-        mod_tests.linkSystemLibrary("png");
-        mod_tests.linkSystemLibrary("dbus-1");
-        mod_tests.linkLibC();
+        linkLinuxLibraries(mod_tests);
         if (!skip_shader_compile) {
             mod_tests.step.dependOn(compile_shaders_step);
         }
@@ -505,14 +357,7 @@ pub fn build(b: *std.Build) void {
         const valgrind_tests = b.addTest(.{
             .root_module = valgrind_mod,
         });
-        valgrind_tests.linkSystemLibrary("vulkan");
-        valgrind_tests.linkSystemLibrary("wayland-client");
-        valgrind_tests.linkSystemLibrary("freetype");
-        valgrind_tests.linkSystemLibrary("harfbuzz");
-        valgrind_tests.linkSystemLibrary("fontconfig");
-        valgrind_tests.linkSystemLibrary("png");
-        valgrind_tests.linkSystemLibrary("dbus-1");
-        valgrind_tests.linkLibC();
+        linkLinuxLibraries(valgrind_tests);
         if (!skip_shader_compile) {
             valgrind_tests.step.dependOn(compile_shaders_step);
         }
@@ -733,4 +578,55 @@ fn addWasmExample(
         b.path("web/index.html"),
         b.fmt("{s}/index.html", .{output_dir}),
     ).step);
+}
+
+/// Helper to add a Linux native example with Vulkan + Wayland system libraries.
+fn addLinuxExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    compile_shaders_step: *std.Build.Step,
+    skip_shader_compile: bool,
+    name: []const u8,
+    source: []const u8,
+) void {
+    const exe = b.addExecutable(.{
+        .name = b.fmt("gooey-{s}", .{name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+            },
+        }),
+    });
+
+    linkLinuxLibraries(exe);
+
+    b.installArtifact(exe);
+    if (!skip_shader_compile) {
+        exe.step.dependOn(compile_shaders_step);
+    }
+
+    const step_name = b.fmt("run-{s}", .{name});
+    const step_desc = b.fmt("Run the {s} example", .{name});
+    const step = b.step(step_name, step_desc);
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+    step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+}
+
+/// Links the standard set of Linux system libraries (Vulkan, Wayland, text rendering, etc.)
+fn linkLinuxLibraries(step: *std.Build.Step.Compile) void {
+    step.linkSystemLibrary("vulkan");
+    step.linkSystemLibrary("wayland-client");
+    step.linkSystemLibrary("freetype");
+    step.linkSystemLibrary("harfbuzz");
+    step.linkSystemLibrary("fontconfig");
+    step.linkSystemLibrary("png");
+    step.linkSystemLibrary("dbus-1");
+    step.linkLibC();
 }

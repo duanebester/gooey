@@ -291,6 +291,10 @@ pub fn flattenArc(
 pub const IndexSlice = struct {
     start: u32,
     end: u32,
+    /// Whether this subpath was explicitly closed with a Z command.
+    /// Open subpaths (e.g. arcs, curves) should NOT have their endpoints
+    /// joined when stroking.
+    closed: bool = false,
 };
 
 /// Parsed SVG Path - ready for flattening/tessellation
@@ -1059,11 +1063,13 @@ pub fn flattenPath(
     polygons: *std.ArrayList(IndexSlice),
 ) !void {
     var cur_pt = Vec2.init(0, 0);
+    var subpath_start_pt = Vec2.init(0, 0);
     var poly_start: u32 = @intCast(points.items.len);
     var data_idx: usize = 0;
     var last_control_pt = Vec2.init(0, 0);
     var last_was_curve = false;
     var last_was_quad = false;
+    var current_subpath_closed = false;
 
     for (path.commands.items) |cmd| {
         var is_curve = false;
@@ -1073,20 +1079,24 @@ pub fn flattenPath(
             .move_to => {
                 // Close previous polygon if any
                 if (points.items.len > poly_start + 1) {
-                    try polygons.append(allocator, .{ .start = poly_start, .end = @intCast(points.items.len) });
+                    try polygons.append(allocator, .{ .start = poly_start, .end = @intCast(points.items.len), .closed = current_subpath_closed });
                 }
                 cur_pt = Vec2.init(path.data.items[data_idx], path.data.items[data_idx + 1]);
                 data_idx += 2;
+                subpath_start_pt = cur_pt;
                 poly_start = @intCast(points.items.len);
+                current_subpath_closed = false;
                 try points.append(allocator, cur_pt);
             },
             .move_to_rel => {
                 if (points.items.len > poly_start + 1) {
-                    try polygons.append(allocator, .{ .start = poly_start, .end = @intCast(points.items.len) });
+                    try polygons.append(allocator, .{ .start = poly_start, .end = @intCast(points.items.len), .closed = current_subpath_closed });
                 }
                 cur_pt = cur_pt.add(Vec2.init(path.data.items[data_idx], path.data.items[data_idx + 1]));
                 data_idx += 2;
+                subpath_start_pt = cur_pt;
                 poly_start = @intCast(points.items.len);
+                current_subpath_closed = false;
                 try points.append(allocator, cur_pt);
             },
             .line_to => {
@@ -1338,16 +1348,25 @@ pub fn flattenPath(
                 cur_pt = Vec2.init(x, y);
             },
             .close_path => {
-                // Close path is implicit for fill operations
+                // Emit the current subpath as explicitly closed.
+                // For fill, the scanline algorithm implicitly wraps around,
+                // but for stroke we need to know this was closed so we draw
+                // the final segment back to the start.
+                current_subpath_closed = true;
+                cur_pt = subpath_start_pt;
+                if (points.items.len > poly_start + 1) {
+                    try polygons.append(allocator, .{ .start = poly_start, .end = @intCast(points.items.len), .closed = true });
+                }
+                poly_start = @intCast(points.items.len);
             },
         }
         last_was_curve = is_curve;
         last_was_quad = is_quad;
     }
 
-    // Final polygon
+    // Final polygon (not explicitly closed — no trailing Z command)
     if (points.items.len > poly_start + 1) {
-        try polygons.append(allocator, .{ .start = poly_start, .end = @intCast(points.items.len) });
+        try polygons.append(allocator, .{ .start = poly_start, .end = @intCast(points.items.len), .closed = current_subpath_closed });
     }
 }
 

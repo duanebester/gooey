@@ -812,7 +812,7 @@ pub const Window = struct {
         // Note: We also upload on first frame when atlas_view is null
         if (self.svg_atlas) |atlas| {
             const needs_upload = (atlas.generation != self.last_svg_atlas_generation) or
-                (self.last_svg_atlas_generation == 0 and self.renderer.svg_atlas_view == null);
+                (self.last_svg_atlas_generation == 0 and self.renderer.svg_atlas.view == null);
             if (needs_upload) {
                 self.renderer.uploadSvgAtlas(atlas.data, atlas.size, atlas.size) catch |err| {
                     std.log.err("Failed to upload SVG atlas: {}", .{err});
@@ -824,7 +824,7 @@ pub const Window = struct {
         // Upload Image atlas if changed
         if (self.image_atlas) |atlas| {
             const needs_upload = (atlas.generation != self.last_image_atlas_generation) or
-                (self.last_image_atlas_generation == 0 and self.renderer.image_atlas_view == null);
+                (self.last_image_atlas_generation == 0 and self.renderer.image_atlas.view == null);
             if (needs_upload) {
                 self.renderer.uploadImageAtlas(atlas.data, atlas.size, atlas.size) catch |err| {
                     std.log.err("Failed to upload Image atlas: {}", .{err});

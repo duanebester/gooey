@@ -1,7 +1,13 @@
-//! VulkanRenderer - Direct Vulkan rendering for Linux
+//! VulkanRenderer — Vulkan rendering coordinator for Linux.
 //!
 //! Takes a gooey Scene and renders it using Vulkan directly.
-//! This replaces the wgpu-native approach for better control and stability.
+//! Delegates to extracted modules for each subsystem:
+//!   - `vk_instance`    : Instance, device, surface, debug messenger
+//!   - `vk_swapchain`   : Swapchain lifecycle, MSAA, render pass, framebuffers
+//!   - `vk_buffers`     : Buffer, command pool, command buffer, sync object creation
+//!   - `vk_descriptors` : Descriptor layouts, pool, sets, sampler, updates
+//!   - `vk_pipelines`   : Generic pipeline creation (Phase 2)
+//!   - `vk_atlas`       : Atlas texture upload (Phase 3)
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
@@ -13,6 +19,13 @@ const text_mod = @import("../../text/mod.zig");
 const svg_instance_mod = @import("../../scene/svg_instance.zig");
 const image_instance_mod = @import("../../scene/image_instance.zig");
 const scene_renderer = @import("scene_renderer.zig");
+pub const vk_types = @import("vk_types.zig");
+const vk_pipelines = @import("vk_pipelines.zig");
+const vk_atlas = @import("vk_atlas.zig");
+const vk_instance = @import("vk_instance.zig");
+const vk_swapchain = @import("vk_swapchain.zig");
+const vk_buffers = @import("vk_buffers.zig");
+const vk_descriptors = @import("vk_descriptors.zig");
 
 const SvgInstance = svg_instance_mod.SvgInstance;
 const ImageInstance = image_instance_mod.ImageInstance;
@@ -25,187 +38,77 @@ const Allocator = std.mem.Allocator;
 // =============================================================================
 
 /// Enable Vulkan validation layers in debug builds.
-/// Set to true to enable VK_LAYER_KHRONOS_validation for API error checking.
-/// This adds runtime overhead but catches many common Vulkan usage errors.
-pub const enable_validation_layers = @import("builtin").mode == .Debug;
+pub const enable_validation_layers = vk_instance.enable_validation_layers;
 
 // =============================================================================
-// Constants
+// Re-exported types and constants from vk_types.zig
 // =============================================================================
 
-pub const MAX_PRIMITIVES: u32 = 4096;
-pub const MAX_GLYPHS: u32 = 8192;
-pub const MAX_SVGS: u32 = 2048;
-pub const MAX_IMAGES: u32 = 1024;
-pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
-pub const MAX_SURFACE_FORMATS: u32 = 128;
-pub const MAX_PRESENT_MODES: u32 = 16;
+pub const MAX_PRIMITIVES = vk_types.MAX_PRIMITIVES;
+pub const MAX_GLYPHS = vk_types.MAX_GLYPHS;
+pub const MAX_SVGS = vk_types.MAX_SVGS;
+pub const MAX_IMAGES = vk_types.MAX_IMAGES;
+pub const FRAME_COUNT = vk_types.FRAME_COUNT;
+pub const MAX_SURFACE_FORMATS = vk_types.MAX_SURFACE_FORMATS;
+pub const MAX_PRESENT_MODES = vk_types.MAX_PRESENT_MODES;
+
+/// Host-visible memory pool size for all per-frame mapped buffers.
+/// Back-of-envelope (CLAUDE.md Rule #7):
+///   Per frame: 128×4096 + 64×8192 + 80×2048 + 96×1024 + 16 = 1,310,736 bytes
+///   × 3 frames = 3,932,208 bytes + ~4KB alignment slack ≈ 4MB
+///   Using 8MB for generous headroom.
+const HOST_POOL_SIZE: vk.DeviceSize = 8 * 1024 * 1024;
+
+pub const Uniforms = vk_types.Uniforms;
+pub const GpuGlyph = vk_types.GpuGlyph;
+pub const GpuSvg = vk_types.GpuSvg;
+pub const GpuImage = vk_types.GpuImage;
 
 // =============================================================================
-// GPU Types
+// Per-Frame Resources (triple-buffered)
 // =============================================================================
 
-pub const Uniforms = extern struct {
-    viewport_width: f32,
-    viewport_height: f32,
-    _pad0: f32 = 0,
-    _pad1: f32 = 0,
-};
+/// Per-frame GPU resources for triple-buffering.
+///
+/// Each frame in flight gets its own buffers, descriptor sets, sync objects,
+/// and command buffer. This eliminates CPU/GPU contention: the CPU writes to
+/// frame N's buffers while the GPU reads from frame N-1 or N-2.
+const FrameResources = struct {
+    // Storage buffers (host-visible, persistently mapped)
+    primitive_buffer: vk.Buffer = null,
+    primitive_memory: vk.DeviceMemory = null,
+    primitive_mapped: ?*anyopaque = null,
 
-pub const GpuGlyph = extern struct {
-    pos_x: f32 = 0,
-    pos_y: f32 = 0,
-    size_x: f32 = 0,
-    size_y: f32 = 0,
-    uv_left: f32 = 0,
-    uv_top: f32 = 0,
-    uv_right: f32 = 0,
-    uv_bottom: f32 = 0,
-    color_h: f32 = 0,
-    color_s: f32 = 0,
-    color_l: f32 = 1,
-    color_a: f32 = 1,
-    clip_x: f32 = 0,
-    clip_y: f32 = 0,
-    clip_width: f32 = 99999,
-    clip_height: f32 = 99999,
+    glyph_buffer: vk.Buffer = null,
+    glyph_memory: vk.DeviceMemory = null,
+    glyph_mapped: ?*anyopaque = null,
 
-    pub fn fromScene(g: scene_mod.GlyphInstance) GpuGlyph {
-        return .{
-            .pos_x = g.pos_x,
-            .pos_y = g.pos_y,
-            .size_x = g.size_x,
-            .size_y = g.size_y,
-            .uv_left = g.uv_left,
-            .uv_top = g.uv_top,
-            .uv_right = g.uv_right,
-            .uv_bottom = g.uv_bottom,
-            .color_h = g.color.h,
-            .color_s = g.color.s,
-            .color_l = g.color.l,
-            .color_a = g.color.a,
-            .clip_x = g.clip_x,
-            .clip_y = g.clip_y,
-            .clip_width = g.clip_width,
-            .clip_height = g.clip_height,
-        };
-    }
-};
+    svg_buffer: vk.Buffer = null,
+    svg_memory: vk.DeviceMemory = null,
+    svg_mapped: ?*anyopaque = null,
 
-/// GPU-ready SVG instance data (matches shader struct layout)
-pub const GpuSvg = extern struct {
-    // Position and size
-    pos_x: f32 = 0,
-    pos_y: f32 = 0,
-    size_x: f32 = 0,
-    size_y: f32 = 0,
-    // UV coordinates
-    uv_left: f32 = 0,
-    uv_top: f32 = 0,
-    uv_right: f32 = 0,
-    uv_bottom: f32 = 0,
-    // Fill color (HSLA)
-    fill_h: f32 = 0,
-    fill_s: f32 = 0,
-    fill_l: f32 = 0,
-    fill_a: f32 = 0,
-    // Stroke color (HSLA)
-    stroke_h: f32 = 0,
-    stroke_s: f32 = 0,
-    stroke_l: f32 = 0,
-    stroke_a: f32 = 0,
-    // Clip bounds
-    clip_x: f32 = 0,
-    clip_y: f32 = 0,
-    clip_width: f32 = 99999,
-    clip_height: f32 = 99999,
+    image_buffer: vk.Buffer = null,
+    image_memory: vk.DeviceMemory = null,
+    image_mapped: ?*anyopaque = null,
 
-    pub fn fromScene(s: SvgInstance) GpuSvg {
-        return .{
-            .pos_x = s.pos_x,
-            .pos_y = s.pos_y,
-            .size_x = s.size_x,
-            .size_y = s.size_y,
-            .uv_left = s.uv_left,
-            .uv_top = s.uv_top,
-            .uv_right = s.uv_right,
-            .uv_bottom = s.uv_bottom,
-            .fill_h = s.color.h,
-            .fill_s = s.color.s,
-            .fill_l = s.color.l,
-            .fill_a = s.color.a,
-            .stroke_h = s.stroke_color.h,
-            .stroke_s = s.stroke_color.s,
-            .stroke_l = s.stroke_color.l,
-            .stroke_a = s.stroke_color.a,
-            .clip_x = s.clip_x,
-            .clip_y = s.clip_y,
-            .clip_width = s.clip_width,
-            .clip_height = s.clip_height,
-        };
-    }
-};
+    // Uniform buffer (host-visible, persistently mapped)
+    uniform_buffer: vk.Buffer = null,
+    uniform_memory: vk.DeviceMemory = null,
+    uniform_mapped: ?*anyopaque = null,
 
-/// GPU-ready Image instance data (matches shader struct layout)
-/// 96 bytes = 24 floats
-pub const GpuImage = extern struct {
-    // Position and size
-    pos_x: f32 = 0,
-    pos_y: f32 = 0,
-    dest_width: f32 = 0,
-    dest_height: f32 = 0,
-    // UV coordinates
-    uv_left: f32 = 0,
-    uv_top: f32 = 0,
-    uv_right: f32 = 0,
-    uv_bottom: f32 = 0,
-    // Tint color (HSLA)
-    tint_h: f32 = 0,
-    tint_s: f32 = 0,
-    tint_l: f32 = 1,
-    tint_a: f32 = 1,
-    // Clip bounds
-    clip_x: f32 = 0,
-    clip_y: f32 = 0,
-    clip_width: f32 = 99999,
-    clip_height: f32 = 99999,
-    // Corner radii
-    corner_tl: f32 = 0,
-    corner_tr: f32 = 0,
-    corner_br: f32 = 0,
-    corner_bl: f32 = 0,
-    // Effects
-    grayscale: f32 = 0,
-    opacity: f32 = 1,
-    _pad0: f32 = 0,
-    _pad1: f32 = 0,
+    // Descriptor sets (reference this frame's buffers + shared atlas views)
+    unified_descriptor_set: vk.DescriptorSet = null,
+    text_descriptor_set: vk.DescriptorSet = null,
+    svg_descriptor_set: vk.DescriptorSet = null,
+    image_descriptor_set: vk.DescriptorSet = null,
 
-    pub fn fromScene(img: ImageInstance) GpuImage {
-        return .{
-            .pos_x = img.pos_x,
-            .pos_y = img.pos_y,
-            .dest_width = img.dest_width,
-            .dest_height = img.dest_height,
-            .uv_left = img.uv_left,
-            .uv_top = img.uv_top,
-            .uv_right = img.uv_right,
-            .uv_bottom = img.uv_bottom,
-            .tint_h = img.tint.h,
-            .tint_s = img.tint.s,
-            .tint_l = img.tint.l,
-            .tint_a = img.tint.a,
-            .clip_x = img.clip_x,
-            .clip_y = img.clip_y,
-            .clip_width = img.clip_width,
-            .clip_height = img.clip_height,
-            .corner_tl = img.corner_tl,
-            .corner_tr = img.corner_tr,
-            .corner_br = img.corner_br,
-            .corner_bl = img.corner_bl,
-            .grayscale = img.grayscale,
-            .opacity = img.opacity,
-        };
-    }
+    // Sync objects
+    fence: vk.Fence = null,
+    image_available_semaphore: vk.Semaphore = null,
+    render_finished_semaphore: vk.Semaphore = null,
+
+    // Command buffer
+    command_buffer: vk.CommandBuffer = null,
 };
 
 // =============================================================================
@@ -267,84 +170,46 @@ pub const VulkanRenderer = struct {
     image_pipeline_layout: vk.PipelineLayout = null,
     image_pipeline: vk.Pipeline = null,
 
-    // Command buffers
+    // Command pool (shared — frees all command buffers on destruction)
     command_pool: vk.CommandPool = null,
-    command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer = [_]vk.CommandBuffer{null} ** MAX_FRAMES_IN_FLIGHT,
     transfer_command_buffer: vk.CommandBuffer = null,
 
-    // Synchronization
-    image_available_semaphores: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore = [_]vk.Semaphore{null} ** MAX_FRAMES_IN_FLIGHT,
-    render_finished_semaphores: [MAX_FRAMES_IN_FLIGHT]vk.Semaphore = [_]vk.Semaphore{null} ** MAX_FRAMES_IN_FLIGHT,
-    in_flight_fences: [MAX_FRAMES_IN_FLIGHT]vk.Fence = [_]vk.Fence{null} ** MAX_FRAMES_IN_FLIGHT,
+    // Transfer synchronization (shared across frames)
     transfer_fence: vk.Fence = null,
     current_frame: u32 = 0,
     swapchain_needs_recreate: bool = false,
 
-    // Buffers
-    uniform_buffer: vk.Buffer = null,
-    uniform_memory: vk.DeviceMemory = null,
-    uniform_mapped: ?*anyopaque = null,
+    // Per-frame resources: buffers, descriptor sets, sync objects, command buffers.
+    // Triple-buffered so CPU can write frame N+1 while GPU reads frame N.
+    frames: [FRAME_COUNT]FrameResources = [_]FrameResources{.{}} ** FRAME_COUNT,
 
-    primitive_buffer: vk.Buffer = null,
-    primitive_memory: vk.DeviceMemory = null,
-    primitive_mapped: ?*anyopaque = null,
-
-    glyph_buffer: vk.Buffer = null,
-    glyph_memory: vk.DeviceMemory = null,
-    glyph_mapped: ?*anyopaque = null,
-
-    svg_buffer: vk.Buffer = null,
-    svg_memory: vk.DeviceMemory = null,
-    svg_mapped: ?*anyopaque = null,
-
-    image_buffer: vk.Buffer = null,
-    image_memory: vk.DeviceMemory = null,
-    image_mapped: ?*anyopaque = null,
-
-    // Staging buffer for texture uploads
+    // Staging buffer for texture uploads (shared across frames)
     staging_buffer: vk.Buffer = null,
     staging_memory: vk.DeviceMemory = null,
     staging_mapped: ?*anyopaque = null,
     staging_size: vk.DeviceSize = 0,
 
-    // Text atlas texture (R8 format)
-    atlas_image: vk.Image = null,
-    atlas_memory: vk.DeviceMemory = null,
-    atlas_view: vk.ImageView = null,
+    // Atlas textures (text=R8, SVG/image=RGBA8)
+    text_atlas: vk_atlas.AtlasResources = .{},
+    svg_atlas: vk_atlas.AtlasResources = .{},
+    image_atlas: vk_atlas.AtlasResources = .{},
     atlas_sampler: vk.Sampler = null,
-    atlas_width: u32 = 0,
-    atlas_height: u32 = 0,
-    atlas_generation: u32 = 0,
 
-    // SVG atlas texture (RGBA format)
-    svg_atlas_image: vk.Image = null,
-    svg_atlas_memory: vk.DeviceMemory = null,
-    svg_atlas_view: vk.ImageView = null,
-    svg_atlas_width: u32 = 0,
-    svg_atlas_height: u32 = 0,
-    svg_atlas_generation: u32 = 0,
+    // Atlas dirty flags for batched upload (improvement #2)
+    text_atlas_dirty: bool = false,
+    svg_atlas_dirty: bool = false,
+    image_atlas_dirty: bool = false,
 
-    // Image atlas texture (RGBA format)
-    image_atlas_image: vk.Image = null,
-    image_atlas_memory: vk.DeviceMemory = null,
-    image_atlas_view: vk.ImageView = null,
-    image_atlas_width: u32 = 0,
-    image_atlas_height: u32 = 0,
-    image_atlas_generation: u32 = 0,
-
-    // Descriptors
+    // Descriptors (layouts + pool shared; per-frame sets live in FrameResources)
     unified_descriptor_layout: vk.DescriptorSetLayout = null,
-    text_descriptor_layout: vk.DescriptorSetLayout = null,
-    svg_descriptor_layout: vk.DescriptorSetLayout = null,
-    image_descriptor_layout: vk.DescriptorSetLayout = null,
+    textured_descriptor_layout: vk.DescriptorSetLayout = null, // shared by text, SVG, image
     descriptor_pool: vk.DescriptorPool = null,
-    unified_descriptor_set: vk.DescriptorSet = null,
-    text_descriptor_set: vk.DescriptorSet = null,
-    svg_descriptor_set: vk.DescriptorSet = null,
-    image_descriptor_set: vk.DescriptorSet = null,
 
     // Memory properties
     mem_properties: vk.PhysicalDeviceMemoryProperties = undefined,
+
+    // Memory pool for per-frame buffer sub-allocation (1 vkAllocateMemory instead of ~15)
+    host_memory_pool: vk_buffers.MemoryPool = .{},
 
     // CPU-side buffers (fixed capacity, no runtime allocation)
     primitives: [MAX_PRIMITIVES]unified.Primitive = undefined,
@@ -355,6 +220,13 @@ pub const VulkanRenderer = struct {
     initialized: bool = false,
 
     const Self = @This();
+
+    // Staging region offsets for batched atlas uploads.
+    // Each atlas type gets a non-overlapping region within the pre-allocated
+    // staging buffer so all three can be staged simultaneously.
+    const STAGING_REGION_TEXT: vk.DeviceSize = 0;
+    const STAGING_REGION_SVG: vk.DeviceSize = vk_atlas.MAX_SINGLE_ATLAS_BYTES;
+    const STAGING_REGION_IMAGE: vk.DeviceSize = vk_atlas.MAX_SINGLE_ATLAS_BYTES * 2;
 
     // Embedded SPIR-V shaders (compiled from GLSL)
     // Force 4-byte alignment as required by Vulkan for SPIR-V code
@@ -376,172 +248,66 @@ pub const VulkanRenderer = struct {
     pub fn deinit(self: *Self) void {
         if (!self.initialized) return;
 
-        // Wait for device to be idle
         if (self.device) |dev| {
             _ = vk.vkDeviceWaitIdle(dev);
         }
 
-        // Destroy synchronization primitives
-        for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-            if (self.image_available_semaphores[i]) |sem| {
-                vk.vkDestroySemaphore(self.device, sem, null);
-            }
-            if (self.render_finished_semaphores[i]) |sem| {
-                vk.vkDestroySemaphore(self.device, sem, null);
-            }
-            if (self.in_flight_fences[i]) |fence| {
-                vk.vkDestroyFence(self.device, fence, null);
-            }
-        }
+        // Per-frame resources (buffer handles, sync objects)
+        self.destroyFrameResources();
 
-        // Destroy transfer fence
-        if (self.transfer_fence) |fence| {
-            vk.vkDestroyFence(self.device, fence, null);
-        }
+        // Host memory pool (frees the single backing VkDeviceMemory for all frame buffers)
+        self.host_memory_pool.destroy(self.device);
 
-        // Destroy command pool (frees command buffers)
+        // Transfer fence (shared, not in FrameResources)
+        if (self.transfer_fence) |fence| vk.vkDestroyFence(self.device, fence, null);
+        self.transfer_fence = null;
+
+        // Command pool (frees command buffers implicitly)
         if (self.command_pool) |pool| {
             vk.vkDestroyCommandPool(self.device, pool, null);
         }
 
-        // Destroy descriptor pool (frees descriptor sets)
+        // Descriptors: pool frees sets implicitly, then destroy layouts
         if (self.descriptor_pool) |pool| {
             vk.vkDestroyDescriptorPool(self.device, pool, null);
         }
+        self.destroyDescriptorLayouts();
 
-        // Destroy descriptor layouts
-        if (self.unified_descriptor_layout) |layout| {
-            vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
-        }
-        if (self.text_descriptor_layout) |layout| {
-            vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
-        }
-        if (self.svg_descriptor_layout) |layout| {
-            vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
-        }
-        if (self.image_descriptor_layout) |layout| {
-            vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
-        }
+        // Pipelines
+        self.destroyAllPipelines();
 
-        // Destroy pipelines
-        if (self.unified_pipeline) |pipeline| {
-            vk.vkDestroyPipeline(self.device, pipeline, null);
-        }
-        if (self.text_pipeline) |pipeline| {
-            vk.vkDestroyPipeline(self.device, pipeline, null);
-        }
-        if (self.svg_pipeline) |pipeline| {
-            vk.vkDestroyPipeline(self.device, pipeline, null);
-        }
-        if (self.image_pipeline) |pipeline| {
-            vk.vkDestroyPipeline(self.device, pipeline, null);
-        }
-        if (self.unified_pipeline_layout) |layout| {
-            vk.vkDestroyPipelineLayout(self.device, layout, null);
-        }
-        if (self.text_pipeline_layout) |layout| {
-            vk.vkDestroyPipelineLayout(self.device, layout, null);
-        }
-        if (self.svg_pipeline_layout) |layout| {
-            vk.vkDestroyPipelineLayout(self.device, layout, null);
-        }
-        if (self.image_pipeline_layout) |layout| {
-            vk.vkDestroyPipelineLayout(self.device, layout, null);
-        }
-
-        // Destroy framebuffers
-        for (&self.framebuffers) |fb| {
-            if (fb) |framebuffer| {
-                vk.vkDestroyFramebuffer(self.device, framebuffer, null);
-            }
-        }
-
-        // Destroy render pass
+        // Framebuffers + render pass
+        vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
         if (self.render_pass) |rp| {
             vk.vkDestroyRenderPass(self.device, rp, null);
         }
 
-        // Destroy MSAA resources
-        if (self.msaa_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-        }
-        if (self.msaa_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-        }
-        if (self.msaa_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-        }
-
-        // Destroy swapchain image views
-        for (&self.swapchain_image_views) |iv| {
-            if (iv) |view| {
-                vk.vkDestroyImageView(self.device, view, null);
-            }
-        }
-
-        // Destroy swapchain
+        // MSAA + swapchain image views + swapchain
+        self.destroyMSAAResources();
+        vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
         if (self.swapchain) |sc| {
             vk.vkDestroySwapchainKHR(self.device, sc, null);
         }
 
-        // Destroy buffers
-        self.destroyBuffer(self.uniform_buffer, self.uniform_memory);
-        self.destroyBuffer(self.primitive_buffer, self.primitive_memory);
-        self.destroyBuffer(self.glyph_buffer, self.glyph_memory);
-        self.destroyBuffer(self.svg_buffer, self.svg_memory);
-        self.destroyBuffer(self.image_buffer, self.image_memory);
-        self.destroyBuffer(self.staging_buffer, self.staging_memory);
+        // Staging buffer (shared, not in FrameResources)
+        self.destroyStagingBuffer();
 
-        // Destroy text atlas
+        // Atlas textures + sampler
+        self.text_atlas.destroy(self.device);
+        self.svg_atlas.destroy(self.device);
+        self.image_atlas.destroy(self.device);
         if (self.atlas_sampler) |sampler| {
             vk.vkDestroySampler(self.device, sampler, null);
         }
-        if (self.atlas_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-        }
-        if (self.atlas_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-        }
-        if (self.atlas_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-        }
 
-        // Destroy SVG atlas
-        if (self.svg_atlas_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-        }
-        if (self.svg_atlas_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-        }
-        if (self.svg_atlas_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-        }
-
-        // Destroy Image atlas
-        if (self.image_atlas_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-        }
-        if (self.image_atlas_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-        }
-        if (self.image_atlas_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-        }
-
-        // Destroy surface
+        // Surface → device → debug → instance (reverse creation order)
         if (self.surface) |surf| {
             vk.vkDestroySurfaceKHR(self.instance, surf, null);
         }
-
-        // Destroy device
         if (self.device) |dev| {
             vk.vkDestroyDevice(dev, null);
         }
-
-        // Destroy debug messenger before instance
-        self.destroyDebugMessenger();
-
-        // Destroy instance
+        vk_instance.destroyDebugMessenger(self.instance, self.debug_messenger);
         if (self.instance) |inst| {
             vk.vkDestroyInstance(inst, null);
         }
@@ -549,19 +315,12 @@ pub const VulkanRenderer = struct {
         self.initialized = false;
     }
 
-    fn destroyBuffer(self: *Self, buffer: vk.Buffer, memory: vk.DeviceMemory) void {
-        if (buffer) |buf| {
-            vk.vkDestroyBuffer(self.device, buf, null);
-        }
-        if (memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-        }
-    }
+    // =========================================================================
+    // Cleanup Helpers — null-safe, null-out-after-destroy
+    // =========================================================================
 
-    // Helper functions for errdefer cleanup chains
     fn destroySwapchainResources(self: *Self) void {
         // Wait for device to be idle before destroying swapchain
-        // This ensures all GPU work is complete before cleanup
         if (self.device) |dev| {
             _ = vk.vkDeviceWaitIdle(dev);
         }
@@ -572,10 +331,7 @@ pub const VulkanRenderer = struct {
             _ = wayland.wl_display_roundtrip(display);
         }
 
-        for (&self.swapchain_image_views) |iv| {
-            if (iv) |view| vk.vkDestroyImageView(self.device, view, null);
-        }
-        @memset(&self.swapchain_image_views, null);
+        vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
         if (self.swapchain) |sc| vk.vkDestroySwapchainKHR(self.device, sc, null);
         self.swapchain = null;
 
@@ -607,48 +363,51 @@ pub const VulkanRenderer = struct {
         self.msaa_memory = null;
     }
 
-    fn destroyFramebuffers(self: *Self) void {
-        for (&self.framebuffers) |fb| {
-            if (fb) |framebuffer| vk.vkDestroyFramebuffer(self.device, framebuffer, null);
+    fn destroyFrameResources(self: *Self) void {
+        for (&self.frames) |*frame| {
+            // Sync objects
+            if (frame.fence) |f| vk.vkDestroyFence(self.device, f, null);
+            frame.fence = null;
+            if (frame.image_available_semaphore) |s| vk.vkDestroySemaphore(self.device, s, null);
+            frame.image_available_semaphore = null;
+            if (frame.render_finished_semaphore) |s| vk.vkDestroySemaphore(self.device, s, null);
+            frame.render_finished_semaphore = null;
+
+            // Per-frame buffers — only destroy handles; memory is owned by host_memory_pool
+            vk_buffers.destroyBufferOnly(self.device, frame.uniform_buffer);
+            frame.uniform_buffer = null;
+            frame.uniform_memory = null;
+            frame.uniform_mapped = null;
+            vk_buffers.destroyBufferOnly(self.device, frame.primitive_buffer);
+            frame.primitive_buffer = null;
+            frame.primitive_memory = null;
+            frame.primitive_mapped = null;
+            vk_buffers.destroyBufferOnly(self.device, frame.glyph_buffer);
+            frame.glyph_buffer = null;
+            frame.glyph_memory = null;
+            frame.glyph_mapped = null;
+            vk_buffers.destroyBufferOnly(self.device, frame.svg_buffer);
+            frame.svg_buffer = null;
+            frame.svg_memory = null;
+            frame.svg_mapped = null;
+            vk_buffers.destroyBufferOnly(self.device, frame.image_buffer);
+            frame.image_buffer = null;
+            frame.image_memory = null;
+            frame.image_mapped = null;
+
+            // Descriptor sets freed implicitly by pool destruction
+            frame.unified_descriptor_set = null;
+            frame.text_descriptor_set = null;
+            frame.svg_descriptor_set = null;
+            frame.image_descriptor_set = null;
+
+            // Command buffers freed implicitly by pool destruction
+            frame.command_buffer = null;
         }
-        @memset(&self.framebuffers, null);
     }
 
-    fn destroySyncObjects(self: *Self) void {
-        for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-            if (self.image_available_semaphores[i]) |sem| vk.vkDestroySemaphore(self.device, sem, null);
-            if (self.render_finished_semaphores[i]) |sem| vk.vkDestroySemaphore(self.device, sem, null);
-            if (self.in_flight_fences[i]) |fence| vk.vkDestroyFence(self.device, fence, null);
-        }
-        @memset(&self.image_available_semaphores, null);
-        @memset(&self.render_finished_semaphores, null);
-        @memset(&self.in_flight_fences, null);
-        if (self.transfer_fence) |fence| vk.vkDestroyFence(self.device, fence, null);
-        self.transfer_fence = null;
-    }
-
-    fn destroyAllBuffers(self: *Self) void {
-        self.destroyBuffer(self.uniform_buffer, self.uniform_memory);
-        self.uniform_buffer = null;
-        self.uniform_memory = null;
-        self.uniform_mapped = null;
-        self.destroyBuffer(self.primitive_buffer, self.primitive_memory);
-        self.primitive_buffer = null;
-        self.primitive_memory = null;
-        self.primitive_mapped = null;
-        self.destroyBuffer(self.glyph_buffer, self.glyph_memory);
-        self.glyph_buffer = null;
-        self.glyph_memory = null;
-        self.glyph_mapped = null;
-        self.destroyBuffer(self.svg_buffer, self.svg_memory);
-        self.svg_buffer = null;
-        self.svg_memory = null;
-        self.svg_mapped = null;
-        self.destroyBuffer(self.image_buffer, self.image_memory);
-        self.image_buffer = null;
-        self.image_memory = null;
-        self.image_mapped = null;
-        self.destroyBuffer(self.staging_buffer, self.staging_memory);
+    fn destroyStagingBuffer(self: *Self) void {
+        vk_buffers.destroyBuffer(self.device, self.staging_buffer, self.staging_memory);
         self.staging_buffer = null;
         self.staging_memory = null;
         self.staging_mapped = null;
@@ -657,43 +416,27 @@ pub const VulkanRenderer = struct {
     fn destroyDescriptorLayouts(self: *Self) void {
         if (self.unified_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
         self.unified_descriptor_layout = null;
-        if (self.text_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
-        self.text_descriptor_layout = null;
-        if (self.svg_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
-        self.svg_descriptor_layout = null;
-        if (self.image_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
-        self.image_descriptor_layout = null;
+        if (self.textured_descriptor_layout) |layout| vk.vkDestroyDescriptorSetLayout(self.device, layout, null);
+        self.textured_descriptor_layout = null;
     }
 
-    fn destroyUnifiedPipeline(self: *Self) void {
-        if (self.unified_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
-        self.unified_pipeline = null;
-        if (self.unified_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
-        self.unified_pipeline_layout = null;
+    fn destroyPipelinePair(self: *Self, pipeline: *vk.Pipeline, layout: *vk.PipelineLayout) void {
+        vk_pipelines.destroyPipeline(self.device, pipeline.*, layout.*);
+        pipeline.* = null;
+        layout.* = null;
     }
 
-    fn destroyTextPipeline(self: *Self) void {
-        if (self.text_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
-        self.text_pipeline = null;
-        if (self.text_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
-        self.text_pipeline_layout = null;
+    fn destroyAllPipelines(self: *Self) void {
+        self.destroyPipelinePair(&self.unified_pipeline, &self.unified_pipeline_layout);
+        self.destroyPipelinePair(&self.text_pipeline, &self.text_pipeline_layout);
+        self.destroyPipelinePair(&self.svg_pipeline, &self.svg_pipeline_layout);
+        self.destroyPipelinePair(&self.image_pipeline, &self.image_pipeline_layout);
     }
 
-    fn destroySvgPipeline(self: *Self) void {
-        if (self.svg_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
-        self.svg_pipeline = null;
-        if (self.svg_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
-        self.svg_pipeline_layout = null;
-    }
+    // =========================================================================
+    // Initialization
+    // =========================================================================
 
-    fn destroyImagePipeline(self: *Self) void {
-        if (self.image_pipeline) |pipeline| vk.vkDestroyPipeline(self.device, pipeline, null);
-        self.image_pipeline = null;
-        if (self.image_pipeline_layout) |layout| vk.vkDestroyPipelineLayout(self.device, layout, null);
-        self.image_pipeline_layout = null;
-    }
-
-    /// Initialize with Wayland surface
     pub fn initWithWaylandSurface(
         self: *Self,
         wl_display: *anyopaque,
@@ -710,1292 +453,346 @@ pub const VulkanRenderer = struct {
         // Store scale factor
         self.scale_factor = scale_factor;
 
-        // Create Vulkan instance
-        try self.createInstance();
+        // ---- Instance + debug messenger (vk_instance) ----
+        const inst = try vk_instance.createInstance();
+        self.instance = inst.instance;
+        self.debug_messenger = inst.debug_messenger;
         errdefer {
-            if (self.instance) |inst| vk.vkDestroyInstance(inst, null);
+            vk_instance.destroyDebugMessenger(self.instance, self.debug_messenger);
+            if (self.instance) |i| vk.vkDestroyInstance(i, null);
             self.instance = null;
         }
 
-        // Create Wayland surface
-        try self.createWaylandSurface(wl_display, wl_surface);
+        // ---- Wayland surface (vk_instance) ----
+        self.surface = try vk_instance.createWaylandSurface(self.instance, wl_display, wl_surface);
         errdefer {
             if (self.surface) |surf| vk.vkDestroySurfaceKHR(self.instance, surf, null);
             self.surface = null;
         }
 
-        // Pick physical device and find queue families
-        try self.pickPhysicalDevice();
+        // ---- Physical device + queue families (vk_instance) ----
+        const phys = try vk_instance.pickPhysicalDevice(self.instance, self.surface);
+        self.physical_device = phys.physical_device;
+        self.graphics_family = phys.families.graphics;
+        self.present_family = phys.families.present;
 
-        // Query and select MSAA sample count
-        self.sample_count = self.getMaxUsableSampleCount();
+        // ---- MSAA sample count (vk_swapchain) ----
+        self.sample_count = vk_swapchain.getMaxUsableSampleCount(self.physical_device);
         std.log.info("Using MSAA sample count: {}", .{self.sample_count});
 
-        // Create logical device
-        try self.createLogicalDevice();
+        // ---- Logical device + queues (vk_instance) ----
+        const dev = try vk_instance.createLogicalDevice(self.physical_device, phys.families);
+        self.device = dev.device;
+        self.graphics_queue = dev.graphics_queue;
+        self.present_queue = dev.present_queue;
         errdefer {
-            if (self.device) |dev| vk.vkDestroyDevice(dev, null);
+            if (self.device) |d| vk.vkDestroyDevice(d, null);
             self.device = null;
         }
 
-        // Get memory properties
+        // ---- Memory properties ----
         vk.vkGetPhysicalDeviceMemoryProperties(self.physical_device, &self.mem_properties);
 
         // Calculate physical pixel dimensions for HiDPI rendering
         const physical_width: u32 = @intFromFloat(@as(f64, @floatFromInt(width)) * scale_factor);
         const physical_height: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) * scale_factor);
 
-        // Create swapchain at physical pixel resolution for crisp HiDPI rendering
-        try self.createSwapchain(physical_width, physical_height);
+        // ---- Swapchain (vk_swapchain) ----
+        const sc = try vk_swapchain.createSwapchain(
+            self.device,
+            self.physical_device,
+            self.surface,
+            physical_width,
+            physical_height,
+            null,
+        );
+        self.swapchain = sc.swapchain;
+        self.swapchain_images = sc.images;
+        self.swapchain_image_views = sc.image_views;
+        self.swapchain_image_count = sc.image_count;
+        self.swapchain_format = sc.format;
+        self.swapchain_extent = sc.extent;
         errdefer self.destroySwapchainResources();
 
-        // Create MSAA color buffer (if MSAA enabled)
-        try self.createMSAAResources();
+        // ---- MSAA resources (vk_swapchain) ----
+        const msaa = try vk_swapchain.createMSAAResources(
+            self.device,
+            self.swapchain_format,
+            self.swapchain_extent,
+            self.sample_count,
+            &self.mem_properties,
+        );
+        self.msaa_image = msaa.image;
+        self.msaa_memory = msaa.memory;
+        self.msaa_view = msaa.view;
         errdefer self.destroyMSAAResources();
 
-        // Create render pass
-        try self.createRenderPass();
+        // ---- Render pass (vk_swapchain) ----
+        self.render_pass = try vk_swapchain.createRenderPass(
+            self.device,
+            self.swapchain_format,
+            self.sample_count,
+        );
         errdefer {
             if (self.render_pass) |rp| vk.vkDestroyRenderPass(self.device, rp, null);
             self.render_pass = null;
         }
 
-        // Create framebuffers
-        try self.createFramebuffers();
-        errdefer self.destroyFramebuffers();
+        // ---- Framebuffers (vk_swapchain) ----
+        try vk_swapchain.createFramebuffers(
+            self.device,
+            self.render_pass,
+            &self.swapchain_image_views,
+            self.swapchain_image_count,
+            self.msaa_view,
+            self.swapchain_extent,
+            self.sample_count,
+            &self.framebuffers,
+        );
+        errdefer vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
 
-        // Create command pool and buffers
-        try self.createCommandPool();
+        // ---- Command pool + buffers (vk_buffers) ----
+        self.command_pool = try vk_buffers.createCommandPool(self.device, self.graphics_family);
         errdefer {
             if (self.command_pool) |pool| vk.vkDestroyCommandPool(self.device, pool, null);
             self.command_pool = null;
         }
-        try self.allocateCommandBuffers();
+        const cmd_bufs = try vk_buffers.allocateCommandBuffers(self.device, self.command_pool);
+        self.transfer_command_buffer = cmd_bufs.transfer;
 
-        // Create synchronization objects
-        try self.createSyncObjects();
-        errdefer self.destroySyncObjects();
+        // ---- Synchronization objects (vk_buffers) ----
+        const sync = try vk_buffers.createSyncObjects(self.device);
+        self.transfer_fence = sync.transfer_fence;
 
-        // Create buffers
-        try self.createBuffers();
-        errdefer self.destroyAllBuffers();
+        // Distribute per-frame sync objects and command buffers
+        for (0..FRAME_COUNT) |i| {
+            self.frames[i].fence = sync.in_flight_fences[i];
+            self.frames[i].image_available_semaphore = sync.image_available_semaphores[i];
+            self.frames[i].render_finished_semaphore = sync.render_finished_semaphores[i];
+            self.frames[i].command_buffer = cmd_bufs.render[i];
+        }
+        errdefer {
+            self.destroyFrameResources();
+            if (self.transfer_fence) |f| vk.vkDestroyFence(self.device, f, null);
+            self.transfer_fence = null;
+        }
 
-        // Create descriptor layouts
+        // ---- Host memory pool (vk_buffers — 1 vkAllocateMemory instead of ~15) ----
+        self.host_memory_pool = try vk_buffers.MemoryPool.init(
+            self.device,
+            &self.mem_properties,
+            HOST_POOL_SIZE,
+            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        );
+        errdefer self.host_memory_pool.destroy(self.device);
+
+        // ---- Pre-allocate staging buffer (improvement #3 — zero mid-frame allocations) ----
+        const staging_result = try vk_buffers.createMappedBuffer(
+            self.device,
+            &self.mem_properties,
+            vk_atlas.MAX_STAGING_BYTES,
+            vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        );
+        self.staging_buffer = staging_result.buffer;
+        self.staging_memory = staging_result.memory;
+        self.staging_mapped = staging_result.mapped;
+        self.staging_size = vk_atlas.MAX_STAGING_BYTES;
+        errdefer self.destroyStagingBuffer();
+
+        // ---- Per-frame GPU buffers (sub-allocated from host pool) ----
+        try self.createFrameBuffers();
+
+        // ---- Descriptor layouts (vk_descriptors) ----
         try self.createDescriptorLayouts();
         errdefer self.destroyDescriptorLayouts();
 
-        // Create descriptor pool
-        try self.createDescriptorPool();
+        // ---- Descriptor pool (vk_descriptors) ----
+        self.descriptor_pool = try vk_descriptors.createDescriptorPool(self.device);
         errdefer {
             if (self.descriptor_pool) |pool| vk.vkDestroyDescriptorPool(self.device, pool, null);
             self.descriptor_pool = null;
         }
 
-        // Allocate descriptor sets
+        // ---- Descriptor sets (vk_descriptors) ----
         try self.allocateDescriptorSets();
 
-        // Create sampler for atlas
-        try self.createSampler();
+        // ---- Atlas sampler (vk_descriptors) ----
+        self.atlas_sampler = try vk_descriptors.createAtlasSampler(self.device);
         errdefer {
             if (self.atlas_sampler) |sampler| vk.vkDestroySampler(self.device, sampler, null);
             self.atlas_sampler = null;
         }
 
-        // Create pipelines
-        try self.createUnifiedPipeline();
-        errdefer self.destroyUnifiedPipeline();
-        try self.createTextPipeline();
-        errdefer self.destroyTextPipeline();
-        try self.createSvgPipeline();
-        errdefer self.destroySvgPipeline();
-        try self.createImagePipeline();
-        errdefer self.destroyImagePipeline();
+        // ---- Pipelines (vk_pipelines) ----
+        try self.createAllPipelines();
+        errdefer self.destroyAllPipelines();
 
-        // Update uniform buffer with LOGICAL pixel dimensions
+        // ---- Initial descriptor writes ----
+        // Uniform buffer with LOGICAL pixel dimensions
         // Scene coordinates are in logical pixels, so the shader needs logical viewport size
         // to correctly normalize to NDC. The swapchain/framebuffers use physical pixels.
         self.updateUniformBuffer(width, height);
 
-        // Update descriptor sets
-        self.updateUnifiedDescriptorSet();
+        for (&self.frames) |*frame| {
+            vk_descriptors.updateUnifiedDescriptorSet(
+                self.device,
+                frame.unified_descriptor_set,
+                frame.primitive_buffer,
+                @sizeOf(unified.Primitive) * MAX_PRIMITIVES,
+                frame.uniform_buffer,
+                @sizeOf(Uniforms),
+            );
+        }
 
         self.initialized = true;
 
-        std.log.info("VulkanRenderer initialized: {}x{} logical, {}x{} physical (scale: {d:.2}, MSAA: {}x)", .{ width, height, physical_width, physical_height, scale_factor, self.sample_count });
-    }
-
-    /// Query the maximum usable MSAA sample count supported by the device
-    fn getMaxUsableSampleCount(self: *Self) c_uint {
-        var props: vk.PhysicalDeviceProperties = undefined;
-        vk.vkGetPhysicalDeviceProperties(self.physical_device, &props);
-
-        // Get the sample counts supported for both color and depth
-        const counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
-
-        // Prefer 4x MSAA for good quality/performance balance
-        if ((counts & vk.VK_SAMPLE_COUNT_4_BIT) != 0) return vk.VK_SAMPLE_COUNT_4_BIT;
-        if ((counts & vk.VK_SAMPLE_COUNT_2_BIT) != 0) return vk.VK_SAMPLE_COUNT_2_BIT;
-        return vk.VK_SAMPLE_COUNT_1_BIT;
-    }
-
-    /// Create MSAA color buffer
-    fn createMSAAResources(self: *Self) !void {
-        // Only create if using MSAA
-        if (self.sample_count == vk.VK_SAMPLE_COUNT_1_BIT) return;
-
-        const image_info = vk.ImageCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .imageType = vk.VK_IMAGE_TYPE_2D,
-            .format = self.swapchain_format,
-            .extent = .{
-                .width = self.swapchain_extent.width,
-                .height = self.swapchain_extent.height,
-                .depth = 1,
-            },
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = self.sample_count,
-            .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
-            .usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-            .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = null,
-            .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-
-        var result = vk.vkCreateImage(self.device, &image_info, null, &self.msaa_image);
-        if (!vk.succeeded(result)) return error.MSAAImageCreationFailed;
-
-        // Get memory requirements and allocate
-        var mem_reqs: vk.MemoryRequirements = undefined;
-        vk.vkGetImageMemoryRequirements(self.device, self.msaa_image, &mem_reqs);
-
-        const mem_type = vk.findMemoryType(
-            &self.mem_properties,
-            mem_reqs.memoryTypeBits,
-            vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        ) orelse return error.NoSuitableMemoryType;
-
-        const alloc_info = vk.MemoryAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = null,
-            .allocationSize = mem_reqs.size,
-            .memoryTypeIndex = mem_type,
-        };
-
-        result = vk.vkAllocateMemory(self.device, &alloc_info, null, &self.msaa_memory);
-        if (!vk.succeeded(result)) return error.MSAAMemoryAllocationFailed;
-
-        result = vk.vkBindImageMemory(self.device, self.msaa_image, self.msaa_memory, 0);
-        if (!vk.succeeded(result)) return error.MSAAMemoryBindFailed;
-
-        // Create image view
-        const view_info = vk.ImageViewCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .image = self.msaa_image,
-            .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-            .format = self.swapchain_format,
-            .components = .{
-                .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        result = vk.vkCreateImageView(self.device, &view_info, null, &self.msaa_view);
-        if (!vk.succeeded(result)) return error.MSAAImageViewCreationFailed;
-    }
-
-    fn createInstance(self: *Self) !void {
-        const app_info = vk.ApplicationInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
-            .pNext = null,
-            .pApplicationName = "Gooey",
-            .applicationVersion = 1,
-            .pEngineName = "Gooey",
-            .engineVersion = 1,
-            .apiVersion = vk.c.VK_API_VERSION_1_0,
-        };
-
-        // Check if validation layers should be enabled
-        const use_validation = enable_validation_layers and vk.isValidationLayerAvailable();
-        if (enable_validation_layers and !use_validation) {
-            std.log.warn("Validation layers requested but VK_LAYER_KHRONOS_validation not available", .{});
-        }
-
-        // Extensions - add debug utils if validation enabled
-        const base_extensions = [_][*:0]const u8{
-            "VK_KHR_surface",
-            "VK_KHR_wayland_surface",
-        };
-        const debug_extensions = [_][*:0]const u8{
-            "VK_KHR_surface",
-            "VK_KHR_wayland_surface",
-            "VK_EXT_debug_utils",
-        };
-        const extensions: []const [*:0]const u8 = if (use_validation) &debug_extensions else &base_extensions;
-
-        // Validation layer
-        const validation_layers = [_][*:0]const u8{vk.VALIDATION_LAYER_NAME};
-
-        // Debug messenger create info (chained via pNext when validation enabled)
-        var debug_create_info = vk.DebugUtilsMessengerCreateInfoEXT{
-            .sType = vk.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-            .pNext = null,
-            .flags = 0,
-            .messageSeverity = vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-            .messageType = vk.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                vk.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                vk.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-            .pfnUserCallback = debugCallback,
-            .pUserData = null,
-        };
-
-        const create_info = vk.InstanceCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            .pNext = if (use_validation) @ptrCast(&debug_create_info) else null,
-            .flags = 0,
-            .pApplicationInfo = &app_info,
-            .enabledLayerCount = if (use_validation) validation_layers.len else 0,
-            .ppEnabledLayerNames = if (use_validation) &validation_layers else null,
-            .enabledExtensionCount = @intCast(extensions.len),
-            .ppEnabledExtensionNames = extensions.ptr,
-        };
-
-        const result = vk.vkCreateInstance(&create_info, null, &self.instance);
-        if (!vk.succeeded(result)) {
-            std.log.err("Failed to create Vulkan instance: {}", .{result});
-            return error.VulkanInstanceCreationFailed;
-        }
-
-        // Create debug messenger after instance creation
-        if (use_validation) {
-            self.createDebugMessenger(&debug_create_info);
-        }
-    }
-
-    /// Debug callback for validation layer messages
-    fn debugCallback(
-        severity: c_uint,
-        msg_type: c_uint,
-        callback_data: [*c]const vk.DebugUtilsMessengerCallbackDataEXT,
-        _: ?*anyopaque,
-    ) callconv(.c) vk.Bool32 {
-        _ = msg_type;
-
-        // Dereference C pointer to access fields
-        const message: [*c]const u8 = if (callback_data != null) callback_data.*.pMessage else "unknown";
-
-        if ((severity & vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
-            std.log.err("[Vulkan Validation] {s}", .{message});
-        } else if ((severity & vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
-            std.log.warn("[Vulkan Validation] {s}", .{message});
-        } else {
-            std.log.info("[Vulkan Validation] {s}", .{message});
-        }
-
-        return vk.FALSE; // Don't abort the call
-    }
-
-    /// Create the debug messenger (called after instance creation)
-    fn createDebugMessenger(self: *Self, create_info: *const vk.DebugUtilsMessengerCreateInfoEXT) void {
-        // Get function pointer dynamically since it's an extension
-        const func = @as(
-            ?*const fn (vk.Instance, *const vk.DebugUtilsMessengerCreateInfoEXT, ?*const anyopaque, *vk.DebugUtilsMessengerEXT) callconv(.c) vk.Result,
-            @ptrCast(vk.vkGetInstanceProcAddr(self.instance, "vkCreateDebugUtilsMessengerEXT")),
+        std.log.info(
+            "VulkanRenderer initialized: {}x{} logical, {}x{} physical (scale: {d:.2}, MSAA: {}x)",
+            .{ width, height, physical_width, physical_height, scale_factor, self.sample_count },
         );
+    }
 
-        if (func) |create_fn| {
-            const result = create_fn(self.instance, create_info, null, &self.debug_messenger);
-            if (vk.succeeded(result)) {
-                std.log.info("Vulkan validation layers enabled", .{});
-            } else {
-                std.log.warn("Failed to create debug messenger: {}", .{result});
-            }
-        } else {
-            std.log.warn("vkCreateDebugUtilsMessengerEXT not available", .{});
+    // =========================================================================
+    // Subsystem Setup — thin orchestrators calling module free functions
+    // =========================================================================
+
+    /// Create per-frame GPU buffers (uniform, primitive, glyph, SVG, image) for all frames.
+    /// Each is host-visible + host-coherent for direct CPU writes.
+    /// Triple-buffered: each frame gets its own set so CPU and GPU don't contend.
+    /// Create per-frame GPU buffers, sub-allocated from the host memory pool.
+    ///
+    /// Reduces ~15 individual `vkAllocateMemory` calls to 0 (the pool's single
+    /// allocation happened earlier). Each buffer gets its own VkBuffer handle
+    /// but shares the pool's backing VkDeviceMemory at different offsets.
+    fn createFrameBuffers(self: *Self) !void {
+        for (&self.frames) |*frame| {
+            const uniform = try vk_buffers.createMappedBufferFromPool(
+                self.device,
+                &self.host_memory_pool,
+                @sizeOf(Uniforms),
+                vk.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            );
+            frame.uniform_buffer = uniform.buffer;
+            frame.uniform_memory = null; // Pool owns memory
+            frame.uniform_mapped = uniform.mapped;
+
+            const prim = try vk_buffers.createMappedBufferFromPool(
+                self.device,
+                &self.host_memory_pool,
+                @sizeOf(unified.Primitive) * MAX_PRIMITIVES,
+                vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            );
+            frame.primitive_buffer = prim.buffer;
+            frame.primitive_memory = null; // Pool owns memory
+            frame.primitive_mapped = prim.mapped;
+
+            const glyph = try vk_buffers.createMappedBufferFromPool(
+                self.device,
+                &self.host_memory_pool,
+                @sizeOf(GpuGlyph) * MAX_GLYPHS,
+                vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            );
+            frame.glyph_buffer = glyph.buffer;
+            frame.glyph_memory = null; // Pool owns memory
+            frame.glyph_mapped = glyph.mapped;
+
+            const svg = try vk_buffers.createMappedBufferFromPool(
+                self.device,
+                &self.host_memory_pool,
+                @sizeOf(GpuSvg) * MAX_SVGS,
+                vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            );
+            frame.svg_buffer = svg.buffer;
+            frame.svg_memory = null; // Pool owns memory
+            frame.svg_mapped = svg.mapped;
+
+            const img = try vk_buffers.createMappedBufferFromPool(
+                self.device,
+                &self.host_memory_pool,
+                @sizeOf(GpuImage) * MAX_IMAGES,
+                vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            );
+            frame.image_buffer = img.buffer;
+            frame.image_memory = null; // Pool owns memory
+            frame.image_mapped = img.mapped;
         }
     }
 
-    /// Destroy the debug messenger (called before instance destruction)
-    fn destroyDebugMessenger(self: *Self) void {
-        if (self.debug_messenger == null) return;
-
-        const func = @as(
-            ?*const fn (vk.Instance, vk.DebugUtilsMessengerEXT, ?*const anyopaque) callconv(.c) void,
-            @ptrCast(vk.vkGetInstanceProcAddr(self.instance, "vkDestroyDebugUtilsMessengerEXT")),
-        );
-
-        if (func) |destroy_fn| {
-            destroy_fn(self.instance, self.debug_messenger, null);
-        }
-        self.debug_messenger = null;
-    }
-
-    fn createWaylandSurface(self: *Self, wl_display: *anyopaque, wl_surface: *anyopaque) !void {
-        const create_info = vk.WaylandSurfaceCreateInfoKHR{
-            .sType = vk.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
-            .pNext = null,
-            .flags = 0,
-            .display = @ptrCast(wl_display),
-            .surface = @ptrCast(wl_surface),
-        };
-
-        const result = vk.vkCreateWaylandSurfaceKHR(self.instance, &create_info, null, &self.surface);
-        if (!vk.succeeded(result)) {
-            std.log.err("Failed to create Wayland surface: {}", .{result});
-            return error.WaylandSurfaceCreationFailed;
-        }
-    }
-
-    fn pickPhysicalDevice(self: *Self) !void {
-        var device_count: u32 = 0;
-        _ = vk.vkEnumeratePhysicalDevices(self.instance, &device_count, null);
-        if (device_count == 0) {
-            return error.NoVulkanDevicesFound;
-        }
-
-        // Assert device count fits our fixed array - fail fast if assumption violated
-        // (16 devices should be more than enough for any reasonable system)
-        std.debug.assert(device_count <= 16);
-        var devices: [16]vk.PhysicalDevice = [_]vk.PhysicalDevice{null} ** 16;
-        var count: u32 = @min(device_count, 16);
-        _ = vk.vkEnumeratePhysicalDevices(self.instance, &count, &devices);
-
-        // Find a suitable device
-        for (devices[0..count]) |dev| {
-            if (dev == null) continue;
-
-            if (self.isDeviceSuitable(dev)) {
-                self.physical_device = dev;
-
-                var props: vk.PhysicalDeviceProperties = undefined;
-                vk.vkGetPhysicalDeviceProperties(dev, &props);
-                std.log.info("Selected GPU: {s}", .{@as([*:0]const u8, @ptrCast(&props.deviceName))});
-                return;
-            }
-        }
-
-        return error.NoSuitableVulkanDevice;
-    }
-
-    fn isDeviceSuitable(self: *Self, device: vk.PhysicalDevice) bool {
-        // Find queue families
-        var queue_family_count: u32 = 0;
-        vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, null);
-
-        // Assert queue family count fits our fixed array - fail fast if assumption violated
-        std.debug.assert(queue_family_count <= 32);
-        var queue_families: [32]vk.QueueFamilyProperties = undefined;
-        var count: u32 = @min(queue_family_count, 32);
-        vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &count, &queue_families);
-
-        var found_graphics = false;
-        var found_present = false;
-
-        for (queue_families[0..count], 0..) |family, i| {
-            const idx: u32 = @intCast(i);
-
-            // Check for graphics support
-            if ((family.queueFlags & vk.VK_QUEUE_GRAPHICS_BIT) != 0) {
-                self.graphics_family = idx;
-                found_graphics = true;
-            }
-
-            // Check for present support
-            var present_support: vk.Bool32 = vk.FALSE;
-            _ = vk.vkGetPhysicalDeviceSurfaceSupportKHR(device, idx, self.surface, &present_support);
-            if (present_support == vk.TRUE) {
-                self.present_family = idx;
-                found_present = true;
-            }
-
-            if (found_graphics and found_present) break;
-        }
-
-        return found_graphics and found_present;
-    }
-
-    fn createLogicalDevice(self: *Self) !void {
-        const queue_priority: f32 = 1.0;
-
-        // May need 1 or 2 queue create infos depending on if families are the same
-        var queue_create_infos: [2]vk.DeviceQueueCreateInfo = undefined;
-        var queue_create_count: u32 = 1;
-
-        queue_create_infos[0] = .{
-            .sType = vk.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .queueFamilyIndex = self.graphics_family,
-            .queueCount = 1,
-            .pQueuePriorities = &queue_priority,
-        };
-
-        if (self.graphics_family != self.present_family) {
-            queue_create_infos[1] = .{
-                .sType = vk.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .queueFamilyIndex = self.present_family,
-                .queueCount = 1,
-                .pQueuePriorities = &queue_priority,
-            };
-            queue_create_count = 2;
-        }
-
-        const device_extensions = [_][*:0]const u8{
-            "VK_KHR_swapchain",
-        };
-
-        const create_info = vk.DeviceCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .queueCreateInfoCount = queue_create_count,
-            .pQueueCreateInfos = &queue_create_infos,
-            .enabledLayerCount = 0,
-            .ppEnabledLayerNames = null,
-            .enabledExtensionCount = device_extensions.len,
-            .ppEnabledExtensionNames = &device_extensions,
-            .pEnabledFeatures = null,
-        };
-
-        const result = vk.vkCreateDevice(self.physical_device, &create_info, null, &self.device);
-        if (!vk.succeeded(result)) {
-            return error.DeviceCreationFailed;
-        }
-
-        // Get queue handles
-        vk.vkGetDeviceQueue(self.device, self.graphics_family, 0, &self.graphics_queue);
-        vk.vkGetDeviceQueue(self.device, self.present_family, 0, &self.present_queue);
-    }
-
-    fn createSwapchain(self: *Self, width: u32, height: u32) !void {
-        // Query surface capabilities
-        var capabilities: vk.SurfaceCapabilitiesKHR = undefined;
-        _ = vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(self.physical_device, self.surface, &capabilities);
-
-        // Query surface formats
-        var format_count: u32 = 0;
-        _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &format_count, null);
-
-        // Use fixed buffer - we only need to find one suitable format.
-        // Some drivers report 99+ formats; we just use what fits since we're searching for
-        // a specific format anyway (B8G8R8A8_UNORM or B8G8R8A8_SRGB).
-        var formats: [MAX_SURFACE_FORMATS]vk.SurfaceFormatKHR = undefined;
-        var fmt_count: u32 = @min(format_count, MAX_SURFACE_FORMATS);
-        _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(self.physical_device, self.surface, &fmt_count, &formats);
-
-        // Choose format - prefer UNORM since our colors are already in sRGB space
-        // Using SRGB format would double-gamma-correct (GPU applies linear→sRGB on output)
-        var chosen_format = formats[0];
-        var found_unorm = false;
-        for (formats[0..fmt_count]) |format| {
-            // Prefer UNORM - we write sRGB values directly, no conversion needed
-            if (format.format == vk.VK_FORMAT_B8G8R8A8_UNORM and
-                format.colorSpace == vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-            {
-                chosen_format = format;
-                found_unorm = true;
-                break;
-            }
-        }
-        // Fallback: accept any UNORM or SRGB format
-        if (!found_unorm) {
-            for (formats[0..fmt_count]) |format| {
-                if (format.format == vk.VK_FORMAT_B8G8R8A8_UNORM or
-                    format.format == vk.VK_FORMAT_B8G8R8A8_SRGB)
-                {
-                    chosen_format = format;
-                    break;
-                }
-            }
-        }
-        self.swapchain_format = chosen_format.format;
-
-        // Query present modes
-        var present_mode_count: u32 = 0;
-        _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &present_mode_count, null);
-
-        // Use fixed buffer for present modes - typically only 4-6 modes exist.
-        var present_modes: [MAX_PRESENT_MODES]c_uint = undefined;
-        var pm_count: u32 = @min(present_mode_count, MAX_PRESENT_MODES);
-        _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(self.physical_device, self.surface, &pm_count, @ptrCast(&present_modes));
-
-        // Choose present mode (prefer FIFO for vsync)
-        var chosen_present_mode: c_uint = @intCast(vk.VK_PRESENT_MODE_FIFO_KHR);
-        for (present_modes[0..pm_count]) |mode| {
-            if (mode == vk.VK_PRESENT_MODE_MAILBOX_KHR) {
-                chosen_present_mode = mode;
-                break;
-            }
-        }
-
-        // Choose composite alpha mode - prefer in order: OPAQUE, PRE_MULTIPLIED, POST_MULTIPLIED, INHERIT
-        // This ensures compatibility across different Wayland compositors
-        const preferred_alpha_modes = [_]c_uint{
-            vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            vk.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
-            vk.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
-            vk.VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
-        };
-        var chosen_composite_alpha: c_uint = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        var found_alpha = false;
-        for (preferred_alpha_modes) |alpha_mode| {
-            if ((capabilities.supportedCompositeAlpha & alpha_mode) != 0) {
-                chosen_composite_alpha = alpha_mode;
-                found_alpha = true;
-                break;
-            }
-        }
-        // Assert at least one mode is supported (should always be true per Vulkan spec)
-        std.debug.assert(found_alpha);
-        std.debug.assert(capabilities.supportedCompositeAlpha != 0);
-
-        // Determine extent
-        var extent: vk.Extent2D = undefined;
-        if (capabilities.currentExtent.width != 0xFFFFFFFF) {
-            // Compositor specifies exact extent (rare on Wayland)
-            extent = capabilities.currentExtent;
-        } else {
-            // We choose the extent - use our requested physical pixel size
-            extent.width = std.math.clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-            extent.height = std.math.clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-        }
-        self.swapchain_extent = extent;
-
-        // Image count
-        var image_count = capabilities.minImageCount + 1;
-        if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
-            image_count = capabilities.maxImageCount;
-        }
-
-        const create_info = vk.SwapchainCreateInfoKHR{
-            .sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-            .pNext = null,
-            .flags = 0,
-            .surface = self.surface,
-            .minImageCount = image_count,
-            .imageFormat = chosen_format.format,
-            .imageColorSpace = chosen_format.colorSpace,
-            .imageExtent = extent,
-            .imageArrayLayers = 1,
-            .imageUsage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-            .imageSharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = null,
-            .preTransform = capabilities.currentTransform,
-            .compositeAlpha = chosen_composite_alpha,
-            .presentMode = chosen_present_mode,
-            .clipped = vk.TRUE,
-            .oldSwapchain = null,
-        };
-
-        const result = vk.vkCreateSwapchainKHR(self.device, &create_info, null, &self.swapchain);
-        if (!vk.succeeded(result)) {
-            return error.SwapchainCreationFailed;
-        }
-
-        // Get swapchain images
-        _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &self.swapchain_image_count, null);
-        // Assert swapchain image count fits our fixed array - fail fast if assumption violated
-        std.debug.assert(self.swapchain_image_count <= 8);
-        var img_count: u32 = @min(self.swapchain_image_count, 8);
-        _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &img_count, &self.swapchain_images);
-        self.swapchain_image_count = img_count;
-
-        // Create image views
-        for (0..img_count) |i| {
-            const view_info = vk.ImageViewCreateInfo{
-                .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .image = self.swapchain_images[i],
-                .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-                .format = self.swapchain_format,
-                .components = .{
-                    .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                },
-                .subresourceRange = .{
-                    .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-            };
-
-            const res = vk.vkCreateImageView(self.device, &view_info, null, &self.swapchain_image_views[i]);
-            if (!vk.succeeded(res)) {
-                return error.ImageViewCreationFailed;
-            }
-        }
-    }
-
-    fn createRenderPass(self: *Self) !void {
-        const use_msaa = self.sample_count != vk.VK_SAMPLE_COUNT_1_BIT;
-
-        if (use_msaa) {
-            // MSAA render pass with resolve
-            // Attachment 0: MSAA color buffer (multisampled)
-            // Attachment 1: Resolve target (swapchain image, single-sampled)
-            const attachments = [_]vk.AttachmentDescription{
-                // MSAA color attachment
-                .{
-                    .flags = 0,
-                    .format = @intCast(self.swapchain_format),
-                    .samples = self.sample_count,
-                    .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
-                    .storeOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE, // Don't need to store MSAA buffer
-                    .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                    .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                    .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-                    .finalLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                },
-                // Resolve attachment (swapchain image)
-                .{
-                    .flags = 0,
-                    .format = @intCast(self.swapchain_format),
-                    .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-                    .loadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE, // Will be resolved into
-                    .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE,
-                    .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                    .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                    .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-                    .finalLayout = vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                },
-            };
-
-            const color_attachment_ref = vk.AttachmentReference{
-                .attachment = 0, // MSAA buffer
-                .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            };
-
-            const resolve_attachment_ref = vk.AttachmentReference{
-                .attachment = 1, // Swapchain image
-                .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            };
-
-            const subpass = vk.SubpassDescription{
-                .flags = 0,
-                .pipelineBindPoint = vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
-                .inputAttachmentCount = 0,
-                .pInputAttachments = null,
-                .colorAttachmentCount = 1,
-                .pColorAttachments = &color_attachment_ref,
-                .pResolveAttachments = &resolve_attachment_ref,
-                .pDepthStencilAttachment = null,
-                .preserveAttachmentCount = 0,
-                .pPreserveAttachments = null,
-            };
-
-            const dependency = vk.SubpassDependency{
-                .srcSubpass = vk.SUBPASS_EXTERNAL,
-                .dstSubpass = 0,
-                .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .srcAccessMask = 0,
-                .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .dependencyFlags = 0,
-            };
-
-            const render_pass_info = vk.RenderPassCreateInfo{
-                .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .attachmentCount = 2,
-                .pAttachments = &attachments,
-                .subpassCount = 1,
-                .pSubpasses = &subpass,
-                .dependencyCount = 1,
-                .pDependencies = &dependency,
-            };
-
-            const result = vk.vkCreateRenderPass(self.device, &render_pass_info, null, &self.render_pass);
-            if (!vk.succeeded(result)) {
-                return error.RenderPassCreationFailed;
-            }
-        } else {
-            // Non-MSAA render pass (single attachment)
-            const color_attachment = vk.AttachmentDescription{
-                .flags = 0,
-                .format = @intCast(self.swapchain_format),
-                .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-                .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE,
-                .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-                .finalLayout = vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            };
-
-            const color_attachment_ref = vk.AttachmentReference{
-                .attachment = 0,
-                .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            };
-
-            const subpass = vk.SubpassDescription{
-                .flags = 0,
-                .pipelineBindPoint = vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
-                .inputAttachmentCount = 0,
-                .pInputAttachments = null,
-                .colorAttachmentCount = 1,
-                .pColorAttachments = &color_attachment_ref,
-                .pResolveAttachments = null,
-                .pDepthStencilAttachment = null,
-                .preserveAttachmentCount = 0,
-                .pPreserveAttachments = null,
-            };
-
-            const dependency = vk.SubpassDependency{
-                .srcSubpass = vk.SUBPASS_EXTERNAL,
-                .dstSubpass = 0,
-                .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .srcAccessMask = 0,
-                .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .dependencyFlags = 0,
-            };
-
-            const render_pass_info = vk.RenderPassCreateInfo{
-                .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .attachmentCount = 1,
-                .pAttachments = &color_attachment,
-                .subpassCount = 1,
-                .pSubpasses = &subpass,
-                .dependencyCount = 1,
-                .pDependencies = &dependency,
-            };
-
-            const result = vk.vkCreateRenderPass(self.device, &render_pass_info, null, &self.render_pass);
-            if (!vk.succeeded(result)) {
-                return error.RenderPassCreationFailed;
-            }
-        }
-    }
-
-    fn createFramebuffers(self: *Self) !void {
-        const use_msaa = self.sample_count != vk.VK_SAMPLE_COUNT_1_BIT;
-
-        for (0..self.swapchain_image_count) |i| {
-            if (use_msaa) {
-                // MSAA: attachment 0 = MSAA color, attachment 1 = resolve (swapchain)
-                const attachments = [_]vk.ImageView{ self.msaa_view, self.swapchain_image_views[i] };
-
-                const framebuffer_info = vk.FramebufferCreateInfo{
-                    .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                    .pNext = null,
-                    .flags = 0,
-                    .renderPass = self.render_pass,
-                    .attachmentCount = 2,
-                    .pAttachments = &attachments,
-                    .width = self.swapchain_extent.width,
-                    .height = self.swapchain_extent.height,
-                    .layers = 1,
-                };
-
-                const result = vk.vkCreateFramebuffer(self.device, &framebuffer_info, null, &self.framebuffers[i]);
-                if (!vk.succeeded(result)) {
-                    return error.FramebufferCreationFailed;
-                }
-            } else {
-                // Non-MSAA: single attachment
-                const attachments = [_]vk.ImageView{self.swapchain_image_views[i]};
-
-                const framebuffer_info = vk.FramebufferCreateInfo{
-                    .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                    .pNext = null,
-                    .flags = 0,
-                    .renderPass = self.render_pass,
-                    .attachmentCount = 1,
-                    .pAttachments = &attachments,
-                    .width = self.swapchain_extent.width,
-                    .height = self.swapchain_extent.height,
-                    .layers = 1,
-                };
-
-                const result = vk.vkCreateFramebuffer(self.device, &framebuffer_info, null, &self.framebuffers[i]);
-                if (!vk.succeeded(result)) {
-                    return error.FramebufferCreationFailed;
-                }
-            }
-        }
-    }
-
-    fn createCommandPool(self: *Self) !void {
-        const pool_info = vk.CommandPoolCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .pNext = null,
-            .flags = vk.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = self.graphics_family,
-        };
-
-        const result = vk.vkCreateCommandPool(self.device, &pool_info, null, &self.command_pool);
-        if (!vk.succeeded(result)) {
-            return error.CommandPoolCreationFailed;
-        }
-    }
-
-    fn allocateCommandBuffers(self: *Self) !void {
-        // Allocate render command buffers (one per frame in flight)
-        const alloc_info = vk.CommandBufferAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext = null,
-            .commandPool = self.command_pool,
-            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = MAX_FRAMES_IN_FLIGHT,
-        };
-
-        const result = vk.vkAllocateCommandBuffers(self.device, &alloc_info, &self.command_buffers);
-        if (!vk.succeeded(result)) {
-            return error.CommandBufferAllocationFailed;
-        }
-
-        // Allocate dedicated transfer command buffer for atlas uploads
-        // This avoids race conditions with render command buffers
-        const transfer_alloc_info = vk.CommandBufferAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext = null,
-            .commandPool = self.command_pool,
-            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-
-        const transfer_result = vk.vkAllocateCommandBuffers(self.device, &transfer_alloc_info, &self.transfer_command_buffer);
-        if (!vk.succeeded(transfer_result)) {
-            return error.CommandBufferAllocationFailed;
-        }
-    }
-
-    fn createSyncObjects(self: *Self) !void {
-        const semaphore_info = vk.SemaphoreCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-        };
-
-        const fence_info = vk.FenceCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .pNext = null,
-            .flags = vk.VK_FENCE_CREATE_SIGNALED_BIT,
-        };
-
-        for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-            var res = vk.vkCreateSemaphore(self.device, &semaphore_info, null, &self.image_available_semaphores[i]);
-            if (!vk.succeeded(res)) return error.SyncObjectCreationFailed;
-
-            res = vk.vkCreateSemaphore(self.device, &semaphore_info, null, &self.render_finished_semaphores[i]);
-            if (!vk.succeeded(res)) return error.SyncObjectCreationFailed;
-
-            res = vk.vkCreateFence(self.device, &fence_info, null, &self.in_flight_fences[i]);
-            if (!vk.succeeded(res)) return error.SyncObjectCreationFailed;
-        }
-
-        // Create dedicated fence for transfer operations (starts signaled so first wait succeeds)
-        const transfer_res = vk.vkCreateFence(self.device, &fence_info, null, &self.transfer_fence);
-        if (!vk.succeeded(transfer_res)) return error.SyncObjectCreationFailed;
-    }
-
-    fn createBuffers(self: *Self) !void {
-        // Uniform buffer
-        try self.createBuffer(
-            @sizeOf(Uniforms),
-            vk.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &self.uniform_buffer,
-            &self.uniform_memory,
-        );
-        _ = vk.vkMapMemory(self.device, self.uniform_memory, 0, @sizeOf(Uniforms), 0, &self.uniform_mapped);
-
-        // Primitive buffer (storage)
-        const prim_size = @sizeOf(unified.Primitive) * MAX_PRIMITIVES;
-        try self.createBuffer(
-            prim_size,
-            vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &self.primitive_buffer,
-            &self.primitive_memory,
-        );
-        _ = vk.vkMapMemory(self.device, self.primitive_memory, 0, prim_size, 0, &self.primitive_mapped);
-
-        // Glyph buffer (storage)
-        const glyph_size = @sizeOf(GpuGlyph) * MAX_GLYPHS;
-        try self.createBuffer(
-            glyph_size,
-            vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &self.glyph_buffer,
-            &self.glyph_memory,
-        );
-        _ = vk.vkMapMemory(self.device, self.glyph_memory, 0, glyph_size, 0, &self.glyph_mapped);
-
-        // SVG buffer (storage)
-        const svg_size = @sizeOf(GpuSvg) * MAX_SVGS;
-        try self.createBuffer(
-            svg_size,
-            vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &self.svg_buffer,
-            &self.svg_memory,
-        );
-        _ = vk.vkMapMemory(self.device, self.svg_memory, 0, svg_size, 0, &self.svg_mapped);
-
-        // Image buffer (storage)
-        const image_size = @sizeOf(GpuImage) * MAX_IMAGES;
-        try self.createBuffer(
-            image_size,
-            vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &self.image_buffer,
-            &self.image_memory,
-        );
-        _ = vk.vkMapMemory(self.device, self.image_memory, 0, image_size, 0, &self.image_mapped);
-    }
-
-    fn createBuffer(
-        self: *Self,
-        size: vk.DeviceSize,
-        usage: u32,
-        properties: u32,
-        buffer: *vk.Buffer,
-        memory: *vk.DeviceMemory,
-    ) !void {
-        const buffer_info = vk.BufferCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .size = size,
-            .usage = usage,
-            .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = null,
-        };
-
-        var result = vk.vkCreateBuffer(self.device, &buffer_info, null, buffer);
-        if (!vk.succeeded(result)) {
-            return error.BufferCreationFailed;
-        }
-
-        var mem_requirements: vk.MemoryRequirements = undefined;
-        vk.vkGetBufferMemoryRequirements(self.device, buffer.*, &mem_requirements);
-
-        const mem_type_index = vk.findMemoryType(&self.mem_properties, mem_requirements.memoryTypeBits, properties) orelse {
-            return error.NoSuitableMemoryType;
-        };
-
-        const alloc_info = vk.MemoryAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = null,
-            .allocationSize = mem_requirements.size,
-            .memoryTypeIndex = mem_type_index,
-        };
-
-        result = vk.vkAllocateMemory(self.device, &alloc_info, null, memory);
-        if (!vk.succeeded(result)) {
-            return error.MemoryAllocationFailed;
-        }
-
-        _ = vk.vkBindBufferMemory(self.device, buffer.*, memory.*, 0);
-    }
-
+    /// Create descriptor set layouts: one unified (no texture) + one textured (shared).
     fn createDescriptorLayouts(self: *Self) !void {
-        // Unified pipeline: storage buffer + uniform buffer
-        const unified_bindings = [_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = null,
-            },
-        };
-
-        const unified_layout_info = vk.DescriptorSetLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .bindingCount = unified_bindings.len,
-            .pBindings = &unified_bindings,
-        };
-
-        var result = vk.vkCreateDescriptorSetLayout(self.device, &unified_layout_info, null, &self.unified_descriptor_layout);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetLayoutCreationFailed;
+        self.unified_descriptor_layout = try vk_descriptors.createUnifiedLayout(self.device);
+        errdefer {
+            vk.vkDestroyDescriptorSetLayout(self.device, self.unified_descriptor_layout, null);
+            self.unified_descriptor_layout = null;
         }
 
-        // Text pipeline: storage buffer + uniform buffer + texture + sampler
-        const text_bindings = [_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 2,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 3,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = null,
-            },
-        };
-
-        const text_layout_info = vk.DescriptorSetLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .bindingCount = text_bindings.len,
-            .pBindings = &text_bindings,
-        };
-
-        result = vk.vkCreateDescriptorSetLayout(self.device, &text_layout_info, null, &self.text_descriptor_layout);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetLayoutCreationFailed;
-        }
-
-        // SVG pipeline: storage buffer + uniform buffer + texture + sampler (same layout as text)
-        const svg_bindings = [_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 2,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 3,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = null,
-            },
-        };
-
-        const svg_layout_info = vk.DescriptorSetLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .bindingCount = svg_bindings.len,
-            .pBindings = &svg_bindings,
-        };
-
-        result = vk.vkCreateDescriptorSetLayout(self.device, &svg_layout_info, null, &self.svg_descriptor_layout);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetLayoutCreationFailed;
-        }
-
-        // Image pipeline: storage buffer + uniform buffer + texture + sampler (same layout as SVG/text)
-        const image_bindings = [_]vk.DescriptorSetLayoutBinding{
-            .{
-                .binding = 0,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 2,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = null,
-            },
-            .{
-                .binding = 3,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-                .descriptorCount = 1,
-                .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = null,
-            },
-        };
-
-        const image_layout_info = vk.DescriptorSetLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .bindingCount = image_bindings.len,
-            .pBindings = &image_bindings,
-        };
-
-        result = vk.vkCreateDescriptorSetLayout(self.device, &image_layout_info, null, &self.image_descriptor_layout);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetLayoutCreationFailed;
-        }
+        // Single textured layout shared by text, SVG, and image pipelines (Phase 5).
+        self.textured_descriptor_layout = try vk_descriptors.createTexturedLayout(self.device);
     }
 
-    fn createDescriptorPool(self: *Self) !void {
-        const pool_sizes = [_]vk.DescriptorPoolSize{
-            .{ .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8 },
-            .{ .type = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 8 },
-            .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 6 },
-            .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 6 },
-        };
-
-        const pool_info = vk.DescriptorPoolCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .maxSets = 8,
-            .poolSizeCount = pool_sizes.len,
-            .pPoolSizes = &pool_sizes,
-        };
-
-        const result = vk.vkCreateDescriptorPool(self.device, &pool_info, null, &self.descriptor_pool);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorPoolCreationFailed;
-        }
-    }
-
+    /// Allocate descriptor sets for all frames (4 sets per frame × FRAME_COUNT frames).
     fn allocateDescriptorSets(self: *Self) !void {
-        // Allocate unified descriptor set
-        const unified_layouts = [_]vk.DescriptorSetLayout{self.unified_descriptor_layout};
-        const unified_alloc_info = vk.DescriptorSetAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .pNext = null,
-            .descriptorPool = self.descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &unified_layouts,
-        };
-
-        var result = vk.vkAllocateDescriptorSets(self.device, &unified_alloc_info, &self.unified_descriptor_set);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetAllocationFailed;
-        }
-
-        // Allocate text descriptor set
-        const text_layouts = [_]vk.DescriptorSetLayout{self.text_descriptor_layout};
-        const text_alloc_info = vk.DescriptorSetAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .pNext = null,
-            .descriptorPool = self.descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &text_layouts,
-        };
-
-        result = vk.vkAllocateDescriptorSets(self.device, &text_alloc_info, &self.text_descriptor_set);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetAllocationFailed;
-        }
-
-        // Allocate SVG descriptor set
-        const svg_layouts = [_]vk.DescriptorSetLayout{self.svg_descriptor_layout};
-        const svg_alloc_info = vk.DescriptorSetAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .pNext = null,
-            .descriptorPool = self.descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &svg_layouts,
-        };
-
-        result = vk.vkAllocateDescriptorSets(self.device, &svg_alloc_info, &self.svg_descriptor_set);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetAllocationFailed;
-        }
-
-        // Allocate image descriptor set
-        const image_layouts = [_]vk.DescriptorSetLayout{self.image_descriptor_layout};
-        const image_alloc_info = vk.DescriptorSetAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .pNext = null,
-            .descriptorPool = self.descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &image_layouts,
-        };
-
-        result = vk.vkAllocateDescriptorSets(self.device, &image_alloc_info, &self.image_descriptor_set);
-        if (!vk.succeeded(result)) {
-            return error.DescriptorSetAllocationFailed;
+        for (&self.frames) |*frame| {
+            frame.unified_descriptor_set = try vk_descriptors.allocateDescriptorSet(
+                self.device,
+                self.descriptor_pool,
+                self.unified_descriptor_layout,
+            );
+            frame.text_descriptor_set = try vk_descriptors.allocateDescriptorSet(
+                self.device,
+                self.descriptor_pool,
+                self.textured_descriptor_layout,
+            );
+            frame.svg_descriptor_set = try vk_descriptors.allocateDescriptorSet(
+                self.device,
+                self.descriptor_pool,
+                self.textured_descriptor_layout,
+            );
+            frame.image_descriptor_set = try vk_descriptors.allocateDescriptorSet(
+                self.device,
+                self.descriptor_pool,
+                self.textured_descriptor_layout,
+            );
         }
     }
 
-    fn createSampler(self: *Self) !void {
-        const sampler_info = vk.SamplerCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .magFilter = vk.VK_FILTER_LINEAR,
-            .minFilter = vk.VK_FILTER_LINEAR,
-            .mipmapMode = vk.VK_SAMPLER_MIPMAP_MODE_LINEAR,
-            .addressModeU = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeV = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeW = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .mipLodBias = 0,
-            .anisotropyEnable = vk.FALSE,
-            .maxAnisotropy = 1,
-            .compareEnable = vk.FALSE,
-            .compareOp = vk.VK_COMPARE_OP_NEVER,
-            .minLod = 0,
-            .maxLod = 0,
-            .borderColor = vk.VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
-            .unnormalizedCoordinates = vk.FALSE,
-        };
+    /// Create all four graphics pipelines via the generic vk_pipelines helper.
+    fn createAllPipelines(self: *Self) !void {
+        std.debug.assert(self.device != null);
+        std.debug.assert(self.render_pass != null);
 
-        const result = vk.vkCreateSampler(self.device, &sampler_info, null, &self.atlas_sampler);
-        if (!vk.succeeded(result)) {
-            return error.SamplerCreationFailed;
-        }
+        const unified_result = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+            .vert_spv = unified_vert_spv,
+            .frag_spv = unified_frag_spv,
+            .descriptor_layout = self.unified_descriptor_layout,
+        });
+        self.unified_pipeline = unified_result.pipeline;
+        self.unified_pipeline_layout = unified_result.layout;
+
+        const text = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+            .vert_spv = text_vert_spv,
+            .frag_spv = text_frag_spv,
+            .descriptor_layout = self.textured_descriptor_layout,
+        });
+        self.text_pipeline = text.pipeline;
+        self.text_pipeline_layout = text.layout;
+
+        const svg = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+            .vert_spv = svg_vert_spv,
+            .frag_spv = svg_frag_spv,
+            .descriptor_layout = self.textured_descriptor_layout,
+            .blend_mode = .premultiplied, // SVG shader outputs pre-multiplied RGB
+        });
+        self.svg_pipeline = svg.pipeline;
+        self.svg_pipeline_layout = svg.layout;
+
+        const image = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+            .vert_spv = image_vert_spv,
+            .frag_spv = image_frag_spv,
+            .descriptor_layout = self.textured_descriptor_layout,
+        });
+        self.image_pipeline = image.pipeline;
+        self.image_pipeline_layout = image.layout;
     }
 
     fn updateUniformBuffer(self: *Self, width: u32, height: u32) void {
@@ -2003,726 +800,20 @@ pub const VulkanRenderer = struct {
             .viewport_width = @floatFromInt(width),
             .viewport_height = @floatFromInt(height),
         };
-        if (self.uniform_mapped) |ptr| {
-            const dest: *Uniforms = @ptrCast(@alignCast(ptr));
-            dest.* = uniforms;
+        for (&self.frames) |*frame| {
+            if (frame.uniform_mapped) |ptr| {
+                const dest: *Uniforms = @ptrCast(@alignCast(ptr));
+                dest.* = uniforms;
+            }
         }
     }
 
-    fn updateUnifiedDescriptorSet(self: *Self) void {
-        const buffer_infos = [_]vk.DescriptorBufferInfo{
-            .{
-                .buffer = self.primitive_buffer,
-                .offset = 0,
-                .range = @sizeOf(unified.Primitive) * MAX_PRIMITIVES,
-            },
-            .{
-                .buffer = self.uniform_buffer,
-                .offset = 0,
-                .range = @sizeOf(Uniforms),
-            },
-        };
-
-        const writes = [_]vk.WriteDescriptorSet{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.unified_descriptor_set,
-                .dstBinding = 0,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[0],
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.unified_descriptor_set,
-                .dstBinding = 1,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[1],
-                .pTexelBufferView = null,
-            },
-        };
-
-        vk.vkUpdateDescriptorSets(self.device, writes.len, &writes, 0, null);
-    }
-
-    fn createUnifiedPipeline(self: *Self) !void {
-        // Create shader modules
-        const vert_module = try self.createShaderModule(unified_vert_spv);
-        defer vk.vkDestroyShaderModule(self.device, vert_module, null);
-
-        const frag_module = try self.createShaderModule(unified_frag_spv);
-        defer vk.vkDestroyShaderModule(self.device, frag_module, null);
-
-        const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .module = vert_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = frag_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-        };
-
-        // No vertex input (generated in shader)
-        const vertex_input_info = vk.PipelineVertexInputStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .vertexBindingDescriptionCount = 0,
-            .pVertexBindingDescriptions = null,
-            .vertexAttributeDescriptionCount = 0,
-            .pVertexAttributeDescriptions = null,
-        };
-
-        const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            .primitiveRestartEnable = vk.FALSE,
-        };
-
-        const viewport_state = vk.PipelineViewportStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .viewportCount = 1,
-            .pViewports = null, // Dynamic
-            .scissorCount = 1,
-            .pScissors = null, // Dynamic
-        };
-
-        const rasterizer = vk.PipelineRasterizationStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .depthClampEnable = vk.FALSE,
-            .rasterizerDiscardEnable = vk.FALSE,
-            .polygonMode = vk.VK_POLYGON_MODE_FILL,
-            .cullMode = vk.VK_CULL_MODE_NONE,
-            .frontFace = vk.VK_FRONT_FACE_CLOCKWISE,
-            .depthBiasEnable = vk.FALSE,
-            .depthBiasConstantFactor = 0,
-            .depthBiasClamp = 0,
-            .depthBiasSlopeFactor = 0,
-            .lineWidth = 1.0,
-        };
-
-        const multisampling = vk.PipelineMultisampleStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .rasterizationSamples = self.sample_count,
-            .sampleShadingEnable = vk.FALSE,
-            .minSampleShading = 1.0,
-            .pSampleMask = null,
-            .alphaToCoverageEnable = vk.FALSE,
-            .alphaToOneEnable = vk.FALSE,
-        };
-
-        const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
-            .blendEnable = vk.TRUE,
-            .srcColorBlendFactor = vk.VK_BLEND_FACTOR_SRC_ALPHA,
-            .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .colorBlendOp = vk.VK_BLEND_OP_ADD,
-            .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-            .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .alphaBlendOp = vk.VK_BLEND_OP_ADD,
-            .colorWriteMask = vk.VK_COLOR_COMPONENT_ALL,
-        };
-
-        const color_blending = vk.PipelineColorBlendStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .logicOpEnable = vk.FALSE,
-            .logicOp = 0,
-            .attachmentCount = 1,
-            .pAttachments = &color_blend_attachment,
-            .blendConstants = .{ 0, 0, 0, 0 },
-        };
-
-        const dynamic_states = [_]c_uint{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
-        const dynamic_state = vk.PipelineDynamicStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .dynamicStateCount = dynamic_states.len,
-            .pDynamicStates = &dynamic_states,
-        };
-
-        // Create pipeline layout
-        const layouts = [_]vk.DescriptorSetLayout{self.unified_descriptor_layout};
-        const layout_info = vk.PipelineLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .setLayoutCount = 1,
-            .pSetLayouts = &layouts,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = null,
-        };
-
-        var result = vk.vkCreatePipelineLayout(self.device, &layout_info, null, &self.unified_pipeline_layout);
-        if (!vk.succeeded(result)) {
-            return error.PipelineLayoutCreationFailed;
-        }
-
-        const pipeline_info = vk.GraphicsPipelineCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .stageCount = shader_stages.len,
-            .pStages = &shader_stages,
-            .pVertexInputState = &vertex_input_info,
-            .pInputAssemblyState = &input_assembly,
-            .pTessellationState = null,
-            .pViewportState = &viewport_state,
-            .pRasterizationState = &rasterizer,
-            .pMultisampleState = &multisampling,
-            .pDepthStencilState = null,
-            .pColorBlendState = &color_blending,
-            .pDynamicState = &dynamic_state,
-            .layout = self.unified_pipeline_layout,
-            .renderPass = self.render_pass,
-            .subpass = 0,
-            .basePipelineHandle = null,
-            .basePipelineIndex = -1,
-        };
-
-        result = vk.vkCreateGraphicsPipelines(self.device, null, 1, &pipeline_info, null, &self.unified_pipeline);
-        if (!vk.succeeded(result)) {
-            return error.PipelineCreationFailed;
-        }
-    }
-
-    fn createTextPipeline(self: *Self) !void {
-        // Create shader modules
-        const vert_module = try self.createShaderModule(text_vert_spv);
-        defer vk.vkDestroyShaderModule(self.device, vert_module, null);
-
-        const frag_module = try self.createShaderModule(text_frag_spv);
-        defer vk.vkDestroyShaderModule(self.device, frag_module, null);
-
-        const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .module = vert_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = frag_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-        };
-
-        // No vertex input (generated in shader)
-        const vertex_input_info = vk.PipelineVertexInputStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .vertexBindingDescriptionCount = 0,
-            .pVertexBindingDescriptions = null,
-            .vertexAttributeDescriptionCount = 0,
-            .pVertexAttributeDescriptions = null,
-        };
-
-        const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            .primitiveRestartEnable = vk.FALSE,
-        };
-
-        const viewport_state = vk.PipelineViewportStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .viewportCount = 1,
-            .pViewports = null, // Dynamic
-            .scissorCount = 1,
-            .pScissors = null, // Dynamic
-        };
-
-        const rasterizer = vk.PipelineRasterizationStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .depthClampEnable = vk.FALSE,
-            .rasterizerDiscardEnable = vk.FALSE,
-            .polygonMode = vk.VK_POLYGON_MODE_FILL,
-            .cullMode = vk.VK_CULL_MODE_NONE,
-            .frontFace = vk.VK_FRONT_FACE_CLOCKWISE,
-            .depthBiasEnable = vk.FALSE,
-            .depthBiasConstantFactor = 0,
-            .depthBiasClamp = 0,
-            .depthBiasSlopeFactor = 0,
-            .lineWidth = 1.0,
-        };
-
-        const multisampling = vk.PipelineMultisampleStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .rasterizationSamples = self.sample_count,
-            .sampleShadingEnable = vk.FALSE,
-            .minSampleShading = 1.0,
-            .pSampleMask = null,
-            .alphaToCoverageEnable = vk.FALSE,
-            .alphaToOneEnable = vk.FALSE,
-        };
-
-        // Text uses premultiplied alpha blending
-        const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
-            .blendEnable = vk.TRUE,
-            .srcColorBlendFactor = vk.VK_BLEND_FACTOR_SRC_ALPHA,
-            .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .colorBlendOp = vk.VK_BLEND_OP_ADD,
-            .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-            .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .alphaBlendOp = vk.VK_BLEND_OP_ADD,
-            .colorWriteMask = vk.VK_COLOR_COMPONENT_ALL,
-        };
-
-        const color_blending = vk.PipelineColorBlendStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .logicOpEnable = vk.FALSE,
-            .logicOp = 0,
-            .attachmentCount = 1,
-            .pAttachments = &color_blend_attachment,
-            .blendConstants = .{ 0, 0, 0, 0 },
-        };
-
-        const dynamic_states = [_]c_uint{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
-        const dynamic_state = vk.PipelineDynamicStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .dynamicStateCount = dynamic_states.len,
-            .pDynamicStates = &dynamic_states,
-        };
-
-        // Create pipeline layout using text descriptor layout
-        const layouts = [_]vk.DescriptorSetLayout{self.text_descriptor_layout};
-        const layout_info = vk.PipelineLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .setLayoutCount = 1,
-            .pSetLayouts = &layouts,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = null,
-        };
-
-        var result = vk.vkCreatePipelineLayout(self.device, &layout_info, null, &self.text_pipeline_layout);
-        if (!vk.succeeded(result)) {
-            return error.PipelineLayoutCreationFailed;
-        }
-
-        const pipeline_info = vk.GraphicsPipelineCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .stageCount = shader_stages.len,
-            .pStages = &shader_stages,
-            .pVertexInputState = &vertex_input_info,
-            .pInputAssemblyState = &input_assembly,
-            .pTessellationState = null,
-            .pViewportState = &viewport_state,
-            .pRasterizationState = &rasterizer,
-            .pMultisampleState = &multisampling,
-            .pDepthStencilState = null,
-            .pColorBlendState = &color_blending,
-            .pDynamicState = &dynamic_state,
-            .layout = self.text_pipeline_layout,
-            .renderPass = self.render_pass,
-            .subpass = 0,
-            .basePipelineHandle = null,
-            .basePipelineIndex = -1,
-        };
-
-        result = vk.vkCreateGraphicsPipelines(self.device, null, 1, &pipeline_info, null, &self.text_pipeline);
-        if (!vk.succeeded(result)) {
-            return error.PipelineCreationFailed;
-        }
-    }
-
-    fn createSvgPipeline(self: *Self) !void {
-        // Create shader modules
-        const vert_module = try self.createShaderModule(svg_vert_spv);
-        defer vk.vkDestroyShaderModule(self.device, vert_module, null);
-
-        const frag_module = try self.createShaderModule(svg_frag_spv);
-        defer vk.vkDestroyShaderModule(self.device, frag_module, null);
-
-        const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .module = vert_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = frag_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-        };
-
-        // No vertex input (generated in shader)
-        const vertex_input_info = vk.PipelineVertexInputStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .vertexBindingDescriptionCount = 0,
-            .pVertexBindingDescriptions = null,
-            .vertexAttributeDescriptionCount = 0,
-            .pVertexAttributeDescriptions = null,
-        };
-
-        const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            .primitiveRestartEnable = vk.FALSE,
-        };
-
-        const viewport_state = vk.PipelineViewportStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .viewportCount = 1,
-            .pViewports = null, // Dynamic
-            .scissorCount = 1,
-            .pScissors = null, // Dynamic
-        };
-
-        const rasterizer = vk.PipelineRasterizationStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .depthClampEnable = vk.FALSE,
-            .rasterizerDiscardEnable = vk.FALSE,
-            .polygonMode = vk.VK_POLYGON_MODE_FILL,
-            .cullMode = vk.VK_CULL_MODE_NONE,
-            .frontFace = vk.VK_FRONT_FACE_CLOCKWISE,
-            .depthBiasEnable = vk.FALSE,
-            .depthBiasConstantFactor = 0,
-            .depthBiasClamp = 0,
-            .depthBiasSlopeFactor = 0,
-            .lineWidth = 1.0,
-        };
-
-        const multisampling = vk.PipelineMultisampleStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .rasterizationSamples = self.sample_count,
-            .sampleShadingEnable = vk.FALSE,
-            .minSampleShading = 1.0,
-            .pSampleMask = null,
-            .alphaToCoverageEnable = vk.FALSE,
-            .alphaToOneEnable = vk.FALSE,
-        };
-
-        // SVG uses premultiplied alpha blending (shader outputs pre-multiplied RGB)
-        const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
-            .blendEnable = vk.TRUE,
-            .srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-            .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .colorBlendOp = vk.VK_BLEND_OP_ADD,
-            .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-            .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .alphaBlendOp = vk.VK_BLEND_OP_ADD,
-            .colorWriteMask = vk.VK_COLOR_COMPONENT_ALL,
-        };
-
-        const color_blending = vk.PipelineColorBlendStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .logicOpEnable = vk.FALSE,
-            .logicOp = 0,
-            .attachmentCount = 1,
-            .pAttachments = &color_blend_attachment,
-            .blendConstants = .{ 0, 0, 0, 0 },
-        };
-
-        const dynamic_states = [_]c_uint{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
-        const dynamic_state = vk.PipelineDynamicStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .dynamicStateCount = dynamic_states.len,
-            .pDynamicStates = &dynamic_states,
-        };
-
-        // Create pipeline layout using SVG descriptor layout
-        const layouts = [_]vk.DescriptorSetLayout{self.svg_descriptor_layout};
-        const layout_info = vk.PipelineLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .setLayoutCount = 1,
-            .pSetLayouts = &layouts,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = null,
-        };
-
-        var result = vk.vkCreatePipelineLayout(self.device, &layout_info, null, &self.svg_pipeline_layout);
-        if (!vk.succeeded(result)) {
-            return error.PipelineLayoutCreationFailed;
-        }
-
-        const pipeline_info = vk.GraphicsPipelineCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .stageCount = shader_stages.len,
-            .pStages = &shader_stages,
-            .pVertexInputState = &vertex_input_info,
-            .pInputAssemblyState = &input_assembly,
-            .pTessellationState = null,
-            .pViewportState = &viewport_state,
-            .pRasterizationState = &rasterizer,
-            .pMultisampleState = &multisampling,
-            .pDepthStencilState = null,
-            .pColorBlendState = &color_blending,
-            .pDynamicState = &dynamic_state,
-            .layout = self.svg_pipeline_layout,
-            .renderPass = self.render_pass,
-            .subpass = 0,
-            .basePipelineHandle = null,
-            .basePipelineIndex = -1,
-        };
-
-        result = vk.vkCreateGraphicsPipelines(self.device, null, 1, &pipeline_info, null, &self.svg_pipeline);
-        if (!vk.succeeded(result)) {
-            return error.PipelineCreationFailed;
-        }
-    }
-
-    fn createImagePipeline(self: *Self) !void {
-        // Create shader modules
-        const vert_module = try self.createShaderModule(image_vert_spv);
-        defer vk.vkDestroyShaderModule(self.device, vert_module, null);
-
-        const frag_module = try self.createShaderModule(image_frag_spv);
-        defer vk.vkDestroyShaderModule(self.device, frag_module, null);
-
-        const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .module = vert_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = frag_module,
-                .pName = "main",
-                .pSpecializationInfo = null,
-            },
-        };
-
-        // No vertex input (generated in shader)
-        const vertex_input_info = vk.PipelineVertexInputStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .vertexBindingDescriptionCount = 0,
-            .pVertexBindingDescriptions = null,
-            .vertexAttributeDescriptionCount = 0,
-            .pVertexAttributeDescriptions = null,
-        };
-
-        const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            .primitiveRestartEnable = vk.FALSE,
-        };
-
-        const viewport_state = vk.PipelineViewportStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .viewportCount = 1,
-            .pViewports = null, // Dynamic
-            .scissorCount = 1,
-            .pScissors = null, // Dynamic
-        };
-
-        const rasterizer = vk.PipelineRasterizationStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .depthClampEnable = vk.FALSE,
-            .rasterizerDiscardEnable = vk.FALSE,
-            .polygonMode = vk.VK_POLYGON_MODE_FILL,
-            .cullMode = vk.VK_CULL_MODE_NONE,
-            .frontFace = vk.VK_FRONT_FACE_CLOCKWISE,
-            .depthBiasEnable = vk.FALSE,
-            .depthBiasConstantFactor = 0,
-            .depthBiasClamp = 0,
-            .depthBiasSlopeFactor = 0,
-            .lineWidth = 1.0,
-        };
-
-        const multisampling = vk.PipelineMultisampleStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .rasterizationSamples = self.sample_count,
-            .sampleShadingEnable = vk.FALSE,
-            .minSampleShading = 1.0,
-            .pSampleMask = null,
-            .alphaToCoverageEnable = vk.FALSE,
-            .alphaToOneEnable = vk.FALSE,
-        };
-
-        // Image uses premultiplied alpha blending
-        const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
-            .blendEnable = vk.TRUE,
-            .srcColorBlendFactor = vk.VK_BLEND_FACTOR_SRC_ALPHA,
-            .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .colorBlendOp = vk.VK_BLEND_OP_ADD,
-            .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-            .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .alphaBlendOp = vk.VK_BLEND_OP_ADD,
-            .colorWriteMask = vk.VK_COLOR_COMPONENT_ALL,
-        };
-
-        const color_blending = vk.PipelineColorBlendStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .logicOpEnable = vk.FALSE,
-            .logicOp = 0,
-            .attachmentCount = 1,
-            .pAttachments = &color_blend_attachment,
-            .blendConstants = .{ 0, 0, 0, 0 },
-        };
-
-        const dynamic_states = [_]c_uint{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
-        const dynamic_state = vk.PipelineDynamicStateCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .dynamicStateCount = dynamic_states.len,
-            .pDynamicStates = &dynamic_states,
-        };
-
-        // Create pipeline layout using image descriptor layout
-        const layouts = [_]vk.DescriptorSetLayout{self.image_descriptor_layout};
-        const layout_info = vk.PipelineLayoutCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .setLayoutCount = 1,
-            .pSetLayouts = &layouts,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = null,
-        };
-
-        var result = vk.vkCreatePipelineLayout(self.device, &layout_info, null, &self.image_pipeline_layout);
-        if (!vk.succeeded(result)) {
-            return error.PipelineLayoutCreationFailed;
-        }
-
-        const pipeline_info = vk.GraphicsPipelineCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .stageCount = shader_stages.len,
-            .pStages = &shader_stages,
-            .pVertexInputState = &vertex_input_info,
-            .pInputAssemblyState = &input_assembly,
-            .pTessellationState = null,
-            .pViewportState = &viewport_state,
-            .pRasterizationState = &rasterizer,
-            .pMultisampleState = &multisampling,
-            .pDepthStencilState = null,
-            .pColorBlendState = &color_blending,
-            .pDynamicState = &dynamic_state,
-            .layout = self.image_pipeline_layout,
-            .renderPass = self.render_pass,
-            .subpass = 0,
-            .basePipelineHandle = null,
-            .basePipelineIndex = -1,
-        };
-
-        result = vk.vkCreateGraphicsPipelines(self.device, null, 1, &pipeline_info, null, &self.image_pipeline);
-        if (!vk.succeeded(result)) {
-            return error.PipelineCreationFailed;
-        }
-    }
-
-    fn createShaderModule(self: *Self, code: []align(4) const u8) !vk.ShaderModule {
-        const create_info = vk.ShaderModuleCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .codeSize = code.len,
-            .pCode = @ptrCast(code.ptr),
-        };
-
-        var shader_module: vk.ShaderModule = null;
-        const result = vk.vkCreateShaderModule(self.device, &create_info, null, &shader_module);
-        if (!vk.succeeded(result)) {
-            return error.ShaderModuleCreationFailed;
-        }
-        return shader_module;
-    }
-
-    /// Resize the renderer (recreates swapchain)
-    /// width/height are logical pixels, scale_factor converts to physical pixels
+    // =========================================================================
+    // Resize
+    // =========================================================================
+
+    /// Resize the renderer (recreates swapchain).
+    /// width/height are logical pixels, scale_factor converts to physical pixels.
     pub fn resize(self: *Self, width: u32, height: u32, scale_factor: f64) void {
         if (!self.initialized) return;
         if (width == 0 or height == 0) return;
@@ -2734,11 +825,12 @@ pub const VulkanRenderer = struct {
         const physical_width: u32 = @intFromFloat(@as(f64, @floatFromInt(width)) * scale_factor);
         const physical_height: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) * scale_factor);
 
-        _ = vk.vkDeviceWaitIdle(self.device);
+        // Wait only for our frames — not ALL GPU work (improvement #4)
+        for (0..FRAME_COUNT) |i| {
+            _ = vk.vkWaitForFences(self.device, 1, &self.frames[i].fence, vk.TRUE, std.math.maxInt(u64));
+        }
 
         // Update uniform buffer with LOGICAL pixel dimensions
-        // Scene coordinates are in logical pixels, so the shader needs logical viewport size
-        // to correctly normalize to NDC. The swapchain/framebuffers use physical pixels.
         self.updateUniformBuffer(width, height);
 
         // Recreate swapchain at physical resolution for HiDPI
@@ -2747,1151 +839,229 @@ pub const VulkanRenderer = struct {
         };
     }
 
-    /// Recreate swapchain and all dependent resources (framebuffers, image views, MSAA)
+    /// Recreate swapchain and dependent resources (MSAA, framebuffers).
+    ///
+    /// The render pass is NOT recreated — it depends only on format and sample count,
+    /// neither of which changes on resize.
     fn recreateSwapchain(self: *Self, width: u32, height: u32) !void {
-        // Destroy old framebuffers
-        for (0..self.swapchain_image_count) |i| {
-            if (self.framebuffers[i] != null) {
-                vk.vkDestroyFramebuffer(self.device, self.framebuffers[i], null);
-                self.framebuffers[i] = null;
-            }
-        }
+        // Destroy old resources in dependency order
+        vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
+        self.destroyMSAAResources();
+        vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
 
-        // Destroy old MSAA resources
-        if (self.msaa_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-            self.msaa_view = null;
-        }
-        if (self.msaa_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-            self.msaa_image = null;
-        }
-        if (self.msaa_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-            self.msaa_memory = null;
-        }
-
-        // Destroy old image views
-        for (0..self.swapchain_image_count) |i| {
-            if (self.swapchain_image_views[i] != null) {
-                vk.vkDestroyImageView(self.device, self.swapchain_image_views[i], null);
-                self.swapchain_image_views[i] = null;
-            }
-        }
-
-        // Store old swapchain for recycling
+        // Create new swapchain, passing old one for resource recycling
         const old_swapchain = self.swapchain;
-
-        // Query surface capabilities for new size
-        var capabilities: vk.SurfaceCapabilitiesKHR = undefined;
-        _ = vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(self.physical_device, self.surface, &capabilities);
-
-        // Determine extent
-        var extent: vk.Extent2D = undefined;
-        if (capabilities.currentExtent.width != 0xFFFFFFFF) {
-            extent = capabilities.currentExtent;
-        } else {
-            extent.width = std.math.clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-            extent.height = std.math.clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-        }
-        self.swapchain_extent = extent;
-
-        // Image count
-        var image_count = capabilities.minImageCount + 1;
-        if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
-            image_count = capabilities.maxImageCount;
-        }
-
-        // Create new swapchain, passing old one for recycling
-        const create_info = vk.SwapchainCreateInfoKHR{
-            .sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-            .pNext = null,
-            .flags = 0,
-            .surface = self.surface,
-            .minImageCount = image_count,
-            .imageFormat = self.swapchain_format,
-            .imageColorSpace = vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
-            .imageExtent = extent,
-            .imageArrayLayers = 1,
-            .imageUsage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-            .imageSharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = null,
-            .preTransform = capabilities.currentTransform,
-            .compositeAlpha = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .presentMode = vk.VK_PRESENT_MODE_FIFO_KHR,
-            .clipped = vk.TRUE,
-            .oldSwapchain = old_swapchain,
-        };
-
-        const result = vk.vkCreateSwapchainKHR(self.device, &create_info, null, &self.swapchain);
-        if (!vk.succeeded(result)) {
-            return error.SwapchainCreationFailed;
-        }
+        const sc = try vk_swapchain.createSwapchain(
+            self.device,
+            self.physical_device,
+            self.surface,
+            width,
+            height,
+            old_swapchain,
+        );
+        self.swapchain = sc.swapchain;
+        self.swapchain_images = sc.images;
+        self.swapchain_image_views = sc.image_views;
+        self.swapchain_image_count = sc.image_count;
+        self.swapchain_extent = sc.extent;
+        // Format must not change on resize — assert per CLAUDE.md Rule #11
+        std.debug.assert(sc.format == self.swapchain_format);
 
         // Destroy old swapchain after new one is created
-        if (old_swapchain != null) {
-            vk.vkDestroySwapchainKHR(self.device, old_swapchain, null);
+        if (old_swapchain) |old| {
+            vk.vkDestroySwapchainKHR(self.device, old, null);
         }
 
-        // Get new swapchain images
-        _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &self.swapchain_image_count, null);
-        // Assert swapchain image count fits our fixed array - fail fast if assumption violated
-        std.debug.assert(self.swapchain_image_count <= 8);
-        var img_count: u32 = @min(self.swapchain_image_count, 8);
-        _ = vk.vkGetSwapchainImagesKHR(self.device, self.swapchain, &img_count, &self.swapchain_images);
-        self.swapchain_image_count = img_count;
+        // Recreate MSAA resources for new extent
+        const msaa = try vk_swapchain.createMSAAResources(
+            self.device,
+            self.swapchain_format,
+            self.swapchain_extent,
+            self.sample_count,
+            &self.mem_properties,
+        );
+        self.msaa_image = msaa.image;
+        self.msaa_memory = msaa.memory;
+        self.msaa_view = msaa.view;
 
-        // Create new image views
-        for (0..img_count) |i| {
-            const view_info = vk.ImageViewCreateInfo{
-                .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .pNext = null,
-                .flags = 0,
-                .image = self.swapchain_images[i],
-                .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-                .format = self.swapchain_format,
-                .components = .{
-                    .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                },
-                .subresourceRange = .{
-                    .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-            };
-
-            const res = vk.vkCreateImageView(self.device, &view_info, null, &self.swapchain_image_views[i]);
-            if (!vk.succeeded(res)) {
-                return error.ImageViewCreationFailed;
-            }
-        }
-
-        // Recreate MSAA resources if needed
-        try self.createMSAAResources();
-
-        // Recreate framebuffers
-        const use_msaa = self.sample_count != vk.VK_SAMPLE_COUNT_1_BIT;
-
-        for (0..self.swapchain_image_count) |i| {
-            if (use_msaa) {
-                // MSAA: attachment 0 = MSAA color, attachment 1 = resolve (swapchain)
-                const attachments = [_]vk.ImageView{ self.msaa_view, self.swapchain_image_views[i] };
-
-                const framebuffer_info = vk.FramebufferCreateInfo{
-                    .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                    .pNext = null,
-                    .flags = 0,
-                    .renderPass = self.render_pass,
-                    .attachmentCount = 2,
-                    .pAttachments = &attachments,
-                    .width = self.swapchain_extent.width,
-                    .height = self.swapchain_extent.height,
-                    .layers = 1,
-                };
-
-                const res = vk.vkCreateFramebuffer(self.device, &framebuffer_info, null, &self.framebuffers[i]);
-                if (!vk.succeeded(res)) {
-                    return error.FramebufferCreationFailed;
-                }
-            } else {
-                // Non-MSAA: single attachment
-                const attachments = [_]vk.ImageView{self.swapchain_image_views[i]};
-
-                const framebuffer_info = vk.FramebufferCreateInfo{
-                    .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                    .pNext = null,
-                    .flags = 0,
-                    .renderPass = self.render_pass,
-                    .attachmentCount = 1,
-                    .pAttachments = &attachments,
-                    .width = self.swapchain_extent.width,
-                    .height = self.swapchain_extent.height,
-                    .layers = 1,
-                };
-
-                const res = vk.vkCreateFramebuffer(self.device, &framebuffer_info, null, &self.framebuffers[i]);
-                if (!vk.succeeded(res)) {
-                    return error.FramebufferCreationFailed;
-                }
-            }
-        }
+        // Recreate framebuffers — single call replaces 45 lines of inlined copy-paste
+        try vk_swapchain.createFramebuffers(
+            self.device,
+            self.render_pass,
+            &self.swapchain_image_views,
+            self.swapchain_image_count,
+            self.msaa_view,
+            self.swapchain_extent,
+            self.sample_count,
+            &self.framebuffers,
+        );
     }
 
-    /// Upload atlas texture
+    // =========================================================================
+    // Atlas Upload — thin wrappers delegating to vk_atlas module
+    // (Phase 3: replaces 6 upload + 3 descriptor update methods with 3 wrappers)
+    // =========================================================================
+
+    /// Build a TransferContext from VulkanRenderer fields.
+    /// Constructed on the stack at each call site — no heap allocation.
+    fn makeTransferContext(self: *Self) vk_atlas.TransferContext {
+        std.debug.assert(self.device != null);
+        std.debug.assert(self.transfer_command_buffer != null);
+        return .{
+            .staging_buffer = &self.staging_buffer,
+            .staging_memory = &self.staging_memory,
+            .staging_mapped = &self.staging_mapped,
+            .staging_size = &self.staging_size,
+            .transfer_command_buffer = self.transfer_command_buffer,
+            .transfer_fence = self.transfer_fence,
+            .graphics_queue = self.graphics_queue,
+            .device = self.device,
+            .mem_properties = &self.mem_properties,
+        };
+    }
+
+    /// Stage text atlas data for batched upload (R8 format).
+    /// Pixel data is copied into a staging region; the actual GPU transfer
+    /// happens in `flushAtlasUploads` (called at the start of `render`).
     pub fn uploadAtlas(self: *Self, data: []const u8, width: u32, height: u32) !void {
         if (!self.initialized) return error.NotInitialized;
+        std.debug.assert(data.len == @as(usize, width) * @as(usize, height));
 
-        // Skip if same size and already uploaded
-        if (self.atlas_width == width and self.atlas_height == height and self.atlas_image != null) {
-            // Just update the data via staging buffer
-            try self.uploadAtlasData(data, width, height);
-            return;
-        }
+        var transfer = self.makeTransferContext();
+        const image_recreated = try vk_atlas.prepareAtlasUpload(
+            &self.text_atlas,
+            data,
+            width,
+            height,
+            .r8,
+            &transfer,
+            STAGING_REGION_TEXT,
+        );
 
-        // Destroy old atlas if exists
-        if (self.atlas_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-            self.atlas_view = null;
-        }
-        if (self.atlas_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-            self.atlas_image = null;
-        }
-        if (self.atlas_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-            self.atlas_memory = null;
-        }
+        self.text_atlas_dirty = true;
 
-        // Create new atlas image
-        const image_info = vk.ImageCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .imageType = vk.VK_IMAGE_TYPE_2D,
-            .format = vk.VK_FORMAT_R8_UNORM,
-            .extent = .{ .width = width, .height = height, .depth = 1 },
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-            .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
-            .usage = vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_SAMPLED_BIT,
-            .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = null,
-            .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-
-        var result = vk.vkCreateImage(self.device, &image_info, null, &self.atlas_image);
-        if (!vk.succeeded(result)) {
-            return error.AtlasImageCreationFailed;
-        }
-
-        // Allocate memory for image
-        var mem_requirements: vk.MemoryRequirements = undefined;
-        vk.vkGetImageMemoryRequirements(self.device, self.atlas_image, &mem_requirements);
-
-        const mem_type_index = vk.findMemoryType(
-            &self.mem_properties,
-            mem_requirements.memoryTypeBits,
-            vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        ) orelse return error.NoSuitableMemoryType;
-
-        const alloc_info = vk.MemoryAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = null,
-            .allocationSize = mem_requirements.size,
-            .memoryTypeIndex = mem_type_index,
-        };
-
-        result = vk.vkAllocateMemory(self.device, &alloc_info, null, &self.atlas_memory);
-        if (!vk.succeeded(result)) {
-            return error.AtlasMemoryAllocationFailed;
-        }
-
-        _ = vk.vkBindImageMemory(self.device, self.atlas_image, self.atlas_memory, 0);
-
-        // Create image view
-        const view_info = vk.ImageViewCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .image = self.atlas_image,
-            .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-            .format = vk.VK_FORMAT_R8_UNORM,
-            .components = .{
-                .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        result = vk.vkCreateImageView(self.device, &view_info, null, &self.atlas_view);
-        if (!vk.succeeded(result)) {
-            return error.AtlasImageViewCreationFailed;
-        }
-
-        self.atlas_width = width;
-        self.atlas_height = height;
-
-        // Upload data
-        try self.uploadAtlasData(data, width, height);
-
-        // Update text descriptor set
-        self.updateTextDescriptorSet();
-    }
-
-    fn uploadAtlasData(self: *Self, data: []const u8, width: u32, height: u32) !void {
-        // Assertions: validate input data
-        std.debug.assert(width > 0 and height > 0);
-        std.debug.assert(data.len == width * height);
-        std.debug.assert(self.transfer_command_buffer != null);
-        std.debug.assert(self.transfer_fence != null);
-
-        const image_size: vk.DeviceSize = @intCast(width * height);
-
-        // Create or resize staging buffer if needed
-        if (self.staging_buffer == null or self.staging_size < image_size) {
-            if (self.staging_buffer) |buf| {
-                vk.vkDestroyBuffer(self.device, buf, null);
+        if (image_recreated) {
+            // Update ALL frames' descriptor sets — any frame could render next
+            for (&self.frames) |*frame| {
+                vk_atlas.updateAtlasDescriptorSet(
+                    self.device,
+                    frame.text_descriptor_set,
+                    frame.glyph_buffer,
+                    @sizeOf(GpuGlyph) * MAX_GLYPHS,
+                    frame.uniform_buffer,
+                    self.text_atlas.view,
+                    self.atlas_sampler,
+                );
             }
-            if (self.staging_memory) |mem| {
-                vk.vkUnmapMemory(self.device, mem);
-                vk.vkFreeMemory(self.device, mem, null);
-            }
-
-            try self.createBuffer(
-                image_size,
-                vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &self.staging_buffer,
-                &self.staging_memory,
-            );
-            _ = vk.vkMapMemory(self.device, self.staging_memory, 0, image_size, 0, &self.staging_mapped);
-            self.staging_size = image_size;
         }
-
-        // Copy data to staging buffer
-        if (self.staging_mapped) |ptr| {
-            const dest: [*]u8 = @ptrCast(ptr);
-            @memcpy(dest[0..data.len], data);
-        }
-
-        // Use dedicated transfer command buffer (avoids race with render command buffers)
-        const cmd = self.transfer_command_buffer;
-        _ = vk.vkResetCommandBuffer(cmd, 0);
-
-        const begin_info = vk.CommandBufferBeginInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .pNext = null,
-            .flags = 0,
-            .pInheritanceInfo = null,
-        };
-        _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
-
-        // Transition image to transfer dst
-        const barrier_to_transfer = vk.ImageMemoryBarrier{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = null,
-            .srcAccessMask = 0,
-            .dstAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .image = self.atlas_image,
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        vk.vkCmdPipelineBarrier(
-            cmd,
-            vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            &barrier_to_transfer,
-        );
-
-        // Copy buffer to image
-        const region = vk.BufferImageCopy{
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = .{ .x = 0, .y = 0, .z = 0 },
-            .imageExtent = .{ .width = width, .height = height, .depth = 1 },
-        };
-
-        vk.vkCmdCopyBufferToImage(
-            cmd,
-            self.staging_buffer,
-            self.atlas_image,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1,
-            &region,
-        );
-
-        // Transition image to shader read
-        const barrier_to_shader = vk.ImageMemoryBarrier{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = null,
-            .srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .image = self.atlas_image,
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        vk.vkCmdPipelineBarrier(
-            cmd,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            &barrier_to_shader,
-        );
-
-        _ = vk.vkEndCommandBuffer(cmd);
-
-        // Reset fence before submit
-        _ = vk.vkResetFences(self.device, 1, &self.transfer_fence);
-
-        // Submit with fence for synchronization
-        const submit_info = vk.SubmitInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .pNext = null,
-            .waitSemaphoreCount = 0,
-            .pWaitSemaphores = null,
-            .pWaitDstStageMask = null,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-            .signalSemaphoreCount = 0,
-            .pSignalSemaphores = null,
-        };
-
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.transfer_fence);
-
-        // Wait for transfer to complete before returning
-        _ = vk.vkWaitForFences(self.device, 1, &self.transfer_fence, vk.TRUE, std.math.maxInt(u64));
-
-        self.atlas_generation += 1;
     }
 
-    fn updateTextDescriptorSet(self: *Self) void {
-        if (self.atlas_view == null or self.atlas_sampler == null) return;
-
-        const buffer_infos = [_]vk.DescriptorBufferInfo{
-            .{
-                .buffer = self.glyph_buffer,
-                .offset = 0,
-                .range = @sizeOf(GpuGlyph) * MAX_GLYPHS,
-            },
-            .{
-                .buffer = self.uniform_buffer,
-                .offset = 0,
-                .range = @sizeOf(Uniforms),
-            },
-        };
-
-        const image_info = vk.DescriptorImageInfo{
-            .sampler = null,
-            .imageView = self.atlas_view,
-            .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-
-        const sampler_info = vk.DescriptorImageInfo{
-            .sampler = self.atlas_sampler,
-            .imageView = null,
-            .imageLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-
-        const writes = [_]vk.WriteDescriptorSet{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.text_descriptor_set,
-                .dstBinding = 0,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[0],
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.text_descriptor_set,
-                .dstBinding = 1,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[1],
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.text_descriptor_set,
-                .dstBinding = 2,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &image_info,
-                .pBufferInfo = null,
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.text_descriptor_set,
-                .dstBinding = 3,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-                .pImageInfo = &sampler_info,
-                .pBufferInfo = null,
-                .pTexelBufferView = null,
-            },
-        };
-
-        vk.vkUpdateDescriptorSets(self.device, writes.len, &writes, 0, null);
-    }
-
-    /// Upload SVG atlas texture (RGBA format)
+    /// Stage SVG atlas data for batched upload (RGBA format).
     pub fn uploadSvgAtlas(self: *Self, data: []const u8, width: u32, height: u32) !void {
         if (!self.initialized) return error.NotInitialized;
+        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
 
-        // Skip if same size and already uploaded
-        if (self.svg_atlas_width == width and self.svg_atlas_height == height and self.svg_atlas_image != null) {
-            // Just update the data via staging buffer
-            try self.uploadSvgAtlasData(data, width, height);
-            return;
-        }
+        var transfer = self.makeTransferContext();
+        const image_recreated = try vk_atlas.prepareAtlasUpload(
+            &self.svg_atlas,
+            data,
+            width,
+            height,
+            .rgba8,
+            &transfer,
+            STAGING_REGION_SVG,
+        );
 
-        // Destroy old SVG atlas if exists
-        if (self.svg_atlas_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-            self.svg_atlas_view = null;
-        }
-        if (self.svg_atlas_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-            self.svg_atlas_image = null;
-        }
-        if (self.svg_atlas_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-            self.svg_atlas_memory = null;
-        }
+        self.svg_atlas_dirty = true;
 
-        // Create new SVG atlas image (RGBA format)
-        const image_info = vk.ImageCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .imageType = vk.VK_IMAGE_TYPE_2D,
-            .format = vk.VK_FORMAT_R8G8B8A8_UNORM,
-            .extent = .{ .width = width, .height = height, .depth = 1 },
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-            .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
-            .usage = vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_SAMPLED_BIT,
-            .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = null,
-            .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-
-        var result = vk.vkCreateImage(self.device, &image_info, null, &self.svg_atlas_image);
-        if (!vk.succeeded(result)) {
-            return error.AtlasImageCreationFailed;
-        }
-
-        // Allocate memory for image
-        var mem_requirements: vk.MemoryRequirements = undefined;
-        vk.vkGetImageMemoryRequirements(self.device, self.svg_atlas_image, &mem_requirements);
-
-        const mem_type_index = vk.findMemoryType(
-            &self.mem_properties,
-            mem_requirements.memoryTypeBits,
-            vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        ) orelse return error.NoSuitableMemoryType;
-
-        const alloc_info = vk.MemoryAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = null,
-            .allocationSize = mem_requirements.size,
-            .memoryTypeIndex = mem_type_index,
-        };
-
-        result = vk.vkAllocateMemory(self.device, &alloc_info, null, &self.svg_atlas_memory);
-        if (!vk.succeeded(result)) {
-            return error.AtlasMemoryAllocationFailed;
-        }
-
-        _ = vk.vkBindImageMemory(self.device, self.svg_atlas_image, self.svg_atlas_memory, 0);
-
-        // Create image view
-        const view_info = vk.ImageViewCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .image = self.svg_atlas_image,
-            .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-            .format = vk.VK_FORMAT_R8G8B8A8_UNORM,
-            .components = .{
-                .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        result = vk.vkCreateImageView(self.device, &view_info, null, &self.svg_atlas_view);
-        if (!vk.succeeded(result)) {
-            return error.AtlasImageViewCreationFailed;
-        }
-
-        self.svg_atlas_width = width;
-        self.svg_atlas_height = height;
-
-        // Upload data
-        try self.uploadSvgAtlasData(data, width, height);
-
-        // Update SVG descriptor set
-        self.updateSvgDescriptorSet();
-    }
-
-    fn uploadSvgAtlasData(self: *Self, data: []const u8, width: u32, height: u32) !void {
-        // Assertions: validate input data
-        std.debug.assert(width > 0 and height > 0);
-        std.debug.assert(data.len == width * height * 4); // RGBA
-        std.debug.assert(self.transfer_command_buffer != null);
-        std.debug.assert(self.transfer_fence != null);
-
-        const image_size: vk.DeviceSize = @intCast(width * height * 4); // RGBA = 4 bytes per pixel
-
-        // Create or resize staging buffer if needed
-        if (self.staging_buffer == null or self.staging_size < image_size) {
-            if (self.staging_buffer) |buf| {
-                vk.vkDestroyBuffer(self.device, buf, null);
+        if (image_recreated) {
+            for (&self.frames) |*frame| {
+                vk_atlas.updateAtlasDescriptorSet(
+                    self.device,
+                    frame.svg_descriptor_set,
+                    frame.svg_buffer,
+                    @sizeOf(GpuSvg) * MAX_SVGS,
+                    frame.uniform_buffer,
+                    self.svg_atlas.view,
+                    self.atlas_sampler,
+                );
             }
-            if (self.staging_memory) |mem| {
-                vk.vkUnmapMemory(self.device, mem);
-                vk.vkFreeMemory(self.device, mem, null);
-            }
-
-            try self.createBuffer(
-                image_size,
-                vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &self.staging_buffer,
-                &self.staging_memory,
-            );
-            _ = vk.vkMapMemory(self.device, self.staging_memory, 0, image_size, 0, &self.staging_mapped);
-            self.staging_size = image_size;
         }
-
-        // Copy data to staging buffer
-        if (self.staging_mapped) |ptr| {
-            const dest: [*]u8 = @ptrCast(ptr);
-            @memcpy(dest[0..data.len], data);
-        }
-
-        // Use dedicated transfer command buffer (avoids race with render command buffers)
-        const cmd = self.transfer_command_buffer;
-        _ = vk.vkResetCommandBuffer(cmd, 0);
-
-        const begin_info = vk.CommandBufferBeginInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .pNext = null,
-            .flags = 0,
-            .pInheritanceInfo = null,
-        };
-        _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
-
-        // Transition image to transfer dst
-        const barrier_to_transfer = vk.ImageMemoryBarrier{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = null,
-            .srcAccessMask = 0,
-            .dstAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .image = self.svg_atlas_image,
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        vk.vkCmdPipelineBarrier(
-            cmd,
-            vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            &barrier_to_transfer,
-        );
-
-        // Copy buffer to image
-        const region = vk.BufferImageCopy{
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = .{ .x = 0, .y = 0, .z = 0 },
-            .imageExtent = .{ .width = width, .height = height, .depth = 1 },
-        };
-
-        vk.vkCmdCopyBufferToImage(
-            cmd,
-            self.staging_buffer,
-            self.svg_atlas_image,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1,
-            &region,
-        );
-
-        // Transition image to shader read
-        const barrier_to_shader = vk.ImageMemoryBarrier{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = null,
-            .srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .image = self.svg_atlas_image,
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        vk.vkCmdPipelineBarrier(
-            cmd,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            &barrier_to_shader,
-        );
-
-        _ = vk.vkEndCommandBuffer(cmd);
-
-        // Reset fence before submit
-        _ = vk.vkResetFences(self.device, 1, &self.transfer_fence);
-
-        // Submit with fence for synchronization
-        const submit_info = vk.SubmitInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .pNext = null,
-            .waitSemaphoreCount = 0,
-            .pWaitSemaphores = null,
-            .pWaitDstStageMask = null,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-            .signalSemaphoreCount = 0,
-            .pSignalSemaphores = null,
-        };
-
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.transfer_fence);
-
-        // Wait for transfer to complete before returning
-        _ = vk.vkWaitForFences(self.device, 1, &self.transfer_fence, vk.TRUE, std.math.maxInt(u64));
-
-        self.svg_atlas_generation += 1;
     }
 
-    fn updateSvgDescriptorSet(self: *Self) void {
-        if (self.svg_atlas_view == null or self.atlas_sampler == null) return;
-
-        const buffer_infos = [_]vk.DescriptorBufferInfo{
-            .{
-                .buffer = self.svg_buffer,
-                .offset = 0,
-                .range = @sizeOf(GpuSvg) * MAX_SVGS,
-            },
-            .{
-                .buffer = self.uniform_buffer,
-                .offset = 0,
-                .range = @sizeOf(Uniforms),
-            },
-        };
-
-        const image_info = vk.DescriptorImageInfo{
-            .sampler = null,
-            .imageView = self.svg_atlas_view,
-            .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-
-        const sampler_info = vk.DescriptorImageInfo{
-            .sampler = self.atlas_sampler,
-            .imageView = null,
-            .imageLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-
-        const writes = [_]vk.WriteDescriptorSet{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.svg_descriptor_set,
-                .dstBinding = 0,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[0],
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.svg_descriptor_set,
-                .dstBinding = 1,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[1],
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.svg_descriptor_set,
-                .dstBinding = 2,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &image_info,
-                .pBufferInfo = null,
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.svg_descriptor_set,
-                .dstBinding = 3,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-                .pImageInfo = &sampler_info,
-                .pBufferInfo = null,
-                .pTexelBufferView = null,
-            },
-        };
-
-        vk.vkUpdateDescriptorSets(self.device, writes.len, &writes, 0, null);
-    }
-
-    /// Upload Image atlas texture (RGBA format)
+    /// Stage image atlas data for batched upload (RGBA format).
     pub fn uploadImageAtlas(self: *Self, data: []const u8, width: u32, height: u32) !void {
         if (!self.initialized) return error.NotInitialized;
+        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
 
-        // Skip if same size and already uploaded
-        if (self.image_atlas_width == width and self.image_atlas_height == height and self.image_atlas_image != null) {
-            // Just update the data via staging buffer
-            try self.uploadImageAtlasData(data, width, height);
-            return;
+        var transfer = self.makeTransferContext();
+        const image_recreated = try vk_atlas.prepareAtlasUpload(
+            &self.image_atlas,
+            data,
+            width,
+            height,
+            .rgba8,
+            &transfer,
+            STAGING_REGION_IMAGE,
+        );
+
+        self.image_atlas_dirty = true;
+
+        if (image_recreated) {
+            for (&self.frames) |*frame| {
+                vk_atlas.updateAtlasDescriptorSet(
+                    self.device,
+                    frame.image_descriptor_set,
+                    frame.image_buffer,
+                    @sizeOf(GpuImage) * MAX_IMAGES,
+                    frame.uniform_buffer,
+                    self.image_atlas.view,
+                    self.atlas_sampler,
+                );
+            }
         }
-
-        // Destroy old Image atlas if exists
-        if (self.image_atlas_view) |view| {
-            vk.vkDestroyImageView(self.device, view, null);
-            self.image_atlas_view = null;
-        }
-        if (self.image_atlas_image) |image| {
-            vk.vkDestroyImage(self.device, image, null);
-            self.image_atlas_image = null;
-        }
-        if (self.image_atlas_memory) |mem| {
-            vk.vkFreeMemory(self.device, mem, null);
-            self.image_atlas_memory = null;
-        }
-
-        // Create new Image atlas image (RGBA format)
-        const image_info = vk.ImageCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .imageType = vk.VK_IMAGE_TYPE_2D,
-            .format = vk.VK_FORMAT_R8G8B8A8_UNORM,
-            .extent = .{ .width = width, .height = height, .depth = 1 },
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-            .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
-            .usage = vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_SAMPLED_BIT,
-            .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = null,
-            .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-
-        var result = vk.vkCreateImage(self.device, &image_info, null, &self.image_atlas_image);
-        if (!vk.succeeded(result)) {
-            return error.AtlasImageCreationFailed;
-        }
-
-        // Allocate memory for image
-        var mem_requirements: vk.MemoryRequirements = undefined;
-        vk.vkGetImageMemoryRequirements(self.device, self.image_atlas_image, &mem_requirements);
-
-        const mem_type_index = vk.findMemoryType(
-            &self.mem_properties,
-            mem_requirements.memoryTypeBits,
-            vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        ) orelse return error.NoSuitableMemoryType;
-
-        const alloc_info = vk.MemoryAllocateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = null,
-            .allocationSize = mem_requirements.size,
-            .memoryTypeIndex = mem_type_index,
-        };
-
-        result = vk.vkAllocateMemory(self.device, &alloc_info, null, &self.image_atlas_memory);
-        if (!vk.succeeded(result)) {
-            return error.AtlasMemoryAllocationFailed;
-        }
-
-        _ = vk.vkBindImageMemory(self.device, self.image_atlas_image, self.image_atlas_memory, 0);
-
-        // Create image view
-        const view_info = vk.ImageViewCreateInfo{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .image = self.image_atlas_image,
-            .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-            .format = vk.VK_FORMAT_R8G8B8A8_UNORM,
-            .components = .{
-                .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        result = vk.vkCreateImageView(self.device, &view_info, null, &self.image_atlas_view);
-        if (!vk.succeeded(result)) {
-            return error.AtlasImageViewCreationFailed;
-        }
-
-        self.image_atlas_width = width;
-        self.image_atlas_height = height;
-
-        // Upload data
-        try self.uploadImageAtlasData(data, width, height);
-
-        // Update Image descriptor set
-        self.updateImageDescriptorSet();
     }
 
-    fn uploadImageAtlasData(self: *Self, data: []const u8, width: u32, height: u32) !void {
-        // Assertions: validate input data
-        std.debug.assert(width > 0 and height > 0);
-        std.debug.assert(data.len == width * height * 4); // RGBA
+    /// Flush all pending atlas uploads in a single GPU submission.
+    ///
+    /// Records barrier → copy → barrier for each dirty atlas into one command
+    /// buffer, then submits once and waits on one fence. This replaces up to 3
+    /// sequential submit+wait cycles with a single round-trip.
+    fn flushAtlasUploads(self: *Self) void {
+        if (!self.text_atlas_dirty and !self.svg_atlas_dirty and !self.image_atlas_dirty) return;
+
         std.debug.assert(self.transfer_command_buffer != null);
         std.debug.assert(self.transfer_fence != null);
+        std.debug.assert(self.staging_buffer != null);
 
-        const image_size: vk.DeviceSize = @intCast(width * height * 4); // RGBA = 4 bytes per pixel
-
-        // Create or resize staging buffer if needed
-        if (self.staging_buffer == null or self.staging_size < image_size) {
-            if (self.staging_buffer) |buf| {
-                vk.vkDestroyBuffer(self.device, buf, null);
-            }
-            if (self.staging_memory) |mem| {
-                vk.vkUnmapMemory(self.device, mem);
-                vk.vkFreeMemory(self.device, mem, null);
-            }
-
-            try self.createBuffer(
-                image_size,
-                vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &self.staging_buffer,
-                &self.staging_memory,
-            );
-            _ = vk.vkMapMemory(self.device, self.staging_memory, 0, image_size, 0, &self.staging_mapped);
-            self.staging_size = image_size;
-        }
-
-        // Copy data to staging buffer
-        if (self.staging_mapped) |ptr| {
-            const dest: [*]u8 = @ptrCast(ptr);
-            @memcpy(dest[0..data.len], data);
-        }
-
-        // Use dedicated transfer command buffer (avoids race with render command buffers)
         const cmd = self.transfer_command_buffer;
         _ = vk.vkResetCommandBuffer(cmd, 0);
 
         const begin_info = vk.CommandBufferBeginInfo{
             .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .pNext = null,
-            .flags = 0,
+            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
             .pInheritanceInfo = null,
         };
         _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
 
-        // Transition image to transfer dst
-        const barrier_to_transfer = vk.ImageMemoryBarrier{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = null,
-            .srcAccessMask = 0,
-            .dstAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .image = self.image_atlas_image,
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        vk.vkCmdPipelineBarrier(
-            cmd,
-            vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            &barrier_to_transfer,
-        );
-
-        // Copy buffer to image
-        const region = vk.BufferImageCopy{
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = .{ .x = 0, .y = 0, .z = 0 },
-            .imageExtent = .{ .width = width, .height = height, .depth = 1 },
-        };
-
-        vk.vkCmdCopyBufferToImage(
-            cmd,
-            self.staging_buffer,
-            self.image_atlas_image,
-            vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1,
-            &region,
-        );
-
-        // Transition image to shader read
-        const barrier_to_shader = vk.ImageMemoryBarrier{
-            .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = null,
-            .srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-            .image = self.image_atlas_image,
-            .subresourceRange = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-
-        vk.vkCmdPipelineBarrier(
-            cmd,
-            vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0,
-            0,
-            null,
-            0,
-            null,
-            1,
-            &barrier_to_shader,
-        );
+        if (self.text_atlas_dirty) {
+            vk_atlas.recordAtlasTransfer(cmd, self.text_atlas.image, self.staging_buffer, STAGING_REGION_TEXT, self.text_atlas.width, self.text_atlas.height);
+            self.text_atlas_dirty = false;
+        }
+        if (self.svg_atlas_dirty) {
+            vk_atlas.recordAtlasTransfer(cmd, self.svg_atlas.image, self.staging_buffer, STAGING_REGION_SVG, self.svg_atlas.width, self.svg_atlas.height);
+            self.svg_atlas_dirty = false;
+        }
+        if (self.image_atlas_dirty) {
+            vk_atlas.recordAtlasTransfer(cmd, self.image_atlas.image, self.staging_buffer, STAGING_REGION_IMAGE, self.image_atlas.width, self.image_atlas.height);
+            self.image_atlas_dirty = false;
+        }
 
         _ = vk.vkEndCommandBuffer(cmd);
 
-        // Reset fence before submit
+        // Single submit, single fence wait
         _ = vk.vkResetFences(self.device, 1, &self.transfer_fence);
-
-        // Submit with fence for synchronization
         const submit_info = vk.SubmitInfo{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = null,
@@ -3903,116 +1073,39 @@ pub const VulkanRenderer = struct {
             .signalSemaphoreCount = 0,
             .pSignalSemaphores = null,
         };
-
         _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.transfer_fence);
-
-        // Wait for transfer to complete before returning
         _ = vk.vkWaitForFences(self.device, 1, &self.transfer_fence, vk.TRUE, std.math.maxInt(u64));
-
-        self.image_atlas_generation += 1;
     }
 
-    fn updateImageDescriptorSet(self: *Self) void {
-        if (self.image_atlas_view == null or self.atlas_sampler == null) return;
-
-        const buffer_infos = [_]vk.DescriptorBufferInfo{
-            .{
-                .buffer = self.image_buffer,
-                .offset = 0,
-                .range = @sizeOf(GpuImage) * MAX_IMAGES,
-            },
-            .{
-                .buffer = self.uniform_buffer,
-                .offset = 0,
-                .range = @sizeOf(Uniforms),
-            },
-        };
-
-        const image_info = vk.DescriptorImageInfo{
-            .sampler = null,
-            .imageView = self.image_atlas_view,
-            .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-
-        const sampler_info = vk.DescriptorImageInfo{
-            .sampler = self.atlas_sampler,
-            .imageView = null,
-            .imageLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-
-        const writes = [_]vk.WriteDescriptorSet{
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.image_descriptor_set,
-                .dstBinding = 0,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[0],
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.image_descriptor_set,
-                .dstBinding = 1,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .pImageInfo = null,
-                .pBufferInfo = &buffer_infos[1],
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.image_descriptor_set,
-                .dstBinding = 2,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                .pImageInfo = &image_info,
-                .pBufferInfo = null,
-                .pTexelBufferView = null,
-            },
-            .{
-                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = null,
-                .dstSet = self.image_descriptor_set,
-                .dstBinding = 3,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-                .pImageInfo = &sampler_info,
-                .pBufferInfo = null,
-                .pTexelBufferView = null,
-            },
-        };
-
-        vk.vkUpdateDescriptorSets(self.device, writes.len, &writes, 0, null);
-    }
+    // =========================================================================
+    // Render
+    // =========================================================================
 
     /// Render a frame using batched scene renderer for proper z-ordering
     pub fn render(self: *Self, scene: *const Scene) void {
         if (!self.initialized) return;
 
+        // Flush any pending atlas uploads (batched — single GPU round-trip)
+        self.flushAtlasUploads();
+
         // Check if swapchain needs recreation from previous frame
         if (self.swapchain_needs_recreate) {
             self.swapchain_needs_recreate = false;
-            _ = vk.vkDeviceWaitIdle(self.device);
+            // Wait only for our frames — not ALL GPU work (improvement #4)
+            for (0..FRAME_COUNT) |i| {
+                _ = vk.vkWaitForFences(self.device, 1, &self.frames[i].fence, vk.TRUE, std.math.maxInt(u64));
+            }
             self.recreateSwapchain(self.swapchain_extent.width, self.swapchain_extent.height) catch |err| {
                 std.debug.print("Failed to recreate swapchain: {}\n", .{err});
                 return;
             };
         }
 
-        const frame = self.current_frame;
+        const frame = &self.frames[self.current_frame];
 
-        // Wait for previous frame
-        _ = vk.vkWaitForFences(self.device, 1, &self.in_flight_fences[frame], vk.TRUE, std.math.maxInt(u64));
-        _ = vk.vkResetFences(self.device, 1, &self.in_flight_fences[frame]);
+        // Wait only for THIS frame's fence — the other frames are free
+        _ = vk.vkWaitForFences(self.device, 1, &frame.fence, vk.TRUE, std.math.maxInt(u64));
+        _ = vk.vkResetFences(self.device, 1, &frame.fence);
 
         // Acquire next image
         var image_index: u32 = 0;
@@ -4020,33 +1113,26 @@ pub const VulkanRenderer = struct {
             self.device,
             self.swapchain,
             std.math.maxInt(u64),
-            self.image_available_semaphores[frame],
+            frame.image_available_semaphore,
             null,
             &image_index,
         );
 
         // Handle acquire result exhaustively
         switch (acquire_result) {
-            vk.SUCCESS => {
-                // Image acquired successfully, continue rendering
-            },
+            vk.SUCCESS => {},
             vk.SUBOPTIMAL_KHR => {
-                // Image acquired but swapchain properties don't match surface
-                // We can still render this frame, but schedule recreation for next frame
                 self.swapchain_needs_recreate = true;
             },
             vk.ERROR_OUT_OF_DATE_KHR => {
-                // Swapchain is incompatible with surface, must recreate before rendering
                 self.swapchain_needs_recreate = true;
                 return;
             },
             vk.TIMEOUT, vk.NOT_READY => {
-                // Should not happen with maxInt timeout, but handle gracefully
                 std.debug.print("vkAcquireNextImageKHR returned unexpected timeout/not_ready\n", .{});
                 return;
             },
             else => {
-                // Any other result is an error we don't expect
                 std.debug.print("vkAcquireNextImageKHR failed with unexpected result: {}\n", .{acquire_result});
                 unreachable;
             },
@@ -4056,7 +1142,7 @@ pub const VulkanRenderer = struct {
         std.debug.assert(image_index < self.swapchain_image_count);
 
         // Record command buffer
-        const cmd = self.command_buffers[frame];
+        const cmd = frame.command_buffer;
         _ = vk.vkResetCommandBuffer(cmd, 0);
 
         const begin_info = vk.CommandBufferBeginInfo{
@@ -4094,7 +1180,8 @@ pub const VulkanRenderer = struct {
         const scissor = vk.makeScissor(self.swapchain_extent.width, self.swapchain_extent.height);
         vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        // Use batched scene renderer for proper z-ordering
+        // Use batched scene renderer for proper z-ordering.
+        // Per-frame descriptor sets and buffer pointers ensure no CPU/GPU contention.
         const pipelines = scene_renderer.Pipelines{
             .unified_pipeline = self.unified_pipeline,
             .unified_pipeline_layout = self.unified_pipeline_layout,
@@ -4104,17 +1191,17 @@ pub const VulkanRenderer = struct {
             .svg_pipeline_layout = self.svg_pipeline_layout,
             .image_pipeline = self.image_pipeline,
             .image_pipeline_layout = self.image_pipeline_layout,
-            .unified_descriptor_set = self.unified_descriptor_set,
-            .text_descriptor_set = self.text_descriptor_set,
-            .svg_descriptor_set = self.svg_descriptor_set,
-            .image_descriptor_set = self.image_descriptor_set,
-            .primitive_mapped = self.primitive_mapped,
-            .glyph_mapped = self.glyph_mapped,
-            .svg_mapped = self.svg_mapped,
-            .image_mapped = self.image_mapped,
-            .atlas_view = self.atlas_view,
-            .svg_atlas_view = self.svg_atlas_view,
-            .image_atlas_view = self.image_atlas_view,
+            .unified_descriptor_set = frame.unified_descriptor_set,
+            .text_descriptor_set = frame.text_descriptor_set,
+            .svg_descriptor_set = frame.svg_descriptor_set,
+            .image_descriptor_set = frame.image_descriptor_set,
+            .primitive_mapped = frame.primitive_mapped,
+            .glyph_mapped = frame.glyph_mapped,
+            .svg_mapped = frame.svg_mapped,
+            .image_mapped = frame.image_mapped,
+            .atlas_view = self.text_atlas.view,
+            .svg_atlas_view = self.svg_atlas.view,
+            .image_atlas_view = self.image_atlas.view,
         };
 
         _ = scene_renderer.drawScene(cmd, scene, pipelines);
@@ -4128,22 +1215,22 @@ pub const VulkanRenderer = struct {
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = null,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &self.image_available_semaphores[frame],
+            .pWaitSemaphores = &frame.image_available_semaphore,
             .pWaitDstStageMask = &wait_stages,
             .commandBufferCount = 1,
             .pCommandBuffers = &cmd,
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &self.render_finished_semaphores[frame],
+            .pSignalSemaphores = &frame.render_finished_semaphore,
         };
 
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, self.in_flight_fences[frame]);
+        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, frame.fence);
 
         // Present
         const present_info = vk.PresentInfoKHR{
             .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = null,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &self.render_finished_semaphores[frame],
+            .pWaitSemaphores = &frame.render_finished_semaphore,
             .swapchainCount = 1,
             .pSwapchains = &self.swapchain,
             .pImageIndices = &image_index,
@@ -4154,26 +1241,19 @@ pub const VulkanRenderer = struct {
 
         // Handle present result exhaustively
         switch (present_result) {
-            vk.SUCCESS => {
-                // Presented successfully
-            },
+            vk.SUCCESS => {},
             vk.SUBOPTIMAL_KHR => {
-                // Presented but swapchain properties don't match surface
-                // Schedule recreation for next frame
                 self.swapchain_needs_recreate = true;
             },
             vk.ERROR_OUT_OF_DATE_KHR => {
-                // Swapchain became incompatible during present
-                // Schedule recreation for next frame
                 self.swapchain_needs_recreate = true;
             },
             else => {
-                // Any other result is an error we don't expect
                 std.debug.print("vkQueuePresentKHR failed with unexpected result: {}\n", .{present_result});
                 unreachable;
             },
         }
 
-        self.current_frame = (frame + 1) % MAX_FRAMES_IN_FLIGHT;
+        self.current_frame = (self.current_frame + 1) % FRAME_COUNT;
     }
 };

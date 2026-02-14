@@ -94,6 +94,11 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Clear scene
     gooey.scene.clear();
 
+    // Reset SVG atlas per-frame rasterization budget so that expensive
+    // software rasterizations are spread across multiple frames instead
+    // of stalling a single frame when many uncached icons scroll into view.
+    gooey.svg_atlas.resetFrameBudget();
+
     // Start render timing for profiler
     gooey.debugger.beginRender();
 
@@ -127,6 +132,12 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     try renderDebugOverlays(gooey);
 
     gooey.scene.finish();
+
+    // If SVG rasterizations were deferred due to per-frame budget, request
+    // another render so the remaining icons progressively appear.
+    if (gooey.svg_atlas.hasDeferredWork()) {
+        gooey.requestRender();
+    }
 
     // Finalize frame timing for profiler
     gooey.finalizeFrame();
