@@ -18,6 +18,7 @@ const std = @import("std");
 pub const gooey = @import("gooey.zig");
 
 pub const Gooey = gooey.Gooey;
+pub const FontConfig = gooey.FontConfig;
 
 // =============================================================================
 // Focus Management

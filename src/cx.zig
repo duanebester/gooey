@@ -202,6 +202,17 @@ pub const Cx = struct {
         self._gooey.window.setTitle(title);
     }
 
+    /// Change the font at runtime.
+    /// Clears glyph and shape caches and triggers a re-render.
+    ///
+    /// Example:
+    /// ```
+    /// cx.setFont("JetBrains Mono", 14.0);
+    /// ```
+    pub fn setFont(self: *Self, name: []const u8, size: f32) !void {
+        try self._gooey.setFont(name, size);
+    }
+
     /// Set the glass/blur effect style for the window.
     /// Only has an effect on platforms that support glass effects (e.g., macOS).
     pub fn setGlassStyle(

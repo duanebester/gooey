@@ -35,6 +35,8 @@ const geometry_mod = @import("../core/geometry.zig");
 const input_mod = @import("../input/mod.zig");
 const handler_mod = @import("../context/handler.zig");
 const cx_mod = @import("../cx.zig");
+const gooey_mod = @import("../context/gooey.zig");
+const FontConfig = gooey_mod.FontConfig;
 
 // Runtime imports
 const window_context = @import("window_context.zig");
@@ -100,7 +102,10 @@ pub fn runCx(
 
     // Create per-window context (replaces static CallbackState)
     const WinCtx = window_context.WindowContext(State);
-    const win_ctx = try WinCtx.init(allocator, window, state, render);
+    const win_ctx = try WinCtx.init(allocator, window, state, render, .{
+        .font_name = config.font,
+        .font_size = config.font_size,
+    });
     defer win_ctx.deinit();
 
     // Set user callbacks
@@ -150,6 +155,13 @@ pub fn CxConfig(comptime State: type) type {
 
         /// Called when window size changes (width, height in logical pixels)
         on_resize: ?*const fn (*Cx, f64, f64) void = null,
+
+        /// Font family name (e.g., "Inter", "JetBrains Mono").
+        /// When null, uses the platform's default sans-serif font.
+        font: ?[]const u8 = null,
+
+        /// Default font size in points.
+        font_size: f32 = 16.0,
 
         /// Custom shaders (cross-platform - MSL for macOS, WGSL for web)
         custom_shaders: []const shader_mod.CustomShader = &.{},

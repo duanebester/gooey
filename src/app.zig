@@ -98,6 +98,9 @@ pub fn App(
                     .glass_corner_radius = if (@hasField(@TypeOf(config), "glass_corner_radius")) config.glass_corner_radius else 16.0,
                     .titlebar_transparent = if (@hasField(@TypeOf(config), "titlebar_transparent")) config.titlebar_transparent else false,
                     .full_size_content = if (@hasField(@TypeOf(config), "full_size_content")) config.full_size_content else false,
+                    // Font configuration
+                    .font = if (@hasField(@TypeOf(config), "font")) config.font else null,
+                    .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
                 });
             }
         };
@@ -185,7 +188,11 @@ pub fn WebApp(
             // Initialize Gooey (owns layout, scene, text_system)
             // Heap-allocated with initOwnedPtr to avoid ~400KB stack frame on WASM
             const gooey_ptr = try allocator.create(Gooey);
-            try gooey_ptr.initOwnedPtr(allocator, g_window.?);
+            const font_cfg = gooey_mod.FontConfig{
+                .font_name = if (@hasField(@TypeOf(config), "font")) config.font else null,
+                .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
+            };
+            try gooey_ptr.initOwnedPtr(allocator, g_window.?, font_cfg);
             g_gooey = gooey_ptr;
 
             // Initialize Builder

@@ -67,6 +67,8 @@ const WindowHandle = @import("window_handle.zig").WindowHandle;
 const cx_mod = @import("../cx.zig");
 const Cx = cx_mod.Cx;
 const handler_mod = @import("../context/handler.zig");
+const gooey_mod = @import("../context/gooey.zig");
+const FontConfig = gooey_mod.FontConfig;
 
 // Input
 const input_mod = @import("../input/mod.zig");
@@ -137,7 +139,7 @@ pub const App = struct {
     ///
     /// Creates the platform, registry, and shared resources.
     /// Call `deinit()` when done to clean up.
-    pub fn init(allocator: Allocator) !Self {
+    pub fn init(allocator: Allocator, font_config: FontConfig) !Self {
         // Assertions: validate input
         std.debug.assert(@intFromPtr(&allocator) != 0);
 
@@ -156,8 +158,12 @@ pub const App = struct {
         text_system.* = try TextSystem.initWithScale(allocator, 1.0);
         errdefer text_system.deinit();
 
-        // Load default font
-        try text_system.loadSystemFont(.sans_serif, 16.0);
+        // Load font from config (named font or system default)
+        if (font_config.font_name) |name| {
+            try text_system.loadFont(name, font_config.font_size);
+        } else {
+            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
+        }
 
         // Initialize shared SVG atlas
         const svg_atlas = try allocator.create(SvgAtlas);
