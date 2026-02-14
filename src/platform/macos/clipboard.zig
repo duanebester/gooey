@@ -23,7 +23,7 @@ pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
     );
     if (ns_string_id == null) return null;
 
-    const ns_string = objc.Object{ .value = ns_string_id };
+    const ns_string = objc.Object.fromId(ns_string_id);
 
     // Get UTF-8 C string
     const cstr: ?[*:0]const u8 = ns_string.msgSend(?[*:0]const u8, "UTF8String", .{});
@@ -49,7 +49,7 @@ pub fn setText(text: []const u8) bool {
     const ns_string_id: objc.c.id = NSString.msgSend(objc.c.id, "alloc", .{});
     if (ns_string_id == null) return false;
 
-    const ns_string = objc.Object{ .value = ns_string_id };
+    const ns_string = objc.Object.fromId(ns_string_id);
     const initialized_id: objc.c.id = ns_string.msgSend(
         objc.c.id,
         "initWithBytes:length:encoding:",
@@ -61,7 +61,7 @@ pub fn setText(text: []const u8) bool {
     );
     if (initialized_id == null) return false;
 
-    const initialized = objc.Object{ .value = initialized_id };
+    const initialized = objc.Object.fromId(initialized_id);
 
     // Write to pasteboard
     return pasteboard.msgSend(bool, "setString:forType:", .{

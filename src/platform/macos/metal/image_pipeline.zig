@@ -246,11 +246,11 @@ pub const ImagePipeline = struct {
 
     pub fn deinit(self: *ImagePipeline) void {
         for (self.instance_buffers) |buffer| {
-            buffer.msgSend(void, "release", .{});
+            buffer.release();
         }
-        self.unit_vertex_buffer.msgSend(void, "release", .{});
-        self.pipeline_state.msgSend(void, "release", .{});
-        if (self.atlas_texture) |tex| tex.msgSend(void, "release", .{});
+        self.unit_vertex_buffer.release();
+        self.pipeline_state.release();
+        if (self.atlas_texture) |tex| tex.release();
     }
 
     /// Call at frame start to advance buffer index
@@ -397,7 +397,7 @@ pub const ImagePipeline = struct {
         if (self.atlas_texture) |old_tex| {
             const old_width = old_tex.msgSend(c_ulong, "width", .{});
             if (old_width != size) {
-                old_tex.msgSend(void, "release", .{});
+                old_tex.release();
                 self.atlas_texture = null;
             }
         }
@@ -451,7 +451,7 @@ pub const ImagePipeline = struct {
             },
         );
 
-        self.instance_buffers[index].msgSend(void, "release", .{});
+        self.instance_buffers[index].release();
         self.instance_buffers[index] = new_buffer;
         self.instance_capacities[index] = new_capacity;
     }
@@ -471,20 +471,20 @@ fn createPipeline(device: objc.Object, sample_count: u32) ?objc.Object {
         .{ source_str.value, @as(?*anyopaque, null), &err },
     ) orelse return null;
     const library = objc.Object.fromId(library_ptr);
-    defer library.msgSend(void, "release", .{});
+    defer library.release();
 
     const vertex_fn_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"image_vertex"});
     const fragment_fn_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"image_fragment"});
 
     const vertex_fn = objc.Object.fromId(library.msgSend(?*anyopaque, "newFunctionWithName:", .{vertex_fn_name.value}) orelse return null);
-    defer vertex_fn.msgSend(void, "release", .{});
+    defer vertex_fn.release();
 
     const fragment_fn = objc.Object.fromId(library.msgSend(?*anyopaque, "newFunctionWithName:", .{fragment_fn_name.value}) orelse return null);
-    defer fragment_fn.msgSend(void, "release", .{});
+    defer fragment_fn.release();
 
     // Create pipeline descriptor
     const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
-    defer desc.msgSend(void, "release", .{});
+    defer desc.release();
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});

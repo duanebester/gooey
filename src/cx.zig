@@ -237,22 +237,8 @@ pub const Cx = struct {
 
     /// Quit the application immediately.
     /// On web platforms, this is a no-op since browser tabs can't be closed programmatically.
-    pub fn quit(_: *Self) void {
-        const platform = @import("platform/mod.zig");
-
-        if (comptime platform.is_wasm) {
-            // No-op on web - can't quit browser
-        } else if (comptime platform.is_linux) {
-            // Linux: need to access platform to quit
-            // For now, just exit
-            std.process.exit(0);
-        } else {
-            // macOS: call NSApp terminate:
-            const objc = @import("objc");
-            const NSApp = objc.getClass("NSApplication") orelse return;
-            const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});
-            app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
-        }
+    pub fn quit(self: *Self) void {
+        self._gooey.quit();
     }
 
     // =========================================================================

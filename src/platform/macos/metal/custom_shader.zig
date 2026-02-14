@@ -210,27 +210,27 @@ pub const CustomShaderPipeline = struct {
             return error.ShaderCompilationFailed;
         }
         const library = objc.Object.fromId(library_ptr);
-        defer library.msgSend(void, "release", .{});
+        defer library.release();
 
         // Get vertex function
         const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"custom_shader_vertex"});
         const vertex_fn = library.msgSend(?*anyopaque, "newFunctionWithName:", .{vertex_name.value});
         if (vertex_fn == null) return error.VertexFunctionNotFound;
         const vertex_func = objc.Object.fromId(vertex_fn);
-        defer vertex_func.msgSend(void, "release", .{});
+        defer vertex_func.release();
 
         // Get fragment function
         const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"custom_shader_fragment"});
         const fragment_fn = library.msgSend(?*anyopaque, "newFunctionWithName:", .{fragment_name.value});
         if (fragment_fn == null) return error.FragmentFunctionNotFound;
         const fragment_func = objc.Object.fromId(fragment_fn);
-        defer fragment_func.msgSend(void, "release", .{});
+        defer fragment_func.release();
 
         // Create pipeline descriptor
         const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse return error.ClassNotFound;
         const descriptor = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{});
         const desc = descriptor.msgSend(objc.Object, "init", .{});
-        defer desc.msgSend(void, "release", .{});
+        defer desc.release();
 
         desc.msgSend(void, "setVertexFunction:", .{vertex_func.value});
         desc.msgSend(void, "setFragmentFunction:", .{fragment_func.value});
@@ -273,7 +273,7 @@ pub const CustomShaderPipeline = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.pipeline_state.msgSend(void, "release", .{});
+        self.pipeline_state.release();
         self.allocator.free(self.name);
     }
 };
@@ -330,10 +330,10 @@ pub const PostProcessState = struct {
         }
         self.pipelines.deinit(self.allocator);
 
-        if (self.front_texture) |tex| tex.msgSend(void, "release", .{});
-        if (self.back_texture) |tex| tex.msgSend(void, "release", .{});
-        if (self.uniform_buffer) |buf| buf.msgSend(void, "release", .{});
-        if (self.sampler) |s| s.msgSend(void, "release", .{});
+        if (self.front_texture) |tex| tex.release();
+        if (self.back_texture) |tex| tex.release();
+        if (self.uniform_buffer) |buf| buf.release();
+        if (self.sampler) |s| s.release();
     }
 
     /// Add a custom shader from MSL-compatible source
@@ -365,11 +365,11 @@ pub const PostProcessState = struct {
 
         // Release old textures
         if (self.front_texture) |tex| {
-            tex.msgSend(void, "release", .{});
+            tex.release();
             self.front_texture = null;
         }
         if (self.back_texture) |tex| {
-            tex.msgSend(void, "release", .{});
+            tex.release();
             self.back_texture = null;
         }
 
@@ -429,7 +429,7 @@ pub const PostProcessState = struct {
 
         const desc = MTLSamplerDescriptor.msgSend(objc.Object, "alloc", .{});
         const sampler_desc = desc.msgSend(objc.Object, "init", .{});
-        defer sampler_desc.msgSend(void, "release", .{});
+        defer sampler_desc.release();
 
         sampler_desc.msgSend(void, "setMinFilter:", .{@as(c_ulong, 1)}); // Linear
         sampler_desc.msgSend(void, "setMagFilter:", .{@as(c_ulong, 1)}); // Linear

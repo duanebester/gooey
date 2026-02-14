@@ -592,7 +592,7 @@ pub const Window = struct {
     pub fn deinit(self: *Self) void {
         if (self.delegate) |d| {
             self.ns_window.msgSend(void, "setDelegate:", .{@as(?*anyopaque, null)});
-            d.msgSend(void, "release", .{});
+            d.release();
         }
         // Clean up glass effect view
         if (self.glass_effect_view) |glass_view| {
@@ -663,8 +663,8 @@ pub const Window = struct {
 
         // During live resize, render synchronously for smooth visuals
         if (self.in_live_resize.load(.acquire)) {
-            const pool = createAutoreleasePool() orelse return;
-            defer drainAutoreleasePool(pool);
+            const pool = objc.AutoreleasePool.init();
+            defer pool.deinit();
 
             // Call render callback to update scene
             if (self.on_render) |callback| {
@@ -1203,8 +1203,8 @@ fn displayLinkCallback(
         return .success;
     }
 
-    const pool = createAutoreleasePool() orelse return .success;
-    defer drainAutoreleasePool(pool);
+    const pool = objc.AutoreleasePool.init();
+    defer pool.deinit();
 
     // Acquire render mutex for thread-safe access to all render state
     window.render_mutex.lock();
@@ -1277,16 +1277,6 @@ fn displayLinkCallback(
 // =============================================================================
 // Helpers
 // =============================================================================
-
-fn createAutoreleasePool() ?objc.Object {
-    const NSAutoreleasePool = objc.getClass("NSAutoreleasePool") orelse return null;
-    const pool = NSAutoreleasePool.msgSend(objc.Object, "alloc", .{});
-    return pool.msgSend(objc.Object, "init", .{});
-}
-
-fn drainAutoreleasePool(pool: objc.Object) void {
-    pool.msgSend(void, "drain", .{});
-}
 
 // =============================================================================
 // High Performance Activity (prevents ProMotion throttling)

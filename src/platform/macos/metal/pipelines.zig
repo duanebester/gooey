@@ -78,7 +78,7 @@ pub fn setupShadowPipeline(device: objc.Object, sample_count: u32) !objc.Object 
     }
 
     const library = objc.Object.fromId(library_ptr);
-    defer library.msgSend(void, "release", .{});
+    defer library.release();
 
     const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"shadow_vertex"});
     const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"shadow_fragment"});
@@ -91,14 +91,14 @@ pub fn setupShadowPipeline(device: objc.Object, sample_count: u32) !objc.Object 
     }
     const vertex_fn = objc.Object.fromId(vertex_fn_ptr);
     const fragment_fn = objc.Object.fromId(fragment_fn_ptr);
-    defer vertex_fn.msgSend(void, "release", .{});
-    defer fragment_fn.msgSend(void, "release", .{});
+    defer vertex_fn.release();
+    defer fragment_fn.release();
 
     const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
         return error.ClassNotFound;
     const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "init", .{});
-    defer desc.msgSend(void, "release", .{});
+    defer desc.release();
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
@@ -139,7 +139,7 @@ pub fn setupQuadPipeline(device: objc.Object, sample_count: u32) !objc.Object {
         return error.ShaderCompilationFailed;
     }
     const library = objc.Object.fromId(library_ptr);
-    defer library.msgSend(void, "release", .{});
+    defer library.release();
 
     const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"quad_vertex"});
     const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"quad_fragment"});
@@ -152,8 +152,8 @@ pub fn setupQuadPipeline(device: objc.Object, sample_count: u32) !objc.Object {
     }
     const vertex_fn = objc.Object.fromId(vertex_fn_ptr);
     const fragment_fn = objc.Object.fromId(fragment_fn_ptr);
-    defer vertex_fn.msgSend(void, "release", .{});
-    defer fragment_fn.msgSend(void, "release", .{});
+    defer vertex_fn.release();
+    defer fragment_fn.release();
 
     const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
         return error.ClassNotFound;
@@ -238,7 +238,7 @@ pub fn setupUnifiedPipeline(device: objc.Object, sample_count: u32) !objc.Object
     }
 
     const library = objc.Object.fromId(library_ptr);
-    defer library.msgSend(void, "release", .{});
+    defer library.release();
 
     const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"unified_vertex"});
     const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"unified_fragment"});
@@ -251,14 +251,14 @@ pub fn setupUnifiedPipeline(device: objc.Object, sample_count: u32) !objc.Object
     }
     const vertex_fn = objc.Object.fromId(vertex_fn_ptr);
     const fragment_fn = objc.Object.fromId(fragment_fn_ptr);
-    defer vertex_fn.msgSend(void, "release", .{});
-    defer fragment_fn.msgSend(void, "release", .{});
+    defer vertex_fn.release();
+    defer fragment_fn.release();
 
     const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
         return error.ClassNotFound;
     const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "init", .{});
-    defer desc.msgSend(void, "release", .{});
+    defer desc.release();
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
