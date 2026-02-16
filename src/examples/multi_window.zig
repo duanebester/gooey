@@ -376,7 +376,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Create the multi-window app
-    var app = try MultiWindowApp.init(allocator);
+    var app = try MultiWindowApp.init(allocator, .{ .font_size = 16.0 });
     defer app.deinit();
 
     // Create main window state with app reference

@@ -36,6 +36,49 @@ const RenderCommandType = render_commands.RenderCommandType;
 /// Maximum elements per frame - prevents unbounded growth
 pub const MAX_ELEMENTS_PER_FRAME = 16384;
 
+/// Per-phase timing breakdown for layout benchmarking and profiling.
+/// All values in nanoseconds. Zero-cost in production — `endFrame()` skips timing entirely;
+/// only `endFrameTimed()` pays the cost of 7 `std.time.Instant.now()` calls (~350ns).
+pub const PhaseTimings = struct {
+    min_sizes_ns: u64 = 0,
+    final_sizes_ns: u64 = 0,
+    text_wrapping_ns: u64 = 0,
+    positions_ns: u64 = 0,
+    floating_ns: u64 = 0,
+    render_commands_ns: u64 = 0,
+    z_sort_ns: u64 = 0,
+    total_ns: u64 = 0,
+
+    pub fn printHeader() void {
+        std.debug.print("| {s:<40} | {s:>8} | {s:>9} | {s:>9} | {s:>9} | {s:>9} | {s:>9} | {s:>9} | {s:>9} |\n", .{
+            "Test", "Nodes", "MinSizes", "FinalSz", "TextWrap", "Position", "Float", "RenderCmd", "ZSort",
+        });
+    }
+
+    pub fn print(self: *const PhaseTimings, name: []const u8, node_count: u32, iterations: u32) void {
+        const iters: u64 = @intCast(iterations);
+        std.debug.assert(iters > 0);
+        std.debug.assert(node_count > 0);
+        std.debug.print("| {s:<40} | {d:>8} | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms |\n", .{
+            name,
+            node_count,
+            @as(f64, @floatFromInt(self.min_sizes_ns / iters)) / 1_000_000.0,
+            @as(f64, @floatFromInt(self.final_sizes_ns / iters)) / 1_000_000.0,
+            @as(f64, @floatFromInt(self.text_wrapping_ns / iters)) / 1_000_000.0,
+            @as(f64, @floatFromInt(self.positions_ns / iters)) / 1_000_000.0,
+            @as(f64, @floatFromInt(self.floating_ns / iters)) / 1_000_000.0,
+            @as(f64, @floatFromInt(self.render_commands_ns / iters)) / 1_000_000.0,
+            @as(f64, @floatFromInt(self.z_sort_ns / iters)) / 1_000_000.0,
+        });
+    }
+};
+
+/// Result type for `endFrameTimed()` — named to avoid Zig anonymous-struct identity issues.
+pub const TimedResult = struct {
+    commands: []const RenderCommand,
+    timings: PhaseTimings,
+};
+
 /// Maximum nesting depth for open elements (e.g., nested containers)
 pub const MAX_OPEN_DEPTH = 64;
 
@@ -568,27 +611,29 @@ pub const LayoutEngine = struct {
         return index;
     }
 
-    /// End frame and compute layout
+    /// End frame and compute layout (zero-cost — no timing instrumentation).
     pub fn endFrame(self: *Self) ![]const RenderCommand {
         if (self.root_index == null) return self.commands.items();
 
+        const root = self.root_index.?;
+
         // Phase 1: Compute minimum sizes (bottom-up)
-        self.computeMinSizes(self.root_index.?, 0);
+        self.computeMinSizes(root, 0);
 
         // Phase 2: Compute final sizes (top-down)
-        self.computeFinalSizes(self.root_index.?, self.viewport_width, self.viewport_height, 0);
+        self.computeFinalSizes(root, self.viewport_width, self.viewport_height, 0);
 
         // Phase 2b: Wrap text now that we know container widths
-        try self.computeTextWrapping(self.root_index.?);
+        try self.computeTextWrapping(root);
 
         // Phase 3: Compute positions (top-down)
-        self.computePositions(self.root_index.?, 0, 0, 0);
+        self.computePositions(root, 0, 0, 0);
 
         // Phase 3b: Position floating elements (includes text wrapping for floats)
         try self.computeFloatingPositions();
 
         // Phase 4: Generate render commands
-        try self.generateRenderCommands(self.root_index.?, 0, 1.0, 0);
+        try self.generateRenderCommands(root, 0, 1.0, 0);
 
         // Sort by z-index only when floating elements exist (they're the only source of non-zero z_index).
         // Skipping the sort saves ~O(n log n) work on frames with no dropdowns/tooltips/modals.
@@ -597,6 +642,62 @@ pub const LayoutEngine = struct {
         }
 
         return self.commands.items();
+    }
+
+    /// End frame with per-phase timing breakdown (for benchmarks and profiling).
+    /// Returns both the render commands and nanosecond timings for each layout phase.
+    /// Pays ~350ns overhead from 7 `std.time.Instant.now()` calls.
+    pub fn endFrameTimed(self: *Self) !TimedResult {
+        var timings = PhaseTimings{};
+
+        if (self.root_index == null) return TimedResult{ .commands = self.commands.items(), .timings = timings };
+
+        const root = self.root_index.?;
+        var t0 = std.time.Instant.now() catch unreachable;
+
+        // Phase 1: Compute minimum sizes (bottom-up)
+        self.computeMinSizes(root, 0);
+        var t1 = std.time.Instant.now() catch unreachable;
+        timings.min_sizes_ns = t1.since(t0);
+
+        // Phase 2: Compute final sizes (top-down)
+        self.computeFinalSizes(root, self.viewport_width, self.viewport_height, 0);
+        t0 = std.time.Instant.now() catch unreachable;
+        timings.final_sizes_ns = t0.since(t1);
+
+        // Phase 2b: Wrap text now that we know container widths
+        try self.computeTextWrapping(root);
+        t1 = std.time.Instant.now() catch unreachable;
+        timings.text_wrapping_ns = t1.since(t0);
+
+        // Phase 3: Compute positions (top-down)
+        self.computePositions(root, 0, 0, 0);
+        t0 = std.time.Instant.now() catch unreachable;
+        timings.positions_ns = t0.since(t1);
+
+        // Phase 3b: Position floating elements (includes text wrapping for floats)
+        try self.computeFloatingPositions();
+        t1 = std.time.Instant.now() catch unreachable;
+        timings.floating_ns = t1.since(t0);
+
+        // Phase 4: Generate render commands
+        try self.generateRenderCommands(root, 0, 1.0, 0);
+        t0 = std.time.Instant.now() catch unreachable;
+        timings.render_commands_ns = t0.since(t1);
+
+        // Sort by z-index only when floating elements exist (they're the only source of non-zero z_index).
+        // Skipping the sort saves ~O(n log n) work on frames with no dropdowns/tooltips/modals.
+        if (self.floating_roots.len > 0) {
+            self.commands.sortByZIndex();
+        }
+        t1 = std.time.Instant.now() catch unreachable;
+        timings.z_sort_ns = t1.since(t0);
+
+        timings.total_ns = timings.min_sizes_ns + timings.final_sizes_ns +
+            timings.text_wrapping_ns + timings.positions_ns +
+            timings.floating_ns + timings.render_commands_ns + timings.z_sort_ns;
+
+        return TimedResult{ .commands = self.commands.items(), .timings = timings };
     }
 
     /// Compute text wrapping now that container sizes are known

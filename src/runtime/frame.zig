@@ -42,6 +42,15 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     const gooey = cx.gooey();
     const builder = cx.builder();
 
+    // Report GPU timings from previous frame (GPU work happens after finalizeFrame).
+    // Only available on platforms whose Window struct records GPU timing (Linux/Vulkan).
+    if (gooey.getWindow()) |w| {
+        const W = @TypeOf(w.*);
+        if (comptime @hasField(W, "last_gpu_submit_ns")) {
+            gooey.debugger.reportGpuTimings(w.last_gpu_submit_ns, w.last_atlas_upload_ns);
+        }
+    }
+
     // Reset dispatch tree for new frame
     gooey.dispatch.reset();
 
@@ -60,8 +69,10 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.pending_scrolls_by_layout_id.clearRetainingCapacity();
     builder.active_scroll_drag_id = null;
 
-    // Call user's render function with Cx
+    // Call user's render function with Cx — time tree construction separately
+    gooey.debugger.beginTreeBuild();
     render_fn(cx);
+    gooey.debugger.endTreeBuild();
 
     // Assert pending item counts are within limits
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
@@ -77,6 +88,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     std.debug.assert(commands.len <= MAX_RENDER_COMMANDS);
 
     // Sync bounds and z_index from layout to dispatch tree
+    // (previously untracked — now measured as "dispatch sync")
+    gooey.debugger.beginDispatchSync();
+
     for (gooey.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
             node.bounds = gooey.layout.getBoundingBox(layout_id);
@@ -90,6 +104,8 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // Register hit regions
     builder.registerPendingScrollRegions();
+
+    gooey.debugger.endDispatchSync();
 
     // Clear scene
     gooey.scene.clear();

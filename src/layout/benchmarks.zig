@@ -15,6 +15,7 @@ const gooey = @import("gooey");
 const layout = gooey.layout;
 
 const LayoutEngine = layout.LayoutEngine;
+const PhaseTimings = layout.engine.PhaseTimings;
 const Sizing = layout.Sizing;
 const SizingAxis = layout.SizingAxis;
 const Padding = layout.Padding;
@@ -65,6 +66,17 @@ const BenchmarkResult = struct {
             "| {s:<40} | {d:>8} | {d:>10.4} ms | {d:>8.2} ns/node |\n",
             .{ self.name, self.node_count, self.avgTimeMs(), self.timePerNodeNs() },
         );
+    }
+};
+
+const PhaseBreakdownResult = struct {
+    name: []const u8,
+    node_count: u32,
+    timings: PhaseTimings,
+    iterations: u32,
+
+    pub fn print(self: PhaseBreakdownResult) void {
+        self.timings.print(self.name, self.node_count, self.iterations);
     }
 };
 
@@ -166,6 +178,66 @@ fn runFullFrameBenchmark(
         .name = name,
         .node_count = node_count,
         .total_time_ns = total_time,
+        .iterations = iterations,
+    };
+}
+
+/// Phase-breakdown benchmark: times each layout phase individually within endFrame.
+/// Shows where time is actually spent (min sizes, final sizes, text wrapping, positions,
+/// floating, render command generation, z-sort).
+fn runPhaseBreakdownBenchmark(
+    allocator: std.mem.Allocator,
+    comptime name: []const u8,
+    comptime buildFn: fn (*LayoutEngine) anyerror!u32,
+) PhaseBreakdownResult {
+    var engine = LayoutEngine.init(allocator);
+    defer engine.deinit();
+
+    // First pass to get node count
+    engine.beginFrame(1000, 1000);
+    const node_count = buildFn(&engine) catch unreachable;
+    _ = engine.endFrame() catch unreachable;
+
+    const warmup_iters = getWarmupIterations(node_count);
+    const min_sample_iters = getMinSampleIterations(node_count);
+
+    // Warmup
+    var warmup_count: u32 = 0;
+    while (warmup_count < warmup_iters) : (warmup_count += 1) {
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+        _ = engine.endFrame() catch unreachable;
+    }
+
+    // Sample — accumulate per-phase timings across iterations
+    var accumulated = PhaseTimings{};
+    var iterations: u32 = 0;
+    var total_time: u64 = 0;
+
+    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+
+        const result = engine.endFrameTimed() catch unreachable;
+        const t = result.timings;
+
+        accumulated.min_sizes_ns += t.min_sizes_ns;
+        accumulated.final_sizes_ns += t.final_sizes_ns;
+        accumulated.text_wrapping_ns += t.text_wrapping_ns;
+        accumulated.positions_ns += t.positions_ns;
+        accumulated.floating_ns += t.floating_ns;
+        accumulated.render_commands_ns += t.render_commands_ns;
+        accumulated.z_sort_ns += t.z_sort_ns;
+        accumulated.total_ns += t.total_ns;
+
+        total_time += t.total_ns;
+        iterations += 1;
+    }
+
+    return .{
+        .name = name,
+        .node_count = node_count,
+        .timings = accumulated,
         .iterations = iterations,
     };
 }
@@ -799,7 +871,31 @@ pub fn main() !void {
     runFullFrameBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights).print();
 
     std.debug.print("=" ** 90 ++ "\n", .{});
+
+    // Phase breakdown benchmarks (per-phase timing within endFrame)
+    std.debug.print("\n", .{});
+    std.debug.print("=" ** 140 ++ "\n", .{});
+    std.debug.print("Gooey Layout Engine Benchmarks — Phase Breakdown (per-phase within endFrame)\n", .{});
+    std.debug.print("=" ** 140 ++ "\n", .{});
+    PhaseTimings.printHeader();
+    std.debug.print("-" ** 140 ++ "\n", .{});
+
+    runPhaseBreakdownBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew).print();
+    runPhaseBreakdownBenchmark(allocator, "deep_nesting", buildDeepNesting).print();
+    runPhaseBreakdownBenchmark(allocator, "space_distribution", buildSpaceDistribution).print();
+    runPhaseBreakdownBenchmark(allocator, "percentage_sizing", buildPercentageSizing).print();
+    runPhaseBreakdownBenchmark(allocator, "shrink_overflow", buildShrinkOverflow).print();
+    runPhaseBreakdownBenchmark(allocator, "expand_with_max_constraint", buildExpandWithMaxConstraint).print();
+    runPhaseBreakdownBenchmark(allocator, "expand_with_min_constraint", buildExpandWithMinConstraint).print();
+    runPhaseBreakdownBenchmark(allocator, "mixed_layout", buildMixedLayout).print();
+    runPhaseBreakdownBenchmark(allocator, "nested_vertical_stack", buildNestedVerticalStack).print();
+    runPhaseBreakdownBenchmark(allocator, "percentage_and_ratio", buildPercentageAndRatio).print();
+    runPhaseBreakdownBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights).print();
+    runPhaseBreakdownBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights).print();
+
+    std.debug.print("=" ** 140 ++ "\n", .{});
     std.debug.print("\nLayout Only = endFrame() only. Full Frame = beginFrame + tree build + endFrame.\n", .{});
+    std.debug.print("Phase Breakdown = per-phase avg within endFrame (MinSizes, FinalSz, TextWrap, Position, Float, RenderCmd, ZSort).\n", .{});
     std.debug.print("Iterations are adaptive based on node count (fewer for large tests).\n", .{});
     std.debug.print("\nCurrent MAX_ELEMENTS_PER_FRAME = {d}\n", .{layout.engine.MAX_ELEMENTS_PER_FRAME});
     std.debug.print("PanGui benchmarks use up to 100k+ nodes for comparison.\n", .{});

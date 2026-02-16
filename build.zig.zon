@@ -1,6 +1,6 @@
 .{
     .name = .gooey,
-    .version = "0.0.12",
+    .version = "0.0.13",
     .fingerprint = 0xfcad6172ee59f0b8,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
