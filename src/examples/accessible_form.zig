@@ -382,7 +382,7 @@ const PersonalInfoSection = struct {
             .background = ui.Color.white,
             .corner_radius = 12,
             .border_color = ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = 1,
+            .border_width = .{ .all = 1 },
         }, .{
             ui.text("Personal Information", .{
                 .size = 18,
@@ -464,7 +464,7 @@ const ContactPreferencesSection = struct {
             .background = ui.Color.white,
             .corner_radius = 12,
             .border_color = ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = 1,
+            .border_width = .{ .all = 1 },
         }, .{
             ui.text("Contact Preferences", .{
                 .size = 18,
@@ -580,7 +580,7 @@ const RadioOption = struct {
                     ui.Color.rgb(0.2, 0.5, 0.9)
                 else
                     ui.Color.rgb(0.7, 0.7, 0.7),
-                .border_width = 2,
+                .border_width = .{ .all = 2 },
                 .background = ui.Color.white,
                 .alignment = .{ .main = .center, .cross = .center },
             }, .{
@@ -624,7 +624,7 @@ const ExperienceSection = struct {
             .background = ui.Color.white,
             .corner_radius = 12,
             .border_color = ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = 1,
+            .border_width = .{ .all = 1 },
         }, .{
             ui.text("Experience Level", .{
                 .size = 18,
@@ -685,7 +685,7 @@ const TermsSection = struct {
                 ui.Color.rgb(0.9, 0.3, 0.3)
             else
                 ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = 1,
+            .border_width = .{ .all = 1 },
         }, .{
             Checkbox{
                 .id = "terms",
@@ -812,7 +812,7 @@ const SuccessMessage = struct {
             .background = ui.Color.rgb(0.9, 1.0, 0.9),
             .corner_radius = 12,
             .border_color = ui.Color.rgb(0.2, 0.7, 0.3),
-            .border_width = 2,
+            .border_width = .{ .all = 2 },
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             ui.text("✓", .{

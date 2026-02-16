@@ -672,8 +672,8 @@ pub const Builder = struct {
         };
 
         // Build border config if we have a border
-        const border_config: ?BorderConfig = if (props.border_width > 0)
-            BorderConfig.all(resolved_border_color, props.border_width)
+        const border_config: ?BorderConfig = if (props.hasBorder())
+            .{ .color = resolved_border_color, .width = props.toBorderWidth() }
         else
             null;
 

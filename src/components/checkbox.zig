@@ -102,7 +102,7 @@ const CheckboxBox = struct {
             .height = self.size,
             .background = if (self.checked) self.checked_background else self.unchecked_background,
             .border_color = self.border_color,
-            .border_width = 1,
+            .border_width = .{ .all = 1 },
             .corner_radius = self.corner_radius,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{

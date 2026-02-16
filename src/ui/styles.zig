@@ -9,6 +9,7 @@ const std = @import("std");
 const layout_types = @import("../layout/types.zig");
 const layout_mod = @import("../layout/layout.zig");
 const Padding = layout_mod.Padding;
+const BorderWidth = layout_mod.BorderWidth;
 const FloatingConfig = layout_types.FloatingConfig;
 
 // Re-exports for convenience
@@ -178,7 +179,7 @@ pub const Box = struct {
     corner_radius: f32 = 0,
     opacity: f32 = 1.0,
     border_color: Color = Color.transparent,
-    border_width: f32 = 0,
+    border_width: BorderWidthValue = .{ .all = 0 },
 
     shadow: ?ShadowConfig = null,
 
@@ -236,6 +237,12 @@ pub const Box = struct {
         each: struct { top: f32, right: f32, bottom: f32, left: f32 },
     };
 
+    pub const BorderWidthValue = union(enum) {
+        all: f32,
+        symmetric: struct { x: f32, y: f32 },
+        each: struct { top: f32, right: f32, bottom: f32, left: f32 },
+    };
+
     /// Convert to layout Padding
     pub fn toPadding(self: Box) Padding {
         return switch (self.padding) {
@@ -247,6 +254,24 @@ pub const Box = struct {
                 .bottom = @intFromFloat(e.bottom),
                 .left = @intFromFloat(e.left),
             },
+        };
+    }
+
+    /// Convert to layout BorderWidth
+    pub fn toBorderWidth(self: Box) BorderWidth {
+        return switch (self.border_width) {
+            .all => |v| BorderWidth.all(v),
+            .symmetric => |s| .{ .left = s.x, .right = s.x, .top = s.y, .bottom = s.y },
+            .each => |e| .{ .top = e.top, .right = e.right, .bottom = e.bottom, .left = e.left },
+        };
+    }
+
+    /// Returns true if any border side has a non-zero width
+    pub fn hasBorder(self: Box) bool {
+        return switch (self.border_width) {
+            .all => |v| v > 0,
+            .symmetric => |s| s.x > 0 or s.y > 0,
+            .each => |e| e.top > 0 or e.right > 0 or e.bottom > 0 or e.left > 0,
         };
     }
 };

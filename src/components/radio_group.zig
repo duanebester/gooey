@@ -119,7 +119,7 @@ const RadioCircle = struct {
             .height = self.size,
             .background = self.unselected_color,
             .border_color = if (self.is_selected) self.selected_color else self.border_color,
-            .border_width = if (self.is_selected) 2 else 1,
+            .border_width = .{ .all = if (self.is_selected) 2 else 1 },
             .corner_radius = self.size / 2,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{

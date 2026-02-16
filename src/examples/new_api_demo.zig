@@ -135,7 +135,7 @@ fn render(cx: *Cx) void {
             ui.box(.{
                 .padding = .{ .all = 16 },
                 .background = Color.rgb(0.2, 0.2, 0.25),
-                .border_width = 2,
+                .border_width = .{ .all = 2 },
                 .border_color = Color.rgb(0.3, 0.3, 0.35),
                 .hover_border_color = Color.rgb(0.5, 0.8, 0.5),
                 .corner_radius = 8,

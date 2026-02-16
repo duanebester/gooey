@@ -980,7 +980,7 @@ const DistributionExample = struct {
                 .background = t.bg,
                 .corner_radius = t.radius_sm,
                 .border_color = t.primary,
-                .border_width = 2,
+                .border_width = .{ .all = 2 },
                 .direction = .row,
                 .alignment = .{ .main = self.mode, .cross = .center },
             }, .{

@@ -258,7 +258,7 @@ const SuccessMessage = struct {
             .padding = .{ .all = 16 },
             .background = t.success.withAlpha(0.15),
             .border_color = t.success,
-            .border_width = 1,
+            .border_width = .{ .all = 1 },
             .corner_radius = t.radius_md,
             .direction = .row,
             .gap = 12,

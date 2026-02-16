@@ -264,7 +264,7 @@ const ItemList = struct {
             .grow = true,
             .min_width = 200,
             .min_height = 300,
-            .border_width = 2,
+            .border_width = .{ .all = 2 },
             .border_color = ui.Color.rgb(0.25, 0.25, 0.28),
             .drag_over_border_color = ui.Color.rgb(0.4, 0.6, 0.9),
         }, .{
