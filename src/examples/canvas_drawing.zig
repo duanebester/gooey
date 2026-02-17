@@ -145,7 +145,7 @@ fn render(cx: *Cx) void {
 
         // Canvas wrapped in clickable container
         ui.box(.{
-            .on_click_handler = cx.command(AppState, AppState.addDotAtMouse),
+            .on_click_handler = cx.command(AppState.addDotAtMouse),
         }, .{
             ui.canvas(CANVAS_WIDTH, CANVAS_HEIGHT, paintCanvas),
         }),
@@ -154,7 +154,7 @@ fn render(cx: *Cx) void {
         ui.hstack(.{ .gap = 15, .alignment = .center }, .{
             gooey.Button{
                 .label = "Clear Canvas",
-                .on_click_handler = cx.update(AppState, AppState.clear),
+                .on_click_handler = cx.update(AppState.clear),
                 .variant = .secondary,
             },
             ui.text("", .{}), // spacer

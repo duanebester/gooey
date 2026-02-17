@@ -1,10 +1,10 @@
 //! Handler - Function pointer storage for UI callbacks
 //!
 //! Handlers are created through Cx methods:
-//! - `cx.update(State, method)` - pure state mutation
-//! - `cx.updateWith(State, arg, method)` - mutation with argument
-//! - `cx.command(State, method)` - needs framework access
-//! - `cx.commandWith(State, arg, method)` - framework access with argument
+//! - `cx.update(method)` - pure state mutation
+//! - `cx.updateWith(arg, method)` - mutation with argument
+//! - `cx.command(method)` - needs framework access
+//! - `cx.commandWith(arg, method)` - framework access with argument
 //!
 //! Example:
 //! ```zig
@@ -19,7 +19,7 @@
 //! fn render(cx: *Cx) void {
 //!     const s = cx.state(AppState);
 //!     cx.render(ui.box(.{}, .{
-//!         Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
+//!         Button{ .label = "+", .on_click_handler = cx.update(AppState.increment) },
 //!     }));
 //! }
 //! ```
@@ -42,6 +42,52 @@ pub const HandlerRef = struct {
     /// Invoke this handler
     pub fn invoke(self: HandlerRef, gooey: *Gooey) void {
         self.callback(gooey, self.entity_id);
+    }
+};
+
+/// Handler template for index-based selection (used by Select, TabBar, etc.).
+///
+/// Captures the comptime callback but defers the index argument, allowing
+/// widgets to generate per-option `HandlerRef`s internally.
+///
+/// Created via `cx.onSelect(State.method)`.
+pub const OnSelectHandler = struct {
+    /// Callback that unpacks a packed index (and optional id hash) from EntityId.
+    /// Generated at comptime by `Cx.onSelect`.
+    callback: *const fn (*Gooey, EntityId) void,
+
+    /// Create a HandlerRef for a specific option index.
+    ///
+    /// Use when the caller manages open/close state externally.
+    pub fn forIndex(self: OnSelectHandler, index: usize) HandlerRef {
+        return .{
+            .callback = self.callback,
+            .entity_id = packArg(usize, index),
+        };
+    }
+
+    /// Create a HandlerRef that selects an option AND closes internal state.
+    ///
+    /// Packs both the option index (lower 32 bits) and the select's id hash
+    /// (upper 32 bits) into the EntityId. The comptime-generated callback
+    /// unpacks both, calls the user method, and closes the widget.
+    pub fn forIndexAndClose(self: OnSelectHandler, index: u32, id_hash: u32) HandlerRef {
+        std.debug.assert(id_hash != 0); // id_hash 0 is reserved (LayoutId.none)
+        return .{
+            .callback = self.callback,
+            .entity_id = .{ .id = @as(u64, id_hash) << 32 | @as(u64, index) },
+        };
+    }
+
+    /// Unpack the option index from a packed EntityId (lower 32 bits).
+    pub fn unpackIndex(entity_id: EntityId) u32 {
+        return @truncate(entity_id.id);
+    }
+
+    /// Unpack the select id hash from a packed EntityId (upper 32 bits).
+    /// Returns 0 if no hash was packed (forIndex was used instead of forIndexAndClose).
+    pub fn unpackIdHash(entity_id: EntityId) u32 {
+        return @truncate(entity_id.id >> 32);
     }
 };
 

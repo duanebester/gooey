@@ -154,7 +154,7 @@ fn render(cx: *Cx) void {
                 .background = Color.rgb(0.3, 0.5, 0.7),
                 .hover_background = Color.rgb(0.4, 0.6, 0.8),
                 .corner_radius = 8,
-                .on_click_handler = cx.update(AppState, AppState.boxClicked),
+                .on_click_handler = cx.update(AppState.boxClicked),
             }, .{
                 ui.text("Click this box!", .{ .size = 14, .color = Color.white }),
             }),
@@ -174,19 +174,19 @@ fn render(cx: *Cx) void {
                 .label = "Start",
                 .size = .small,
                 .variant = if (s.selected_alignment == .start) .primary else .secondary,
-                .on_click_handler = cx.update(AppState, AppState.setAlignStart),
+                .on_click_handler = cx.update(AppState.setAlignStart),
             },
             Button{
                 .label = "Center",
                 .size = .small,
                 .variant = if (s.selected_alignment == .center) .primary else .secondary,
-                .on_click_handler = cx.update(AppState, AppState.setAlignCenter),
+                .on_click_handler = cx.update(AppState.setAlignCenter),
             },
             Button{
                 .label = "End",
                 .size = .small,
                 .variant = if (s.selected_alignment == .end) .primary else .secondary,
-                .on_click_handler = cx.update(AppState, AppState.setAlignEnd),
+                .on_click_handler = cx.update(AppState.setAlignEnd),
             },
         }),
         // Alignment demo box
@@ -198,9 +198,9 @@ fn render(cx: *Cx) void {
             .padding = .{ .all = 8 },
         }, .{
             ui.hstack(.{ .gap = 8, .alignment = main_align }, .{
-                ui.box(.{ .width = 40, .height = 40, .background = Color.rgb(0.8, 0.3, 0.3), .corner_radius = 4 }, .{}),
-                ui.box(.{ .width = 40, .height = 40, .background = Color.rgb(0.3, 0.8, 0.3), .corner_radius = 4 }, .{}),
-                ui.box(.{ .width = 40, .height = 40, .background = Color.rgb(0.3, 0.3, 0.8), .corner_radius = 4 }, .{}),
+                ui.rect(.{ .width = 40, .height = 40, .background = Color.rgb(0.8, 0.3, 0.3), .corner_radius = 4 }),
+                ui.rect(.{ .width = 40, .height = 40, .background = Color.rgb(0.3, 0.8, 0.3), .corner_radius = 4 }),
+                ui.rect(.{ .width = 40, .height = 40, .background = Color.rgb(0.3, 0.3, 0.8), .corner_radius = 4 }),
             }),
         }),
 
@@ -213,7 +213,7 @@ fn render(cx: *Cx) void {
                 .label = if (s.show_details) "Hide" else "Show",
                 .size = .small,
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.toggleDetails),
+                .on_click_handler = cx.update(AppState.toggleDetails),
             },
             ui.when(s.show_details, .{
                 ui.box(.{
@@ -244,18 +244,18 @@ fn render(cx: *Cx) void {
             Button{
                 .label = "−",
                 .size = .small,
-                .on_click_handler = cx.update(AppState, AppState.decrement),
+                .on_click_handler = cx.update(AppState.decrement),
             },
             Button{
                 .label = "+",
                 .size = .small,
-                .on_click_handler = cx.update(AppState, AppState.increment),
+                .on_click_handler = cx.update(AppState.increment),
             },
             Button{
                 .label = "Reset",
                 .variant = .danger,
                 .size = .small,
-                .on_click_handler = cx.update(AppState, AppState.reset),
+                .on_click_handler = cx.update(AppState.reset),
             },
         }),
 
@@ -323,15 +323,14 @@ const SectionHeader = struct {
     title: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-        b.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .symmetric = .{ .x = 0, .y = 4 } },
         }, .{
             ui.text(self.title, .{
                 .size = 13,
                 .color = Color.rgb(0.6, 0.7, 0.8),
             }),
-        });
+        }));
     }
 };
 
@@ -341,8 +340,7 @@ const CounterBadge = struct {
     label: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-        b.box(.{
+        cx.render(ui.box(.{
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
             .background = if (self.value >= 0)
                 Color.rgb(0.2, 0.3, 0.4)
@@ -361,7 +359,7 @@ const CounterBadge = struct {
                 .size = 10,
                 .color = Color.rgb(0.6, 0.6, 0.6),
             }),
-        });
+        }));
     }
 };
 

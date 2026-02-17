@@ -2,15 +2,10 @@
 //!
 //! Simplified to debug floating dropdown behavior
 
-const std = @import("std");
-const builtin = @import("builtin");
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -106,7 +101,7 @@ const DropdownTrigger = struct {
         cx.render(ui.box(.{}, .{
             Button{
                 .label = if (s.show_dropdown) "Close ▲" else "Menu ▼",
-                .on_click_handler = cx.update(AppState, AppState.toggleDropdown),
+                .on_click_handler = cx.update(AppState.toggleDropdown),
             },
             DropdownMenu{},
         }));
@@ -127,7 +122,7 @@ const DropdownMenu = struct {
             .gap = 2,
             .shadow = .{ .blur_radius = 12, .offset_y = 4, .color = ui.Color.rgba(0, 0, 0, 0.15) },
             .floating = ui.Floating.dropdown(),
-            .on_click_outside_handler = cx.update(AppState, AppState.closeDropdown),
+            .on_click_outside_handler = cx.update(AppState.closeDropdown),
         }, .{
             MenuItem{ .label = "Profile" },
             MenuItem{ .label = "Settings" },

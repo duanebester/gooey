@@ -17,10 +17,10 @@
 //! Modal(ConfirmDialogContent){
 //!     .id = "confirm-dialog",
 //!     .is_open = s.show_confirm,
-//!     .on_close = cx.update(State, State.closeConfirm),
+//!     .on_close = cx.update(State.closeConfirm),
 //!     .child = ConfirmDialogContent{
 //!         .message = "Are you sure?",
-//!         .on_confirm = cx.update(State, State.doConfirm),
+//!         .on_confirm = cx.update(State.doConfirm),
 //!     },
 //! }
 //! ```

@@ -506,6 +506,12 @@ pub const Builder = struct {
         self.boxWithIdTracked(null, props, children, SourceLoc.none);
     }
 
+    /// Childless box — a visual-only rectangle (divider, spacer, colored block).
+    /// Equivalent to `box(props, .{})` without the empty children tuple.
+    pub fn rect(self: *Self, props: Box) void {
+        self.boxWithIdTracked(null, props, .{}, SourceLoc.none);
+    }
+
     /// Box with source location tracking (Phase 5)
     /// Call as: b.boxTracked(props, children, @src())
     pub fn boxTracked(self: *Self, props: Box, children: anytype, src: std.builtin.SourceLocation) void {

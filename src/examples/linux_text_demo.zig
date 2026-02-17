@@ -174,18 +174,18 @@ const CounterSection = struct {
                 Button{
                     .label = "−",
                     .size = .large,
-                    .on_click_handler = cx.update(AppState, AppState.decrement),
+                    .on_click_handler = cx.update(AppState.decrement),
                 },
                 Button{
                     .label = "+",
                     .size = .large,
-                    .on_click_handler = cx.update(AppState, AppState.increment),
+                    .on_click_handler = cx.update(AppState.increment),
                 },
                 ui.spacerMin(16),
                 Button{
                     .label = "Reset",
                     .variant = .secondary,
-                    .on_click_handler = cx.update(AppState, AppState.reset),
+                    .on_click_handler = cx.update(AppState.reset),
                 },
             }),
         }));
@@ -205,7 +205,7 @@ const FontSizeSection = struct {
             Button{
                 .label = "A−",
                 .size = .small,
-                .on_click_handler = cx.update(AppState, AppState.decreaseFontSize),
+                .on_click_handler = cx.update(AppState.decreaseFontSize),
             },
 
             ui.textFmt("{}", .{s.font_size}, .{
@@ -216,7 +216,7 @@ const FontSizeSection = struct {
             Button{
                 .label = "A+",
                 .size = .small,
-                .on_click_handler = cx.update(AppState, AppState.increaseFontSize),
+                .on_click_handler = cx.update(AppState.increaseFontSize),
             },
         }));
     }

@@ -94,12 +94,9 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
-    const b = cx.builder();
-    const g = b.gooey orelse return;
-
     // Announce errors assertively (live region behavior)
     if (std.mem.indexOf(u8, s.status_message, "Error") != null) {
-        g.announce(s.status_message, .assertive);
+        cx.announce(s.status_message, .assertive);
     }
 
     const bg_color = if (s.dark_mode)
@@ -155,15 +152,13 @@ const HeaderSection = struct {
     text_color: ui.Color,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Accessible heading
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .heading,
             .name = "Accessibility Demo",
             .heading_level = .h1,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.vstack(.{ .gap = 4 }, .{
@@ -184,9 +179,7 @@ const A11yStatusSection = struct {
     text_color: ui.Color,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-        const g = b.gooey orelse return;
-        const is_enabled = g.isA11yEnabled();
+        const is_enabled = cx.isA11yEnabled();
 
         const status_color = if (is_enabled)
             ui.Color.rgb(0.2, 0.7, 0.3)
@@ -194,12 +187,12 @@ const A11yStatusSection = struct {
             ui.Color.rgb(0.6, 0.6, 0.6);
 
         // Accessible status region
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .status,
             .name = if (is_enabled) "VoiceOver detected" else "VoiceOver not detected",
             .live = .polite,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
@@ -223,14 +216,12 @@ const CounterSection = struct {
     dark_mode: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Accessible group
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .group,
             .name = "Counter controls",
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -253,7 +244,7 @@ const CounterSection = struct {
                 Button{
                     .label = "−",
                     .accessible_name = "Decrease counter",
-                    .on_click_handler = cx.update(AppState, AppState.decrement),
+                    .on_click_handler = cx.update(AppState.decrement),
                 },
                 // Counter value
                 ui.textFmt("{d}", .{self.count}, .{
@@ -267,7 +258,7 @@ const CounterSection = struct {
                 Button{
                     .label = "+",
                     .accessible_name = "Increase counter",
-                    .on_click_handler = cx.update(AppState, AppState.increment),
+                    .on_click_handler = cx.update(AppState.increment),
                 },
             }),
         }));
@@ -280,14 +271,12 @@ const ToggleSection = struct {
     text_color: ui.Color,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Accessible group
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .group,
             .name = "Toggle settings",
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -312,7 +301,7 @@ const ToggleSection = struct {
                     .checked = self.notifications,
                     .label = if (self.notifications) "Notifications On" else "Notifications Off",
                     .accessible_name = "Enable Notifications",
-                    .on_click_handler = cx.update(AppState, AppState.toggleNotifications),
+                    .on_click_handler = cx.update(AppState.toggleNotifications),
                 },
                 // Dark mode toggle - Checkbox has built-in a11y
                 gooey.Checkbox{
@@ -320,7 +309,7 @@ const ToggleSection = struct {
                     .checked = self.dark_mode,
                     .label = if (self.dark_mode) "Dark Mode On" else "Dark Mode Off",
                     .accessible_name = "Dark Mode",
-                    .on_click_handler = cx.update(AppState, AppState.toggleDarkMode),
+                    .on_click_handler = cx.update(AppState.toggleDarkMode),
                 },
             }),
         }));
@@ -348,15 +337,13 @@ const StatusSection = struct {
         else
             ui.Color.rgb(0.1, 0.4, 0.1);
 
-        const b = cx.builder();
-
         // Live region - announced when content changes
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = if (is_error) .alert else .status,
             .name = self.message,
             .live = if (is_error) .assertive else .polite,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -373,7 +360,7 @@ const StatusSection = struct {
                         .label = "Dismiss",
                         .size = .small,
                         .variant = .secondary,
-                        .on_click_handler = cx.update(AppState, AppState.clearError),
+                        .on_click_handler = cx.update(AppState.clearError),
                     },
                 }),
                 ui.when(!is_error, .{
@@ -381,7 +368,7 @@ const StatusSection = struct {
                         .label = "Test Error",
                         .size = .small,
                         .variant = .danger,
-                        .on_click_handler = cx.update(AppState, AppState.simulateError),
+                        .on_click_handler = cx.update(AppState.simulateError),
                     },
                 }),
             }),

@@ -80,7 +80,7 @@ pub fn main() !void {
         .width = 600,
         .height = 400,
         // Dark background color - RGB values become the glass tint
-        .background_color = gooey.Color.init(0.1, 0.1, 0.15, 1.0),
+        .background_color = gooey.Color.rgba(0.1, 0.1, 0.15, 1.0),
         // How opaque the tint is (0.0-1.0)
         .background_opacity = 0.2,
         // Request liquid glass
@@ -161,7 +161,7 @@ const StyleControls = struct {
         cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Cycle Style",
-                .on_click_handler = cx.command(AppState, AppState.cycleStyleCmd),
+                .on_click_handler = cx.command(AppState.cycleStyleCmd),
             },
         }));
     }

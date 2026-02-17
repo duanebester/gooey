@@ -10,14 +10,11 @@
 //! (not paths, due to browser security restrictions).
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -285,17 +282,17 @@ const OpenButtonRow = struct {
             Button{
                 .label = "Text Files",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.openSingleFile),
+                .on_click_handler = cx.update(AppState.openSingleFile),
             },
             Button{
                 .label = "Multiple Files",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.openMultipleFiles),
+                .on_click_handler = cx.update(AppState.openMultipleFiles),
             },
             Button{
                 .label = "Any File",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.openAnyFile),
+                .on_click_handler = cx.update(AppState.openAnyFile),
             },
         }));
     }
@@ -311,12 +308,12 @@ const SaveButtonRow = struct {
             Button{
                 .label = "Download .txt",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.saveExampleFile),
+                .on_click_handler = cx.update(AppState.saveExampleFile),
             },
             Button{
                 .label = "Download .json",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.saveJsonFile),
+                .on_click_handler = cx.update(AppState.saveJsonFile),
             },
         }));
     }

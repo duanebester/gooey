@@ -73,7 +73,7 @@ pub fn runCx(
     }
 
     // Default background color
-    const bg_color = config.background_color orelse geometry_mod.Color.init(0.95, 0.95, 0.95, 1.0);
+    const bg_color = config.background_color orelse geometry_mod.Color.rgba(0.95, 0.95, 0.95, 1.0);
 
     // Create window
     var window = try Window.init(allocator, &plat, .{
@@ -119,6 +119,11 @@ pub fn runCx(
     // Connect WindowContext to window (sets user_data and callbacks)
     win_ctx.setupWindow(window);
 
+    // Call user init callback if provided (after full setup, before first frame)
+    if (config.on_init) |init_fn| {
+        init_fn(win_ctx.getCx());
+    }
+
     // Run the event loop
     plat.run();
 }
@@ -146,6 +151,10 @@ pub fn CxConfig(comptime State: type) type {
         centered: bool = true,
 
         // Event callbacks
+
+        /// Called once after platform, window, and Gooey context are initialized,
+        /// before the first render. Use for one-time setup (HTTP clients, API keys, etc.)
+        on_init: ?*const fn (*Cx) void = null,
 
         /// Optional event handler for raw input events
         on_event: ?*const fn (*Cx, InputEvent) bool = null,

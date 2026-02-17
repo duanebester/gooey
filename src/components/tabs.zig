@@ -8,9 +8,9 @@
 //! Usage with Cx (recommended):
 //! ```zig
 //! cx.render(ui.box(.{ .direction = .row, .gap = 0 }, .{
-//!     Tab{ .label = "Home", .is_active = s.page == 0, .on_click_handler = cx.updateWith(State, @as(u8, 0), State.setPage) },
-//!     Tab{ .label = "Settings", .is_active = s.page == 1, .on_click_handler = cx.updateWith(State, @as(u8, 1), State.setPage) },
-//!     Tab{ .label = "About", .is_active = s.page == 2, .on_click_handler = cx.updateWith(State, @as(u8, 2), State.setPage) },
+//!     Tab{ .label = "Home", .is_active = s.page == 0, .on_click_handler = cx.updateWith(@as(u8, 0), State.setPage) },
+//!     Tab{ .label = "Settings", .is_active = s.page == 1, .on_click_handler = cx.updateWith(@as(u8, 1), State.setPage) },
+//!     Tab{ .label = "About", .is_active = s.page == 2, .on_click_handler = cx.updateWith(@as(u8, 2), State.setPage) },
 //! }));
 //! ```
 //!

@@ -11,12 +11,12 @@
 //!     RadioButton{
 //!         .label = "Email",
 //!         .is_selected = s.contact == 0,
-//!         .on_click_handler = cx.updateWith(State, @as(u8, 0), State.setContact),
+//!         .on_click_handler = cx.updateWith(@as(u8, 0), State.setContact),
 //!     },
 //!     RadioButton{
 //!         .label = "Phone",
 //!         .is_selected = s.contact == 1,
-//!         .on_click_handler = cx.updateWith(State, @as(u8, 1), State.setContact),
+//!         .on_click_handler = cx.updateWith(@as(u8, 1), State.setContact),
 //!     },
 //! }));
 //! ```
@@ -28,9 +28,9 @@
 //!     .options = &.{ "Email", "Phone", "Mail" },
 //!     .selected = s.contact,
 //!     .handlers = &.{
-//!         cx.updateWith(State, @as(u8, 0), State.setContact),
-//!         cx.updateWith(State, @as(u8, 1), State.setContact),
-//!         cx.updateWith(State, @as(u8, 2), State.setContact),
+//!         cx.updateWith(@as(u8, 0), State.setContact),
+//!         cx.updateWith(@as(u8, 1), State.setContact),
+//!         cx.updateWith(@as(u8, 2), State.setContact),
 //!     },
 //! }
 //! ```

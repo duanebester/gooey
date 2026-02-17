@@ -8,14 +8,11 @@
 //! - Works on macOS, Linux, and WASM
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -248,9 +245,9 @@ const ItemList = struct {
         const count = if (self.side == .left) s.left_count else s.right_count;
 
         const drop_handler = if (self.side == .left)
-            cx.command(AppState, AppState.onDropLeft)
+            cx.command(AppState.onDropLeft)
         else
-            cx.command(AppState, AppState.onDropRight);
+            cx.command(AppState.onDropRight);
 
         // List container (drop target)
         cx.render(ui.box(.{

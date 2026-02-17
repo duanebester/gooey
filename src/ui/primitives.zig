@@ -406,6 +406,18 @@ pub fn box(style: styles.Box, children: anytype) BoxElement(@TypeOf(children), f
     return .{ .style = style, .children = children, .source_loc = {} };
 }
 
+/// Childless box — a visual-only rectangle (divider, spacer, colored block).
+///
+/// Equivalent to `box(style, .{})` but without the empty children tuple:
+/// ```
+/// ui.rect(.{ .width = 1, .height = 18, .background = t.border })
+/// ui.rect(.{ .grow = true })
+/// ui.rect(.{ .width = 40, .height = 40, .background = color, .corner_radius = 4 })
+/// ```
+pub fn rect(style: styles.Box) BoxElement(@TypeOf(.{}), false) {
+    return .{ .style = style, .children = .{}, .source_loc = {} };
+}
+
 /// Create a box element with source location tracking (returns struct for cx.render())
 /// Usage: ui.boxTracked(.{ ... }, .{ ... }, @src())
 pub fn boxTracked(style: styles.Box, children: anytype, src: std.builtin.SourceLocation) BoxElement(@TypeOf(children), true) {

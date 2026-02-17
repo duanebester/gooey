@@ -18,15 +18,10 @@
 //! 8. **Toggle buttons transition** (200ms on state change)
 //! 9. **Neon buttons idle pulse** (2s subtle glow)
 
-const std = @import("std");
-const builtin = @import("builtin");
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 
 const platform = gooey.platform;
 const ui = gooey.ui;
@@ -735,7 +730,7 @@ const JumpButtons = struct {
                     .label = "INITIATE JUMP",
                     .color = Colors.green,
                     .icon = SpaceIcons.jump_drive,
-                    .handler = cx.update(AppState, AppState.initiateJump),
+                    .handler = cx.update(AppState.initiateJump),
                 },
             }));
         } else if (!s.destination_locked) {
@@ -744,7 +739,7 @@ const JumpButtons = struct {
                     .label = "LOCK DESTINATION",
                     .color = Colors.magenta,
                     .icon = SpaceIcons.target,
-                    .handler = cx.update(AppState, AppState.lockDestination),
+                    .handler = cx.update(AppState.lockDestination),
                 },
             }));
         } else {
@@ -1127,7 +1122,7 @@ const AutopilotToggle = struct {
             .corner_radius = 4,
             .direction = .row,
             .alignment = .{ .cross = .center },
-            .on_click_handler = cx.update(AppState, AppState.toggleAutopilot),
+            .on_click_handler = cx.update(AppState.toggleAutopilot),
         }, .{
             ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
@@ -1163,7 +1158,7 @@ const ShieldsToggle = struct {
             .corner_radius = 4,
             .direction = .row,
             .alignment = .{ .cross = .center },
-            .on_click_handler = cx.update(AppState, AppState.toggleShields),
+            .on_click_handler = cx.update(AppState.toggleShields),
         }, .{
             ui.hstack(.{ .gap = 6, .alignment = .center }, .{
                 Svg{
@@ -1256,13 +1251,13 @@ const QuickActions = struct {
                 .label = "BOOST SHIELDS",
                 .color = Colors.cyan,
                 .icon = SpaceIcons.boost,
-                .handler = cx.update(AppState, AppState.boostShields),
+                .handler = cx.update(AppState.boostShields),
             },
             NeonButton{
                 .label = "EMERGENCY STOP",
                 .color = Colors.red,
                 .icon = SpaceIcons.emergency,
-                .handler = cx.update(AppState, AppState.emergencyStop),
+                .handler = cx.update(AppState.emergencyStop),
             },
         }));
     }

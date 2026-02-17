@@ -295,7 +295,7 @@ fn renderForm(cx: *Cx) void {
         .id = "subscribe",
         .checked = s.subscribe,
         .label = "Subscribe to newsletter",
-        .on_click_handler = cx.update(FormState, FormState.toggleSubscribe),
+        .on_click_handler = cx.update(FormState.toggleSubscribe),
     };
 
     // Submit button
@@ -303,7 +303,7 @@ fn renderForm(cx: *Cx) void {
         .label = "Send",
         .accessible_name = "Submit contact form",
         .enabled = s.isValid(),
-        .on_click_handler = cx.update(FormState, FormState.submit),
+        .on_click_handler = cx.update(FormState.submit),
     };
 }
 ```

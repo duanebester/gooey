@@ -175,7 +175,7 @@ var state = State{};
 
 const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        const theme = cx.builder().theme();
+        const theme = cx.theme();
 
         cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
             ui.text("Tree List Demo", .{
@@ -195,7 +195,7 @@ const Header = struct {
 const StatsBar = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(State);
-        const theme = cx.builder().theme();
+        const theme = cx.theme();
 
         // Format stats
         var buf: [256]u8 = undefined;
@@ -227,7 +227,7 @@ const StatsBar = struct {
 const TreeView = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(State);
-        const theme = cx.builder().theme();
+        const theme = cx.theme();
 
         cx.treeList(
             "file-tree",
@@ -246,7 +246,7 @@ const TreeView = struct {
 
     fn renderTreeItem(entry: *const TreeEntry, cx: *Cx) void {
         const s = cx.stateConst(State);
-        const theme = cx.builder().theme();
+        const theme = cx.theme();
 
         // Find entry index for handlers
         const entry_index = getEntryIndex(entry, s);
@@ -282,7 +282,7 @@ const TreeView = struct {
             .direction = .row,
             .alignment = .{ .main = .start, .cross = .center },
             .gap = 0,
-            .on_click_handler = cx.updateWith(State, entry_index, State.onSelect),
+            .on_click_handler = cx.updateWith(entry_index, State.onSelect),
         }, .{
             // Indent spacer
             ui.box(.{
@@ -295,7 +295,7 @@ const TreeView = struct {
                 .height = ITEM_HEIGHT,
                 .alignment = .{ .main = .center, .cross = .center },
                 .on_click_handler = if (entry.is_folder)
-                    cx.updateWith(State, entry_index, State.onToggle)
+                    cx.updateWith(entry_index, State.onToggle)
                 else
                     null,
             }, .{
@@ -303,7 +303,7 @@ const TreeView = struct {
                     Svg{ .path = chevron_icon, .size = 12, .color = chevron_color },
                 }),
                 ui.when(!show_chevron, .{
-                    ui.box(.{ .width = 12, .height = 12 }, .{}),
+                    ui.rect(.{ .width = 12, .height = 12 }),
                 }),
             }),
             // Folder/file icon
@@ -340,28 +340,28 @@ const Controls = struct {
         cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Expand All",
-                .on_click_handler = cx.update(State, State.expandAll),
+                .on_click_handler = cx.update(State.expandAll),
             },
             Button{
                 .label = "Collapse All",
-                .on_click_handler = cx.update(State, State.collapseAll),
+                .on_click_handler = cx.update(State.collapseAll),
             },
             ui.spacer(),
             Button{
                 .label = "← Left",
-                .on_click_handler = cx.update(State, State.navigateLeft),
+                .on_click_handler = cx.update(State.navigateLeft),
             },
             Button{
                 .label = "→ Right",
-                .on_click_handler = cx.update(State, State.navigateRight),
+                .on_click_handler = cx.update(State.navigateRight),
             },
             Button{
                 .label = "↑ Up",
-                .on_click_handler = cx.update(State, State.selectPrevious),
+                .on_click_handler = cx.update(State.selectPrevious),
             },
             Button{
                 .label = "↓ Down",
-                .on_click_handler = cx.update(State, State.selectNext),
+                .on_click_handler = cx.update(State.selectNext),
             },
         }));
     }
@@ -369,7 +369,7 @@ const Controls = struct {
 
 const KeyboardHint = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        const theme = cx.builder().theme();
+        const theme = cx.theme();
 
         cx.render(ui.box(.{
             .fill_width = true,
@@ -394,7 +394,7 @@ fn render(cx: *Cx) void {
     s.init();
 
     const size = cx.windowSize();
-    const theme = cx.builder().theme();
+    const theme = cx.theme();
 
     cx.render(ui.box(.{
         .width = size.width,

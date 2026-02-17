@@ -58,13 +58,28 @@ const builtin = @import("builtin");
 // WASM-compatible logging
 // =============================================================================
 
+/// Platform-aware logger — works on native and WASM without `std_options`.
+///
+/// ```
+/// const log = gooey.log.scoped(.myapp);
+/// log.info("connected to {s}", .{host});
+/// ```
+pub const log = @import("log.zig");
+
+/// Pre-configured `std.Options` that routes `std.log` through the browser
+/// console on WASM and uses the default log function on native.
+///
+/// Add this single line to your root source file:
+/// ```
+/// pub const std_options = gooey.std_options;
+/// ```
+pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
+    .{ .logFn = wasmLogFn }
+else
+    .{};
+
 /// WASM-compatible log function for use with std_options.
-/// WASM executables should define in their root file:
-/// ```
-/// pub const std_options: std.Options = .{
-///     .logFn = gooey.wasmLogFn,
-/// };
-/// ```
+/// Prefer `gooey.std_options` (one-liner) or `gooey.log` (zero-config).
 pub fn wasmLogFn(
     comptime level: std.log.Level,
     comptime scope: @Type(.enum_literal),
@@ -130,6 +145,12 @@ pub const ui = @import("ui/mod.zig");
 
 /// Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU)
 pub const platform = @import("platform/mod.zig");
+
+/// Cross-platform file dialogs (open/save)
+/// - macOS: NSOpenPanel / NSSavePanel
+/// - Linux: XDG Desktop Portal
+/// - WASM: returns null (use platform.web.file_dialog for async API)
+pub const file_dialog = @import("file_dialog.zig");
 
 /// Runtime: event loop, frame rendering, input handling, window management
 pub const runtime = @import("runtime/mod.zig");
@@ -325,6 +346,7 @@ pub const isView = context.isView;
 
 // Handler system (from context module)
 pub const HandlerRef = context.HandlerRef;
+pub const OnSelectHandler = context.handler.OnSelectHandler;
 pub const typeId = context.typeId;
 
 // Animation system (types from animation module for convenience)

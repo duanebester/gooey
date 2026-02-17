@@ -8,15 +8,12 @@
 //! - Auto-cleanup when entities are removed
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 const platform = gooey.platform;
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = gooey.Button;
@@ -175,8 +172,8 @@ const ControlPanel = struct {
 
         cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             // These need command() because they create/remove entities
-            Button{ .label = "+ Add Counter", .on_click_handler = cx.command(AppState, AppState.addCounter) },
-            Button{ .label = "- Remove Counter", .variant = .secondary, .on_click_handler = cx.command(AppState, AppState.removeCounter) },
+            Button{ .label = "+ Add Counter", .on_click_handler = cx.command(AppState.addCounter) },
+            Button{ .label = "- Remove Counter", .variant = .secondary, .on_click_handler = cx.command(AppState.removeCounter) },
             ui.textFmt("({}/10)", .{s.countersSlice().len}, .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
         }));
     }

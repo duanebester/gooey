@@ -29,6 +29,14 @@ const MotionState = motion_mod.MotionState;
 const SpringMotionConfig = motion_mod.SpringMotionConfig;
 const SpringMotionState = motion_mod.SpringMotionState;
 const hashString = @import("../animation/animation.zig").hashString;
+const change_tracker_mod = @import("change_tracker.zig");
+const ChangeTracker = change_tracker_mod.ChangeTracker;
+
+/// Internal state for Select widgets, keyed by LayoutId hash (u32).
+/// Managed automatically when using `on_select` with the Select component.
+pub const SelectState = struct {
+    is_open: bool = false,
+};
 
 pub const WidgetStore = struct {
     allocator: std.mem.Allocator,
@@ -37,6 +45,9 @@ pub const WidgetStore = struct {
     code_editors: std.StringHashMap(*CodeEditorState),
     scroll_containers: std.StringHashMap(*ScrollContainer),
     accessed_this_frame: std.StringHashMap(void),
+
+    // u32-keyed select state (open/close, keyed by LayoutId hash)
+    select_states: std.AutoHashMap(u32, SelectState),
 
     // u32-keyed animation storage
     animations: std.AutoArrayHashMap(u32, AnimationState),
@@ -52,6 +63,9 @@ pub const WidgetStore = struct {
     spring_motions: std.AutoArrayHashMap(u32, SpringMotionState),
     active_motion_count: u32 = 0,
 
+    // Change detection (fixed-capacity, zero allocation after init)
+    change_tracker: ChangeTracker = .{},
+
     default_text_input_bounds: Bounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 },
     default_text_area_bounds: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 },
     default_code_editor_bounds: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 },
@@ -66,6 +80,7 @@ pub const WidgetStore = struct {
             .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
             .accessed_this_frame = std.StringHashMap(void).init(allocator),
+            .select_states = std.AutoHashMap(u32, SelectState).init(allocator),
             .animations = std.AutoArrayHashMap(u32, AnimationState).init(allocator),
             .springs = std.AutoArrayHashMap(u32, SpringState).init(allocator),
             .motions = std.AutoArrayHashMap(u32, MotionState).init(allocator),
@@ -109,6 +124,9 @@ pub const WidgetStore = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.scroll_containers.deinit();
+
+        // Clean up select states (no heap allocations to free, just the map)
+        self.select_states.deinit();
 
         // Clean up animation keys
         self.animations.deinit();
@@ -736,6 +754,47 @@ pub const WidgetStore = struct {
         var ce_it = self.code_editors.valueIterator();
         while (ce_it.next()) |ce| {
             ce.*.blur();
+        }
+    }
+
+    // =========================================================================
+    // Select State (internal open/close for Select widgets)
+    // =========================================================================
+
+    /// Get or create internal state for a Select widget, keyed by LayoutId hash.
+    /// Returns a mutable pointer to the SelectState.
+    pub fn getOrCreateSelectState(self: *Self, id_hash: u32) ?*SelectState {
+        std.debug.assert(id_hash != 0); // 0 is reserved (LayoutId.none)
+
+        const gop = self.select_states.getOrPut(id_hash) catch return null;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = SelectState{};
+        }
+        return gop.value_ptr;
+    }
+
+    /// Get existing select state (returns null if not yet created).
+    pub fn getSelectState(self: *Self, id_hash: u32) ?*SelectState {
+        return self.select_states.getPtr(id_hash);
+    }
+
+    /// Close a select's internal state by id hash. No-op if state doesn't exist.
+    pub fn closeSelectState(self: *Self, id_hash: u32) void {
+        if (self.select_states.getPtr(id_hash)) |ss| {
+            ss.is_open = false;
+        }
+    }
+
+    /// Toggle a select's internal open/close state by id hash.
+    /// Creates the state if it doesn't exist yet.
+    pub fn toggleSelectState(self: *Self, id_hash: u32) void {
+        std.debug.assert(id_hash != 0);
+
+        const gop = self.select_states.getOrPut(id_hash) catch return;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = SelectState{ .is_open = true };
+        } else {
+            gop.value_ptr.is_open = !gop.value_ptr.is_open;
         }
     }
 };

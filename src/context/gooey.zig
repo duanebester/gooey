@@ -122,6 +122,31 @@ const DeferredCommand = struct {
     packed_arg: u64,
 };
 
+/// Extract the State type from a handler method's first parameter.
+///
+/// All handler methods follow the pattern `fn(*State, ...) void` where the
+/// first parameter is always a pointer to the state type. This helper uses
+/// `@typeInfo` to pull the pointee type from that first parameter, eliminating
+/// the need to pass the State type explicitly.
+fn extractState(comptime caller: []const u8, comptime Fn: type) type {
+    const info = @typeInfo(Fn);
+    if (info != .@"fn") {
+        @compileError(caller ++ "() expects a function, got " ++ @typeName(Fn));
+    }
+    const fn_info = info.@"fn";
+    if (fn_info.params.len == 0) {
+        @compileError(caller ++ "() expects a method with at least one parameter (*State), got a function with no parameters");
+    }
+    const FirstParam = fn_info.params[0].type orelse {
+        @compileError(caller ++ "() expects a concrete first parameter type (*State), got anytype");
+    };
+    const ptr_info = @typeInfo(FirstParam);
+    if (ptr_info != .pointer or ptr_info.pointer.size != .one) {
+        @compileError(caller ++ "() expects first parameter to be *State (single-item pointer), got " ++ @typeName(FirstParam));
+    }
+    return ptr_info.pointer.child;
+}
+
 // Blur handler infrastructure (fixed-capacity to avoid dynamic allocation)
 const MAX_BLUR_HANDLERS: usize = 64;
 
@@ -297,11 +322,15 @@ pub const Gooey = struct {
 
     /// Queue a callback to run after current event handling completes.
     /// Used internally by Cx.defer().
+    ///
+    /// The State type is inferred from the method's first parameter.
+    /// The method should be `fn(*State, *Gooey) void`.
     pub fn deferCommand(
         self: *Self,
-        comptime State: type,
-        comptime method: fn (*State, *Self) void,
+        comptime method: anytype,
     ) void {
+        const State = comptime extractState("deferCommand", @TypeOf(method));
+
         if (self.deferred_count >= MAX_DEFERRED_COMMANDS) {
             std.log.warn("Deferred command queue full ({} commands) - dropping command", .{MAX_DEFERRED_COMMANDS});
             return;
@@ -325,15 +354,17 @@ pub const Gooey = struct {
     /// Queue a callback with an argument to run after current event handling completes.
     /// Used internally by Cx.deferWith().
     ///
+    /// The State type is inferred from the method's first parameter.
     /// The argument is stored inline in the command struct (packed into u64),
     /// so multiple deferred calls with the same signature work correctly.
     pub fn deferCommandWith(
         self: *Self,
-        comptime State: type,
-        comptime Arg: type,
-        arg: Arg,
-        comptime method: fn (*State, *Self, Arg) void,
+        arg: anytype,
+        comptime method: anytype,
     ) void {
+        const State = comptime extractState("deferCommandWith", @TypeOf(method));
+        const Arg = @TypeOf(arg);
+
         comptime {
             if (@sizeOf(Arg) > @sizeOf(u64)) {
                 @compileError("deferWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 8 bytes. Use a pointer or index instead.");
@@ -1536,7 +1567,7 @@ pub const Gooey = struct {
     ///     g.quit();
     /// }
     /// // In render:
-    /// Button{ .on_click_handler = cx.command(AppState, AppState.quitApp) }
+    /// Button{ .on_click_handler = cx.command(AppState.quitApp) }
     /// ```
     pub fn quit(self: *Self) void {
         if (comptime platform.is_wasm) {
@@ -1725,7 +1756,7 @@ test "deferCommand queues command" {
     gooey.setRootState(TestState, &state);
 
     // Queue a deferred command
-    gooey.deferCommand(TestState, TestState.increment);
+    gooey.deferCommand(TestState.increment);
 
     // Should be queued but not executed yet
     try std.testing.expectEqual(@as(u8, 1), gooey.deferred_count);
@@ -1761,7 +1792,7 @@ test "deferCommandWith passes argument" {
     gooey.setRootState(TestState, &state);
 
     // Queue a deferred command with argument
-    gooey.deferCommandWith(TestState, i32, 42, TestState.setValue);
+    gooey.deferCommandWith(@as(i32, 42), TestState.setValue);
 
     try std.testing.expectEqual(@as(u8, 1), gooey.deferred_count);
     try std.testing.expectEqual(@as(i32, 0), state.value);
@@ -1794,9 +1825,9 @@ test "multiple deferWith calls preserve their arguments" {
     gooey.setRootState(TestState, &state);
 
     // Queue multiple commands with different arguments
-    gooey.deferCommandWith(TestState, i32, 10, TestState.addValue);
-    gooey.deferCommandWith(TestState, i32, 20, TestState.addValue);
-    gooey.deferCommandWith(TestState, i32, 30, TestState.addValue);
+    gooey.deferCommandWith(@as(i32, 10), TestState.addValue);
+    gooey.deferCommandWith(@as(i32, 20), TestState.addValue);
+    gooey.deferCommandWith(@as(i32, 30), TestState.addValue);
 
     try std.testing.expectEqual(@as(u8, 3), gooey.deferred_count);
 
@@ -1826,13 +1857,13 @@ test "deferred queue overflow is handled gracefully" {
 
     // Fill the queue
     for (0..MAX_DEFERRED_COMMANDS) |_| {
-        gooey.deferCommand(TestState, TestState.noop);
+        gooey.deferCommand(TestState.noop);
     }
 
     try std.testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), gooey.deferred_count);
 
     // This should not crash, just log a warning and drop the command
-    gooey.deferCommand(TestState, TestState.noop);
+    gooey.deferCommand(TestState.noop);
 
     // Queue size should not exceed max
     try std.testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), gooey.deferred_count);

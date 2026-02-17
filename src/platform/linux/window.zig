@@ -88,7 +88,7 @@ pub const Window = struct {
 
     // Rendering (Vulkan)
     renderer: VulkanRenderer,
-    background_color: geometry.Color = geometry.Color.init(0.2, 0.2, 0.25, 1.0),
+    background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
     needs_redraw: bool = true,
 
     /// When true, continuously schedule frames at vsync rate (like macOS DisplayLink).

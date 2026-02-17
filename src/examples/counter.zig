@@ -9,15 +9,12 @@
 //! - WebApp for browser support
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 const platform = gooey.platform;
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = gooey.Button;
@@ -148,16 +145,16 @@ const ControlButtons = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             // Pure state handlers - cx.update()
-            Button{ .label = "−", .size = .large, .on_click_handler = cx.update(AppState, AppState.decrement) },
-            Button{ .label = "+", .size = .large, .on_click_handler = cx.update(AppState, AppState.increment) },
+            Button{ .label = "−", .size = .large, .on_click_handler = cx.update(AppState.decrement) },
+            Button{ .label = "+", .size = .large, .on_click_handler = cx.update(AppState.increment) },
 
             ui.spacerMin(20),
 
             // Pure reset
-            Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.reset) },
+            Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState.reset) },
 
             // Command handler - cx.command() for framework access
-            Button{ .label = "Reset & Blur", .variant = .danger, .on_click_handler = cx.command(AppState, AppState.resetAndBlur) },
+            Button{ .label = "Reset & Blur", .variant = .danger, .on_click_handler = cx.command(AppState.resetAndBlur) },
         }));
     }
 };
@@ -183,9 +180,8 @@ const StepButton = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const is_active = self.value == self.current;
-        const b = cx.builder();
 
-        const btn = Button{
+        cx.render(Button{
             .label = switch (self.value) {
                 1 => "1",
                 5 => "5",
@@ -194,9 +190,8 @@ const StepButton = struct {
             },
             .size = .small,
             .variant = if (is_active) .primary else .secondary,
-            .on_click_handler = cx.updateWith(AppState, self.value, AppState.setStep),
-        };
-        btn.render(b);
+            .on_click_handler = cx.updateWith(self.value, AppState.setStep),
+        });
     }
 };
 

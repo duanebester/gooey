@@ -89,6 +89,7 @@ pub fn App(
                     .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                     .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
                     .background_color = if (@hasField(@TypeOf(config), "background_color")) config.background_color else null,
+                    .on_init = if (@hasField(@TypeOf(config), "init")) config.init else null,
                     .on_event = if (@hasField(@TypeOf(config), "on_event")) config.on_event else null,
                     // Custom shaders (cross-platform - MSL for macOS, WGSL for web)
                     .custom_shaders = if (@hasField(@TypeOf(config), "custom_shaders")) coerceShaders(config.custom_shaders) else &.{},

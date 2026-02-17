@@ -290,7 +290,7 @@ pub fn main() !void {
         .title = "Gooey Linux Demo - Input Events",
         .width = 800,
         .height = 600,
-        .background_color = Color.init(0.1, 0.1, 0.15, 1.0),
+        .background_color = Color.rgba(0.1, 0.1, 0.15, 1.0),
     });
     defer window.deinit();
 

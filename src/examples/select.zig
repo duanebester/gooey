@@ -1,16 +1,13 @@
 //! Select Component Demo
 //!
 //! Demonstrates the Select component with various configurations.
+//! Uses the simplified `on_select` API — no toggle/close handlers or
+//! per-option handler arrays needed.
 
-const std = @import("std");
-const builtin = @import("builtin");
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -22,74 +19,21 @@ const Select = gooey.Select;
 // =============================================================================
 
 const AppState = struct {
-    // Fruit select
+    // Selection state only — no open/close booleans needed
     fruit_selected: ?usize = null,
-    fruit_open: bool = false,
-
-    // Country select
     country_selected: ?usize = 2, // Pre-selected: "Canada"
-    country_open: bool = false,
-
-    // Size select
     size_selected: ?usize = 1, // Pre-selected: "Medium"
-    size_open: bool = false,
-
-    // Fruit handlers
-    pub fn toggleFruit(self: *AppState) void {
-        self.fruit_open = !self.fruit_open;
-        // Close others
-        self.country_open = false;
-        self.size_open = false;
-    }
-
-    pub fn closeFruit(self: *AppState) void {
-        self.fruit_open = false;
-    }
 
     pub fn selectFruit(self: *AppState, index: usize) void {
         self.fruit_selected = index;
-        self.fruit_open = false;
-    }
-
-    // Country handlers
-    pub fn toggleCountry(self: *AppState) void {
-        self.country_open = !self.country_open;
-        // Close others
-        self.fruit_open = false;
-        self.size_open = false;
-    }
-
-    pub fn closeCountry(self: *AppState) void {
-        self.country_open = false;
     }
 
     pub fn selectCountry(self: *AppState, index: usize) void {
         self.country_selected = index;
-        self.country_open = false;
-    }
-
-    // Size handlers
-    pub fn toggleSize(self: *AppState) void {
-        self.size_open = !self.size_open;
-        // Close others
-        self.fruit_open = false;
-        self.country_open = false;
-    }
-
-    pub fn closeSize(self: *AppState) void {
-        self.size_open = false;
     }
 
     pub fn selectSize(self: *AppState, index: usize) void {
         self.size_selected = index;
-        self.size_open = false;
-    }
-
-    // Close all dropdowns
-    pub fn closeAll(self: *AppState) void {
-        self.fruit_open = false;
-        self.country_open = false;
-        self.size_open = false;
     }
 };
 
@@ -111,7 +55,6 @@ const App = gooey.App(AppState, &state, render, .{
     .title = "Select Component Demo",
     .width = 700,
     .height = 500,
-    .on_event = onEvent,
 });
 
 comptime {
@@ -187,16 +130,7 @@ const SelectExamples = struct {
                     .options = &fruit_options,
                     .selected = s.fruit_selected,
                     .placeholder = "Choose a fruit...",
-                    .is_open = s.fruit_open,
-                    .on_toggle_handler = cx.update(AppState, AppState.toggleFruit),
-                    .on_close_handler = cx.update(AppState, AppState.closeFruit),
-                    .handlers = &.{
-                        cx.updateWith(AppState, @as(usize, 0), AppState.selectFruit),
-                        cx.updateWith(AppState, @as(usize, 1), AppState.selectFruit),
-                        cx.updateWith(AppState, @as(usize, 2), AppState.selectFruit),
-                        cx.updateWith(AppState, @as(usize, 3), AppState.selectFruit),
-                        cx.updateWith(AppState, @as(usize, 4), AppState.selectFruit),
-                    },
+                    .on_select = cx.onSelect(AppState.selectFruit),
                 },
             },
             // Row 2: Country select (wider)
@@ -207,19 +141,8 @@ const SelectExamples = struct {
                     .options = &country_options,
                     .selected = s.country_selected,
                     .placeholder = "Select your country...",
-                    .is_open = s.country_open,
                     .width = 250,
-                    .on_toggle_handler = cx.update(AppState, AppState.toggleCountry),
-                    .on_close_handler = cx.update(AppState, AppState.closeCountry),
-                    .handlers = &.{
-                        cx.updateWith(AppState, @as(usize, 0), AppState.selectCountry),
-                        cx.updateWith(AppState, @as(usize, 1), AppState.selectCountry),
-                        cx.updateWith(AppState, @as(usize, 2), AppState.selectCountry),
-                        cx.updateWith(AppState, @as(usize, 3), AppState.selectCountry),
-                        cx.updateWith(AppState, @as(usize, 4), AppState.selectCountry),
-                        cx.updateWith(AppState, @as(usize, 5), AppState.selectCountry),
-                        cx.updateWith(AppState, @as(usize, 6), AppState.selectCountry),
-                    },
+                    .on_select = cx.onSelect(AppState.selectCountry),
                 },
             },
             // Row 3: Size select (custom colors)
@@ -229,18 +152,10 @@ const SelectExamples = struct {
                     .id = "size-select",
                     .options = &size_options,
                     .selected = s.size_selected,
-                    .is_open = s.size_open,
                     .width = 160,
                     .focus_border_color = ui.Color.rgb(0.4, 0.7, 0.4),
                     .selected_background = ui.Color.rgb(0.9, 1.0, 0.9),
-                    .on_toggle_handler = cx.update(AppState, AppState.toggleSize),
-                    .on_close_handler = cx.update(AppState, AppState.closeSize),
-                    .handlers = &.{
-                        cx.updateWith(AppState, @as(usize, 0), AppState.selectSize),
-                        cx.updateWith(AppState, @as(usize, 1), AppState.selectSize),
-                        cx.updateWith(AppState, @as(usize, 2), AppState.selectSize),
-                        cx.updateWith(AppState, @as(usize, 3), AppState.selectSize),
-                    },
+                    .on_select = cx.onSelect(AppState.selectSize),
                 },
             },
         }));
@@ -328,23 +243,3 @@ const StatusLine = struct {
         });
     }
 };
-
-// =============================================================================
-// Event Handling
-// =============================================================================
-
-fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
-    if (event == .key_down) {
-        const key = event.key_down;
-        const s = cx.state(AppState);
-
-        // Escape closes all dropdowns
-        if (key.key == .escape) {
-            if (s.fruit_open or s.country_open or s.size_open) {
-                state.closeAll();
-                return true;
-            }
-        }
-    }
-    return false;
-}

@@ -126,10 +126,10 @@ fn render(cx: *Cx) void {
         ui.textFmt("{d}", .{s.count}, .{ .size = 48 }),
         ui.hstack(.{ .gap = 12 }, .{
             // Pure handlers - framework auto-renders after mutation!
-            Button{ .label = "-", .on_click_handler = cx.update(AppState, AppState.decrement) },
-            Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
+            Button{ .label = "-", .on_click_handler = cx.update(AppState.decrement) },
+            Button{ .label = "+", .on_click_handler = cx.update(AppState.increment) },
         }),
-        Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.reset) },
+        Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState.reset) },
     }));
 }
 
@@ -148,10 +148,10 @@ test "counter logic" {
 
 Gooey separates concerns between `Cx` (context) and `ui` (layout primitives):
 
-| Module | Purpose                            | Examples                                                           |
-| ------ | ---------------------------------- | ------------------------------------------------------------------ |
-| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.update()`, `cx.animate()`, `cx.render()`         |
-| `ui.*` | Layout containers and primitives   | `ui.box()`, `ui.hstack()`, `ui.vstack()`, `ui.text()`, `ui.when()` |
+| Module | Purpose                            | Examples                                                                        |
+| ------ | ---------------------------------- | ------------------------------------------------------------------------------- |
+| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.update()`, `cx.animate()`, `cx.changed()`, `cx.render()`      |
+| `ui.*` | Layout containers and primitives   | `ui.box()`, `ui.rect()`, `ui.hstack()`, `ui.vstack()`, `ui.text()`, `ui.when()` |
 
 ```/dev/null/example.zig#L1-19
 fn render(cx: *Cx) void {
@@ -178,6 +178,7 @@ fn render(cx: *Cx) void {
 **Key primitives:**
 
 - `ui.box()` - Container with flexbox layout
+- `ui.rect()` - Childless box (dividers, spacers, colored blocks)
 - `ui.hstack()` / `ui.vstack()` - Horizontal/vertical stacks
 - `ui.text()` / `ui.textFmt()` - Text rendering
 - `ui.when(cond, children)` - Conditional rendering
@@ -197,7 +198,7 @@ fn render(cx: *Cx) void {
 | `cx.defer()`       | `fn(*State, *Gooey) void`      | Run after current event completes        |
 | `cx.deferWith()`   | `fn(*State, *Gooey, Arg) void` | Deferred with argument                   |
 
-> **Note:** The state type is passed explicitly: `cx.update(AppState, AppState.increment)`
+> **Note:** The state type is inferred automatically from the method pointer's first parameter — no need to pass it separately.
 
 ### Handlers with Arguments
 
@@ -205,7 +206,7 @@ The `*With` variants (`updateWith`, `commandWith`, `deferWith`) let you pass dat
 
 ```zig
 // In a list render callback - capture the index
-.on_click_handler = cx.updateWith(State, index, State.selectItem),
+.on_click_handler = cx.updateWith(index, State.selectItem),
 
 // The handler receives the captured value
 pub fn selectItem(self: *State, index: u32) void {
@@ -237,10 +238,10 @@ error: updateWith: argument type 'MyLargeStruct' exceeds 8 bytes. Use a pointer 
 
 ```zig
 // Option 1: Use an index into your data
-.on_click_handler = cx.updateWith(State, row_index, State.selectRow),
+.on_click_handler = cx.updateWith(row_index, State.selectRow),
 
 // Option 2: Use a pointer (if the data outlives the handler)
-.on_click_handler = cx.updateWith(State, &self.items[i], State.editItem),
+.on_click_handler = cx.updateWith(&self.items[i], State.editItem),
 
 // Option 3: Store data in state, pass an ID
 pub fn openFile(self: *State, file_id: u32) void {
@@ -267,7 +268,10 @@ pub fn openFolder(self: *State, g: *Gooey) void {
 fn openFolderDeferred(self: *State, g: *Gooey) void {
     _ = g;
     // Safe to open modal dialog here - we're outside event handling
-    if (file_dialog.chooseFolder(.{})) |path| {
+    const file_dialog = gooey.file_dialog;
+    if (file_dialog.promptForPaths(allocator, .{ .directories = true })) |result| {
+        defer result.deinit();
+        const path = result.paths[0];
         self.loadDirectory(path);
     }
 }
@@ -287,6 +291,40 @@ fn confirmDelete(self: *State, g: *Gooey, index: u32) void {
 ```
 
 The deferred command queue holds up to 32 commands and is flushed after each event cycle.
+
+### Thread Dispatch
+
+Use the dispatch API on `Cx` to run work on background threads or schedule callbacks on the main thread. This is useful for network requests, file I/O, or any expensive computation you want off the UI thread.
+
+```zig
+const Ctx = struct { app: *AppState };
+
+// Dispatch work to a background thread
+try cx.dispatchBackground(Ctx, .{ .app = self }, struct {
+    fn handler(ctx: *Ctx) void {
+        // Do expensive work off the main thread
+        const result = ctx.app.fetchData();
+        ctx.app.pending_result = result;
+
+        // Dispatch back to the main thread to apply results
+        const g = ctx.app.gooey_ptr orelse return;
+        g.dispatchOnMainThread(Ctx, .{ .app = ctx.app }, struct {
+            fn apply(inner: *Ctx) void {
+                inner.app.applyPendingResult();
+            }
+        }.apply) catch {};
+    }
+}.handler);
+```
+
+Available methods on `Cx`:
+
+- **`cx.dispatchBackground(Ctx, context, callback)`** — Run a callback on a background thread. The context is copied and heap-allocated, so stack values are safe.
+- **`cx.dispatchOnMainThread(Ctx, context, callback)`** — Run a callback on the main thread. Safe to call from any thread.
+- **`cx.dispatchAfter(delay_ns, Ctx, context, callback)`** — Run a callback on the main thread after a delay (in nanoseconds).
+- **`cx.isMainThread()`** — Check if the current thread is the main/UI thread.
+
+> **Note:** These methods return `error.NotSupported` on WASM (single-threaded) and `error.NotInitialized` if the dispatcher hasn't been set up. Workers that need to dispatch back to the main thread still need a stashed `*Gooey` pointer, since `Cx` is only available during rendering.
 
 ## Fonts
 
@@ -337,7 +375,7 @@ Gooey includes ready-to-use components:
 
 ```zig
 // Button variants
-Button{ .label = "Save", .variant = .primary, .on_click_handler = cx.update(State, State.save) }
+Button{ .label = "Save", .variant = .primary, .on_click_handler = cx.update(State.save) }
 Button{ .label = "Cancel", .variant = .secondary, .size = .small, .on_click_handler = ... }
 Button{ .label = "Delete", .variant = .danger, .on_click_handler = ... }
 ```
@@ -369,7 +407,7 @@ TextArea{
 Checkbox{
     .id = "terms",
     .checked = s.agreed_to_terms,
-    .on_click_handler = cx.update(State, State.toggleTerms),
+    .on_click_handler = cx.update(State.toggleTerms),
 }
 ```
 
@@ -380,7 +418,7 @@ Checkbox{
 RadioButton{
     .label = "Email",
     .is_selected = s.contact_method == 0,
-    .on_click_handler = cx.updateWith(State, @as(u8, 0), State.setContactMethod),
+    .on_click_handler = cx.updateWith(@as(u8, 0), State.setContactMethod),
 }
 
 // RadioGroup - grouped buttons with handlers array
@@ -389,9 +427,9 @@ RadioGroup{
     .options = &.{ "Low", "Medium", "High" },
     .selected = s.priority,
     .handlers = &.{
-        cx.updateWith(State, @as(u8, 0), State.setPriority),
-        cx.updateWith(State, @as(u8, 1), State.setPriority),
-        cx.updateWith(State, @as(u8, 2), State.setPriority),
+        cx.updateWith(@as(u8, 0), State.setPriority),
+        cx.updateWith(@as(u8, 1), State.setPriority),
+        cx.updateWith(@as(u8, 2), State.setPriority),
     },
     .direction = .row,  // or .column
     .gap = 16,
@@ -402,20 +440,10 @@ RadioGroup{
 
 ```zig
 const State = struct {
-    selected_option: ?usize = null,
-    select_open: bool = false,
+    selected_fruit: ?usize = null,
 
-    pub fn toggleSelect(self: *State) void {
-        self.select_open = !self.select_open;
-    }
-
-    pub fn closeSelect(self: *State) void {
-        self.select_open = false;
-    }
-
-    pub fn selectOption(self: *State, index: usize) void {
-        self.selected_option = index;
-        self.select_open = false;
+    pub fn selectFruit(self: *State, index: usize) void {
+        self.selected_fruit = index;
     }
 };
 
@@ -423,20 +451,16 @@ const State = struct {
 Select{
     .id = "fruit-select",
     .options = &.{ "Apple", "Banana", "Cherry", "Date" },
-    .selected = s.selected_option,
-    .is_open = s.select_open,
+    .selected = s.selected_fruit,
     .placeholder = "Choose a fruit...",
-    .on_toggle_handler = cx.update(State, State.toggleSelect),
-    .on_close_handler = cx.update(State, State.closeSelect),
-    .handlers = &.{
-        cx.updateWith(State, @as(usize, 0), State.selectOption),
-        cx.updateWith(State, @as(usize, 1), State.selectOption),
-        cx.updateWith(State, @as(usize, 2), State.selectOption),
-        cx.updateWith(State, @as(usize, 3), State.selectOption),
-    },
+    .on_select = cx.onSelect(State.selectFruit),
     .width = 200,
 }
 ```
+
+The widget manages open/close state internally — no toggle/close handlers or per-option handler arrays needed. Just provide `on_select` and a single handler that receives the selected index.
+
+> **Legacy API:** The explicit `is_open` / `on_toggle_handler` / `on_close_handler` / `handlers` fields are still supported for full manual control.
 
 ### Modal
 
@@ -454,17 +478,17 @@ const State = struct {
 };
 
 // Trigger button
-Button{ .label = "Delete Item", .variant = .danger, .on_click_handler = cx.update(State, State.openConfirm) }
+Button{ .label = "Delete Item", .variant = .danger, .on_click_handler = cx.update(State.openConfirm) }
 
 // Modal with custom content
 Modal(ConfirmContent){
     .id = "confirm-dialog",
     .is_open = s.show_confirm,
-    .on_close = cx.update(State, State.closeConfirm),
+    .on_close = cx.update(State.closeConfirm),
     .child = ConfirmContent{
         .message = "Are you sure you want to delete?",
-        .on_confirm = cx.update(State, State.doDelete),
-        .on_cancel = cx.update(State, State.closeConfirm),
+        .on_confirm = cx.update(State.doDelete),
+        .on_cancel = cx.update(State.closeConfirm),
     },
     .animate = true,
     .close_on_backdrop = true,
@@ -560,12 +584,12 @@ cx.render(ui.hstack(.{ .gap = 4 }, .{
     Tab{
         .label = "Home",
         .is_active = s.tab == 0,
-        .on_click_handler = cx.updateWith(State, @as(u8, 0), State.setTab),
+        .on_click_handler = cx.updateWith(@as(u8, 0), State.setTab),
     },
     Tab{
         .label = "Settings",
         .is_active = s.tab == 1,
-        .on_click_handler = cx.updateWith(State, @as(u8, 1), State.setTab),
+        .on_click_handler = cx.updateWith(@as(u8, 1), State.setTab),
         .style = .underline,  // .pills (default), .underline, .segmented
     },
 }))
@@ -604,7 +628,7 @@ fn render(cx: *Cx) void {
 
 fn renderItem(index: u32, cx: *Cx) void {
     const s = cx.stateConst(State);
-    const theme = cx.builder().theme();
+    const theme = cx.theme();
     const is_selected = if (s.selected) |sel| sel == index else false;
 
     // Color is available via: const Color = gooey.Color;
@@ -615,7 +639,7 @@ fn renderItem(index: u32, cx: *Cx) void {
         .height = 32,
         .background = if (is_selected) theme.primary else null,
         .hover_background = theme.overlay,
-        .on_click_handler = cx.updateWith(State, index, State.selectItem),
+        .on_click_handler = cx.updateWith(index, State.selectItem),
     }, .{
         ui.text("Item", .{ .color = text_color }),
     }));
@@ -645,7 +669,7 @@ fn renderMessage(index: u32, cx: *Cx) f32 {
     cx.render(ui.box(.{
         .fill_width = true,
         .height = height,
-        .on_click_handler = cx.updateWith(State, index, State.selectMessage),
+        .on_click_handler = cx.updateWith(index, State.selectMessage),
     }, .{
         ui.text(msg.text, .{}),
     }));
@@ -653,6 +677,38 @@ fn renderMessage(index: u32, cx: *Cx) f32 {
     return height; // Return actual rendered height for caching
 }
 ```
+
+#### Accurate Height Estimation with `measureText`
+
+Instead of hardcoding heights or guessing character widths, use `cx.measureText()` to get pixel-accurate dimensions from the platform text shaper (CoreText/HarfBuzz/browser):
+
+```zig
+fn renderMessage(index: u32, cx: *Cx) f32 {
+    const s = cx.stateConst(State);
+    const msg = s.messages[index];
+    const padding: f32 = 32.0;
+    const max_bubble_width: f32 = 400.0;
+
+    // Measure with wrapping — uses the real shaper so kerning matches rendering
+    const m = cx.measureText(msg.text, .{
+        .max_width = max_bubble_width,
+        .font_size = 15,        // null = use the current font size
+    }) catch |_| TextMeasurement{ .width = 0, .height = 48, .line_count = 1 };
+
+    const height = m.height + padding;
+
+    cx.render(ui.box(.{
+        .fill_width = true,
+        .height = height,
+    }, .{
+        ui.text(msg.text, .{ .size = 15, .wrap = .word }),
+    }));
+
+    return height;
+}
+```
+
+`measureText` returns a `TextMeasurement` with `.width`, `.height`, and `.line_count`.
 
 ### DataTable
 
@@ -681,7 +737,7 @@ const State = struct {
 // In render function:
 fn render(cx: *Cx) void {
     const s = cx.state(State);
-    const theme = cx.builder().theme();
+    const theme = cx.theme();
     cx.dataTable("my-table", &s.table_state, .{
         .fill_width = true,
         .grow_height = true,
@@ -695,7 +751,7 @@ fn render(cx: *Cx) void {
 
 fn renderHeader(col: u32, cx: *Cx) void {
     const s = cx.stateConst(State);
-    const theme = cx.builder().theme();
+    const theme = cx.theme();
 
     // Add sort indicator if this column is sorted
     const name = COLUMN_NAMES[col];
@@ -707,14 +763,14 @@ fn renderHeader(col: u32, cx: *Cx) void {
     cx.render(ui.box(.{
         .fill_width = true,
         .fill_height = true,
-        .on_click_handler = cx.updateWith(State, col, State.onHeaderClick),
+        .on_click_handler = cx.updateWith(col, State.onHeaderClick),
     }, .{
         ui.text(label, .{ .weight = .semibold, .color = theme.text }),
     }));
 }
 
 fn renderCell(row: u32, col: u32, cx: *Cx) void {
-    const theme = cx.builder().theme();
+    const theme = cx.theme();
 
     cx.render(ui.box(.{
         .fill_width = true,
@@ -887,7 +943,7 @@ gooey.ValidatedTextInput{
     .error_message = s.validateEmail(),  // Simple string error
     .show_error = s.touched_email,       // Only show after interaction
     .help_text = "We'll never share your email",
-    .on_blur_handler = cx.update(State, State.onEmailBlur),
+    .on_blur_handler = cx.update(State.onEmailBlur),
     .width = 300,
 }
 
@@ -959,6 +1015,80 @@ cx.render(ui.box(.{
 
 **Available Easings:** `linear`, `easeIn`, `easeOut`, `easeInOut`, `easeOutBack`, `easeOutCubic`, `easeInOutCubic`
 
+## Change Detection
+
+`cx.changed()` detects when a value changes between frames — replacing the common pattern of module-level `var last_foo: ?T = null` with manual diffing:
+
+```zig
+// Invalidate caches when dependencies change
+if (cx.changed("dark_mode", s.dark_mode) or cx.changed("window_width", size.width)) {
+    s.invalidateCachedHeights();
+}
+```
+
+**Semantics:**
+
+- **First call** for a given key → returns `false` (no previous value)
+- **Same value** as last frame → returns `false`
+- **Different value** → returns `true` (and stores the new value)
+
+Works with any value type: `bool`, `f32`, `i32`, enums, small structs.
+
+```zig
+// Theme change
+if (cx.changed("theme", s.theme)) {
+    s.rebuildStyles();
+}
+
+// Window resize (triggers layout recalc)
+const size = cx.windowSize();
+if (cx.changed("width", size.width)) {
+    s.onResize(size.width);
+}
+
+// Enum state
+if (cx.changed("view", s.current_view)) {
+    s.scrollToTop();
+}
+```
+
+Keys are comptime strings hashed to `u32` (same approach as the animation system). Up to 64 tracked values per app.
+
+## File Dialogs
+
+Cross-platform file open/save dialogs via `gooey.file_dialog`:
+
+```zig
+const file_dialog = gooey.file_dialog;
+
+// Open dialog
+if (file_dialog.promptForPaths(allocator, .{
+    .files = true,
+    .prompt = "Attach",
+    .allowed_extensions = &.{ "txt", "png", "pdf" },
+})) |result| {
+    defer result.deinit();
+    for (result.paths) |path| {
+        // ...
+    }
+}
+
+// Save dialog
+if (file_dialog.promptForNewPath(allocator, .{
+    .suggested_name = "untitled.txt",
+    .prompt = "Save",
+})) |path| {
+    defer allocator.free(path);
+    // ...
+}
+```
+
+- **macOS**: NSOpenPanel / NSSavePanel (blocking)
+- **Linux**: XDG Desktop Portal via D-Bus (blocking)
+- **WASM**: Returns `null` — use `gooey.platform.web.file_dialog` for the async callback API
+
+Use `file_dialog.supported` (comptime bool) for feature detection. File dialogs block the thread, so call them from a [deferred command](#deferred-commands) to avoid deadlocks during event handling.
+
 ## Entity System
 
 Dynamic creation and deletion with automatic cleanup:
@@ -1003,6 +1133,11 @@ cx.render(ui.box(.{
     .fill_width = true,
     .grow = true,
 }, .{...}));
+
+// Childless boxes — use ui.rect() for dividers, spacers, colored blocks
+ui.rect(.{ .width = 1, .height = 18, .background = t.border })  // divider
+ui.rect(.{ .grow = true })                                       // spacer
+ui.rect(.{ .width = 40, .height = 40, .background = color, .corner_radius = 4 })
 
 // Shrink behavior - elements shrink when container is too small
 cx.render(ui.box(.{ .width = 150, .min_width = 60 }, .{...}));
@@ -1066,7 +1201,7 @@ Transparent window with liquid glass effect:
 ```zig
 try gooey.runCx(AppState, &state, render, .{
     .title = "Glass Demo",
-    .background_color = gooey.Color.init(0.1, 0.1, 0.15, 1.0),
+    .background_color = gooey.Color.rgba(0.1, 0.1, 0.15, 1.0),
     .background_opacity = 0.2,
     .glass_style = .glass_regular,  // .glass_clear, .blur, .none
     .glass_corner_radius = 10.0,
@@ -1132,7 +1267,7 @@ fn setupKeymap(cx: *Cx) void {
 fn render(cx: *Cx) void {
     setupKeymap(cx);
 
-    const quit_handler = cx.command(AppState, AppState.quitApp);
+    const quit_handler = cx.command(AppState.quitApp);
 
     cx.render(ui.box(.{ .padding = .{ .all = 24 }, .gap = 16 }, .{
         // cmd+q triggers quitApp via the action system
@@ -1175,6 +1310,30 @@ fn render(cx: *Cx) void {
 | Code Editor      | `zig build run-code-editor`      | Code editor with syntax highlighting  |
 
 See [docs/accessibility.md](docs/accessibility.md) for comprehensive accessibility documentation.
+
+## Logging
+
+Two options for cross-platform logging (native + WASM):
+
+**Option A: `gooey.std_options`** — one-liner for `std.log` compatibility:
+
+```zig
+const gooey = @import("gooey");
+
+// Routes std.log through console.log on WASM, default on native
+pub const std_options = gooey.std_options;
+```
+
+**Option B: `gooey.log`** — zero-config, no `std_options` needed:
+
+```zig
+const log = gooey.log.scoped(.myapp);
+
+log.info("connected to {s}", .{host});
+log.err("request failed: {}", .{code});
+```
+
+On native, `gooey.log` delegates to `std.log.scoped()`. On WASM, it writes directly to the browser console. Use option A if you need third-party libraries to log through `std.log`. Use option B if you just want logging that works everywhere.
 
 ## WASM
 

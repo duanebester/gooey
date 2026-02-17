@@ -210,7 +210,7 @@ pub const WindowOptions = struct {
     height: f64 = 600,
 
     /// Background color
-    background_color: geometry.Color = geometry.Color.init(0.2, 0.2, 0.25, 1.0),
+    background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
 
     /// Enable vsync via display link (recommended)
     use_display_link: bool = true,

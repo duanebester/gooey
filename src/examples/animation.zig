@@ -104,20 +104,20 @@ const ControlButtons = struct {
             Button{
                 .label = "-",
                 .size = .large,
-                .on_click_handler = cx.update(AppState, AppState.decrement),
+                .on_click_handler = cx.update(AppState.decrement),
             },
             Button{
                 .label = "+",
                 .size = .large,
-                .on_click_handler = cx.update(AppState, AppState.increment),
+                .on_click_handler = cx.update(AppState.increment),
             },
             Button{
                 .label = if (s.show_panel) "Hide Panel" else "Show Panel",
-                .on_click_handler = cx.update(AppState, AppState.togglePanel),
+                .on_click_handler = cx.update(AppState.togglePanel),
             },
             Button{
                 .label = if (s.show_list) "Hide List" else "Show List",
-                .on_click_handler = cx.update(AppState, AppState.toggleList),
+                .on_click_handler = cx.update(AppState.toggleList),
             },
         }));
     }

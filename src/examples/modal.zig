@@ -2,15 +2,10 @@
 //!
 //! Demonstrates the Modal component with various configurations.
 
-const std = @import("std");
-const builtin = @import("builtin");
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -112,7 +107,7 @@ fn render(cx: *Cx) void {
         Modal(BasicModalContent){
             .id = "basic-modal",
             .is_open = s.show_basic,
-            .on_close = cx.update(AppState, AppState.closeBasic),
+            .on_close = cx.update(AppState.closeBasic),
             .child = BasicModalContent{},
         },
 
@@ -120,7 +115,7 @@ fn render(cx: *Cx) void {
         Modal(ConfirmModalContent){
             .id = "confirm-modal",
             .is_open = s.show_confirm,
-            .on_close = cx.update(AppState, AppState.closeConfirm),
+            .on_close = cx.update(AppState.closeConfirm),
             .child = ConfirmModalContent{},
         },
 
@@ -128,7 +123,7 @@ fn render(cx: *Cx) void {
         Modal(CustomModalContent){
             .id = "custom-modal",
             .is_open = s.show_custom,
-            .on_close = cx.update(AppState, AppState.closeCustom),
+            .on_close = cx.update(AppState.closeCustom),
             .child = CustomModalContent{},
             .backdrop_color = ui.Color.rgba(0.1, 0.1, 0.2, 0.7),
             .content_max_width = 400,
@@ -176,17 +171,17 @@ const ButtonRow = struct {
             Button{
                 .label = "Basic Modal",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.openBasic),
+                .on_click_handler = cx.update(AppState.openBasic),
             },
             Button{
                 .label = "Confirm Delete",
                 .variant = .danger,
-                .on_click_handler = cx.update(AppState, AppState.openConfirm),
+                .on_click_handler = cx.update(AppState.openConfirm),
             },
             Button{
                 .label = "Custom Style",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.openCustom),
+                .on_click_handler = cx.update(AppState.openCustom),
             },
         }));
     }
@@ -226,7 +221,7 @@ const BasicModalContent = struct {
             Button{
                 .label = "Got it",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.closeBasic),
+                .on_click_handler = cx.update(AppState.closeBasic),
             },
         }));
     }
@@ -261,12 +256,12 @@ const ActionButtons = struct {
             Button{
                 .label = "Cancel",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.closeConfirm),
+                .on_click_handler = cx.update(AppState.closeConfirm),
             },
             Button{
                 .label = "Delete",
                 .variant = .danger,
-                .on_click_handler = cx.update(AppState, AppState.doDelete),
+                .on_click_handler = cx.update(AppState.doDelete),
             },
         }));
     }
@@ -289,7 +284,7 @@ const CustomModalContent = struct {
             Button{
                 .label = "Close",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.closeCustom),
+                .on_click_handler = cx.update(AppState.closeCustom),
             },
         }));
     }

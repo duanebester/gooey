@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
 
         // Link macOS frameworks to the module (needed for tests too)
         mod.linkFramework("AppKit", .{});
+        mod.linkFramework("Foundation", .{});
         mod.linkFramework("Metal", .{});
         mod.linkFramework("QuartzCore", .{});
         mod.linkFramework("CoreFoundation", .{});
@@ -488,6 +489,46 @@ pub fn build(b: *std.Build) void {
     addWasmExample(b, gooey_wasm_module, wasm_target, "modal", "src/examples/modal.zig", "web/modal");
     addWasmExample(b, gooey_wasm_module, wasm_target, "file-dialog", "src/examples/web_file_dialog.zig", "web/file-dialog");
     addWasmExample(b, gooey_wasm_module, wasm_target, "drag-drop", "src/examples/drag_drop.zig", "web/drag-drop");
+}
+
+// =============================================================================
+// Public API for Consumers
+// =============================================================================
+
+/// Link all platform-specific system dependencies that Gooey requires.
+///
+/// Call this on your executable's compile step so the linker can find
+/// the frameworks / shared libraries Gooey uses under the hood.
+///
+/// Example (consumer build.zig):
+/// ```
+/// const gooey_dep = b.dependency("gooey", .{ .target = target, .optimize = optimize });
+/// const gooey_build = @import("gooey");
+/// exe.root_module.addImport("gooey", gooey_dep.module("gooey"));
+/// gooey_build.linkSystemDeps(exe);
+/// ```
+///
+/// Note: The gooey *module* already declares its framework links, so in many
+/// cases transitive linking handles everything automatically. This helper
+/// exists as a safety net and for non-module usage patterns.
+pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
+    const os = step.rootModuleTarget().os.tag;
+
+    if (os == .macos) {
+        step.linkFramework("AppKit");
+        step.linkFramework("Foundation");
+        step.linkFramework("Metal");
+        step.linkFramework("QuartzCore");
+        step.linkFramework("CoreFoundation");
+        step.linkFramework("CoreVideo");
+        step.linkFramework("CoreText");
+        step.linkFramework("CoreGraphics");
+        step.linkLibC();
+    }
+
+    if (os == .linux) {
+        linkLinuxLibraries(step);
+    }
 }
 
 fn addNativeExample(

@@ -10,15 +10,12 @@
 //!   - [Esc] Close modals/dropdowns
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 const platform = gooey.platform;
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Gooey = gooey.Gooey;
@@ -108,9 +105,7 @@ const AppState = struct {
 
     // Select demos
     fruit_selected: ?usize = null,
-    fruit_open: bool = false,
     priority_selected: ?usize = 1,
-    priority_open: bool = false,
 
     // Progress demos
     progress: f32 = 0.65,
@@ -180,34 +175,13 @@ const AppState = struct {
         self.size_choice = s;
     }
 
-    // Select handlers
-    pub fn toggleFruit(self: *AppState) void {
-        self.fruit_open = !self.fruit_open;
-        self.priority_open = false;
-    }
-    pub fn closeFruit(self: *AppState) void {
-        self.fruit_open = false;
-    }
+    // Select handlers (open/close managed internally by Select widget)
     pub fn selectFruit(self: *AppState, idx: usize) void {
         self.fruit_selected = idx;
-        self.fruit_open = false;
     }
 
-    pub fn togglePriority(self: *AppState) void {
-        self.priority_open = !self.priority_open;
-        self.fruit_open = false;
-    }
-    pub fn closePriority(self: *AppState) void {
-        self.priority_open = false;
-    }
     pub fn selectPriority(self: *AppState, idx: usize) void {
         self.priority_selected = idx;
-        self.priority_open = false;
-    }
-
-    pub fn closeAllDropdowns(self: *AppState) void {
-        self.fruit_open = false;
-        self.priority_open = false;
     }
 
     // Progress handlers
@@ -289,14 +263,14 @@ fn render(cx: *Cx) void {
         Modal(InfoModalContent){
             .id = "info-modal",
             .is_open = s.show_modal,
-            .on_close = cx.update(AppState, AppState.closeModal),
+            .on_close = cx.update(AppState.closeModal),
             .child = InfoModalContent{},
         },
 
         Modal(ConfirmModalContent){
             .id = "confirm-modal",
             .is_open = s.show_confirm,
-            .on_close = cx.update(AppState, AppState.closeConfirm),
+            .on_close = cx.update(AppState.closeConfirm),
             .child = ConfirmModalContent{},
         },
     }, @src()));
@@ -410,7 +384,7 @@ const NavItem = struct {
             .alignment = .{ .cross = .center },
             .background = if (is_active) t.primary.withAlpha(0.15) else ui.Color.transparent,
             .hover_background = if (is_active) t.primary.withAlpha(0.2) else t.overlay.withAlpha(0.5),
-            .on_click_handler = cx.updateWith(AppState, idx, AppState.goToSection),
+            .on_click_handler = cx.updateWith(idx, AppState.goToSection),
         }, .{
             ui.text(self.section.title(), .{
                 .size = 14,
@@ -430,7 +404,7 @@ const ThemeToggle = struct {
             .corner_radius = 6,
             .alignment = .{ .cross = .center },
             .hover_background = t.overlay.withAlpha(0.5),
-            .on_click_handler = cx.update(AppState, AppState.toggleTheme),
+            .on_click_handler = cx.update(AppState.toggleTheme),
         }, .{
             Svg{
                 .path = if (s.is_dark) Icons.visibility else Icons.visibility_off,
@@ -1184,12 +1158,12 @@ const ButtonInteractiveCard = struct {
                 Button{
                     .label = "Click Me!",
                     .variant = .primary,
-                    .on_click_handler = cx.update(AppState, AppState.incrementClicks),
+                    .on_click_handler = cx.update(AppState.incrementClicks),
                 },
                 Button{
                     .label = "Reset",
                     .variant = .secondary,
-                    .on_click_handler = cx.update(AppState, AppState.resetClicks),
+                    .on_click_handler = cx.update(AppState.resetClicks),
                 },
                 ui.box(.{
                     .padding = .{ .symmetric = .{ .x = 16, .y = 8 } },
@@ -1293,20 +1267,20 @@ const CheckboxCard = struct {
                     .id = "opt-a",
                     .checked = s.option_a,
                     .label = "Option A (checked by default)",
-                    .on_click_handler = cx.update(AppState, AppState.toggleOptionA),
+                    .on_click_handler = cx.update(AppState.toggleOptionA),
                     // Uses theme defaults
                 },
                 Checkbox{
                     .id = "opt-b",
                     .checked = s.option_b,
                     .label = "Option B",
-                    .on_click_handler = cx.update(AppState, AppState.toggleOptionB),
+                    .on_click_handler = cx.update(AppState.toggleOptionB),
                 },
                 Checkbox{
                     .id = "opt-c",
                     .checked = s.option_c,
                     .label = "Option C (success color)",
-                    .on_click_handler = cx.update(AppState, AppState.toggleOptionC),
+                    .on_click_handler = cx.update(AppState.toggleOptionC),
                     // Override just the checked color
                     .checked_background = t.success,
                 },
@@ -1329,19 +1303,19 @@ const RadioCard = struct {
                     RadioButton{
                         .label = "Red",
                         .is_selected = s.color_choice == 0,
-                        .on_click_handler = cx.updateWith(AppState, @as(u8, 0), AppState.setColor),
+                        .on_click_handler = cx.updateWith(@as(u8, 0), AppState.setColor),
                         .selected_color = t.danger,
                     },
                     RadioButton{
                         .label = "Green",
                         .is_selected = s.color_choice == 1,
-                        .on_click_handler = cx.updateWith(AppState, @as(u8, 1), AppState.setColor),
+                        .on_click_handler = cx.updateWith(@as(u8, 1), AppState.setColor),
                         .selected_color = t.success,
                     },
                     RadioButton{
                         .label = "Blue",
                         .is_selected = s.color_choice == 2,
-                        .on_click_handler = cx.updateWith(AppState, @as(u8, 2), AppState.setColor),
+                        .on_click_handler = cx.updateWith(@as(u8, 2), AppState.setColor),
                         .selected_color = t.primary,
                     },
                 }),
@@ -1353,10 +1327,10 @@ const RadioCard = struct {
                         .options = &.{ "S", "M", "L", "XL" },
                         .selected = s.size_choice,
                         .handlers = &.{
-                            cx.updateWith(AppState, @as(u8, 0), AppState.setSize),
-                            cx.updateWith(AppState, @as(u8, 1), AppState.setSize),
-                            cx.updateWith(AppState, @as(u8, 2), AppState.setSize),
-                            cx.updateWith(AppState, @as(u8, 3), AppState.setSize),
+                            cx.updateWith(@as(u8, 0), AppState.setSize),
+                            cx.updateWith(@as(u8, 1), AppState.setSize),
+                            cx.updateWith(@as(u8, 2), AppState.setSize),
+                            cx.updateWith(@as(u8, 3), AppState.setSize),
                         },
                         .direction = .row,
                         .gap = 16,
@@ -1386,18 +1360,8 @@ const SelectCard = struct {
                         .options = &fruit_options,
                         .selected = s.fruit_selected,
                         .placeholder = "Choose a fruit...",
-                        .is_open = s.fruit_open,
                         .width = 180,
-                        .on_toggle_handler = cx.update(AppState, AppState.toggleFruit),
-                        .on_close_handler = cx.update(AppState, AppState.closeFruit),
-                        .handlers = &.{
-                            cx.updateWith(AppState, @as(usize, 0), AppState.selectFruit),
-                            cx.updateWith(AppState, @as(usize, 1), AppState.selectFruit),
-                            cx.updateWith(AppState, @as(usize, 2), AppState.selectFruit),
-                            cx.updateWith(AppState, @as(usize, 3), AppState.selectFruit),
-                            cx.updateWith(AppState, @as(usize, 4), AppState.selectFruit),
-                        },
-                        // Uses theme defaults
+                        .on_select = cx.onSelect(AppState.selectFruit),
                     },
                 }),
                 ui.box(.{ .gap = 8 }, .{
@@ -1406,17 +1370,8 @@ const SelectCard = struct {
                         .id = "priority-select",
                         .options = &priority_options,
                         .selected = s.priority_selected,
-                        .is_open = s.priority_open,
                         .width = 150,
-                        .on_toggle_handler = cx.update(AppState, AppState.togglePriority),
-                        .on_close_handler = cx.update(AppState, AppState.closePriority),
-                        .handlers = &.{
-                            cx.updateWith(AppState, @as(usize, 0), AppState.selectPriority),
-                            cx.updateWith(AppState, @as(usize, 1), AppState.selectPriority),
-                            cx.updateWith(AppState, @as(usize, 2), AppState.selectPriority),
-                            cx.updateWith(AppState, @as(usize, 3), AppState.selectPriority),
-                        },
-                        // Override focus border color
+                        .on_select = cx.onSelect(AppState.selectPriority),
                         .focus_border_color = t.warning,
                     },
                 }),
@@ -1478,7 +1433,7 @@ const ProgressCard = struct {
                         .label = "Step Progress",
                         .variant = .secondary,
                         .size = .small,
-                        .on_click_handler = cx.update(AppState, AppState.stepProgress),
+                        .on_click_handler = cx.update(AppState.stepProgress),
                     },
                     ProgressBar{
                         .progress = s.animated_progress,
@@ -1551,12 +1506,12 @@ const ModalCard = struct {
                     Button{
                         .label = "Info Modal",
                         .variant = .primary,
-                        .on_click_handler = cx.update(AppState, AppState.openModal),
+                        .on_click_handler = cx.update(AppState.openModal),
                     },
                     Button{
                         .label = "Confirm Action",
                         .variant = .danger,
-                        .on_click_handler = cx.update(AppState, AppState.openConfirm),
+                        .on_click_handler = cx.update(AppState.openConfirm),
                     },
                 }),
                 ui.hstack(.{ .gap = 8 }, .{
@@ -1582,7 +1537,7 @@ const InfoModalContent = struct {
             Button{
                 .label = "Got it!",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.closeModal),
+                .on_click_handler = cx.update(AppState.closeModal),
             },
         }));
     }
@@ -1604,12 +1559,12 @@ const ConfirmModalContent = struct {
                 Button{
                     .label = "Cancel",
                     .variant = .secondary,
-                    .on_click_handler = cx.update(AppState, AppState.closeConfirm),
+                    .on_click_handler = cx.update(AppState.closeConfirm),
                 },
                 Button{
                     .label = "Confirm",
                     .variant = .danger,
-                    .on_click_handler = cx.update(AppState, AppState.doConfirm),
+                    .on_click_handler = cx.update(AppState.doConfirm),
                 },
             }),
         }));
@@ -1774,11 +1729,6 @@ fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
                 cx.notify();
                 return true;
             }
-            if (s.fruit_open or s.priority_open) {
-                s.closeAllDropdowns();
-                cx.notify();
-                return true;
-            }
         }
 
         // T toggles theme
@@ -1902,14 +1852,9 @@ test "AppState checkboxes" {
 test "AppState select" {
     var s = AppState{};
     try std.testing.expect(s.fruit_selected == null);
-    try std.testing.expect(!s.fruit_open);
-
-    s.toggleFruit();
-    try std.testing.expect(s.fruit_open);
 
     s.selectFruit(2);
     try std.testing.expectEqual(@as(?usize, 2), s.fruit_selected);
-    try std.testing.expect(!s.fruit_open);
 }
 
 test "AppState modals" {

@@ -11,7 +11,7 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const platform = gooey.platform;
-const file_dialog = gooey.platform.mac.file_dialog;
+const file_dialog = gooey.file_dialog;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -310,7 +310,7 @@ const AppState = struct {
 
     pub fn openDirectory(self: *AppState, g: *gooey.Gooey) void {
         _ = self;
-        g.deferCommand(AppState, AppState.openDialogDeferred);
+        g.deferCommand(AppState.openDialogDeferred);
     }
 
     fn openDialogDeferred(self: *AppState, g: *gooey.Gooey) void {
@@ -594,7 +594,7 @@ const FileSidebar = struct {
                 Button{
                     .label = "📂 Open",
                     .variant = .secondary,
-                    .on_click_handler = cx.command(AppState, AppState.openDirectory),
+                    .on_click_handler = cx.command(AppState.openDirectory),
                 },
                 ui.spacer(),
                 ui.when(s.dir_path_len > 0, .{
@@ -604,7 +604,7 @@ const FileSidebar = struct {
                         .corner_radius = 4,
                         .alignment = .{ .main = .center, .cross = .center },
                         .hover_background = Color.rgba(1, 1, 1, 0.1),
-                        .on_click_handler = cx.update(AppState, AppState.expandAll),
+                        .on_click_handler = cx.update(AppState.expandAll),
                     }, .{
                         Svg{ .path = Lucide.folder_open, .size = 16, .no_fill = true, .stroke_color = text_muted, .stroke_width = 1.5 },
                     }),
@@ -614,7 +614,7 @@ const FileSidebar = struct {
                         .corner_radius = 4,
                         .alignment = .{ .main = .center, .cross = .center },
                         .hover_background = Color.rgba(1, 1, 1, 0.1),
-                        .on_click_handler = cx.update(AppState, AppState.collapseAll),
+                        .on_click_handler = cx.update(AppState.collapseAll),
                     }, .{
                         Svg{ .path = Lucide.folder, .size = 16, .no_fill = true, .stroke_color = text_muted, .stroke_width = 1.5 },
                     }),
@@ -692,10 +692,10 @@ const TreeListContent = struct {
             .direction = .row,
             .alignment = .{ .main = .start, .cross = .center },
             .gap = 0,
-            .on_click_handler = cx.commandWith(AppState, entry_index, AppState.onItemClick),
+            .on_click_handler = cx.commandWith(entry_index, AppState.onItemClick),
         }, .{
             // Indent spacer
-            ui.box(.{ .width = indent, .height = FILE_ITEM_HEIGHT }, .{}),
+            ui.rect(.{ .width = indent, .height = FILE_ITEM_HEIGHT }),
 
             // Chevron (clickable for folders)
             ui.box(.{
@@ -731,7 +731,7 @@ const TreeListContent = struct {
             }),
 
             // Gap
-            ui.box(.{ .width = 4 }, .{}),
+            ui.rect(.{ .width = 4 }),
 
             // File name
             ui.text(label, .{ .size = 12, .color = item_text_color }),
@@ -781,7 +781,7 @@ const EditorPanel = struct {
                 CodeEditor{
                     .id = "source",
                     .placeholder = "Enter your code here...",
-                    .bind = @constCast(&s.source_code),
+                    .bind = &s.source_code,
                     .width = self.editor_width - 16,
                     .height = self.editor_height - 50,
                     .show_line_numbers = true,
@@ -872,7 +872,7 @@ const App = gooey.App(AppState, &state, render, .{
     .width = 1000,
     .height = 700,
     // Glass effect
-    .background_color = Color.init(0.08, 0.08, 0.12, 1.0),
+    .background_color = Color.rgba(0.08, 0.08, 0.12, 1.0),
     .background_opacity = 0.3,
     .glass_style = .glass_regular,
     .glass_corner_radius = 10.0,

@@ -154,7 +154,7 @@ var state = State{};
 
 const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        const theme = cx.builder().theme();
+        const theme = cx.theme();
 
         cx.render(ui.hstack(.{ .gap = 8 }, .{
             ui.text("Virtual List Demo", .{
@@ -174,8 +174,7 @@ const Header = struct {
 const StatsBar = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(State);
-        const b = cx.builder();
-        const theme = b.theme();
+        const theme = cx.theme();
         const range = s.list_state.visibleRange();
 
         // Format stats
@@ -301,24 +300,24 @@ const Controls = struct {
         cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Top",
-                .on_click_handler = cx.update(State, State.scrollToTop),
+                .on_click_handler = cx.update(State.scrollToTop),
             },
             Button{
                 .label = "Bottom",
-                .on_click_handler = cx.update(State, State.scrollToBottom),
+                .on_click_handler = cx.update(State.scrollToBottom),
             },
             Button{
                 .label = "Jump to #500",
-                .on_click_handler = cx.update(State, State.jumpToMiddle),
+                .on_click_handler = cx.update(State.jumpToMiddle),
             },
             ui.spacer(),
             Button{
                 .label = "↑ Prev",
-                .on_click_handler = cx.update(State, State.selectPrevious),
+                .on_click_handler = cx.update(State.selectPrevious),
             },
             Button{
                 .label = "↓ Next",
-                .on_click_handler = cx.update(State, State.selectNext),
+                .on_click_handler = cx.update(State.selectNext),
             },
         }));
     }
@@ -330,7 +329,7 @@ const Controls = struct {
 
 fn render(cx: *Cx) void {
     const size = cx.windowSize();
-    const theme = cx.builder().theme();
+    const theme = cx.theme();
 
     cx.render(ui.box(.{
         .width = size.width,

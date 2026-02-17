@@ -1,5 +1,7 @@
 //! Cx - The Unified Rendering Context
 //!
+//! Includes `cx.changed()` for per-frame value change detection.
+//!
 //! Provides access to:
 //! - Rendering via `cx.render()` with `ui.*` elements
 //! - Application state
@@ -31,10 +33,10 @@
 //!
 //! | API | Signature | Use Case |
 //! |-----|-----------|----------|
-//! | `cx.update(State, fn)` | `fn(*State) void` | Pure state mutation |
-//! | `cx.updateWith(State, arg, fn)` | `fn(*State, Arg) void` | Pure with data |
-//! | `cx.command(State, fn)` | `fn(*State, *Gooey) void` | Framework ops |
-//! | `cx.commandWith(State, arg, fn)` | `fn(*State, *Gooey, Arg) void` | Framework ops + data |
+//! | `cx.update(method)` | `fn(*State) void` | Pure state mutation |
+//! | `cx.updateWith(arg, method)` | `fn(*State, Arg) void` | Pure with data |
+//! | `cx.command(method)` | `fn(*State, *Gooey) void` | Framework ops |
+//! | `cx.commandWith(arg, method)` | `fn(*State, *Gooey, Arg) void` | Framework ops + data |
 //!
 //! ## Example
 //!
@@ -63,8 +65,8 @@
 //!         .height = size.height,
 //!     }, .{
 //!         ui.textFmt("Count: {}", .{s.count}, .{}),
-//!         gooey.Button{ .label = "+", .on_click_handler = cx.update(AppState, AppState.increment) },
-//!         gooey.Button{ .label = "Reset", .on_click_handler = cx.updateWith(AppState, @as(i32, 0), AppState.setCount) },
+//!         gooey.Button{ .label = "+", .on_click_handler = cx.update(AppState.increment) },
+//!         gooey.Button{ .label = "Reset", .on_click_handler = cx.updateWith(@as(i32, 0), AppState.setCount) },
 //!     }));
 //! }
 //! ```
@@ -78,6 +80,7 @@ const ui_mod = @import("ui/mod.zig");
 const Builder = ui_mod.Builder;
 const AccessibleConfig = ui_mod.AccessibleConfig;
 const a11y = @import("accessibility/accessibility.zig");
+const change_tracker_mod = @import("context/change_tracker.zig");
 const handler_mod = @import("context/handler.zig");
 const entity_mod = @import("context/entity.zig");
 const text_field_mod = @import("widgets/text_input_state.zig");
@@ -98,6 +101,10 @@ const tree_list_mod = @import("widgets/tree_list.zig");
 const TreeListState = tree_list_mod.TreeListState;
 const TreeEntry = tree_list_mod.TreeEntry;
 const TreeListStyle = ui_mod.TreeListStyle;
+
+// Text measurement types
+const text_mod = @import("text/mod.zig");
+pub const TextMeasurement = text_mod.TextMeasurement;
 
 // Animation types (re-exported from root.zig for users)
 const animation_mod = @import("animation/mod.zig");
@@ -121,6 +128,7 @@ const SpringMotionConfig = motion_mod.SpringMotionConfig;
 
 // Handler types (re-exported from root.zig for users)
 const HandlerRef = handler_mod.HandlerRef;
+const OnSelectHandler = handler_mod.OnSelectHandler;
 pub const typeId = handler_mod.typeId;
 const packArg = handler_mod.packArg;
 const unpackArg = handler_mod.unpackArg;
@@ -258,14 +266,19 @@ pub const Cx = struct {
 
     /// Create a handler from a pure state method.
     ///
+    /// The State type is inferred from the method's first parameter.
     /// The method should be `fn(*State) void` - no context parameter.
     /// After the method is called, the UI automatically re-renders.
+    ///
+    /// ```zig
+    /// Button{ .label = "+", .on_click_handler = cx.update(AppState.increment) }
+    /// ```
     pub fn update(
         self: *Self,
-        comptime State: type,
-        comptime method: fn (*State) void,
+        comptime method: anytype,
     ) HandlerRef {
         _ = self;
+        const State = comptime ExtractState("update", @TypeOf(method));
 
         const Wrapper = struct {
             fn invoke(g: *Gooey, _: EntityId) void {
@@ -283,17 +296,22 @@ pub const Cx = struct {
 
     /// Create a handler from a pure state method that takes an argument.
     ///
+    /// The State type is inferred from the method's first parameter.
     /// The method should be `fn(*State, ArgType) void`.
     /// The argument is captured and passed when the handler is invoked.
     ///
     /// **Note:** The argument must fit in 8 bytes (u64).
+    ///
+    /// ```zig
+    /// Button{ .label = "Reset", .on_click_handler = cx.updateWith(@as(i32, 0), AppState.setCount) }
+    /// ```
     pub fn updateWith(
         self: *Self,
-        comptime State: type,
         arg: anytype,
-        comptime method: fn (*State, @TypeOf(arg)) void,
+        comptime method: anytype,
     ) HandlerRef {
         _ = self;
+        const State = comptime ExtractState("updateWith", @TypeOf(method));
         const Arg = @TypeOf(arg);
 
         comptime {
@@ -320,22 +338,89 @@ pub const Cx = struct {
     }
 
     // =========================================================================
+    // Select Handler - onSelect (Index-Based Selection)
+    // =========================================================================
+
+    /// Create an index-based selection handler for Select, TabBar, etc.
+    ///
+    /// The State type is inferred from the method's first parameter.
+    /// The method should be `fn(*State, usize) void`.
+    /// Returns an `OnSelectHandler` that the widget uses internally to
+    /// generate per-option `HandlerRef`s — no manual handler arrays needed.
+    ///
+    /// When used with `Select`, the widget also manages open/close state
+    /// internally, so no toggle/close handlers or `is_open` field required.
+    ///
+    /// ```zig
+    /// Select{
+    ///     .id = "my-select",
+    ///     .options = &.{ "A", "B", "C" },
+    ///     .selected = s.selected,
+    ///     .on_select = cx.onSelect(AppState.selectOption),
+    /// }
+    /// ```
+    pub fn onSelect(
+        self: *Self,
+        comptime method: anytype,
+    ) OnSelectHandler {
+        _ = self;
+        const State = comptime ExtractState("onSelect", @TypeOf(method));
+
+        const Wrapper = struct {
+            /// Invoked when an option is clicked.
+            ///
+            /// EntityId packing:
+            ///   - If upper 32 bits != 0: lower 32 = index, upper 32 = select id hash
+            ///     (forIndexAndClose path — also closes internal state)
+            ///   - If upper 32 bits == 0: full u64 = usize index
+            ///     (forIndex path — caller manages open/close)
+            fn invoke(g: *Gooey, packed_arg: EntityId) void {
+                const id_hash = OnSelectHandler.unpackIdHash(packed_arg);
+
+                if (id_hash != 0) {
+                    // forIndexAndClose path: index in lower 32 bits
+                    const index: usize = @as(usize, OnSelectHandler.unpackIndex(packed_arg));
+                    const state_ptr = g.getRootState(State) orelse return;
+                    method(state_ptr, index);
+
+                    // Close internal select state
+                    g.widgets.closeSelectState(id_hash);
+                } else {
+                    // forIndex path: full usize index
+                    const index = unpackArg(usize, packed_arg);
+                    const state_ptr = g.getRootState(State) orelse return;
+                    method(state_ptr, index);
+                }
+
+                g.requestRender();
+            }
+        };
+
+        return .{ .callback = Wrapper.invoke };
+    }
+
+    // =========================================================================
     // Command Handlers - command / commandWith (Framework Access)
     // =========================================================================
 
     /// Create a command handler that has framework access.
     ///
+    /// The State type is inferred from the method's first parameter.
     /// The method should be `fn(*State, *Gooey) void`.
     /// Use this when you need to perform framework operations like:
     /// - Focus management (`g.focusTextInput()`, `g.blurAll()`)
     /// - Window operations
     /// - Entity creation/removal
+    ///
+    /// ```zig
+    /// Button{ .label = "Save", .on_click_handler = cx.command(AppState.save) }
+    /// ```
     pub fn command(
         self: *Self,
-        comptime State: type,
-        comptime method: fn (*State, *Gooey) void,
+        comptime method: anytype,
     ) HandlerRef {
         _ = self;
+        const State = comptime ExtractState("command", @TypeOf(method));
 
         const Wrapper = struct {
             fn invoke(g: *Gooey, _: EntityId) void {
@@ -353,16 +438,21 @@ pub const Cx = struct {
 
     /// Create a command handler with an argument that has framework access.
     ///
+    /// The State type is inferred from the method's first parameter.
     /// The method should be `fn(*State, *Gooey, ArgType) void`.
     ///
     /// **Note:** The argument must fit in 8 bytes (u64).
+    ///
+    /// ```zig
+    /// Button{ .label = "Open", .on_click_handler = cx.commandWith(@as(u32, idx), AppState.openTab) }
+    /// ```
     pub fn commandWith(
         self: *Self,
-        comptime State: type,
         arg: anytype,
-        comptime method: fn (*State, *Gooey, @TypeOf(arg)) void,
+        comptime method: anytype,
     ) HandlerRef {
         _ = self;
+        const State = comptime ExtractState("commandWith", @TypeOf(method));
         const Arg = @TypeOf(arg);
 
         comptime {
@@ -395,13 +485,14 @@ pub const Cx = struct {
     /// Schedule a state method to run after current event handling completes.
     /// Useful for opening dialogs, avoiding re-entrancy, or deferring heavy work.
     ///
+    /// The State type is inferred from the method's first parameter.
     /// The method signature is `fn(*State, *Gooey) void` - same as `command()`.
     ///
     /// Example:
     /// ```
     /// pub fn openFolder(self: *State, g: *Gooey) void {
     ///     // Can't open modal dialog mid-event - defer it
-    ///     g.defer(State, State.openFolderDeferred);
+    ///     g.defer(State.openFolderDeferred);
     /// }
     ///
     /// pub fn openFolderDeferred(self: *State, g: *Gooey) void {
@@ -413,10 +504,9 @@ pub const Cx = struct {
     /// ```
     pub fn @"defer"(
         self: *Self,
-        comptime State: type,
-        comptime method: fn (*State, *Gooey) void,
+        comptime method: anytype,
     ) void {
-        self._gooey.deferCommand(State, method);
+        self._gooey.deferCommand(method);
     }
 
     /// Schedule a state method with an argument to run after current event handling completes.
@@ -428,7 +518,7 @@ pub const Cx = struct {
     /// ```
     /// pub fn openFile(self: *State, index: u32) void {
     ///     // Defer the actual file opening
-    ///     g.deferWith(State, index, State.openFileDeferred);
+    ///     g.deferWith(index, State.openFileDeferred);
     /// }
     ///
     /// pub fn openFileDeferred(self: *State, g: *Gooey, index: u32) void {
@@ -438,11 +528,136 @@ pub const Cx = struct {
     /// ```
     pub fn deferWith(
         self: *Self,
-        comptime State: type,
         arg: anytype,
-        comptime method: fn (*State, *Gooey, @TypeOf(arg)) void,
+        comptime method: anytype,
     ) void {
-        self._gooey.deferCommandWith(State, @TypeOf(arg), arg, method);
+        self._gooey.deferCommandWith(arg, method);
+    }
+
+    // =========================================================================
+    // Thread Dispatch
+    // =========================================================================
+
+    /// Dispatch a callback to run on the main thread.
+    /// Safe to call from any thread. Returns error on WASM (single-threaded).
+    ///
+    /// Example:
+    /// ```zig
+    /// const Ctx = struct { app: *AppState };
+    /// try cx.dispatchOnMainThread(Ctx, .{ .app = self }, struct {
+    ///     fn handler(ctx: *Ctx) void {
+    ///         ctx.app.applyResult();
+    ///     }
+    /// }.handler);
+    /// ```
+    pub fn dispatchOnMainThread(
+        self: *Self,
+        comptime Context: type,
+        context: Context,
+        comptime callback: fn (*Context) void,
+    ) !void {
+        try self._gooey.dispatchOnMainThread(Context, context, callback);
+    }
+
+    /// Dispatch a callback to run on the main thread after a delay.
+    /// Safe to call from any thread. Returns error on WASM (single-threaded).
+    ///
+    /// Example:
+    /// ```zig
+    /// // Run after 100ms
+    /// const Ctx = struct { app: *AppState };
+    /// try cx.dispatchAfter(100_000_000, Ctx, .{ .app = self }, handler);
+    /// ```
+    pub fn dispatchAfter(
+        self: *Self,
+        delay_ns: u64,
+        comptime Context: type,
+        context: Context,
+        comptime callback: fn (*Context) void,
+    ) !void {
+        try self._gooey.dispatchAfter(delay_ns, Context, context, callback);
+    }
+
+    /// Dispatch a callback to run on a background thread.
+    /// Returns error on WASM (no threads) or if the dispatcher is not initialized.
+    ///
+    /// Example:
+    /// ```zig
+    /// const Ctx = struct { app: *AppState };
+    /// try cx.dispatchBackground(Ctx, .{ .app = self }, struct {
+    ///     fn handler(ctx: *Ctx) void {
+    ///         // Do expensive work off the main thread
+    ///         const result = ctx.app.fetchData();
+    ///         // Then dispatch back to main thread to apply
+    ///         ctx.app.pending_result = result;
+    ///         ctx.app.dispatchToMain();
+    ///     }
+    /// }.handler);
+    /// ```
+    pub fn dispatchBackground(
+        self: *Self,
+        comptime Context: type,
+        context: Context,
+        comptime callback: fn (*Context) void,
+    ) !void {
+        const d = self._gooey.getDispatcher() orelse return error.NotInitialized;
+        try d.dispatch(Context, context, callback);
+    }
+
+    /// Check if the current thread is the main/UI thread.
+    /// Always returns true on WASM (single-threaded).
+    pub fn isMainThread(_: *Self) bool {
+        return Gooey.isMainThread();
+    }
+
+    // =========================================================================
+    // Text Measurement
+    // =========================================================================
+
+    /// Options for measuring text dimensions.
+    pub const MeasureTextOptions = struct {
+        /// Maximum width before wrapping (null = no wrapping).
+        max_width: ?f32 = null,
+        /// Font size to measure at (null = use the current font size).
+        font_size: ?f32 = null,
+    };
+
+    /// Measure the dimensions of a text string, with optional wrapping and font size.
+    ///
+    /// Returns a `TextMeasurement` with `width`, `height`, and `line_count`.
+    /// Uses the platform text shaper (CoreText/HarfBuzz/browser) so kerning
+    /// and wrapping match what gets rendered on screen.
+    ///
+    /// Example:
+    /// ```zig
+    /// const m = try cx.measureText(msg.getText(), .{
+    ///     .max_width = max_bubble_width,
+    ///     .font_size = 15,
+    /// });
+    /// const height = m.height + padding;
+    /// ```
+    pub fn measureText(self: *Self, text_content: []const u8, opts: MeasureTextOptions) !TextMeasurement {
+        std.debug.assert(opts.font_size == null or opts.font_size.? > 0);
+        std.debug.assert(opts.max_width == null or opts.max_width.? > 0);
+
+        const ts = self._gooey.getTextSystem();
+
+        if (opts.font_size) |requested_size| {
+            const metrics = ts.getMetrics() orelse return error.NoFontLoaded;
+            std.debug.assert(metrics.point_size > 0);
+            const scale = requested_size / metrics.point_size;
+            std.debug.assert(scale > 0);
+
+            // Scale max_width into base-font units so wrapping breaks at
+            // the correct character positions, then scale the result back.
+            const base_max_width: ?f32 = if (opts.max_width) |mw| mw / scale else null;
+            var m = try ts.measureTextEx(text_content, base_max_width);
+            m.width *= scale;
+            m.height *= scale;
+            return m;
+        }
+
+        return ts.measureTextEx(text_content, opts.max_width);
     }
 
     // =========================================================================
@@ -549,7 +764,12 @@ pub const Cx = struct {
 
     /// Render an element tree. This is the primary entry point for the new ui.* API.
     ///
-    /// Usage:
+    /// Works with any renderable: ui primitives, layout containers, and components
+    /// regardless of whether their `render` method accepts `*Cx` or `*ui.Builder`.
+    /// The framework auto-dispatches to the correct signature, so you never need
+    /// to extract the builder manually to render a built-in component.
+    ///
+    /// Layout containers and primitives:
     /// ```
     /// cx.render(ui.box(.{ .background = t.bg }, .{
     ///     ui.text("Hello", .{}),
@@ -558,6 +778,16 @@ pub const Cx = struct {
     ///         ui.text("B", .{}),
     ///     }),
     /// }));
+    /// ```
+    ///
+    /// Built-in components (render takes *Builder — dispatched automatically):
+    /// ```
+    /// cx.render(Button{ .label = "Go", .on_click_handler = cx.update(State.go) });
+    /// ```
+    ///
+    /// User components (render takes *Cx — dispatched automatically):
+    /// ```
+    /// cx.render(MyWidget{ .value = 42 });
     /// ```
     pub fn render(self: *Self, element: anytype) void {
         self._builder.processChildren(element);
@@ -807,6 +1037,43 @@ pub const Cx = struct {
     }
 
     // =========================================================================
+    // Change Detection
+    // =========================================================================
+
+    /// Returns `true` when the value associated with `key` has changed since
+    /// the previous frame. On the first call for a given key, returns `false`
+    /// (no previous value to compare against).
+    ///
+    /// Replaces the common pattern of module-level `var last_foo: ?T = null`
+    /// with manual diffing.
+    ///
+    /// ```zig
+    /// // Before:
+    /// var last_dark_mode: ?bool = null;
+    /// if (last_dark_mode) |prev| { if (prev != s.dark_mode) invalidate(); }
+    /// last_dark_mode = s.dark_mode;
+    ///
+    /// // After:
+    /// if (cx.changed("dark_mode", s.dark_mode)) invalidate();
+    /// ```
+    ///
+    /// Multiple keys compose naturally:
+    ///
+    /// ```zig
+    /// if (cx.changed("dark_mode", s.dark_mode) or cx.changed("window_width", size.width)) {
+    ///     s.invalidateCachedHeights();
+    /// }
+    /// ```
+    ///
+    /// Works with any value type: `bool`, `f32`, `i32`, enums, small structs, etc.
+    /// For pointer types, compares the address (identity), not the pointee.
+    pub fn changed(self: *Self, comptime key: []const u8, value: anytype) bool {
+        const key_hash = comptime animation_mod.hashString(key);
+        const value_hash = change_tracker_mod.hashValue(@TypeOf(value), value);
+        return self._gooey.widgets.change_tracker.changed(key_hash, value_hash);
+    }
+
+    // =========================================================================
     // Uniform List API
     // =========================================================================
 
@@ -821,7 +1088,7 @@ pub const Cx = struct {
     ///     const s = cx.stateConst(State);
     ///     cx.render(ui.box(.{
     ///         .height = 32,
-    ///         .on_click_handler = cx.updateWith(State, index, State.selectItem),
+    ///         .on_click_handler = cx.updateWith(index, State.selectItem),
     ///     }, .{ ui.text(s.items[index].name, .{}) }));
     /// }
     /// ```
@@ -972,7 +1239,7 @@ pub const Cx = struct {
     ///     const height: f32 = if (item.expanded) 100.0 else 40.0;
     ///     cx.render(ui.box(.{
     ///         .height = height,
-    ///         .on_click_handler = cx.updateWith(State, index, State.selectItem),
+    ///         .on_click_handler = cx.updateWith(index, State.selectItem),
     ///     }, .{ ui.text(item.description, .{}) }));
     ///     return height;
     /// }
@@ -1060,7 +1327,7 @@ pub const Cx = struct {
     /// fn renderHeader(col: u32, cx: *Cx) void {
     ///     const s = cx.stateConst(State);
     ///     cx.render(ui.box(.{
-    ///         .on_click_handler = cx.updateWith(State, col, State.sortBy),
+    ///         .on_click_handler = cx.updateWith(col, State.sortBy),
     ///     }, .{ ui.text(s.columns[col].name, .{ .weight = .bold }) }));
     /// }
     ///
@@ -1088,7 +1355,7 @@ pub const Cx = struct {
     ///
     ///     // Set up click handler on the row
     ///     if (b.dispatch) |d| {
-    ///         d.onClickHandler(cx.updateWith(State, row, State.selectRow));
+    ///         d.onClickHandler(cx.updateWith(row, State.selectRow));
     ///     }
     ///
     ///     // Render visible cells
@@ -1166,6 +1433,34 @@ pub const Cx = struct {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// Extract the State type from a handler method's first parameter.
+///
+/// All handler methods follow the pattern `fn(*State, ...) void` where the
+/// first parameter is always a pointer to the state type. This helper uses
+/// `@typeInfo` to pull the pointee type from that first parameter, eliminating
+/// the need to pass the State type explicitly.
+///
+/// Produces clear compile errors if the function signature doesn't match
+/// the expected pattern (not a function, no parameters, first param not a pointer).
+fn ExtractState(comptime caller: []const u8, comptime Fn: type) type {
+    const info = @typeInfo(Fn);
+    if (info != .@"fn") {
+        @compileError(caller ++ "() expects a function, got " ++ @typeName(Fn));
+    }
+    const fn_info = info.@"fn";
+    if (fn_info.params.len == 0) {
+        @compileError(caller ++ "() expects a method with at least one parameter (*State), got a function with no parameters");
+    }
+    const FirstParam = fn_info.params[0].type orelse {
+        @compileError(caller ++ "() expects a concrete first parameter type (*State), got anytype");
+    };
+    const ptr_info = @typeInfo(FirstParam);
+    if (ptr_info != .pointer or ptr_info.pointer.size != .one) {
+        @compileError(caller ++ "() expects first parameter to be *State (single-item pointer), got " ++ @typeName(FirstParam));
+    }
+    return ptr_info.pointer.child;
+}
 
 /// Compute a hash for any trigger value for use with animateOn.
 /// Uses type-specific handling for common types.
@@ -1327,7 +1622,7 @@ test "Cx.update creates valid HandlerRef" {
     };
 
     // Create handler
-    const handler = cx.update(TestState, TestState.increment);
+    const handler = cx.update(TestState.increment);
 
     // update() handlers use EntityId.invalid (they operate on root state, not an entity)
     try std.testing.expectEqual(EntityId.invalid, handler.entity_id);
@@ -1355,7 +1650,7 @@ test "Cx.updateWith creates handler with packed argument" {
     };
 
     // Create handler with argument 42
-    const handler = cx.updateWith(TestState, @as(i32, 42), TestState.setValue);
+    const handler = cx.updateWith(@as(i32, 42), TestState.setValue);
 
     // The argument (42) is packed into entity_id for transport
     const unpacked = unpackArg(i32, handler.entity_id);

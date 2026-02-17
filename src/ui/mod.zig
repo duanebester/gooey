@@ -57,6 +57,7 @@ pub const canvas = canvas_mod.canvas;
 // Container element functions (Phase 1: cx/ui separation)
 // These return element structs for use with cx.render()
 pub const box = primitives.box;
+pub const rect = primitives.rect;
 pub const hstack = primitives.hstack;
 pub const vstack = primitives.vstack;
 pub const scroll = primitives.scroll;

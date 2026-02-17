@@ -351,10 +351,6 @@ pub const Color = struct {
     b: f32 = 0,
     a: f32 = 1,
 
-    pub fn init(r: f32, g: f32, b: f32, a: f32) Color {
-        return .{ .r = r, .g = g, .b = b, .a = a };
-    }
-
     pub fn rgb(r: f32, g: f32, b: f32) Color {
         return .{ .r = r, .g = g, .b = b, .a = 1.0 };
     }

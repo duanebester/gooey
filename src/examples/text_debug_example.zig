@@ -9,14 +9,11 @@
 //!   Web:    zig build wasm-text && open web/index.html
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -121,7 +118,7 @@ fn render(cx: *Cx) void {
             Button{
                 .label = "Log Debug Info to Console",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.triggerDebugLog),
+                .on_click_handler = cx.update(AppState.triggerDebugLog),
             },
         }),
 

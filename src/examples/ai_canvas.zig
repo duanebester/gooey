@@ -24,7 +24,7 @@
 //! at which point the final batch is committed automatically.
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 const platform = gooey.platform;
 const ui = gooey.ui;
@@ -34,10 +34,7 @@ const AiCanvas = ai.AiCanvas;
 const Theme = ui.Theme;
 
 /// WASM-compatible logging — redirect std.log to console.log via JS imports.
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 
 // =============================================================================
 // Constants (CLAUDE.md #4: put a limit on everything)

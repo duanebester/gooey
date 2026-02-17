@@ -9,14 +9,11 @@
 //! - Beautiful, practical UI
 
 const std = @import("std");
-const builtin = @import("builtin");
+
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
-    .{ .logFn = gooey.wasmLogFn }
-else
-    .{};
+pub const std_options = gooey.std_options;
 
 // Use platform abstraction for time
 const platform = gooey.platform;
@@ -348,7 +345,7 @@ const ResetButton = struct {
 
         if (s.phase != .idle) {
             cx.render(ui.box(.{}, .{
-                Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.reset) },
+                Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState.reset) },
             }));
         }
     }
@@ -361,27 +358,27 @@ const ControlButtons = struct {
         switch (s.phase) {
             .idle => {
                 cx.render(ui.box(.{}, .{
-                    Button{ .label = "Start Focus", .on_click_handler = cx.update(AppState, AppState.startFocus) },
+                    Button{ .label = "Start Focus", .on_click_handler = cx.update(AppState.startFocus) },
                 }));
             },
             .focus, .short_break, .long_break => {
                 if (s.time_remaining == 0) {
                     if (s.phase == .focus) {
                         cx.render(ui.box(.{}, .{
-                            Button{ .label = "Take Break", .variant = .secondary, .on_click_handler = cx.update(AppState, AppState.startBreak) },
+                            Button{ .label = "Take Break", .variant = .secondary, .on_click_handler = cx.update(AppState.startBreak) },
                         }));
                     } else {
                         cx.render(ui.box(.{}, .{
-                            Button{ .label = "Start Focus", .on_click_handler = cx.update(AppState, AppState.startFocus) },
+                            Button{ .label = "Start Focus", .on_click_handler = cx.update(AppState.startFocus) },
                         }));
                     }
                 } else if (s.is_running) {
                     cx.render(ui.box(.{}, .{
-                        Button{ .label = "Pause", .variant = .danger, .on_click_handler = cx.update(AppState, AppState.pause) },
+                        Button{ .label = "Pause", .variant = .danger, .on_click_handler = cx.update(AppState.pause) },
                     }));
                 } else {
                     cx.render(ui.box(.{}, .{
-                        Button{ .label = "Resume", .on_click_handler = cx.update(AppState, AppState.resumeTimer) },
+                        Button{ .label = "Resume", .on_click_handler = cx.update(AppState.resumeTimer) },
                     }));
                 }
             },
@@ -407,7 +404,7 @@ const TaskInput = struct {
                 .placeholder_color = ui.Color.rgb(0.5, 0.5, 0.5),
                 .corner_radius = 8,
             },
-            Button{ .label = "Add", .on_click_handler = cx.command(AppState, AppState.addTask) },
+            Button{ .label = "Add", .on_click_handler = cx.command(AppState.addTask) },
         }));
     }
 };
@@ -432,7 +429,7 @@ const TaskItem = struct {
             Checkbox{
                 .id = checkbox_id,
                 .checked = data.completed,
-                .on_click_handler = cx.commandWith(AppState, self.index, AppState.toggleTask),
+                .on_click_handler = cx.commandWith(self.index, AppState.toggleTask),
                 .checked_background = ui.Color.rgb(0.3, 0.8, 0.5),
             },
             ui.text(data.text, .{
@@ -472,7 +469,7 @@ const ClearDoneButton = struct {
 
         if (s.completedCount(g) > 0) {
             cx.render(ui.box(.{}, .{
-                Button{ .label = "Clear done", .size = .small, .variant = .secondary, .on_click_handler = cx.command(AppState, AppState.clearCompleted) },
+                Button{ .label = "Clear done", .size = .small, .variant = .secondary, .on_click_handler = cx.command(AppState.clearCompleted) },
             }));
         }
     }

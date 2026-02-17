@@ -249,7 +249,7 @@ pub const App = struct {
         }
 
         // Create platform window
-        const bg_color = options.background_color orelse Color.init(0.95, 0.95, 0.95, 1.0);
+        const bg_color = options.background_color orelse Color.rgba(0.95, 0.95, 0.95, 1.0);
 
         var window = try Window.init(self.allocator, &self.platform, .{
             .title = options.title,

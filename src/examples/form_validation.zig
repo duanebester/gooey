@@ -280,7 +280,7 @@ const SuccessMessage = struct {
                 .id = "dismiss-success",
                 .label = "Dismiss",
                 .variant = .secondary,
-                .on_click_handler = cx.update(FormState, FormState.dismissSuccess),
+                .on_click_handler = cx.update(FormState.dismissSuccess),
             },
         }));
     }
@@ -349,7 +349,7 @@ const SectionHeader = struct {
 const Divider = struct {
     pub fn render(_: Divider, cx: *Cx) void {
         const t = cx.theme();
-        cx.render(ui.box(.{ .height = 1, .fill_width = true, .background = t.border }, .{}));
+        cx.render(ui.rect(.{ .height = 1, .fill_width = true, .background = t.border }));
     }
 };
 
@@ -370,11 +370,11 @@ const ValidatedInputFields = struct {
                 .label = "Username",
                 .required_indicator = true,
                 .placeholder = "Enter username (3-20 chars, alphanumeric)",
-                .bind = @constCast(&s.username),
+                .bind = &s.username,
                 .error_message = self.username_error,
                 .show_error = self.username_touched,
                 .help_text = "Letters and numbers only",
-                .on_blur_handler = cx.update(FormState, FormState.onUsernameBlur),
+                .on_blur_handler = cx.update(FormState.onUsernameBlur),
                 .width = 400,
                 .gap = 10,
             },
@@ -383,10 +383,10 @@ const ValidatedInputFields = struct {
                 .label = "Email Address",
                 .required_indicator = true,
                 .placeholder = "you@example.com",
-                .bind = @constCast(&s.email),
+                .bind = &s.email,
                 .error_message = self.email_error,
                 .show_error = self.email_touched,
-                .on_blur_handler = cx.update(FormState, FormState.onEmailBlur),
+                .on_blur_handler = cx.update(FormState.onEmailBlur),
                 .width = 400,
                 .gap = 10,
             },
@@ -427,7 +427,7 @@ const ManualInputFields = struct {
                 ui.input("password", .{
                     .placeholder = "Enter password (min 8 characters)",
                     .secure = true,
-                    .bind = @constCast(&s.password),
+                    .bind = &s.password,
                     .width = 400,
                     .background = t.surface,
                     .border_color = if (self.password_error != null) t.danger else t.border,
@@ -437,7 +437,7 @@ const ManualInputFields = struct {
                     .placeholder_color = t.muted,
                     .selection_color = t.primary.withAlpha(0.3),
                     .cursor_color = t.text,
-                    .on_blur_handler = cx.update(FormState, FormState.onPasswordBlur),
+                    .on_blur_handler = cx.update(FormState.onPasswordBlur),
                 }),
                 // Error text (always 16px tall)
                 ui.box(.{ .height = 16 }, .{password_helper}),
@@ -453,7 +453,7 @@ const ManualInputFields = struct {
                 ui.input("confirm-password", .{
                     .placeholder = "Re-enter your password",
                     .secure = true,
-                    .bind = @constCast(&s.confirm_password),
+                    .bind = &s.confirm_password,
                     .width = 400,
                     .background = t.surface,
                     .border_color = if (self.confirm_error != null) t.danger else t.border,
@@ -463,7 +463,7 @@ const ManualInputFields = struct {
                     .placeholder_color = t.muted,
                     .selection_color = t.primary.withAlpha(0.3),
                     .cursor_color = t.text,
-                    .on_blur_handler = cx.update(FormState, FormState.onConfirmPasswordBlur),
+                    .on_blur_handler = cx.update(FormState.onConfirmPasswordBlur),
                 }),
                 // Error text (always 16px tall)
                 ui.box(.{ .height = 16 }, .{confirm_helper}),
@@ -495,15 +495,15 @@ const FormActions = struct {
                 .id = "submit",
                 .label = "Submit",
                 .variant = .primary,
-                .on_click_handler = cx.update(FormState, FormState.submit),
+                .on_click_handler = cx.update(FormState.submit),
             },
             Button{
                 .id = "reset",
                 .label = "Reset",
                 .variant = .secondary,
-                .on_click_handler = cx.update(FormState, FormState.reset),
+                .on_click_handler = cx.update(FormState.reset),
             },
-            ui.box(.{ .grow = true }, .{}),
+            ui.rect(.{ .grow = true }),
             ui.when(self.submitted and !self.is_valid, .{
                 ui.text("Please fix the errors above", .{ .size = 14, .color = t.danger }),
             }),

@@ -146,7 +146,7 @@ fn renderContent(cx: *Cx) void {
             Button{
                 .label = if (s.allow_close) "Close Enabled ✓" else "Close Blocked ✗",
                 .variant = if (s.allow_close) .primary else .secondary,
-                .on_click_handler = cx.update(AppState, AppState.toggleAllowClose),
+                .on_click_handler = cx.update(AppState.toggleAllowClose),
             },
             ui.text(
                 if (s.allow_close)

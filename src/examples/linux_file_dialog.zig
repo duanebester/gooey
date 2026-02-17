@@ -1,16 +1,13 @@
-//! Linux File Dialog Example
+//! File Dialog Example (Linux)
 //!
 //! Demonstrates:
-//! - Opening files with XDG Desktop Portal
-//! - Saving files with XDG Desktop Portal
+//! - Opening files with native file dialogs (cross-platform)
+//! - Saving files with native save dialogs (cross-platform)
 //! - Different dialog options (multiple selection, directories, file types)
-//!
-//! This example uses the freedesktop.org portal system which works across
-//! all major Linux desktop environments (GNOME, KDE, etc.)
 
 const std = @import("std");
 const gooey = @import("gooey");
-const file_dialog = gooey.platform.linux.file_dialog;
+const file_dialog = gooey.file_dialog;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = gooey.Button;
@@ -188,22 +185,22 @@ const ButtonRow = struct {
             Button{
                 .label = "Open File",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.openSingleFile),
+                .on_click_handler = cx.update(AppState.openSingleFile),
             },
             Button{
                 .label = "Open Multiple",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState, AppState.openMultipleFiles),
+                .on_click_handler = cx.update(AppState.openMultipleFiles),
             },
             Button{
                 .label = "Open Directory",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.openDirectory),
+                .on_click_handler = cx.update(AppState.openDirectory),
             },
             Button{
                 .label = "Save As...",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState, AppState.saveFile),
+                .on_click_handler = cx.update(AppState.saveFile),
             },
         }));
     }

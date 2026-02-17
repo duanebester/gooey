@@ -42,7 +42,6 @@ const FormState = struct {
     terms_accepted: bool = false,
 
     // Experience level selection
-    experience_select_open: bool = false,
     experience_level: ?usize = null,
 
     // Form status
@@ -103,32 +102,8 @@ const FormState = struct {
         self.contact_method = .mail;
     }
 
-    pub fn toggleExperienceSelect(self: *FormState) void {
-        self.experience_select_open = !self.experience_select_open;
-    }
-
-    pub fn closeExperienceSelect(self: *FormState) void {
-        self.experience_select_open = false;
-    }
-
-    pub fn selectExperience0(self: *FormState) void {
-        self.experience_level = 0;
-        self.experience_select_open = false;
-    }
-
-    pub fn selectExperience1(self: *FormState) void {
-        self.experience_level = 1;
-        self.experience_select_open = false;
-    }
-
-    pub fn selectExperience2(self: *FormState) void {
-        self.experience_level = 2;
-        self.experience_select_open = false;
-    }
-
-    pub fn selectExperience3(self: *FormState) void {
-        self.experience_level = 3;
-        self.experience_select_open = false;
+    pub fn selectExperience(self: *FormState, index: usize) void {
+        self.experience_level = index;
     }
 
     pub fn validate(self: *FormState) bool {
@@ -211,17 +186,14 @@ pub fn main() !void {
 fn render(cx: *Cx) void {
     const s = cx.state(FormState);
     const size = cx.windowSize();
-    const b = cx.builder();
-    const g = b.gooey orelse return;
-
     // Announce validation errors assertively
     if (s.last_validation_message.len > 0) {
         if (std.mem.indexOf(u8, s.last_validation_message, "error") != null or
             std.mem.indexOf(u8, s.last_validation_message, "fix") != null)
         {
-            g.announce(s.last_validation_message, .assertive);
+            cx.announce(s.last_validation_message, .assertive);
         } else {
-            g.announce(s.last_validation_message, .polite);
+            cx.announce(s.last_validation_message, .polite);
         }
         // Clear after announcing
         s.last_validation_message = "";
@@ -263,7 +235,6 @@ fn render(cx: *Cx) void {
             // Experience Level Section
             ExperienceSection{
                 .experience_level = s.experience_level,
-                .select_open = s.experience_select_open,
             },
             // Terms and Submit Section
             TermsSection{
@@ -282,15 +253,13 @@ fn render(cx: *Cx) void {
 
 const FormHeader = struct {
     pub fn render(_: FormHeader, cx: *Cx) void {
-        const b = cx.builder();
-
         // Main page heading (h1)
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .heading,
             .name = "Registration Form",
             .heading_level = .h1,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.vstack(.{ .gap = 8 }, .{
@@ -309,9 +278,7 @@ const FormHeader = struct {
 
 const A11yStatus = struct {
     pub fn render(_: A11yStatus, cx: *Cx) void {
-        const b = cx.builder();
-        const g = b.gooey orelse return;
-        const is_enabled = g.isA11yEnabled();
+        const is_enabled = cx.isA11yEnabled();
 
         const status_text = if (is_enabled)
             "Screen reader detected - accessibility features active"
@@ -319,12 +286,12 @@ const A11yStatus = struct {
             "No screen reader detected";
 
         // Accessible status region
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .status,
             .name = status_text,
             .live = .polite,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
@@ -357,23 +324,22 @@ const PersonalInfoSection = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const s = cx.state(FormState);
-        const b = cx.builder();
 
         // Section heading (h2)
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .heading,
             .name = "Personal Information",
             .heading_level = .h2,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         // Group for form fields
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .group,
             .name = "Personal information fields",
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -400,7 +366,7 @@ const PersonalInfoSection = struct {
                 .placeholder = "Enter your full name",
                 .accessible_name = "Full name, required field",
                 .accessible_description = if (self.errors.name) "Error: Name is required" else null,
-                .bind = @constCast(&s.name),
+                .bind = &s.name,
                 .width = 300,
                 .border_color = if (self.errors.name)
                     ui.Color.rgb(0.9, 0.3, 0.3)
@@ -418,7 +384,7 @@ const PersonalInfoSection = struct {
                 .placeholder = "name@example.com",
                 .accessible_name = "Email address, required field",
                 .accessible_description = if (self.errors.email) "Error: Please enter a valid email address" else null,
-                .bind = @constCast(&s.email),
+                .bind = &s.email,
                 .width = 300,
                 .border_color = if (self.errors.email)
                     ui.Color.rgb(0.9, 0.3, 0.3)
@@ -435,7 +401,7 @@ const PersonalInfoSection = struct {
                 .id = "phone",
                 .placeholder = "(555) 123-4567",
                 .accessible_name = "Phone number, optional field",
-                .bind = @constCast(&s.phone),
+                .bind = &s.phone,
                 .width = 300,
             },
         }));
@@ -447,15 +413,13 @@ const ContactPreferencesSection = struct {
     newsletter: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Section heading (h2)
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .heading,
             .name = "Contact Preferences",
             .heading_level = .h2,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -486,7 +450,7 @@ const ContactPreferencesSection = struct {
                 .label = "Subscribe to our newsletter",
                 .accessible_name = "Subscribe to newsletter",
                 .accessible_description = "Receive weekly updates about our products and services",
-                .on_click_handler = cx.update(FormState, FormState.toggleNewsletter),
+                .on_click_handler = cx.update(FormState.toggleNewsletter),
             },
         }));
     }
@@ -497,14 +461,12 @@ const RadioGroupSection = struct {
     contact_method: FormState.ContactMethod,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Radiogroup container
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .group, // radiogroup maps to group
             .name = self.label,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.vstack(.{ .gap = 12 }, .{
@@ -520,21 +482,21 @@ const RadioGroupSection = struct {
                     .selected = self.contact_method == .email,
                     .pos_in_set = 1,
                     .set_size = 3,
-                    .on_select = cx.update(FormState, FormState.setContactEmail),
+                    .on_select = cx.update(FormState.setContactEmail),
                 },
                 RadioOption{
                     .label = "Phone",
                     .selected = self.contact_method == .phone,
                     .pos_in_set = 2,
                     .set_size = 3,
-                    .on_select = cx.update(FormState, FormState.setContactPhone),
+                    .on_select = cx.update(FormState.setContactPhone),
                 },
                 RadioOption{
                     .label = "Postal Mail",
                     .selected = self.contact_method == .mail,
                     .pos_in_set = 3,
                     .set_size = 3,
-                    .on_select = cx.update(FormState, FormState.setContactMail),
+                    .on_select = cx.update(FormState.setContactMail),
                 },
             }),
         }));
@@ -549,10 +511,8 @@ const RadioOption = struct {
     on_select: ui.HandlerRef,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Accessible radio button
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .radio,
             .name = self.label,
             .state = .{
@@ -561,7 +521,7 @@ const RadioOption = struct {
             .pos_in_set = self.pos_in_set,
             .set_size = self.set_size,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         // Wrap in clickable box
@@ -604,18 +564,15 @@ const RadioOption = struct {
 
 const ExperienceSection = struct {
     experience_level: ?usize,
-    select_open: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Section heading (h2)
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .heading,
             .name = "Experience Level",
             .heading_level = .h2,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -642,15 +599,7 @@ const ExperienceSection = struct {
                 .options = &FormState.experience_options,
                 .selected = self.experience_level,
                 .placeholder = "Select your experience level",
-                .is_open = self.select_open,
-                .on_toggle_handler = cx.update(FormState, FormState.toggleExperienceSelect),
-                .on_close_handler = cx.update(FormState, FormState.closeExperienceSelect),
-                .handlers = &.{
-                    cx.update(FormState, FormState.selectExperience0),
-                    cx.update(FormState, FormState.selectExperience1),
-                    cx.update(FormState, FormState.selectExperience2),
-                    cx.update(FormState, FormState.selectExperience3),
-                },
+                .on_select = cx.onSelect(FormState.selectExperience),
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
             },
@@ -663,14 +612,12 @@ const TermsSection = struct {
     has_error: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Group for terms
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .group,
             .name = "Terms and conditions agreement",
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -696,7 +643,7 @@ const TermsSection = struct {
                     "Error: You must accept the terms to continue"
                 else
                     "Required to submit the form",
-                .on_click_handler = cx.update(FormState, FormState.toggleTerms),
+                .on_click_handler = cx.update(FormState.toggleTerms),
             },
 
             ui.when(self.has_error, .{
@@ -710,14 +657,12 @@ const TermsSection = struct {
 
 const FormActions = struct {
     pub fn render(_: FormActions, cx: *Cx) void {
-        const b = cx.builder();
-
         // Group for form actions
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .group,
             .name = "Form actions",
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.hstack(.{ .gap = 16 }, .{
@@ -726,7 +671,7 @@ const FormActions = struct {
                 .accessible_name = "Submit registration form",
                 .variant = .primary,
                 .size = .large,
-                .on_click_handler = cx.update(FormState, FormState.submit),
+                .on_click_handler = cx.update(FormState.submit),
             },
 
             Button{
@@ -734,7 +679,7 @@ const FormActions = struct {
                 .accessible_name = "Reset form to default values",
                 .variant = .secondary,
                 .size = .large,
-                .on_click_handler = cx.update(FormState, FormState.reset),
+                .on_click_handler = cx.update(FormState.reset),
             },
         }));
     }
@@ -769,15 +714,13 @@ const ErrorMessage = struct {
     message: []const u8,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const b = cx.builder();
-
         // Accessible error alert
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .alert,
             .name = self.message,
             .live = .assertive,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.hstack(.{ .gap = 4, .alignment = .center }, .{
@@ -795,15 +738,13 @@ const ErrorMessage = struct {
 
 const SuccessMessage = struct {
     pub fn render(_: SuccessMessage, cx: *Cx) void {
-        const b = cx.builder();
-
         // Accessible success alert
-        if (b.accessible(.{
+        if (cx.accessible(.{
             .role = .alert,
             .name = "Registration successful! Thank you for signing up.",
             .live = .assertive,
         })) {
-            defer b.accessibleEnd();
+            defer cx.accessibleEnd();
         }
 
         cx.render(ui.box(.{
@@ -833,7 +774,7 @@ const SuccessMessage = struct {
                 .label = "Submit Another Response",
                 .accessible_name = "Start a new registration",
                 .variant = .primary,
-                .on_click_handler = cx.update(FormState, FormState.dismissSuccess),
+                .on_click_handler = cx.update(FormState.dismissSuccess),
             },
         }));
     }

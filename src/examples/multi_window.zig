@@ -208,12 +208,12 @@ fn renderMain(cx: *Cx) void {
                 Button{
                     .label = "−",
                     .size = .large,
-                    .on_click_handler = cx.update(MainState, MainState.decrement),
+                    .on_click_handler = cx.update(MainState.decrement),
                 },
                 Button{
                     .label = "+",
                     .size = .large,
-                    .on_click_handler = cx.update(MainState, MainState.increment),
+                    .on_click_handler = cx.update(MainState.increment),
                 },
             }),
         }),
@@ -223,7 +223,7 @@ fn renderMain(cx: *Cx) void {
             .label = if (s.dialog_open.load(.seq_cst)) "Dialog Open..." else "Open Settings Dialog",
             .variant = if (s.dialog_open.load(.seq_cst)) .secondary else .primary,
             .size = .large,
-            .on_click_handler = cx.update(MainState, MainState.openDialog),
+            .on_click_handler = cx.update(MainState.openDialog),
         },
 
         // Window count info
@@ -322,19 +322,19 @@ fn renderDialog(cx: *Cx) void {
                 Button{
                     .label = "−",
                     .size = .medium,
-                    .on_click_handler = cx.update(DialogState, DialogState.decrementNew),
+                    .on_click_handler = cx.update(DialogState.decrementNew),
                 },
                 Button{
                     .label = "+",
                     .size = .medium,
-                    .on_click_handler = cx.update(DialogState, DialogState.incrementNew),
+                    .on_click_handler = cx.update(DialogState.incrementNew),
                 },
                 ui.spacerMin(8),
                 Button{
                     .label = "Reset",
                     .variant = .secondary,
                     .size = .small,
-                    .on_click_handler = cx.update(DialogState, DialogState.reset),
+                    .on_click_handler = cx.update(DialogState.reset),
                 },
             }),
         }),
@@ -348,13 +348,13 @@ fn renderDialog(cx: *Cx) void {
                 .label = "Cancel",
                 .variant = .secondary,
                 .size = .medium,
-                .on_click_handler = cx.update(DialogState, DialogState.cancel),
+                .on_click_handler = cx.update(DialogState.cancel),
             },
             Button{
                 .label = if (has_changes) "Apply Changes" else "Apply",
                 .variant = if (has_changes) .primary else .secondary,
                 .size = .medium,
-                .on_click_handler = cx.update(DialogState, DialogState.applyAndClose),
+                .on_click_handler = cx.update(DialogState.applyAndClose),
             },
         }),
 
