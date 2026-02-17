@@ -48,9 +48,9 @@ pub const Button = struct {
 
         fn padding(self: Size) Box.PaddingValue {
             return switch (self) {
-                .small => .{ .symmetric = .{ .x = 12, .y = 6 } },
-                .medium => .{ .symmetric = .{ .x = 24, .y = 10 } },
-                .large => .{ .symmetric = .{ .x = 32, .y = 14 } },
+                .small => .{ .symmetric = .{ .x = 12, .y = 4 } },
+                .medium => .{ .symmetric = .{ .x = 16, .y = 8 } },
+                .large => .{ .symmetric = .{ .x = 24, .y = 12 } },
             };
         }
 
@@ -65,6 +65,13 @@ pub const Button = struct {
 
     pub fn render(self: Button, b: *ui.Builder) void {
         const t = b.theme();
+
+        const defined_font_size = getAppDefinedFontSize(b);
+        const font_size = switch (self.size) {
+            .small => defined_font_size - 2,
+            .medium => defined_font_size,
+            .large => defined_font_size + 2,
+        };
 
         // Get theme-based colors for variant
         const variant_colors = self.getVariantColors(t);
@@ -111,7 +118,7 @@ pub const Button = struct {
         }, .{
             ui.text(self.label, .{
                 .color = final_fg,
-                .size = self.size.fontSize(),
+                .size = if (font_size > 0) font_size else self.size.fontSize(),
             }),
         });
     }
@@ -134,5 +141,15 @@ pub const Button = struct {
                 .fg = Color.white,
             },
         };
+    }
+
+    ///Fetch the font size from the text system
+    fn getAppDefinedFontSize(b: *ui.Builder) u16 {
+        const point_size: ?f32 = b.getGooey().?.text_system.getMetrics().?.point_size;
+        if (point_size) |p| {
+            const font_size: u16 = @intFromFloat(p);
+            return font_size;
+        }
+        return 0;
     }
 };
