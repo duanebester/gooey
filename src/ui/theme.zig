@@ -79,6 +79,9 @@ pub const Theme = struct {
     radius_md: f32 = 8,
     /// Large corner radius (e.g., modals, panels)
     radius_lg: f32 = 16,
+    /// Base font size in points. Components scale relative to this value.
+    /// e.g. Button.Size.small = base - 2, .medium = base, .large = base + 2
+    font_size_base: u16 = 14,
 
     // =========================================================================
     // Built-in Presets - Catppuccin
@@ -112,6 +115,7 @@ pub const Theme = struct {
         .radius_sm = 4,
         .radius_md = 8,
         .radius_lg = 16,
+        .font_size_base = 14,
     };
 
     /// Catppuccin Macchiato - dark theme
@@ -142,6 +146,7 @@ pub const Theme = struct {
         .radius_sm = 4,
         .radius_md = 8,
         .radius_lg = 16,
+        .font_size_base = 14,
     };
 
     // =========================================================================
@@ -177,6 +182,7 @@ test "Theme.light preset has valid colors" {
     try testing.expectEqual(@as(f32, 4), t.radius_sm);
     try testing.expectEqual(@as(f32, 8), t.radius_md);
     try testing.expectEqual(@as(f32, 16), t.radius_lg);
+    try testing.expectEqual(@as(u16, 14), t.font_size_base);
 }
 
 test "Theme.dark preset has valid colors" {

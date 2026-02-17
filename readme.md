@@ -367,6 +367,99 @@ This clears the glyph and shape caches and triggers a re-render automatically. A
 
 > **Note:** Gooey currently uses a single global font. Per-component font families (e.g., mixing a serif body font with a monospace code font) are not yet supported — components expose `font_size` but not `font_family`.
 
+## Theming
+
+Gooey ships with two built-in themes — `Theme.light` (Catppuccin Latte) and `Theme.dark` (Catppuccin Macchiato). Set the active theme before rendering:
+
+```zig
+fn render(cx: *Cx) void {
+    cx.setTheme(if (s.dark_mode) &Theme.dark else &Theme.light);
+    // ...
+}
+```
+
+### Custom Themes
+
+Define a light/dark pair of `Theme` values and swap between them the same way as the built-ins. Every field has a semantic role so components resolve colors automatically without per-component overrides:
+
+```zig
+const my_light = gooey.Theme{
+    .bg      = Color.rgb(0.97, 0.97, 0.98),
+    .surface = Color.rgb(0.93, 0.93, 0.95),
+    .overlay = Color.rgb(0.88, 0.88, 0.91),
+
+    .primary   = Color.rgb(0.20, 0.50, 0.90),
+    .secondary = Color.rgb(0.45, 0.48, 0.58),
+    .accent    = Color.rgb(0.55, 0.25, 0.85),
+    .success   = Color.rgb(0.20, 0.65, 0.30),
+    .warning   = Color.rgb(0.85, 0.60, 0.10),
+    .danger    = Color.rgb(0.82, 0.24, 0.24),
+
+    .text    = Color.rgb(0.15, 0.15, 0.20),
+    .subtext = Color.rgb(0.35, 0.37, 0.45),
+    .muted   = Color.rgb(0.55, 0.57, 0.65),
+
+    .border       = Color.rgba(0.55, 0.57, 0.65, 0.3),
+    .border_focus = Color.rgb(0.20, 0.50, 0.90),
+
+    .radius_sm = 4,
+    .radius_md = 8,
+    .radius_lg = 16,
+
+    .font_size_base = 14,
+};
+
+const my_dark = gooey.Theme{
+    .bg      = Color.rgb(0.10, 0.10, 0.12),
+    .surface = Color.rgb(0.15, 0.15, 0.18),
+    .overlay = Color.rgb(0.20, 0.20, 0.24),
+
+    .primary   = Color.rgb(0.40, 0.70, 1.00),
+    .secondary = Color.rgb(0.45, 0.48, 0.58),
+    .accent    = Color.rgb(0.75, 0.55, 0.95),
+    .success   = Color.rgb(0.45, 0.85, 0.55),
+    .warning   = Color.rgb(0.95, 0.80, 0.35),
+    .danger    = Color.rgb(0.95, 0.40, 0.40),
+
+    .text    = Color.rgb(0.92, 0.92, 0.95),
+    .subtext = Color.rgb(0.70, 0.72, 0.80),
+    .muted   = Color.rgb(0.50, 0.52, 0.60),
+
+    .border       = Color.rgba(0.50, 0.52, 0.60, 0.3),
+    .border_focus = Color.rgb(0.40, 0.70, 1.00),
+
+    .radius_sm = 4,
+    .radius_md = 8,
+    .radius_lg = 16,
+
+    .font_size_base = 14,
+};
+
+fn render(cx: *Cx) void {
+    cx.setTheme(if (s.dark_mode) &my_dark else &my_light);
+    // ...
+}
+```
+
+### Base Font Size
+
+The `font_size_base` field (default `14`) is the single source of truth for text sizing across components. Components scale relative to it — for example, `Button` derives its per-size font sizes as:
+
+| Button size | Font size       |
+| ----------- | --------------- |
+| `.small`    | `base - 2` (12) |
+| `.medium`   | `base` (14)     |
+| `.large`    | `base + 2` (16) |
+
+Set it once in your theme and every component scales consistently — no per-component font size overrides needed:
+
+```zig
+const large_text_theme = gooey.Theme{
+    // ...colors...
+    .font_size_base = 18,  // small=16, medium=18, large=20
+};
+```
+
 ## Components
 
 Gooey includes ready-to-use components:
