@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+const std = @import("std");
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
@@ -56,7 +57,7 @@ pub const RadioButton = struct {
     unselected_color: ?Color = null,
     border_color: ?Color = null,
     label_color: ?Color = null,
-    font_size: u16 = 14,
+    font_size: ?u16 = null,
     gap: f32 = 8,
 
     // Accessibility
@@ -66,6 +67,8 @@ pub const RadioButton = struct {
 
     pub fn render(self: RadioButton, b: *ui.Builder) void {
         const t = b.theme();
+        const font_size = self.font_size orelse t.font_size_base;
+        std.debug.assert(font_size > 0);
 
         // Resolve colors: explicit value OR theme default
         const selected = self.selected_color orelse t.primary;
@@ -101,7 +104,7 @@ pub const RadioButton = struct {
                 .unselected_color = unselected,
                 .border_color = border,
             },
-            ui.text(self.label, .{ .color = label_col, .size = self.font_size }),
+            ui.text(self.label, .{ .color = label_col, .size = font_size }),
         });
     }
 };
@@ -170,7 +173,7 @@ pub const RadioGroup = struct {
     unselected_color: ?Color = null,
     border_color: ?Color = null,
     label_color: ?Color = null,
-    font_size: u16 = 14,
+    font_size: ?u16 = null,
 
     // Accessibility
     accessible_name: ?[]const u8 = null,
@@ -179,6 +182,8 @@ pub const RadioGroup = struct {
 
     pub fn render(self: RadioGroup, b: *ui.Builder) void {
         const t = b.theme();
+        const font_size = self.font_size orelse t.font_size_base;
+        std.debug.assert(font_size > 0);
 
         // Resolve colors: explicit value OR theme default
         const selected = self.selected_color orelse t.primary;
@@ -210,7 +215,7 @@ pub const RadioGroup = struct {
                 .unselected_color = unselected,
                 .border_color = border,
                 .label_color = label_col,
-                .font_size = self.font_size,
+                .font_size = font_size,
                 .set_size = @intCast(self.options.len),
             },
         });

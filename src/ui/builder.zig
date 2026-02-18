@@ -2247,7 +2247,7 @@ pub const Builder = struct {
 
         self.layout.text(btn.label, .{
             .color = fg,
-            .font_size = 14,
+            .font_size = self.theme().font_size_base,
         }) catch {};
 
         self.layout.closeElement();
@@ -2311,7 +2311,7 @@ pub const Builder = struct {
 
         self.layout.text(btn.label, .{
             .color = fg,
-            .font_size = 14,
+            .font_size = self.theme().font_size_base,
         }) catch {};
 
         self.layout.closeElement();

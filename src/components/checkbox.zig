@@ -5,6 +5,7 @@
 //! Colors default to null, which means "use the current theme".
 //! Set explicit colors to override theme defaults.
 
+const std = @import("std");
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
@@ -32,6 +33,7 @@ pub const Checkbox = struct {
     checkmark_color: ?Color = null,
     label_color: ?Color = null,
     corner_radius: ?f32 = null,
+    font_size: ?u16 = null,
 
     // Accessibility overrides
     accessible_name: ?[]const u8 = null, // Override label for screen readers
@@ -39,6 +41,10 @@ pub const Checkbox = struct {
 
     pub fn render(self: Checkbox, b: *ui.Builder) void {
         const t = b.theme();
+
+        // Resolve font size: explicit override OR theme base
+        const font_size = self.font_size orelse t.font_size_base;
+        std.debug.assert(font_size > 0);
 
         // Resolve colors: explicit value OR theme default
         const checked_bg = self.checked_background orelse t.primary;
@@ -82,6 +88,7 @@ pub const Checkbox = struct {
             CheckboxLabel{
                 .label = self.label,
                 .color = label_col,
+                .font_size = font_size,
             },
         });
     }
@@ -130,11 +137,12 @@ const Checkmark = struct {
 const CheckboxLabel = struct {
     label: ?[]const u8,
     color: Color,
+    font_size: u16,
 
     pub fn render(self: CheckboxLabel, b: *ui.Builder) void {
         if (self.label) |lbl| {
             b.box(.{}, .{
-                ui.text(lbl, .{ .color = self.color, .size = 14 }),
+                ui.text(lbl, .{ .color = self.color, .size = self.font_size }),
             });
         }
     }

@@ -162,8 +162,8 @@ pub const Select = struct {
     /// Placeholder text color
     placeholder_color: ?Color = null,
 
-    /// Font size
-    font_size: u16 = 14,
+    /// Font size (null = use theme font_size_base)
+    font_size: ?u16 = null,
 
     /// Corner radius (null = use theme)
     corner_radius: ?f32 = null,
@@ -199,8 +199,11 @@ pub const Select = struct {
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
         const layout_id = LayoutId.fromString(self.id);
+        const t = b.theme();
+        const font_size = self.font_size orelse t.font_size_base;
+        std.debug.assert(font_size > 0);
         const resolved = self.resolveState(b, layout_id);
-        const colors = self.resolveColors(b.theme(), resolved.is_open);
+        const colors = self.resolveColors(t, resolved.is_open);
 
         // Accessibility: combobox role
         const a11y_pushed = b.accessible(.{
@@ -230,7 +233,7 @@ pub const Select = struct {
                 .hover_background = if (!self.disabled) colors.hover_bg else colors.background,
                 .border_color = colors.current_border,
                 .text_color = if (self.selected == null) colors.placeholder_col else colors.text_col,
-                .font_size = self.font_size,
+                .font_size = font_size,
                 .corner_radius = colors.radius,
                 .padding = self.padding,
                 .disabled = self.disabled,
@@ -250,7 +253,7 @@ pub const Select = struct {
                 .text_color = colors.text_col,
                 .checkmark_color = b.theme().primary,
                 .border_color = colors.border,
-                .font_size = self.font_size,
+                .font_size = font_size,
                 .corner_radius = colors.radius,
                 .padding = self.padding,
             },
@@ -315,7 +318,6 @@ pub const Select = struct {
         const background = self.background orelse t.surface;
         const border = self.border_color orelse t.border;
         const focus_border = self.focus_border_color orelse t.border_focus;
-        std.debug.assert(self.font_size > 0);
         std.debug.assert(self.padding >= 0);
         return .{
             .background = background,

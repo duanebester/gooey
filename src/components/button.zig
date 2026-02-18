@@ -54,11 +54,11 @@ pub const Button = struct {
             };
         }
 
-        fn fontSize(self: Size) u16 {
+        fn fontSize(self: Size, base: u16) u16 {
             return switch (self) {
-                .small => 12,
-                .medium => 14,
-                .large => 16,
+                .small => base -| 2,
+                .medium => base,
+                .large => base + 2,
             };
         }
     };
@@ -111,7 +111,7 @@ pub const Button = struct {
         }, .{
             ui.text(self.label, .{
                 .color = final_fg,
-                .size = self.size.fontSize(),
+                .size = self.size.fontSize(t.font_size_base),
             }),
         });
     }

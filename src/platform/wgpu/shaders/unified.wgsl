@@ -202,18 +202,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         var color = in.color;
         if has_border {
-            var border: f32;
-            if centered.x < 0.0 { border = bw.w; }
-            else { border = bw.y; }
-            if abs(centered.y) > abs(centered.x) {
-                if centered.y < 0.0 { border = bw.x; }
-                else { border = bw.z; }
-            }
+            // bw: x=top, y=right, z=bottom, w=left
+            // Distance from each edge (positive = inside the rect)
+            let d_top = centered.y + half_size.y;
+            let d_bottom = half_size.y - centered.y;
+            let d_left = centered.x + half_size.x;
+            let d_right = half_size.x - centered.x;
 
-            let inner_radius = max(0.0, radius - border);
-            let inner_half_size = half_size - vec2<f32>(border);
-            let inner_dist = rounded_rect_sdf(centered, inner_half_size, inner_radius);
-            let border_blend = smoothstep(-0.5, 0.5, inner_dist);
+            // For each side, compute border blend (1.0 = in border, 0.0 = not in border)
+            // Only active for sides with non-zero border width
+            let b_top = (1.0 - smoothstep(bw.x - 0.5, bw.x + 0.5, d_top)) * step(0.001, bw.x);
+            let b_right = (1.0 - smoothstep(bw.y - 0.5, bw.y + 0.5, d_right)) * step(0.001, bw.y);
+            let b_bottom = (1.0 - smoothstep(bw.z - 0.5, bw.z + 0.5, d_bottom)) * step(0.001, bw.z);
+            let b_left = (1.0 - smoothstep(bw.w - 0.5, bw.w + 0.5, d_left)) * step(0.001, bw.w);
+
+            let border_blend = max(max(b_top, b_right), max(b_bottom, b_left));
             color = mix(in.color, in.border_color, border_blend);
         }
 

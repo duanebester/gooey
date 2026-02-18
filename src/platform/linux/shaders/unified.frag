@@ -63,18 +63,21 @@ void main() {
 
         vec4 color = in_color;
         if (has_border) {
-            float border;
-            if (centered.x < 0.0) { border = bw.w; }
-            else { border = bw.y; }
-            if (abs(centered.y) > abs(centered.x)) {
-                if (centered.y < 0.0) { border = bw.x; }
-                else { border = bw.z; }
-            }
+            // bw: x=top, y=right, z=bottom, w=left
+            // Distance from each edge (positive = inside the rect)
+            float d_top = centered.y + half_size.y;
+            float d_bottom = half_size.y - centered.y;
+            float d_left = centered.x + half_size.x;
+            float d_right = half_size.x - centered.x;
 
-            float inner_radius = max(0.0, radius - border);
-            vec2 inner_half_size = half_size - vec2(border);
-            float inner_dist = rounded_rect_sdf(centered, inner_half_size, inner_radius);
-            float border_blend = smoothstep(-0.5, 0.5, inner_dist);
+            // For each side, compute border blend (1.0 = in border, 0.0 = not in border)
+            // Only active for sides with non-zero border width
+            float b_top = (1.0 - smoothstep(bw.x - 0.5, bw.x + 0.5, d_top)) * step(0.001, bw.x);
+            float b_right = (1.0 - smoothstep(bw.y - 0.5, bw.y + 0.5, d_right)) * step(0.001, bw.y);
+            float b_bottom = (1.0 - smoothstep(bw.z - 0.5, bw.z + 0.5, d_bottom)) * step(0.001, bw.z);
+            float b_left = (1.0 - smoothstep(bw.w - 0.5, bw.w + 0.5, d_left)) * step(0.001, bw.w);
+
+            float border_blend = max(max(b_top, b_right), max(b_bottom, b_left));
             color = mix(in_color, in_border_color, border_blend);
         }
 
