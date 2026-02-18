@@ -23,6 +23,7 @@
 //! }
 //! ```
 
+const std = @import("std");
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
@@ -48,7 +49,7 @@ pub const Tab = struct {
     corner_radius: ?f32 = null,
     padding_x: f32 = 16,
     padding_y: f32 = 8,
-    font_size: u16 = 14,
+    font_size: ?u16 = null,
     grow: bool = false,
 
     // Accessibility
@@ -67,6 +68,10 @@ pub const Tab = struct {
 
     pub fn render(self: Tab, b: *ui.Builder) void {
         const t = b.theme();
+
+        // Resolve font size: explicit override OR theme base
+        const font_size = self.font_size orelse t.font_size_base;
+        std.debug.assert(font_size > 0);
 
         // Resolve colors: explicit value OR theme default
         const active_bg = self.active_background orelse t.primary;
@@ -125,7 +130,7 @@ pub const Tab = struct {
             .grow = self.grow,
             .on_click_handler = self.on_click_handler,
         }, .{
-            ui.text(self.label, .{ .color = text_color, .size = self.font_size }),
+            ui.text(self.label, .{ .color = text_color, .size = font_size }),
         });
     }
 
@@ -165,13 +170,17 @@ pub const TabBar = struct {
     corner_radius: ?f32 = null,
     padding_x: f32 = 16,
     padding_y: f32 = 8,
-    font_size: u16 = 14,
+    font_size: ?u16 = null,
 
     // Accessibility
     accessible_name: ?[]const u8 = null,
 
     pub fn render(self: TabBar, b: *ui.Builder) void {
         const t = b.theme();
+
+        // Resolve font size: explicit override OR theme base
+        const font_size = self.font_size orelse t.font_size_base;
+        std.debug.assert(font_size > 0);
 
         // Resolve colors: explicit value OR theme default
         const active_bg = self.active_background orelse t.primary;
@@ -228,7 +237,7 @@ pub const TabBar = struct {
                 .corner_radius = radius,
                 .padding_x = self.padding_x,
                 .padding_y = self.padding_y,
-                .font_size = self.font_size,
+                .font_size = font_size,
                 .grow = self.fill_width,
                 .set_size = @intCast(self.tabs.len),
             },

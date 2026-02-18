@@ -55,8 +55,8 @@ pub fn Tooltip(comptime ChildType: type) type {
         /// Text color
         text_color: ?Color = null,
 
-        /// Font size
-        font_size: u16 = 13,
+        /// Font size (null = use theme font_size_base - 1)
+        font_size: ?u16 = null,
 
         /// Padding inside the tooltip
         padding: f32 = 8,
@@ -81,6 +81,10 @@ pub fn Tooltip(comptime ChildType: type) type {
 
         pub fn render(self: Self, b: *ui.Builder) void {
             const t = b.theme();
+
+            // Resolve font size: explicit override OR one below theme base
+            // Tooltips are intentionally slightly smaller than body text
+            const font_size = self.font_size orelse t.font_size_base -| 1;
 
             // Resolve colors: explicit value OR theme default
             // Tooltips typically use overlay/inverted colors
@@ -120,7 +124,7 @@ pub fn Tooltip(comptime ChildType: type) type {
                     .max_width = self.max_width,
                     .background = background,
                     .text_color = text_col,
-                    .font_size = self.font_size,
+                    .font_size = font_size,
                     .padding = self.padding,
                     .corner_radius = radius,
                     .gap = self.gap,
