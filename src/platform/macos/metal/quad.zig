@@ -127,13 +127,25 @@ pub const quad_shader_source =
     \\    float4 color = in.color;
     \\
     \\    if (has_border) {
-    \\        float border = (centered.x < 0.0) ? bw.w : bw.y;
-    \\        if (abs(centered.y) > abs(centered.x)) {
-    \\            border = (centered.y < 0.0) ? bw.x : bw.z;
-    \\        }
-    \\        float inner_radius = max(0.0, radius - border);
-    \\        float2 inner_half_size = half_size - float2(border);
-    \\        float inner_dist = rounded_rect_sdf(centered, inner_half_size, inner_radius);
+    \\        // bw: x=top, y=right, z=bottom, w=left
+    \\        // Construct inner rounded rect by insetting each side independently.
+    \\        // Per-side insets handle both uniform borders on rounded corners
+    \\        // and single-side borders on wide/tall rects.
+    \\        float2 inner_min = float2(-half_size.x + bw.w, -half_size.y + bw.x);
+    \\        float2 inner_max = float2(half_size.x - bw.y, half_size.y - bw.z);
+    \\        float2 inner_center = (inner_min + inner_max) * 0.5;
+    \\        float2 inner_half_size = max(float2(0.0), (inner_max - inner_min) * 0.5);
+    \\        float2 inner_pos = centered - inner_center;
+    \\        // Per-corner inner radii: reduce by the max of the two adjacent border widths.
+    \\        float4 cr = in.corner_radii;
+    \\        float4 inner_radii = float4(
+    \\            max(0.0, cr.x - max(bw.x, bw.w)),
+    \\            max(0.0, cr.y - max(bw.x, bw.y)),
+    \\            max(0.0, cr.z - max(bw.z, bw.y)),
+    \\            max(0.0, cr.w - max(bw.z, bw.w))
+    \\        );
+    \\        float inner_radius = pick_corner_radius(inner_pos, inner_radii);
+    \\        float inner_dist = rounded_rect_sdf(inner_pos, inner_half_size, inner_radius);
     \\        float border_blend = smoothstep(-0.5, 0.5, inner_dist);
     \\        color = mix(in.color, in.border_color, border_blend);
     \\    }

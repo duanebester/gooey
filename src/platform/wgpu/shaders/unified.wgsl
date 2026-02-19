@@ -203,20 +203,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var color = in.color;
         if has_border {
             // bw: x=top, y=right, z=bottom, w=left
-            // Distance from each edge (positive = inside the rect)
-            let d_top = centered.y + half_size.y;
-            let d_bottom = half_size.y - centered.y;
-            let d_left = centered.x + half_size.x;
-            let d_right = half_size.x - centered.x;
+            // Construct inner rounded rect by insetting each side independently.
+            // This handles both per-side borders (e.g. bottom-only navbar) and
+            // uniform borders on rounded corners correctly.
+            let inner_min = vec2<f32>(-half_size.x + bw.w, -half_size.y + bw.x);
+            let inner_max = vec2<f32>(half_size.x - bw.y, half_size.y - bw.z);
+            let inner_center = (inner_min + inner_max) * 0.5;
+            let inner_half_size = max(vec2<f32>(0.0), (inner_max - inner_min) * 0.5);
+            let inner_pos = centered - inner_center;
 
-            // For each side, compute border blend (1.0 = in border, 0.0 = not in border)
-            // Only active for sides with non-zero border width
-            let b_top = (1.0 - smoothstep(bw.x - 0.5, bw.x + 0.5, d_top)) * step(0.001, bw.x);
-            let b_right = (1.0 - smoothstep(bw.y - 0.5, bw.y + 0.5, d_right)) * step(0.001, bw.y);
-            let b_bottom = (1.0 - smoothstep(bw.z - 0.5, bw.z + 0.5, d_bottom)) * step(0.001, bw.z);
-            let b_left = (1.0 - smoothstep(bw.w - 0.5, bw.w + 0.5, d_left)) * step(0.001, bw.w);
+            // Per-corner inner radii: reduce by the max of the two adjacent border widths.
+            let cr = in.corner_radii;
+            let inner_radii = vec4<f32>(
+                max(0.0, cr.x - max(bw.x, bw.w)),
+                max(0.0, cr.y - max(bw.x, bw.y)),
+                max(0.0, cr.z - max(bw.z, bw.y)),
+                max(0.0, cr.w - max(bw.z, bw.w))
+            );
+            let inner_radius = pick_corner_radius(inner_pos, inner_radii);
 
-            let border_blend = max(max(b_top, b_right), max(b_bottom, b_left));
+            let inner_dist = rounded_rect_sdf(inner_pos, inner_half_size, inner_radius);
+            let border_blend = smoothstep(-0.5, 0.5, inner_dist);
             color = mix(in.color, in.border_color, border_blend);
         }
 

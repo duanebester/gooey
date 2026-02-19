@@ -530,6 +530,8 @@ const OverviewSection = struct {
                 .fill_width = true,
                 .padding = .{ .all = 32 },
                 .background = t.primary.withAlpha(0.1),
+                .border_width = .{ .all = 1 },
+                .border_color = t.border,
                 .corner_radius = t.radius_lg,
                 .gap = 16,
                 .alignment = .{ .cross = .center },

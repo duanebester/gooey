@@ -385,18 +385,25 @@ pub const metal_shader_source =
     \\        float4 color = in.color;
     \\        if (has_border) {
     \\            // bw: x=top, y=right, z=bottom, w=left
-    \\            // Distance from each edge (positive = inside the rect)
-    \\            float d_top = centered.y + half_size.y;
-    \\            float d_bottom = half_size.y - centered.y;
-    \\            float d_left = centered.x + half_size.x;
-    \\            float d_right = half_size.x - centered.x;
-    \\            // For each side, compute border blend (1.0 = in border, 0.0 = not in border)
-    \\            // Only active for sides with non-zero border width
-    \\            float b_top = (1.0 - smoothstep(bw.x - 0.5, bw.x + 0.5, d_top)) * step(0.001, bw.x);
-    \\            float b_right = (1.0 - smoothstep(bw.y - 0.5, bw.y + 0.5, d_right)) * step(0.001, bw.y);
-    \\            float b_bottom = (1.0 - smoothstep(bw.z - 0.5, bw.z + 0.5, d_bottom)) * step(0.001, bw.z);
-    \\            float b_left = (1.0 - smoothstep(bw.w - 0.5, bw.w + 0.5, d_left)) * step(0.001, bw.w);
-    \\            float border_blend = max(max(b_top, b_right), max(b_bottom, b_left));
+    \\            // Construct inner rounded rect by insetting each side independently.
+    \\            // This handles both per-side borders (e.g. bottom-only navbar) and
+    \\            // uniform borders on rounded corners correctly.
+    \\            float2 inner_min = float2(-half_size.x + bw.w, -half_size.y + bw.x);
+    \\            float2 inner_max = float2(half_size.x - bw.y, half_size.y - bw.z);
+    \\            float2 inner_center = (inner_min + inner_max) * 0.5;
+    \\            float2 inner_half_size = max(float2(0.0), (inner_max - inner_min) * 0.5);
+    \\            float2 inner_pos = centered - inner_center;
+    \\            // Per-corner inner radii: reduce by the max of the two adjacent border widths.
+    \\            float4 cr = in.corner_radii;
+    \\            float4 inner_radii = float4(
+    \\                max(0.0, cr.x - max(bw.x, bw.w)),
+    \\                max(0.0, cr.y - max(bw.x, bw.y)),
+    \\                max(0.0, cr.z - max(bw.z, bw.y)),
+    \\                max(0.0, cr.w - max(bw.z, bw.w))
+    \\            );
+    \\            float inner_radius = pick_corner_radius(inner_pos, inner_radii);
+    \\            float inner_dist = rounded_rect_sdf(inner_pos, inner_half_size, inner_radius);
+    \\            float border_blend = smoothstep(-0.5, 0.5, inner_dist);
     \\            color = mix(in.color, in.border_color, border_blend);
     \\        }
     \\        float alpha = 1.0 - smoothstep(-0.5, 0.5, outer_dist);
