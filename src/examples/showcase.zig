@@ -35,6 +35,7 @@ const Icons = gooey.Icons;
 const Select = gooey.Select;
 const Tooltip = gooey.Tooltip;
 const Modal = gooey.Modal;
+const Color = gooey.Color;
 
 // =============================================================================
 // Section Navigation
@@ -290,6 +291,8 @@ const TopNavBar = struct {
             .background = t.surface,
             .direction = .row,
             .padding = .{ .symmetric = .{ .x = 20, .y = 0 } },
+            .border_width = .{ .each = .{ .bottom = 1, .top = 0, .left = 0, .right = 0 } },
+            .border_color = t.border,
             .gap = 8,
             .alignment = .{ .cross = .center, .main = .center },
         }, .{
