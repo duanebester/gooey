@@ -317,13 +317,13 @@ test "MeshRef toGpuRef" {
 }
 
 test "MeshPool persistent caching" {
-    const triangulator = @import("../core/triangulator.zig");
+    const vec2_mod = @import("../core/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
 
     // Create a simple mesh
-    const triangle = [_]triangulator.Vec2{
+    const triangle = [_]vec2_mod.Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },
         .{ .x = 0.5, .y = 1 },
@@ -344,12 +344,12 @@ test "MeshPool persistent caching" {
 }
 
 test "MeshPool frame allocation" {
-    const triangulator = @import("../core/triangulator.zig");
+    const vec2_mod = @import("../core/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
 
-    const triangle = [_]triangulator.Vec2{
+    const triangle = [_]vec2_mod.Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },
         .{ .x = 0.5, .y = 1 },
@@ -373,12 +373,12 @@ test "MeshPool frame allocation" {
 }
 
 test "MeshPool hasPersistent" {
-    const triangulator = @import("../core/triangulator.zig");
+    const vec2_mod = @import("../core/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
 
-    const triangle = [_]triangulator.Vec2{
+    const triangle = [_]vec2_mod.Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },
         .{ .x = 0.5, .y = 1 },
@@ -418,8 +418,8 @@ test "MeshPool lazy allocation" {
     try std.testing.expect(!stats1.frame_allocated);
 
     // After using persistent, only persistent should be allocated
-    const triangulator = @import("../core/triangulator.zig");
-    const triangle = [_]triangulator.Vec2{
+    const vec2_mod = @import("../core/vec2.zig");
+    const triangle = [_]vec2_mod.Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },
         .{ .x = 0.5, .y = 1 },

@@ -52,11 +52,11 @@ const history_mod = @import("edit_history.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const element_types = @import("../core/element_types.zig");
+const element_id_mod = @import("../core/element_id.zig");
 const event = @import("../input/event.zig");
 const geometry = @import("../core/geometry.zig");
 
-const ElementId = element_types.ElementId;
+const ElementId = element_id_mod.ElementId;
 const Event = event.Event;
 const EventResult = event.EventResult;
 
@@ -306,7 +306,7 @@ pub const TextInput = struct {
     }
 
     /// Element interface: get bounds
-    pub fn getBounds(self: *Self) element_types.Bounds {
+    pub fn getBounds(self: *Self) geometry.BoundsF {
         return geometry.BoundsF.init(
             self.bounds.x,
             self.bounds.y,

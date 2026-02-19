@@ -352,10 +352,17 @@ pub const Color = struct {
     a: f32 = 1,
 
     pub fn rgb(r: f32, g: f32, b: f32) Color {
+        std.debug.assert(r >= 0.0 and r <= 1.0);
+        std.debug.assert(g >= 0.0 and g <= 1.0);
+        std.debug.assert(b >= 0.0 and b <= 1.0);
         return .{ .r = r, .g = g, .b = b, .a = 1.0 };
     }
 
     pub fn rgba(r: f32, g: f32, b: f32, a: f32) Color {
+        std.debug.assert(r >= 0.0 and r <= 1.0);
+        std.debug.assert(g >= 0.0 and g <= 1.0);
+        std.debug.assert(b >= 0.0 and b <= 1.0);
+        std.debug.assert(a >= 0.0 and a <= 1.0);
         return .{ .r = r, .g = g, .b = b, .a = a };
     }
 
@@ -461,6 +468,7 @@ pub const Color = struct {
     }
 
     pub fn withAlpha(self: Color, a: f32) Color {
+        std.debug.assert(a >= 0.0 and a <= 1.0);
         return .{ .r = self.r, .g = self.g, .b = self.b, .a = a };
     }
 

@@ -31,14 +31,14 @@ else
 const scene_mod = @import("../scene/mod.zig");
 const input_mod = @import("../input/events.zig");
 const text_mod = @import("../text/mod.zig");
-const element_types = @import("../core/element_types.zig");
+const element_id_mod = @import("../core/element_id.zig");
 const event = @import("../input/event.zig");
 const common = @import("text_common.zig");
 const history_mod = @import("edit_history.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const ElementId = element_types.ElementId;
+const ElementId = element_id_mod.ElementId;
 const Event = event.Event;
 const EventResult = event.EventResult;
 const Scene = scene_mod.Scene;

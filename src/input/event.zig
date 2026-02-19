@@ -10,9 +10,9 @@
 
 const std = @import("std");
 const input = @import("events.zig");
-const element_types = @import("../core/element_types.zig");
+const element_id_mod = @import("../core/element_id.zig");
 
-pub const ElementId = element_types.ElementId;
+pub const ElementId = element_id_mod.ElementId;
 
 /// Result of handling an event
 pub const EventResult = enum {

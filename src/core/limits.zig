@@ -150,6 +150,27 @@ pub const MAX_PATH_DATA: u32 = MAX_PATH_COMMANDS * 8;
 pub const MAX_SUBPATHS: u32 = 64;
 
 // =============================================================================
+// Stroke Limits
+// =============================================================================
+
+/// Maximum input points for stroke expansion
+pub const MAX_STROKE_INPUT: u32 = 512;
+
+/// Maximum output points for stroke expansion.
+/// Kept small to avoid stack overflow (ExpandedStroke ~8KB at 1024 points).
+/// For UI strokes, 1024 points is plenty (circles flatten to ~64 points).
+pub const MAX_STROKE_OUTPUT: u32 = 1024;
+
+/// Number of segments for round caps/joins (affects smoothness)
+pub const ROUND_SEGMENTS: u32 = 8;
+
+/// Maximum triangles for direct stroke triangulation
+pub const MAX_STROKE_TRIANGLES: u32 = MAX_STROKE_OUTPUT;
+
+/// Maximum indices for stroke triangulation (3 per triangle)
+pub const MAX_STROKE_INDICES: u32 = MAX_STROKE_TRIANGLES * 3;
+
+// =============================================================================
 // Mesh Pool Limits
 // =============================================================================
 
@@ -230,6 +251,12 @@ comptime {
     // Indices are derived from vertices correctly
     std.debug.assert(MAX_PATH_TRIANGLES == MAX_PATH_VERTICES - 2);
     std.debug.assert(MAX_PATH_INDICES == MAX_PATH_TRIANGLES * 3);
+
+    // Stroke limits are self-consistent
+    std.debug.assert(MAX_STROKE_OUTPUT >= MAX_STROKE_INPUT);
+    std.debug.assert(MAX_STROKE_TRIANGLES == MAX_STROKE_OUTPUT);
+    std.debug.assert(MAX_STROKE_INDICES == MAX_STROKE_TRIANGLES * 3);
+    std.debug.assert(ROUND_SEGMENTS >= 4); // Minimum for visual smoothness
 }
 
 // =============================================================================

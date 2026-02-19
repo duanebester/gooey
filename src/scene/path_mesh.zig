@@ -7,17 +7,22 @@
 const std = @import("std");
 const scene = @import("scene.zig");
 const triangulator = @import("../core/triangulator.zig");
+const vec2_mod = @import("../core/vec2.zig");
 const stroke = @import("../core/stroke.zig");
-const FixedArray = triangulator.FixedArray;
+const limits = @import("../core/limits.zig");
+const FixedArray = @import("../core/fixed_array.zig").FixedArray;
+
+const Vec2 = vec2_mod.Vec2;
+const IndexSlice = vec2_mod.IndexSlice;
 
 // =============================================================================
 // Constants (static allocation per CLAUDE.md)
 // =============================================================================
 
-/// Maximum vertices per mesh
-pub const MAX_MESH_VERTICES: u32 = triangulator.MAX_PATH_VERTICES;
-/// Maximum indices per mesh
-pub const MAX_MESH_INDICES: u32 = triangulator.MAX_PATH_INDICES;
+/// Maximum vertices per mesh — sourced from limits.zig (single source of truth)
+pub const MAX_MESH_VERTICES: u32 = limits.MAX_PATH_VERTICES;
+/// Maximum indices per mesh — sourced from limits.zig (single source of truth)
+pub const MAX_MESH_INDICES: u32 = limits.MAX_PATH_INDICES;
 
 /// Maximum vertices in a single solid-path batch (Phase 2 batching)
 /// This bounds the staging buffer size for baked vertices
@@ -169,8 +174,8 @@ pub const PathMesh = struct {
     ///
     /// Returns error if path is too complex or degenerate
     pub fn fromFlattenedPath(
-        points: []const triangulator.Vec2,
-        polygons: []const triangulator.IndexSlice,
+        points: []const Vec2,
+        polygons: []const IndexSlice,
     ) PathMeshError!Self {
         // Assertions at API boundary
         std.debug.assert(points.len > 0);
@@ -222,19 +227,19 @@ pub const PathMesh = struct {
 
     /// Build mesh from a simple convex polygon (no holes)
     /// More efficient than fromFlattenedPath for simple shapes
-    pub fn fromConvexPolygon(points: []const triangulator.Vec2) PathMeshError!Self {
+    pub fn fromConvexPolygon(points: []const Vec2) PathMeshError!Self {
         std.debug.assert(points.len >= 3);
 
         if (points.len > MAX_MESH_VERTICES) {
             return error.TooManyVertices;
         }
 
-        const polygon = triangulator.IndexSlice{
+        const polygon = IndexSlice{
             .start = 0,
             .end = @intCast(points.len),
         };
 
-        return fromFlattenedPath(points, &[_]triangulator.IndexSlice{polygon});
+        return fromFlattenedPath(points, &[_]IndexSlice{polygon});
     }
 
     /// Build mesh from pre-triangulated stroke data (bypasses ear-clipper)
@@ -346,15 +351,15 @@ test "SolidPathVertex fromPathVertex bakes transform and color" {
 }
 
 test "PathMesh from square" {
-    const square = [_]triangulator.Vec2{
+    const square = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 100, .y = 0 },
         .{ .x = 100, .y = 100 },
         .{ .x = 0, .y = 100 },
     };
-    const polygon = triangulator.IndexSlice{ .start = 0, .end = 4 };
+    const polygon = IndexSlice{ .start = 0, .end = 4 };
 
-    const mesh = try PathMesh.fromFlattenedPath(&square, &[_]triangulator.IndexSlice{polygon});
+    const mesh = try PathMesh.fromFlattenedPath(&square, &[_]IndexSlice{polygon});
 
     try std.testing.expectEqual(@as(usize, 4), mesh.vertices.len);
     try std.testing.expectEqual(@as(usize, 6), mesh.indices.len); // 2 triangles
@@ -374,7 +379,7 @@ test "PathMesh from square" {
 }
 
 test "PathMesh fromConvexPolygon" {
-    const triangle = [_]triangulator.Vec2{
+    const triangle = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 50, .y = 100 },
         .{ .x = 100, .y = 0 },
@@ -391,7 +396,7 @@ test "PathMesh isEmpty" {
     const empty = PathMesh.init();
     try std.testing.expect(empty.isEmpty());
 
-    const triangle = [_]triangulator.Vec2{
+    const triangle = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },
         .{ .x = 0.5, .y = 1 },
@@ -401,7 +406,7 @@ test "PathMesh isEmpty" {
 }
 
 test "PathMesh vertexBytes and indexBytes" {
-    const triangle = [_]triangulator.Vec2{
+    const triangle = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },
         .{ .x = 0.5, .y = 1 },

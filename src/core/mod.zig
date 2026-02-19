@@ -32,7 +32,9 @@ pub const RectI = geometry.RectI;
 pub const BoundsF = geometry.BoundsF;
 pub const BoundsI = geometry.BoundsI;
 pub const EdgesF = geometry.EdgesF;
+pub const EdgesI = geometry.EdgesI;
 pub const CornersF = geometry.CornersF;
+pub const CornersI = geometry.CornersI;
 
 // GPU-aligned types
 pub const GpuPoint = geometry.GpuPoint;
@@ -45,11 +47,26 @@ pub const GpuEdges = geometry.GpuEdges;
 pub const Pixels = geometry.Pixels;
 
 // =============================================================================
-// Element Types
+// Fixed-Capacity Array (static allocation container)
 // =============================================================================
 
-pub const element_types = @import("element_types.zig");
-pub const ElementId = element_types.ElementId;
+pub const fixed_array = @import("fixed_array.zig");
+pub const FixedArray = fixed_array.FixedArray;
+
+// =============================================================================
+// Vec2 / IndexSlice (2D math vector for triangulation, strokes, paths)
+// =============================================================================
+
+pub const vec2 = @import("vec2.zig");
+pub const Vec2 = vec2.Vec2;
+pub const IndexSlice = vec2.IndexSlice;
+
+// =============================================================================
+// Element ID (stable identity across renders)
+// =============================================================================
+
+pub const element_id = @import("element_id.zig");
+pub const ElementId = element_id.ElementId;
 
 // =============================================================================
 // Limits (static allocation bounds)
@@ -63,8 +80,6 @@ pub const limits = @import("limits.zig");
 
 pub const triangulator = @import("triangulator.zig");
 pub const Triangulator = triangulator.Triangulator;
-pub const Vec2 = triangulator.Vec2;
-pub const IndexSlice = triangulator.IndexSlice;
 
 // =============================================================================
 // Stroke API
@@ -90,9 +105,13 @@ pub const CustomShader = shader.CustomShader;
 pub const interface_verify = @import("interface_verify.zig");
 pub const verifyRendererInterface = interface_verify.verifyRendererInterface;
 pub const verifyClipboardInterface = interface_verify.verifyClipboardInterface;
+pub const verifySvgRasterizerInterface = interface_verify.verifySvgRasterizerInterface;
 pub const verifySvgRasterizerModule = interface_verify.verifySvgRasterizerModule;
+pub const verifyImageLoaderInterface = interface_verify.verifyImageLoaderInterface;
+pub const verifyImageLoaderModule = interface_verify.verifyImageLoaderModule;
 pub const verifyPlatformInterface = interface_verify.verifyPlatformInterface;
 pub const verifyWindowInterface = interface_verify.verifyWindowInterface;
+pub const verifyFileDialogInterface = interface_verify.verifyFileDialogInterface;
 
 // =============================================================================
 // Tests

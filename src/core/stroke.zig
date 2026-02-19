@@ -18,23 +18,20 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const triangulator = @import("triangulator.zig");
+const limits = @import("limits.zig");
+const vec2_mod = @import("vec2.zig");
+const fixed_array_mod = @import("fixed_array.zig");
 
-const Vec2 = triangulator.Vec2;
-const FixedArray = triangulator.FixedArray;
+const Vec2 = vec2_mod.Vec2;
+const FixedArray = fixed_array_mod.FixedArray;
 
 // =============================================================================
-// Constants (static allocation per CLAUDE.md)
+// Constants — re-exported from limits.zig (single source of truth)
 // =============================================================================
 
-/// Maximum input points for stroke expansion
-pub const MAX_STROKE_INPUT: u32 = 512;
-/// Maximum output points for stroke expansion
-/// Kept small to avoid stack overflow (ExpandedStroke ~8KB at 1024 points)
-/// For UI strokes, 1024 points is plenty (circles flatten to ~64 points)
-pub const MAX_STROKE_OUTPUT: u32 = 1024;
-/// Number of segments for round caps/joins (affects smoothness)
-pub const ROUND_SEGMENTS: u32 = 8;
+pub const MAX_STROKE_INPUT = limits.MAX_STROKE_INPUT;
+pub const MAX_STROKE_OUTPUT = limits.MAX_STROKE_OUTPUT;
+pub const ROUND_SEGMENTS = limits.ROUND_SEGMENTS;
 
 // =============================================================================
 // Types
@@ -81,10 +78,8 @@ pub const ExpandedStroke = struct {
     closed: bool,
 };
 
-/// Maximum triangles for direct stroke triangulation
-pub const MAX_STROKE_TRIANGLES: u32 = MAX_STROKE_OUTPUT;
-/// Maximum indices (3 per triangle)
-pub const MAX_STROKE_INDICES: u32 = MAX_STROKE_TRIANGLES * 3;
+pub const MAX_STROKE_TRIANGLES = limits.MAX_STROKE_TRIANGLES;
+pub const MAX_STROKE_INDICES = limits.MAX_STROKE_INDICES;
 
 /// Result of direct stroke triangulation (bypasses ear-clipper)
 pub const StrokeTriangles = struct {
@@ -306,8 +301,8 @@ fn expandSingleSegmentToTriangles(
         .indices = .{},
     };
 
-    const dir = normalize(p1.sub(p0));
-    const normal = Vec2{ .x = -dir.y, .y = dir.x };
+    const dir = p1.sub(p0).normalize();
+    const normal = dir.perp();
     const offset = normal.scale(half_width);
 
     // Four corners of the basic rectangle
@@ -367,9 +362,9 @@ fn expandSingleSegmentToTriangles(
             result.indices.appendAssumeCapacity(base_idx + 3);
 
             // Start cap (semicircle at p0)
-            try addSemicircleTriangles(&result, p0, offset, dir.scale(-1));
+            try addSemicircleTriangles(&result, p0, offset, dir.negate());
             // End cap (semicircle at p1)
-            try addSemicircleTriangles(&result, p1, offset.scale(-1), dir);
+            try addSemicircleTriangles(&result, p1, offset.negate(), dir);
         },
     }
 
@@ -392,8 +387,8 @@ fn addCapTriangles(
         },
         .square => {
             // Add extended rectangle at the cap
-            const dir = normalize(p1.sub(p0));
-            const normal = Vec2{ .x = -dir.y, .y = dir.x };
+            const dir = p1.sub(p0).normalize();
+            const normal = dir.perp();
             const offset = normal.scale(half_width);
             const ext = if (is_start) dir.scale(-half_width) else dir.scale(half_width);
             const base_pt = if (is_start) p0 else p1;
@@ -424,12 +419,12 @@ fn addCapTriangles(
             }
         },
         .round => {
-            const dir = normalize(p1.sub(p0));
-            const normal = Vec2{ .x = -dir.y, .y = dir.x };
+            const dir = p1.sub(p0).normalize();
+            const normal = dir.perp();
             const offset = normal.scale(half_width);
-            const cap_dir = if (is_start) dir.scale(-1) else dir;
+            const cap_dir = if (is_start) dir.negate() else dir;
             const base_pt = if (is_start) p0 else p1;
-            const cap_offset = if (is_start) offset else offset.scale(-1);
+            const cap_offset = if (is_start) offset else offset.negate();
 
             try addSemicircleTriangles(result, base_pt, cap_offset, cap_dir);
         },
@@ -451,24 +446,20 @@ fn addSemicircleTriangles(
     result.vertices.appendAssumeCapacity(center.add(start_offset));
 
     const segments = ROUND_SEGMENTS;
+    // Loop-invariant: start_offset doesn't change across iterations.
+    const end_offset = start_offset.negate();
+    const radius = start_offset.length();
+
     for (1..segments + 1) |i| {
         const angle = @as(f32, @floatFromInt(i)) * std.math.pi / @as(f32, @floatFromInt(segments));
         const cos_a = @cos(angle);
         const sin_a = @sin(angle);
 
-        // Rotate start_offset by angle around the direction axis
-        const rotated = Vec2{
-            .x = start_offset.x * cos_a + direction.x * sin_a * (start_offset.x * direction.x + start_offset.y * direction.y) / (direction.x * direction.x + direction.y * direction.y + 0.0001) - direction.y * sin_a,
-            .y = start_offset.y * cos_a + direction.y * sin_a * (start_offset.x * direction.x + start_offset.y * direction.y) / (direction.x * direction.x + direction.y * direction.y + 0.0001) + direction.x * sin_a,
-        };
-
-        // Simpler rotation: interpolate between start_offset and -start_offset along the arc
-        const end_offset = Vec2{ .x = -start_offset.x, .y = -start_offset.y };
+        // Interpolate between start_offset and -start_offset along the arc.
         const interp = Vec2{
-            .x = start_offset.x * cos_a + end_offset.x * (1 - cos_a) + direction.x * sin_a * @sqrt(start_offset.x * start_offset.x + start_offset.y * start_offset.y),
-            .y = start_offset.y * cos_a + end_offset.y * (1 - cos_a) + direction.y * sin_a * @sqrt(start_offset.x * start_offset.x + start_offset.y * start_offset.y),
+            .x = start_offset.x * cos_a + end_offset.x * (1 - cos_a) + direction.x * sin_a * radius,
+            .y = start_offset.y * cos_a + end_offset.y * (1 - cos_a) + direction.y * sin_a * radius,
         };
-        _ = rotated;
 
         const curr_idx: u32 = @intCast(result.vertices.len);
         if (result.vertices.len >= MAX_STROKE_OUTPUT) return error.TooManyOutputPoints;
@@ -501,8 +492,8 @@ fn expandSingleSegment(
         .closed = closed,
     };
 
-    const dir = normalize(p1.sub(p0));
-    const normal = Vec2{ .x = -dir.y, .y = dir.x };
+    const dir = p1.sub(p0).normalize();
+    const normal = dir.perp();
     const offset = normal.scale(half_width);
 
     // Four corners of the basic rectangle
@@ -531,11 +522,11 @@ fn expandSingleSegment(
         },
         .round => {
             // Start with back semicircle
-            try addSemicircle(&result.points, p0, offset, dir.scale(-1), ROUND_SEGMENTS);
+            try addSemicircle(&result.points, p0, offset, dir.negate(), ROUND_SEGMENTS);
             // Top edge
             try appendPoint(&result.points, left1);
             // Front semicircle
-            try addSemicircle(&result.points, p1, offset.scale(-1), dir, ROUND_SEGMENTS);
+            try addSemicircle(&result.points, p1, offset.negate(), dir, ROUND_SEGMENTS);
             // Bottom edge (back to start)
             try appendPoint(&result.points, right0);
         },
@@ -644,7 +635,7 @@ fn addJoinPoints(
 
     // Near-collinear segments - just use average normal
     if (@abs(cross) < 1e-6 and dot > 0.9) {
-        const avg = normalize(prev_normal.add(next_normal));
+        const avg = prev_normal.add(next_normal).normalize();
         try appendPointToHalf(left_offsets, point.add(avg.scale(half_width)));
         try appendPointToHalf(right_offsets, point.sub(avg.scale(half_width)));
         return;
@@ -654,7 +645,7 @@ fn addJoinPoints(
     const is_left_turn = cross > 0;
 
     // For the inner side, compute the intersection point
-    const avg_normal = normalize(prev_normal.add(next_normal));
+    const avg_normal = prev_normal.add(next_normal).normalize();
     const inner_dot = prev_normal.dot(avg_normal);
     const inner_scale = if (@abs(inner_dot) > 0.1)
         std.math.clamp(half_width / inner_dot, half_width * 0.5, half_width * 2.0)
@@ -672,7 +663,7 @@ fn addJoinPoints(
         // Right turn: outer join on right, inner point on left
         try appendPointToHalf(left_offsets, point.add(avg_normal.scale(inner_scale)));
         // For right side, we need to negate offsets
-        try addOuterJoin(right_offsets, point, prev_offset.scale(-1), next_offset.scale(-1), join, miter_limit, half_width);
+        try addOuterJoin(right_offsets, point, prev_offset.negate(), next_offset.negate(), join, miter_limit, half_width);
     }
 }
 
@@ -695,8 +686,8 @@ fn addOuterJoin(
         },
         .miter => {
             // Calculate miter point
-            const miter_dir = normalize(prev_offset.add(next_offset));
-            const miter_dot = normalize(prev_offset).dot(miter_dir);
+            const miter_dir = prev_offset.add(next_offset).normalize();
+            const miter_dot = prev_offset.normalize().dot(miter_dir);
 
             if (@abs(miter_dot) < 0.1) {
                 // Nearly 180° turn, use bevel
@@ -733,8 +724,8 @@ fn addStartCap(
 ) StrokeError!void {
     std.debug.assert(half_width > 0);
 
-    const dir = normalize(p1.sub(p0));
-    const normal = Vec2{ .x = -dir.y, .y = dir.x };
+    const dir = p1.sub(p0).normalize();
+    const normal = dir.perp();
     const offset = normal.scale(half_width);
 
     switch (cap) {
@@ -751,7 +742,7 @@ fn addStartCap(
         },
         .round => {
             // Semicircle from right side around to left side
-            try addSemicircle(result, p0, offset.scale(-1), dir.scale(-1), ROUND_SEGMENTS);
+            try addSemicircle(result, p0, offset.negate(), dir.negate(), ROUND_SEGMENTS);
         },
     }
 }
@@ -765,8 +756,8 @@ fn addEndCap(
 ) StrokeError!void {
     std.debug.assert(half_width > 0);
 
-    const dir = normalize(p1.sub(p0));
-    const normal = Vec2{ .x = -dir.y, .y = dir.x };
+    const dir = p1.sub(p0).normalize();
+    const normal = dir.perp();
     const offset = normal.scale(half_width);
 
     switch (cap) {
@@ -792,22 +783,13 @@ fn addEndCap(
 // Internal: Geometry helpers
 // =============================================================================
 
-/// Compute perpendicular normal for a line segment (unit length, pointing left)
+/// Compute perpendicular normal for a line segment (unit length, pointing left).
+/// Delegates to `Vec2.normalize().perp()` — kept as a named helper for readability
+/// at call sites where the semantic meaning "segment normal" matters.
 fn segmentNormal(p0: Vec2, p1: Vec2) Vec2 {
     std.debug.assert(!std.math.isNan(p0.x) and !std.math.isNan(p1.x));
 
-    const dir = normalize(p1.sub(p0));
-    return Vec2{ .x = -dir.y, .y = dir.x };
-}
-
-/// Normalize a vector (handle zero-length gracefully)
-fn normalize(v: Vec2) Vec2 {
-    const len_sq = v.lengthSq();
-    if (len_sq < 1e-12) {
-        return Vec2{ .x = 1, .y = 0 }; // Default direction
-    }
-    const inv_len = 1.0 / @sqrt(len_sq);
-    return v.scale(inv_len);
+    return p1.sub(p0).normalize().perp();
 }
 
 /// Add semicircle points (for round caps)
@@ -821,7 +803,7 @@ fn addSemicircle(
     std.debug.assert(segments > 0);
 
     const start_angle = std.math.atan2(start_offset.y, start_offset.x);
-    const radius = @sqrt(start_offset.lengthSq());
+    const radius = start_offset.length();
 
     // Determine which way to go (half circle in direction of 'direction')
     const dir_angle = std.math.atan2(direction.y, direction.x);
@@ -871,7 +853,7 @@ fn addArcToHalf(
     if (angle_diff > std.math.pi) angle_diff -= 2.0 * std.math.pi;
     if (angle_diff < -std.math.pi) angle_diff += 2.0 * std.math.pi;
 
-    const radius = @sqrt(from_offset.lengthSq());
+    const radius = from_offset.length();
     const step = angle_diff / @as(f32, @floatFromInt(segments));
 
     var i: u32 = 0;
@@ -1013,7 +995,7 @@ test "segmentNormal correctness" {
 
 test "normalize handles zero vector" {
     const zero = Vec2{ .x = 0, .y = 0 };
-    const n = normalize(zero);
+    const n = zero.normalize();
     // Should return a default direction, not NaN
     try std.testing.expect(!std.math.isNan(n.x));
     try std.testing.expect(!std.math.isNan(n.y));

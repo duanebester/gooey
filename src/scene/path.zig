@@ -18,13 +18,15 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const triangulator = @import("../core/triangulator.zig");
+const vec2_mod = @import("../core/vec2.zig");
+const fixed_array_mod = @import("../core/fixed_array.zig");
 const path_mesh = @import("path_mesh.zig");
 const mesh_pool = @import("mesh_pool.zig");
 const stroke_mod = @import("../core/stroke.zig");
 
-const Vec2 = triangulator.Vec2;
-const FixedArray = triangulator.FixedArray;
+const Vec2 = vec2_mod.Vec2;
+const IndexSlice = vec2_mod.IndexSlice;
+const FixedArray = fixed_array_mod.FixedArray;
 const PathMesh = path_mesh.PathMesh;
 const MeshPool = mesh_pool.MeshPool;
 const MeshRef = mesh_pool.MeshRef;
@@ -441,7 +443,7 @@ pub const Path = struct {
         var points: std.ArrayList(Vec2) = .{};
         defer points.deinit(allocator);
 
-        var polygons: std.ArrayList(triangulator.IndexSlice) = .{};
+        var polygons: std.ArrayList(IndexSlice) = .{};
         defer polygons.deinit(allocator);
 
         try self.flatten(allocator, tolerance, &points, &polygons);
@@ -450,7 +452,7 @@ pub const Path = struct {
             return error.EmptyPath;
         }
 
-        // Convert to PathMesh via triangulator
+        // Convert to PathMesh via triangulation
         return PathMesh.fromFlattenedPath(points.items, polygons.items);
     }
 
@@ -517,7 +519,7 @@ pub const Path = struct {
         var points: std.ArrayList(Vec2) = .{};
         defer points.deinit(allocator);
 
-        var polygons: std.ArrayList(triangulator.IndexSlice) = .{};
+        var polygons: std.ArrayList(IndexSlice) = .{};
         defer polygons.deinit(allocator);
 
         try self.flattenForStroke(allocator, tolerance, &points, &polygons);
@@ -684,7 +686,7 @@ pub const Path = struct {
         allocator: std.mem.Allocator,
         tolerance: f32,
         points: *std.ArrayList(Vec2),
-        polygons: *std.ArrayList(triangulator.IndexSlice),
+        polygons: *std.ArrayList(IndexSlice),
     ) !void {
         std.debug.assert(tolerance > 0);
         // Note: caller (toMesh) validates commands.len > 0
@@ -785,7 +787,7 @@ pub const Path = struct {
         allocator: std.mem.Allocator,
         tolerance: f32,
         points: *std.ArrayList(Vec2),
-        polygons: *std.ArrayList(triangulator.IndexSlice),
+        polygons: *std.ArrayList(IndexSlice),
     ) !void {
         std.debug.assert(tolerance > 0);
 

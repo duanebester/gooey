@@ -7,109 +7,29 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const limits = @import("limits.zig");
+const vec2_mod = @import("vec2.zig");
+const fixed_array_mod = @import("fixed_array.zig");
 
 // =============================================================================
-// Fixed Capacity Array (since std.BoundedArray doesn't exist in Zig 0.15)
+// Re-exports — canonical definitions live in dedicated modules
 // =============================================================================
 
-/// A fixed-capacity array that doesn't allocate after initialization.
-/// Used to avoid dynamic allocation during frame rendering per CLAUDE.md.
-pub fn FixedArray(comptime T: type, comptime capacity: usize) type {
-    return struct {
-        buffer: [capacity]T = undefined,
-        len: usize = 0,
-
-        const Self = @This();
-
-        pub fn appendAssumeCapacity(self: *Self, item: T) void {
-            std.debug.assert(self.len < capacity);
-            self.buffer[self.len] = item;
-            self.len += 1;
-        }
-
-        pub fn get(self: *const Self, index: usize) T {
-            std.debug.assert(index < self.len);
-            return self.buffer[index];
-        }
-
-        pub fn slice(self: *Self) []T {
-            return self.buffer[0..self.len];
-        }
-
-        pub fn constSlice(self: *const Self) []const T {
-            return self.buffer[0..self.len];
-        }
-
-        pub fn orderedRemove(self: *Self, index: usize) T {
-            std.debug.assert(index < self.len);
-            const item = self.buffer[index];
-            // Shift elements left
-            const len = self.len;
-            for (index..len - 1) |i| {
-                self.buffer[i] = self.buffer[i + 1];
-            }
-            self.len -= 1;
-            return item;
-        }
-    };
-}
+pub const FixedArray = fixed_array_mod.FixedArray;
+pub const Vec2 = vec2_mod.Vec2;
+pub const IndexSlice = vec2_mod.IndexSlice;
 
 // =============================================================================
-// Types
+// Constants — re-exported from limits.zig (single source of truth)
 // =============================================================================
 
-pub const Vec2 = struct {
-    x: f32,
-    y: f32,
+pub const MAX_PATH_VERTICES = limits.MAX_PATH_VERTICES;
+pub const MAX_PATH_TRIANGLES = limits.MAX_PATH_TRIANGLES;
+pub const MAX_PATH_INDICES = limits.MAX_PATH_INDICES;
 
-    pub fn sub(self: Vec2, other: Vec2) Vec2 {
-        return .{ .x = self.x - other.x, .y = self.y - other.y };
-    }
-
-    pub fn add(self: Vec2, other: Vec2) Vec2 {
-        return .{ .x = self.x + other.x, .y = self.y + other.y };
-    }
-
-    pub fn scale(self: Vec2, s: f32) Vec2 {
-        return .{ .x = self.x * s, .y = self.y * s };
-    }
-
-    pub fn dot(self: Vec2, other: Vec2) f32 {
-        return self.x * other.x + self.y * other.y;
-    }
-
-    pub fn cross(self: Vec2, other: Vec2) f32 {
-        return self.x * other.y - self.y * other.x;
-    }
-
-    pub fn lengthSq(self: Vec2) f32 {
-        return self.x * self.x + self.y * self.y;
-    }
-};
-
-pub const IndexSlice = struct {
-    start: u32,
-    end: u32,
-
-    pub fn len(self: IndexSlice) u32 {
-        std.debug.assert(self.end >= self.start);
-        return self.end - self.start;
-    }
-};
-
-// =============================================================================
-// Constants (static allocation per CLAUDE.md)
-// =============================================================================
-
-/// Maximum vertices per path (reduced from 4096 to avoid stack overflow - PathMesh ~14KB at 512)
-pub const MAX_PATH_VERTICES: u32 = 512;
-/// Maximum triangles = MAX_PATH_VERTICES - 2 (for simple polygon)
-pub const MAX_PATH_TRIANGLES: u32 = MAX_PATH_VERTICES - 2;
-/// Maximum indices = triangles * 3
-pub const MAX_PATH_INDICES: u32 = MAX_PATH_TRIANGLES * 3;
-
-/// Bitset for tracking reflex (concave) vertices - O(1) lookup, 64 bytes for 512 vertices
-pub const ReflexSet = std.bit_set.IntegerBitSet(MAX_PATH_VERTICES);
+/// Bitset for tracking vertex membership — O(1) lookup, 64 bytes for 512 vertices.
+/// Used for both reflex-vertex tracking and active-vertex tracking.
+pub const ReflexSet = std.bit_set.IntegerBitSet(limits.MAX_PATH_VERTICES);
 
 // =============================================================================
 // Errors
@@ -177,97 +97,115 @@ pub const Triangulator = struct {
         return self.indices.slice()[start_idx..];
     }
 
-    /// Core ear-clipping algorithm
+    /// Core ear-clipping algorithm.
+    ///
+    /// Uses an intrusive circular doubly-linked list for O(1) vertex removal
+    /// instead of shifting a dense array (O(n) per removal). After clipping
+    /// an ear the scan resumes from the previous neighbor — the vertex most
+    /// likely to be the next ear — rather than restarting from vertex 0.
+    ///
+    /// Total memory-write savings: O(n) vs O(n²) for the removal step alone,
+    /// which dominates for polygons approaching MAX_PATH_VERTICES (512).
     fn earClipPolygon(
         self: *Self,
         points: []const Vec2,
         polygon: IndexSlice,
     ) TriangulationError!void {
         const poly_points = points[polygon.start..polygon.end];
-        const n = poly_points.len;
+        const n: u32 = @intCast(poly_points.len);
 
-        // Internal assertions (already validated at API boundary)
+        // Internal assertions (already validated at API boundary).
         std.debug.assert(n >= 3);
         std.debug.assert(n <= MAX_PATH_VERTICES);
 
-        // Build vertex index list (we'll remove ears as we go)
-        var vertex_list: FixedArray(u32, MAX_PATH_VERTICES) = .{};
+        // Intrusive circular doubly-linked list — O(1) removal vs O(n) array shift.
+        // Each entry stores the *vertex index* of the next/prev active vertex in the
+        // polygon ring.  Two u32 arrays × 512 entries = 4 KB on the stack.
+        var next_v: [MAX_PATH_VERTICES]u32 = undefined;
+        var prev_v: [MAX_PATH_VERTICES]u32 = undefined;
+
+        // Active vertex bitset for O(1) membership checks in hasPointInsideReflex.
+        var active_set = ReflexSet.initEmpty();
+
         for (0..n) |i| {
-            vertex_list.appendAssumeCapacity(@intCast(i));
+            next_v[i] = if (i == n - 1) 0 else @as(u32, @intCast(i)) + 1;
+            prev_v[i] = if (i == 0) n - 1 else @as(u32, @intCast(i)) - 1;
+            active_set.set(i);
         }
 
-        // Pre-compute reflex vertices (O(n)) - only these can be inside ear triangles
+        // Pre-compute reflex vertices (O(n)) — only these can block an ear.
         self.reflex_vertices = ReflexSet.initEmpty();
         for (0..n) |i| {
-            const prev_idx = if (i == 0) n - 1 else i - 1;
-            const next_idx = if (i == n - 1) 0 else i + 1;
-            const p0 = poly_points[prev_idx];
+            const p0 = poly_points[prev_v[i]];
             const p1 = poly_points[i];
-            const p2 = poly_points[next_idx];
+            const p2 = poly_points[next_v[i]];
 
             if (!isConvex(p0, p1, p2, self.is_ccw)) {
                 self.reflex_vertices.set(i);
             }
         }
 
-        var remaining = n;
+        var remaining: u32 = n;
         var safety_counter: u32 = 0;
-        const max_iterations: u32 = @intCast(n * n); // O(n²) worst case
+        const max_iterations: u32 = n * n; // O(n²) worst case.
+
+        // Start scanning from vertex 0.
+        var scan_start: u32 = 0;
 
         while (remaining > 3) {
-            safety_counter += 1;
-            if (safety_counter > max_iterations) {
-                if (builtin.mode == .Debug) {
-                    std.log.warn(
-                        "Ear clipping failed: {} vertices remaining after {} iterations. " ++
-                            "Polygon may be self-intersecting or have collinear points.",
-                        .{ remaining, safety_counter },
-                    );
-                }
-                return error.EarClippingFailed;
-            }
-
             var found_ear = false;
+            var curr = scan_start;
+            var scanned: u32 = 0;
 
-            for (0..remaining) |i| {
-                const prev = if (i == 0) remaining - 1 else i - 1;
-                const next = if (i == remaining - 1) 0 else i + 1;
-
-                const idx_prev = vertex_list.get(prev);
-                const idx_curr = vertex_list.get(i);
-                const idx_next = vertex_list.get(next);
-
-                const p0 = poly_points[idx_prev];
-                const p1 = poly_points[idx_curr];
-                const p2 = poly_points[idx_next];
-
-                // Check if this is a convex vertex (ear candidate)
-                if (!isConvex(p0, p1, p2, self.is_ccw)) continue;
-
-                // Check no reflex vertices inside this triangle (O(r) instead of O(n))
-                if (hasPointInsideReflex(poly_points, &vertex_list, &self.reflex_vertices, prev, i, next, p0, p1, p2)) continue;
-
-                // Found an ear! Emit triangle and remove vertex
-                self.indices.appendAssumeCapacity(polygon.start + idx_prev);
-                self.indices.appendAssumeCapacity(polygon.start + idx_curr);
-                self.indices.appendAssumeCapacity(polygon.start + idx_next);
-
-                // Clear reflex status for removed vertex
-                self.reflex_vertices.unset(idx_curr);
-
-                _ = vertex_list.orderedRemove(i);
-                remaining -= 1;
-
-                // Update reflex status for neighbors (they may become convex)
-                if (remaining >= 3) {
-                    const new_prev = if (i == 0) remaining - 1 else if (i > remaining) 0 else i - 1;
-                    const new_curr = if (i >= remaining) 0 else i;
-                    self.updateReflexStatus(new_prev, &vertex_list, poly_points);
-                    self.updateReflexStatus(new_curr, &vertex_list, poly_points);
+            while (scanned < remaining) : (scanned += 1) {
+                safety_counter += 1;
+                if (safety_counter > max_iterations) {
+                    if (builtin.mode == .Debug) {
+                        std.log.warn(
+                            "Ear clipping failed: {} vertices remaining after {} iterations. " ++
+                                "Polygon may be self-intersecting or have collinear points.",
+                            .{ remaining, safety_counter },
+                        );
+                    }
+                    return error.EarClippingFailed;
                 }
 
-                found_ear = true;
-                break;
+                const pv = prev_v[curr];
+                const nv = next_v[curr];
+
+                const p0 = poly_points[pv];
+                const p1 = poly_points[curr];
+                const p2 = poly_points[nv];
+
+                // Convex vertex with no reflex point inside → ear.
+                if (isConvex(p0, p1, p2, self.is_ccw) and
+                    !hasPointInsideReflex(poly_points, &self.reflex_vertices, &active_set, pv, curr, nv, p0, p1, p2))
+                {
+                    // Emit triangle.
+                    self.indices.appendAssumeCapacity(polygon.start + pv);
+                    self.indices.appendAssumeCapacity(polygon.start + curr);
+                    self.indices.appendAssumeCapacity(polygon.start + nv);
+
+                    // Unlink curr from the ring — O(1) pointer update.
+                    next_v[pv] = nv;
+                    prev_v[nv] = pv;
+                    self.reflex_vertices.unset(curr);
+                    active_set.unset(curr);
+                    remaining -= 1;
+
+                    // Neighbors may have become convex after removal.
+                    if (remaining >= 3) {
+                        self.updateReflexLinked(pv, &next_v, &prev_v, poly_points);
+                        self.updateReflexLinked(nv, &next_v, &prev_v, poly_points);
+                    }
+
+                    // Resume from the previous neighbor — most likely next ear.
+                    scan_start = pv;
+                    found_ear = true;
+                    break;
+                }
+
+                curr = next_v[curr];
             }
 
             if (!found_ear) {
@@ -278,38 +216,34 @@ pub const Triangulator = struct {
             }
         }
 
-        // Emit final triangle
+        // Emit final triangle from the three remaining vertices.
         if (remaining == 3) {
-            self.indices.appendAssumeCapacity(polygon.start + vertex_list.get(0));
-            self.indices.appendAssumeCapacity(polygon.start + vertex_list.get(1));
-            self.indices.appendAssumeCapacity(polygon.start + vertex_list.get(2));
+            const v0 = scan_start;
+            const v1 = next_v[v0];
+            const v2 = next_v[v1];
+            std.debug.assert(next_v[v2] == v0); // Ring integrity.
+            self.indices.appendAssumeCapacity(polygon.start + v0);
+            self.indices.appendAssumeCapacity(polygon.start + v1);
+            self.indices.appendAssumeCapacity(polygon.start + v2);
         }
     }
 
-    /// Update reflex status for a vertex after neighbor removal
-    fn updateReflexStatus(
+    /// Update reflex status for a vertex using linked-list neighbors.
+    fn updateReflexLinked(
         self: *Self,
-        list_idx: usize,
-        vertex_list: *const FixedArray(u32, MAX_PATH_VERTICES),
+        vertex: u32,
+        next_vertex: *const [MAX_PATH_VERTICES]u32,
+        prev_vertex: *const [MAX_PATH_VERTICES]u32,
         poly_points: []const Vec2,
     ) void {
-        const n = vertex_list.len;
-        if (n < 3) return;
+        const p0 = poly_points[prev_vertex[vertex]];
+        const p1 = poly_points[vertex];
+        const p2 = poly_points[next_vertex[vertex]];
 
-        std.debug.assert(list_idx < n);
-
-        const prev = if (list_idx == 0) n - 1 else list_idx - 1;
-        const next = if (list_idx == n - 1) 0 else list_idx + 1;
-
-        const p0 = poly_points[vertex_list.get(prev)];
-        const p1 = poly_points[vertex_list.get(list_idx)];
-        const p2 = poly_points[vertex_list.get(next)];
-
-        const vertex_idx = vertex_list.get(list_idx);
         if (isConvex(p0, p1, p2, self.is_ccw)) {
-            self.reflex_vertices.unset(vertex_idx);
+            self.reflex_vertices.unset(vertex);
         } else {
-            self.reflex_vertices.set(vertex_idx);
+            self.reflex_vertices.set(vertex);
         }
     }
 };
@@ -348,37 +282,25 @@ fn isConvex(p0: Vec2, p1: Vec2, p2: Vec2, is_ccw: bool) bool {
 /// This reduces complexity from O(n) to O(r) where r = reflex vertex count.
 fn hasPointInsideReflex(
     poly_points: []const Vec2,
-    vertex_list: *const FixedArray(u32, MAX_PATH_VERTICES),
     reflex_set: *const ReflexSet,
-    prev: usize,
-    curr: usize,
-    next: usize,
+    active_set: *const ReflexSet,
+    idx_prev: u32,
+    idx_curr: u32,
+    idx_next: u32,
     p0: Vec2,
     p1: Vec2,
     p2: Vec2,
 ) bool {
-    std.debug.assert(vertex_list.len > 0);
-    std.debug.assert(prev < vertex_list.len and curr < vertex_list.len and next < vertex_list.len);
+    std.debug.assert(active_set.count() > 0);
 
-    const idx_prev = vertex_list.get(prev);
-    const idx_curr = vertex_list.get(curr);
-    const idx_next = vertex_list.get(next);
-
-    // Only iterate over reflex vertices
+    // Only iterate over reflex vertices — O(r) where r = reflex count.
     var iter = reflex_set.iterator(.{});
     while (iter.next()) |reflex_idx| {
         // Skip triangle vertices
         if (reflex_idx == idx_prev or reflex_idx == idx_curr or reflex_idx == idx_next) continue;
 
-        // Check if this reflex vertex is still in the active vertex list
-        var found = false;
-        for (0..vertex_list.len) |i| {
-            if (vertex_list.get(i) == reflex_idx) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) continue;
+        // O(1) check: is this reflex vertex still in the active polygon?
+        if (!active_set.isSet(reflex_idx)) continue;
 
         const pt = poly_points[reflex_idx];
         if (pointInTriangle(pt, p0, p1, p2)) return true;

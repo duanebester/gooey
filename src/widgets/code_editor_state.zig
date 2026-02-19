@@ -24,8 +24,8 @@ const Hsla = scene_mod.Hsla;
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
 
-const element_types = @import("../core/element_types.zig");
-const ElementId = element_types.ElementId;
+const element_id_mod = @import("../core/element_id.zig");
+const ElementId = element_id_mod.ElementId;
 
 const event = @import("../input/event.zig");
 const Event = event.Event;
