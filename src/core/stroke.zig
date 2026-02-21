@@ -431,6 +431,11 @@ fn addCapTriangles(
     }
 }
 
+/// Add semicircle triangle fan using incremental rotation.
+///
+/// One sin/cos pair for the step angle, then 2 multiplies + 2 adds per
+/// arc vertex.  The previous implementation called cos+sin per segment
+/// and did a three-term interpolation (6 muls + 4 adds per vertex).
 fn addSemicircleTriangles(
     result: *StrokeTriangles,
     center: Vec2,
@@ -446,24 +451,27 @@ fn addSemicircleTriangles(
     result.vertices.appendAssumeCapacity(center.add(start_offset));
 
     const segments = ROUND_SEGMENTS;
-    // Loop-invariant: start_offset doesn't change across iterations.
-    const end_offset = start_offset.negate();
-    const radius = start_offset.length();
 
-    for (1..segments + 1) |i| {
-        const angle = @as(f32, @floatFromInt(i)) * std.math.pi / @as(f32, @floatFromInt(segments));
-        const cos_a = @cos(angle);
-        const sin_a = @sin(angle);
+    // Determine sweep direction from the cross product of start_offset and
+    // direction.  Positive cross → CCW sweep, negative → CW sweep.
+    const cross = start_offset.x * direction.y - start_offset.y * direction.x;
+    const sweep_sign: f32 = if (cross >= 0) 1.0 else -1.0;
+    const step_angle = sweep_sign * std.math.pi / @as(f32, @floatFromInt(segments));
 
-        // Interpolate between start_offset and -start_offset along the arc.
-        const interp = Vec2{
-            .x = start_offset.x * cos_a + end_offset.x * (1 - cos_a) + direction.x * sin_a * radius,
-            .y = start_offset.y * cos_a + end_offset.y * (1 - cos_a) + direction.y * sin_a * radius,
-        };
+    // Pre-compute rotation matrix — one sin/cos pair total.
+    const cos_step = @cos(step_angle);
+    const sin_step = @sin(step_angle);
+
+    // Emit arc vertices via incremental rotation (2 muls + 2 adds per step).
+    var offset = start_offset;
+    for (1..segments + 1) |_| {
+        const rx = offset.x * cos_step - offset.y * sin_step;
+        const ry = offset.x * sin_step + offset.y * cos_step;
+        offset = Vec2{ .x = rx, .y = ry };
 
         const curr_idx: u32 = @intCast(result.vertices.len);
         if (result.vertices.len >= MAX_STROKE_OUTPUT) return error.TooManyOutputPoints;
-        result.vertices.appendAssumeCapacity(center.add(interp));
+        result.vertices.appendAssumeCapacity(center.add(offset));
 
         if (result.indices.len + 3 > MAX_STROKE_INDICES) return error.TooManyOutputPoints;
         result.indices.appendAssumeCapacity(center_idx);
@@ -792,7 +800,13 @@ fn segmentNormal(p0: Vec2, p1: Vec2) Vec2 {
     return p1.sub(p0).normalize().perp();
 }
 
-/// Add semicircle points (for round caps)
+/// Add semicircle points (for round caps).
+///
+/// Uses incremental rotation: one sin/cos pair for the step angle, then
+/// two multiplies + two adds per arc point. The previous implementation
+/// called atan2 twice and cos+sin per segment (2·atan2 + N·cos + N·sin).
+/// This version costs 1·cos + 1·sin + N·(2 mul + 2 add) — roughly 3–4×
+/// faster for ROUND_SEGMENTS = 8.
 fn addSemicircle(
     result: *FixedArray(Vec2, MAX_STROKE_OUTPUT),
     center: Vec2,
@@ -802,40 +816,34 @@ fn addSemicircle(
 ) StrokeError!void {
     std.debug.assert(segments > 0);
 
-    const start_angle = std.math.atan2(start_offset.y, start_offset.x);
-    const radius = start_offset.length();
+    // Determine sweep direction from the cross product of start_offset and
+    // direction.  Positive cross → CCW sweep, negative → CW sweep.
+    // The total sweep is always π (semicircle).
+    const cross = start_offset.x * direction.y - start_offset.y * direction.x;
+    const sweep_sign: f32 = if (cross >= 0) 1.0 else -1.0;
+    const step_angle = sweep_sign * std.math.pi / @as(f32, @floatFromInt(segments));
 
-    // Determine which way to go (half circle in direction of 'direction')
-    const dir_angle = std.math.atan2(direction.y, direction.x);
-    var end_angle = dir_angle + std.math.pi / 2.0;
+    // Pre-compute rotation matrix for the step angle — one sin/cos pair total.
+    const cos_step = @cos(step_angle);
+    const sin_step = @sin(step_angle);
 
-    // Ensure we go the right way (pi radians = semicircle)
-    var angle_diff = end_angle - start_angle;
-    while (angle_diff > std.math.pi) angle_diff -= 2.0 * std.math.pi;
-    while (angle_diff < -std.math.pi) angle_diff += 2.0 * std.math.pi;
-
-    // If angle_diff is negative, we need to go the other way
-    if (@abs(angle_diff) < std.math.pi * 0.5) {
-        end_angle = dir_angle - std.math.pi / 2.0;
-        angle_diff = end_angle - start_angle;
-        while (angle_diff > std.math.pi) angle_diff -= 2.0 * std.math.pi;
-        while (angle_diff < -std.math.pi) angle_diff += 2.0 * std.math.pi;
-    }
-
-    // Add arc points
-    const step = angle_diff / @as(f32, @floatFromInt(segments));
+    // Emit arc points via incremental rotation (2 muls + 2 adds per step).
+    var offset = start_offset;
     var i: u32 = 0;
     while (i <= segments) : (i += 1) {
-        const angle = start_angle + step * @as(f32, @floatFromInt(i));
-        const pt = Vec2{
-            .x = center.x + radius * @cos(angle),
-            .y = center.y + radius * @sin(angle),
-        };
-        try appendPoint(result, pt);
+        try appendPoint(result, center.add(offset));
+        const rx = offset.x * cos_step - offset.y * sin_step;
+        const ry = offset.x * sin_step + offset.y * cos_step;
+        offset = Vec2{ .x = rx, .y = ry };
     }
 }
 
-/// Add arc points to half buffer (for round joins)
+/// Add arc points to half buffer (for round joins).
+///
+/// Uses incremental rotation: one atan2 + one sin/cos for the step angle,
+/// then two multiplies + two adds per arc point.  The previous version
+/// called 2·atan2 + N·(cos + sin).  This costs 1·atan2 + 1·cos + 1·sin +
+/// N·(2 mul + 2 add).
 fn addArcToHalf(
     side: *FixedArray(Vec2, MAX_STROKE_OUTPUT / 2),
     center: Vec2,
@@ -845,25 +853,26 @@ fn addArcToHalf(
 ) StrokeError!void {
     std.debug.assert(segments > 0);
 
-    const from_angle = std.math.atan2(from_offset.y, from_offset.x);
-    const to_angle = std.math.atan2(to_offset.y, to_offset.x);
+    // Signed angle between the two offset vectors via atan2(cross, dot).
+    // This automatically takes the shorter arc (result in [−π, π]).
+    const cross = from_offset.x * to_offset.y - from_offset.y * to_offset.x;
+    const dot = from_offset.x * to_offset.x + from_offset.y * to_offset.y;
+    const angle_diff = std.math.atan2(cross, dot);
 
-    var angle_diff = to_angle - from_angle;
-    // Take the shorter arc
-    if (angle_diff > std.math.pi) angle_diff -= 2.0 * std.math.pi;
-    if (angle_diff < -std.math.pi) angle_diff += 2.0 * std.math.pi;
+    const step_angle = angle_diff / @as(f32, @floatFromInt(segments));
 
-    const radius = from_offset.length();
-    const step = angle_diff / @as(f32, @floatFromInt(segments));
+    // Pre-compute rotation matrix — one sin/cos pair total.
+    const cos_step = @cos(step_angle);
+    const sin_step = @sin(step_angle);
 
+    // Emit arc points via incremental rotation.
+    var offset = from_offset;
     var i: u32 = 0;
     while (i <= segments) : (i += 1) {
-        const angle = from_angle + step * @as(f32, @floatFromInt(i));
-        const pt = Vec2{
-            .x = center.x + radius * @cos(angle),
-            .y = center.y + radius * @sin(angle),
-        };
-        try appendPointToHalf(side, pt);
+        try appendPointToHalf(side, center.add(offset));
+        const rx = offset.x * cos_step - offset.y * sin_step;
+        const ry = offset.x * sin_step + offset.y * cos_step;
+        offset = Vec2{ .x = rx, .y = ry };
     }
 }
 

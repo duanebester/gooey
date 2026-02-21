@@ -58,6 +58,55 @@ pub const DispatchNodeId = enum(u32) {
 };
 
 // =============================================================================
+// Listener Block (heap-allocated, out-of-line from DispatchNode)
+// =============================================================================
+
+/// Heap-allocated listener storage for dispatch nodes. Moved out-of-line to
+/// shrink per-node size and improve cache locality during hit testing — most
+/// nodes carry zero listeners. Allocated lazily via `DispatchNode.getOrCreateListeners`
+/// on first listener registration. Retained across frames (cleared, not freed).
+/// Size: 10 × ArrayListUnmanaged = 240 bytes (vs 8 bytes for the pointer in DispatchNode).
+pub const ListenerBlock = struct {
+    click_listeners: std.ArrayListUnmanaged(ClickListener) = .{},
+    click_listeners_ctx: std.ArrayListUnmanaged(ClickListenerWithContext) = .{},
+    click_listeners_data: std.ArrayListUnmanaged(ClickListenerWithData) = .{},
+    mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .{},
+    key_down_listeners: std.ArrayListUnmanaged(KeyListener) = .{},
+    simple_key_listeners: std.ArrayListUnmanaged(SimpleKeyListener) = .{},
+    action_listeners: std.ArrayListUnmanaged(ActionListener) = .{},
+    click_listeners_handler: std.ArrayListUnmanaged(ClickListenerHandler) = .{},
+    action_listeners_handler: std.ArrayListUnmanaged(ActionListenerHandler) = .{},
+    click_outside_listeners: std.ArrayListUnmanaged(ClickOutsideListener) = .{},
+
+    pub fn deinit(self: *ListenerBlock, allocator: std.mem.Allocator) void {
+        self.click_listeners.deinit(allocator);
+        self.click_listeners_ctx.deinit(allocator);
+        self.click_listeners_data.deinit(allocator);
+        self.mouse_down_listeners.deinit(allocator);
+        self.key_down_listeners.deinit(allocator);
+        self.simple_key_listeners.deinit(allocator);
+        self.action_listeners.deinit(allocator);
+        self.click_listeners_handler.deinit(allocator);
+        self.action_listeners_handler.deinit(allocator);
+        self.click_outside_listeners.deinit(allocator);
+    }
+
+    /// Clear all listener arrays, retaining heap capacity for reuse next frame.
+    pub fn clearRetainingCapacity(self: *ListenerBlock) void {
+        self.click_listeners.clearRetainingCapacity();
+        self.click_listeners_ctx.clearRetainingCapacity();
+        self.click_listeners_data.clearRetainingCapacity();
+        self.mouse_down_listeners.clearRetainingCapacity();
+        self.key_down_listeners.clearRetainingCapacity();
+        self.simple_key_listeners.clearRetainingCapacity();
+        self.action_listeners.clearRetainingCapacity();
+        self.click_listeners_handler.clearRetainingCapacity();
+        self.action_listeners_handler.clearRetainingCapacity();
+        self.click_outside_listeners.clearRetainingCapacity();
+    }
+};
+
+// =============================================================================
 // Dispatch Node
 // =============================================================================
 
@@ -69,6 +118,9 @@ pub const DispatchNode = struct {
 
     /// First child node
     first_child: DispatchNodeId = .invalid,
+
+    /// Last child node (O(1) child append instead of O(n) sibling walk)
+    last_child: DispatchNodeId = .invalid,
 
     /// Next sibling node
     next_sibling: DispatchNodeId = .invalid,
@@ -95,39 +147,10 @@ pub const DispatchNode = struct {
     /// Number of children (for iteration)
     child_count: u32 = 0,
 
-    // =========================================================================
-    // Event Listeners (populated during render)
-    // =========================================================================
-
-    /// Simple click handlers (most common case)
-    click_listeners: std.ArrayListUnmanaged(ClickListener) = .{},
-
-    /// Click handlers with context (for stateful widgets)
-    click_listeners_ctx: std.ArrayListUnmanaged(ClickListenerWithContext) = .{},
-
-    /// Click handlers with u32 data (for table column/row clicks)
-    click_listeners_data: std.ArrayListUnmanaged(ClickListenerWithData) = .{},
-
-    /// Full mouse down listeners with phase control
-    mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .{},
-
-    /// Key down listeners
-    key_down_listeners: std.ArrayListUnmanaged(KeyListener) = .{},
-
-    /// Simple key handlers
-    simple_key_listeners: std.ArrayListUnmanaged(SimpleKeyListener) = .{},
-
-    /// Action handlers
-    action_listeners: std.ArrayListUnmanaged(ActionListener) = .{},
-
-    /// Click handlers with HandlerRef (new pattern)
-    click_listeners_handler: std.ArrayListUnmanaged(ClickListenerHandler) = .{},
-
-    /// Action handlers with HandlerRef (new pattern)
-    action_listeners_handler: std.ArrayListUnmanaged(ActionListenerHandler) = .{},
-
-    /// Click-outside listeners (for closing dropdowns, modals, etc.)
-    click_outside_listeners: std.ArrayListUnmanaged(ClickOutsideListener) = .{},
+    /// Heap-allocated listener block — null for nodes without listeners.
+    /// Lazily allocated on first listener registration. Reduces per-node
+    /// inline size by ~232 bytes (10 × ArrayListUnmanaged → 1 pointer).
+    listeners: ?*ListenerBlock = null,
 
     // Drag & Drop
     /// Drag source (if this node is draggable)
@@ -141,6 +164,18 @@ pub const DispatchNode = struct {
 
     const Self = @This();
 
+    /// Get or lazily allocate the listener block. Panics on OOM — listener
+    /// registration during rendering is unrecoverable (per audit item #10).
+    pub fn getOrCreateListeners(self: *Self, allocator: std.mem.Allocator) *ListenerBlock {
+        if (self.listeners) |block| return block;
+
+        const block = allocator.create(ListenerBlock) catch
+            @panic("dispatch: listener block allocation failed (OOM)");
+        block.* = .{};
+        self.listeners = block;
+        return block;
+    }
+
     pub fn containsPoint(self: Self, x: f32, y: f32) bool {
         if (self.bounds) |b| {
             return x >= b.x and x < b.x + b.width and
@@ -149,35 +184,19 @@ pub const DispatchNode = struct {
         return true;
     }
 
-    /// Clean up listener arrays
+    /// Clean up listener block (if allocated).
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-        self.click_listeners.deinit(allocator);
-        self.click_listeners_ctx.deinit(allocator);
-        self.click_listeners_data.deinit(allocator);
-        self.key_down_listeners.deinit(allocator);
-        self.simple_key_listeners.deinit(allocator);
-        self.mouse_down_listeners.deinit(allocator);
-        self.action_listeners.deinit(allocator);
-        // New handler-based listeners
-        self.click_listeners_handler.deinit(allocator);
-        self.action_listeners_handler.deinit(allocator);
-        self.click_outside_listeners.deinit(allocator);
+        if (self.listeners) |block| {
+            block.deinit(allocator);
+            allocator.destroy(block);
+        }
     }
 
-    /// Reset listeners for reuse (keeps capacity)
+    /// Reset listeners for reuse (keeps listener block capacity for next frame).
     pub fn resetListeners(self: *Self) void {
-        self.click_listeners.clearRetainingCapacity();
-        self.click_listeners_ctx.clearRetainingCapacity();
-        self.click_listeners_data.clearRetainingCapacity();
-        self.mouse_down_listeners.clearRetainingCapacity();
-        self.key_down_listeners.clearRetainingCapacity();
-        self.simple_key_listeners.clearRetainingCapacity();
-        self.action_listeners.clearRetainingCapacity();
-        // New handler-based listeners
-        self.click_listeners_handler.clearRetainingCapacity();
-        self.action_listeners_handler.clearRetainingCapacity();
-        self.click_outside_listeners.clearRetainingCapacity();
-        // Drag & Drop
+        if (self.listeners) |block| {
+            block.clearRetainingCapacity();
+        }
         self.drag_source = null;
         self.drop_target = null;
         self.pointer_events_none = false;
@@ -316,6 +335,12 @@ pub const DispatchTree = struct {
     /// Maximum depth for dispatch paths (should be plenty for any UI)
     pub const MAX_PATH_DEPTH = 64;
 
+    /// Maximum stack depth for iterative tree traversals (hit testing, depth
+    /// computation). Must accommodate the widest single node's children in
+    /// the worst case (flat tree: all nodes are siblings of root). 4096
+    /// entries × 4 bytes = 16 KB — well within WASM's 1 MB stack budget.
+    const MAX_TRAVERSAL_STACK = 4096;
+
     // =========================================================================
     // Lifecycle
     // =========================================================================
@@ -381,6 +406,7 @@ pub const DispatchTree = struct {
             // Reset node fields but keep listener array capacities
             node.parent = parent_id;
             node.first_child = .invalid;
+            node.last_child = .invalid;
             node.next_sibling = .invalid;
             node.bounds = null;
             node.z_index = 0;
@@ -406,21 +432,20 @@ pub const DispatchTree = struct {
             if (parent.first_child == .invalid) {
                 parent.first_child = node_id;
             } else {
-                // Find last child and add as sibling
-                var last_child = parent.first_child;
-                while (self.nodes.items[@intFromEnum(last_child)].next_sibling.isValid()) {
-                    last_child = self.nodes.items[@intFromEnum(last_child)].next_sibling;
-                }
-                self.nodes.items[@intFromEnum(last_child)].next_sibling = node_id;
+                // O(1): link directly from last_child.
+                std.debug.assert(parent.last_child.isValid());
+                self.nodes.items[@intFromEnum(parent.last_child)].next_sibling = node_id;
             }
+            parent.last_child = node_id;
             parent.child_count += 1;
         } else {
             // This is the root node
             self.root = node_id;
         }
 
-        // Push onto stack
-        self.node_stack.append(self.allocator, node_id) catch {};
+        // Push onto stack — failure corrupts parent tracking for the entire subtree.
+        self.node_stack.append(self.allocator, node_id) catch
+            @panic("dispatch: node_stack append failed (OOM during render)");
 
         return node_id;
     }
@@ -461,7 +486,9 @@ pub const DispatchTree = struct {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
             node.layout_id = layout_id;
-            self.layout_to_node.put(self.allocator, layout_id, node_id) catch {};
+            // Failure silently breaks hit testing for this element.
+            self.layout_to_node.put(self.allocator, layout_id, node_id) catch
+                @panic("dispatch: layout_to_node put failed (OOM during render)");
         }
     }
 
@@ -470,7 +497,9 @@ pub const DispatchTree = struct {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
             node.focus_id = focus_id;
-            self.focus_to_node.put(self.allocator, focus_id.hash, node_id) catch {};
+            // Failure silently breaks focus routing for this element.
+            self.focus_to_node.put(self.allocator, focus_id.hash, node_id) catch
+                @panic("dispatch: focus_to_node put failed (OOM during render)");
         }
     }
 
@@ -534,58 +563,68 @@ pub const DispatchTree = struct {
     // Hit Testing
     // =========================================================================
 
-    /// Find the deepest node containing the given point.
-    /// Z-index aware: prefers higher z-index nodes over lower ones.
-    /// Returns null if no node contains the point.
+    /// Find the topmost node at (x, y), respecting z-index and pointer_events_none.
+    /// Uses an explicit DFS stack instead of recursion (Rule 6).
     pub fn hitTest(self: *const Self, x: f32, y: f32) ?DispatchNodeId {
         if (!self.root.isValid()) return null;
 
         var result: ?DispatchNodeId = null;
         var best_z: i16 = std.math.minInt(i16);
-        self.hitTestRecursive(self.root, x, y, &result, &best_z);
-        return result;
-    }
 
-    fn hitTestRecursive(
-        self: *const Self,
-        node_id: DispatchNodeId,
-        x: f32,
-        y: f32,
-        result: *?DispatchNodeId,
-        best_z: *i16,
-    ) void {
-        const node = self.getNodeConst(node_id) orelse return;
+        // Explicit pre-order DFS stack (Rule 6: no recursion on component trees).
+        var stack: [MAX_TRAVERSAL_STACK]DispatchNodeId = undefined;
+        var stack_len: u32 = 1;
+        stack[0] = self.root;
 
-        // Check if this node contains the point
-        const contains_point = if (node.bounds) |bounds|
-            x >= bounds.x and x < bounds.x + bounds.width and
-                y >= bounds.y and y < bounds.y + bounds.height
-        else
-            true; // No bounds = assume contains (for structural nodes)
+        while (stack_len > 0) {
+            stack_len -= 1;
+            const current_id = stack[stack_len];
 
-        if (contains_point) {
-            // Only accept this node if:
-            // - z_index >= best so far (equal z_index: later in tree order wins)
-            // - pointer_events_none is false (otherwise transparent to hit testing)
-            if (node.z_index >= best_z.* and !node.pointer_events_none) {
-                result.* = node_id;
-                best_z.* = node.z_index;
+            const node = self.getNodeConst(current_id) orelse continue;
+
+            // Check if this node contains the point.
+            const contains_point = if (node.bounds) |bounds|
+                x >= bounds.x and x < bounds.x + bounds.width and
+                    y >= bounds.y and y < bounds.y + bounds.height
+            else
+                true; // No bounds = assume contains (for structural nodes).
+
+            if (contains_point) {
+                // Only accept this node if:
+                // - z_index >= best so far (equal z_index: later in tree order wins)
+                // - pointer_events_none is false (otherwise transparent to hit testing)
+                if (node.z_index >= best_z and !node.pointer_events_none) {
+                    result = current_id;
+                    best_z = node.z_index;
+                }
             }
+
+            // Optimization: skip children if point is outside AND no floating descendants.
+            // Floating elements can be positioned outside parent bounds, so we must check them.
+            if (!contains_point and !node.has_floating_descendant) {
+                continue;
+            }
+
+            // Push children directly onto the DFS stack, then reverse the
+            // pushed segment so the first child ends up on top (processed
+            // first). This preserves left-to-right tree order: last sibling
+            // wins on equal z-index. No temp buffer — the stack itself is the
+            // buffer, so wide nodes (>64 children) are handled correctly.
+            const push_start = stack_len;
+            var child = node.first_child;
+            while (child.isValid()) {
+                std.debug.assert(stack_len < MAX_TRAVERSAL_STACK); // Rule 4: hard cap.
+                stack[stack_len] = child;
+                stack_len += 1;
+                const child_node = self.getNodeConst(child) orelse break;
+                child = child_node.next_sibling;
+            }
+            // Reverse so first child is on top of the stack (popped first).
+            const pushed = stack[push_start..stack_len];
+            std.mem.reverse(DispatchNodeId, pushed);
         }
 
-        // Optimization: skip children if point is outside AND no floating descendants
-        // Floating elements can be positioned outside parent bounds, so we must check them
-        if (!contains_point and !node.has_floating_descendant) {
-            return;
-        }
-
-        // Check children
-        var child = node.first_child;
-        while (child.isValid()) {
-            self.hitTestRecursive(child, x, y, result, best_z);
-            const child_node = self.getNodeConst(child) orelse break;
-            child = child_node.next_sibling;
-        }
+        return result;
     }
 
     // =========================================================================
@@ -647,19 +686,35 @@ pub const DispatchTree = struct {
         return self.computeDepth(self.root);
     }
 
-    fn computeDepth(self: *const Self, node_id: DispatchNodeId) u32 {
-        const node = self.getNodeConst(node_id) orelse return 0;
+    /// Compute the maximum depth of the subtree rooted at `root_id`.
+    /// Uses an explicit stack instead of recursion (Rule 6).
+    fn computeDepth(self: *const Self, root_id: DispatchNodeId) u32 {
+        const Entry = struct { node_id: DispatchNodeId, depth: u32 };
 
-        var max_child_depth: u32 = 0;
-        var child = node.first_child;
-        while (child.isValid()) {
-            const child_depth = self.computeDepth(child);
-            max_child_depth = @max(max_child_depth, child_depth);
-            const child_node = self.getNodeConst(child) orelse break;
-            child = child_node.next_sibling;
+        var stack: [MAX_TRAVERSAL_STACK]Entry = undefined;
+        var stack_len: u32 = 1;
+        stack[0] = .{ .node_id = root_id, .depth = 1 };
+
+        var max_depth: u32 = 0;
+
+        while (stack_len > 0) {
+            stack_len -= 1;
+            const entry = stack[stack_len];
+
+            const node = self.getNodeConst(entry.node_id) orelse continue;
+            max_depth = @max(max_depth, entry.depth);
+
+            var child = node.first_child;
+            while (child.isValid()) {
+                std.debug.assert(stack_len < MAX_TRAVERSAL_STACK); // Rule 4: hard cap.
+                stack[stack_len] = .{ .node_id = child, .depth = entry.depth + 1 };
+                stack_len += 1;
+                const child_node = self.getNodeConst(child) orelse break;
+                child = child_node.next_sibling;
+            }
         }
 
-        return 1 + max_child_depth;
+        return max_depth;
     }
 
     // =========================================================================
@@ -670,9 +725,9 @@ pub const DispatchTree = struct {
     pub fn onClick(self: *Self, callback: *const fn () void) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.click_listeners.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).click_listeners.append(self.allocator, .{
                 .callback = callback,
-            }) catch {};
+            }) catch @panic("dispatch: click listener registration failed (OOM)");
         }
     }
 
@@ -680,9 +735,9 @@ pub const DispatchTree = struct {
     pub fn onClickHandler(self: *Self, ref: HandlerRef) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.click_listeners_handler.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).click_listeners_handler.append(self.allocator, .{
                 .handler = ref,
-            }) catch {};
+            }) catch @panic("dispatch: click handler registration failed (OOM)");
         }
     }
 
@@ -690,10 +745,10 @@ pub const DispatchTree = struct {
     pub fn onClickWithContext(self: *Self, callback: *const fn (ctx: *anyopaque) void, context: *anyopaque) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.click_listeners_ctx.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).click_listeners_ctx.append(self.allocator, .{
                 .callback = callback,
                 .context = context,
-            }) catch {};
+            }) catch @panic("dispatch: click context listener registration failed (OOM)");
         }
     }
 
@@ -701,10 +756,10 @@ pub const DispatchTree = struct {
     pub fn onClickWithData(self: *Self, callback: *const fn (data: u32) void, data: u32) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.click_listeners_data.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).click_listeners_data.append(self.allocator, .{
                 .callback = callback,
                 .data = data,
-            }) catch {};
+            }) catch @panic("dispatch: click data listener registration failed (OOM)");
         }
     }
 
@@ -712,7 +767,8 @@ pub const DispatchTree = struct {
     pub fn onMouseDown(self: *Self, listener: MouseListener) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.mouse_down_listeners.append(self.allocator, listener) catch {};
+            node.getOrCreateListeners(self.allocator).mouse_down_listeners.append(self.allocator, listener) catch
+                @panic("dispatch: mouse down listener registration failed (OOM)");
         }
     }
 
@@ -722,13 +778,15 @@ pub const DispatchTree = struct {
     pub fn onClickOutside(self: *Self, callback: *const fn () void) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            // Track this node for fast iteration (only if first listener)
-            if (node.click_outside_listeners.items.len == 0) {
-                self.click_outside_nodes.append(self.allocator, node_id) catch {};
+            const lb = node.getOrCreateListeners(self.allocator);
+            // Track this node for fast iteration (only if first listener).
+            if (lb.click_outside_listeners.items.len == 0) {
+                self.click_outside_nodes.append(self.allocator, node_id) catch
+                    @panic("dispatch: click_outside_nodes tracking failed (OOM)");
             }
-            node.click_outside_listeners.append(self.allocator, .{
+            lb.click_outside_listeners.append(self.allocator, .{
                 .callback = callback,
-            }) catch {};
+            }) catch @panic("dispatch: click outside listener registration failed (OOM)");
         }
     }
 
@@ -736,13 +794,15 @@ pub const DispatchTree = struct {
     pub fn onClickOutsideHandler(self: *Self, ref: HandlerRef) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            // Track this node for fast iteration (only if first listener)
-            if (node.click_outside_listeners.items.len == 0) {
-                self.click_outside_nodes.append(self.allocator, node_id) catch {};
+            const lb = node.getOrCreateListeners(self.allocator);
+            // Track this node for fast iteration (only if first listener).
+            if (lb.click_outside_listeners.items.len == 0) {
+                self.click_outside_nodes.append(self.allocator, node_id) catch
+                    @panic("dispatch: click_outside_nodes tracking failed (OOM)");
             }
-            node.click_outside_listeners.append(self.allocator, .{
+            lb.click_outside_listeners.append(self.allocator, .{
                 .handler = ref,
-            }) catch {};
+            }) catch @panic("dispatch: click outside handler registration failed (OOM)");
         }
     }
 
@@ -761,30 +821,34 @@ pub const DispatchTree = struct {
         while (i > 0) {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
+            const lb = node.listeners orelse continue;
 
-            // Call simple click listeners
-            for (node.click_listeners.items) |listener| {
+            // Fire all listeners across all types on the matching node,
+            // then stop bubbling. Preserves stop-at-first-node semantics
+            // while handling nodes with multiple listener types correctly.
+            var handled = false;
+
+            for (lb.click_listeners.items) |listener| {
                 listener.callback();
-                return true;
+                handled = true;
             }
 
-            // Call context click listeners
-            for (node.click_listeners_ctx.items) |listener| {
+            for (lb.click_listeners_ctx.items) |listener| {
                 listener.callback(listener.context);
-                return true;
+                handled = true;
             }
 
-            // Call data click listeners (for table columns/rows)
-            for (node.click_listeners_data.items) |listener| {
+            for (lb.click_listeners_data.items) |listener| {
                 listener.callback(listener.data);
-                return true;
+                handled = true;
             }
 
-            // Call handler-based click listeners (new pattern)
-            for (node.click_listeners_handler.items) |listener| {
+            for (lb.click_listeners_handler.items) |listener| {
                 listener.handler.invoke(gooey);
-                return true;
+                handled = true;
             }
+
+            if (handled) return true;
         }
 
         return false;
@@ -799,7 +863,8 @@ pub const DispatchTree = struct {
         // Capture phase: root -> target
         for (path) |node_id| {
             const node = self.getNodeConst(node_id) orelse continue;
-            for (node.mouse_down_listeners.items) |listener| {
+            const lb = node.listeners orelse continue;
+            for (lb.mouse_down_listeners.items) |listener| {
                 const result = listener.callback(listener.context, event, .capture);
                 if (result == .stop) return true;
             }
@@ -810,10 +875,11 @@ pub const DispatchTree = struct {
         while (i > 0) {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
+            const lb = node.listeners orelse continue;
 
             const phase: EventPhase = if (i == path.len - 1) .target else .bubble;
 
-            for (node.mouse_down_listeners.items) |listener| {
+            for (lb.mouse_down_listeners.items) |listener| {
                 const result = listener.callback(listener.context, event, phase);
                 if (result == .stop) return true;
             }
@@ -865,8 +931,8 @@ pub const DispatchTree = struct {
 
             // Only fire if click is outside bounds AND not on a descendant
             if (is_outside_bounds and !is_on_descendant) {
-                // Fire all click-outside listeners for this node
-                for (node.click_outside_listeners.items) |listener| {
+                const lb = node.listeners orelse continue;
+                for (lb.click_outside_listeners.items) |listener| {
                     if (listener.callback) |cb| {
                         cb();
                         any_fired = true;
@@ -903,7 +969,8 @@ pub const DispatchTree = struct {
     pub fn onKeyDown(self: *Self, listener: KeyListener) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.key_down_listeners.append(self.allocator, listener) catch {};
+            node.getOrCreateListeners(self.allocator).key_down_listeners.append(self.allocator, listener) catch
+                @panic("dispatch: key down listener registration failed (OOM)");
         }
     }
 
@@ -911,9 +978,9 @@ pub const DispatchTree = struct {
     pub fn onKey(self: *Self, callback: *const fn (event: KeyEvent) EventResult) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.simple_key_listeners.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).simple_key_listeners.append(self.allocator, .{
                 .callback = callback,
-            }) catch {};
+            }) catch @panic("dispatch: simple key listener registration failed (OOM)");
         }
     }
 
@@ -926,8 +993,9 @@ pub const DispatchTree = struct {
         // Capture phase: root -> focused
         for (path) |node_id| {
             const node = self.getNodeConst(node_id) orelse continue;
+            const lb = node.listeners orelse continue;
 
-            for (node.key_down_listeners.items) |listener| {
+            for (lb.key_down_listeners.items) |listener| {
                 const result = listener.callback(listener.context, event, .capture);
                 if (result == .stop) return true;
             }
@@ -938,18 +1006,19 @@ pub const DispatchTree = struct {
         while (i > 0) {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
+            const lb = node.listeners orelse continue;
 
             const phase: EventPhase = if (i == path.len - 1) .target else .bubble;
 
             // Full listeners
-            for (node.key_down_listeners.items) |listener| {
+            for (lb.key_down_listeners.items) |listener| {
                 const result = listener.callback(listener.context, event, phase);
                 if (result == .stop) return true;
             }
 
             // Simple listeners (bubble phase only)
             if (phase != .capture) {
-                for (node.simple_key_listeners.items) |listener| {
+                for (lb.simple_key_listeners.items) |listener| {
                     const result = listener.callback(event);
                     if (result == .stop) return true;
                 }
@@ -963,10 +1032,10 @@ pub const DispatchTree = struct {
     pub fn onAction(self: *Self, comptime Action: type, callback: *const fn () void) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.action_listeners.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).action_listeners.append(self.allocator, .{
                 .action_type = actionTypeId(Action),
                 .callback = callback,
-            }) catch {};
+            }) catch @panic("dispatch: action listener registration failed (OOM)");
         }
     }
 
@@ -974,10 +1043,10 @@ pub const DispatchTree = struct {
     pub fn onActionHandler(self: *Self, comptime Action: type, ref: HandlerRef) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.action_listeners_handler.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).action_listeners_handler.append(self.allocator, .{
                 .action_type = actionTypeId(Action),
                 .handler = ref,
-            }) catch {};
+            }) catch @panic("dispatch: action handler registration failed (OOM)");
         }
     }
 
@@ -1048,9 +1117,10 @@ pub const DispatchTree = struct {
         while (i > 0) {
             i -= 1;
             const node = self.getNodeConst(path[i]) orelse continue;
+            const lb = node.listeners orelse continue;
 
             // Check action listeners
-            for (node.action_listeners.items) |listener| {
+            for (lb.action_listeners.items) |listener| {
                 if (listener.action_type == action_type) {
                     listener.callback();
                     return true;
@@ -1058,7 +1128,7 @@ pub const DispatchTree = struct {
             }
 
             // Check handler-based action listeners (new pattern)
-            for (node.action_listeners_handler.items) |listener| {
+            for (lb.action_listeners_handler.items) |listener| {
                 if (listener.action_type == action_type) {
                     listener.handler.invoke(gooey);
                     return true;

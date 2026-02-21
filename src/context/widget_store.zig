@@ -44,7 +44,11 @@ pub const WidgetStore = struct {
     text_areas: std.StringHashMap(*TextArea),
     code_editors: std.StringHashMap(*CodeEditorState),
     scroll_containers: std.StringHashMap(*ScrollContainer),
-    accessed_this_frame: std.StringHashMap(void),
+    /// Tracks which widgets were accessed this frame. Keyed by pointer
+    /// address of the heap-duped key in the widget map — avoids re-hashing
+    /// string contents every frame (pointer identity is sufficient because
+    /// each widget map entry owns a unique heap allocation).
+    accessed_this_frame: std.AutoHashMap([*]const u8, void),
 
     // u32-keyed select state (open/close, keyed by LayoutId hash)
     select_states: std.AutoHashMap(u32, SelectState),
@@ -72,6 +76,95 @@ pub const WidgetStore = struct {
 
     const Self = @This();
 
+    // =========================================================================
+    // Generic widget helpers (eliminate duplication across widget types)
+    // =========================================================================
+
+    /// Look up a widget by `id` in `map`. If found, mark it as accessed this
+    /// frame and return the existing instance. If not found, heap-allocate a
+    /// new `T`, dupe the key, initialize via the type-specific init function,
+    /// store in the map, mark accessed, and return. Returns null only on OOM.
+    fn getOrCreateWidget(self: *Self, comptime T: type, map: *std.StringHashMap(*T), id: []const u8) ?*T {
+        std.debug.assert(id.len > 0);
+
+        // Return existing instance if found.
+        if (map.getEntry(id)) |entry| {
+            const stable_key = entry.key_ptr.*;
+            if (!self.accessed_this_frame.contains(stable_key.ptr)) {
+                self.accessed_this_frame.put(stable_key.ptr, {}) catch {};
+            }
+            return entry.value_ptr.*;
+        }
+
+        // Allocate new instance.
+        const instance = self.allocator.create(T) catch return null;
+
+        const owned_key = self.allocator.dupe(u8, id) catch {
+            self.allocator.destroy(instance);
+            return null;
+        };
+
+        // Initialize via the type-specific init function.
+        if (T == ScrollContainer) {
+            instance.* = ScrollContainer.init(self.allocator, owned_key);
+        } else if (T == TextInput) {
+            instance.* = TextInput.initWithId(self.allocator, self.default_text_input_bounds, owned_key);
+        } else if (T == TextArea) {
+            instance.* = TextArea.initWithId(self.allocator, self.default_text_area_bounds, owned_key);
+        } else if (T == CodeEditorState) {
+            instance.* = CodeEditorState.initWithId(self.allocator, self.default_code_editor_bounds, owned_key);
+        } else {
+            @compileError("getOrCreateWidget: unsupported widget type");
+        }
+
+        // Store in map and mark accessed.
+        map.put(owned_key, instance) catch {
+            instance.deinit();
+            self.allocator.destroy(instance);
+            self.allocator.free(owned_key);
+            return null;
+        };
+
+        self.accessed_this_frame.put(owned_key.ptr, {}) catch {};
+        return instance;
+    }
+
+    /// Remove a widget by `id`: deinit the instance, free the heap allocation
+    /// and the duped key, and remove from the accessed-this-frame set.
+    fn removeWidget(self: *Self, comptime T: type, map: *std.StringHashMap(*T), id: []const u8) void {
+        if (map.fetchRemove(id)) |kv| {
+            _ = self.accessed_this_frame.remove(kv.key.ptr);
+            kv.value.deinit();
+            self.allocator.destroy(kv.value);
+            self.allocator.free(kv.key);
+        }
+    }
+
+    /// Iterate a widget map and return the first focused instance, or null.
+    /// Only valid for types that expose `isFocused()` (TextInput, TextArea,
+    /// CodeEditorState).
+    fn getFocusedWidget(comptime T: type, map: *std.StringHashMap(*T)) ?*T {
+        var it = map.valueIterator();
+        while (it.next()) |val| {
+            if (val.*.isFocused()) {
+                return val.*;
+            }
+        }
+        return null;
+    }
+
+    /// Deinit every entry in a widget map: call `deinit` on each instance,
+    /// free the heap allocation, free the duped key, then deinit the map itself.
+    fn deinitWidgetMap(self: *Self, comptime T: type, map: *std.StringHashMap(*T)) void {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+            self.allocator.destroy(entry.value_ptr.*);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        map.deinit();
+    }
+
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
@@ -79,7 +172,7 @@ pub const WidgetStore = struct {
             .text_areas = std.StringHashMap(*TextArea).init(allocator),
             .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
-            .accessed_this_frame = std.StringHashMap(void).init(allocator),
+            .accessed_this_frame = std.AutoHashMap([*]const u8, void).init(allocator),
             .select_states = std.AutoHashMap(u32, SelectState).init(allocator),
             .animations = std.AutoArrayHashMap(u32, AnimationState).init(allocator),
             .springs = std.AutoArrayHashMap(u32, SpringState).init(allocator),
@@ -89,55 +182,16 @@ pub const WidgetStore = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Clean up TextInputs
-        var it = self.text_inputs.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.text_inputs.deinit();
+        self.deinitWidgetMap(TextInput, &self.text_inputs);
+        self.deinitWidgetMap(TextArea, &self.text_areas);
+        self.deinitWidgetMap(CodeEditorState, &self.code_editors);
+        self.deinitWidgetMap(ScrollContainer, &self.scroll_containers);
 
-        // Clean up TextAreas
-        var ta_it = self.text_areas.iterator();
-        while (ta_it.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.text_areas.deinit();
-
-        // Clean up CodeEditors
-        var ce_it = self.code_editors.iterator();
-        while (ce_it.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.code_editors.deinit();
-
-        // Clean up ScrollContainers
-        var sc_it = self.scroll_containers.iterator();
-        while (sc_it.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.scroll_containers.deinit();
-
-        // Clean up select states (no heap allocations to free, just the map)
         self.select_states.deinit();
-
-        // Clean up animation keys
         self.animations.deinit();
-
-        // Clean up springs
         self.springs.deinit();
-
-        // Clean up motions
         self.motions.deinit();
         self.spring_motions.deinit();
-
         self.accessed_this_frame.deinit();
     }
 
@@ -501,34 +555,7 @@ pub const WidgetStore = struct {
     // =========================================================================
 
     pub fn textInput(self: *Self, id: []const u8) ?*TextInput {
-        if (self.text_inputs.getEntry(id)) |entry| {
-            const stable_key = entry.key_ptr.*;
-            if (!self.accessed_this_frame.contains(stable_key)) {
-                self.accessed_this_frame.put(stable_key, {}) catch {};
-            }
-            return entry.value_ptr.*;
-        }
-
-        const input = self.allocator.create(TextInput) catch return null;
-        errdefer self.allocator.destroy(input);
-
-        const owned_key = self.allocator.dupe(u8, id) catch {
-            self.allocator.destroy(input);
-            return null;
-        };
-        errdefer self.allocator.free(owned_key);
-
-        input.* = TextInput.initWithId(self.allocator, self.default_text_input_bounds, owned_key);
-
-        self.text_inputs.put(owned_key, input) catch {
-            input.deinit();
-            self.allocator.destroy(input);
-            self.allocator.free(owned_key);
-            return null;
-        };
-
-        self.accessed_this_frame.put(owned_key, {}) catch {};
-        return input;
+        return self.getOrCreateWidget(TextInput, &self.text_inputs, id);
     }
 
     pub fn textInputOrPanic(self: *Self, id: []const u8) *TextInput {
@@ -540,34 +567,7 @@ pub const WidgetStore = struct {
     // =========================================================================
 
     pub fn textArea(self: *Self, id: []const u8) ?*TextArea {
-        if (self.text_areas.getEntry(id)) |entry| {
-            const stable_key = entry.key_ptr.*;
-            if (!self.accessed_this_frame.contains(stable_key)) {
-                self.accessed_this_frame.put(stable_key, {}) catch {};
-            }
-            return entry.value_ptr.*;
-        }
-
-        const ta = self.allocator.create(TextArea) catch return null;
-        errdefer self.allocator.destroy(ta);
-
-        const owned_key = self.allocator.dupe(u8, id) catch {
-            self.allocator.destroy(ta);
-            return null;
-        };
-        errdefer self.allocator.free(owned_key);
-
-        ta.* = TextArea.initWithId(self.allocator, self.default_text_area_bounds, owned_key);
-
-        self.text_areas.put(owned_key, ta) catch {
-            ta.deinit();
-            self.allocator.destroy(ta);
-            self.allocator.free(owned_key);
-            return null;
-        };
-
-        self.accessed_this_frame.put(owned_key, {}) catch {};
-        return ta;
+        return self.getOrCreateWidget(TextArea, &self.text_areas, id);
     }
 
     pub fn textAreaOrPanic(self: *Self, id: []const u8) *TextArea {
@@ -579,22 +579,11 @@ pub const WidgetStore = struct {
     }
 
     pub fn removeTextArea(self: *Self, id: []const u8) void {
-        if (self.text_areas.fetchRemove(id)) |kv| {
-            _ = self.accessed_this_frame.remove(kv.key);
-            kv.value.deinit();
-            self.allocator.destroy(kv.value);
-            self.allocator.free(kv.key);
-        }
+        self.removeWidget(TextArea, &self.text_areas, id);
     }
 
     pub fn getFocusedTextArea(self: *Self) ?*TextArea {
-        var it = self.text_areas.valueIterator();
-        while (it.next()) |ta| {
-            if (ta.*.isFocused()) {
-                return ta.*;
-            }
-        }
-        return null;
+        return getFocusedWidget(TextArea, &self.text_areas);
     }
 
     // =========================================================================
@@ -602,34 +591,7 @@ pub const WidgetStore = struct {
     // =========================================================================
 
     pub fn codeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
-        if (self.code_editors.getEntry(id)) |entry| {
-            const stable_key = entry.key_ptr.*;
-            if (!self.accessed_this_frame.contains(stable_key)) {
-                self.accessed_this_frame.put(stable_key, {}) catch {};
-            }
-            return entry.value_ptr.*;
-        }
-
-        const ce = self.allocator.create(CodeEditorState) catch return null;
-        errdefer self.allocator.destroy(ce);
-
-        const owned_key = self.allocator.dupe(u8, id) catch {
-            self.allocator.destroy(ce);
-            return null;
-        };
-        errdefer self.allocator.free(owned_key);
-
-        ce.* = CodeEditorState.initWithId(self.allocator, self.default_code_editor_bounds, owned_key);
-
-        self.code_editors.put(owned_key, ce) catch {
-            ce.deinit();
-            self.allocator.destroy(ce);
-            self.allocator.free(owned_key);
-            return null;
-        };
-
-        self.accessed_this_frame.put(owned_key, {}) catch {};
-        return ce;
+        return self.getOrCreateWidget(CodeEditorState, &self.code_editors, id);
     }
 
     pub fn codeEditorOrPanic(self: *Self, id: []const u8) *CodeEditorState {
@@ -641,22 +603,11 @@ pub const WidgetStore = struct {
     }
 
     pub fn removeCodeEditor(self: *Self, id: []const u8) void {
-        if (self.code_editors.fetchRemove(id)) |kv| {
-            _ = self.accessed_this_frame.remove(kv.key);
-            kv.value.deinit();
-            self.allocator.destroy(kv.value);
-            self.allocator.free(kv.key);
-        }
+        self.removeWidget(CodeEditorState, &self.code_editors, id);
     }
 
     pub fn getFocusedCodeEditor(self: *Self) ?*CodeEditorState {
-        var it = self.code_editors.valueIterator();
-        while (it.next()) |ce| {
-            if (ce.*.isFocused()) {
-                return ce.*;
-            }
-        }
-        return null;
+        return getFocusedWidget(CodeEditorState, &self.code_editors);
     }
 
     // =========================================================================
@@ -664,34 +615,7 @@ pub const WidgetStore = struct {
     // =========================================================================
 
     pub fn scrollContainer(self: *Self, id: []const u8) ?*ScrollContainer {
-        if (self.scroll_containers.getEntry(id)) |entry| {
-            const stable_key = entry.key_ptr.*;
-            if (!self.accessed_this_frame.contains(stable_key)) {
-                self.accessed_this_frame.put(stable_key, {}) catch {};
-            }
-            return entry.value_ptr.*;
-        }
-
-        const sc = self.allocator.create(ScrollContainer) catch return null;
-        errdefer self.allocator.destroy(sc);
-
-        const owned_key = self.allocator.dupe(u8, id) catch {
-            self.allocator.destroy(sc);
-            return null;
-        };
-        errdefer self.allocator.free(owned_key);
-
-        sc.* = ScrollContainer.init(self.allocator, owned_key);
-
-        self.scroll_containers.put(owned_key, sc) catch {
-            sc.deinit();
-            self.allocator.destroy(sc);
-            self.allocator.free(owned_key);
-            return null;
-        };
-
-        self.accessed_this_frame.put(owned_key, {}) catch {};
-        return sc;
+        return self.getOrCreateWidget(ScrollContainer, &self.scroll_containers, id);
     }
 
     pub fn getScrollContainer(self: *Self, id: []const u8) ?*ScrollContainer {
@@ -703,12 +627,7 @@ pub const WidgetStore = struct {
     // =========================================================================
 
     pub fn removeTextInput(self: *Self, id: []const u8) void {
-        if (self.text_inputs.fetchRemove(id)) |kv| {
-            _ = self.accessed_this_frame.remove(kv.key);
-            kv.value.deinit();
-            self.allocator.destroy(kv.value);
-            self.allocator.free(kv.key);
-        }
+        self.removeWidget(TextInput, &self.text_inputs, id);
     }
 
     pub fn getTextInput(self: *Self, id: []const u8) ?*TextInput {
@@ -724,22 +643,7 @@ pub const WidgetStore = struct {
     }
 
     pub fn getFocusedTextInput(self: *Self) ?*TextInput {
-        var it = self.text_inputs.valueIterator();
-        while (it.next()) |input| {
-            if (input.*.isFocused()) {
-                return input.*;
-            }
-        }
-        return null;
-    }
-
-    pub fn focusTextInput(self: *Self, id: []const u8) void {
-        if (self.getFocusedTextInput()) |current| {
-            current.blur();
-        }
-        if (self.text_inputs.get(id)) |input| {
-            input.focus();
-        }
+        return getFocusedWidget(TextInput, &self.text_inputs);
     }
 
     pub fn blurAll(self: *Self) void {

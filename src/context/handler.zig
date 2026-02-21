@@ -91,41 +91,8 @@ pub const OnSelectHandler = struct {
     }
 };
 
-// =============================================================================
-// Root State Management
-// =============================================================================
-
-/// Storage for the root view's state pointer (for non-entity handlers).
-pub threadlocal var root_state_ptr: ?*anyopaque = null;
-pub threadlocal var root_state_type_id: usize = 0;
-
-/// Get the type ID for a given type (used for runtime type checking).
-pub fn typeId(comptime T: type) usize {
-    const name_ptr: [*]const u8 = @typeName(T).ptr;
-    return @intFromPtr(name_ptr);
-}
-
-/// Store the root state pointer for handler callbacks
-pub fn setRootState(comptime State: type, state_ptr: *State) void {
-    root_state_ptr = @ptrCast(state_ptr);
-    root_state_type_id = typeId(State);
-}
-
-/// Clear the root state pointer
-pub fn clearRootState() void {
-    root_state_ptr = null;
-    root_state_type_id = 0;
-}
-
-/// Get the root state pointer with type checking
-pub fn getRootState(comptime State: type) ?*State {
-    if (root_state_ptr) |ptr| {
-        if (root_state_type_id == typeId(State)) {
-            return @ptrCast(@alignCast(ptr));
-        }
-    }
-    return null;
-}
+/// Re-exported from `entity.zig` — single canonical definition.
+pub const typeId = entity_mod.typeId;
 
 // =============================================================================
 // Argument Packing (for updateWith/commandWith)
@@ -155,35 +122,6 @@ pub fn unpackArg(comptime Arg: type, entity_id: EntityId) Arg {
 // =============================================================================
 // Tests
 // =============================================================================
-
-test "HandlerRef basic usage" {
-    const TestState = struct {
-        value: i32 = 0,
-    };
-
-    var state = TestState{ .value = 42 };
-    setRootState(TestState, &state);
-    defer clearRootState();
-
-    const retrieved = getRootState(TestState);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqual(@as(i32, 42), retrieved.?.value);
-}
-
-test "getRootState type mismatch returns null" {
-    const StateA = struct { a: i32 = 1 };
-    const StateB = struct { b: i32 = 2 };
-
-    var state_a = StateA{};
-    setRootState(StateA, &state_a);
-    defer clearRootState();
-
-    const wrong_type = getRootState(StateB);
-    try std.testing.expect(wrong_type == null);
-
-    const right_type = getRootState(StateA);
-    try std.testing.expect(right_type != null);
-}
 
 test "typeId returns consistent values" {
     const TestA = struct { a: i32 };

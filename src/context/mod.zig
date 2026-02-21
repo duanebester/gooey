@@ -97,9 +97,6 @@ pub const typeId = entity.typeId;
 pub const handler = @import("handler.zig");
 
 pub const HandlerRef = handler.HandlerRef;
-pub const setRootState = handler.setRootState;
-pub const clearRootState = handler.clearRootState;
-pub const getRootState = handler.getRootState;
 pub const packArg = handler.packArg;
 pub const unpackArg = handler.unpackArg;
 
@@ -110,6 +107,9 @@ pub const unpackArg = handler.unpackArg;
 pub const widget_store = @import("widget_store.zig");
 
 pub const WidgetStore = widget_store.WidgetStore;
+
+// Note: `change_tracker.zig` is intentionally not re-exported here.
+// It is an implementation detail of `WidgetStore`, not part of the public API.
 
 // =============================================================================
 // Tests

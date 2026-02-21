@@ -1567,7 +1567,7 @@ test "command method signatures are valid" {
     _ = MockGooey;
 }
 
-test "handler root state registration" {
+test "root state registration via Gooey instance" {
     const StateA = struct {
         a: i32 = 10,
         pub fn inc(self: *@This()) void {
@@ -1579,23 +1579,30 @@ test "handler root state registration" {
         b: []const u8 = "hello",
     };
 
+    // Heap-allocate Gooey (>400KB — too large for stack per CLAUDE.md).
+    const gooey = try std.testing.allocator.create(Gooey);
+    defer std.testing.allocator.destroy(gooey);
+
+    gooey.root_state_ptr = null;
+    gooey.root_state_type_id = 0;
+
     var state_a = StateA{};
 
-    // Set root state
-    handler_mod.setRootState(StateA, &state_a);
-    defer handler_mod.clearRootState();
+    // Set root state on the Gooey instance.
+    gooey.setRootState(StateA, &state_a);
+    defer gooey.clearRootState();
 
-    // Retrieve with correct type
-    const retrieved = handler_mod.getRootState(StateA);
+    // Retrieve with correct type.
+    const retrieved = gooey.getRootState(StateA);
     try std.testing.expect(retrieved != null);
     try std.testing.expectEqual(@as(i32, 10), retrieved.?.a);
 
-    // Modify through pointer
+    // Modify through pointer.
     retrieved.?.inc();
     try std.testing.expectEqual(@as(i32, 11), state_a.a);
 
-    // Wrong type returns null
-    const wrong = handler_mod.getRootState(StateB);
+    // Wrong type returns null.
+    const wrong = gooey.getRootState(StateB);
     try std.testing.expect(wrong == null);
 }
 
@@ -1609,10 +1616,9 @@ test "Cx.update creates valid HandlerRef" {
     };
 
     var state = TestState{};
-    handler_mod.setRootState(TestState, &state);
-    defer handler_mod.clearRootState();
 
-    // Create a minimal Cx (we only need it for the update() method)
+    // Create a minimal Cx (we only need it for the update() method).
+    // No root state registration needed — the handler is not invoked here.
     var cx = Cx{
         ._allocator = undefined, // Not used by update()
         ._gooey = undefined, // Not used by update()
@@ -1638,9 +1644,8 @@ test "Cx.updateWith creates handler with packed argument" {
     };
 
     var state = TestState{};
-    handler_mod.setRootState(TestState, &state);
-    defer handler_mod.clearRootState();
 
+    // No root state registration needed — the handler is not invoked here.
     var cx = Cx{
         ._allocator = undefined,
         ._gooey = undefined,

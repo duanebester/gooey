@@ -2387,10 +2387,10 @@ pub const Builder = struct {
     fn renderActionHandler(self: *Self, handler: ActionHandlerPrimitive) void {
         const node_id = self.dispatch.currentNode();
         if (self.dispatch.getNode(node_id)) |node| {
-            node.action_listeners.append(self.allocator, .{
+            node.getOrCreateListeners(self.allocator).action_listeners.append(self.allocator, .{
                 .action_type = handler.action_type,
                 .callback = handler.callback,
-            }) catch {};
+            }) catch @panic("dispatch: action listener registration failed (OOM)");
         }
     }
 

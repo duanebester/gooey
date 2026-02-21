@@ -257,12 +257,15 @@ pub const Triangulator = struct {
 pub fn signedArea(points: []const Vec2) f32 {
     std.debug.assert(points.len >= 3);
 
+    // Shoelace formula without modulo: iterate consecutive pairs directly,
+    // then handle the wrap-around edge (last→first) separately.
     var area: f32 = 0;
-    for (0..points.len) |i| {
-        const j = (i + 1) % points.len;
-        // Shoelace formula: cross product of consecutive vertices
-        area += points[i].x * points[j].y - points[j].x * points[i].y;
+    const n = points.len;
+    for (0..n - 1) |i| {
+        area += points[i].x * points[i + 1].y - points[i + 1].x * points[i].y;
     }
+    // Closing edge: last vertex back to first vertex.
+    area += points[n - 1].x * points[0].y - points[0].x * points[n - 1].y;
     return area / 2;
 }
 

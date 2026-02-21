@@ -307,41 +307,44 @@ pub const FocusManager = struct {
         self.cycleFocus(-1);
     }
 
-    /// Cycle focus by delta (+1 for next, -1 for prev)
+    // Most UIs have far fewer than 128 tab stops. If a UI exceeds this,
+    // the extra stops are silently ignored — focus still cycles among the
+    // first MAX_TAB_STOPS entries, which is better than failing.
+    const MAX_TAB_STOPS = 128;
+
+    /// Single pass: collect tab-stop indices into a fixed buffer, find the
+    /// current position, compute the target, and index directly.
     fn cycleFocus(self: *Self, delta: i32) void {
-        // Count tab stops inline
-        var count: usize = 0;
-        for (self.focus_order.items) |handle| {
-            if (handle.tab_stop) count += 1;
+        std.debug.assert(delta == 1 or delta == -1);
+
+        // Collect tab stops and locate current position in one pass.
+        var tab_stops: [MAX_TAB_STOPS]FocusId = undefined;
+        var count: u32 = 0;
+        var current_pos: i32 = -1;
+
+        for (self.focus_order.items, 0..) |handle, i| {
+            if (!handle.tab_stop) continue;
+            if (count >= MAX_TAB_STOPS) break; // Hard cap — fail safe.
+
+            if (self.focus_index >= 0 and i == @as(usize, @intCast(self.focus_index))) {
+                current_pos = @intCast(count);
+            }
+            tab_stops[count] = handle.id;
+            count += 1;
         }
         if (count == 0) return;
 
-        // Find current position and next target in one pass
-        var current_pos: i32 = -1;
-        var pos: i32 = 0;
-        for (self.focus_order.items, 0..) |handle, i| {
-            if (!handle.tab_stop) continue;
-            if (self.focus_index >= 0 and i == @as(usize, @intCast(self.focus_index))) {
-                current_pos = pos;
-            }
-            pos += 1;
-        }
-
-        // Calculate target and iterate again to find it
+        // Compute target position with wrap-around.
+        const count_i32: i32 = @intCast(count);
         const target_pos: i32 = if (current_pos < 0)
-            if (delta > 0) 0 else @as(i32, @intCast(count)) - 1
+            if (delta > 0) 0 else count_i32 - 1
         else
-            @mod(current_pos + delta, @as(i32, @intCast(count)));
+            @mod(current_pos + delta, count_i32);
 
-        pos = 0;
-        for (self.focus_order.items) |handle| {
-            if (!handle.tab_stop) continue;
-            if (pos == target_pos) {
-                self.focus(handle.id);
-                return;
-            }
-            pos += 1;
-        }
+        // Direct index — no second iteration.
+        std.debug.assert(target_pos >= 0);
+        std.debug.assert(target_pos < count_i32);
+        self.focus(tab_stops[@intCast(target_pos)]);
     }
 
     // =========================================================================

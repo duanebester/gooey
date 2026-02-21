@@ -288,11 +288,8 @@ pub const Gooey = struct {
 
     const Self = @This();
 
-    /// Get the type ID for a given type (used for runtime type checking).
-    pub fn typeId(comptime T: type) usize {
-        const name_ptr: [*]const u8 = @typeName(T).ptr;
-        return @intFromPtr(name_ptr);
-    }
+    /// Get the type ID for a given type. Canonical definition in entity.zig.
+    pub const typeId = entity_mod.typeId;
 
     /// Set the root state pointer for this window's handler callbacks
     pub fn setRootState(self: *Self, comptime State: type, state_ptr: *State) void {
@@ -1201,12 +1198,30 @@ pub const Gooey = struct {
         return self.widgets.textInput(id);
     }
 
-    /// Focus a TextInput by ID
-    pub fn focusTextInput(self: *Self, id: []const u8) void {
-        self.widgets.focusTextInput(id);
-        // Also update FocusManager so action dispatch works
+    /// Blur all focusable widgets, focus the widget of type `T` with the given
+    /// id (get-or-create), update FocusManager, and request a render. Adding a
+    /// new focusable widget type requires updating only this switch.
+    fn focusWidgetById(self: *Self, comptime T: type, id: []const u8) void {
+        self.widgets.blurAll();
+        const maybe_widget = if (T == TextInput)
+            self.widgets.textInput(id)
+        else if (T == TextArea)
+            self.widgets.textArea(id)
+        else if (T == CodeEditorState)
+            self.widgets.codeEditor(id)
+        else
+            @compileError("focusWidgetById: unsupported widget type");
+        if (maybe_widget) |w| {
+            w.focus();
+        }
         self.focus.focusByName(id);
         self.requestRender();
+    }
+
+    /// Focus a TextInput by ID.
+    /// Blurs all focusable widgets first (TextInput, TextArea, CodeEditor).
+    pub fn focusTextInput(self: *Self, id: []const u8) void {
+        self.focusWidgetById(TextInput, id);
     }
 
     /// Get currently focused TextInput
@@ -1223,21 +1238,7 @@ pub const Gooey = struct {
     }
 
     pub fn focusTextArea(self: *Self, id: []const u8) void {
-        // Blur any currently focused TextInput
-        if (self.getFocusedTextInput()) |current| {
-            current.blur();
-        }
-        // Blur any currently focused TextArea
-        if (self.getFocusedTextArea()) |current| {
-            current.blur();
-        }
-        // Focus the new one
-        if (self.widgets.textArea(id)) |ta| {
-            ta.focus();
-        } else {}
-        // Also update FocusManager so action dispatch works
-        self.focus.focusByName(id);
-        self.requestRender();
+        self.focusWidgetById(TextArea, id);
     }
 
     pub fn getFocusedTextArea(self: *Self) ?*TextArea {
@@ -1257,25 +1258,7 @@ pub const Gooey = struct {
     }
 
     pub fn focusCodeEditor(self: *Self, id: []const u8) void {
-        // Blur any currently focused TextInput
-        if (self.getFocusedTextInput()) |current| {
-            current.blur();
-        }
-        // Blur any currently focused TextArea
-        if (self.getFocusedTextArea()) |current| {
-            current.blur();
-        }
-        // Blur any currently focused CodeEditor
-        if (self.getFocusedCodeEditor()) |current| {
-            current.blur();
-        }
-        // Focus the new one
-        if (self.widgets.codeEditor(id)) |ce| {
-            ce.focus();
-        } else {}
-        // Also update FocusManager so action dispatch works
-        self.focus.focusByName(id);
-        self.requestRender();
+        self.focusWidgetById(CodeEditorState, id);
     }
 
     pub fn getFocusedCodeEditor(self: *Self) ?*CodeEditorState {
@@ -1351,17 +1334,19 @@ pub const Gooey = struct {
     /// Sync widget focus state with FocusManager.
     /// Invokes blur handlers for the previously focused widget, then focuses the new one.
     fn syncWidgetFocus(self: *Self, id: []const u8) void {
-        // Invoke blur handlers for any focused text fields before blurring
+        // Invoke blur handlers for any focused text fields before blurring.
         self.invokeBlurHandlersForFocusedWidgets();
-        // Blur all widgets first
+        // Blur all widgets first.
         self.widgets.blurAll();
-        // Focus the specific widget if it exists (check both TextInput and TextArea)
+        // Focus the specific widget if it exists (check all focusable types).
         if (self.widgets.text_inputs.get(id)) |input| {
             input.focus();
         } else if (self.widgets.text_areas.get(id)) |ta| {
             ta.focus();
+        } else if (self.widgets.code_editors.get(id)) |ce| {
+            ce.focus();
         }
-        // Reset guard after complete focus transition to allow subsequent focus changes
+        // Reset guard after complete focus transition to allow subsequent focus changes.
         self.blur_handlers_invoked_this_transition = false;
     }
 

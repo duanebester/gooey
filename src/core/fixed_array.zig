@@ -47,10 +47,11 @@ pub fn FixedArray(comptime T: type, comptime capacity: u32) type {
             std.debug.assert(index < self.len);
             std.debug.assert(self.len > 0);
             const item = self.buffer[index];
-            // Shift elements left to fill the gap.
-            const len = self.len;
-            for (index..len - 1) |i| {
-                self.buffer[i] = self.buffer[i + 1];
+            // Bulk-shift elements left via memmove — uses SIMD-width moves
+            // instead of a scalar element-by-element loop.
+            const tail_len = self.len - 1 - index;
+            if (tail_len > 0) {
+                std.mem.copyForwards(T, self.buffer[index..][0..tail_len], self.buffer[index + 1 ..][0..tail_len]);
             }
             self.len -= 1;
             return item;

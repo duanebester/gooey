@@ -16,30 +16,21 @@
 //! ## Usage
 //!
 //! ```zig
-//! // Define a model (shared state - no render method)
+//! // A "View" is just an Entity(T) where T implements a render() method.
+//! // cx.update() returns a HandlerRef that, when invoked, calls the
+//! // method and marks the entity dirty automatically.
 //! const Counter = struct {
 //!     count: i32 = 0,
 //!
-//!     pub fn increment(self: *Counter, cx: *EntityContext(Counter)) void {
+//!     pub fn increment(self: *Counter) void {
 //!         self.count += 1;
-//!         cx.notify();
 //!     }
-//! };
 //!
-//! // Define a view (entity with render method)
-//! const CounterView = struct {
-//!     counter: Entity(Counter),
-//!
-//!     pub fn render(self: *CounterView, cx: *EntityContext(CounterView), b: *Builder) void {
-//!         const count = cx.read(self.counter);
+//!     pub fn render(self: *Counter, cx: *EntityContext(Counter), b: *Builder) void {
 //!         b.vstack(.{}, .{
-//!             ui.textFmt("Count: {}", .{count.count}, .{}),
-//!             ui.buttonHandler("+", cx.handler(CounterView.onIncrement)),
+//!             ui.textFmt("Count: {}", .{self.count}, .{}),
+//!             ui.buttonHandler("+", cx.update(Counter.increment)),
 //!         });
-//!     }
-//!
-//!     fn onIncrement(self: *CounterView, cx: *EntityContext(CounterView)) void {
-//!         cx.update(self.counter, Counter.increment);
 //!     }
 //! };
 //! ```
@@ -177,6 +168,12 @@ const EntitySlot = struct {
 
     /// Whether this entity needs re-render (for views)
     dirty: bool = true,
+
+    /// Whether this entity is already in the pending_notifications list.
+    /// Separate from `dirty` because `processNotifications` clears the
+    /// pending list without clearing dirty flags — using `dirty` alone
+    /// would silently skip re-notification after processing.
+    in_pending_list: bool = false,
 };
 
 // =============================================================================
@@ -270,17 +267,16 @@ pub const EntityMap = struct {
         return null;
     }
 
-    /// Mark an entity as needing notification
+    /// Mark an entity as needing notification. O(1) dedup via
+    /// `in_pending_list` flag — no linear scan of the pending list.
     pub fn markDirty(self: *Self, id: EntityId) void {
         if (self.slots.getPtr(id.id)) |slot| {
             slot.dirty = true;
+            if (slot.in_pending_list) return; // Already queued — O(1) dedup.
+            slot.in_pending_list = true;
+            self.pending_notifications.append(self.allocator, id) catch
+                @panic("entity: pending_notifications append failed (OOM)");
         }
-
-        // Add to pending notifications (avoid duplicates)
-        for (self.pending_notifications.items) |pending| {
-            if (pending.eql(id)) return;
-        }
-        self.pending_notifications.append(self.allocator, id) catch {};
     }
 
     /// Process all pending notifications, marking observers as dirty
@@ -289,8 +285,11 @@ pub const EntityMap = struct {
         var any_dirty = false;
 
         for (self.pending_notifications.items) |id| {
-            if (self.slots.get(id.id)) |slot| {
-                // Mark all observers as dirty
+            if (self.slots.getPtr(id.id)) |slot| {
+                // Clear pending flag so the entity can be re-queued next time.
+                slot.in_pending_list = false;
+
+                // Mark all observers as dirty.
                 for (slot.observers.items) |observer_id| {
                     if (self.slots.getPtr(observer_id.id)) |observer_slot| {
                         observer_slot.dirty = true;
@@ -566,58 +565,61 @@ pub fn EntityContext(comptime T: type) type {
         ///
         /// For most cases, prefer using the existing `handler()` method or restructure
         /// to avoid needing both entity_id and an argument.
+        /// Create a handler from a pure entity method that takes an argument.
+        ///
+        /// Packs entity_id (lower 32 bits) and arg (upper 32 bits) into
+        /// `HandlerRef.entity_id`, so each handler carries its own argument
+        /// without shared mutable state. Args are limited to ≤4 bytes
+        /// (`bool`, `i32`, `u32`, `enum`, small structs).
         pub fn updateWith(
             self: *Self,
             arg: anytype,
             comptime method: fn (*T, @TypeOf(arg)) void,
         ) HandlerRef {
             const Arg = @TypeOf(arg);
-            const entity_id = self.entity_id;
+            comptime {
+                std.debug.assert(@sizeOf(Arg) <= 4); // Arg must fit in upper 32 bits.
+            }
+            // Data integrity: truncation to u32 must be lossless. Runtime check
+            // because std.debug.assert is stripped in ReleaseFast and silent
+            // corruption of the packed ID would target the wrong entity.
+            if (self.entity_id.id > std.math.maxInt(u32))
+                @panic("entity_id exceeds u32 range for updateWith packing");
 
-            // For EntityContext, we use a comptime-generated closure with static storage.
-            // This works correctly when each (entity_id, arg) combination is unique per render,
-            // but has limitations if the same method is used with different args for the same entity.
-            const Closure = struct {
-                var captured_arg: Arg = undefined;
+            // Pack: lower 32 = entity_id, upper 32 = arg.
+            var arg_bits: u32 = 0;
+            @memcpy(std.mem.asBytes(&arg_bits)[0..@sizeOf(Arg)], std.mem.asBytes(&arg));
+            const combined: u64 = @as(u64, arg_bits) << 32 | @as(u64, @as(u32, @truncate(self.entity_id.id)));
 
-                fn invoke(gooey: *Gooey, eid: EntityId) void {
+            const Wrapper = struct {
+                fn invoke(gooey: *Gooey, packed_id: EntityId) void {
+                    // Unpack entity_id from lower 32 bits.
+                    const eid_raw: u32 = @truncate(packed_id.id);
+                    const eid = EntityId{ .id = @as(u64, eid_raw) };
+
+                    // Unpack arg from upper 32 bits.
+                    var raw: u32 = @truncate(packed_id.id >> 32);
+                    var unpacked_arg: Arg = undefined;
+                    @memcpy(std.mem.asBytes(&unpacked_arg), std.mem.asBytes(&raw)[0..@sizeOf(Arg)]);
+
                     const ents = gooey.getEntities();
                     const data = ents.write(T, .{ .id = eid }) orelse {
                         return;
                     };
 
-                    // Call the pure method with the captured argument
-                    method(data, captured_arg);
+                    // Call the pure method with the unpacked argument.
+                    method(data, unpacked_arg);
 
-                    // Mark dirty and request render
+                    // Mark dirty and request render.
                     ents.markDirty(eid);
                     gooey.requestRender();
                 }
             };
-            Closure.captured_arg = arg;
 
             return .{
-                .callback = Closure.invoke,
-                .entity_id = entity_id,
+                .callback = Wrapper.invoke,
+                .entity_id = .{ .id = combined },
             };
-        }
-
-        /// Update another entity by calling a method on it
-        pub fn mutate(
-            self: *Self,
-            comptime U: type,
-            entity: Entity(U),
-            comptime method: fn (*U, *EntityContext(U)) void,
-        ) void {
-            const data = self.entities.write(U, entity) orelse return;
-
-            var inner_cx = EntityContext(U){
-                .gooey = self._gooey,
-                .entities = self.entities,
-                .entity_id = entity.id,
-            };
-
-            method(data, &inner_cx);
         }
 
         // =====================================================================
@@ -632,17 +634,6 @@ pub fn EntityContext(comptime T: type) type {
         /// Remove an entity
         pub fn remove(self: *Self, id: EntityId) void {
             self.entities.remove(id);
-        }
-
-        // =====================================================================
-        // Notifications
-        // =====================================================================
-
-        /// Notify that this entity has changed.
-        /// This marks all observers as needing re-render.
-        pub fn notify(self: *Self) void {
-            self.entities.markDirty(self.entity_id);
-            self._gooey.requestRender();
         }
 
         // =====================================================================
@@ -685,23 +676,6 @@ pub fn EntityContext(comptime T: type) type {
             return .{
                 .callback = Wrapper.invoke,
                 .entity_id = self.entity_id,
-            };
-        }
-
-        // =====================================================================
-        // Resource Access
-        // =====================================================================
-
-        /// Get the allocator
-        pub fn allocator(self: *Self) std.mem.Allocator {
-            return self._gooey.allocator;
-        }
-
-        /// Get window dimensions
-        pub fn windowSize(self: *Self) struct { width: f32, height: f32 } {
-            return .{
-                .width = self._gooey.width,
-                .height = self._gooey.height,
             };
         }
     };

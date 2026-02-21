@@ -164,6 +164,46 @@ pub fn build(b: *std.Build) void {
         bench_step.dependOn(&bench_run.step);
 
         // =====================================================================
+        // Context Benchmarks
+        // =====================================================================
+
+        const context_bench_exe = b.addExecutable(.{
+            .name = "context-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        const context_bench_step = b.step("bench-context", "Run context module benchmarks");
+        const context_bench_run = b.addRunArtifact(context_bench_exe);
+        context_bench_step.dependOn(&context_bench_run.step);
+
+        // =====================================================================
+        // Core Benchmarks
+        // =====================================================================
+
+        const core_bench_exe = b.addExecutable(.{
+            .name = "core-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/core/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        const core_bench_step = b.step("bench-core", "Run core module benchmarks");
+        const core_bench_run = b.addRunArtifact(core_bench_exe);
+        core_bench_step.dependOn(&core_bench_run.step);
+
+        // =====================================================================
         // Hot Reload Watcher
         // =====================================================================
 
@@ -341,6 +381,48 @@ pub fn build(b: *std.Build) void {
         const bench_step = b.step("bench", "Run layout engine benchmarks");
         const bench_run = b.addRunArtifact(bench_exe);
         bench_step.dependOn(&bench_run.step);
+
+        // =====================================================================
+        // Context Benchmarks
+        // =====================================================================
+
+        const context_bench_exe = b.addExecutable(.{
+            .name = "context-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(context_bench_exe);
+
+        const context_bench_step = b.step("bench-context", "Run context module benchmarks");
+        const context_bench_run = b.addRunArtifact(context_bench_exe);
+        context_bench_step.dependOn(&context_bench_run.step);
+
+        // =====================================================================
+        // Core Benchmarks
+        // =====================================================================
+
+        const core_bench_exe = b.addExecutable(.{
+            .name = "core-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/core/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(core_bench_exe);
+
+        const core_bench_step = b.step("bench-core", "Run core module benchmarks");
+        const core_bench_run = b.addRunArtifact(core_bench_exe);
+        core_bench_step.dependOn(&core_bench_run.step);
 
         // =====================================================================
         // Tests
