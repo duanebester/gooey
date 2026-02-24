@@ -63,7 +63,9 @@ pub const GlyphCache = cache.GlyphCache;
 pub const CachedGlyph = cache.CachedGlyph;
 
 // High-level API
-pub const TextSystem = @import("text_system.zig").TextSystem;
+const text_system = @import("text_system.zig");
+pub const TextSystem = text_system.TextSystem;
+pub const ShapedRunCache = text_system.ShapedRunCache;
 
 // Debug utilities (for diagnosing native vs web differences)
 pub const text_debug = @import("text_debug.zig");

@@ -965,13 +965,13 @@ pub const TextInput = struct {
         }
     }
 
-    /// Measure text width without rendering
+    /// Measure text width without rendering.
+    /// Delegates to TextSystem.measureText which has a zero-alloc fast path
+    /// on shape cache hits (~25 ns vs ~5200 ns through shapeText+deinit).
     fn measureText(self: *Self, text_system: *TextSystem, text: []const u8) !f32 {
         _ = self;
         if (text.len == 0) return 0;
-        var shaped = try text_system.shapeText(text, null);
-        defer shaped.deinit(text_system.allocator);
-        return shaped.width;
+        return text_system.measureText(text);
     }
 
     /// Render selection highlight
