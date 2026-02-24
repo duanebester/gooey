@@ -61,42 +61,30 @@ pub const GlyphKey = struct {
         };
     }
 
-    /// Compute hash for this key using FNV-1a
+    /// Compute hash using wyhash-style 2-multiply mix.
+    /// Packs non-pointer fields into a single u64 (56 bits: 16+16+8+8+8)
+    /// then mixes with the font pointer in two dependent multiplies.
+    /// Replaces a 15-round FNV-1a serial chain with 2 multiplies that
+    /// have excellent avalanche properties and allow instruction-level
+    /// parallelism on the pack and pointer loads.
     pub fn hash(self: GlyphKey) u64 {
-        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-        const FNV_PRIME: u64 = 0x100000001b3;
+        // Pack glyph_id(16) | size_fixed(16) | scale_fixed(8) | subpixel_x(8) | subpixel_y(8).
+        const fields: u64 = @as(u64, self.glyph_id) |
+            (@as(u64, self.size_fixed) << 16) |
+            (@as(u64, self.scale_fixed) << 32) |
+            (@as(u64, self.subpixel_x) << 40) |
+            (@as(u64, self.subpixel_y) << 48);
 
-        var h: u64 = FNV_OFFSET;
+        // Convert to u64 for platform independence (wasm32 has 32-bit usize).
+        const ptr_u64: u64 = @intCast(self.font_ptr);
 
-        // Hash font_ptr (convert to u64 first for platform independence - wasm32 has 32-bit usize)
-        const ptr_as_u64: u64 = @intCast(self.font_ptr);
-        const ptr_bytes: [8]u8 = @bitCast(ptr_as_u64);
-        for (ptr_bytes) |b| {
-            h ^= b;
-            h *%= FNV_PRIME;
-        }
+        const PRIME_A: u64 = 0x9E3779B97F4A7C15; // golden ratio fractional bits
+        const PRIME_B: u64 = 0xBF58476D1CE4E5B9;
 
-        // Hash glyph_id (2 bytes)
-        h ^= @as(u64, self.glyph_id & 0xFF);
-        h *%= FNV_PRIME;
-        h ^= @as(u64, self.glyph_id >> 8);
-        h *%= FNV_PRIME;
-
-        // Hash size_fixed (2 bytes)
-        h ^= @as(u64, self.size_fixed & 0xFF);
-        h *%= FNV_PRIME;
-        h ^= @as(u64, self.size_fixed >> 8);
-        h *%= FNV_PRIME;
-
-        // Hash scale, subpixel_x, subpixel_y (1 byte each)
-        h ^= @as(u64, self.scale_fixed);
-        h *%= FNV_PRIME;
-        h ^= @as(u64, self.subpixel_x);
-        h *%= FNV_PRIME;
-        h ^= @as(u64, self.subpixel_y);
-        h *%= FNV_PRIME;
-
-        return h;
+        // Two dependent multiplies with xor-shift finalization.
+        var h = (ptr_u64 ^ PRIME_A) *% (fields ^ PRIME_B);
+        h = (h ^ (h >> 32)) *% PRIME_A;
+        return h ^ (h >> 32);
     }
 
     /// Check equality of two keys
@@ -151,6 +139,19 @@ pub const GlyphCache = struct {
     /// Number of valid entries
     entry_count: u32,
 
+    /// Intrusive free list threaded through entries array.
+    /// Each element stores the index of the next free slot, or EMPTY_SLOT for end-of-list.
+    /// Separate array avoids union gymnastics in GlyphEntry — 8 KB (4096 × 2 bytes).
+    ///
+    /// INVARIANT: Any code path that sets `entry.valid = false` on an individual entry
+    /// MUST push that entry's index back onto this free list (set `free_chain[idx] =
+    /// next_free; next_free = idx`).  Currently only bulk `clear()` and `initFreeList()`
+    /// rebuild the list — no individual eviction path exists.  If one is added without
+    /// maintaining this invariant, the freed slot becomes permanently lost until `clear()`.
+    free_chain: [MAX_CACHED_GLYPHS]u16,
+    /// Head of the free list (EMPTY_SLOT = cache full, no free slots).
+    next_free: u16,
+
     /// Grayscale atlas for regular text
     grayscale_atlas: Atlas,
 
@@ -172,6 +173,8 @@ pub const GlyphCache = struct {
     comptime {
         std.debug.assert(MAX_CACHED_GLYPHS < EMPTY_SLOT); // Ensure sentinel is valid
         std.debug.assert(HASH_TABLE_SIZE >= MAX_CACHED_GLYPHS * 2); // Good load factor
+        // Free chain index type must be able to address all entries.
+        std.debug.assert(MAX_CACHED_GLYPHS <= std.math.maxInt(u16));
     }
 
     pub fn init(allocator: std.mem.Allocator, scale: f32) !Self {
@@ -187,6 +190,8 @@ pub const GlyphCache = struct {
             .entries = undefined,
             .hash_table = [_]u16{EMPTY_SLOT} ** HASH_TABLE_SIZE,
             .entry_count = 0,
+            .free_chain = undefined,
+            .next_free = 0,
             .grayscale_atlas = try Atlas.init(allocator, .grayscale),
             .render_buffer = render_buffer,
             .render_buffer_size = buffer_bytes,
@@ -198,7 +203,11 @@ pub const GlyphCache = struct {
             entry.valid = false;
         }
 
+        // Chain every slot into the free list: 0 → 1 → 2 → ... → EMPTY_SLOT.
+        self.initFreeList();
+
         std.debug.assert(self.entry_count == 0);
+        std.debug.assert(self.next_free == 0);
         return self;
     }
 
@@ -227,10 +236,15 @@ pub const GlyphCache = struct {
             entry.valid = false;
         }
 
+        // Chain every slot into the free list: 0 → 1 → 2 → ... → EMPTY_SLOT.
+        self.next_free = 0;
+        self.initFreeList();
+
         // Initialize atlas in-place
         self.grayscale_atlas = try Atlas.init(allocator, .grayscale);
 
         std.debug.assert(self.entry_count == 0);
+        std.debug.assert(self.next_free == 0);
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
@@ -247,6 +261,19 @@ pub const GlyphCache = struct {
         self.grayscale_atlas.deinit();
         self.allocator.free(self.render_buffer);
         self.* = undefined;
+    }
+
+    /// Chain all entry slots into the free list for O(1) insertion.
+    /// Called at init and after clear.
+    fn initFreeList(self: *Self) void {
+        for (0..MAX_CACHED_GLYPHS - 1) |i| {
+            self.free_chain[i] = @intCast(i + 1);
+        }
+        self.free_chain[MAX_CACHED_GLYPHS - 1] = EMPTY_SLOT;
+        self.next_free = 0;
+
+        std.debug.assert(self.free_chain[0] == 1);
+        std.debug.assert(self.free_chain[MAX_CACHED_GLYPHS - 1] == EMPTY_SLOT);
     }
 
     /// Get a cached glyph, or null if not cached
@@ -278,28 +305,22 @@ pub const GlyphCache = struct {
         return null; // Max probe length reached
     }
 
-    /// Store a glyph in the cache
+    /// Store a glyph in the cache using O(1) free list pop.
     fn putInCache(self: *Self, key: GlyphKey, glyph: CachedGlyph) void {
         std.debug.assert(key.font_ptr != 0);
         std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
 
-        // Find an empty slot in entries array
-        var target_idx: ?usize = null;
-        for (&self.entries, 0..) |*entry, idx| {
-            if (!entry.valid) {
-                target_idx = idx;
-                break;
-            }
+        // Pop the head of the free list — O(1) instead of O(N) linear scan.
+        if (self.next_free == EMPTY_SLOT) {
+            return; // Cache full (atlas eviction handles this case).
         }
 
-        // If cache is full, we can't add more (atlas eviction handles this case)
-        if (target_idx == null) {
-            return;
-        }
+        const idx = self.next_free;
+        self.next_free = self.free_chain[idx];
 
-        const idx = target_idx.?;
+        std.debug.assert(!self.entries[idx].valid);
 
-        // Store the entry
+        // Store the entry.
         self.entries[idx] = .{
             .key = key,
             .glyph = glyph,
@@ -307,8 +328,8 @@ pub const GlyphCache = struct {
         };
         self.entry_count += 1;
 
-        // Insert into hash table
-        self.insertIntoHashTable(key, @intCast(idx));
+        // Insert into hash table.
+        self.insertIntoHashTable(key, idx);
 
         std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
     }
@@ -590,20 +611,24 @@ pub const GlyphCache = struct {
         };
     }
 
-    /// Clear the cache (call when changing fonts)
+    /// Clear the cache (call when changing fonts).
     pub fn clear(self: *Self) void {
-        // Clear all entries
+        // Clear all entries.
         for (&self.entries) |*entry| {
             entry.valid = false;
         }
 
-        // Clear hash table
+        // Clear hash table.
         @memset(&self.hash_table, EMPTY_SLOT);
 
         self.entry_count = 0;
         self.grayscale_atlas.clear();
 
+        // Rebuild the free list so every slot is available again.
+        self.initFreeList();
+
         std.debug.assert(self.entry_count == 0);
+        std.debug.assert(self.next_free == 0);
     }
 
     /// Get the grayscale atlas for GPU upload
@@ -679,4 +704,41 @@ test "GlyphKey subpixel variants" {
     // Different hashes
     try testing.expect(key_sub0.hash() != key_sub1.hash());
     try testing.expect(key_sub1.hash() != key_sub2.hash());
+}
+
+test "GlyphKey wyhash distribution — printable ASCII × subpixel variants" {
+    // Hash all printable ASCII glyph IDs (32–126 = 95 chars) × 4 subpixel variants = 380 keys.
+    // Use the real HASH_TABLE_SIZE (8192) — that's what determines probe-chain length in practice.
+    // At load factor 380/8192 ≈ 4.6%, birthday-paradox predicts ~2.4% collision rate.
+    const testing = std.testing;
+    const TABLE_SLOTS: u32 = GlyphCache.HASH_TABLE_SIZE;
+    var buckets = [_]u16{0} ** TABLE_SLOTS;
+
+    const font_ptr: usize = 0x7FFF_0000_1000;
+    var total_keys: u32 = 0;
+
+    var glyph_id: u16 = 32;
+    while (glyph_id <= 126) : (glyph_id += 1) {
+        for (0..SUBPIXEL_VARIANTS_X) |sx| {
+            const key = GlyphKey.initWithFontPtr(font_ptr, glyph_id, 14.0, 2.0, @intCast(sx), 0);
+            const slot = @as(u32, @truncate(key.hash())) % TABLE_SLOTS;
+            buckets[slot] += 1;
+            total_keys += 1;
+        }
+    }
+
+    // Count collisions: any bucket with >1 entry contributes (count - 1) collisions.
+    var collisions: u32 = 0;
+    for (buckets) |count| {
+        if (count > 1) {
+            collisions += count - 1;
+        }
+    }
+
+    // Collision rate must stay below 5%.
+    const collision_rate = @as(f64, @floatFromInt(collisions)) / @as(f64, @floatFromInt(total_keys));
+    try testing.expect(collision_rate < 0.05);
+
+    // Sanity: we generated the expected number of keys.
+    try testing.expectEqual(@as(u32, 95) * @as(u32, SUBPIXEL_VARIANTS_X), total_keys);
 }

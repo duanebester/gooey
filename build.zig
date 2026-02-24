@@ -204,6 +204,26 @@ pub fn build(b: *std.Build) void {
         core_bench_step.dependOn(&core_bench_run.step);
 
         // =====================================================================
+        // Text Benchmarks
+        // =====================================================================
+
+        const text_bench_exe = b.addExecutable(.{
+            .name = "text-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/text/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+
+        const text_bench_step = b.step("bench-text", "Run text module benchmarks");
+        const text_bench_run = b.addRunArtifact(text_bench_exe);
+        text_bench_step.dependOn(&text_bench_run.step);
+
+        // =====================================================================
         // Hot Reload Watcher
         // =====================================================================
 
@@ -423,6 +443,27 @@ pub fn build(b: *std.Build) void {
         const core_bench_step = b.step("bench-core", "Run core module benchmarks");
         const core_bench_run = b.addRunArtifact(core_bench_exe);
         core_bench_step.dependOn(&core_bench_run.step);
+
+        // =====================================================================
+        // Text Benchmarks
+        // =====================================================================
+
+        const text_bench_exe = b.addExecutable(.{
+            .name = "text-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/text/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(text_bench_exe);
+
+        const text_bench_step = b.step("bench-text", "Run text module benchmarks");
+        const text_bench_run = b.addRunArtifact(text_bench_exe);
+        text_bench_step.dependOn(&text_bench_run.step);
 
         // =====================================================================
         // Tests
