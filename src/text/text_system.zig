@@ -914,24 +914,6 @@ pub const TextSystem = struct {
         return callback(ctx, self.cache.getAtlas());
     }
 
-    /// Thread-safe batch access to the glyph cache.
-    /// Holds glyph_cache_mutex for the duration of the callback, allowing
-    /// the caller to perform multiple cache lookups under a single lock.
-    /// This eliminates N-1 lock/unlock pairs when processing N glyphs.
-    pub fn withGlyphCacheLockedCtx(
-        self: *Self,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime callback: fn (Ctx, *cache_mod.GlyphCache, FontFace) anyerror!void,
-    ) !void {
-        const face = try self.getFontFace();
-
-        self.glyph_cache_mutex.lock();
-        defer self.glyph_cache_mutex.unlock();
-
-        return callback(ctx, &self.cache, face);
-    }
-
     /// Batch resolve glyphs under a single glyph_cache_mutex lock.
     /// Writes CachedGlyph results into `out_cached[0..glyphs.len]`.
     /// For glyphs with font_ref != null, uses the fallback font path;

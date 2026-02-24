@@ -142,6 +142,12 @@ pub const GlyphCache = struct {
     /// Intrusive free list threaded through entries array.
     /// Each element stores the index of the next free slot, or EMPTY_SLOT for end-of-list.
     /// Separate array avoids union gymnastics in GlyphEntry — 8 KB (4096 × 2 bytes).
+    ///
+    /// INVARIANT: Any code path that sets `entry.valid = false` on an individual entry
+    /// MUST push that entry's index back onto this free list (set `free_chain[idx] =
+    /// next_free; next_free = idx`).  Currently only bulk `clear()` and `initFreeList()`
+    /// rebuild the list — no individual eviction path exists.  If one is added without
+    /// maintaining this invariant, the freed slot becomes permanently lost until `clear()`.
     free_chain: [MAX_CACHED_GLYPHS]u16,
     /// Head of the free list (EMPTY_SLOT = cache full, no free slots).
     next_free: u16,

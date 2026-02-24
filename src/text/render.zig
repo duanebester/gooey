@@ -36,6 +36,15 @@ const SUBPIXEL_VARIANTS_F: f32 = @floatFromInt(SUBPIXEL_VARIANTS_X);
 /// Maximum glyphs per text run.  Matches ShapedRunCache capacity.
 const MAX_GLYPHS_PER_RUN: u32 = ShapedRunCache.MAX_GLYPHS_PER_ENTRY;
 
+// WASM stack budget check (rule #14): renderText allocates five stack buffers
+// sized at MAX_GLYPHS_PER_RUN.  Assert the combined footprint stays under 16 KB
+// so it fits comfortably within WASM's 1 MB stack even in deep call chains
+// (widget render → layout traversal → renderText).
+comptime {
+    const frame_bytes = MAX_GLYPHS_PER_RUN * (@sizeOf(ShapedGlyph) + @sizeOf(f32) + @sizeOf(f32) + @sizeOf(u8) + @sizeOf(CachedGlyph));
+    std.debug.assert(frame_bytes <= 16384);
+}
+
 pub const RenderTextOptions = struct {
     clipped: bool = true,
     decoration: TextDecoration = .{},
@@ -95,7 +104,7 @@ pub fn renderText(
         1.0;
 
     // Stack buffer for warm-path glyph copies — avoids GPA alloc/free (~5,000 ns).
-    // MAX_GLYPHS_PER_RUN (128) * @sizeOf(ShapedGlyph) ≈ 6 KB; safe for WASM stack.
+    // Total stack footprint verified at comptime above (see WASM stack budget check).
     var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
     var shaped = try text_system.shapeTextInto(text, options.stats, &glyph_buf);
     defer if (shaped.owned) shaped.deinit(text_system.allocator);

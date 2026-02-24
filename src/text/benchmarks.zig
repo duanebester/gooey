@@ -69,9 +69,9 @@ const MAX_SAMPLE_COUNT: u32 = 4096;
 const TABLE_WIDTH = 125;
 
 /// Horizontal subpixel variants to exercise in glyph cache benchmarks.
-/// Matches text.types.SUBPIXEL_VARIANTS_X (the authoritative source).
+/// Derived from text.SUBPIXEL_VARIANTS_X (the authoritative source).
 /// SUBPIXEL_VARIANTS_Y is 1, so only X variants create cache diversity.
-const BENCH_SUBPIXEL_VARIANTS: u32 = 4;
+const BENCH_SUBPIXEL_VARIANTS: u32 = text.SUBPIXEL_VARIANTS_X;
 
 // =============================================================================
 // Iteration Sample Collection and Percentile Computation
@@ -1429,13 +1429,16 @@ fn benchRenderText(
     const baseline_y: f32 = 20.0;
 
     // Pre-allocate scene capacity so append is a pointer bump, not an alloc.
-    var scene = Scene.initCapacity(allocator) catch return .{
-        .name = name,
-        .operation_count = operation_count,
-        .total_time_ns = 0,
-        .iterations = 0,
-        .p50_per_op_ns = 0,
-        .p99_per_op_ns = 0,
+    var scene = Scene.initCapacity(allocator) catch |err| {
+        std.debug.print("  !! {s}: Scene.initCapacity failed: {s} — skipping benchmark\n", .{ name, @errorName(err) });
+        return .{
+            .name = name,
+            .operation_count = operation_count,
+            .total_time_ns = 0,
+            .iterations = 0,
+            .p50_per_op_ns = 0,
+            .p99_per_op_ns = 0,
+        };
     };
     defer scene.deinit();
 
