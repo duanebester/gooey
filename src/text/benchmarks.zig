@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const bench = @import("bench");
 
 const text = gooey.text;
 const Atlas = text.Atlas;
@@ -747,7 +748,7 @@ fn benchShapeWarm(
 }
 
 /// Benchmark warm text shaping with an arena allocator instead of GPA.
-/// On a shape cache hit, shapeTextComplex allocates only the glyph array copy
+/// On a shape cache hit, shapeText allocates only the glyph array copy
 /// from self.allocator.  Swapping the allocator to an arena makes alloc a
 /// pointer bump and free a no-op — isolating the true cache lookup cost from
 /// the GPA alloc/free overhead that dominates the warm GPA path.
@@ -894,7 +895,7 @@ fn benchShapeWarmInto(
 // =============================================================================
 
 /// Benchmark simple text width measurement.  Calls measureText() which
-/// internally invokes shapeTextComplex() (shape cache warm after first call).
+/// internally invokes shapeText() (shape cache warm after first call).
 /// Measures the combined cost of cache lookup + width extraction.
 fn benchMeasureText(
     text_sys: *TextSystem,
@@ -1851,6 +1852,20 @@ test "validate: generatePrintableAscii covers full range" {
 // =============================================================================
 
 /// Print a section header with title, column labels, and separator line.
+/// Print a text benchmark result and record it in the JSON reporter.
+/// Text benchmarks include p50/p99 percentile data.
+fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
+    result.print();
+    reporter.addEntry(bench.entryWithPercentiles(
+        result.name,
+        result.operation_count,
+        result.total_time_ns,
+        result.iterations,
+        result.p50_per_op_ns,
+        result.p99_per_op_ns,
+    ));
+}
+
 fn printSectionHeader(title: []const u8) void {
     std.debug.assert(title.len > 0);
     std.debug.assert(title.len < TABLE_WIDTH);
@@ -1874,35 +1889,35 @@ fn printHeader() void {
 }
 
 /// Print all atlas benchmarks (no platform dependencies, pure data structures).
-fn runAtlasBenchmarks(gpa: std.mem.Allocator) void {
+fn runAtlasBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) void {
     // Verify atlas initial size matches our benchmark assumptions.
     comptime std.debug.assert(Atlas.INITIAL_SIZE == 512);
     comptime std.debug.assert(Atlas.INITIAL_SIZE * Atlas.INITIAL_SIZE <= 1024 * 1024);
 
     // Atlas Reserve — Skyline Bin-Packing.
     printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Reserve (skyline bin-packing)");
-    benchAtlasReserve(gpa, "reserve_8x12_x100", 8, 12, 100).print();
-    benchAtlasReserve(gpa, "reserve_16x20_x100", 16, 20, 100).print();
-    benchAtlasReserveMixed(gpa, "reserve_mixed_x100", 100).print();
+    collect(reporter, benchAtlasReserve(gpa, "reserve_8x12_x100", 8, 12, 100));
+    collect(reporter, benchAtlasReserve(gpa, "reserve_16x20_x100", 16, 20, 100));
+    collect(reporter, benchAtlasReserveMixed(gpa, "reserve_mixed_x100", 100));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 
     // Atlas Set + Combined — Pixel Copy Bandwidth.
     printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Set + Combined (pixel copy)");
-    benchAtlasSet(gpa, "set_8x12_x100", 8, 12, 100).print();
-    benchAtlasReserveAndSet(gpa, "reserve_and_set_8x12_x100", 8, 12, 100).print();
+    collect(reporter, benchAtlasSet(gpa, "set_8x12_x100", 8, 12, 100));
+    collect(reporter, benchAtlasReserveAndSet(gpa, "reserve_and_set_8x12_x100", 8, 12, 100));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 
     // Atlas Grow — Reallocation Cost.
     printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Grow (512 -> 1024 reallocation)");
-    benchAtlasGrow(gpa, "grow_512_to_1024").print();
+    collect(reporter, benchAtlasGrow(gpa, "grow_512_to_1024"));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 
     // Atlas Reserve Scaling — ns/op vs Glyph Count.
     printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Reserve Scaling (8x12, varying count)");
-    benchAtlasReserve(gpa, "scaling_reserve_x50", 8, 12, 50).print();
-    benchAtlasReserve(gpa, "scaling_reserve_x100", 8, 12, 100).print();
-    benchAtlasReserve(gpa, "scaling_reserve_x200", 8, 12, 200).print();
-    benchAtlasReserve(gpa, "scaling_reserve_x400", 8, 12, 400).print();
+    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x50", 8, 12, 50));
+    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x100", 8, 12, 100));
+    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x200", 8, 12, 200));
+    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x400", 8, 12, 400));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 
     // Atlas utilization — fill efficiency.
@@ -1982,83 +1997,83 @@ fn printAtlasNotes() void {
 }
 
 /// Print text shaping benchmarks (cold = cache miss FFI, warm = cache hit).
-fn printShapingBenchmarks(text_sys: *TextSystem) void {
+fn printShapingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.current_face != null);
     std.debug.assert(text_sys.scale_factor > 0);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Text Shaping (cold = cache miss, warm = cache hit)");
-    benchShapeCold(text_sys, "shape_cold_short_13ch", TEXT_SHORT).print();
-    benchShapeCold(text_sys, "shape_cold_medium_50ch", TEXT_MEDIUM).print();
-    benchShapeCold(text_sys, "shape_cold_long_104ch", TEXT_LONG).print();
-    benchShapeWarm(text_sys, "shape_warm_short_13ch_x100", TEXT_SHORT, 100).print();
-    benchShapeWarm(text_sys, "shape_warm_medium_50ch_x100", TEXT_MEDIUM, 100).print();
-    benchShapeWarm(text_sys, "shape_warm_long_104ch_x100", TEXT_LONG, 100).print();
+    collect(reporter, benchShapeCold(text_sys, "shape_cold_short_13ch", TEXT_SHORT));
+    collect(reporter, benchShapeCold(text_sys, "shape_cold_medium_50ch", TEXT_MEDIUM));
+    collect(reporter, benchShapeCold(text_sys, "shape_cold_long_104ch", TEXT_LONG));
+    collect(reporter, benchShapeWarm(text_sys, "shape_warm_short_13ch_x100", TEXT_SHORT, 100));
+    collect(reporter, benchShapeWarm(text_sys, "shape_warm_medium_50ch_x100", TEXT_MEDIUM, 100));
+    collect(reporter, benchShapeWarm(text_sys, "shape_warm_long_104ch_x100", TEXT_LONG, 100));
     std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
-    benchShapeWarmArena(text_sys, "shape_warm_arena_short_13ch_x100", TEXT_SHORT, 100).print();
-    benchShapeWarmArena(text_sys, "shape_warm_arena_medium_50ch_x100", TEXT_MEDIUM, 100).print();
-    benchShapeWarmArena(text_sys, "shape_warm_arena_long_104ch_x100", TEXT_LONG, 100).print();
+    collect(reporter, benchShapeWarmArena(text_sys, "shape_warm_arena_short_13ch_x100", TEXT_SHORT, 100));
+    collect(reporter, benchShapeWarmArena(text_sys, "shape_warm_arena_medium_50ch_x100", TEXT_MEDIUM, 100));
+    collect(reporter, benchShapeWarmArena(text_sys, "shape_warm_arena_long_104ch_x100", TEXT_LONG, 100));
     std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
-    benchShapeWarmInto(text_sys, "shape_warm_into_short_13ch_x100", TEXT_SHORT, 100).print();
-    benchShapeWarmInto(text_sys, "shape_warm_into_medium_50ch_x100", TEXT_MEDIUM, 100).print();
-    benchShapeWarmInto(text_sys, "shape_warm_into_long_104ch_x100", TEXT_LONG, 100).print();
+    collect(reporter, benchShapeWarmInto(text_sys, "shape_warm_into_short_13ch_x100", TEXT_SHORT, 100));
+    collect(reporter, benchShapeWarmInto(text_sys, "shape_warm_into_medium_50ch_x100", TEXT_MEDIUM, 100));
+    collect(reporter, benchShapeWarmInto(text_sys, "shape_warm_into_long_104ch_x100", TEXT_LONG, 100));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 }
 
 /// Print text measurement benchmarks (simple width + wrapped with max_width).
-fn printMeasurementBenchmarks(text_sys: *TextSystem) void {
+fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.current_face != null);
     std.debug.assert(text_sys.scale_factor > 0);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Text Measurement (measureText + measureTextEx)");
-    benchMeasureText(text_sys, "measure_short_13ch_x100", TEXT_SHORT, 100).print();
-    benchMeasureText(text_sys, "measure_medium_50ch_x100", TEXT_MEDIUM, 100).print();
-    benchMeasureText(text_sys, "measure_long_104ch_x100", TEXT_LONG, 100).print();
-    benchMeasureTextWrapped(text_sys, "measure_wrapped_50ch_200px_x100", TEXT_MEDIUM, 200.0, 100).print();
-    benchMeasureTextWrapped(text_sys, "measure_wrapped_104ch_300px_x100", TEXT_LONG, 300.0, 100).print();
+    collect(reporter, benchMeasureText(text_sys, "measure_short_13ch_x100", TEXT_SHORT, 100));
+    collect(reporter, benchMeasureText(text_sys, "measure_medium_50ch_x100", TEXT_MEDIUM, 100));
+    collect(reporter, benchMeasureText(text_sys, "measure_long_104ch_x100", TEXT_LONG, 100));
+    collect(reporter, benchMeasureTextWrapped(text_sys, "measure_wrapped_50ch_200px_x100", TEXT_MEDIUM, 200.0, 100));
+    collect(reporter, benchMeasureTextWrapped(text_sys, "measure_wrapped_104ch_300px_x100", TEXT_LONG, 300.0, 100));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 }
 
 /// Print glyph rasterization benchmarks (cold = rasterize, warm = cache hit).
-fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16) void {
+fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16, reporter: *bench.Reporter) void {
     std.debug.assert(glyph_ids.len > 0);
     std.debug.assert(text_sys.current_face != null);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Glyph Rasterization (cold = render, warm = cache hit)");
-    benchGlyphRasterCold(text_sys, "glyph_raster_cold_ascii", glyph_ids, BENCH_FONT_SIZE).print();
-    benchGlyphRasterWarm(text_sys, "glyph_raster_warm_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20).print();
+    collect(reporter, benchGlyphRasterCold(text_sys, "glyph_raster_cold_ascii", glyph_ids, BENCH_FONT_SIZE));
+    collect(reporter, benchGlyphRasterWarm(text_sys, "glyph_raster_warm_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20));
     std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
-    benchGlyphRasterWarmPerGlyph(text_sys, "glyph_warm_perglyph_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20).print();
-    benchGlyphRasterWarmBatch(text_sys, "glyph_warm_batch_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20).print();
+    collect(reporter, benchGlyphRasterWarmPerGlyph(text_sys, "glyph_warm_perglyph_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20));
+    collect(reporter, benchGlyphRasterWarmBatch(text_sys, "glyph_warm_batch_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20));
     std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
-    benchGlyphRasterWarmSubpixel(text_sys, "glyph_warm_subpixel_ascii_x5", glyph_ids, BENCH_FONT_SIZE, 5).print();
+    collect(reporter, benchGlyphRasterWarmSubpixel(text_sys, "glyph_warm_subpixel_ascii_x5", glyph_ids, BENCH_FONT_SIZE, 5));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 }
 
 /// Print end-to-end renderText benchmarks at short/medium/long text lengths.
 /// Exercises the full pipeline: shape (warm) → device positions → batch glyph
 /// resolve → scene emission.  Scene is pre-allocated; measures steady-state cost.
-fn printRenderTextBenchmarks(text_sys: *TextSystem, allocator: std.mem.Allocator) void {
+fn printRenderTextBenchmarks(text_sys: *TextSystem, allocator: std.mem.Allocator, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.current_face != null);
     std.debug.assert(text_sys.scale_factor > 0);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} renderText End-to-End (warm cache, full pipeline)");
-    benchRenderText(text_sys, allocator, "render_text_short_13ch_x50", TEXT_SHORT, BENCH_FONT_SIZE, 50).print();
-    benchRenderText(text_sys, allocator, "render_text_medium_50ch_x50", TEXT_MEDIUM, BENCH_FONT_SIZE, 50).print();
-    benchRenderText(text_sys, allocator, "render_text_long_104ch_x50", TEXT_LONG, BENCH_FONT_SIZE, 50).print();
+    collect(reporter, benchRenderText(text_sys, allocator, "render_text_short_13ch_x50", TEXT_SHORT, BENCH_FONT_SIZE, 50));
+    collect(reporter, benchRenderText(text_sys, allocator, "render_text_medium_50ch_x50", TEXT_MEDIUM, BENCH_FONT_SIZE, 50));
+    collect(reporter, benchRenderText(text_sys, allocator, "render_text_long_104ch_x50", TEXT_LONG, BENCH_FONT_SIZE, 50));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 }
 
 /// Print shaping scaling analysis (cold shaping at increasing text lengths).
-fn printScalingBenchmarks(text_sys: *TextSystem) void {
+fn printScalingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.current_face != null);
     std.debug.assert(SCALING_TEXT_BASE.len >= 200);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Shaping Scaling (cold shape at varying text length)");
-    benchShapeCold(text_sys, "scaling_shape_10ch", SCALING_TEXT_BASE[0..10]).print();
-    benchShapeCold(text_sys, "scaling_shape_25ch", SCALING_TEXT_BASE[0..25]).print();
-    benchShapeCold(text_sys, "scaling_shape_50ch", SCALING_TEXT_BASE[0..50]).print();
-    benchShapeCold(text_sys, "scaling_shape_100ch", SCALING_TEXT_BASE[0..100]).print();
-    benchShapeCold(text_sys, "scaling_shape_200ch", SCALING_TEXT_BASE[0..200]).print();
+    collect(reporter, benchShapeCold(text_sys, "scaling_shape_10ch", SCALING_TEXT_BASE[0..10]));
+    collect(reporter, benchShapeCold(text_sys, "scaling_shape_25ch", SCALING_TEXT_BASE[0..25]));
+    collect(reporter, benchShapeCold(text_sys, "scaling_shape_50ch", SCALING_TEXT_BASE[0..50]));
+    collect(reporter, benchShapeCold(text_sys, "scaling_shape_100ch", SCALING_TEXT_BASE[0..100]));
+    collect(reporter, benchShapeCold(text_sys, "scaling_shape_200ch", SCALING_TEXT_BASE[0..200]));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 }
 
@@ -2074,7 +2089,7 @@ fn printTextPipelineNotes() void {
         \\  - Shape warm into = shapeTextInto() with a stack-allocated glyph buffer.
         \\    Zero heap allocation on cache hit: memcpy into caller's buffer, owned=false.
         \\    This is the pattern used by renderText for zero-alloc warm-path rendering.
-        \\  - Measure = measureText() which calls shapeTextComplex() internally.
+        \\  - Measure = measureText() which calls shapeText() internally.
         \\  - Measure wrapped = measureTextEx() with max_width constraint (line-breaking).
         \\  - Glyph cold = clear glyph cache, then rasterize all printable ASCII glyphs.
         \\  - Glyph warm = all glyphs pre-cached, pure hash table lookups (subpixel_x=0).
@@ -2106,7 +2121,7 @@ fn printTextPipelineNotes() void {
 /// Run all text pipeline benchmarks that require a loaded font.
 /// Heap-allocates TextSystem (~1.7 MB) to avoid stack overflow on constrained
 /// platforms.  Errors propagate to main() for graceful skip messaging.
-fn runTextPipelineBenchmarks(gpa: std.mem.Allocator) !void {
+fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) !void {
     // Heap-allocate TextSystem to avoid blowing the stack (CLAUDE.md rule #14).
 
     const text_sys = try gpa.create(TextSystem);
@@ -2118,10 +2133,10 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator) !void {
     try text_sys.loadSystemFont(.monospace, BENCH_FONT_SIZE);
 
     // --- Shaping benchmarks ---
-    printShapingBenchmarks(text_sys);
+    printShapingBenchmarks(text_sys, reporter);
 
     // --- Measurement benchmarks ---
-    printMeasurementBenchmarks(text_sys);
+    printMeasurementBenchmarks(text_sys, reporter);
 
     // --- Glyph rasterization benchmarks ---
     // Shape printable ASCII to extract glyph IDs for the rasterization benchmarks.
@@ -2136,13 +2151,13 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator) !void {
         unique_glyphs.count,
         printable_ascii.len,
     });
-    printGlyphBenchmarks(text_sys, unique_glyphs.ids[0..unique_glyphs.count]);
+    printGlyphBenchmarks(text_sys, unique_glyphs.ids[0..unique_glyphs.count], reporter);
 
     // --- End-to-end renderText ---
-    printRenderTextBenchmarks(text_sys, gpa);
+    printRenderTextBenchmarks(text_sys, gpa, reporter);
 
     // --- Scaling analysis ---
-    printScalingBenchmarks(text_sys);
+    printScalingBenchmarks(text_sys, reporter);
 
     printTextPipelineNotes();
 }
@@ -2156,13 +2171,17 @@ pub fn main() !void {
     defer _ = gpa_instance.deinit();
     const gpa = gpa_instance.allocator();
 
-    runAtlasBenchmarks(gpa);
+    var reporter = bench.Reporter.init("text");
 
-    runTextPipelineBenchmarks(gpa) catch |err| {
+    runAtlasBenchmarks(gpa, &reporter);
+
+    runTextPipelineBenchmarks(gpa, &reporter) catch |err| {
         std.debug.print(
             "\nSkipping text pipeline benchmarks: {s}\n" ++
                 "  (Font loading or TextSystem init failed — expected on headless CI.)\n",
             .{@errorName(err)},
         );
     };
+
+    reporter.finish();
 }

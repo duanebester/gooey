@@ -45,6 +45,7 @@ jobs:
       - build-wasm
       - valgrind
       - zig-fmt
+      - bench-macos
     if: always()
     steps:
       - name: Determine status
@@ -261,6 +262,174 @@ jobs:
           name: wasm-build
           path: zig-out/web/
           retention-days: 7
+
+  # ==========================================================================
+  # Benchmarks (macOS)
+  # ==========================================================================
+  bench-macos:
+    name: Benchmarks (macOS)
+    runs-on: macos-latest
+    needs: test-macos
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/zig
+            zig-cache
+          key: zig-cache-bench-macos-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-bench-macos-
+            zig-cache-macos-
+
+      - name: Run all benchmarks
+        run: zig build bench-all -Dbench-json-dir=bench-results
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-macos
+          path: bench-results/
+          retention-days: 90
+
+  # ==========================================================================
+  # Benchmark Regression Gate (PR only)
+  # ==========================================================================
+  # Compares current PR benchmarks against the most recent successful main
+  # run.  Uses continue-on-error so regressions surface as warnings, not
+  # blockers — promote to required once you trust the signal on shared
+  # runners.  The 15% default threshold (in bench-compare) absorbs CI noise.
+  bench-gate:
+    name: Benchmark Gate (macOS)
+    runs-on: macos-14
+    if: github.event_name == 'pull_request'
+    needs: test-macos
+    continue-on-error: true
+    permissions:
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/zig
+            zig-cache
+          key: zig-cache-bench-gate-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-bench-gate-
+            zig-cache-bench-macos-
+            zig-cache-macos-
+
+      # Find the latest successful CI run on main and download its macOS
+      # benchmark artifact.  If no run exists or the artifact expired,
+      # skip comparison gracefully — the PR still gets benchmark numbers.
+      - name: Download baseline from main
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+
+          RUN_ID=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
+
+          if [ -z "${RUN_ID}" ]; then
+            echo "No successful main run found -- skipping comparison."
+            echo "has_baseline=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "Downloading baseline from main run ${RUN_ID}..."
+          if ! gh run download "${RUN_ID}" --name bench-macos --dir baseline/; then
+            echo "Artifact not found or expired -- skipping comparison."
+            echo "has_baseline=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "has_baseline=true" >> "${GITHUB_OUTPUT}"
+          echo "baseline_run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
+          ls -la baseline/
+
+      - name: Run benchmarks
+        run: zig build bench-all -Dbench-json-dir=current/
+
+      # Compare each module independently.  bench-compare exits 1 on
+      # regression, 2 on usage/load errors.  We track per-module results
+      # so the summary tells you exactly which module regressed.
+      - name: Compare against baseline
+        if: steps.baseline.outputs.has_baseline == 'true'
+        id: compare
+        run: |
+          set -eo pipefail
+
+          FAILED=0
+          : > bench-report.txt
+
+          for module in core layout context text; do
+            BASELINE=$(ls baseline/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
+            CURRENT=$(ls current/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
+
+            if [ -z "${BASELINE}" ]; then
+              echo "[warn] No baseline found for ${module} -- skipping."
+              continue
+            fi
+            if [ -z "${CURRENT}" ]; then
+              echo "[warn] No current result found for ${module} -- skipping."
+              continue
+            fi
+
+            echo ""
+            echo "=== Comparing ${module} ==="
+
+            # bench-compare prints to stderr; merge into stdout for capture.
+            if zig build bench-compare -- "${BASELINE}" "${CURRENT}" 2>&1 | tee -a bench-report.txt; then
+              echo "[pass] ${module}: OK"
+            else
+              FAILED=1
+              echo "[FAIL] ${module}: REGRESSION DETECTED"
+            fi
+          done
+
+          exit ${FAILED}
+
+      # Always post the comparison table to the Actions job summary so
+      # reviewers can inspect numbers without digging through logs.
+      - name: Post benchmark summary
+        if: always() && steps.baseline.outputs.has_baseline == 'true'
+        run: |
+          {
+            echo "## Benchmark Comparison"
+            echo ""
+            if [ -s bench-report.txt ]; then
+              echo "<details><summary>Full comparison output</summary>"
+              echo ""
+              echo '```'
+              cat bench-report.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            else
+              echo "_No comparison data produced._"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   # ==========================================================================
   # Valgrind Memory Leak Detection

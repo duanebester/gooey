@@ -4,6 +4,47 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Benchmark JSON output directory (optional).
+    // Usage: zig build bench-all -Dbench-json-dir=bench-results
+    const bench_json_dir = b.option([]const u8, "bench-json-dir", "Directory to write benchmark JSON results");
+
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench/json_writer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Benchmark comparison threshold (optional, default 15%).
+    // Usage: zig build bench-compare -Dbench-threshold=10 -- old.json new.json
+    const bench_threshold = b.option(f64, "bench-threshold", "Regression threshold percent for bench-compare (default: 15)");
+
+    // =========================================================================
+    // Benchmark Comparison Tool (platform-independent)
+    // =========================================================================
+
+    const compare_exe = b.addExecutable(.{
+        .name = "bench-compare",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench/compare.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+
+    const compare_step = b.step("bench-compare", "Compare two benchmark JSON files for regressions");
+    const compare_run = b.addRunArtifact(compare_exe);
+    if (bench_threshold) |threshold| {
+        var threshold_buf: [32]u8 = undefined;
+        const threshold_str = std.fmt.bufPrint(&threshold_buf, "{d:.1}", .{threshold}) catch "15.0";
+        compare_run.addArgs(&.{ "--threshold", threshold_str });
+    }
+    if (b.args) |args| {
+        for (args) |arg| {
+            compare_run.addArg(arg);
+        }
+    }
+    compare_step.dependOn(&compare_run.step);
+
     // Platform detection
     const is_native_macos = target.result.os.tag == .macos;
     const is_native_linux = target.result.os.tag == .linux;
@@ -155,12 +196,16 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
 
         const bench_step = b.step("bench", "Run layout engine benchmarks");
         const bench_run = b.addRunArtifact(bench_exe);
+        if (bench_json_dir) |dir| {
+            bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         bench_step.dependOn(&bench_run.step);
 
         // =====================================================================
@@ -175,12 +220,16 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
 
         const context_bench_step = b.step("bench-context", "Run context module benchmarks");
         const context_bench_run = b.addRunArtifact(context_bench_exe);
+        if (bench_json_dir) |dir| {
+            context_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         context_bench_step.dependOn(&context_bench_run.step);
 
         // =====================================================================
@@ -195,12 +244,16 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
 
         const core_bench_step = b.step("bench-core", "Run core module benchmarks");
         const core_bench_run = b.addRunArtifact(core_bench_exe);
+        if (bench_json_dir) |dir| {
+            core_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         core_bench_step.dependOn(&core_bench_run.step);
 
         // =====================================================================
@@ -215,13 +268,27 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
 
         const text_bench_step = b.step("bench-text", "Run text module benchmarks");
         const text_bench_run = b.addRunArtifact(text_bench_exe);
+        if (bench_json_dir) |dir| {
+            text_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         text_bench_step.dependOn(&text_bench_run.step);
+
+        // =====================================================================
+        // Run All Benchmarks
+        // =====================================================================
+
+        const bench_all_step = b.step("bench-all", "Run all benchmark suites");
+        bench_all_step.dependOn(&bench_run.step);
+        bench_all_step.dependOn(&context_bench_run.step);
+        bench_all_step.dependOn(&core_bench_run.step);
+        bench_all_step.dependOn(&text_bench_run.step);
 
         // =====================================================================
         // Hot Reload Watcher
@@ -393,6 +460,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
@@ -400,6 +468,9 @@ pub fn build(b: *std.Build) void {
 
         const bench_step = b.step("bench", "Run layout engine benchmarks");
         const bench_run = b.addRunArtifact(bench_exe);
+        if (bench_json_dir) |dir| {
+            bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         bench_step.dependOn(&bench_run.step);
 
         // =====================================================================
@@ -414,6 +485,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
@@ -421,6 +493,9 @@ pub fn build(b: *std.Build) void {
 
         const context_bench_step = b.step("bench-context", "Run context module benchmarks");
         const context_bench_run = b.addRunArtifact(context_bench_exe);
+        if (bench_json_dir) |dir| {
+            context_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         context_bench_step.dependOn(&context_bench_run.step);
 
         // =====================================================================
@@ -435,6 +510,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
@@ -442,6 +518,9 @@ pub fn build(b: *std.Build) void {
 
         const core_bench_step = b.step("bench-core", "Run core module benchmarks");
         const core_bench_run = b.addRunArtifact(core_bench_exe);
+        if (bench_json_dir) |dir| {
+            core_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         core_bench_step.dependOn(&core_bench_run.step);
 
         // =====================================================================
@@ -456,6 +535,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
                 },
             }),
         });
@@ -463,7 +543,20 @@ pub fn build(b: *std.Build) void {
 
         const text_bench_step = b.step("bench-text", "Run text module benchmarks");
         const text_bench_run = b.addRunArtifact(text_bench_exe);
+        if (bench_json_dir) |dir| {
+            text_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
         text_bench_step.dependOn(&text_bench_run.step);
+
+        // =====================================================================
+        // Run All Benchmarks
+        // =====================================================================
+
+        const bench_all_step = b.step("bench-all", "Run all benchmark suites");
+        bench_all_step.dependOn(&bench_run.step);
+        bench_all_step.dependOn(&context_bench_run.step);
+        bench_all_step.dependOn(&core_bench_run.step);
+        bench_all_step.dependOn(&text_bench_run.step);
 
         // =====================================================================
         // Tests

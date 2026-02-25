@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const bench = @import("bench");
 
 const core = gooey.core;
 const Vec2 = core.Vec2;
@@ -1053,7 +1054,19 @@ test "validate: ElementId hash determinism" {
 // Main Entry Point (for benchmark executable)
 // =============================================================================
 
+/// Print a benchmark result and record it in the JSON reporter.
+fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
+    result.print();
+    reporter.addEntry(bench.entry(
+        result.name,
+        result.operation_count,
+        result.total_time_ns,
+        result.iterations,
+    ));
+}
+
 pub fn main() !void {
+    var reporter = bench.Reporter.init("core");
 
     // =========================================================================
     // Triangulation — Convex Polygons
@@ -1066,12 +1079,12 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchTriangulate("convex_8", buildConvex8).print();
-    benchTriangulate("convex_32", buildConvex32).print();
-    benchTriangulate("convex_64", buildConvex64).print();
-    benchTriangulate("convex_128", buildConvex128).print();
-    benchTriangulate("convex_256", buildConvex256).print();
-    benchTriangulate("convex_512", buildConvex512).print();
+    collect(&reporter, benchTriangulate("convex_8", buildConvex8));
+    collect(&reporter, benchTriangulate("convex_32", buildConvex32));
+    collect(&reporter, benchTriangulate("convex_64", buildConvex64));
+    collect(&reporter, benchTriangulate("convex_128", buildConvex128));
+    collect(&reporter, benchTriangulate("convex_256", buildConvex256));
+    collect(&reporter, benchTriangulate("convex_512", buildConvex512));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1086,10 +1099,10 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchTriangulate("star_5 (10 verts)", buildStar5).print();
-    benchTriangulate("star_10 (20 verts)", buildStar10).print();
-    benchTriangulate("star_50 (100 verts)", buildStar50).print();
-    benchTriangulate("star_100 (200 verts)", buildStar100).print();
+    collect(&reporter, benchTriangulate("star_5 (10 verts)", buildStar5));
+    collect(&reporter, benchTriangulate("star_10 (20 verts)", buildStar10));
+    collect(&reporter, benchTriangulate("star_50 (100 verts)", buildStar50));
+    collect(&reporter, benchTriangulate("star_100 (200 verts)", buildStar100));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1104,10 +1117,10 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchStrokeExpand("zigzag_4_butt_miter", buildZigzag4, .butt, .miter, false).print();
-    benchStrokeExpand("zigzag_32_butt_miter", buildZigzag32, .butt, .miter, false).print();
-    benchStrokeExpand("zigzag_128_butt_miter", buildZigzag128, .butt, .miter, false).print();
-    benchStrokeExpand("zigzag_256_butt_miter", buildZigzag256, .butt, .miter, false).print();
+    collect(&reporter, benchStrokeExpand("zigzag_4_butt_miter", buildZigzag4, .butt, .miter, false));
+    collect(&reporter, benchStrokeExpand("zigzag_32_butt_miter", buildZigzag32, .butt, .miter, false));
+    collect(&reporter, benchStrokeExpand("zigzag_128_butt_miter", buildZigzag128, .butt, .miter, false));
+    collect(&reporter, benchStrokeExpand("zigzag_256_butt_miter", buildZigzag256, .butt, .miter, false));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1122,14 +1135,14 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchStrokeExpand("zigzag_32_butt_miter", buildZigzag32, .butt, .miter, false).print();
-    benchStrokeExpand("zigzag_32_round_round", buildZigzag32, .round, .round, false).print();
-    benchStrokeExpand("zigzag_32_square_bevel", buildZigzag32, .square, .bevel, false).print();
+    collect(&reporter, benchStrokeExpand("zigzag_32_butt_miter", buildZigzag32, .butt, .miter, false));
+    collect(&reporter, benchStrokeExpand("zigzag_32_round_round", buildZigzag32, .round, .round, false));
+    collect(&reporter, benchStrokeExpand("zigzag_32_square_bevel", buildZigzag32, .square, .bevel, false));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchStrokeExpand("sine_64_butt_miter", buildSine64, .butt, .miter, false).print();
-    benchStrokeExpand("sine_64_round_round", buildSine64, .round, .round, false).print();
+    collect(&reporter, benchStrokeExpand("sine_64_butt_miter", buildSine64, .butt, .miter, false));
+    collect(&reporter, benchStrokeExpand("sine_64_round_round", buildSine64, .round, .round, false));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1144,10 +1157,10 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchStrokeExpand("circle_32_closed_miter", buildCircle32, .butt, .miter, true).print();
-    benchStrokeExpand("circle_64_closed_miter", buildCircle64, .butt, .miter, true).print();
-    benchStrokeExpand("circle_32_closed_round", buildCircle32, .butt, .round, true).print();
-    benchStrokeExpand("circle_64_closed_round", buildCircle64, .butt, .round, true).print();
+    collect(&reporter, benchStrokeExpand("circle_32_closed_miter", buildCircle32, .butt, .miter, true));
+    collect(&reporter, benchStrokeExpand("circle_64_closed_miter", buildCircle64, .butt, .miter, true));
+    collect(&reporter, benchStrokeExpand("circle_32_closed_round", buildCircle32, .butt, .round, true));
+    collect(&reporter, benchStrokeExpand("circle_64_closed_round", buildCircle64, .butt, .round, true));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1162,10 +1175,10 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchStrokeToTriangles("zigzag_32_tri_butt_miter", buildZigzag32, .butt, .miter, false).print();
-    benchStrokeToTriangles("zigzag_128_tri_butt_miter", buildZigzag128, .butt, .miter, false).print();
-    benchStrokeToTriangles("circle_32_tri_closed", buildCircle32, .butt, .miter, true).print();
-    benchStrokeToTriangles("circle_64_tri_closed", buildCircle64, .butt, .miter, true).print();
+    collect(&reporter, benchStrokeToTriangles("zigzag_32_tri_butt_miter", buildZigzag32, .butt, .miter, false));
+    collect(&reporter, benchStrokeToTriangles("zigzag_128_tri_butt_miter", buildZigzag128, .butt, .miter, false));
+    collect(&reporter, benchStrokeToTriangles("circle_32_tri_closed", buildCircle32, .butt, .miter, true));
+    collect(&reporter, benchStrokeToTriangles("circle_64_tri_closed", buildCircle64, .butt, .miter, true));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1180,9 +1193,9 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchFixedArrayAppendClear("append_clear_100", 100).print();
-    benchFixedArrayAppendClear("append_clear_1000", 1000).print();
-    benchFixedArrayAppendClear("append_clear_4000", 4000).print();
+    collect(&reporter, benchFixedArrayAppendClear("append_clear_100", 100));
+    collect(&reporter, benchFixedArrayAppendClear("append_clear_1000", 1000));
+    collect(&reporter, benchFixedArrayAppendClear("append_clear_4000", 4000));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1198,21 +1211,21 @@ pub fn main() !void {
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // O(1) removal: pop from end.
-    benchFixedArrayPopCycle("pop_100", 100).print();
-    benchFixedArrayPopCycle("pop_1000", 1000).print();
+    collect(&reporter, benchFixedArrayPopCycle("pop_100", 100));
+    collect(&reporter, benchFixedArrayPopCycle("pop_1000", 1000));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // O(1) removal: swap with last element.
-    benchFixedArraySwapRemove("swap_remove_100", 100).print();
-    benchFixedArraySwapRemove("swap_remove_1000", 1000).print();
+    collect(&reporter, benchFixedArraySwapRemove("swap_remove_100", 100));
+    collect(&reporter, benchFixedArraySwapRemove("swap_remove_1000", 1000));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // O(n) removal: shift all elements left. ns/op should grow with N.
-    benchFixedArrayOrderedRemove("ordered_remove_100", 100).print();
-    benchFixedArrayOrderedRemove("ordered_remove_500", 500).print();
-    benchFixedArrayOrderedRemove("ordered_remove_1000", 1000).print();
+    collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_100", 100));
+    collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_500", 500));
+    collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_1000", 1000));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1227,9 +1240,9 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchVec2Normalize("normalize_100", 100).print();
-    benchVec2Normalize("normalize_1000", 1000).print();
-    benchVec2Normalize("normalize_4000", 4000).print();
+    collect(&reporter, benchVec2Normalize("normalize_100", 100));
+    collect(&reporter, benchVec2Normalize("normalize_1000", 1000));
+    collect(&reporter, benchVec2Normalize("normalize_4000", 4000));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1244,9 +1257,9 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchRectContains("contains_100", 100).print();
-    benchRectContains("contains_1000", 1000).print();
-    benchRectContains("contains_4000", 4000).print();
+    collect(&reporter, benchRectContains("contains_100", 100));
+    collect(&reporter, benchRectContains("contains_1000", 1000));
+    collect(&reporter, benchRectContains("contains_4000", 4000));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1261,14 +1274,14 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchElementIdHash("hash_100", 100).print();
-    benchElementIdHash("hash_1000", 1000).print();
-    benchElementIdHash("hash_4000", 4000).print();
+    collect(&reporter, benchElementIdHash("hash_100", 100));
+    collect(&reporter, benchElementIdHash("hash_1000", 1000));
+    collect(&reporter, benchElementIdHash("hash_4000", 4000));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchElementIdEquality("equality_100", 100).print();
-    benchElementIdEquality("equality_1000", 1000).print();
+    collect(&reporter, benchElementIdEquality("equality_100", 100));
+    collect(&reporter, benchElementIdEquality("equality_1000", 1000));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1285,21 +1298,21 @@ pub fn main() !void {
 
     // Ear-clipping is O(n²): ns/op should grow linearly with vertex count.
     // Reflex-set optimization reduces constant factor for convex polygons.
-    benchTriangulate("scaling_convex_8", buildConvex8).print();
-    benchTriangulate("scaling_convex_16", buildConvex16).print();
-    benchTriangulate("scaling_convex_32", buildConvex32).print();
-    benchTriangulate("scaling_convex_64", buildConvex64).print();
-    benchTriangulate("scaling_convex_128", buildConvex128).print();
-    benchTriangulate("scaling_convex_256", buildConvex256).print();
-    benchTriangulate("scaling_convex_512", buildConvex512).print();
+    collect(&reporter, benchTriangulate("scaling_convex_8", buildConvex8));
+    collect(&reporter, benchTriangulate("scaling_convex_16", buildConvex16));
+    collect(&reporter, benchTriangulate("scaling_convex_32", buildConvex32));
+    collect(&reporter, benchTriangulate("scaling_convex_64", buildConvex64));
+    collect(&reporter, benchTriangulate("scaling_convex_128", buildConvex128));
+    collect(&reporter, benchTriangulate("scaling_convex_256", buildConvex256));
+    collect(&reporter, benchTriangulate("scaling_convex_512", buildConvex512));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // Stars are concave — more reflex vertices mean more work per ear test.
-    benchTriangulate("scaling_star_5", buildStar5).print();
-    benchTriangulate("scaling_star_10", buildStar10).print();
-    benchTriangulate("scaling_star_50", buildStar50).print();
-    benchTriangulate("scaling_star_100", buildStar100).print();
+    collect(&reporter, benchTriangulate("scaling_star_5", buildStar5));
+    collect(&reporter, benchTriangulate("scaling_star_10", buildStar10));
+    collect(&reporter, benchTriangulate("scaling_star_50", buildStar50));
+    collect(&reporter, benchTriangulate("scaling_star_100", buildStar100));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -1319,6 +1332,8 @@ pub fn main() !void {
         \\  - Iterations are adaptive based on operation count.
         \\
     , .{});
+
+    reporter.finish();
 }
 
 // =============================================================================

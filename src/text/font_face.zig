@@ -61,11 +61,6 @@ pub const FontFace = struct {
         return self.vtable.glyphMetrics(self.ptr, glyph_id);
     }
 
-    /// Get glyph metrics for a codepoint (convenience)
-    pub inline fn codepointMetrics(self: FontFace, codepoint: u21) GlyphMetrics {
-        return self.glyphMetrics(self.glyphIndex(codepoint));
-    }
-
     /// Render a glyph with subpixel positioning
     pub inline fn renderGlyphSubpixel(
         self: FontFace,

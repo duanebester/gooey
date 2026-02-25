@@ -11,7 +11,7 @@
 //! The text system is designed with platform abstraction in mind:
 //! - `types.zig` - Platform-agnostic data types
 //! - `font_face.zig` - FontFace interface (trait)
-//! - `shaper.zig` - Shaper interface + generic simple shaper
+//! - `shaper.zig` - Shaper interface for platform backends
 //! - `atlas.zig` - Platform-agnostic texture atlas
 //! - `cache.zig` - Glyph cache using FontFace interface
 //! - `text_system.zig` - High-level unified API
@@ -43,11 +43,6 @@ pub const RasterizedGlyph = types.RasterizedGlyph;
 // Interfaces
 pub const font_face = @import("font_face.zig");
 pub const FontFace = font_face.FontFace;
-
-pub const shaper = @import("shaper.zig");
-pub const Shaper = shaper.Shaper;
-pub const shapeSimple = shaper.shapeSimple;
-pub const measureSimple = shaper.measureSimple;
 
 // Infrastructure
 pub const Atlas = @import("atlas.zig").Atlas;
