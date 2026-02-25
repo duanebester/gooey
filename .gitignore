@@ -7,5 +7,8 @@ zig-out/
 *.so
 *.dylib
 
+# Benchmark output
+bench-results/
+
 # System files
 .DS_Store

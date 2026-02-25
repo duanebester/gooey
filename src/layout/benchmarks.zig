@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const bench = @import("bench");
 const layout = gooey.layout;
 
 const LayoutEngine = layout.LayoutEngine;
@@ -810,10 +811,24 @@ test "validate: percentage_sizing" {
 // Main Entry Point (for benchmark executable)
 // =============================================================================
 
+/// Print a layout benchmark result and record it in the JSON reporter.
+/// Maps the layout-specific `node_count` field to the common `operation_count`.
+fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
+    result.print();
+    reporter.addEntry(bench.entry(
+        result.name,
+        result.node_count,
+        result.total_time_ns,
+        result.iterations,
+    ));
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    var reporter = bench.Reporter.init("layout");
 
     std.debug.print("\n", .{});
     std.debug.print("=" ** 90 ++ "\n", .{});
@@ -828,19 +843,19 @@ pub fn main() !void {
     std.debug.print("-" ** 90 ++ "\n", .{});
 
     // Smallest first
-    runBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew).print();
-    runBenchmark(allocator, "deep_nesting", buildDeepNesting).print();
-    runBenchmark(allocator, "space_distribution", buildSpaceDistribution).print();
-    runBenchmark(allocator, "percentage_sizing", buildPercentageSizing).print();
-    runBenchmark(allocator, "shrink_overflow", buildShrinkOverflow).print();
-    runBenchmark(allocator, "expand_with_max_constraint", buildExpandWithMaxConstraint).print();
-    runBenchmark(allocator, "expand_with_min_constraint", buildExpandWithMinConstraint).print();
-    runBenchmark(allocator, "mixed_layout", buildMixedLayout).print();
+    collect(&reporter, runBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
+    collect(&reporter, runBenchmark(allocator, "deep_nesting", buildDeepNesting));
+    collect(&reporter, runBenchmark(allocator, "space_distribution", buildSpaceDistribution));
+    collect(&reporter, runBenchmark(allocator, "percentage_sizing", buildPercentageSizing));
+    collect(&reporter, runBenchmark(allocator, "shrink_overflow", buildShrinkOverflow));
+    collect(&reporter, runBenchmark(allocator, "expand_with_max_constraint", buildExpandWithMaxConstraint));
+    collect(&reporter, runBenchmark(allocator, "expand_with_min_constraint", buildExpandWithMinConstraint));
+    collect(&reporter, runBenchmark(allocator, "mixed_layout", buildMixedLayout));
     // PanGui comparison benchmarks (larger node counts)
-    runBenchmark(allocator, "nested_vertical_stack", buildNestedVerticalStack).print();
-    runBenchmark(allocator, "percentage_and_ratio", buildPercentageAndRatio).print();
-    runBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights).print();
-    runBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights).print();
+    collect(&reporter, runBenchmark(allocator, "nested_vertical_stack", buildNestedVerticalStack));
+    collect(&reporter, runBenchmark(allocator, "percentage_and_ratio", buildPercentageAndRatio));
+    collect(&reporter, runBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights));
+    collect(&reporter, runBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights));
 
     std.debug.print("=" ** 90 ++ "\n", .{});
 
@@ -857,22 +872,23 @@ pub fn main() !void {
     });
     std.debug.print("-" ** 90 ++ "\n", .{});
 
-    runFullFrameBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew).print();
-    runFullFrameBenchmark(allocator, "deep_nesting", buildDeepNesting).print();
-    runFullFrameBenchmark(allocator, "space_distribution", buildSpaceDistribution).print();
-    runFullFrameBenchmark(allocator, "percentage_sizing", buildPercentageSizing).print();
-    runFullFrameBenchmark(allocator, "shrink_overflow", buildShrinkOverflow).print();
-    runFullFrameBenchmark(allocator, "expand_with_max_constraint", buildExpandWithMaxConstraint).print();
-    runFullFrameBenchmark(allocator, "expand_with_min_constraint", buildExpandWithMinConstraint).print();
-    runFullFrameBenchmark(allocator, "mixed_layout", buildMixedLayout).print();
-    runFullFrameBenchmark(allocator, "nested_vertical_stack", buildNestedVerticalStack).print();
-    runFullFrameBenchmark(allocator, "percentage_and_ratio", buildPercentageAndRatio).print();
-    runFullFrameBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights).print();
-    runFullFrameBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights).print();
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_deep_nesting", buildDeepNesting));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_space_distribution", buildSpaceDistribution));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_percentage_sizing", buildPercentageSizing));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_shrink_overflow", buildShrinkOverflow));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_expand_with_max_constraint", buildExpandWithMaxConstraint));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_expand_with_min_constraint", buildExpandWithMinConstraint));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_mixed_layout", buildMixedLayout));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_nested_vertical_stack", buildNestedVerticalStack));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_percentage_and_ratio", buildPercentageAndRatio));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_equal_weights", buildFlexExpandEqualWeights));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_weights", buildFlexExpandWeights));
 
     std.debug.print("=" ** 90 ++ "\n", .{});
 
-    // Phase breakdown benchmarks (per-phase timing within endFrame)
+    // Phase breakdown benchmarks (per-phase timing within endFrame).
+    // These use a different result type; printed but not collected for JSON.
     std.debug.print("\n", .{});
     std.debug.print("=" ** 140 ++ "\n", .{});
     std.debug.print("Gooey Layout Engine Benchmarks — Phase Breakdown (per-phase within endFrame)\n", .{});
@@ -899,4 +915,6 @@ pub fn main() !void {
     std.debug.print("Iterations are adaptive based on node count (fewer for large tests).\n", .{});
     std.debug.print("\nCurrent MAX_ELEMENTS_PER_FRAME = {d}\n", .{layout.engine.MAX_ELEMENTS_PER_FRAME});
     std.debug.print("PanGui benchmarks use up to 100k+ nodes for comparison.\n", .{});
+
+    reporter.finish();
 }

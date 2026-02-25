@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const bench = @import("bench");
 
 const context = gooey.context;
 const DispatchTree = context.DispatchTree;
@@ -661,10 +662,23 @@ test "validate: markDirty deduplication" {
 // Main Entry Point (for benchmark executable)
 // =============================================================================
 
+/// Print a benchmark result and record it in the JSON reporter.
+fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
+    result.print();
+    reporter.addEntry(bench.entry(
+        result.name,
+        result.operation_count,
+        result.total_time_ns,
+        result.iterations,
+    ));
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    var reporter = bench.Reporter.init("context");
 
     // =========================================================================
     // Tree Build Benchmarks
@@ -678,26 +692,26 @@ pub fn main() !void {
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // Wide trees: expose O(n²) sibling walk in pushNode.
-    benchTreeBuild(allocator, "wide_100", buildWide100).print();
-    benchTreeBuild(allocator, "wide_500", buildWide500).print();
-    benchTreeBuild(allocator, "wide_1000", buildWide1000).print();
-    benchTreeBuild(allocator, "wide_2000", buildWide2000).print();
+    collect(&reporter, benchTreeBuild(allocator, "wide_100", buildWide100));
+    collect(&reporter, benchTreeBuild(allocator, "wide_500", buildWide500));
+    collect(&reporter, benchTreeBuild(allocator, "wide_1000", buildWide1000));
+    collect(&reporter, benchTreeBuild(allocator, "wide_2000", buildWide2000));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // Deep trees: linear depth, no sibling walk cost.
-    benchTreeBuild(allocator, "deep_16", buildDeep16).print();
-    benchTreeBuild(allocator, "deep_32", buildDeep32).print();
-    benchTreeBuild(allocator, "deep_64", buildDeep64).print();
+    collect(&reporter, benchTreeBuild(allocator, "deep_16", buildDeep16));
+    collect(&reporter, benchTreeBuild(allocator, "deep_32", buildDeep32));
+    collect(&reporter, benchTreeBuild(allocator, "deep_64", buildDeep64));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // Realistic trees: mixed width and depth.
-    benchTreeBuild(allocator, "table_50x10", buildTable50x10).print();
-    benchTreeBuild(allocator, "table_100x10", buildTable100x10).print();
-    benchTreeBuild(allocator, "table_200x8", buildTable200x8).print();
-    benchTreeBuild(allocator, "nested_list_20x50", buildNestedList20x50).print();
-    benchTreeBuild(allocator, "nested_list_50x20", buildNestedList50x20).print();
+    collect(&reporter, benchTreeBuild(allocator, "table_50x10", buildTable50x10));
+    collect(&reporter, benchTreeBuild(allocator, "table_100x10", buildTable100x10));
+    collect(&reporter, benchTreeBuild(allocator, "table_200x8", buildTable200x8));
+    collect(&reporter, benchTreeBuild(allocator, "nested_list_20x50", buildNestedList20x50));
+    collect(&reporter, benchTreeBuild(allocator, "nested_list_50x20", buildNestedList50x20));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -712,14 +726,14 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchHitTest(allocator, "hit_wide_100", buildWide100).print();
-    benchHitTest(allocator, "hit_wide_1000", buildWide1000).print();
-    benchHitTest(allocator, "hit_deep_32", buildDeep32).print();
-    benchHitTest(allocator, "hit_deep_64", buildDeep64).print();
-    benchHitTest(allocator, "hit_table_50x10", buildTable50x10).print();
-    benchHitTest(allocator, "hit_table_100x10", buildTable100x10).print();
-    benchHitTest(allocator, "hit_table_200x8", buildTable200x8).print();
-    benchHitTest(allocator, "hit_nested_list_20x50", buildNestedList20x50).print();
+    collect(&reporter, benchHitTest(allocator, "hit_wide_100", buildWide100));
+    collect(&reporter, benchHitTest(allocator, "hit_wide_1000", buildWide1000));
+    collect(&reporter, benchHitTest(allocator, "hit_deep_32", buildDeep32));
+    collect(&reporter, benchHitTest(allocator, "hit_deep_64", buildDeep64));
+    collect(&reporter, benchHitTest(allocator, "hit_table_50x10", buildTable50x10));
+    collect(&reporter, benchHitTest(allocator, "hit_table_100x10", buildTable100x10));
+    collect(&reporter, benchHitTest(allocator, "hit_table_200x8", buildTable200x8));
+    collect(&reporter, benchHitTest(allocator, "hit_nested_list_20x50", buildNestedList20x50));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -734,10 +748,10 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchReset(allocator, "reset_wide_1000", buildWide1000).print();
-    benchReset(allocator, "reset_deep_64", buildDeep64).print();
-    benchReset(allocator, "reset_table_100x10", buildTable100x10).print();
-    benchReset(allocator, "reset_table_200x8", buildTable200x8).print();
+    collect(&reporter, benchReset(allocator, "reset_wide_1000", buildWide1000));
+    collect(&reporter, benchReset(allocator, "reset_deep_64", buildDeep64));
+    collect(&reporter, benchReset(allocator, "reset_table_100x10", buildTable100x10));
+    collect(&reporter, benchReset(allocator, "reset_table_200x8", buildTable200x8));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -752,23 +766,23 @@ pub fn main() !void {
     printHeader();
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchFullFrame(allocator, "frame_wide_100", buildWide100).print();
-    benchFullFrame(allocator, "frame_wide_500", buildWide500).print();
-    benchFullFrame(allocator, "frame_wide_1000", buildWide1000).print();
-    benchFullFrame(allocator, "frame_wide_2000", buildWide2000).print();
+    collect(&reporter, benchFullFrame(allocator, "frame_wide_100", buildWide100));
+    collect(&reporter, benchFullFrame(allocator, "frame_wide_500", buildWide500));
+    collect(&reporter, benchFullFrame(allocator, "frame_wide_1000", buildWide1000));
+    collect(&reporter, benchFullFrame(allocator, "frame_wide_2000", buildWide2000));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchFullFrame(allocator, "frame_deep_32", buildDeep32).print();
-    benchFullFrame(allocator, "frame_deep_64", buildDeep64).print();
+    collect(&reporter, benchFullFrame(allocator, "frame_deep_32", buildDeep32));
+    collect(&reporter, benchFullFrame(allocator, "frame_deep_64", buildDeep64));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
-    benchFullFrame(allocator, "frame_table_50x10", buildTable50x10).print();
-    benchFullFrame(allocator, "frame_table_100x10", buildTable100x10).print();
-    benchFullFrame(allocator, "frame_table_200x8", buildTable200x8).print();
-    benchFullFrame(allocator, "frame_nested_list_20x50", buildNestedList20x50).print();
-    benchFullFrame(allocator, "frame_nested_list_50x20", buildNestedList50x20).print();
+    collect(&reporter, benchFullFrame(allocator, "frame_table_50x10", buildTable50x10));
+    collect(&reporter, benchFullFrame(allocator, "frame_table_100x10", buildTable100x10));
+    collect(&reporter, benchFullFrame(allocator, "frame_table_200x8", buildTable200x8));
+    collect(&reporter, benchFullFrame(allocator, "frame_nested_list_20x50", buildNestedList20x50));
+    collect(&reporter, benchFullFrame(allocator, "frame_nested_list_50x20", buildNestedList50x20));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -784,19 +798,19 @@ pub fn main() !void {
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // Unique dirtying (each entity marked once).
-    benchMarkDirty(allocator, "dirty_unique_10", 10).print();
-    benchMarkDirty(allocator, "dirty_unique_50", 50).print();
-    benchMarkDirty(allocator, "dirty_unique_200", 200).print();
-    benchMarkDirty(allocator, "dirty_unique_1000", 1000).print();
+    collect(&reporter, benchMarkDirty(allocator, "dirty_unique_10", 10));
+    collect(&reporter, benchMarkDirty(allocator, "dirty_unique_50", 50));
+    collect(&reporter, benchMarkDirty(allocator, "dirty_unique_200", 200));
+    collect(&reporter, benchMarkDirty(allocator, "dirty_unique_1000", 1000));
 
     std.debug.print("-" ** 105 ++ "\n", .{});
 
     // Duplicate dirtying (same entities marked multiple times).
     // Exposes the O(n) linear scan for duplicate detection.
-    benchMarkDirtyDuplicates(allocator, "dirty_dupes_50x10", 50, 10).print();
-    benchMarkDirtyDuplicates(allocator, "dirty_dupes_200x5", 200, 5).print();
-    benchMarkDirtyDuplicates(allocator, "dirty_dupes_200x10", 200, 10).print();
-    benchMarkDirtyDuplicates(allocator, "dirty_dupes_1000x5", 1000, 5).print();
+    collect(&reporter, benchMarkDirtyDuplicates(allocator, "dirty_dupes_50x10", 50, 10));
+    collect(&reporter, benchMarkDirtyDuplicates(allocator, "dirty_dupes_200x5", 200, 5));
+    collect(&reporter, benchMarkDirtyDuplicates(allocator, "dirty_dupes_200x10", 200, 10));
+    collect(&reporter, benchMarkDirtyDuplicates(allocator, "dirty_dupes_1000x5", 1000, 5));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -813,12 +827,12 @@ pub fn main() !void {
 
     // If pushNode is O(n²) via sibling walk, ns/op should grow linearly with width.
     // After fixing to O(1) with last_child, ns/op should be roughly constant.
-    benchTreeBuild(allocator, "scaling_wide_50", buildWide50).print();
-    benchTreeBuild(allocator, "scaling_wide_100", buildWide100).print();
-    benchTreeBuild(allocator, "scaling_wide_200", buildWide200).print();
-    benchTreeBuild(allocator, "scaling_wide_500", buildWide500).print();
-    benchTreeBuild(allocator, "scaling_wide_1000", buildWide1000).print();
-    benchTreeBuild(allocator, "scaling_wide_2000", buildWide2000).print();
+    collect(&reporter, benchTreeBuild(allocator, "scaling_wide_50", buildWide50));
+    collect(&reporter, benchTreeBuild(allocator, "scaling_wide_100", buildWide100));
+    collect(&reporter, benchTreeBuild(allocator, "scaling_wide_200", buildWide200));
+    collect(&reporter, benchTreeBuild(allocator, "scaling_wide_500", buildWide500));
+    collect(&reporter, benchTreeBuild(allocator, "scaling_wide_1000", buildWide1000));
+    collect(&reporter, benchTreeBuild(allocator, "scaling_wide_2000", buildWide2000));
 
     std.debug.print("=" ** 105 ++ "\n", .{});
 
@@ -835,6 +849,8 @@ pub fn main() !void {
         \\  - Iterations are adaptive based on operation count.
         \\
     , .{});
+
+    reporter.finish();
 }
 
 // =============================================================================

@@ -75,17 +75,6 @@ pub const Metrics = struct {
         const padding_top = (box_height - text_height) * 0.5;
         return box_y + padding_top + self.ascender;
     }
-
-    /// Calculate strikethrough position (center of x-height, relative to baseline)
-    /// Returns negative value (above baseline)
-    pub inline fn strikethroughPosition(self: Metrics) f32 {
-        return -(self.x_height * 0.5);
-    }
-
-    /// Get strikethrough thickness (same as underline by default)
-    pub inline fn strikethroughThickness(self: Metrics) f32 {
-        return self.underline_thickness;
-    }
 };
 
 /// Glyph metrics for a single glyph

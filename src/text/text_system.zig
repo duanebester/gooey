@@ -620,15 +620,9 @@ pub const TextSystem = struct {
         return error.NoFontLoaded;
     }
 
-    /// Shape text with proper kerning and ligature support
-    /// Stats parameter is optional - pass null to skip performance tracking
-    pub inline fn shapeText(self: *Self, text: []const u8, stats: ?*RenderStats) !ShapedRun {
-        return self.shapeTextComplex(text, stats);
-    }
-
-    /// Shape text using complex shaper (ligatures, kerning)
-    /// Stats parameter is optional - pass null to skip performance tracking
-    pub fn shapeTextComplex(self: *Self, text: []const u8, stats: ?*RenderStats) !ShapedRun {
+    /// Shape text with proper kerning and ligature support.
+    /// Stats parameter is optional - pass null to skip performance tracking.
+    pub fn shapeText(self: *Self, text: []const u8, stats: ?*RenderStats) !ShapedRun {
         std.debug.assert(text.len > 0);
 
         const face = self.current_face orelse return error.NoFontLoaded;
@@ -761,9 +755,9 @@ pub const TextSystem = struct {
             }
         }
 
-        // Cold path (or buffer overflow): delegate to heap-allocating shapeTextComplex.
+        // Cold path (or buffer overflow): delegate to heap-allocating shapeText.
         // Returns owned = true; caller must deinit with self.allocator.
-        return self.shapeTextComplex(text, stats);
+        return self.shapeText(text, stats);
     }
 
     /// Get cached glyph with subpixel variant (renders if needed)
@@ -824,8 +818,8 @@ pub const TextSystem = struct {
             }
 
             // Cache miss: full shape via CoreText/HarfBuzz, read width, free.
-            // The shapeTextComplex call also populates the cache for next time.
-            var shaped = try self.shapeTextComplex(text, null);
+            // The shapeText call also populates the cache for next time.
+            var shaped = try self.shapeText(text, null);
             defer shaped.deinit(self.allocator);
             return shaped.width;
         }
@@ -874,8 +868,8 @@ pub const TextSystem = struct {
         }
 
         // Cache miss: full shape via CoreText/HarfBuzz, measure, free.
-        // The shapeTextComplex call also populates the cache for next time.
-        var run = try self.shapeTextComplex(text, null);
+        // The shapeText call also populates the cache for next time.
+        var run = try self.shapeText(text, null);
         defer run.deinit(self.allocator);
         return measureGlyphRun(run.glyphs, text, run.width, max_width, line_height);
     }
@@ -884,21 +878,6 @@ pub const TextSystem = struct {
     /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
     pub inline fn getAtlas(self: *const Self) *const Atlas {
         return self.cache.getAtlas();
-    }
-
-    /// Check if atlas needs re-upload
-    pub inline fn atlasGeneration(self: *const Self) u32 {
-        return self.cache.getGeneration();
-    }
-
-    /// Thread-safe atlas access for GPU upload.
-    /// Holds the glyph_cache_mutex while calling the callback, ensuring no other
-    /// thread can modify the atlas (grow, reserve, etc.) during the upload.
-    /// Returns the callback's return value.
-    pub fn withAtlasLocked(self: *Self, comptime T: type, callback: *const fn (*const Atlas) T) T {
-        self.glyph_cache_mutex.lock();
-        defer self.glyph_cache_mutex.unlock();
-        return callback(self.cache.getAtlas());
     }
 
     /// Thread-safe atlas access with user data for GPU upload.
@@ -947,30 +926,6 @@ pub const TextSystem = struct {
                 out_cached[i] = try self.cache.getOrRenderSubpixel(face, glyphs[i].glyph_id, font_size, subpixel_xs[i], 0);
             }
         }
-    }
-
-    /// Get cached glyph from a fallback font
-    /// Thread-safe: protected by glyph_cache_mutex for multi-window scenarios.
-    pub fn getGlyphFallback(
-        self: *Self,
-        font_ptr: *anyopaque,
-        glyph_id: u16,
-        font_size: f32,
-        subpixel_x: u8,
-        subpixel_y: u8,
-    ) !CachedGlyph {
-        std.debug.assert(font_size > 0);
-
-        // Lock for thread-safe glyph cache/atlas access (multiple DisplayLink threads)
-        self.glyph_cache_mutex.lock();
-        defer self.glyph_cache_mutex.unlock();
-
-        return self.cache.getOrRenderFallback(font_ptr, glyph_id, font_size, subpixel_x, subpixel_y);
-    }
-
-    /// Get shape cache statistics for debugging
-    pub fn getShapeCacheStats(self: *const Self) struct { entries: u32, capacity: u32 } {
-        return self.shape_cache.getStats();
     }
 };
 

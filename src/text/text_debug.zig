@@ -99,22 +99,6 @@ pub fn debugShapeText(text_system: *TextSystem, text: []const u8) !void {
     }
 }
 
-/// Compare expected vs actual text width
-pub fn checkTextWidth(text_system: *TextSystem, text: []const u8, expected_width: f32, tolerance: f32) !bool {
-    var shaped = try text_system.shapeText(text, null);
-    defer shaped.deinit(text_system.allocator);
-
-    const diff = @abs(shaped.width - expected_width);
-    const ok = diff <= tolerance;
-
-    if (!ok) {
-        debugLog("!!! Width mismatch for \"{s}\" ({s})", .{ text, platform_name });
-        debugLog("    Expected: {d:.3}, Got: {d:.3}, Diff: {d:.3}", .{ expected_width, shaped.width, diff });
-    }
-
-    return ok;
-}
-
 /// Get character preview from cluster index
 fn getCharPreview(text: []const u8, cluster: u32) []const u8 {
     if (cluster >= text.len) return "?";
@@ -150,40 +134,4 @@ pub fn logGlyphAdvances(text_system: *TextSystem, text: []const u8) !void {
 
     debugLog("  {s}", .{stream.getWritten()});
     debugLog("  Total: {d:.3}", .{shaped.width});
-}
-
-// =============================================================================
-// Test utilities
-// =============================================================================
-
-/// Test that shaping produces expected number of glyphs
-pub fn expectGlyphCount(shaped: ShapedRun, expected: usize) !void {
-    if (shaped.glyphs.len != expected) {
-        debugLog("Expected {d} glyphs, got {d}", .{ expected, shaped.glyphs.len });
-        return error.GlyphCountMismatch;
-    }
-}
-
-/// Test that all glyph advances are positive (no weird negative values)
-pub fn expectPositiveAdvances(shaped: ShapedRun) !void {
-    for (shaped.glyphs, 0..) |glyph, i| {
-        if (glyph.x_advance < 0) {
-            debugLog("Glyph {d} has negative advance: {d:.3}", .{ i, glyph.x_advance });
-            return error.NegativeAdvance;
-        }
-    }
-}
-
-/// Test that total width approximately equals sum of advances
-pub fn expectConsistentWidth(shaped: ShapedRun, tolerance: f32) !void {
-    var sum: f32 = 0;
-    for (shaped.glyphs) |glyph| {
-        sum += glyph.x_advance + glyph.x_offset;
-    }
-
-    const diff = @abs(shaped.width - sum);
-    if (diff > tolerance) {
-        debugLog("Width inconsistency: total={d:.3}, sum={d:.3}, diff={d:.3}", .{ shaped.width, sum, diff });
-        return error.WidthInconsistency;
-    }
 }
