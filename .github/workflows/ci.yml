@@ -345,27 +345,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           RUN_ID=$(gh api \
             "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
             --jq '.workflow_runs[0].id // empty')
 
-          if [ -z "$RUN_ID" ]; then
-            echo "No successful main run found — skipping comparison."
-            echo "has_baseline=false" >> "$GITHUB_OUTPUT"
+          if [ -z "${RUN_ID}" ]; then
+            echo "No successful main run found -- skipping comparison."
+            echo "has_baseline=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          echo "Downloading baseline from main run $RUN_ID…"
-          if ! gh run download "$RUN_ID" --name bench-macos --dir baseline/; then
-            echo "Artifact not found or expired — skipping comparison."
-            echo "has_baseline=false" >> "$GITHUB_OUTPUT"
+          echo "Downloading baseline from main run ${RUN_ID}..."
+          if ! gh run download "${RUN_ID}" --name bench-macos --dir baseline/; then
+            echo "Artifact not found or expired -- skipping comparison."
+            echo "has_baseline=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          echo "has_baseline=true" >> "$GITHUB_OUTPUT"
-          echo "baseline_run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "has_baseline=true" >> "${GITHUB_OUTPUT}"
+          echo "baseline_run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
           ls -la baseline/
 
       - name: Run benchmarks
@@ -378,37 +378,37 @@ jobs:
         if: steps.baseline.outputs.has_baseline == 'true'
         id: compare
         run: |
-          set -uo pipefail
+          set -eo pipefail
 
           FAILED=0
           : > bench-report.txt
 
           for module in core layout context text; do
-            BASELINE=$(ls baseline/*-*-${module}-benchmarks-*.json 2>/dev/null | head -1)
-            CURRENT=$(ls current/*-*-${module}-benchmarks-*.json 2>/dev/null | head -1)
+            BASELINE=$(ls baseline/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
+            CURRENT=$(ls current/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
 
-            if [ -z "$BASELINE" ]; then
-              echo "⚠ No baseline found for ${module} — skipping."
+            if [ -z "${BASELINE}" ]; then
+              echo "[warn] No baseline found for ${module} -- skipping."
               continue
             fi
-            if [ -z "$CURRENT" ]; then
-              echo "⚠ No current result found for ${module} — skipping."
+            if [ -z "${CURRENT}" ]; then
+              echo "[warn] No current result found for ${module} -- skipping."
               continue
             fi
 
             echo ""
-            echo "═══ Comparing ${module} ═══"
+            echo "=== Comparing ${module} ==="
 
             # bench-compare prints to stderr; merge into stdout for capture.
-            if zig build bench-compare -- "$BASELINE" "$CURRENT" 2>&1 | tee -a bench-report.txt; then
-              echo "✅ ${module}: OK"
+            if zig build bench-compare -- "${BASELINE}" "${CURRENT}" 2>&1 | tee -a bench-report.txt; then
+              echo "[pass] ${module}: OK"
             else
               FAILED=1
-              echo "🔴 ${module}: REGRESSION DETECTED"
+              echo "[FAIL] ${module}: REGRESSION DETECTED"
             fi
           done
 
-          exit $FAILED
+          exit ${FAILED}
 
       # Always post the comparison table to the Actions job summary so
       # reviewers can inspect numbers without digging through logs.
@@ -429,7 +429,7 @@ jobs:
             else
               echo "_No comparison data produced._"
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   # ==========================================================================
   # Valgrind Memory Leak Detection
