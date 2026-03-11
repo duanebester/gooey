@@ -259,6 +259,7 @@ fn renderTextInputs(gooey: *Gooey, builder: *const Builder) !void {
         input_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
         input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
+        input_widget.secure = pending.style.secure;
         try input_widget.render(gooey.scene, gooey.text_system, gooey.scale_factor);
     }
 }

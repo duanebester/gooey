@@ -136,6 +136,9 @@ pub const TextInput = struct {
     // Placeholder text
     placeholder: []const u8 = "",
 
+    /// When true, display bullet characters instead of actual text content.
+    secure: bool = false,
+
     // Callbacks
     on_change: ?*const fn (*TextInput) void = null,
     on_submit: ?*const fn (*TextInput) void = null,
@@ -865,15 +868,55 @@ pub const TextInput = struct {
             cursor_byte = common.snapToCharBoundary(text, cursor_byte);
         }
 
+        // Secure mode: replace each codepoint with a bullet character so the
+        // raw text is never rendered.  Builds a parallel display buffer with
+        // a mapped cursor position that preserves editing behaviour.
+        var secure_buf: [4096]u8 = undefined;
+        var display_text: []const u8 = text;
+        var display_cursor: usize = cursor_byte;
+        if (self.secure and text.len > 0) {
+            var mask_len: usize = 0;
+            var mask_cursor: usize = 0;
+            var i: usize = 0;
+            while (i < text.len) {
+                const cp_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+                // Write one '•' (U+2022): 0xE2 0x80 0xA2.
+                if (mask_len + 3 <= secure_buf.len) {
+                    secure_buf[mask_len] = 0xe2;
+                    secure_buf[mask_len + 1] = 0x80;
+                    secure_buf[mask_len + 2] = 0xa2;
+                    mask_len += 3;
+                }
+                i += cp_len;
+                if (i <= cursor_byte) mask_cursor = mask_len;
+            }
+            display_text = secure_buf[0..mask_len];
+            display_cursor = mask_cursor;
+        }
+
         // Text area is now the full bounds (padding handled by component's box)
         const text_x = self.bounds.x;
         const text_y = self.bounds.y;
         const text_width = self.bounds.width;
         const text_height = self.bounds.height;
 
-        // Ensure cursor is visible BEFORE rendering
+        // Ensure cursor is visible BEFORE rendering.
+        // In secure mode, scroll based on the masked display text width
+        // because the bullet glyphs differ in width from the real text.
         if (self.focused and preedit.len == 0) {
-            self.ensureCursorVisible(text_system, text_width);
+            if (self.secure) {
+                const cursor_x_pos: f32 = if (display_cursor > 0)
+                    self.measureText(text_system, display_text[0..display_cursor]) catch 0
+                else
+                    0;
+                if (cursor_x_pos - self.scroll_offset > text_width) {
+                    self.scroll_offset = cursor_x_pos - text_width + 10;
+                } else if (cursor_x_pos < self.scroll_offset) {
+                    self.scroll_offset = @max(cursor_x_pos - 10, 0);
+                }
+            } else {
+                self.ensureCursorVisible(text_system, text_width);
+            }
         }
 
         // No background/border - component handles that
@@ -900,14 +943,14 @@ pub const TextInput = struct {
             _ = try text_mod.renderText(scene, text_system, self.placeholder, text_x, baseline_y, scale_factor, self.style.placeholder_color, metrics.point_size, &placeholder_opts);
         } else if (has_content) {
             // Render selection background first (if any)
-            if (self.hasSelection()) {
+            if (self.hasSelection() and !self.secure) {
                 try self.renderSelection(scene, text_system, text_x, text_y, text_height, scale_factor);
             }
 
             // Render text before cursor
             var pen_x = text_x - self.scroll_offset;
-            if (cursor_byte > 0) {
-                const before = text[0..cursor_byte];
+            if (display_cursor > 0) {
+                const before = display_text[0..display_cursor];
                 var before_opts = text_mod.RenderTextOptions{};
                 const width = try text_mod.renderText(scene, text_system, before, pen_x, baseline_y, scale_factor, self.style.text_color, metrics.point_size, &before_opts);
                 pen_x += width;
@@ -934,8 +977,8 @@ pub const TextInput = struct {
             }
 
             // Render text after cursor
-            if (cursor_byte < text.len) {
-                const after = text[cursor_byte..];
+            if (display_cursor < display_text.len) {
+                const after = display_text[display_cursor..];
                 var after_opts = text_mod.RenderTextOptions{};
                 _ = try text_mod.renderText(scene, text_system, after, pen_x, baseline_y, scale_factor, self.style.text_color, metrics.point_size, &after_opts);
             }
@@ -944,8 +987,8 @@ pub const TextInput = struct {
         // Render cursor
         if (self.focused and self.cursor_visible and preedit.len == 0) {
             var cursor_x = text_x - self.scroll_offset;
-            if (cursor_byte > 0 and text.len > 0) {
-                cursor_x += try self.measureText(text_system, text[0..cursor_byte]);
+            if (display_cursor > 0 and display_text.len > 0) {
+                cursor_x += try self.measureText(text_system, display_text[0..display_cursor]);
             }
 
             const cursor_height = metrics.line_height;
