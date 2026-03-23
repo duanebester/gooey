@@ -158,6 +158,7 @@ pub fn build(b: *std.Build) void {
 
         addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "charts-demo", "src/examples/charts_demo.zig");
         addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "dashboard", "src/examples/dashboard.zig");
+        addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "two-line-charts", "src/examples/two_line_charts.zig");
 
         // =====================================================================
         // Tests

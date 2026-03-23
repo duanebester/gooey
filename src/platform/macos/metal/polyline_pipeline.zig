@@ -256,7 +256,7 @@ pub const PolylinePipeline = struct {
                 // 0--1
                 // |  |
                 // 3--2
-                const seg_base = vertex_offset;
+                const seg_base = vertex_offset - base_vertex;
 
                 vb_ptr[vertex_offset] = .{ .x = p0.x + perp_x, .y = p0.y + perp_y };
                 vertex_offset += 1;

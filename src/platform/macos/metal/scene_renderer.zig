@@ -379,7 +379,11 @@ fn drawColoredPointCloudBatch(
     }
 }
 
-/// Common rendering logic for unified primitives (quads and shadows)
+/// Common rendering logic for unified primitives (quads and shadows).
+///
+/// Metal's `setVertexBytes` has a 4 KB limit. Each Primitive is 128 bytes,
+/// so we can pass at most 32 per call (128 × 32 = 4096). Batches larger
+/// than that are split into chunks automatically.
 fn drawUnifiedPrimitives(
     encoder: objc.Object,
     primitives: []const unified.Primitive,
@@ -389,6 +393,14 @@ fn drawUnifiedPrimitives(
 ) void {
     if (primitives.len == 0) return;
 
+    // 4096 / @sizeOf(Primitive) = 32. Hard-coded to match the compile-time
+    // assertion on Primitive size (128 bytes) so the relationship is obvious.
+    const MAX_PER_CALL: usize = 32;
+    comptime {
+        std.debug.assert(@sizeOf(unified.Primitive) == 128);
+        std.debug.assert(MAX_PER_CALL * @sizeOf(unified.Primitive) <= 4096);
+    }
+
     encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
     encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
         unit_vertex_buffer.value,
@@ -396,19 +408,28 @@ fn drawUnifiedPrimitives(
         @as(c_ulong, 0),
     });
     encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-        @as(*const anyopaque, @ptrCast(primitives.ptr)),
-        @as(c_ulong, primitives.len * @sizeOf(unified.Primitive)),
-        @as(c_ulong, 1),
-    });
-    encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
         @as(*const anyopaque, @ptrCast(&viewport_size)),
         @as(c_ulong, @sizeOf([2]f32)),
         @as(c_ulong, 2),
     });
-    encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-        @intFromEnum(mtl.MTLPrimitiveType.triangle),
-        @as(c_ulong, 0),
-        @as(c_ulong, 6),
-        @as(c_ulong, primitives.len),
-    });
+
+    var offset: usize = 0;
+    while (offset < primitives.len) {
+        const chunk_len: usize = @min(primitives.len - offset, MAX_PER_CALL);
+        const chunk = primitives[offset..][0..chunk_len];
+
+        encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+            @as(*const anyopaque, @ptrCast(chunk.ptr)),
+            @as(c_ulong, chunk_len * @sizeOf(unified.Primitive)),
+            @as(c_ulong, 1),
+        });
+        encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+            @intFromEnum(mtl.MTLPrimitiveType.triangle),
+            @as(c_ulong, 0),
+            @as(c_ulong, 6),
+            @as(c_ulong, chunk_len),
+        });
+
+        offset += chunk_len;
+    }
 }
