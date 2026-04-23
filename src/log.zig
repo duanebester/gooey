@@ -24,7 +24,7 @@ const MAX_LOG_MESSAGE_LEN = 4096;
 ///
 /// On native: delegates to `std.log.scoped(scope)`.
 /// On WASM:   formats and writes directly to `console.log` / `console.error`.
-pub fn scoped(comptime scope: @Type(.enum_literal)) type {
+pub fn scoped(comptime scope: @EnumLiteral()) type {
     if (is_freestanding) {
         return WasmLogger(scope);
     } else {
@@ -39,7 +39,7 @@ pub const default = scoped(.default);
 // Native logger — thin wrapper around std.log.scoped
 // =============================================================================
 
-fn NativeLogger(comptime scope: @Type(.enum_literal)) type {
+fn NativeLogger(comptime scope: @EnumLiteral()) type {
     const std_scoped = std.log.scoped(scope);
 
     return struct {
@@ -65,7 +65,7 @@ fn NativeLogger(comptime scope: @Type(.enum_literal)) type {
 // WASM logger — writes directly to browser console, no std_options needed
 // =============================================================================
 
-fn WasmLogger(comptime scope: @Type(.enum_literal)) type {
+fn WasmLogger(comptime scope: @EnumLiteral()) type {
     return struct {
         const scope_prefix = if (scope == .default)
             ""

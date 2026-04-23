@@ -172,7 +172,7 @@ pub const MTLTextureUsage = packed struct(c_ulong) {
     _reserved: u1 = 0,
     pixel_format_view: bool = false,
     shader_atomic: bool = false,
-    _pad: @Type(.{ .int = .{ .signedness = .unsigned, .bits = @bitSizeOf(c_ulong) - 6 } }) = 0,
+    _pad: @Int(.unsigned, @bitSizeOf(c_ulong) - 6) = 0,
 
     pub const unknown: MTLTextureUsage = @bitCast(@as(c_ulong, 0));
     pub const render_target_only: MTLTextureUsage = .{ .render_target = true };
@@ -184,7 +184,7 @@ pub const MTLResourceOptions = packed struct(c_ulong) {
     cpu_cache_mode: CPUCacheMode = .default,
     storage_mode: StorageMode = .shared,
     hazard_tracking_mode: HazardTrackingMode = .default,
-    _pad: @Type(.{ .int = .{ .signedness = .unsigned, .bits = @bitSizeOf(c_ulong) - 10 } }) = 0,
+    _pad: @Int(.unsigned, @bitSizeOf(c_ulong) - 10) = 0,
 
     pub const CPUCacheMode = enum(u4) {
         default = 0,

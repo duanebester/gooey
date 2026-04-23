@@ -300,8 +300,8 @@ pub const IndexSlice = struct {
 /// Parsed SVG Path - ready for flattening/tessellation
 pub const SvgPath = struct {
     allocator: std.mem.Allocator,
-    commands: std.ArrayListUnmanaged(PathCommand) = .{},
-    data: std.ArrayListUnmanaged(f32) = .{},
+    commands: std.ArrayListUnmanaged(PathCommand) = .empty,
+    data: std.ArrayListUnmanaged(f32) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) SvgPath {
         return .{ .allocator = allocator };
@@ -1396,9 +1396,9 @@ test "flatten simple triangle" {
 
     try parser.parse(&path, "M0 0 L100 0 L50 100 Z");
 
-    var points: std.ArrayList(Vec2) = .{};
+    var points: std.ArrayList(Vec2) = .empty;
     defer points.deinit(allocator);
-    var polygons: std.ArrayList(IndexSlice) = .{};
+    var polygons: std.ArrayList(IndexSlice) = .empty;
     defer polygons.deinit(allocator);
 
     try flattenPath(allocator, &path, 0.5, &points, &polygons);
@@ -1450,7 +1450,7 @@ test "parse arc command" {
 
 test "flatten arc" {
     const allocator = std.testing.allocator;
-    var points: std.ArrayList(Vec2) = .{};
+    var points: std.ArrayList(Vec2) = .empty;
     defer points.deinit(allocator);
 
     // Semi-circle arc

@@ -25,6 +25,35 @@ const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
+/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
+/// local to the benchmark module so every sample site reads as a two-line
+/// capture-then-diff instead of threading `io` through every benchmark
+/// helper signature. `.awake` is the monotonic clock — deltas here can
+/// never go negative regardless of NTP or sysadmin clock edits.
+///
+/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
+/// per-call `global_single_threaded.io()` lookup compiles down to a pair
+/// of constant pointer loads — effectively free.
+const time = struct {
+    inline fn benchIo() std.Io {
+        return std.Io.Threaded.global_single_threaded.io();
+    }
+
+    const Instant = struct {
+        ts: std.Io.Timestamp,
+
+        inline fn now() Instant {
+            return .{ .ts = std.Io.Timestamp.now(benchIo(), .awake) };
+        }
+
+        inline fn since(self: Instant, earlier: Instant) u64 {
+            const ns: i96 = earlier.ts.durationTo(self.ts).toNanoseconds();
+            std.debug.assert(ns >= 0);
+            return @intCast(ns);
+        }
+    };
+};
+
 const text = gooey.text;
 const Atlas = text.Atlas;
 const Region = text.Region;
@@ -324,12 +353,12 @@ fn benchAtlasReserve(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         atlas.clear();
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..count) |_| {
             const region = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
             last_region_x = region.x;
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -383,9 +412,9 @@ fn benchAtlasReserveMixed(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         atlas.clear();
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         reserveMixedBatch(&atlas, count);
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -463,11 +492,11 @@ fn benchAtlasSet(
     var samples = IterationSamples.init();
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (regions) |region| {
             atlas.set(region, &pixel_data);
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -531,12 +560,12 @@ fn benchAtlasReserveAndSet(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         atlas.clear();
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..count) |_| {
             const region = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
             atlas.set(region, &pixel_data);
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         last_generation = atlas.generation;
         const elapsed = end.since(start);
@@ -592,9 +621,9 @@ fn benchAtlasGrow(
         var atlas = Atlas.init(allocator, .grayscale) catch unreachable;
         std.debug.assert(atlas.size == Atlas.INITIAL_SIZE);
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         atlas.grow() catch unreachable;
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         last_size = atlas.size;
         atlas.deinit();
@@ -655,9 +684,9 @@ fn benchShapeCold(
         // Invalidate shape cache so the next shapeText call always misses.
         text_sys.shape_cache.current_font_ptr = 0;
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         var run = text_sys.shapeText(bench_text, null) catch unreachable;
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         last_width = run.width;
         run.deinit(allocator);
@@ -719,13 +748,13 @@ fn benchShapeWarm(
     var last_width: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..count) |_| {
             var run = text_sys.shapeText(bench_text, null) catch unreachable;
             last_width = run.width;
             run.deinit(allocator);
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -794,13 +823,13 @@ fn benchShapeWarmArena(
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         text_sys.allocator = arena_alloc;
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..count) |_| {
             var run = text_sys.shapeText(bench_text, null) catch unreachable;
             last_width = run.width;
             run.deinit(arena_alloc);
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         text_sys.allocator = gpa;
 
         const elapsed = end.since(start);
@@ -862,14 +891,14 @@ fn benchShapeWarmInto(
     var last_width: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..count) |_| {
             var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
             var run = text_sys.shapeTextInto(bench_text, null, &buf) catch unreachable;
             last_width = run.width;
             if (run.owned) run.deinit(allocator);
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -923,11 +952,11 @@ fn benchMeasureText(
     var last_width: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..count) |_| {
             last_width = text_sys.measureText(bench_text) catch unreachable;
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -980,12 +1009,12 @@ fn benchMeasureTextWrapped(
     var last_line_count: u32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..count) |_| {
             const measurement = text_sys.measureTextEx(bench_text, max_width) catch unreachable;
             last_line_count = measurement.line_count;
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -1043,12 +1072,12 @@ fn benchGlyphRasterCold(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         text_sys.cache.clear();
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (glyph_ids) |glyph_id| {
             const cached = text_sys.getGlyphSubpixel(glyph_id, font_size, 0, 0) catch unreachable;
             last_advance_x = cached.advance_x;
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -1111,7 +1140,7 @@ fn benchGlyphRasterWarm(
     var last_advance_x: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..repetitions) |_| {
             for (glyph_ids) |glyph_id| {
                 const cached = text_sys.getGlyphSubpixel(glyph_id, font_size, 0, 0) catch unreachable;
@@ -1119,7 +1148,7 @@ fn benchGlyphRasterWarm(
                 last_advance_x = cached.advance_x;
             }
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -1186,7 +1215,7 @@ fn benchGlyphRasterWarmSubpixel(
     var last_advance_x: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..repetitions) |_| {
             for (0..BENCH_SUBPIXEL_VARIANTS) |sx| {
                 for (glyph_ids) |glyph_id| {
@@ -1196,7 +1225,7 @@ fn benchGlyphRasterWarmSubpixel(
                 }
             }
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -1273,7 +1302,7 @@ fn benchGlyphRasterWarmPerGlyph(
     var last_advance_x: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..repetitions) |_| {
             for (shaped_glyphs[0..glyph_count]) |glyph| {
                 const cached = text_sys.getGlyphSubpixel(glyph.glyph_id, font_size, 0, 0) catch unreachable;
@@ -1281,7 +1310,7 @@ fn benchGlyphRasterWarmPerGlyph(
                 last_advance_x = cached.advance_x;
             }
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -1367,7 +1396,7 @@ fn benchGlyphRasterWarmBatch(
     var last_advance_x: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..repetitions) |_| {
             text_sys.resolveGlyphBatch(
                 shaped_glyphs[0..glyph_count],
@@ -1376,7 +1405,7 @@ fn benchGlyphRasterWarmBatch(
                 out_cached[0..glyph_count],
             ) catch unreachable;
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         last_advance_x = out_cached[0].advance_x;
         const elapsed = end.since(start);
@@ -1462,11 +1491,11 @@ fn benchRenderText(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         scene.clear(); // Outside timed region — constant cost, not text-rendering cost.
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..repetitions) |_| {
             last_width = renderText(&scene, text_sys, input_text, 0, baseline_y, scale_factor, color, font_size, &options) catch unreachable;
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -2127,7 +2156,11 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     const text_sys = try gpa.create(TextSystem);
     defer gpa.destroy(text_sys);
 
-    try text_sys.initInPlace(gpa, 1.0);
+    // `TextSystem.initInPlace` now requires an `Io` so the embedded
+    // shape/glyph cache mutexes (migrated to `std.Io.Mutex` in Phase 5)
+    // have a process-lifetime vtable to lock against.  Forward the `Io`
+    // supplied by the process entry point.
+    try text_sys.initInPlace(gpa, 1.0, reporter.io);
     defer text_sys.deinit();
 
     try text_sys.loadSystemFont(.monospace, BENCH_FONT_SIZE);
@@ -2166,12 +2199,12 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
 // Main
 // =============================================================================
 
-pub fn main() !void {
-    var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa_instance: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_instance.deinit();
     const gpa = gpa_instance.allocator();
 
-    var reporter = bench.Reporter.init("text");
+    var reporter = bench.Reporter.init("text", init.io, init.minimal.args.vector);
 
     runAtlasBenchmarks(gpa, &reporter);
 

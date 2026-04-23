@@ -22,6 +22,34 @@
 
 const std = @import("std");
 const posix = std.posix;
+const Dir = std.Io.Dir;
+const Io = std.Io;
+
+// =============================================================================
+// Inline Time Helpers (watcher is a standalone exe — cannot import platform/)
+// =============================================================================
+
+/// Wall-clock milliseconds since Unix epoch via gettimeofday.
+fn milliTimestamp() i64 {
+    var tv: std.c.timeval = undefined;
+    const rc = std.c.gettimeofday(&tv, null);
+    std.debug.assert(rc == 0);
+    const sec_ms: i64 = tv.sec * std.time.ms_per_s;
+    const usec_ms: i64 = @divTrunc(tv.usec, std.time.us_per_ms);
+    return sec_ms + usec_ms;
+}
+
+/// Sleep for `ns` nanoseconds using C nanosleep, restarting on EINTR.
+fn sleep(ns: u64) void {
+    const sec: std.c.time_t = @intCast(ns / std.time.ns_per_s);
+    const nsec: c_long = @intCast(ns % std.time.ns_per_s);
+    var ts = std.c.timespec{ .sec = sec, .nsec = nsec };
+    while (true) {
+        const rc = std.c.nanosleep(&ts, &ts);
+        if (rc == 0) break;
+        // Interrupted by signal — remaining time written back to ts.
+    }
+}
 
 // =============================================================================
 // Configuration
@@ -45,13 +73,10 @@ var global_watcher: ?*Watcher = null;
 // Entry Point
 // =============================================================================
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len < 3) {
         std.debug.print("Usage: {s} <watch_dir> <build_command...>\n", .{args[0]});
@@ -72,7 +97,7 @@ pub fn main() !void {
     std.debug.print("└─────────────────────────────────────┘\n", .{});
     std.debug.print("\n", .{});
 
-    var watcher = Watcher.init(allocator, watch_path, build_cmd);
+    var watcher = Watcher.init(allocator, init.io, watch_path, build_cmd);
     defer watcher.deinit();
 
     // Set up global pointer for signal handler
@@ -95,14 +120,15 @@ pub fn main() !void {
     std.debug.print("\n👋 Goodbye!\n", .{});
 }
 
-fn handleSignal(sig: i32) callconv(.c) void {
+fn handleSignal(sig: posix.SIG) callconv(.c) void {
     _ = sig;
     should_quit.store(true, .release);
 
-    // Also kill the child immediately from the signal handler
+    // Also kill the child immediately from the signal handler.
     if (global_watcher) |w| {
         if (w.child) |*child| {
-            _ = posix.kill(-child.id, posix.SIG.TERM) catch {};
+            const pid = child.id orelse return;
+            _ = posix.kill(-pid, posix.SIG.TERM) catch {};
         }
     }
 }
@@ -113,19 +139,21 @@ fn handleSignal(sig: i32) callconv(.c) void {
 
 const Watcher = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     watch_path: []const u8,
     build_cmd: []const []const u8,
-    file_times: std.StringHashMap(i128),
+    file_times: std.StringHashMap(i96),
     child: ?std.process.Child,
     last_change: i64,
     max_files_warning_shown: bool,
 
-    fn init(allocator: std.mem.Allocator, watch_path: []const u8, build_cmd: []const []const u8) Watcher {
+    fn init(allocator: std.mem.Allocator, io: Io, watch_path: []const u8, build_cmd: []const []const u8) Watcher {
         return .{
             .allocator = allocator,
+            .io = io,
             .watch_path = watch_path,
             .build_cmd = build_cmd,
-            .file_times = std.StringHashMap(i128).init(allocator),
+            .file_times = std.StringHashMap(i96).init(allocator),
             .child = null,
             .last_change = 0,
             .max_files_warning_shown = false,
@@ -153,12 +181,12 @@ const Watcher = struct {
 
         // Watch loop
         while (!should_quit.load(.acquire)) {
-            std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+            sleep(poll_interval_ms * std.time.ns_per_ms);
 
             if (should_quit.load(.acquire)) break;
 
             if (self.scanForChanges() catch false) {
-                const now = std.time.milliTimestamp();
+                const now = milliTimestamp();
 
                 // Debounce rapid changes (editors often write multiple times)
                 if (now - self.last_change < debounce_ms) {
@@ -171,7 +199,7 @@ const Watcher = struct {
                 self.killChild();
 
                 // Small delay to ensure file writes are complete
-                std.Thread.sleep(50 * std.time.ns_per_ms);
+                sleep(50 * std.time.ns_per_ms);
 
                 self.spawnChild();
             }
@@ -180,16 +208,16 @@ const Watcher = struct {
 
     fn scanForChanges(self: *Watcher) !bool {
         var changed = false;
-        var dir = std.fs.cwd().openDir(self.watch_path, .{ .iterate = true }) catch |err| {
+        var dir = Dir.cwd().openDir(self.io, self.watch_path, .{ .iterate = true }) catch |err| {
             std.debug.print("⚠️  Failed to open {s}: {}\n", .{ self.watch_path, err });
             return false;
         };
-        defer dir.close();
+        defer dir.close(self.io);
 
         var walker = try dir.walk(self.allocator);
         defer walker.deinit();
 
-        while (try walker.next()) |entry| {
+        while (try walker.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.path, ".zig")) continue;
 
@@ -204,13 +232,13 @@ const Watcher = struct {
 
             const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.watch_path, entry.path });
 
-            const stat = std.fs.cwd().statFile(full_path) catch |err| {
+            const stat = Dir.cwd().statFile(self.io, full_path, .{}) catch |err| {
                 std.debug.print("⚠️  Failed to stat {s}: {}\n", .{ full_path, err });
                 self.allocator.free(full_path);
                 continue;
             };
 
-            const mtime = stat.mtime;
+            const mtime = stat.mtime.nanoseconds;
 
             if (self.file_times.get(full_path)) |old_time| {
                 // File already tracked - check if modified
@@ -235,14 +263,13 @@ const Watcher = struct {
     }
 
     fn spawnChild(self: *Watcher) void {
-        var child = std.process.Child.init(self.build_cmd, self.allocator);
-
-        // Make child its own process group leader (pgid = 0 means use child's pid).
+        // Spawn as process group leader (pgid = 0 means use child's pid).
         // This allows us to kill the entire process tree on reload, including
         // any grandchild processes (like the actual app spawned by `zig build run`).
-        child.pgid = 0;
-
-        child.spawn() catch |err| {
+        const child = std.process.spawn(self.io, .{
+            .argv = self.build_cmd,
+            .pgid = 0,
+        }) catch |err| {
             std.debug.print("⚠️  Failed to spawn build: {}\n", .{err});
             return;
         };
@@ -255,18 +282,21 @@ const Watcher = struct {
             // Kill the entire process group (negative pid = process group).
             // Since we set pgid=0 when spawning, the child's pid IS the pgid.
             // This ensures we kill both zig AND the spawned application.
-            const pid = child.id;
+            const pid = child.id orelse {
+                self.child = null;
+                return;
+            };
 
-            // Send SIGTERM to entire process group
+            // Send SIGTERM to entire process group.
             _ = posix.kill(-pid, posix.SIG.TERM) catch {};
 
-            // Give processes a moment to clean up
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+            // Give processes a moment to clean up.
+            sleep(100 * std.time.ns_per_ms);
 
-            // Force kill if still running
+            // Force kill if still running.
             _ = posix.kill(-pid, posix.SIG.KILL) catch {};
 
-            _ = child.wait() catch {};
+            _ = child.wait(self.io) catch {};
             self.child = null;
         }
     }

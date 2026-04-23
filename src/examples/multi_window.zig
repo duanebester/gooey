@@ -371,12 +371,13 @@ fn renderDialog(cx: *Cx) void {
 // =============================================================================
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Create the multi-window app
-    var app = try MultiWindowApp.init(allocator, .{ .font_size = 16.0 });
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app = try MultiWindowApp.init(allocator, .{ .font_size = 16.0 }, io);
     defer app.deinit();
 
     // Create main window state with app reference

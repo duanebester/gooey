@@ -20,12 +20,16 @@
 //! ## Usage
 //!
 //! ```zig
-//! var text = try TextSystem.init(allocator);
+//! var text = try TextSystem.init(allocator, io);
 //! defer text.deinit();
 //!
 //! try text.loadSystemFont(.monospace, 14.0);
 //! const width = try text.measureText("Hello, World!");
 //! ```
+//!
+//! The `io` parameter is stored on the struct so lock sites on render
+//! threads (which do not carry a `*Cx`) can still acquire the internal
+//! mutexes via `std.Io.Mutex`.
 
 const std = @import("std");
 

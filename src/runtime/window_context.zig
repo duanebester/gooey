@@ -117,6 +117,7 @@ pub fn WindowContext(comptime State: type) type {
             state: *State,
             render_fn: *const fn (*Cx) void,
             font_config: FontConfig,
+            io: std.Io,
         ) !*Self {
             // Assertions: validate inputs (pointers must not be null-equivalent)
             std.debug.assert(@intFromPtr(state) != 0);
@@ -129,7 +130,8 @@ pub fn WindowContext(comptime State: type) type {
             // Initialize Gooey with owned resources (single-window mode)
             const gooey = try allocator.create(Gooey);
             errdefer allocator.destroy(gooey);
-            gooey.* = try Gooey.initOwned(allocator, window, font_config);
+            gooey.* = try Gooey.initOwned(allocator, window, font_config, io);
+            gooey.fixupImageLoadQueue();
             errdefer gooey.deinit();
 
             // Initialize UI Builder
@@ -179,6 +181,7 @@ pub fn WindowContext(comptime State: type) type {
             shared_text_system: *TextSystem,
             shared_svg_atlas: *SvgAtlas,
             shared_image_atlas: *ImageAtlas,
+            io: std.Io,
         ) !*Self {
             // Assertions: validate inputs
             std.debug.assert(@intFromPtr(state) != 0);
@@ -200,7 +203,9 @@ pub fn WindowContext(comptime State: type) type {
                 shared_text_system,
                 shared_svg_atlas,
                 shared_image_atlas,
+                io,
             );
+            gooey.fixupImageLoadQueue();
             errdefer gooey.deinit();
 
             // Initialize UI Builder
@@ -269,11 +274,14 @@ pub fn WindowContext(comptime State: type) type {
             self.building = true;
             defer self.building = false;
 
-            // Frame timing for budget warnings (debug builds only, skip first few frames)
-            const start_time = if (builtin.mode == .Debug)
-                std.time.nanoTimestamp()
+            // Frame timing for budget warnings (debug builds only, skip first few frames).
+            // Sample `.awake` (monotonic) so the elapsed delta can never be negative
+            // even if NTP or the sysadmin adjusts the wall clock mid-frame.
+            const io = self.gooey.io;
+            const start_ts = if (builtin.mode == .Debug)
+                std.Io.Timestamp.now(io, .awake)
             else
-                0;
+                std.Io.Timestamp.zero;
 
             frame_mod.renderFrameCxRuntime(&self.cx, self.render_fn) catch |err| {
                 std.debug.print("Render error: {}\n", .{err});
@@ -283,7 +291,9 @@ pub fn WindowContext(comptime State: type) type {
             if (builtin.mode == .Debug) {
                 self.frame_count += 1;
                 if (self.frame_count > FRAME_BUDGET_SKIP_COUNT) {
-                    const elapsed = std.time.nanoTimestamp() - start_time;
+                    const elapsed_ns: i96 = start_ts.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds();
+                    std.debug.assert(elapsed_ns >= 0);
+                    const elapsed: u64 = @intCast(elapsed_ns);
                     if (elapsed > FRAME_WARNING_THRESHOLD_NS) {
                         const elapsed_ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
                         std.debug.print("⚠️  Frame budget exceeded: {d:.2}ms (target: 16.67ms)\n", .{elapsed_ms});

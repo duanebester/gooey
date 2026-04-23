@@ -24,6 +24,7 @@
 //! at which point the final batch is committed automatically.
 
 const std = @import("std");
+const Io = std.Io;
 
 const gooey = @import("gooey");
 const platform = gooey.platform;
@@ -109,6 +110,11 @@ var wasm_canvas: AiCanvas = .{};
 /// changing the `fn (*DrawContext) void` paint signature.
 var active_theme: *const Theme = &Theme.dark;
 
+/// Process-wide Io instance, set once from main before spawning the reader
+/// thread. The reader thread captures this to create a buffered stdin reader.
+/// Safe to share: Io is a pair of pointers into the process-lifetime vtable.
+var process_io: Io = Io.failing;
+
 // =============================================================================
 // Application State (minimal — most state is in the global buffers)
 // =============================================================================
@@ -135,8 +141,9 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
+    process_io = init.io;
     spawnReaderThread();
     return App.main();
 }
@@ -319,9 +326,9 @@ fn stdinReaderLoop() void {
 
 /// Inner loop — separated so `defer` in `stdinReaderLoop` always fires.
 fn stdinReaderLoopInner() void {
-    const stdin = std.fs.File.stdin();
+    const stdin = std.Io.File.stdin();
     var read_buf: [READER_BUF_SIZE]u8 = undefined;
-    var file_reader = stdin.readerStreaming(&read_buf);
+    var file_reader = stdin.readerStreaming(process_io, &read_buf);
 
     // Fixed scratch buffer for JSON parsing — no heap growth (CLAUDE.md #2).
     var parse_buf: [JSON_PARSE_BUF_SIZE]u8 = undefined;

@@ -40,7 +40,7 @@ pub const CoreTextShaper = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .utf16_buffer = std.ArrayList(ct.UniChar){},
+            .utf16_buffer = .empty,
             .glyph_buf = undefined,
             .position_buf = undefined,
             .advance_buf = undefined,
@@ -160,7 +160,7 @@ pub const CoreTextShaper = struct {
         const runs = ct.CTLineGetGlyphRuns(line);
         const run_count = ct.CFArrayGetCount(runs);
 
-        var glyph_buffer = std.ArrayList(ShapedGlyph){};
+        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
         defer glyph_buffer.deinit(allocator);
 
         var total_width: f32 = 0;

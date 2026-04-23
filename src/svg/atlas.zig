@@ -73,9 +73,17 @@ pub const SvgAtlas = struct {
     render_buffer_size: u32,
     /// Current scale factor
     scale_factor: f64,
+    /// IO instance for mutex operations. Stored on the struct because lock
+    /// sites run on CVDisplayLink threads that have no access to `*Cx` and
+    /// therefore cannot reach `cx.io()`. Io is a pair of pointers into the
+    /// process-lifetime vtable — safe to copy across threads.
+    io: std.Io,
     /// Mutex for thread-safe access in multi-window scenarios.
     /// Multiple DisplayLink threads may access the atlas concurrently.
-    mutex: std.Thread.Mutex,
+    /// Uses `lockUncancelable` everywhere — none of the atlas call sites
+    /// propagate `std.Io.Cancelable`, and the critical sections are short
+    /// enough that cancelation points would add noise without value.
+    mutex: std.Io.Mutex,
 
     // =========================================================================
     // Per-frame rasterization budget
@@ -101,7 +109,7 @@ pub const SvgAtlas = struct {
     /// of stalling a single frame for 8–32ms of pure rasterization.
     const MAX_RASTERIZATIONS_PER_FRAME: u32 = 4;
 
-    pub fn init(allocator: std.mem.Allocator, scale_factor: f64) !Self {
+    pub fn init(allocator: std.mem.Allocator, scale_factor: f64, io: std.Io) !Self {
         // Buffer for largest possible icon (256x256 RGBA)
         const buffer_size = MAX_ICON_SIZE * MAX_ICON_SIZE * 4;
         const render_buffer = try allocator.alloc(u8, buffer_size);
@@ -113,7 +121,8 @@ pub const SvgAtlas = struct {
             .render_buffer = render_buffer,
             .render_buffer_size = MAX_ICON_SIZE,
             .scale_factor = scale_factor,
-            .mutex = .{},
+            .io = io,
+            .mutex = .init,
             .rasterizations_this_frame = 0,
             .deferred_this_frame = false,
         };
@@ -169,8 +178,8 @@ pub const SvgAtlas = struct {
         has_fill: bool,
         stroke_width: ?f32,
     ) !CachedSvg {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         const key = SvgKey.init(path_data, logical_size, self.scale_factor, has_fill, stroke_width);
 
@@ -297,8 +306,8 @@ pub const SvgAtlas = struct {
         ctx: Ctx,
         comptime callback: fn (Ctx, *const Atlas) anyerror!void,
     ) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return callback(ctx, &self.atlas);
     }
 };

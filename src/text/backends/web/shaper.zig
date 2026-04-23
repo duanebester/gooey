@@ -75,9 +75,9 @@ pub const WebShaper = struct {
         const font_size = face.metrics.point_size;
 
         // Collect codepoints and byte positions
-        var codepoints = std.ArrayList(u21){};
+        var codepoints: std.ArrayList(u21) = .empty;
         defer codepoints.deinit(allocator);
-        var byte_positions = std.ArrayList(u32){};
+        var byte_positions: std.ArrayList(u32) = .empty;
         defer byte_positions.deinit(allocator);
 
         var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
@@ -93,7 +93,7 @@ pub const WebShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        var glyph_buffer = std.ArrayList(ShapedGlyph){};
+        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
         defer glyph_buffer.deinit(allocator);
 
         var char_buf: [4]u8 = undefined;

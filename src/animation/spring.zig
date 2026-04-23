@@ -18,7 +18,6 @@
 //! - At-rest springs cost one branch (early return in tickSpring). Zero physics.
 
 const std = @import("std");
-const platform = @import("../platform/mod.zig");
 
 // =============================================================================
 // Limits (per CLAUDE.md: "put a limit on everything")
@@ -99,12 +98,14 @@ pub const SpringState = struct {
     mass: f32,
     rest_threshold: f32,
     at_rest: bool,
-    last_time_ms: i64,
+    /// Monotonic timestamp of the last `tickSpring` call. Captured from
+    /// `std.Io.Clock.awake` — guaranteed non-decreasing, so `durationTo`
+    /// always yields a non-negative delta no matter what NTP is doing.
+    last_time: std.Io.Timestamp,
 
     const Self = @This();
 
-    pub fn init(config: SpringConfig) Self {
-        const now = platform.time.milliTimestamp();
+    pub fn init(io: std.Io, config: SpringConfig) Self {
         std.debug.assert(config.mass > 0.0);
         std.debug.assert(config.stiffness >= 0.0);
         return .{
@@ -116,13 +117,12 @@ pub const SpringState = struct {
             .mass = config.mass,
             .rest_threshold = config.rest_threshold,
             .at_rest = (config.initial_position == config.target),
-            .last_time_ms = now,
+            .last_time = std.Io.Timestamp.now(io, .awake),
         };
     }
 
     /// Initialize in a settled state (at target, zero velocity, at rest).
-    pub fn initSettled(config: SpringConfig) Self {
-        const now = platform.time.milliTimestamp();
+    pub fn initSettled(io: std.Io, config: SpringConfig) Self {
         std.debug.assert(config.mass > 0.0);
         std.debug.assert(config.stiffness >= 0.0);
         return .{
@@ -134,7 +134,7 @@ pub const SpringState = struct {
             .mass = config.mass,
             .rest_threshold = config.rest_threshold,
             .at_rest = true,
-            .last_time_ms = now,
+            .last_time = std.Io.Timestamp.now(io, .awake),
         };
     }
 };
@@ -245,8 +245,10 @@ pub fn stepSpring(state: *SpringState, dt_raw: f32) void {
     }
 }
 
-/// Tick a spring: compute dt from wall clock, step physics, return handle.
-pub fn tickSpring(state: *SpringState) SpringHandle {
+/// Tick a spring: compute dt from the monotonic awake clock, step physics,
+/// return handle. `io` threads through so callers can opt into different
+/// `std.Io` backends without spring.zig touching any globals.
+pub fn tickSpring(io: std.Io, state: *SpringState) SpringHandle {
     if (state.at_rest) {
         return .{
             .value = state.position,
@@ -256,12 +258,14 @@ pub fn tickSpring(state: *SpringState) SpringHandle {
         };
     }
 
-    const now = platform.time.milliTimestamp();
-    const elapsed_ms = now - state.last_time_ms;
-    state.last_time_ms = now;
+    // Monotonic clock — `elapsed_ms` is guaranteed `>= 0`.
+    const now = std.Io.Timestamp.now(io, .awake);
+    const elapsed_ms: i64 = state.last_time.durationTo(now).toMilliseconds();
+    std.debug.assert(elapsed_ms >= 0);
+    state.last_time = now;
 
-    // Convert to seconds for physics
-    const dt: f32 = @as(f32, @floatFromInt(@max(elapsed_ms, 0))) / 1000.0;
+    // Convert to seconds for physics; `stepSpring` will clamp to `MAX_DT`.
+    const dt: f32 = @as(f32, @floatFromInt(elapsed_ms)) / 1000.0;
     stepSpring(state, dt);
 
     return .{
@@ -277,7 +281,8 @@ pub fn tickSpring(state: *SpringState) SpringHandle {
 // =============================================================================
 
 test "spring reaches target" {
-    var state = SpringState.init(.{ .target = 1.0, .initial_position = 0.0 });
+    const io = std.testing.io;
+    var state = SpringState.init(io, .{ .target = 1.0, .initial_position = 0.0 });
     // Simulate 2 seconds at 60fps
     var i: u32 = 0;
     while (i < 120) : (i += 1) {
@@ -288,7 +293,8 @@ test "spring reaches target" {
 }
 
 test "spring inherits velocity on target change" {
-    var state = SpringState.init(.{
+    const io = std.testing.io;
+    var state = SpringState.init(io, .{
         .target = 1.0,
         .initial_position = 0.0,
         .stiffness = 200,
@@ -312,15 +318,17 @@ test "spring inherits velocity on target change" {
 }
 
 test "spring at rest produces zero cost" {
-    var state = SpringState.initSettled(.{ .target = 1.0 });
+    const io = std.testing.io;
+    var state = SpringState.initSettled(io, .{ .target = 1.0 });
     try std.testing.expect(state.at_rest);
-    const handle = tickSpring(&state);
+    const handle = tickSpring(io, &state);
     try std.testing.expect(handle.at_rest);
     try std.testing.expectEqual(@as(f32, 1.0), handle.value);
 }
 
 test "bouncy spring overshoots" {
-    var state = SpringState.init(.{
+    const io = std.testing.io;
+    var state = SpringState.init(io, .{
         .target = 1.0,
         .initial_position = 0.0,
         .stiffness = 180,
@@ -340,7 +348,8 @@ test "bouncy spring overshoots" {
 
 test "rk4 is stable at large timestep" {
     // Euler would blow up here. RK4 should be fine.
-    var state = SpringState.init(.{
+    const io = std.testing.io;
+    var state = SpringState.init(io, .{
         .target = 1.0,
         .initial_position = 0.0,
         .stiffness = 300,
@@ -391,7 +400,8 @@ test "spring handle clamped bounds overshoot" {
 }
 
 test "step with zero dt is a no-op" {
-    var state = SpringState.init(.{ .target = 1.0, .initial_position = 0.0 });
+    const io = std.testing.io;
+    var state = SpringState.init(io, .{ .target = 1.0, .initial_position = 0.0 });
     const pos_before = state.position;
     const vel_before = state.velocity;
     stepSpring(&state, 0.0);
@@ -400,7 +410,8 @@ test "step with zero dt is a no-op" {
 }
 
 test "spring settles from target to zero" {
-    var state = SpringState.init(.{
+    const io = std.testing.io;
+    var state = SpringState.init(io, .{
         .target = 0.0,
         .initial_position = 1.0,
     });
@@ -413,7 +424,8 @@ test "spring settles from target to zero" {
 }
 
 test "large dt is clamped to MAX_DT" {
-    var state = SpringState.init(.{
+    const io = std.testing.io;
+    var state = SpringState.init(io, .{
         .target = 1.0,
         .initial_position = 0.0,
         .stiffness = 300,

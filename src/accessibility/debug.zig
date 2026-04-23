@@ -355,8 +355,7 @@ fn dumpElementTo(elem: Element, index: usize, tree: *const Tree, writer: anytype
 
 /// Format an element as a single-line summary string
 pub fn formatElement(elem: *const Element, buf: []u8) []const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     writer.print("{s}", .{@tagName(elem.role)}) catch return buf[0..0];
 
@@ -368,13 +367,12 @@ pub fn formatElement(elem: *const Element, buf: []u8) []const u8 {
         }
     }
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 /// Get a human-readable state description
 pub fn formatState(state: State, buf: []u8) []const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     var first = true;
     inline for (std.meta.fields(State)) |field| {
@@ -393,7 +391,7 @@ pub fn formatState(state: State, buf: []u8) []const u8 {
         writer.print("(none)", .{}) catch {};
     }
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 /// Count elements with a specific role

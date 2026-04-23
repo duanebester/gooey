@@ -121,8 +121,7 @@ pub fn logGlyphAdvances(text_system: *TextSystem, text: []const u8) !void {
     debugLog("Glyph advances for \"{s}\" ({s}):", .{ text, platform_name });
 
     var buf: [256]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const writer = stream.writer();
+    var writer = std.Io.Writer.fixed(&buf);
 
     for (shaped.glyphs, 0..) |glyph, i| {
         const char_preview = getCharPreview(text, glyph.cluster);
@@ -132,6 +131,6 @@ pub fn logGlyphAdvances(text_system: *TextSystem, text: []const u8) !void {
         }
     }
 
-    debugLog("  {s}", .{stream.getWritten()});
+    debugLog("  {s}", .{writer.buffered()});
     debugLog("  Total: {d:.3}", .{shaped.width});
 }

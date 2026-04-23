@@ -1,12 +1,12 @@
 .{
     .name = .gooey,
-    .version = "0.0.15",
+    .version = "0.1.0",
     .fingerprint = 0xfcad6172ee59f0b8,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zig_objc = .{
-            .url = "git+https://github.com/mitchellh/zig-objc.git#27d0e03242e7ee6842bf8a86d2e0bb1f586a9847",
-            .hash = "zig_objc-0.0.0-Ir_Sp7oUAQC3JpeR9EGUFGcHRSx_33IehitnjBCy-CwD",
+            .url = "git+https://github.com/mitchellh/zig-objc.git#c8de82ff80281215ad92900866dab7103a8efa8b",
+            .hash = "zig_objc-0.0.0-Ir_Sp9gsAQCPAJc0oF5xoWePHWP6Y6tCphDeyNUThJoi",
         },
     },
     .paths = .{

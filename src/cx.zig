@@ -535,79 +535,145 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Thread Dispatch
+    // Async Work — Io.Queue(T) Pattern
     // =========================================================================
+    //
+    // Cross-thread communication uses std.Io.Queue(T) — a bounded, lock-free
+    // channel with static backing storage. Background work pushes typed results
+    // into the queue; the render loop drains them without blocking.
+    //
+    // Pattern:
+    //
+    //   // 1. Define a result type (in your app):
+    //   const AppResult = union(enum) {
+    //       image_loaded: ImageData,
+    //       fetch_complete: []const u8,
+    //       fetch_error: anyerror,
+    //   };
+    //
+    //   // 2. Create a queue with static storage (in your app state):
+    //   var result_buffer: [32]AppResult = undefined;
+    //   var result_queue: std.Io.Queue(AppResult) = .init(&result_buffer);
+    //
+    //   // 3. Kick off background work (pushes results into the queue):
+    //   var future = cx.io().async(fetchImage, .{ url, &result_queue });
+    //
+    //   // 4. Drain results in render loop (non-blocking):
+    //   var drain_buf: [32]AppResult = undefined;
+    //   for (cx.drainQueue(AppResult, &result_queue, &drain_buf)) |result| {
+    //       switch (result) {
+    //           .image_loaded => |img| self.loaded_image = img,
+    //           .fetch_complete => |data| self.data = data,
+    //           .fetch_error => |err| self.last_error = err,
+    //       }
+    //   }
+    //
 
-    /// Dispatch a callback to run on the main thread.
-    /// Safe to call from any thread. Returns error on WASM (single-threaded).
+    /// Non-blocking drain of an `std.Io.Queue(T)`.
+    ///
+    /// Returns a slice of results filled into the caller-provided buffer.
+    /// Never blocks — returns an empty slice if no results are available.
+    /// Designed for use in render loops where blocking is not acceptable.
+    ///
+    /// The buffer size determines the maximum results drained per call.
+    /// For most apps, 32 elements is sufficient (one frame's worth of results).
     ///
     /// Example:
     /// ```zig
-    /// const Ctx = struct { app: *AppState };
-    /// try cx.dispatchOnMainThread(Ctx, .{ .app = self }, struct {
-    ///     fn handler(ctx: *Ctx) void {
-    ///         ctx.app.applyResult();
+    /// var drain_buf: [32]MyResult = undefined;
+    /// for (cx.drainQueue(MyResult, &my_queue, &drain_buf)) |result| {
+    ///     switch (result) {
+    ///         .image_loaded => |img| self.loaded_image = img,
     ///     }
-    /// }.handler);
+    /// }
     /// ```
-    pub fn dispatchOnMainThread(
-        self: *Self,
-        comptime Context: type,
-        context: Context,
-        comptime callback: fn (*Context) void,
-    ) !void {
-        try self._gooey.dispatchOnMainThread(Context, context, callback);
+    pub fn drainQueue(self: *Self, comptime T: type, queue: *std.Io.Queue(T), buffer: []T) []const T {
+        std.debug.assert(buffer.len > 0);
+        // Non-blocking: min=0 guarantees immediate return.
+        const count = queue.get(self.io(), buffer, 0) catch return buffer[0..0];
+        return buffer[0..count];
     }
 
-    /// Dispatch a callback to run on the main thread after a delay.
-    /// Safe to call from any thread. Returns error on WASM (single-threaded).
+    // =========================================================================
+    // Structured Cancellation — Io.Group Lifecycle
+    // =========================================================================
+    //
+    // std.Io.Group manages the lifetime of related async tasks. When a group
+    // is cancelled, all tasks in it receive cancellation and the call blocks
+    // until they finish. This makes Group.cancel() safe at teardown but
+    // unsuitable for mid-frame use.
+    //
+    // Two mechanisms exist for automatic cancellation:
+    //
+    //   1. **Cancel group registry** — for app-level groups not tied to entities.
+    //      Registered groups are cancelled when the window closes (Gooey.deinit).
+    //
+    //      cx.registerCancelGroup(&my_state.io_group);
+    //      // ... later, if work completes normally:
+    //      cx.unregisterCancelGroup(&my_state.io_group);
+    //
+    //   2. **Entity-attached groups** — for groups tied to entity lifecycle.
+    //      Cancelled automatically when the entity is removed.
+    //
+    //      const entity = try cx.createEntity(MyData, .{});
+    //      cx.attachEntityCancelGroup(entity.id, &my_data.io_group);
+    //      // When entity is removed, io_group.cancel() is called automatically.
+    //
+    // Pattern — component with async work:
+    //
+    //   const MyComponent = struct {
+    //       io_group: std.Io.Group = .init,
+    //       result_buffer: [32]AppResult = undefined,
+    //       result_queue: std.Io.Queue(AppResult),
+    //
+    //       pub fn startFetch(self: *MyComponent, io: std.Io, url: []const u8) void {
+    //           self.io_group.async(io, fetchData, .{ url, &self.result_queue });
+    //       }
+    //   };
+    //
+    //   // In app init: register for auto-cancel on window close.
+    //   cx.registerCancelGroup(&my_component.io_group);
+    //
+    //   // In render loop: drain results (non-blocking).
+    //   for (cx.drainQueue(AppResult, &my_component.result_queue, &drain_buf)) |result| {
+    //       switch (result) { ... }
+    //   }
+    //
+
+    /// Register a cancel group for automatic cancellation on window close.
     ///
-    /// Example:
-    /// ```zig
-    /// // Run after 100ms
-    /// const Ctx = struct { app: *AppState };
-    /// try cx.dispatchAfter(100_000_000, Ctx, .{ .app = self }, handler);
-    /// ```
-    pub fn dispatchAfter(
-        self: *Self,
-        delay_ns: u64,
-        comptime Context: type,
-        context: Context,
-        comptime callback: fn (*Context) void,
-    ) !void {
-        try self._gooey.dispatchAfter(delay_ns, Context, context, callback);
-    }
-
-    /// Dispatch a callback to run on a background thread.
-    /// Returns error on WASM (no threads) or if the dispatcher is not initialized.
+    /// Groups are cancelled during `Gooey.deinit()` — blocking is acceptable
+    /// at that point because we are shutting down. Groups are never cancelled
+    /// mid-frame.
     ///
-    /// Example:
-    /// ```zig
-    /// const Ctx = struct { app: *AppState };
-    /// try cx.dispatchBackground(Ctx, .{ .app = self }, struct {
-    ///     fn handler(ctx: *Ctx) void {
-    ///         // Do expensive work off the main thread
-    ///         const result = ctx.app.fetchData();
-    ///         // Then dispatch back to main thread to apply
-    ///         ctx.app.pending_result = result;
-    ///         ctx.app.dispatchToMain();
-    ///     }
-    /// }.handler);
-    /// ```
-    pub fn dispatchBackground(
-        self: *Self,
-        comptime Context: type,
-        context: Context,
-        comptime callback: fn (*Context) void,
-    ) !void {
-        const d = self._gooey.getDispatcher() orelse return error.NotInitialized;
-        try d.dispatch(Context, context, callback);
+    /// Call `unregisterCancelGroup` if the async work completes normally and
+    /// the group should no longer be cancelled at teardown.
+    pub fn registerCancelGroup(self: *Self, group: *std.Io.Group) void {
+        self._gooey.registerCancelGroup(group);
     }
 
-    /// Check if the current thread is the main/UI thread.
-    /// Always returns true on WASM (single-threaded).
-    pub fn isMainThread(_: *Self) bool {
-        return Gooey.isMainThread();
+    /// Unregister a cancel group (e.g., when async work completes normally).
+    pub fn unregisterCancelGroup(self: *Self, group: *std.Io.Group) void {
+        self._gooey.unregisterCancelGroup(group);
+    }
+
+    /// Attach a cancellation group to an entity.
+    ///
+    /// When the entity is removed (via `EntityContext.remove`, `EntityMap.remove`,
+    /// or during `Gooey.deinit`), the group is cancelled automatically.
+    /// This prevents use-after-free from background tasks that reference entity data.
+    ///
+    /// Only one group per entity. Detach before attaching a different group.
+    pub fn attachEntityCancelGroup(self: *Self, id: EntityId, group: *std.Io.Group) void {
+        self._gooey.entities.attachCancelGroup(id, group);
+    }
+
+    /// Detach a cancellation group from an entity without cancelling it.
+    ///
+    /// Use when the async work has completed normally and the group should
+    /// no longer be auto-cancelled on entity removal.
+    pub fn detachEntityCancelGroup(self: *Self, id: EntityId) void {
+        self._gooey.entities.detachCancelGroup(id);
     }
 
     // =========================================================================
@@ -851,6 +917,14 @@ pub const Cx = struct {
     /// Get the allocator.
     pub fn allocator(self: *Self) std.mem.Allocator {
         return self._allocator;
+    }
+
+    /// Get the IO interface.
+    /// Mirrors the `cx.allocator()` pattern. Use for filesystem access, async work,
+    /// and any operation that requires an `std.Io` instance.
+    /// Must not be called outside the render function — same lifetime as `*Cx`.
+    pub fn io(self: *Self) std.Io {
+        return self._gooey.io;
     }
 
     // =========================================================================

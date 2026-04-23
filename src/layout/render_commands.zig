@@ -162,7 +162,7 @@ pub const RenderCommandList = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         var list = Self{
             .allocator = allocator,
-            .commands = .{},
+            .commands = .empty,
             .next_order = 0,
         };
         // Pre-allocate per CLAUDE.md: static memory allocation at startup

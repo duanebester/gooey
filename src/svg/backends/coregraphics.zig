@@ -10,9 +10,74 @@
 const std = @import("std");
 const svg_mod = @import("../../scene/svg.zig");
 
-const cg = @cImport({
-    @cInclude("CoreGraphics/CoreGraphics.h");
-});
+// Manual CoreGraphics bindings.
+//
+// Zig 0.16.0 switched from libclang to Aro for C translation, and Aro cannot
+// parse the ObjC block syntax (^) in the CoreGraphics umbrella header. We
+// declare only the functions we actually use. The framework is linked via
+// build.zig.
+const cg = struct {
+    // Opaque CoreGraphics types.
+    const CGPath = opaque {};
+    const CGContext = opaque {};
+    const CGColorSpace = opaque {};
+
+    // Handle types (nullable opaque pointers, matching CF convention).
+    const CGMutablePathRef = ?*CGPath;
+    const CGContextRef = ?*CGContext;
+    const CGColorSpaceRef = ?*CGColorSpace;
+
+    // CGFloat is f64 on 64-bit macOS.
+    const CGFloat = f64;
+
+    // Constants.
+    const kCGImageAlphaPremultipliedLast: u32 = 1;
+    const kCGLineCapRound: i32 = 1;
+    const kCGLineJoinRound: i32 = 1;
+
+    // --- CGPath functions ---
+
+    extern "c" fn CGPathCreateMutable() CGMutablePathRef;
+    extern "c" fn CGPathCloseSubpath(path: CGMutablePathRef) void;
+    extern "c" fn CGPathMoveToPoint(path: CGMutablePathRef, m: ?*const anyopaque, x: CGFloat, y: CGFloat) void;
+    extern "c" fn CGPathAddLineToPoint(path: CGMutablePathRef, m: ?*const anyopaque, x: CGFloat, y: CGFloat) void;
+    extern "c" fn CGPathAddCurveToPoint(path: CGMutablePathRef, m: ?*const anyopaque, cp1x: CGFloat, cp1y: CGFloat, cp2x: CGFloat, cp2y: CGFloat, x: CGFloat, y: CGFloat) void;
+    extern "c" fn CGPathAddQuadCurveToPoint(path: CGMutablePathRef, m: ?*const anyopaque, cpx: CGFloat, cpy: CGFloat, x: CGFloat, y: CGFloat) void;
+    extern "c" fn CGPathRelease(path: CGMutablePathRef) void;
+
+    // --- CGColorSpace functions ---
+
+    extern "c" fn CGColorSpaceCreateDeviceRGB() CGColorSpaceRef;
+    extern "c" fn CGColorSpaceRelease(space: CGColorSpaceRef) void;
+
+    // --- CGBitmapContext functions ---
+
+    extern "c" fn CGBitmapContextCreate(
+        data: ?*anyopaque,
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bytes_per_row: usize,
+        space: CGColorSpaceRef,
+        bitmap_info: u32,
+    ) CGContextRef;
+
+    // --- CGContext functions ---
+
+    extern "c" fn CGContextSetAllowsAntialiasing(ctx: CGContextRef, allows: bool) void;
+    extern "c" fn CGContextSetShouldAntialias(ctx: CGContextRef, should: bool) void;
+    extern "c" fn CGContextTranslateCTM(ctx: CGContextRef, tx: CGFloat, ty: CGFloat) void;
+    extern "c" fn CGContextScaleCTM(ctx: CGContextRef, sx: CGFloat, sy: CGFloat) void;
+    extern "c" fn CGContextRelease(ctx: CGContextRef) void;
+    extern "c" fn CGContextAddPath(ctx: CGContextRef, path: CGMutablePathRef) void;
+    extern "c" fn CGContextSetRGBFillColor(ctx: CGContextRef, red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) void;
+    extern "c" fn CGContextFillPath(ctx: CGContextRef) void;
+    extern "c" fn CGContextSetRGBStrokeColor(ctx: CGContextRef, red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) void;
+    extern "c" fn CGContextSetLineWidth(ctx: CGContextRef, width: CGFloat) void;
+    extern "c" fn CGContextSetLineCap(ctx: CGContextRef, cap: i32) void;
+    extern "c" fn CGContextSetLineJoin(ctx: CGContextRef, join: i32) void;
+    extern "c" fn CGContextStrokePath(ctx: CGContextRef) void;
+};
 
 pub const RasterizedSvg = struct {
     width: u32,

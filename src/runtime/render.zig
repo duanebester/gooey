@@ -335,8 +335,21 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
             scale_factor,
         );
 
-    // On WASM, handle async loading for non-URL sources (relative paths)
-    if (is_wasm and !is_url) {
+    // On WASM, route all async loading — both relative paths and URLs —
+    // through the browser's fetch + createImageBitmap pipeline. URLs used to
+    // require user-side boilerplate (see the archived images_wasm.zig
+    // pattern: hand-written per-index callbacks, a pending-request table,
+    // manual atlas caching). `ensureWasmImageLoading` already dispatches to
+    // `loadFromUrlAsync` vs `loadFromMemoryAsync` based on the source shape,
+    // so renderImage just needs to call it unconditionally on WASM.
+    if (is_wasm) {
+        // Guard absurdly long URLs before we hit the MAX_SOURCE_PATH_LEN
+        // assert inside ensureWasmImageLoading. Matches the silent-drop
+        // behaviour of ensureNativeUrlLoading for parity across platforms.
+        if (is_url and img_data.source.len > image_mod.loader.MAX_URL_LENGTH) {
+            try renderImagePlaceholder(gooey_ctx, cmd);
+            return;
+        }
         // Check if already cached
         if (gooey_ctx.image_atlas.*.get(key) == null) {
             // Not cached - check/start async load
@@ -358,14 +371,41 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         }
     }
 
-    // Check cache or load synchronously (URLs handled by async loader)
+    // Check cache or load synchronously.
+    //
+    // Atlas-eviction re-fetch (Task 4.5b): if the LRU atlas previously held
+    // this URL's pixels but evicted them to make room, we land here on a cache
+    // miss. The URL is not in `failed_image_hashes` (only outright fetch
+    // failures go there), so `ensureNativeUrlLoading` will kick off a fresh
+    // fetch — the correct behavior. The only visible effect to the user is a
+    // brief placeholder flash while the refetch completes.
     const cached = gooey_ctx.image_atlas.*.get(key) orelse blk: {
-        if (is_url) return; // URLs handled by async loader
-        if (is_wasm) return; // WASM uses async loading above
+        if (is_url) {
+            // Known-failed URLs show an error placeholder rather than a loading
+            // placeholder — otherwise the user sees a perpetual "loading" state
+            // for a URL that will never succeed. A URL reaches the failed set
+            // only after `MAX_FETCH_ATTEMPTS` transient failures or a single
+            // permanent error — see `loadFromUrl` for the retry policy.
+            if (!is_wasm and gooey_ctx.isImageLoadFailed(key.source_hash)) {
+                try renderImageError(gooey_ctx, cmd);
+                return;
+            }
+            // Kick off background fetch if not already in flight (native only).
+            // WASM URL fetches are handled in the `is_wasm` block above and
+            // never reach this branch in steady state; the `is_wasm` guard
+            // here is only a safety net for a second-lookup race where the
+            // first-block cache check reported `.cached` but the atlas entry
+            // is gone by the time we re-check below.
+            if (!is_wasm) ensureNativeUrlLoading(gooey_ctx, img_data.source, key);
+            try renderImagePlaceholder(gooey_ctx, cmd);
+            return;
+        }
+        if (is_wasm) return; // WASM uses async loading in the `is_wasm` block above
 
         var decoded = image_mod.loader.loadFromPath(
             gooey_ctx.allocator,
             img_data.source,
+            gooey_ctx.io,
         ) catch return;
         defer decoded.deinit();
 
@@ -469,6 +509,45 @@ inline fn isUrlSource(source: []const u8) bool {
         std.mem.startsWith(u8, source, "https://");
 }
 
+/// Kick off an async URL image fetch if not already in flight (native only).
+///
+/// The background task fetches the URL via std.http.Client, decodes the image,
+/// and pushes an ImageLoadResult into the Gooey image load queue. The queue is
+/// drained each frame in beginFrame, which caches decoded pixels into the atlas.
+/// Subsequent frames find the image in the atlas cache and render it normally.
+fn ensureNativeUrlLoading(gooey_ctx: *Gooey, source: []const u8, key: image_mod.ImageKey) void {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(isUrlSource(source));
+
+    // URL too long — silently drop rather than crashing in the background task.
+    if (source.len > image_mod.loader.MAX_URL_LENGTH) return;
+
+    // Previously failed — short-circuit to avoid per-frame retry storms.
+    // Ordered before the pending check: a failed URL is the cheapest to reject,
+    // and failed + pending are disjoint (see Gooey.addFailedImageLoad).
+    if (gooey_ctx.isImageLoadFailed(key.source_hash)) return;
+
+    // Already in flight — nothing to do.
+    if (gooey_ctx.isImageLoadPending(key.source_hash)) return;
+
+    // At capacity — drop this request rather than blocking.
+    if (gooey_ctx.pending_image_hash_count >= gooey_ctx.pending_image_hashes.len) return;
+
+    // Duplicate the URL — the source slice lives in the layout arena which
+    // is reset each frame, but the background task outlives the frame.
+    const url_owned = gooey_ctx.allocator.dupe(u8, source) catch return;
+
+    gooey_ctx.addPendingImageLoad(key.source_hash);
+
+    // Fire-and-forget into the image load group.
+    // The task fetches, decodes, and pushes the result into the queue.
+    gooey_ctx.image_load_group.async(
+        gooey_ctx.io,
+        image_mod.loader.loadFromUrl,
+        .{ gooey_ctx.io, gooey_ctx.allocator, url_owned, key, &gooey_ctx.image_load_queue },
+    );
+}
+
 /// Snap coordinates to device pixel grid for crisp rendering
 /// This prevents sub-pixel blurring on retina displays
 inline fn snapToPixelGrid(x: f32, y: f32, scale_factor: f32) SnappedPosition {
@@ -539,14 +618,21 @@ fn renderImageError(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
     }
 }
 
-/// Maximum source path length (per CLAUDE.md: put a limit on everything)
-const MAX_SOURCE_PATH_LEN: usize = 4096;
+/// Maximum source length (per CLAUDE.md: put a limit on everything).
+///
+/// Matches `image_mod.loader.MAX_URL_LENGTH` so that the native and WASM
+/// paths agree on the upper bound — `renderImage` now routes URLs through
+/// `ensureWasmImageLoading` on WASM (Task 4.6), and a tighter limit here
+/// would trip the length assert for URLs the native path accepts.
+/// `MAX_URL_LENGTH` is declared `u32`; widen to `usize` for comparison
+/// against `source.len`.
+const MAX_SOURCE_PATH_LEN: usize = @as(usize, image_mod.loader.MAX_URL_LENGTH);
 
 /// Ensure an image is loading on WASM (starts load if not already in progress)
 fn ensureWasmImageLoading(source: []const u8, key: image_mod.ImageKey, gooey_ctx: *Gooey) LoadStatus {
     // Assert source validity (per CLAUDE.md: minimum 2 assertions per function)
     std.debug.assert(source.len > 0); // Source must not be empty
-    std.debug.assert(source.len < MAX_SOURCE_PATH_LEN); // Source path must be reasonable length
+    std.debug.assert(source.len <= MAX_SOURCE_PATH_LEN); // Source path/URL must be reasonable length
 
     if (!is_wasm) return .failed;
 

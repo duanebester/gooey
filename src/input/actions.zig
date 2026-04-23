@@ -155,7 +155,7 @@ pub const KeyBinding = struct {
 /// Maps keystrokes to actions, with optional context requirements
 pub const Keymap = struct {
     allocator: std.mem.Allocator,
-    bindings: std.ArrayListUnmanaged(KeyBinding) = .{},
+    bindings: std.ArrayListUnmanaged(KeyBinding) = .empty,
 
     const Self = @This();
 

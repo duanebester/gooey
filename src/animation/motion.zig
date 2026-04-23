@@ -19,7 +19,6 @@
 //!   At-rest motions cost one branch (early return). Zero work.
 
 const std = @import("std");
-const platform = @import("../platform/mod.zig");
 const animation = @import("animation.zig");
 const spring_mod = @import("spring.zig");
 
@@ -177,7 +176,9 @@ pub const MotionHandle = struct {
 ///   entered --[show=false]--> exiting --[complete]--> exited
 ///
 /// Progress goes 0→1 on enter, 1→0 on exit (reversed automatically).
-pub fn tickMotion(state: *MotionState, show: bool) MotionHandle {
+/// `io` is threaded through so `AnimationState.init` and `calculateProgress`
+/// can sample the monotonic awake clock without touching any global state.
+pub fn tickMotion(io: std.Io, state: *MotionState, show: bool) MotionHandle {
     std.debug.assert(state.enter_config.duration_ms > 0);
     std.debug.assert(state.exit_config.duration_ms > 0);
 
@@ -186,24 +187,24 @@ pub fn tickMotion(state: *MotionState, show: bool) MotionHandle {
         state.last_show = show;
         if (show) {
             state.phase = .entering;
-            state.enter_state = animation.AnimationState.init(state.enter_config);
+            state.enter_state = animation.AnimationState.init(io, state.enter_config);
         } else {
             state.phase = .exiting;
-            state.exit_state = animation.AnimationState.init(state.exit_config);
+            state.exit_state = animation.AnimationState.init(io, state.exit_config);
         }
     }
 
     return switch (state.phase) {
-        .entering => tickEntering(state),
+        .entering => tickEntering(io, state),
         .entered => MotionHandle.shown,
-        .exiting => tickExiting(state),
+        .exiting => tickExiting(io, state),
         .exited => MotionHandle.hidden,
     };
 }
 
 /// Handle the entering sub-state. Split out per 70-line rule.
-fn tickEntering(state: *MotionState) MotionHandle {
-    const handle = animation.calculateProgress(&state.enter_state);
+fn tickEntering(io: std.Io, state: *MotionState) MotionHandle {
+    const handle = animation.calculateProgress(&state.enter_state, io);
     if (!handle.running) {
         state.phase = .entered;
         return MotionHandle.shown;
@@ -216,8 +217,8 @@ fn tickEntering(state: *MotionState) MotionHandle {
 }
 
 /// Handle the exiting sub-state. Progress is reversed: exit goes 1→0.
-fn tickExiting(state: *MotionState) MotionHandle {
-    const handle = animation.calculateProgress(&state.exit_state);
+fn tickExiting(io: std.Io, state: *MotionState) MotionHandle {
+    const handle = animation.calculateProgress(&state.exit_state, io);
     if (!handle.running) {
         state.phase = .exited;
         return MotionHandle.hidden;
@@ -238,7 +239,7 @@ fn tickExiting(state: *MotionState) MotionHandle {
 /// The spring target is set to 1.0 (show) or 0.0 (hide) each frame.
 /// Velocity is preserved on direction change — no snap, no restart.
 /// Phase is derived from spring position and rest state.
-pub fn tickSpringMotion(state: *SpringMotionState, show: bool) MotionHandle {
+pub fn tickSpringMotion(io: std.Io, state: *SpringMotionState, show: bool) MotionHandle {
     std.debug.assert(state.spring_state.mass > 0.0);
     std.debug.assert(state.spring_state.stiffness >= 0.0);
 
@@ -253,11 +254,13 @@ pub fn tickSpringMotion(state: *SpringMotionState, show: bool) MotionHandle {
 
     if (target_changed and state.spring_state.at_rest) {
         state.spring_state.at_rest = false;
-        // Reset timestamp so first dt after wake is reasonable
-        state.spring_state.last_time_ms = platform.time.milliTimestamp();
+        // Reset timestamp so first dt after wake is reasonable.
+        // Monotonic `awake` clock guarantees the subsequent `durationTo`
+        // in `tickSpring` returns a non-negative delta.
+        state.spring_state.last_time = std.Io.Timestamp.now(io, .awake);
     }
 
-    const handle = spring_mod.tickSpring(&state.spring_state);
+    const handle = spring_mod.tickSpring(io, &state.spring_state);
 
     // Derive phase from spring position and rest state
     if (handle.at_rest) {
@@ -322,15 +325,16 @@ fn makeExitedSpringState(config: SpringMotionConfig) SpringMotionState {
     return .{
         .phase = .exited,
         .last_show = false,
-        .spring_state = spring_mod.SpringState.initSettled(spring_config),
+        .spring_state = spring_mod.SpringState.initSettled(std.testing.io, spring_config),
     };
 }
 
 test "tween motion: enter plays 0→1" {
+    const io = std.testing.io;
     var state = makeExitedState(.{});
 
     // First frame with show=true triggers entering
-    const h1 = tickMotion(&state, true);
+    const h1 = tickMotion(io, &state, true);
     try testing.expect(h1.visible);
     try testing.expectEqual(MotionPhase.entering, h1.phase);
     try testing.expect(h1.progress >= 0.0);
@@ -338,10 +342,11 @@ test "tween motion: enter plays 0→1" {
 }
 
 test "tween motion: exit plays 1→0" {
+    const io = std.testing.io;
     var state = makeEnteredState(.{});
 
     // First frame with show=false triggers exiting
-    const h1 = tickMotion(&state, false);
+    const h1 = tickMotion(io, &state, false);
     try testing.expect(h1.visible); // Still visible during exit!
     try testing.expectEqual(MotionPhase.exiting, h1.phase);
     try testing.expect(h1.progress <= 1.0);
@@ -349,79 +354,84 @@ test "tween motion: exit plays 1→0" {
 }
 
 test "tween motion: not visible after exit completes" {
+    const io = std.testing.io;
     var state = makeEnteredState(.{
         .enter = .{ .duration_ms = 100 },
         .exit = .{ .duration_ms = 100 },
     });
 
     // Trigger exit
-    _ = tickMotion(&state, false);
+    _ = tickMotion(io, &state, false);
     try testing.expectEqual(MotionPhase.exiting, state.phase);
 
-    // Simulate time passing: backdate the exit_state start_time
-    // so calculateProgress sees the animation as complete.
-    state.exit_state.start_time -= 200; // 200ms in the past, duration is 100ms
+    // Simulate time passing: backdate the exit_state start_time by 200ms
+    // (duration is 100ms) so calculateProgress sees the animation as complete.
+    state.exit_state.start_time = state.exit_state.start_time.subDuration(std.Io.Duration.fromMilliseconds(200));
 
-    const h = tickMotion(&state, false);
+    const h = tickMotion(io, &state, false);
     try testing.expect(!h.visible);
     try testing.expectEqual(MotionPhase.exited, h.phase);
     try testing.expectApproxEqAbs(@as(f32, 0.0), h.progress, 0.001);
 }
 
 test "tween motion: not visible after enter then full exit" {
+    const io = std.testing.io;
     var state = makeEnteredState(.{
         .enter = .{ .duration_ms = 50 },
         .exit = .{ .duration_ms = 50 },
     });
 
     // Trigger exit
-    _ = tickMotion(&state, false);
+    _ = tickMotion(io, &state, false);
     // Backdate to complete
-    state.exit_state.start_time -= 100;
-    const h = tickMotion(&state, false);
+    state.exit_state.start_time = state.exit_state.start_time.subDuration(std.Io.Duration.fromMilliseconds(100));
+    const h = tickMotion(io, &state, false);
     try testing.expectEqual(MotionPhase.exited, h.phase);
     try testing.expect(!h.visible);
 }
 
 test "tween motion: enter completes to entered phase" {
+    const io = std.testing.io;
     var state = makeExitedState(.{
         .enter = .{ .duration_ms = 50 },
     });
 
     // Trigger enter
-    _ = tickMotion(&state, true);
+    _ = tickMotion(io, &state, true);
     try testing.expectEqual(MotionPhase.entering, state.phase);
 
     // Backdate to complete
-    state.enter_state.start_time -= 100;
-    const h = tickMotion(&state, true);
+    state.enter_state.start_time = state.enter_state.start_time.subDuration(std.Io.Duration.fromMilliseconds(100));
+    const h = tickMotion(io, &state, true);
     try testing.expectEqual(MotionPhase.entered, h.phase);
     try testing.expect(h.visible);
     try testing.expectApproxEqAbs(@as(f32, 1.0), h.progress, 0.001);
 }
 
 test "tween motion: re-enter during exit restarts enter" {
+    const io = std.testing.io;
     var state = makeEnteredState(.{
         .enter = .{ .duration_ms = 200 },
         .exit = .{ .duration_ms = 200 },
     });
 
     // Start exiting
-    _ = tickMotion(&state, false);
+    _ = tickMotion(io, &state, false);
     try testing.expectEqual(MotionPhase.exiting, state.phase);
 
     // Immediately toggle back to show
-    const h = tickMotion(&state, true);
+    const h = tickMotion(io, &state, true);
     try testing.expectEqual(MotionPhase.entering, h.phase);
     try testing.expect(h.visible);
 }
 
 test "tween motion: entered state is stable" {
+    const io = std.testing.io;
     var state = makeEnteredState(.{});
 
     // Multiple ticks with show=true should stay entered
-    const h1 = tickMotion(&state, true);
-    const h2 = tickMotion(&state, true);
+    const h1 = tickMotion(io, &state, true);
+    const h2 = tickMotion(io, &state, true);
     try testing.expectEqual(MotionPhase.entered, h1.phase);
     try testing.expectEqual(MotionPhase.entered, h2.phase);
     try testing.expectApproxEqAbs(@as(f32, 1.0), h1.progress, 0.001);
@@ -429,11 +439,12 @@ test "tween motion: entered state is stable" {
 }
 
 test "tween motion: exited state is stable" {
+    const io = std.testing.io;
     var state = makeExitedState(.{});
 
     // Multiple ticks with show=false should stay exited
-    const h1 = tickMotion(&state, false);
-    const h2 = tickMotion(&state, false);
+    const h1 = tickMotion(io, &state, false);
+    const h2 = tickMotion(io, &state, false);
     try testing.expectEqual(MotionPhase.exited, h1.phase);
     try testing.expectEqual(MotionPhase.exited, h2.phase);
     try testing.expect(!h1.visible);
@@ -456,23 +467,25 @@ test "tween motion: exit config uses explicit exit when set" {
 }
 
 test "spring motion: enter from exited" {
+    const io = std.testing.io;
     var state = makeExitedSpringState(.{});
 
     // Tick with show=true — spring wakes from rest and starts entering
-    const h = tickSpringMotion(&state, true);
+    const h = tickSpringMotion(io, &state, true);
     // With the wake-from-rest fix, the spring reliably enters on the first tick
     try testing.expectEqual(MotionPhase.entering, h.phase);
     try testing.expect(h.visible);
 }
 
 test "spring motion: wake from rest on toggle" {
+    const io = std.testing.io;
     // Start settled at 0 (exited, at rest)
     var state = makeExitedSpringState(.{});
     try testing.expect(state.spring_state.at_rest);
     try testing.expectApproxEqAbs(@as(f32, 0.0), state.spring_state.position, 0.001);
 
     // Toggle show=true — spring must wake and begin entering
-    const h1 = tickSpringMotion(&state, true);
+    const h1 = tickSpringMotion(io, &state, true);
     try testing.expect(!state.spring_state.at_rest);
     try testing.expectEqual(MotionPhase.entering, h1.phase);
     try testing.expect(h1.visible);
@@ -485,7 +498,7 @@ test "spring motion: wake from rest on toggle" {
     state.phase = .entered;
 
     // Toggle show=false — spring must wake and begin exiting
-    const h2 = tickSpringMotion(&state, false);
+    const h2 = tickSpringMotion(io, &state, false);
     try testing.expect(!state.spring_state.at_rest);
     try testing.expectEqual(MotionPhase.exiting, h2.phase);
     try testing.expect(h2.visible);
@@ -493,11 +506,12 @@ test "spring motion: wake from rest on toggle" {
 }
 
 test "spring motion: rapid toggle doesn't snap" {
+    const io = std.testing.io;
     // Create a spring motion that's already partway through entering
     var state = SpringMotionState{
         .phase = .entering,
         .last_show = true,
-        .spring_state = spring_mod.SpringState.init(.{
+        .spring_state = spring_mod.SpringState.init(io, .{
             .target = 1.0,
             .initial_position = 0.0,
         }),
@@ -507,10 +521,10 @@ test "spring motion: rapid toggle doesn't snap" {
     state.spring_state.position = 0.5;
     state.spring_state.velocity = 2.0;
     state.spring_state.at_rest = false;
-    state.spring_state.last_time_ms = platform.time.milliTimestamp();
+    state.spring_state.last_time = std.Io.Timestamp.now(io, .awake);
 
     // Toggle off — spring should redirect, not snap
-    const h = tickSpringMotion(&state, false);
+    const h = tickSpringMotion(io, &state, false);
 
     // Should be visible (exit in progress) and progress > 0
     try testing.expect(h.visible);
@@ -519,31 +533,33 @@ test "spring motion: rapid toggle doesn't snap" {
 }
 
 test "spring motion: settled at target 1.0 is entered" {
+    const io = std.testing.io;
     var state = SpringMotionState{
         .phase = .entering,
         .last_show = true,
-        .spring_state = spring_mod.SpringState.initSettled(.{
+        .spring_state = spring_mod.SpringState.initSettled(io, .{
             .target = 1.0,
         }),
     };
 
-    const h = tickSpringMotion(&state, true);
+    const h = tickSpringMotion(io, &state, true);
     try testing.expectEqual(MotionPhase.entered, h.phase);
     try testing.expect(h.visible);
     try testing.expectApproxEqAbs(@as(f32, 1.0), h.progress, 0.001);
 }
 
 test "spring motion: settled at target 0.0 is exited" {
+    const io = std.testing.io;
     var state = SpringMotionState{
         .phase = .exiting,
         .last_show = false,
-        .spring_state = spring_mod.SpringState.initSettled(.{
+        .spring_state = spring_mod.SpringState.initSettled(io, .{
             .target = 0.0,
             .initial_position = 0.0,
         }),
     };
 
-    const h = tickSpringMotion(&state, false);
+    const h = tickSpringMotion(io, &state, false);
     try testing.expectEqual(MotionPhase.exited, h.phase);
     try testing.expect(!h.visible);
     try testing.expectApproxEqAbs(@as(f32, 0.0), h.progress, 0.001);

@@ -620,92 +620,26 @@ pub fn build(b: *std.Build) void {
     }
 
     // =============================================================================
-    // WebAssembly Builds
+    // WebAssembly Builds — deferred on Zig 0.16.0
     // =============================================================================
-
-    const wasm_target = b.resolveTargetQuery(.{
-        .cpu_arch = .wasm32,
-        .os_tag = .freestanding,
-    });
-
-    // Create gooey module for WASM (shared by all examples)
-    const gooey_wasm_module = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = wasm_target,
-        .optimize = .ReleaseSmall,
-    });
-
-    // Add shader embeds (needed by renderer.zig)
-    gooey_wasm_module.addAnonymousImport("unified_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/unified.wgsl"),
-    });
-    gooey_wasm_module.addAnonymousImport("text_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/text.wgsl"),
-    });
-    gooey_wasm_module.addAnonymousImport("svg_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/svg.wgsl"),
-    });
-    gooey_wasm_module.addAnonymousImport("image_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/image.wgsl"),
-    });
-    gooey_wasm_module.addAnonymousImport("path_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/path.wgsl"),
-    });
-    gooey_wasm_module.addAnonymousImport("solid_path_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/path_solid.wgsl"),
-    });
-    gooey_wasm_module.addAnonymousImport("polyline_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/polyline.wgsl"),
-    });
-    gooey_wasm_module.addAnonymousImport("point_cloud_wgsl", .{
-        .root_source_file = b.path("src/platform/wgpu/shaders/point_cloud.wgsl"),
-    });
-
-    // -------------------------------------------------------------------------
-    // WASM Examples
-    // -------------------------------------------------------------------------
-
-    // Main demo: "zig build wasm" builds showcase (matches "zig build run")
-    {
-        const wasm_exe = b.addExecutable(.{
-            .name = "app",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/showcase.zig"),
-                .target = wasm_target,
-                .optimize = .ReleaseSmall,
-                .imports = &.{
-                    .{ .name = "gooey", .module = gooey_wasm_module },
-                },
-            }),
-        });
-        wasm_exe.entry = .disabled;
-        wasm_exe.rdynamic = true;
-        // Increase stack size for large structs (Gooey is ~400KB with a11y)
-        wasm_exe.stack_size = 1024 * 1024; // 1MB stack
-
-        const wasm_step = b.step("wasm", "Build showcase for web (main demo)");
-        wasm_step.dependOn(&b.addInstallArtifact(wasm_exe, .{
-            .dest_dir = .{ .override = .{ .custom = "web" } },
-        }).step);
-        wasm_step.dependOn(&b.addInstallFile(b.path("web/index.html"), "web/index.html").step);
-
-        // Copy assets for WASM builds (images need to be fetched via URL)
-        wasm_step.dependOn(&b.addInstallFile(b.path("assets/gooey-logo-final.png"), "web/assets/gooey-logo-final.png").step);
-    }
-
-    // Individual examples
-    addWasmExample(b, gooey_wasm_module, wasm_target, "counter", "src/examples/counter.zig", "web/counter");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "dynamic-counters", "src/examples/dynamic_counters.zig", "web/dynamic");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "pomodoro", "src/examples/pomodoro.zig", "web/pomodoro");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "spaceship", "src/examples/spaceship.zig", "web/spaceship");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "layout", "src/examples/layout.zig", "web/layout");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "select", "src/examples/select.zig", "web/select");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "text", "src/examples/text_debug_example.zig", "web/text");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "images", "src/examples/images_wasm.zig", "web/images");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "tooltip", "src/examples/tooltip.zig", "web/tooltip");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "modal", "src/examples/modal.zig", "web/modal");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "file-dialog", "src/examples/web_file_dialog.zig", "web/file-dialog");
-    addWasmExample(b, gooey_wasm_module, wasm_target, "drag-drop", "src/examples/drag_drop.zig", "web/drag-drop");
+    //
+    // `std.Io.Threaded` does not compile for `wasm32-freestanding` on Zig 0.16.0:
+    // its comptime body eagerly references `posix.system.getrandom`
+    // (Threaded.zig:2064) and `posix.IOV_MAX` (posix.zig:90), both of which resolve
+    // to `void` / absent on wasm32-freestanding. This breaks the Phase-1 invariant
+    // ("WASM uses `init_single_threaded`") at the type-analysis level — so even
+    // reaching for `global_single_threaded` fails to compile.
+    //
+    // The WASM code paths (`src/platform/web/`, `WebApp` in `app.zig`, all
+    // `src/examples/*_wasm.zig` and web-specific examples) are deliberately left
+    // in place; they'll resume compiling once upstream gates these references
+    // behind `native_os == .linux` or the `@TypeOf(...) != void` idiom already
+    // used elsewhere in `Threaded.zig`. When that lands, restore the WASM build
+    // steps below (pulled from the git history prior to the 0.1.0 tag) and flip
+    // the deferred row in `docs/zig-0.16-io-migration.md` to complete.
+    //
+    // See `docs/zig-0.16-io-migration.md` → "Remediation Plan" → Step 3 for
+    // rationale, tracking, and exit criteria.
 }
 
 // =============================================================================
@@ -729,18 +663,19 @@ pub fn build(b: *std.Build) void {
 /// cases transitive linking handles everything automatically. This helper
 /// exists as a safety net and for non-module usage patterns.
 pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
+    const mod = step.root_module;
     const os = step.rootModuleTarget().os.tag;
 
     if (os == .macos) {
-        step.linkFramework("AppKit");
-        step.linkFramework("Foundation");
-        step.linkFramework("Metal");
-        step.linkFramework("QuartzCore");
-        step.linkFramework("CoreFoundation");
-        step.linkFramework("CoreVideo");
-        step.linkFramework("CoreText");
-        step.linkFramework("CoreGraphics");
-        step.linkLibC();
+        mod.linkFramework("AppKit", .{});
+        mod.linkFramework("Foundation", .{});
+        mod.linkFramework("Metal", .{});
+        mod.linkFramework("QuartzCore", .{});
+        mod.linkFramework("CoreFoundation", .{});
+        mod.linkFramework("CoreVideo", .{});
+        mod.linkFramework("CoreText", .{});
+        mod.linkFramework("CoreGraphics", .{});
+        mod.link_libc = true;
     }
 
     if (os == .linux) {
@@ -821,46 +756,9 @@ fn addChartsExample(
     run_cmd.step.dependOn(b.getInstallStep());
 }
 
-/// Helper to add a WASM example with minimal boilerplate.
-/// All examples output as "app.wasm" so index.html works universally.
-fn addWasmExample(
-    b: *std.Build,
-    gooey_module: *std.Build.Module,
-    wasm_target: std.Build.ResolvedTarget,
-    name: []const u8,
-    source: []const u8,
-    output_dir: []const u8,
-) void {
-    const exe = b.addExecutable(.{
-        .name = "app",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(source),
-            .target = wasm_target,
-            .optimize = .ReleaseSmall,
-            .imports = &.{
-                .{ .name = "gooey", .module = gooey_module },
-            },
-        }),
-    });
-
-    exe.entry = .disabled;
-    exe.rdynamic = true;
-    // Increase stack size for large structs (Gooey is ~400KB with a11y)
-    exe.stack_size = 1024 * 1024; // 1MB stack
-
-    const step_name = b.fmt("wasm-{s}", .{name});
-    const step_desc = b.fmt("Build {s} example for web", .{name});
-    const step = b.step(step_name, step_desc);
-
-    step.dependOn(&b.addInstallArtifact(exe, .{
-        .dest_dir = .{ .override = .{ .custom = output_dir } },
-    }).step);
-
-    step.dependOn(&b.addInstallFile(
-        b.path("web/index.html"),
-        b.fmt("{s}/index.html", .{output_dir}),
-    ).step);
-}
+// `addWasmExample` helper removed alongside the WASM build steps — see the
+// deferral note in `pub fn build` above. Restore from git history (pre-0.1.0
+// tag) once upstream `Io.Threaded` compiles for `wasm32-freestanding`.
 
 /// Helper to add a Linux native example with Vulkan + Wayland system libraries.
 fn addLinuxExample(
@@ -903,12 +801,13 @@ fn addLinuxExample(
 
 /// Links the standard set of Linux system libraries (Vulkan, Wayland, text rendering, etc.)
 fn linkLinuxLibraries(step: *std.Build.Step.Compile) void {
-    step.linkSystemLibrary("vulkan");
-    step.linkSystemLibrary("wayland-client");
-    step.linkSystemLibrary("freetype");
-    step.linkSystemLibrary("harfbuzz");
-    step.linkSystemLibrary("fontconfig");
-    step.linkSystemLibrary("png");
-    step.linkSystemLibrary("dbus-1");
-    step.linkLibC();
+    const mod = step.root_module;
+    mod.linkSystemLibrary("vulkan", .{});
+    mod.linkSystemLibrary("wayland-client", .{});
+    mod.linkSystemLibrary("freetype", .{});
+    mod.linkSystemLibrary("harfbuzz", .{});
+    mod.linkSystemLibrary("fontconfig", .{});
+    mod.linkSystemLibrary("png", .{});
+    mod.linkSystemLibrary("dbus-1", .{});
+    mod.link_libc = true;
 }

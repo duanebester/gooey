@@ -14,7 +14,6 @@ const WindowRegistry = window_registry.WindowRegistry;
 const linux_input = @import("input.zig");
 const input = @import("../../input/events.zig");
 const clipboard = @import("clipboard.zig");
-const dispatcher_mod = @import("dispatcher.zig");
 
 // Static listeners - must persist for lifetime of Wayland objects
 const registry_listener = wayland.RegistryListener{
@@ -126,9 +125,6 @@ pub const LinuxPlatform = struct {
     ime_delete_before: u32 = 0,
     ime_delete_after: u32 = 0,
     ime_serial: u32 = 0,
-
-    /// Optional dispatcher for cross-thread communication
-    dispatcher_ref: ?*dispatcher_mod.Dispatcher = null,
 
     const Self = @This();
 
@@ -320,21 +316,11 @@ pub const LinuxPlatform = struct {
         // This allows frame callbacks to drive rendering at vsync rate
         // without blocking on input events (unlike wl_display_dispatch).
 
-        // Build pollfd array - always include Wayland, optionally dispatcher
-        // Using 8 slots for future expansion (timerfd, etc.)
         var pollfds_buf: [8]posix.pollfd = undefined;
 
         while (self.running) {
-            // Rebuild pollfd array each iteration (dispatcher_ref could change)
-            var num_fds: usize = 1;
             pollfds_buf[0] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 };
-
-            if (self.dispatcher_ref) |d| {
-                pollfds_buf[1] = .{ .fd = d.getFd(), .events = posix.POLL.IN, .revents = 0 };
-                num_fds = 2;
-            }
-
-            var pollfds = pollfds_buf[0..num_fds];
+            var pollfds = pollfds_buf[0..1];
 
             // Render frame if we have an active window
             if (self.active_window) |window| {
@@ -368,12 +354,6 @@ pub const LinuxPlatform = struct {
                 break;
             }
 
-            // Process any pending dispatcher tasks before polling
-            // (handles tasks queued since last poll)
-            if (self.dispatcher_ref) |d| {
-                _ = d.processPending();
-            }
-
             // Adaptive poll timeout based on work state:
             // - 0ms if redraw/animation pending (minimize latency, max FPS)
             // - 1000/refresh_rate if idle (reduce CPU usage, match display responsiveness)
@@ -401,13 +381,6 @@ pub const LinuxPlatform = struct {
                 if (wayland.wl_display_dispatch(display) < 0) {
                     self.running = false;
                     break;
-                }
-            }
-
-            // Handle dispatcher events (cross-thread tasks)
-            if (num_fds > 1 and (pollfds[1].revents & posix.POLL.IN) != 0) {
-                if (self.dispatcher_ref) |d| {
-                    _ = d.processPending();
                 }
             }
         }
@@ -516,15 +489,6 @@ pub const LinuxPlatform = struct {
     /// Set the active window for pointer events (move/resize operations)
     pub fn setActiveWindow(self: *Self, window: *LinuxWindow) void {
         self.active_window = window;
-    }
-
-    /// Set a dispatcher for cross-thread communication.
-    ///
-    /// This enables poll() to wake when background threads dispatch to main.
-    /// Call this after creating the dispatcher and before running the event loop.
-    pub fn setDispatcher(self: *Self, d: *dispatcher_mod.Dispatcher) void {
-        std.debug.assert(d.event_fd >= 0);
-        self.dispatcher_ref = d;
     }
 
     pub fn isRunning(self: *const Self) bool {

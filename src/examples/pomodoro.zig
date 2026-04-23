@@ -545,6 +545,12 @@ fn render(cx: *Cx) void {
     }));
 }
 
+/// Monotonic millisecond timestamp used by the Pomodoro timer to drive
+/// one-second tick deltas. Monotonic `.awake` keeps the countdown stable
+/// across NTP jumps or sysadmin-driven wall-clock edits. `std.Io` is a
+/// pair of pointers into a process-lifetime vtable, so reaching for the
+/// single-threaded global here costs nothing.
 fn getTimestamp() i64 {
-    return platform.time.milliTimestamp();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }

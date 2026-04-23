@@ -20,6 +20,35 @@ const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
+/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
+/// local to the benchmark module so every sample site reads as a two-line
+/// capture-then-diff instead of threading `io` through every benchmark
+/// helper signature. `.awake` is the monotonic clock — deltas here can
+/// never go negative regardless of NTP or sysadmin clock edits.
+///
+/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
+/// per-call `global_single_threaded.io()` lookup compiles down to a pair
+/// of constant pointer loads — effectively free.
+const time = struct {
+    inline fn benchIo() std.Io {
+        return std.Io.Threaded.global_single_threaded.io();
+    }
+
+    const Instant = struct {
+        ts: std.Io.Timestamp,
+
+        inline fn now() Instant {
+            return .{ .ts = std.Io.Timestamp.now(benchIo(), .awake) };
+        }
+
+        inline fn since(self: Instant, earlier: Instant) u64 {
+            const ns: i96 = earlier.ts.durationTo(self.ts).toNanoseconds();
+            std.debug.assert(ns >= 0);
+            return @intCast(ns);
+        }
+    };
+};
+
 const core = gooey.core;
 const Vec2 = core.Vec2;
 const IndexSlice = core.IndexSlice;
@@ -269,9 +298,9 @@ fn benchTriangulate(
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
         triangulator.reset();
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         const indices = triangulator.triangulate(polygon_vertices, polygon) catch unreachable;
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         last_index_count = indices.len;
         total_time_ns += end.since(start);
         iterations += 1;
@@ -323,9 +352,9 @@ fn benchStrokeExpand(
     var last_output_count: usize = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         const result = stroke_mod.expandStroke(path_points, stroke_width, cap, join, miter_limit, closed) catch unreachable;
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         last_output_count = result.points.len;
         total_time_ns += end.since(start);
         iterations += 1;
@@ -372,9 +401,9 @@ fn benchStrokeToTriangles(
     var last_triangle_count: usize = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         const result = stroke_mod.expandStrokeToTriangles(path_points, stroke_width, cap, join, miter_limit, closed) catch unreachable;
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         last_triangle_count = result.indices.len / 3;
         total_time_ns += end.since(start);
         iterations += 1;
@@ -424,7 +453,7 @@ fn benchFixedArrayAppendClear(
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
         var array: FixedArray(u32, 8192) = .{};
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
         }
@@ -433,7 +462,7 @@ fn benchFixedArrayAppendClear(
         // computed final state — every element must be materialised.
         std.mem.doNotOptimizeAway(array.constSlice());
         array.clear();
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         std.debug.assert(array.len == 0);
         total_time_ns += end.since(start);
         iterations += 1;
@@ -487,11 +516,11 @@ fn benchFixedArrayPopCycle(
         std.mem.doNotOptimizeAway(array.constSlice());
 
         var pop_sink: u32 = 0;
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..item_count) |_| {
             pop_sink +%= array.pop();
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         // Sink must be observable per-iteration to prevent cross-iteration folding.
         std.mem.doNotOptimizeAway(pop_sink);
         std.debug.assert(array.len == 0);
@@ -542,11 +571,11 @@ fn benchFixedArraySwapRemove(
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
         }
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..item_count) |_| {
             _ = array.swapRemove(0);
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         std.debug.assert(array.len == 0);
         total_time_ns += end.since(start);
         iterations += 1;
@@ -596,11 +625,11 @@ fn benchFixedArrayOrderedRemove(
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
         }
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..item_count) |_| {
             _ = array.orderedRemove(0);
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         std.debug.assert(array.len == 0);
         total_time_ns += end.since(start);
         iterations += 1;
@@ -653,11 +682,11 @@ fn benchVec2Normalize(
     var iterations: u32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..vector_count) |i| {
             sink = sink.add(vectors[i].normalize());
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         total_time_ns += end.since(start);
         iterations += 1;
     }
@@ -721,13 +750,13 @@ fn benchRectContains(
     var iterations: u32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..point_count) |i| {
             if (rect.contains(test_points[i])) {
                 hit_count += 1;
             }
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         total_time_ns += end.since(start);
         iterations += 1;
     }
@@ -785,12 +814,12 @@ fn benchElementIdHash(
     var iterations: u32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..hash_count) |i| {
             const element_id = ElementId.named(element_names[i % element_names.len]);
             hash_sink +%= element_id.hash();
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         total_time_ns += end.since(start);
         iterations += 1;
     }
@@ -847,13 +876,13 @@ fn benchElementIdEquality(
     var iterations: u32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..comparison_count) |i| {
             if (ids_a[i].eql(ids_b[i])) {
                 match_count += 1;
             }
         }
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
         total_time_ns += end.since(start);
         iterations += 1;
     }
@@ -1065,8 +1094,8 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     ));
 }
 
-pub fn main() !void {
-    var reporter = bench.Reporter.init("core");
+pub fn main(init: std.process.Init) !void {
+    var reporter = bench.Reporter.init("core", init.io, init.minimal.args.vector);
 
     // =========================================================================
     // Triangulation — Convex Polygons

@@ -17,6 +17,8 @@
 //! freed immediately after copying into fixed buffers.
 
 const std = @import("std");
+const Dir = std.Io.Dir;
+const Io = std.Io;
 
 // =============================================================================
 // Limits
@@ -229,14 +231,18 @@ const ArgsError = error{
 
 /// Parse CLI arguments: <baseline.json> <current.json> [--threshold N].
 /// Positional args come first; --threshold is optional.
-fn parseArgs() ArgsError!Args {
-    const argv = std.os.argv;
-    std.debug.assert(argv.len >= 1); // argv[0] is always the program name.
-
+///
+/// `argv` is passed explicitly (rather than reaching for a global) so
+/// callers can unit-test arg parsing with a fixed slice, and so the
+/// parser never depends on platform-specific globals.  `main` receives
+/// `std.process.Init` and forwards `init.args.vector` here.
+fn parseArgs(argv: []const [*:0]const u8) ArgsError!Args {
     var args: Args = .{};
     var positional_count: u32 = 0;
 
-    var i: u32 = 1;
+    // argv may be empty under test runners; start at 1 when argv[0] is
+    // present (the program name), otherwise at 0.
+    var i: u32 = if (argv.len >= 1) 1 else 0;
     const argc: u32 = @intCast(argv.len);
     while (i < argc) : (i += 1) {
         const arg = std.mem.sliceTo(argv[i], 0);
@@ -334,19 +340,31 @@ const LoadError = error{
 
 /// Read a JSON benchmark file and parse it into a fixed-capacity report.
 /// Heap allocation for file I/O and JSON parsing is freed before return.
-fn loadReport(path: []const u8) LoadError!ParsedReport {
+fn loadReport(io: Io, path: []const u8) LoadError!ParsedReport {
     std.debug.assert(path.len > 0);
     std.debug.assert(path.len <= MAX_PATH_LENGTH);
 
     const allocator = std.heap.page_allocator;
 
     // Read the entire file into memory.
-    const file = std.fs.cwd().openFile(path, .{ .mode = .read_only }) catch {
+    const file = Dir.cwd().openFile(io, path, .{}) catch {
         return error.file_open_failed;
     };
-    defer file.close();
+    defer file.close(io);
 
-    const contents = file.readToEndAlloc(allocator, MAX_JSON_FILE_BYTES) catch {
+    const stat = file.stat(io) catch {
+        return error.file_read_failed;
+    };
+    if (stat.size > MAX_JSON_FILE_BYTES) {
+        return error.file_read_failed;
+    }
+    // `file.readerStreaming` returns an `Io.File.Reader`; the byte-source
+    // methods (`readAlloc` and friends) live on its `.interface`
+    // (`std.Io.Reader`).  The file size was bounded above against
+    // `MAX_JSON_FILE_BYTES`, so the cast to `usize` cannot overflow.
+    var stream_buf: [4096]u8 = undefined;
+    var reader = file.readerStreaming(io, &stream_buf);
+    const contents = reader.interface.readAlloc(allocator, @intCast(stat.size)) catch {
         return error.file_read_failed;
     };
     defer allocator.free(contents);
@@ -842,8 +860,8 @@ fn printUsage() void {
 // Entry Point
 // =============================================================================
 
-pub fn main() void {
-    const args = parseArgs() catch |err| {
+pub fn main(init: std.process.Init) void {
+    const args = parseArgs(init.minimal.args.vector) catch |err| {
         if (err == error.help_requested) {
             printUsage();
             std.process.exit(0);
@@ -860,7 +878,7 @@ pub fn main() void {
         std.process.exit(2);
     };
 
-    const baseline = loadReport(args.baselineSlice()) catch |err| {
+    const baseline = loadReport(init.io, args.baselineSlice()) catch |err| {
         std.debug.print("bench-compare: failed to load baseline \"{s}\": {s}\n", .{
             args.baselineSlice(),
             @errorName(err),
@@ -868,7 +886,7 @@ pub fn main() void {
         std.process.exit(2);
     };
 
-    const current = loadReport(args.currentSlice()) catch |err| {
+    const current = loadReport(init.io, args.currentSlice()) catch |err| {
         std.debug.print("bench-compare: failed to load current \"{s}\": {s}\n", .{
             args.currentSlice(),
             @errorName(err),
@@ -911,11 +929,10 @@ test "deltaPercent: basic cases" {
 }
 
 test "parseArgs: rejects missing arguments" {
-    // In the test runner, argv contains the test binary plus runner-specific
-    // flags.  The exact error depends on how many args the runner passes,
-    // but parseArgs must always fail — it never sees two valid JSON paths.
-    if (parseArgs()) |_| {
-        // parseArgs should never succeed in the test runner context.
+    // Pass an empty argv — parseArgs must fail with missing_baseline
+    // because there are no positional arguments to consume.
+    if (parseArgs(&.{})) |_| {
+        // parseArgs should never succeed with no positional args.
         unreachable;
     } else |err| {
         std.debug.assert(err == error.missing_baseline or err == error.missing_current);

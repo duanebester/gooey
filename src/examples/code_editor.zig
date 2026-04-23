@@ -269,21 +269,25 @@ const AppState = struct {
             return;
         }
 
-        // Read file contents
-        const file = std.fs.openFileAbsolute(path, .{}) catch return;
-        defer file.close();
-
-        const stat = file.stat() catch return;
-        if (stat.size > 1024 * 1024) {
-            self.file_status = .file_too_large;
-            self.source_code = "";
-            if (g.codeEditor("source")) |editor| {
-                editor.setText("") catch {};
-            }
-            return;
-        }
-
-        const content = file.readToEndAlloc(std.heap.page_allocator, 1024 * 1024) catch return;
+        // Read file contents (Zig 0.16: std.Io.Dir replaces std.fs)
+        const io = g.io;
+        const content = std.Io.Dir.readFileAlloc(
+            .cwd(),
+            io,
+            path,
+            std.heap.page_allocator,
+            .limited(1024 * 1024),
+        ) catch |err| switch (err) {
+            error.StreamTooLong => {
+                self.file_status = .file_too_large;
+                self.source_code = "";
+                if (g.codeEditor("source")) |editor| {
+                    editor.setText("") catch {};
+                }
+                return;
+            },
+            else => return,
+        };
 
         // Validate UTF-8 before setting - this prevents crashes in the text shaper
         if (!std.unicode.utf8ValidateSlice(content)) {
@@ -314,7 +318,6 @@ const AppState = struct {
     }
 
     fn openDialogDeferred(self: *AppState, g: *gooey.Gooey) void {
-        _ = g;
         if (file_dialog.promptForPaths(std.heap.page_allocator, .{
             .files = false,
             .directories = true,
@@ -324,12 +327,12 @@ const AppState = struct {
         })) |result| {
             defer result.deinit();
             if (result.paths.len > 0) {
-                self.loadDirectory(result.paths[0]);
+                self.loadDirectory(result.paths[0], g.io);
             }
         }
     }
 
-    pub fn loadDirectory(self: *AppState, path: []const u8) void {
+    pub fn loadDirectory(self: *AppState, path: []const u8, io: std.Io) void {
         // Store directory path
         const path_len = @min(path.len, self.dir_path.len);
         @memcpy(self.dir_path[0..path_len], path[0..path_len]);
@@ -339,7 +342,7 @@ const AppState = struct {
         self.tree_state.clear();
 
         // Build tree from directory
-        self.buildTreeFromDirectory(path, null);
+        self.buildTreeFromDirectory(path, null, io);
 
         // Rebuild flattened view
         self.tree_state.rebuild();
@@ -347,9 +350,9 @@ const AppState = struct {
 
     const DirEntry = struct { name: [128]u8, len: u8 };
 
-    fn buildTreeFromDirectory(self: *AppState, path: []const u8, parent: ?u32) void {
-        var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch return;
-        defer dir.close();
+    fn buildTreeFromDirectory(self: *AppState, path: []const u8, parent: ?u32, io: std.Io) void {
+        var dir = std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }) catch return;
+        defer dir.close(io);
 
         // Collect entries for sorting
         var dirs: [256]DirEntry = undefined;
@@ -358,7 +361,7 @@ const AppState = struct {
         var file_count: u32 = 0;
 
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(io) catch null) |entry| {
             // Skip hidden files
             if (entry.name.len > 0 and entry.name[0] == '.') continue;
 
@@ -400,7 +403,7 @@ const AppState = struct {
                 self.setNodePath(idx, full_len);
 
                 // Recursively add children (but don't expand by default)
-                self.buildTreeFromDirectory(full_len, idx);
+                self.buildTreeFromDirectory(full_len, idx, io);
             }
         }
 

@@ -18,6 +18,7 @@
 //! 8. **Toggle buttons transition** (200ms on state change)
 //! 9. **Neon buttons idle pulse** (2s subtle glow)
 
+const std = @import("std");
 const gooey = @import("gooey");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
@@ -353,7 +354,12 @@ const AppState = struct {
     };
 
     pub fn tick(self: *AppState) void {
-        const now = platform.time.milliTimestamp();
+        // Monotonic `.awake` clock — the 500ms throttle comparison must
+        // not misbehave when NTP/wall-clock jumps occur. `std.Io` is a
+        // pair of pointers into the process-lifetime vtable, so grabbing
+        // the single-threaded global here is effectively free.
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const now = std.Io.Timestamp.now(io, .awake).toMilliseconds();
         if (now - self.last_tick < 500) return;
         self.last_tick = now;
         self.tick_counter +%= 1;

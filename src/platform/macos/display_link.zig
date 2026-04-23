@@ -4,6 +4,45 @@
 //! synchronized with the display's refresh rate.
 //!
 //! Reference: https://developer.apple.com/documentation/corevideo/cvdisplaylink
+//!
+//! ## Why CVDisplayLink and not CADisplayLink?
+//!
+//! `CADisplayLink` is the newer Core Animation API (macOS 14+) and is what
+//! Apple nudges you toward in current docs. We deliberately stay on
+//! `CVDisplayLink` for two reasons:
+//!
+//! 1. **Dedicated vsync thread, not the run loop.** `CVDisplayLink` fires
+//!    on a CoreVideo-managed high-priority thread. `CADisplayLink` on macOS
+//!    dispatches via the main run loop, which also services AppKit events,
+//!    `NSTimer` callbacks, tracking areas, etc. For an immediate-mode
+//!    renderer that wants to sprint on each vsync without run-loop jitter,
+//!    the dedicated thread is the better primitive.
+//! 2. **Direct ProMotion pinning.** `CVDisplayLinkSetCurrentCGDisplay`
+//!    reliably binds the link to a specific display's refresh rate.
+//!    `CADisplayLink`'s `preferredFrameRateRange` is a hint that macOS is
+//!    free to adaptively ignore.
+//!
+//! ## Prior art — Zed's GPUI (`crates/gpui_macos/src/display_link.rs`)
+//!
+//! Zed (a production GPU-accelerated editor) also uses `CVDisplayLink`
+//! rather than `CADisplayLink`, explicitly citing older-macOS support as
+//! the reason to stay. Two design points worth knowing:
+//!
+//! - **Main-thread bounce.** Zed's CV callback does not render on the
+//!   vsync thread. It posts a GCD `DISPATCH_SOURCE_TYPE_DATA_ADD` source
+//!   targeting `DispatchQueue::main()`, and the user's render callback
+//!   runs on the main thread. Trades one context switch of frame latency
+//!   for zero render-state synchronization and automatic coalescing of
+//!   backed-up vsync ticks. Gooey makes the opposite choice: render
+//!   directly on the vsync thread and synchronize via `Window.render_mutex`
+//!   (see `src/platform/mutex.zig`). Either is defensible; ours is
+//!   lower-latency at the cost of the one mutex.
+//! - **Release-on-drop crash.** Zed observed sporadic segfaults from
+//!   `CVDisplayLinkRelease` racing with the CV timer thread, and their
+//!   fix is to `mem::forget` the display link rather than release it.
+//!   We call `CVDisplayLinkRelease` in `deinit` today; if we ever see
+//!   matching crash reports on window close, leaking the link is the
+//!   known-good workaround (per-window lifetime, bounded cost).
 
 const std = @import("std");
 const objc = @import("objc");
@@ -189,7 +228,15 @@ pub const DisplayLink = struct {
         return self.running.load(.acquire);
     }
 
-    /// Clean up resources
+    /// Clean up resources.
+    ///
+    /// Zed's GPUI (`crates/gpui_macos/src/display_link.rs`) deliberately
+    /// leaks the `CVDisplayLink` here via `mem::forget` to avoid sporadic
+    /// segfaults from `CVDisplayLinkRelease` racing with the CV timer
+    /// thread. We release it cleanly — `stop()` synchronously returns
+    /// before `CVDisplayLinkRelease` runs, so the race window should be
+    /// closed. If we ever see matching crashes on window close, skipping
+    /// the release call is the known-good workaround.
     pub fn deinit(self: *Self) void {
         self.stop();
         CVDisplayLinkRelease(self.link);

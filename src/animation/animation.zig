@@ -15,7 +15,6 @@
 //! ```
 
 const std = @import("std");
-const platform = @import("../platform/mod.zig");
 // =============================================================================
 // Animation ID (hashed, like LayoutId)
 // =============================================================================
@@ -225,8 +224,13 @@ pub const AnimationConfig = struct {
 // =============================================================================
 
 pub const AnimationState = struct {
-    /// When the animation started (milliseconds, from platform.time)
-    start_time: i64,
+    /// When the animation started. Monotonic timestamp captured from
+    /// `std.Io.Clock.awake` — unaffected by NTP or user clock adjustments,
+    /// so durations derived from it can never jump or go negative.
+    /// For `initSettled`, this is `std.Io.Timestamp.zero` (unset); the
+    /// `running = false` guard in `calculateProgress` prevents the
+    /// sentinel from producing a spurious elapsed value.
+    start_time: std.Io.Timestamp,
     /// Configured duration
     duration_ms: u32,
     /// Configured delay before starting
@@ -250,9 +254,9 @@ pub const AnimationState = struct {
 
     const Self = @This();
 
-    pub fn init(config: AnimationConfig) Self {
+    pub fn init(io: std.Io, config: AnimationConfig) Self {
         return .{
-            .start_time = platform.time.milliTimestamp(),
+            .start_time = std.Io.Timestamp.now(io, .awake),
             .duration_ms = config.duration_ms,
             .delay_ms = config.delay_ms,
             .easing = config.easing,
@@ -264,8 +268,8 @@ pub const AnimationState = struct {
         };
     }
 
-    pub fn initWithTrigger(config: AnimationConfig, trigger_hash: u64) @This() {
-        var state = init(config);
+    pub fn initWithTrigger(io: std.Io, config: AnimationConfig, trigger_hash: u64) @This() {
+        var state = init(io, config);
         state.trigger_hash = trigger_hash;
         return state;
     }
@@ -275,7 +279,7 @@ pub const AnimationState = struct {
     /// "default" state (e.g., modals that start closed).
     pub fn initSettled(config: AnimationConfig, trigger_hash: u64) @This() {
         return .{
-            .start_time = 0,
+            .start_time = .zero,
             .duration_ms = config.duration_ms,
             .delay_ms = config.delay_ms,
             .easing = config.easing,
@@ -322,10 +326,12 @@ pub const AnimationHandle = struct {
         .state = null,
     };
 
-    /// Restart the animation from the beginning
-    pub fn restart(self: Self) void {
+    /// Restart the animation from the beginning.
+    /// `io` is required to capture a fresh monotonic timestamp; pass
+    /// `cx.io()` at render sites or the stored `gooey.io` elsewhere.
+    pub fn restart(self: Self, io: std.Io) void {
         if (self.state) |s| {
-            s.start_time = platform.time.milliTimestamp();
+            s.start_time = std.Io.Timestamp.now(io, .awake);
             s.running = true;
             s.forward = true;
             s.generation +%= 1;
@@ -363,8 +369,11 @@ pub const AnimationHandle = struct {
 // Progress Calculation (called by WidgetStore)
 // =============================================================================
 
-/// Calculate current progress for an animation state
-pub fn calculateProgress(state: *AnimationState) AnimationHandle {
+/// Calculate current progress for an animation state.
+/// `io` is threaded through so we can sample the monotonic `awake` clock
+/// without any hidden globals — keeping timing deterministic under
+/// `std.Io.Threaded` and consistent with the rest of the Gooey IO plumbing.
+pub fn calculateProgress(state: *AnimationState, io: std.Io) AnimationHandle {
     if (!state.running) {
         // Stopped - return last position
         const final: f32 = if (state.forward) 1.0 else 0.0;
@@ -376,8 +385,11 @@ pub fn calculateProgress(state: *AnimationState) AnimationHandle {
         };
     }
 
-    const now = platform.time.milliTimestamp();
-    const elapsed = now - state.start_time;
+    // Monotonic clock guarantees `elapsed >= 0` — no NTP jumps, no wall-clock rewrites.
+    // `durationTo` returns a `std.Io.Duration`; `toMilliseconds` matches the old i64 math.
+    const now = std.Io.Timestamp.now(io, .awake);
+    const elapsed: i64 = state.start_time.durationTo(now).toMilliseconds();
+    std.debug.assert(elapsed >= 0);
 
     // Still in delay period
     if (elapsed < state.delay_ms) {
@@ -553,7 +565,8 @@ test "lerpColor interpolates correctly" {
 }
 
 test "AnimationState initializes correctly" {
-    const state = AnimationState.init(.{ .duration_ms = 500 });
+    const io = std.testing.io;
+    const state = AnimationState.init(io, .{ .duration_ms = 500 });
     try std.testing.expect(state.running);
     try std.testing.expectEqual(@as(u32, 500), state.duration_ms);
     try std.testing.expectEqual(@as(u32, 0), state.delay_ms);

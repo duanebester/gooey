@@ -19,6 +19,35 @@ const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
+/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
+/// local to the benchmark module so every sample site reads as a two-line
+/// capture-then-diff instead of threading `io` through the closure-heavy
+/// benchmark harness signatures. `.awake` is the monotonic clock — deltas
+/// here can never go negative regardless of NTP or sysadmin clock edits.
+///
+/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
+/// per-call `global_single_threaded.io()` lookup compiles down to a pair
+/// of constant pointer loads — effectively free.
+const time = struct {
+    inline fn benchIo() std.Io {
+        return std.Io.Threaded.global_single_threaded.io();
+    }
+
+    const Instant = struct {
+        ts: std.Io.Timestamp,
+
+        inline fn now() Instant {
+            return .{ .ts = std.Io.Timestamp.now(benchIo(), .awake) };
+        }
+
+        inline fn since(self: Instant, earlier: Instant) u64 {
+            const ns: i96 = earlier.ts.durationTo(self.ts).toNanoseconds();
+            std.debug.assert(ns >= 0);
+            return @intCast(ns);
+        }
+    };
+};
+
 const context = gooey.context;
 const DispatchTree = context.DispatchTree;
 const DispatchNodeId = context.DispatchNodeId;
@@ -223,10 +252,10 @@ fn benchTreeBuild(
     var iterations: u32 = 0;
 
     while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         tree.reset();
         _ = buildFn(&tree);
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -268,11 +297,11 @@ fn benchHitTest(
     var iterations: u32 = 0;
 
     while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         std.mem.doNotOptimizeAway(tree.hitTest(500.0, 500.0));
         std.mem.doNotOptimizeAway(tree.hitTest(0.5, 0.5));
         std.mem.doNotOptimizeAway(tree.hitTest(999.0, 999.0));
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -316,9 +345,9 @@ fn benchReset(
         tree.reset();
         _ = buildFn(&tree);
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         tree.reset();
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -360,12 +389,12 @@ fn benchFullFrame(
     var iterations: u32 = 0;
 
     while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         tree.reset();
         _ = buildFn(&tree);
         assignBounds(&tree);
         std.mem.doNotOptimizeAway(tree.hitTest(500.0, 500.0));
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -388,7 +417,7 @@ fn benchMarkDirty(
 ) BenchmarkResult {
     std.debug.assert(entity_count > 0);
 
-    var entities = EntityMap.init(allocator);
+    var entities = EntityMap.init(allocator, null);
     defer entities.deinit();
 
     // Create entities.
@@ -417,12 +446,12 @@ fn benchMarkDirty(
     var iterations: u32 = 0;
 
     while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (ids[0..entity_count]) |id| {
             entities.markDirty(id);
         }
         std.mem.doNotOptimizeAway(entities.processNotifications());
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -447,7 +476,7 @@ fn benchMarkDirtyDuplicates(
     std.debug.assert(entity_count > 0);
     std.debug.assert(rounds > 0);
 
-    var entities = EntityMap.init(allocator);
+    var entities = EntityMap.init(allocator, null);
     defer entities.deinit();
 
     const Counter = struct { value: u32 };
@@ -478,14 +507,14 @@ fn benchMarkDirtyDuplicates(
     var iterations: u32 = 0;
 
     while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         for (0..rounds) |_| {
             for (ids[0..entity_count]) |id| {
                 entities.markDirty(id);
             }
         }
         std.mem.doNotOptimizeAway(entities.processNotifications());
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -643,7 +672,7 @@ test "validate: reset clears nodes" {
 }
 
 test "validate: markDirty deduplication" {
-    var entities = EntityMap.init(std.testing.allocator);
+    var entities = EntityMap.init(std.testing.allocator, null);
     defer entities.deinit();
 
     const Counter = struct { value: u32 };
@@ -673,12 +702,12 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     ));
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var reporter = bench.Reporter.init("context");
+    var reporter = bench.Reporter.init("context", init.io, init.minimal.args.vector);
 
     // =========================================================================
     // Tree Build Benchmarks

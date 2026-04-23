@@ -1,5 +1,6 @@
 .zig-cache
 zig-out/
+zig-pkg/
 
 # Object files and static libraries
 *.o

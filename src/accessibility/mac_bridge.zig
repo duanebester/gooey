@@ -569,7 +569,8 @@ fn convertToScreenRect(
     };
 
     // Convert view coords -> window coords (handles flipped coordinate system)
-    const window_rect: NSRect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(?objc.c.id, null) });
+    // Zig 0.16: ?[*c]T is not allowed in C calling convention; [*c] is already nullable.
+    const window_rect: NSRect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
 
     // Convert window coords -> screen coords (handles multiple monitors)
     const screen_rect: NSRect = window.msgSend(NSRect, "convertRectToScreen:", .{window_rect});

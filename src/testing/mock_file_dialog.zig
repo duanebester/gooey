@@ -76,7 +76,7 @@ pub const MockFileDialog = struct {
     allocator: std.mem.Allocator,
 
     /// Stored paths that need cleanup
-    stored_open_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    stored_open_paths: std.ArrayListUnmanaged([]const u8) = .empty,
     stored_save_path: ?[]const u8 = null,
 
     const Self = @This();
@@ -88,7 +88,7 @@ pub const MockFileDialog = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .stored_open_paths = .{},
+            .stored_open_paths = .empty,
         };
     }
 

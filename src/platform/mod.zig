@@ -8,9 +8,6 @@
 //! ```zig
 //! const platform = @import("gooey").platform;
 //!
-//! // Time (works on native and WASM)
-//! const now = platform.time.milliTimestamp();
-//!
 //! // Platform detection
 //! if (platform.is_wasm) { ... }
 //!
@@ -65,14 +62,13 @@ pub const PathPromptResult = interface.PathPromptResult;
 pub const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 
 // =============================================================================
-// Platform-agnostic Time Utilities
-// =============================================================================
-
-pub const time = @import("time.zig");
-
-// =============================================================================
 // Backend Selection
 // =============================================================================
+//
+// Note: Time utilities previously lived here as `platform.time`. As of the
+// Zig 0.16 `std.Io` migration, callers sample timestamps via
+// `std.Io.Timestamp.now(io, .awake)` directly (see `docs/zig-0.16-io-migration.md`,
+// phase 5.4/5.6). The `platform/time.zig` shim has been retired.
 
 pub const is_linux = builtin.os.tag == .linux;
 
@@ -108,17 +104,6 @@ else if (is_linux)
 else
     backend.DisplayLink;
 
-/// Thread dispatcher for cross-thread task dispatch
-/// - macOS: GCD-based dispatcher
-/// - Linux: eventfd-based dispatcher
-/// - WASM: void (single-threaded, no dispatcher needed)
-pub const Dispatcher = if (is_wasm)
-    void // WASM is single-threaded
-else if (is_linux)
-    backend.dispatcher.Dispatcher
-else
-    backend.dispatcher.Dispatcher;
-
 // =============================================================================
 // Platform-specific modules (for advanced usage)
 // =============================================================================
@@ -138,13 +123,10 @@ pub const linux = if (is_linux) struct {
     pub const clipboard = @import("linux/clipboard.zig");
     pub const dbus = @import("linux/dbus.zig");
     pub const file_dialog = @import("linux/file_dialog.zig");
-    pub const dispatcher = @import("linux/dispatcher.zig");
-
     // Type aliases
     pub const LinuxPlatform = platform.LinuxPlatform;
     pub const Window = window.Window;
     pub const VulkanRenderer = vk_renderer.VulkanRenderer;
-    pub const Dispatcher = dispatcher.Dispatcher;
 } else struct {};
 
 pub const web = if (is_wasm) struct {

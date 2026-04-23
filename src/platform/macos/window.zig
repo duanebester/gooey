@@ -4,6 +4,7 @@
 //! Uses simple callbacks for rendering and input handling.
 
 const std = @import("std");
+const Mutex = @import("../mutex.zig").Mutex;
 const objc = @import("objc");
 const geometry = @import("../../core/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
@@ -67,7 +68,7 @@ pub const Window = struct {
     /// Must be held when:
     /// - DisplayLink callback reads scene/atlas for rendering
     /// - Main thread modifies scene/atlas/size
-    render_mutex: std.Thread.Mutex = .{},
+    render_mutex: Mutex = .{},
 
     /// Flag indicating we're in a live resize operation.
     /// During live resize, the main thread handles rendering synchronously,
@@ -880,7 +881,7 @@ pub const Window = struct {
             bounds,
             options,
             self.ns_view.value,
-            @as(?objc.c.id, null),
+            @as(objc.c.id, @ptrFromInt(0)),
         });
 
         self.ns_view.msgSend(void, "addTrackingArea:", .{tracking_area.value});
@@ -1186,17 +1187,22 @@ fn displayLinkCallback(
     const explicit_render = window.needs_render.swap(false, .acq_rel);
     const should_render = window.benchmark_mode or explicit_render or window.custom_shader_animation;
 
-    // DEBUG
+    // DEBUG. CVDisplayLink callbacks run on a dedicated vsync thread that
+    // does not carry a `*Cx`/`Gooey`, so we reach for the single-threaded
+    // global `Io` here — same escape hatch as the render mutex (Phase 5
+    // option 3 in the migration doc). `std.Io` is a pair of pointers into
+    // a process-lifetime vtable, so there's no allocation or cost.
     const static = struct {
         var count: u32 = 0;
-        var last_print: i64 = 0;
+        var last_print_ms: i64 = 0;
     };
     static.count += 1;
-    const now = std.time.milliTimestamp();
-    if (now - static.last_print > 1000) {
+    const dl_io = std.Io.Threaded.global_single_threaded.io();
+    const now_ms = std.Io.Timestamp.now(dl_io, .awake).toMilliseconds();
+    if (now_ms - static.last_print_ms > 1000) {
         //std.debug.print("DisplayLink callbacks/sec: {}, should_render: {}, explicit: {}\n", .{ static.count, should_render, explicit_render });
         static.count = 0;
-        static.last_print = now;
+        static.last_print_ms = now_ms;
     }
 
     if (!should_render) {

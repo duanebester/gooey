@@ -193,7 +193,10 @@ pub fn WebApp(
                 .font_name = if (@hasField(@TypeOf(config), "font")) config.font else null,
                 .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
             };
-            try gooey_ptr.initOwnedPtr(allocator, g_window.?, font_cfg);
+            // WASM uses single-threaded IO — no fibers, sequential execution.
+            const io = std.Io.Threaded.global_single_threaded.io();
+
+            try gooey_ptr.initOwnedPtr(allocator, g_window.?, font_cfg, io);
             g_gooey = gooey_ptr;
 
             // Initialize Builder

@@ -82,7 +82,7 @@ else
 /// Prefer `gooey.std_options` (one-liner) or `gooey.log` (zero-config).
 pub fn wasmLogFn(
     comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {

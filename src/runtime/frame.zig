@@ -70,9 +70,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.active_scroll_drag_id = null;
 
     // Call user's render function with Cx — time tree construction separately
-    gooey.debugger.beginTreeBuild();
+    gooey.debugger.beginTreeBuild(gooey.io);
     render_fn(cx);
-    gooey.debugger.endTreeBuild();
+    gooey.debugger.endTreeBuild(gooey.io);
 
     // Assert pending item counts are within limits
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
@@ -89,7 +89,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // Sync bounds and z_index from layout to dispatch tree
     // (previously untracked — now measured as "dispatch sync")
-    gooey.debugger.beginDispatchSync();
+    gooey.debugger.beginDispatchSync(gooey.io);
 
     for (gooey.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
@@ -105,7 +105,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Register hit regions
     builder.registerPendingScrollRegions();
 
-    gooey.debugger.endDispatchSync();
+    gooey.debugger.endDispatchSync(gooey.io);
 
     // Clear scene
     gooey.scene.clear();
@@ -116,7 +116,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     gooey.svg_atlas.resetFrameBudget();
 
     // Start render timing for profiler
-    gooey.debugger.beginRender();
+    gooey.debugger.beginRender(gooey.io);
 
     // Render all commands (includes SVGs and images inline for correct z-ordering)
     // Scrollbars are rendered inline when their scissor_end is encountered
@@ -142,7 +142,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     updateImeCursorPosition(gooey);
 
     // End render timing for profiler
-    gooey.debugger.endRender();
+    gooey.debugger.endRender(gooey.io);
 
     // Render debug overlays (if enabled via Cmd+Shift+I)
     try renderDebugOverlays(gooey);

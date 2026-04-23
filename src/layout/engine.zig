@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+
 const types = @import("types.zig");
 const layout_id = @import("layout_id.zig");
 const arena_mod = @import("arena.zig");
@@ -38,7 +39,7 @@ pub const MAX_ELEMENTS_PER_FRAME = 16384;
 
 /// Per-phase timing breakdown for layout benchmarking and profiling.
 /// All values in nanoseconds. Zero-cost in production — `endFrame()` skips timing entirely;
-/// only `endFrameTimed()` pays the cost of 7 `std.time.Instant.now()` calls (~350ns).
+/// only `endFrameTimed()` pays the cost of 7 `std.Io.Timestamp.now(..., .awake)` calls (~350ns).
 pub const PhaseTimings = struct {
     min_sizes_ns: u64 = 0,
     final_sizes_ns: u64 = 0,
@@ -307,7 +308,7 @@ pub const ElementList = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         var list = Self{
             .allocator = allocator,
-            .elements = .{},
+            .elements = .empty,
         };
         // Pre-allocate per CLAUDE.md: static memory allocation at startup
         list.elements.ensureTotalCapacity(allocator, MAX_ELEMENTS_PER_FRAME) catch {};
@@ -646,58 +647,73 @@ pub const LayoutEngine = struct {
 
     /// End frame with per-phase timing breakdown (for benchmarks and profiling).
     /// Returns both the render commands and nanosecond timings for each layout phase.
-    /// Pays ~350ns overhead from 7 `std.time.Instant.now()` calls.
-    pub fn endFrameTimed(self: *Self) !TimedResult {
+    /// Pays ~350ns overhead from 7 `std.Io.Timestamp.now(io, .awake)` calls.
+    ///
+    /// `io` is threaded in so the caller chooses which `std.Io` backend
+    /// to sample the clock on — benchmarks use the global single-threaded
+    /// instance; production callers pass `cx.io()` / `gooey.io`.
+    pub fn endFrameTimed(self: *Self, io: std.Io) !TimedResult {
         var timings = PhaseTimings{};
 
         if (self.root_index == null) return TimedResult{ .commands = self.commands.items(), .timings = timings };
 
         const root = self.root_index.?;
-        var t0 = std.time.Instant.now() catch unreachable;
+        // Monotonic `awake` clock — phase deltas can never go negative
+        // even if NTP or the sysadmin adjusts the wall clock mid-frame.
+        var t0 = std.Io.Timestamp.now(io, .awake);
 
         // Phase 1: Compute minimum sizes (bottom-up)
         self.computeMinSizes(root, 0);
-        var t1 = std.time.Instant.now() catch unreachable;
-        timings.min_sizes_ns = t1.since(t0);
+        var t1 = std.Io.Timestamp.now(io, .awake);
+        timings.min_sizes_ns = durationNs(t0, t1);
 
         // Phase 2: Compute final sizes (top-down)
         self.computeFinalSizes(root, self.viewport_width, self.viewport_height, 0);
-        t0 = std.time.Instant.now() catch unreachable;
-        timings.final_sizes_ns = t0.since(t1);
+        t0 = std.Io.Timestamp.now(io, .awake);
+        timings.final_sizes_ns = durationNs(t1, t0);
 
         // Phase 2b: Wrap text now that we know container widths
         try self.computeTextWrapping(root);
-        t1 = std.time.Instant.now() catch unreachable;
-        timings.text_wrapping_ns = t1.since(t0);
+        t1 = std.Io.Timestamp.now(io, .awake);
+        timings.text_wrapping_ns = durationNs(t0, t1);
 
         // Phase 3: Compute positions (top-down)
         self.computePositions(root, 0, 0, 0);
-        t0 = std.time.Instant.now() catch unreachable;
-        timings.positions_ns = t0.since(t1);
+        t0 = std.Io.Timestamp.now(io, .awake);
+        timings.positions_ns = durationNs(t1, t0);
 
         // Phase 3b: Position floating elements (includes text wrapping for floats)
         try self.computeFloatingPositions();
-        t1 = std.time.Instant.now() catch unreachable;
-        timings.floating_ns = t1.since(t0);
+        t1 = std.Io.Timestamp.now(io, .awake);
+        timings.floating_ns = durationNs(t0, t1);
 
         // Phase 4: Generate render commands
         try self.generateRenderCommands(root, 0, 1.0, 0);
-        t0 = std.time.Instant.now() catch unreachable;
-        timings.render_commands_ns = t0.since(t1);
+        t0 = std.Io.Timestamp.now(io, .awake);
+        timings.render_commands_ns = durationNs(t1, t0);
 
         // Sort by z-index only when floating elements exist (they're the only source of non-zero z_index).
         // Skipping the sort saves ~O(n log n) work on frames with no dropdowns/tooltips/modals.
         if (self.floating_roots.len > 0) {
             self.commands.sortByZIndex();
         }
-        t1 = std.time.Instant.now() catch unreachable;
-        timings.z_sort_ns = t1.since(t0);
+        t1 = std.Io.Timestamp.now(io, .awake);
+        timings.z_sort_ns = durationNs(t0, t1);
 
         timings.total_ns = timings.min_sizes_ns + timings.final_sizes_ns +
             timings.text_wrapping_ns + timings.positions_ns +
             timings.floating_ns + timings.render_commands_ns + timings.z_sort_ns;
 
         return TimedResult{ .commands = self.commands.items(), .timings = timings };
+    }
+
+    /// Convert a monotonic `(from, to)` timestamp pair into elapsed nanoseconds.
+    /// Extracted so the hot `endFrameTimed` body reads as data flow, not casts.
+    /// Monotonic clock guarantees the delta is non-negative — asserted.
+    inline fn durationNs(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
+        const ns = from.durationTo(to).toNanoseconds();
+        std.debug.assert(ns >= 0);
+        return @intCast(ns);
     }
 
     /// Compute text wrapping now that container sizes are known
@@ -2038,7 +2054,7 @@ pub const LayoutEngine = struct {
         if (line_start < text_str.len) {
             // Trim trailing whitespace from final line
             const remaining = text_str[line_start..];
-            const trimmed = std.mem.trimRight(u8, remaining, " \t\n");
+            const trimmed = std.mem.trimEnd(u8, remaining, " \t\n");
             if (trimmed.len > 0) {
                 lines.append(.{
                     .start_offset = line_start,

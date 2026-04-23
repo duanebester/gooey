@@ -227,15 +227,13 @@ pub const CodeEditorState = struct {
     // =========================================================================
 
     fn generateUniqueId() u64 {
+        // Atomic counter — no mutex needed for a monotonic ID generator.
+        // `fetchAdd` returns the pre-increment value; starting at 1 keeps the
+        // sequence identical to the previous mutex-guarded implementation.
         const Counter = struct {
-            var next: u64 = 1;
-            var mutex: std.Thread.Mutex = .{};
+            var next: std.atomic.Value(u64) = .init(1);
         };
-        Counter.mutex.lock();
-        defer Counter.mutex.unlock();
-        const id = Counter.next;
-        Counter.next += 1;
-        return id;
+        return Counter.next.fetchAdd(1, .monotonic);
     }
 
     // =========================================================================

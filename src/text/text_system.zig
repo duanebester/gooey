@@ -517,21 +517,29 @@ pub const TextSystem = struct {
     scale_factor: f32,
     /// Cache for shaped text runs (fixed capacity, pre-allocated)
     shape_cache: ShapedRunCache,
+    /// IO instance for mutex operations. Stored on the struct because lock
+    /// sites run on CVDisplayLink threads that have no access to `*Cx` and
+    /// therefore cannot reach `cx.io()`. Io is a pair of pointers into the
+    /// process-lifetime vtable — safe to copy across threads.
+    io: std.Io,
     /// Mutex for thread-safe shape cache access in multi-window scenarios.
     /// Multiple DisplayLink threads may call shapeText concurrently.
-    shape_cache_mutex: std.Thread.Mutex,
+    /// Uses `lockUncancelable` everywhere — none of the text call sites
+    /// propagate `std.Io.Cancelable`, and the critical sections are short
+    /// enough that cancelation points would add noise without value.
+    shape_cache_mutex: std.Io.Mutex,
     /// Mutex for thread-safe glyph cache/atlas access in multi-window scenarios.
     /// Multiple DisplayLink threads may render glyphs concurrently, and the
     /// atlas skyline data structure is not thread-safe.
-    glyph_cache_mutex: std.Thread.Mutex,
+    glyph_cache_mutex: std.Io.Mutex,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
-        return initWithScale(allocator, 1.0);
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !Self {
+        return initWithScale(allocator, 1.0, io);
     }
 
-    pub fn initWithScale(allocator: std.mem.Allocator, scale: f32) !Self {
+    pub fn initWithScale(allocator: std.mem.Allocator, scale: f32, io: std.Io) !Self {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
 
@@ -542,8 +550,9 @@ pub const TextSystem = struct {
             .shaper = null,
             .scale_factor = scale,
             .shape_cache = ShapedRunCache.init(),
-            .shape_cache_mutex = .{},
-            .glyph_cache_mutex = .{},
+            .io = io,
+            .shape_cache_mutex = .init,
+            .glyph_cache_mutex = .init,
         };
     }
 
@@ -551,7 +560,7 @@ pub const TextSystem = struct {
     /// Avoids stack overflow on WASM where TextSystem is ~1.7MB
     /// (GlyphCache: ~200KB, ShapedRunCache: ~1.5MB).
     /// Marked noinline to prevent stack accumulation in WASM builds.
-    pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator, scale: f32) !void {
+    pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator, scale: f32, io: std.Io) !void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
 
@@ -559,12 +568,13 @@ pub const TextSystem = struct {
         self.current_face = null;
         self.shaper = null;
         self.scale_factor = scale;
+        self.io = io;
 
         // Initialize caches in-place to avoid large stack temporaries
         try self.cache.initInPlace(allocator, scale);
         self.shape_cache.initInPlace();
-        self.shape_cache_mutex = .{};
-        self.glyph_cache_mutex = .{};
+        self.shape_cache_mutex = .init;
+        self.glyph_cache_mutex = .init;
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
@@ -643,8 +653,8 @@ pub const TextSystem = struct {
 
         if (use_cache) {
             // Lock for thread-safe cache access (multiple DisplayLink threads in multi-window)
-            self.shape_cache_mutex.lock();
-            defer self.shape_cache_mutex.unlock();
+            self.shape_cache_mutex.lockUncancelable(self.io);
+            defer self.shape_cache_mutex.unlock(self.io);
 
             // Check font hasn't changed
             self.shape_cache.checkFont(font_ptr);
@@ -672,29 +682,32 @@ pub const TextSystem = struct {
 
         std.debug.assert(self.shaper != null);
 
-        // Time the shaping call for performance debugging (not available on WASM)
-        const start_time = if (!is_wasm) std.time.nanoTimestamp() else 0;
+        // Time the shaping call for performance debugging (not available on WASM:
+        // we intentionally skip the JS FFI clock read on the shaping hot path —
+        // calling into `getTimestampMillis` twice per cache miss is not free,
+        // and shape-miss timing is a native-only profiling aid).
+        //
+        // The monotonic `.awake` clock is chosen so `elapsed` can never go
+        // negative due to NTP/wall-clock adjustments.
+        const start_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
         const result = try self.shaper.?.shape(&face, text, self.allocator);
-        const end_time = if (!is_wasm) std.time.nanoTimestamp() else 0;
+        const end_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
 
         std.debug.assert(result.width >= 0);
         std.debug.assert(result.owned == true);
 
-        // Record stats (safe even if negative due to clock issues)
-        // On WASM, elapsed will always be 0 since timing is unavailable
+        // Record stats. On WASM, `elapsed` is always 0 since timing is skipped.
         if (stats) |s| {
-            const elapsed: u64 = if (end_time > start_time)
-                @intCast(end_time - start_time)
-            else
-                0;
-            s.recordShapeMiss(elapsed);
+            const elapsed_ns: i96 = start_ts.durationTo(end_ts).toNanoseconds();
+            std.debug.assert(elapsed_ns >= 0);
+            s.recordShapeMiss(@intCast(elapsed_ns));
         }
 
         // Cache the result for next time (reuse key computed earlier)
         if (use_cache) {
             // Lock for thread-safe cache write
-            self.shape_cache_mutex.lock();
-            defer self.shape_cache_mutex.unlock();
+            self.shape_cache_mutex.lockUncancelable(self.io);
+            defer self.shape_cache_mutex.unlock(self.io);
             self.shape_cache.put(cache_key, result);
         }
 
@@ -733,8 +746,8 @@ pub const TextSystem = struct {
         if (use_cache) {
             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
 
-            self.shape_cache_mutex.lock();
-            defer self.shape_cache_mutex.unlock();
+            self.shape_cache_mutex.lockUncancelable(self.io);
+            defer self.shape_cache_mutex.unlock(self.io);
 
             self.shape_cache.checkFont(font_ptr);
 
@@ -767,8 +780,8 @@ pub const TextSystem = struct {
         const face = try self.getFontFace();
 
         // Lock for thread-safe glyph cache/atlas access (multiple DisplayLink threads)
-        self.glyph_cache_mutex.lock();
-        defer self.glyph_cache_mutex.unlock();
+        self.glyph_cache_mutex.lockUncancelable(self.io);
+        defer self.glyph_cache_mutex.unlock(self.io);
 
         return self.cache.getOrRenderSubpixel(face, glyph_id, font_size, subpixel_x, subpixel_y);
     }
@@ -806,8 +819,8 @@ pub const TextSystem = struct {
                 const font_ptr = @intFromPtr(&self.current_face);
                 const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
 
-                self.shape_cache_mutex.lock();
-                defer self.shape_cache_mutex.unlock();
+                self.shape_cache_mutex.lockUncancelable(self.io);
+                defer self.shape_cache_mutex.unlock(self.io);
 
                 self.shape_cache.checkFont(font_ptr);
 
@@ -856,8 +869,8 @@ pub const TextSystem = struct {
             const font_ptr = @intFromPtr(&self.current_face);
             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
 
-            self.shape_cache_mutex.lock();
-            defer self.shape_cache_mutex.unlock();
+            self.shape_cache_mutex.lockUncancelable(self.io);
+            defer self.shape_cache_mutex.unlock(self.io);
 
             self.shape_cache.checkFont(font_ptr);
 
@@ -888,8 +901,8 @@ pub const TextSystem = struct {
         ctx: Ctx,
         comptime callback: fn (Ctx, *const Atlas) anyerror!void,
     ) !void {
-        self.glyph_cache_mutex.lock();
-        defer self.glyph_cache_mutex.unlock();
+        self.glyph_cache_mutex.lockUncancelable(self.io);
+        defer self.glyph_cache_mutex.unlock(self.io);
         return callback(ctx, self.cache.getAtlas());
     }
 
@@ -916,8 +929,8 @@ pub const TextSystem = struct {
 
         const face = try self.getFontFace();
 
-        self.glyph_cache_mutex.lock();
-        defer self.glyph_cache_mutex.unlock();
+        self.glyph_cache_mutex.lockUncancelable(self.io);
+        defer self.glyph_cache_mutex.unlock(self.io);
 
         for (0..glyphs.len) |i| {
             if (glyphs[i].font_ref) |fallback_font| {

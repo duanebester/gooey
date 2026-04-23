@@ -40,6 +40,12 @@ pub const SelectState = struct {
 
 pub const WidgetStore = struct {
     allocator: std.mem.Allocator,
+    /// IO instance for monotonic timing. Stored on the struct because
+    /// animations sample the `awake` clock every frame and callers
+    /// (e.g. `cx.animate`) come through methods, not free functions.
+    /// `std.Io` is a pair of pointers into a process-lifetime vtable —
+    /// safe and cheap to copy.
+    io: std.Io,
     text_inputs: std.StringHashMap(*TextInput),
     text_areas: std.StringHashMap(*TextArea),
     code_editors: std.StringHashMap(*CodeEditorState),
@@ -54,17 +60,17 @@ pub const WidgetStore = struct {
     select_states: std.AutoHashMap(u32, SelectState),
 
     // u32-keyed animation storage
-    animations: std.AutoArrayHashMap(u32, AnimationState),
+    animations: std.AutoArrayHashMapUnmanaged(u32, AnimationState),
     active_animation_count: u32 = 0,
     frame_counter: u64 = 1,
 
     // u32-keyed spring storage
-    springs: std.AutoArrayHashMap(u32, SpringState),
+    springs: std.AutoArrayHashMapUnmanaged(u32, SpringState),
     active_spring_count: u32 = 0,
 
     // u32-keyed motion storage (tween-based and spring-based)
-    motions: std.AutoArrayHashMap(u32, MotionState),
-    spring_motions: std.AutoArrayHashMap(u32, SpringMotionState),
+    motions: std.AutoArrayHashMapUnmanaged(u32, MotionState),
+    spring_motions: std.AutoArrayHashMapUnmanaged(u32, SpringMotionState),
     active_motion_count: u32 = 0,
 
     // Change detection (fixed-capacity, zero allocation after init)
@@ -165,19 +171,20 @@ pub const WidgetStore = struct {
         map.deinit();
     }
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .allocator = allocator,
+            .io = io,
             .text_inputs = std.StringHashMap(*TextInput).init(allocator),
             .text_areas = std.StringHashMap(*TextArea).init(allocator),
             .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
             .accessed_this_frame = std.AutoHashMap([*]const u8, void).init(allocator),
             .select_states = std.AutoHashMap(u32, SelectState).init(allocator),
-            .animations = std.AutoArrayHashMap(u32, AnimationState).init(allocator),
-            .springs = std.AutoArrayHashMap(u32, SpringState).init(allocator),
-            .motions = std.AutoArrayHashMap(u32, MotionState).init(allocator),
-            .spring_motions = std.AutoArrayHashMap(u32, SpringMotionState).init(allocator),
+            .animations = .empty,
+            .springs = .empty,
+            .motions = .empty,
+            .spring_motions = .empty,
         };
     }
 
@@ -188,10 +195,10 @@ pub const WidgetStore = struct {
         self.deinitWidgetMap(ScrollContainer, &self.scroll_containers);
 
         self.select_states.deinit();
-        self.animations.deinit();
-        self.springs.deinit();
-        self.motions.deinit();
-        self.spring_motions.deinit();
+        self.animations.deinit(self.allocator);
+        self.springs.deinit(self.allocator);
+        self.motions.deinit(self.allocator);
+        self.spring_motions.deinit(self.allocator);
         self.accessed_this_frame.deinit();
     }
 
@@ -201,25 +208,25 @@ pub const WidgetStore = struct {
 
     /// Get or create animation by hashed ID (no string allocation)
     pub fn animateById(self: *Self, anim_id: u32, config: AnimationConfig) AnimationHandle {
-        const gop = self.animations.getOrPut(anim_id) catch {
+        const gop = self.animations.getOrPut(self.allocator, anim_id) catch {
             return AnimationHandle.complete;
         };
 
         if (!gop.found_existing) {
-            gop.value_ptr.* = AnimationState.init(config);
+            gop.value_ptr.* = AnimationState.init(self.io, config);
             gop.value_ptr.last_queried_frame = self.frame_counter;
         } else if (!gop.value_ptr.running and self.frame_counter > gop.value_ptr.last_queried_frame + 1) {
             // Animation completed AND wasn't queried last frame (component was hidden).
             // Restart so mount/stagger animations replay on re-appearance.
             const gen = gop.value_ptr.generation +% 1;
-            gop.value_ptr.* = AnimationState.init(config);
+            gop.value_ptr.* = AnimationState.init(self.io, config);
             gop.value_ptr.generation = gen;
             gop.value_ptr.last_queried_frame = self.frame_counter;
         } else {
             gop.value_ptr.last_queried_frame = self.frame_counter;
         }
 
-        const handle = animation.calculateProgress(gop.value_ptr);
+        const handle = animation.calculateProgress(gop.value_ptr, self.io);
         if (handle.running) {
             self.active_animation_count += 1;
         }
@@ -234,12 +241,12 @@ pub const WidgetStore = struct {
     /// Restart animation by hashed ID
     /// Restart animation by hashed ID
     pub fn restartAnimationById(self: *Self, anim_id: u32, config: AnimationConfig) AnimationHandle {
-        const gop = self.animations.getOrPut(anim_id) catch {
+        const gop = self.animations.getOrPut(self.allocator, anim_id) catch {
             return AnimationHandle.complete;
         };
 
         // Always reset the animation state (whether existing or new)
-        gop.value_ptr.* = AnimationState.init(config);
+        gop.value_ptr.* = AnimationState.init(self.io, config);
         gop.value_ptr.last_queried_frame = self.frame_counter;
 
         // If it was existing, preserve generation continuity
@@ -248,7 +255,7 @@ pub const WidgetStore = struct {
         }
 
         self.active_animation_count += 1;
-        return animation.calculateProgress(gop.value_ptr);
+        return animation.calculateProgress(gop.value_ptr, self.io);
     }
 
     /// String-based restart API
@@ -259,17 +266,17 @@ pub const WidgetStore = struct {
     /// OPTIMIZED animateOn - single HashMap lookup!
     /// Trigger hash is now stored IN the AnimationState
     pub fn animateOnById(self: *Self, anim_id: u32, trigger_hash: u64, config: AnimationConfig) AnimationHandle {
-        const platform_time = @import("../platform/mod.zig");
-
-        const gop = self.animations.getOrPut(anim_id) catch {
+        const gop = self.animations.getOrPut(self.allocator, anim_id) catch {
             return AnimationHandle.complete;
         };
 
         if (gop.found_existing) {
             // Check if trigger changed
             if (gop.value_ptr.trigger_hash != trigger_hash) {
-                // Trigger changed - restart animation and update hash
-                gop.value_ptr.start_time = platform_time.time.milliTimestamp();
+                // Trigger changed - restart animation and update hash.
+                // Monotonic clock so the resulting `elapsed` stays non-negative
+                // even if the wall clock later jumps.
+                gop.value_ptr.start_time = std.Io.Timestamp.now(self.io, .awake);
                 gop.value_ptr.duration_ms = config.duration_ms;
                 gop.value_ptr.delay_ms = config.delay_ms;
                 gop.value_ptr.easing = config.easing;
@@ -288,7 +295,7 @@ pub const WidgetStore = struct {
             gop.value_ptr.last_queried_frame = self.frame_counter;
         }
 
-        const handle = animation.calculateProgress(gop.value_ptr);
+        const handle = animation.calculateProgress(gop.value_ptr, self.io);
         if (handle.running) {
             self.active_animation_count += 1;
         }
@@ -313,7 +320,7 @@ pub const WidgetStore = struct {
 
     pub fn getAnimationById(self: *Self, anim_id: u32) ?AnimationHandle {
         if (self.animations.getPtr(anim_id)) |state| {
-            const handle = animation.calculateProgress(state);
+            const handle = animation.calculateProgress(state, self.io);
             if (handle.running) {
                 self.active_animation_count += 1;
             }
@@ -363,12 +370,12 @@ pub const WidgetStore = struct {
             }
         }
 
-        const gop = self.springs.getOrPut(spring_id) catch {
+        const gop = self.springs.getOrPut(self.allocator, spring_id) catch {
             return SpringHandle.one;
         };
 
         if (!gop.found_existing) {
-            gop.value_ptr.* = SpringState.init(config);
+            gop.value_ptr.* = SpringState.init(self.io, config);
         } else {
             // Update target — this is the interruptibility mechanism.
             // Position and velocity are preserved; only the destination changes.
@@ -382,13 +389,15 @@ pub const WidgetStore = struct {
 
             if (target_changed and gop.value_ptr.at_rest) {
                 gop.value_ptr.at_rest = false;
-                // Reset timestamp so first dt after wake is reasonable
-                // (will be clamped to MAX_DT by stepSpring if stale)
-                gop.value_ptr.last_time_ms = @import("../platform/mod.zig").time.milliTimestamp();
+                // Reset timestamp so first dt after wake is reasonable.
+                // `awake` is monotonic, so `tickSpring`'s `durationTo` is
+                // guaranteed non-negative even on long frame drops
+                // (the result will be clamped to MAX_DT in stepSpring).
+                gop.value_ptr.last_time = std.Io.Timestamp.now(self.io, .awake);
             }
         }
 
-        const handle = spring_mod.tickSpring(gop.value_ptr);
+        const handle = spring_mod.tickSpring(self.io, gop.value_ptr);
         if (!handle.at_rest) {
             self.active_spring_count += 1;
         }
@@ -452,7 +461,7 @@ pub const WidgetStore = struct {
             }
         }
 
-        const gop = self.motions.getOrPut(motion_id) catch {
+        const gop = self.motions.getOrPut(self.allocator, motion_id) catch {
             return if (show) MotionHandle.shown else MotionHandle.hidden;
         };
 
@@ -464,7 +473,7 @@ pub const WidgetStore = struct {
                 .phase = initial_phase,
                 .last_show = if (config.start_visible) true else show,
                 .enter_state = if (initial_phase == .entering)
-                    AnimationState.init(enter_config)
+                    AnimationState.init(self.io, enter_config)
                 else
                     AnimationState.initSettled(enter_config, 0),
                 .exit_state = AnimationState.initSettled(exit_config, 0),
@@ -473,7 +482,7 @@ pub const WidgetStore = struct {
             };
             // If entering on first mount, tick it immediately
             if (initial_phase == .entering) {
-                const handle = motion_mod.tickMotion(gop.value_ptr, show);
+                const handle = motion_mod.tickMotion(self.io, gop.value_ptr, show);
                 if (handle.phase == .entering or handle.phase == .exiting) {
                     self.active_motion_count += 1;
                 }
@@ -482,7 +491,7 @@ pub const WidgetStore = struct {
             return if (config.start_visible) MotionHandle.shown else MotionHandle.hidden;
         }
 
-        const handle = motion_mod.tickMotion(gop.value_ptr, show);
+        const handle = motion_mod.tickMotion(self.io, gop.value_ptr, show);
         if (handle.phase == .entering or handle.phase == .exiting) {
             self.active_motion_count += 1;
         }
@@ -508,7 +517,7 @@ pub const WidgetStore = struct {
             }
         }
 
-        const gop = self.spring_motions.getOrPut(motion_id) catch {
+        const gop = self.spring_motions.getOrPut(self.allocator, motion_id) catch {
             return if (show) MotionHandle.shown else MotionHandle.hidden;
         };
 
@@ -522,13 +531,13 @@ pub const WidgetStore = struct {
                 .phase = if (config.start_visible) .entered else .exited,
                 .last_show = if (config.start_visible) true else show,
                 .spring_state = if (config.start_visible)
-                    spring_mod.SpringState.initSettled(spring_config)
+                    spring_mod.SpringState.initSettled(self.io, spring_config)
                 else
-                    spring_mod.SpringState.init(spring_config),
+                    spring_mod.SpringState.init(self.io, spring_config),
             };
         }
 
-        const handle = motion_mod.tickSpringMotion(gop.value_ptr, show);
+        const handle = motion_mod.tickSpringMotion(self.io, gop.value_ptr, show);
         if (handle.phase == .entering or handle.phase == .exiting) {
             self.active_motion_count += 1;
         }

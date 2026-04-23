@@ -92,7 +92,7 @@ pub const KeyCode = enum(u16) {
     _,
 
     pub fn from(code: u16) KeyCode {
-        const result = std.meta.intToEnum(KeyCode, code) catch return .unknown;
+        const result: KeyCode = @enumFromInt(code);
         if (std.enums.tagName(KeyCode, result) == null) return .unknown;
         return result;
     }

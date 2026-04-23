@@ -440,10 +440,10 @@ pub const Path = struct {
         }
 
         // Flatten curves to line segments
-        var points: std.ArrayList(Vec2) = .{};
+        var points: std.ArrayList(Vec2) = .empty;
         defer points.deinit(allocator);
 
-        var polygons: std.ArrayList(IndexSlice) = .{};
+        var polygons: std.ArrayList(IndexSlice) = .empty;
         defer polygons.deinit(allocator);
 
         try self.flatten(allocator, tolerance, &points, &polygons);
@@ -516,10 +516,10 @@ pub const Path = struct {
         }
 
         // Flatten curves to line segments (using stroke-aware version that keeps 2-point lines)
-        var points: std.ArrayList(Vec2) = .{};
+        var points: std.ArrayList(Vec2) = .empty;
         defer points.deinit(allocator);
 
-        var polygons: std.ArrayList(IndexSlice) = .{};
+        var polygons: std.ArrayList(IndexSlice) = .empty;
         defer polygons.deinit(allocator);
 
         try self.flattenForStroke(allocator, tolerance, &points, &polygons);
@@ -1258,7 +1258,7 @@ test "Path empty check" {
 }
 
 test "flattenQuadratic produces points" {
-    var points: std.ArrayList(Vec2) = .{};
+    var points: std.ArrayList(Vec2) = .empty;
     defer points.deinit(std.testing.allocator);
 
     const start = Vec2{ .x = 0, .y = 0 };
@@ -1269,7 +1269,7 @@ test "flattenQuadratic produces points" {
 }
 
 test "flattenCubic produces points" {
-    var points: std.ArrayList(Vec2) = .{};
+    var points: std.ArrayList(Vec2) = .empty;
     defer points.deinit(std.testing.allocator);
 
     const start = Vec2{ .x = 0, .y = 0 };
@@ -1279,7 +1279,7 @@ test "flattenCubic produces points" {
 }
 
 test "flattenArcSegment produces points" {
-    var points: std.ArrayList(Vec2) = .{};
+    var points: std.ArrayList(Vec2) = .empty;
     defer points.deinit(std.testing.allocator);
 
     const start = Vec2{ .x = 100, .y = 50 };

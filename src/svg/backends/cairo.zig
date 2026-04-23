@@ -96,9 +96,9 @@ pub fn rasterizeWithOptions(
     if (path.commands.items.len == 0) return error.EmptyPath;
 
     // Flatten path to polygons
-    var points: std.ArrayList(svg_mod.Vec2) = .{};
+    var points: std.ArrayList(svg_mod.Vec2) = .empty;
     defer points.deinit(allocator);
-    var polygons: std.ArrayList(svg_mod.IndexSlice) = .{};
+    var polygons: std.ArrayList(svg_mod.IndexSlice) = .empty;
     defer polygons.deinit(allocator);
 
     // Use tolerance based on device size for good quality curves
@@ -177,7 +177,7 @@ fn renderPolygonsFill(
     const supersample_height = size * Y_SAMPLES;
 
     // Build edge table for all polygons (at supersampled resolution)
-    var edges: std.ArrayList(Edge) = .{};
+    var edges: std.ArrayList(Edge) = .empty;
     defer edges.deinit(allocator);
 
     for (polygons.items) |poly| {
@@ -235,7 +235,7 @@ fn renderPolygonsFill(
     std.sort.pdq(Edge, edges.items, {}, Edge.lessThan);
 
     // Active edge table
-    var active_edges: std.ArrayList(ActiveEdge) = .{};
+    var active_edges: std.ArrayList(ActiveEdge) = .empty;
     defer active_edges.deinit(allocator);
 
     // Coverage accumulator for current pixel row

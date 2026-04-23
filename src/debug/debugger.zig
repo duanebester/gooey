@@ -11,7 +11,6 @@
 //! use pre-allocated fixed-capacity arrays. No dynamic allocation after initialization.
 
 const std = @import("std");
-const platform_time = @import("../platform/time.zig");
 const scene_mod = @import("../scene/scene.zig");
 const input_mod = @import("../input/events.zig");
 const layout_mod = @import("../layout/layout.zig");
@@ -181,43 +180,57 @@ pub const Debugger = struct {
         return self.mode == .profiler;
     }
 
-    pub fn beginFrame(self: *Self) void {
-        self.frame_start_ns = @intCast(platform_time.nanoTimestamp());
+    /// All `begin*`/`end*` timing methods take `io` rather than stashing it
+    /// on the struct. The Debugger is embedded in `Gooey` with defaulted
+    /// `.{}` initialization; threading `io` through the call site keeps it
+    /// a pure data struct and mirrors the pattern used for timing in the
+    /// rest of the framework (see `animation.calculateProgress`).
+    ///
+    /// `.awake` (monotonic) is the correct clock here — `end - begin` must
+    /// never go negative because of NTP or wall-clock adjustments.
+    fn nowNs(io: std.Io) u64 {
+        const ns = std.Io.Timestamp.now(io, .awake).toNanoseconds();
+        std.debug.assert(ns >= 0);
+        return @intCast(ns);
     }
 
-    pub fn beginLayout(self: *Self) void {
-        self.layout_start_ns = @intCast(platform_time.nanoTimestamp());
+    pub fn beginFrame(self: *Self, io: std.Io) void {
+        self.frame_start_ns = nowNs(io);
     }
 
-    pub fn endLayout(self: *Self) void {
-        const now: u64 = @intCast(platform_time.nanoTimestamp());
+    pub fn beginLayout(self: *Self, io: std.Io) void {
+        self.layout_start_ns = nowNs(io);
+    }
+
+    pub fn endLayout(self: *Self, io: std.Io) void {
+        const now = nowNs(io);
         self.layout_time_ns = now - self.layout_start_ns;
     }
 
-    pub fn beginTreeBuild(self: *Self) void {
-        self.tree_build_start_ns = @intCast(platform_time.nanoTimestamp());
+    pub fn beginTreeBuild(self: *Self, io: std.Io) void {
+        self.tree_build_start_ns = nowNs(io);
     }
 
-    pub fn endTreeBuild(self: *Self) void {
-        const now: u64 = @intCast(platform_time.nanoTimestamp());
+    pub fn endTreeBuild(self: *Self, io: std.Io) void {
+        const now = nowNs(io);
         self.tree_build_ns = now - self.tree_build_start_ns;
     }
 
-    pub fn beginDispatchSync(self: *Self) void {
-        self.dispatch_sync_start_ns = @intCast(platform_time.nanoTimestamp());
+    pub fn beginDispatchSync(self: *Self, io: std.Io) void {
+        self.dispatch_sync_start_ns = nowNs(io);
     }
 
-    pub fn endDispatchSync(self: *Self) void {
-        const now: u64 = @intCast(platform_time.nanoTimestamp());
+    pub fn endDispatchSync(self: *Self, io: std.Io) void {
+        const now = nowNs(io);
         self.dispatch_sync_ns = now - self.dispatch_sync_start_ns;
     }
 
-    pub fn beginRender(self: *Self) void {
-        self.render_start_ns = @intCast(platform_time.nanoTimestamp());
+    pub fn beginRender(self: *Self, io: std.Io) void {
+        self.render_start_ns = nowNs(io);
     }
 
-    pub fn endRender(self: *Self) void {
-        const now: u64 = @intCast(platform_time.nanoTimestamp());
+    pub fn endRender(self: *Self, io: std.Io) void {
+        const now = nowNs(io);
         self.render_time_ns = now - self.render_start_ns;
     }
 
@@ -229,8 +242,8 @@ pub const Debugger = struct {
         self.atlas_upload_ns = atlas_upload_ns;
     }
 
-    pub fn endFrame(self: *Self, stats: ?*const render_stats.RenderStats) void {
-        const now: u64 = @intCast(platform_time.nanoTimestamp());
+    pub fn endFrame(self: *Self, io: std.Io, stats: ?*const render_stats.RenderStats) void {
+        const now = nowNs(io);
         if (self.frame_start_ns > 0) {
             self.frame_time_ns = now - self.frame_start_ns;
         }
@@ -833,12 +846,13 @@ test "direction names" {
 }
 
 test "profiler timing" {
+    const io = std.testing.io;
     var debugger = Debugger{};
     debugger.mode = .profiler;
     debugger.frame_time_ns = 16_000_000;
     debugger.layout_time_ns = 2_000_000;
     debugger.render_time_ns = 10_000_000;
-    debugger.endFrame(null);
+    debugger.endFrame(io, null);
     try std.testing.expect(debugger.frame_count == 1);
     const snapshot = debugger.frame_history[0];
     try std.testing.expectEqual(@as(u64, 16_000_000), snapshot.frame_time_ns);

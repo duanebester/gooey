@@ -297,9 +297,11 @@ pub const PostProcessState = struct {
     // Compiled shader pipelines
     pipelines: std.ArrayList(CustomShaderPipeline),
 
-    // Timing
-    start_time: ?std.time.Instant,
-    last_frame_time: ?std.time.Instant,
+    // Timing. Monotonic `.awake` timestamps are captured via the
+    // process-lifetime single-threaded `Io` in `updateTiming` — this
+    // struct lives on the render path and does not carry a `*Cx`.
+    start_time: ?std.Io.Timestamp,
+    last_frame_time: ?std.Io.Timestamp,
 
     // Current texture size
     width: u32,
@@ -316,7 +318,7 @@ pub const PostProcessState = struct {
             .uniform_buffer = null,
             .uniforms = Uniforms.init(),
             .sampler = null,
-            .pipelines = .{},
+            .pipelines = .empty,
             .start_time = null,
             .last_frame_time = null,
             .width = 0,
@@ -442,20 +444,32 @@ pub const PostProcessState = struct {
         self.sampler = objc.Object.fromId(sampler_ptr);
     }
 
-    /// Update timing uniforms
+    /// Update timing uniforms.
+    ///
+    /// This runs on Metal's render thread (no `*Cx` in scope), so we reach
+    /// for the process-lifetime single-threaded `Io` — same escape hatch as
+    /// the render mutex (see phase-5 option 3 in the migration doc). `std.Io`
+    /// is a pair of pointers into a static vtable; the read is effectively
+    /// free. Monotonic `.awake` guarantees `elapsed_ns >= 0` regardless of
+    /// any NTP or sysadmin-driven wall-clock adjustments.
     pub fn updateTiming(self: *Self) void {
-        const now = std.time.Instant.now() catch return;
+        const render_io = std.Io.Threaded.global_single_threaded.io();
+        const now = std.Io.Timestamp.now(render_io, .awake);
 
         if (self.start_time == null) {
             self.start_time = now;
         }
 
-        const elapsed_ns = now.since(self.start_time.?);
+        const elapsed_ns_i: i96 = self.start_time.?.durationTo(now).toNanoseconds();
+        std.debug.assert(elapsed_ns_i >= 0);
+        const elapsed_ns: u64 = @intCast(elapsed_ns_i);
         const elapsed_s: f32 = @floatCast(@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
 
         var delta_s: f32 = 0.016;
         if (self.last_frame_time) |last| {
-            const delta_ns = now.since(last);
+            const delta_ns_i: i96 = last.durationTo(now).toNanoseconds();
+            std.debug.assert(delta_ns_i >= 0);
+            const delta_ns: u64 = @intCast(delta_ns_i);
             delta_s = @floatCast(@as(f64, @floatFromInt(delta_ns)) / 1_000_000_000.0);
         }
 

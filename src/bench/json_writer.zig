@@ -16,6 +16,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const Dir = std.Io.Dir;
+const Io = std.Io;
 
 // =============================================================================
 // Limits
@@ -160,8 +162,13 @@ const CalendarDate = struct {
 };
 
 /// Derive the current UTC calendar date from the system clock.
-fn getCurrentDate() CalendarDate {
-    const timestamp_seconds: u64 = @intCast(@max(0, std.time.timestamp()));
+///
+/// Uses `std.Io.Clock.real` — wall-clock seconds since the Unix epoch — and
+/// then reuses the existing `std.time.epoch` calendar arithmetic.  Only the
+/// *source* of the seconds changes vs. Zig 0.15; the Y/M/D decomposition is
+/// unchanged.
+fn getCurrentDate(io: Io) CalendarDate {
+    const timestamp_seconds: u64 = @intCast(@max(0, Io.Clock.real.now(io).toSeconds()));
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = timestamp_seconds };
     const epoch_day = epoch_seconds.getEpochDay();
     const year_day = epoch_day.calculateYearDay();
@@ -257,18 +264,35 @@ pub const Reporter = struct {
 
     json_enabled: bool = false,
 
-    /// Create a reporter for the given module.  Scans process argv for
+    /// I/O interface for file system operations (directory creation, file writing).
+    /// Passed from the process entry point; defaults to `Io.failing` so that
+    /// struct-literal initialisation (`.{}`) still compiles in tests where
+    /// file I/O is never exercised.
+    io: Io = Io.failing,
+
+    /// Create a reporter for the given module.  Scans `argv` for
     /// `--json-dir <path>`.
-    pub fn init(module_name: []const u8) Reporter {
+    ///
+    /// `argv` is passed explicitly (rather than reaching for a global) so
+    /// callers can unit-test arg parsing with a fixed slice, and so the
+    /// reporter never depends on platform-specific globals.  Benchmark
+    /// `main` functions receive `std.process.Init` and forward
+    /// `init.args.vector` here.
+    pub fn init(
+        module_name: []const u8,
+        io: Io,
+        argv: []const [*:0]const u8,
+    ) Reporter {
         std.debug.assert(module_name.len > 0);
         std.debug.assert(module_name.len <= MAX_MODULE_NAME_LENGTH);
 
         var self: Reporter = .{};
+        self.io = io;
 
         @memcpy(self.module_name[0..module_name.len], module_name);
         self.module_name_length = @intCast(module_name.len);
 
-        self.parseArgs();
+        self.parseArgs(argv);
         return self;
     }
 
@@ -303,13 +327,11 @@ pub const Reporter = struct {
     // Arg Parsing (private)
     // =========================================================================
 
-    /// Scan process argv for `--json-dir <path>`.
-    /// Uses std.os.argv directly — zero allocation.
-    fn parseArgs(self: *Reporter) void {
-        const argv = std.os.argv;
-        std.debug.assert(argv.len >= 1); // argv[0] is always the program name.
-
-        var i: u32 = 1;
+    /// Scan `argv` for `--json-dir <path>`.  Zero allocation — the argv
+    /// slice is borrowed from `std.process.Init.args.vector`.
+    fn parseArgs(self: *Reporter, argv: []const [*:0]const u8) void {
+        // argv may be empty under test runners; only assert non-negative.
+        var i: u32 = if (argv.len >= 1) 1 else 0;
         const argc: u32 = @intCast(argv.len);
         while (i < argc) : (i += 1) {
             const arg = std.mem.sliceTo(argv[i], 0);
@@ -352,7 +374,7 @@ pub const Reporter = struct {
         std.debug.assert(self.json_dir_length > 0);
         std.debug.assert(self.module_name_length > 0);
 
-        const date = getCurrentDate();
+        const date = getCurrentDate(self.io);
         var result: FilenameBuffer = .{};
 
         const written = std.fmt.bufPrint(&result.buf, "{s}" ++ "/" ++ "{s}-{s}-{s}-benchmarks-{d:0>2}-{d:0>2}-{d}.json", .{
@@ -387,7 +409,7 @@ pub const Reporter = struct {
 
         // Ensure output directory exists.
         const dir_path = self.json_dir[0..self.json_dir_length];
-        std.fs.cwd().makePath(dir_path) catch |err| {
+        Dir.cwd().createDirPath(self.io, dir_path) catch |err| {
             std.debug.print("bench: cannot create directory \"{s}\": {s}\n", .{ dir_path, @errorName(err) });
             return err;
         };
@@ -397,15 +419,22 @@ pub const Reporter = struct {
 
         const path_slice = file_path.buf[0..file_path.len];
 
-        const file = try std.fs.cwd().createFile(path_slice, .{ .truncate = true });
-        defer file.close();
+        const file = try Dir.cwd().createFile(self.io, path_slice, .{});
+        defer file.close(self.io);
 
         // Build the JSON payload from collected entries.
         const json_bytes = try self.serializePayload();
         defer std.heap.page_allocator.free(json_bytes);
 
-        try file.writeAll(json_bytes);
-        try file.writeAll("\n"); // Trailing newline for POSIX friendliness.
+        // `file.writerStreaming` returns an `Io.File.Writer`; the actual
+        // byte-sink methods live on its `.interface` (`std.Io.Writer`).
+        // `File.Writer.flush` forwards to the interface flush and then
+        // surfaces any latched error — use it at the end.
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writerStreaming(self.io, &write_buf);
+        try writer.interface.writeAll(json_bytes);
+        try writer.interface.writeAll("\n"); // Trailing newline for POSIX friendliness.
+        try writer.flush();
 
         std.debug.print("\nbench: wrote {d} entries to {s}\n", .{ self.count, path_slice });
     }
@@ -418,7 +447,7 @@ pub const Reporter = struct {
 
         // Format the date string into a stack buffer.
         var date_buf: [16]u8 = undefined;
-        const date = getCurrentDate();
+        const date = getCurrentDate(self.io);
         const date_str = std.fmt.bufPrint(&date_buf, "{d:0>2}-{d:0>2}-{d}", .{
             date.month,
             date.day,
@@ -432,7 +461,7 @@ pub const Reporter = struct {
             json_entries[i] = JsonBenchmarkEntry.fromEntry(&self.entries[i]);
         }
 
-        const timestamp_seconds: u64 = @intCast(@max(0, std.time.timestamp()));
+        const timestamp_seconds: u64 = @intCast(@max(0, Io.Clock.real.now(self.io).toSeconds()));
 
         const payload: JsonPayload = .{
             .metadata = .{
@@ -490,9 +519,9 @@ test "entryWithPercentiles: percentile fields are set" {
 }
 
 test "reporter: addEntry collects entries" {
-    var reporter = Reporter.init("test_module");
+    var reporter = Reporter.init("test_module", Io.failing, &.{});
     std.debug.assert(reporter.count == 0);
-    std.debug.assert(!reporter.json_enabled); // No --json-dir in test runner args.
+    std.debug.assert(!reporter.json_enabled); // No --json-dir in empty argv.
 
     reporter.addEntry(entry("bench_a", 10, 500, 5));
     reporter.addEntry(entry("bench_b", 20, 1000, 10));
@@ -502,14 +531,18 @@ test "reporter: addEntry collects entries" {
 }
 
 test "reporter: finish is no-op when json is disabled" {
-    var reporter = Reporter.init("noop");
+    var reporter = Reporter.init("noop", Io.failing, &.{});
     reporter.addEntry(entry("x", 1, 100, 1));
     // Must not crash or attempt file I/O.
     reporter.finish();
 }
 
 test "getCurrentDate: returns plausible values" {
-    const date = getCurrentDate();
+    // `std.testing.io` is the blessed per-test `Io` instance — backed by
+    // `Io.Threaded` and initialised by the test runner for the lifetime
+    // of each test.  It routes wall-clock reads through the real system
+    // clock, unlike `Io.failing` which would return `Timestamp.zero`.
+    const date = getCurrentDate(std.testing.io);
     std.debug.assert(date.year >= 2025);
     std.debug.assert(date.month >= 1);
     std.debug.assert(date.month <= 12);
@@ -565,7 +598,11 @@ test "JsonBenchmarkEntry.fromEntry: converts with percentiles" {
 }
 
 test "reporter: serializePayload produces valid JSON" {
-    var reporter = Reporter.init("test_mod");
+    // `serializePayload` reads the wall clock (real-time) for the
+    // `timestamp_unix` metadata field; route that through the
+    // per-test `std.testing.io` instance (backed by `Io.Threaded`)
+    // instead of `Io.failing`, which would return `Timestamp.zero`.
+    var reporter = Reporter.init("test_mod", std.testing.io, &.{});
     reporter.addEntry(entry("alpha", 10, 500_000, 50));
     reporter.addEntry(entryWithPercentiles("beta", 20, 1_000_000, 100, 5.0, 15.0));
 

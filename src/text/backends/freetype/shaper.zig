@@ -101,7 +101,7 @@ pub const HarfBuzzShaper = struct {
         }
 
         // Allocate output
-        var glyph_buffer = std.ArrayList(ShapedGlyph){};
+        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
         defer glyph_buffer.deinit(allocator);
         try glyph_buffer.ensureTotalCapacity(allocator, glyph_count);
 
@@ -175,7 +175,7 @@ pub const HarfBuzzShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        var glyph_buffer = std.ArrayList(ShapedGlyph){};
+        var glyph_buffer: std.ArrayList(ShapedGlyph) = .empty;
         defer glyph_buffer.deinit(allocator);
         try glyph_buffer.ensureTotalCapacity(allocator, glyph_count);
 

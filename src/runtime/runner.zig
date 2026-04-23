@@ -59,7 +59,7 @@ pub fn runCx(
     comptime render: fn (*Cx) void,
     config: CxConfig(State),
 ) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -100,12 +100,15 @@ pub fn runCx(
         plat.setActiveWindow(window);
     }
 
+    // Resolve IO: use caller-provided instance or fall back to global single-threaded.
+    const io = config.io orelse std.Io.Threaded.global_single_threaded.io();
+
     // Create per-window context (replaces static CallbackState)
     const WinCtx = window_context.WindowContext(State);
     const win_ctx = try WinCtx.init(allocator, window, state, render, .{
         .font_name = config.font,
         .font_size = config.font_size,
-    });
+    }, io);
     defer win_ctx.deinit();
 
     // Set user callbacks
@@ -191,5 +194,9 @@ pub fn CxConfig(comptime State: type) type {
 
         /// Extend content under titlebar
         full_size_content: bool = false,
+
+        /// IO interface for async work (filesystem, network, concurrency).
+        /// When null, falls back to `std.Io.Threaded.global_single_threaded`.
+        io: ?std.Io = null,
     };
 }

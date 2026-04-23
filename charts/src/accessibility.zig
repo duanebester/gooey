@@ -131,18 +131,17 @@ pub fn describe(info: *const ChartInfo, buf: []u8) []const u8 {
     }
 
     // Generate description based on chart type and data
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     // Write chart type and data overview
-    writeChartOverview(writer, info) catch return buf[0..0];
+    writeChartOverview(&writer, info) catch return buf[0..0];
 
     // Write data summary (min/max/avg)
     if (info.point_count > 0) {
-        writeDataSummary(writer, info) catch {};
+        writeDataSummary(&writer, info) catch {};
     }
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 /// Write the chart type and overview.
@@ -216,8 +215,7 @@ pub fn summarize(info: *const ChartInfo, buf: []u8) []const u8 {
     std.debug.assert(buf.len >= MAX_SUMMARY_LENGTH);
     std.debug.assert(info.point_count <= constants.MAX_DATA_POINTS * constants.MAX_SERIES);
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     writer.print("{s}", .{info.getTitle()}) catch return buf[0..0];
 
@@ -228,7 +226,7 @@ pub fn summarize(info: *const ChartInfo, buf: []u8) []const u8 {
         }
     }
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 // =============================================================================
@@ -244,12 +242,11 @@ pub fn describePoint(
     std.debug.assert(buf.len >= MAX_POINT_DESCRIPTION_LENGTH);
     std.debug.assert(!std.math.isNan(value));
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     writer.print("{s}: {d:.1}", .{ label, value }) catch return buf[0..0];
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 /// Format a pie/donut slice with percentage.
@@ -263,12 +260,11 @@ pub fn describeSlice(
     std.debug.assert(!std.math.isNan(value));
     std.debug.assert(percentage >= 0 and percentage <= 100);
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     writer.print("{s}: {d:.1} ({d:.0}%)", .{ label, value, percentage }) catch return buf[0..0];
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 /// Format a scatter point with X and Y coordinates.
@@ -281,8 +277,7 @@ pub fn describeScatterPoint(
     std.debug.assert(buf.len >= MAX_POINT_DESCRIPTION_LENGTH);
     std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     if (label) |l| {
         writer.print("{s}: ({d:.1}, {d:.1})", .{ l, x, y }) catch return buf[0..0];
@@ -290,7 +285,7 @@ pub fn describeScatterPoint(
         writer.print("({d:.1}, {d:.1})", .{ x, y }) catch return buf[0..0];
     }
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 // =============================================================================
@@ -509,8 +504,7 @@ pub fn announceValueChange(
     std.debug.assert(buf.len >= MAX_SUMMARY_LENGTH);
     std.debug.assert(!std.math.isNan(old_value) and !std.math.isNan(new_value));
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     const delta = new_value - old_value;
     const direction: []const u8 = if (delta > 0) "increased" else if (delta < 0) "decreased" else "unchanged";
@@ -522,7 +516,7 @@ pub fn announceValueChange(
         new_value,
     }) catch return buf[0..0];
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 /// Format a selection announcement.
@@ -537,8 +531,7 @@ pub fn announceSelection(
     std.debug.assert(position < total);
     std.debug.assert(!std.math.isNan(value));
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(buf);
 
     writer.print("{s}, {d:.1}, {d} of {d}", .{
         label,
@@ -547,7 +540,7 @@ pub fn announceSelection(
         total,
     }) catch return buf[0..0];
 
-    return fbs.getWritten();
+    return writer.buffered();
 }
 
 // =============================================================================

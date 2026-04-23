@@ -116,6 +116,9 @@ pub const App = struct {
     /// Shared image atlas for bitmaps
     image_atlas: *ImageAtlas,
 
+    /// IO interface for async work. Threaded through to all windows.
+    io: std.Io,
+
     // =========================================================================
     // App State
     // =========================================================================
@@ -139,7 +142,7 @@ pub const App = struct {
     ///
     /// Creates the platform, registry, and shared resources.
     /// Call `deinit()` when done to clean up.
-    pub fn init(allocator: Allocator, font_config: FontConfig) !Self {
+    pub fn init(allocator: Allocator, font_config: FontConfig, io: std.Io) !Self {
         // Assertions: validate input
         std.debug.assert(@intFromPtr(&allocator) != 0);
 
@@ -155,7 +158,7 @@ pub const App = struct {
         // Initialize shared text system
         const text_system = try allocator.create(TextSystem);
         errdefer allocator.destroy(text_system);
-        text_system.* = try TextSystem.initWithScale(allocator, 1.0);
+        text_system.* = try TextSystem.initWithScale(allocator, 1.0, io);
         errdefer text_system.deinit();
 
         // Load font from config (named font or system default)
@@ -168,17 +171,18 @@ pub const App = struct {
         // Initialize shared SVG atlas
         const svg_atlas = try allocator.create(SvgAtlas);
         errdefer allocator.destroy(svg_atlas);
-        svg_atlas.* = try SvgAtlas.init(allocator, 1.0);
+        svg_atlas.* = try SvgAtlas.init(allocator, 1.0, io);
         errdefer svg_atlas.deinit();
 
         // Initialize shared image atlas
         const image_atlas = try allocator.create(ImageAtlas);
         errdefer allocator.destroy(image_atlas);
-        image_atlas.* = try ImageAtlas.init(allocator, 1.0);
+        image_atlas.* = try ImageAtlas.init(allocator, 1.0, io);
         errdefer image_atlas.deinit();
 
         const self = Self{
             .allocator = allocator,
+            .io = io,
             .platform = plat,
             .registry = WindowRegistry.init(allocator),
             .text_system = text_system,
@@ -464,6 +468,7 @@ pub const App = struct {
             self.text_system,
             self.svg_atlas,
             self.image_atlas,
+            self.io,
         );
 
         // Wire up shared atlases to window for rendering

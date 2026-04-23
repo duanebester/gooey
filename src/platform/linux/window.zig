@@ -818,7 +818,14 @@ pub const Window = struct {
         // Time GPU command recording + atlas transfers + submit + present.
         // Atlas transfers are now folded into the render command buffer,
         // so this timing covers everything.
-        const gpu_start = std.time.Instant.now() catch unreachable;
+        //
+        // `render_io` is intentionally the process-lifetime single-threaded
+        // `Io` — the render path runs on the Wayland event thread and does
+        // not carry a `*Cx`/`Gooey`. `std.Io` is a pair of pointers into a
+        // static vtable, so copying it here costs nothing. Same escape hatch
+        // as the render mutex (see phase-5 option 3 in the migration doc).
+        const render_io = std.Io.Threaded.global_single_threaded.io();
+        const gpu_start = std.Io.Timestamp.now(render_io, .awake);
 
         // Render scene if available
         if (self.scene) |scene| {
@@ -830,8 +837,10 @@ pub const Window = struct {
             self.renderer.render(&empty_scene);
         }
 
-        const gpu_end = std.time.Instant.now() catch unreachable;
-        self.last_gpu_submit_ns = gpu_end.since(gpu_start);
+        const gpu_end = std.Io.Timestamp.now(render_io, .awake);
+        const gpu_ns: i96 = gpu_start.durationTo(gpu_end).toNanoseconds();
+        std.debug.assert(gpu_ns >= 0);
+        self.last_gpu_submit_ns = @intCast(gpu_ns);
         self.last_atlas_upload_ns = 0; // Atlas transfers are now async (inside render cmd buf)
 
         self.needs_redraw = false;
@@ -1071,17 +1080,21 @@ pub const Window = struct {
         wayland.callbackDestroy(callback);
         self.frame_callback = null;
 
-        // DEBUG: FPS counter
+        // DEBUG: FPS counter. Wayland frame callbacks fire on the main
+        // event thread which does not carry a `*Cx`, so we reach for the
+        // single-threaded global `Io` here (same escape hatch as the
+        // render-mutex strategy in the Phase 5 migration doc).
         const static = struct {
             var count: u32 = 0;
-            var last_print: i64 = 0;
+            var last_print_ms: i64 = 0;
         };
         static.count += 1;
-        const now = std.time.milliTimestamp();
-        if (now - static.last_print > 1000) {
+        const fps_io = std.Io.Threaded.global_single_threaded.io();
+        const now_ms = std.Io.Timestamp.now(fps_io, .awake).toMilliseconds();
+        if (now_ms - static.last_print_ms > 1000) {
             std.debug.print("Wayland frame callbacks/sec: {}\n", .{static.count});
             static.count = 0;
-            static.last_print = now;
+            static.last_print_ms = now_ms;
         }
 
         // In continuous mode, always render (like macOS benchmark_mode)

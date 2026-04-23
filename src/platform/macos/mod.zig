@@ -47,7 +47,6 @@ pub const appkit = @import("appkit.zig");
 
 // Input handling
 pub const input_view = @import("input_view.zig");
-pub const dispatcher = @import("dispatcher.zig");
 
 // Shared GPU primitives
 pub const unified = @import("../unified.zig");

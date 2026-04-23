@@ -13,6 +13,35 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
+
+/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
+/// local to the benchmark module so every sample site reads as a two-line
+/// capture-then-diff instead of threading `io` through every benchmark
+/// helper signature. `.awake` is the monotonic clock — deltas here can
+/// never go negative regardless of NTP or sysadmin clock edits.
+///
+/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
+/// per-call `global_single_threaded.io()` lookup compiles down to a pair
+/// of constant pointer loads — effectively free.
+const time = struct {
+    inline fn benchIo() std.Io {
+        return std.Io.Threaded.global_single_threaded.io();
+    }
+
+    const Instant = struct {
+        ts: std.Io.Timestamp,
+
+        inline fn now() Instant {
+            return .{ .ts = std.Io.Timestamp.now(benchIo(), .awake) };
+        }
+
+        inline fn since(self: Instant, earlier: Instant) u64 {
+            const ns: i96 = earlier.ts.durationTo(self.ts).toNanoseconds();
+            std.debug.assert(ns >= 0);
+            return @intCast(ns);
+        }
+    };
+};
 const layout = gooey.layout;
 
 const LayoutEngine = layout.LayoutEngine;
@@ -117,9 +146,9 @@ fn runBenchmark(
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
 
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         _ = engine.endFrame() catch unreachable;
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -165,11 +194,11 @@ fn runFullFrameBenchmark(
     var iterations: u32 = 0;
 
     while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
-        const start = std.time.Instant.now() catch unreachable;
+        const start = time.Instant.now();
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
         _ = engine.endFrame() catch unreachable;
-        const end = std.time.Instant.now() catch unreachable;
+        const end = time.Instant.now();
 
         total_time += end.since(start);
         iterations += 1;
@@ -219,7 +248,7 @@ fn runPhaseBreakdownBenchmark(
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
 
-        const result = engine.endFrameTimed() catch unreachable;
+        const result = engine.endFrameTimed(time.benchIo()) catch unreachable;
         const t = result.timings;
 
         accumulated.min_sizes_ns += t.min_sizes_ns;
@@ -823,12 +852,12 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     ));
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var reporter = bench.Reporter.init("layout");
+    var reporter = bench.Reporter.init("layout", init.io, init.minimal.args.vector);
 
     std.debug.print("\n", .{});
     std.debug.print("=" ** 90 ++ "\n", .{});

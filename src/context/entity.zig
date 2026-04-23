@@ -161,10 +161,10 @@ const EntitySlot = struct {
     ref_count: u32 = 1,
 
     /// Entities that are observing this one (notified on change)
-    observers: std.ArrayListUnmanaged(EntityId) = .{},
+    observers: std.ArrayListUnmanaged(EntityId) = .empty,
 
     /// Entities that this one is observing (for cleanup on removal)
-    observing: std.ArrayListUnmanaged(EntityId) = .{},
+    observing: std.ArrayListUnmanaged(EntityId) = .empty,
 
     /// Whether this entity needs re-render (for views)
     dirty: bool = true,
@@ -174,6 +174,11 @@ const EntitySlot = struct {
     /// pending list without clearing dirty flags — using `dirty` alone
     /// would silently skip re-notification after processing.
     in_pending_list: bool = false,
+
+    /// Optional cancellation group for async work owned by this entity.
+    /// When the entity is removed, the group is cancelled automatically.
+    /// The entity does not own the group — it holds a borrowed pointer.
+    cancel_group: ?*std.Io.Group = null,
 };
 
 // =============================================================================
@@ -187,23 +192,27 @@ const EntitySlot = struct {
 pub const EntityMap = struct {
     allocator: std.mem.Allocator,
 
+    /// IO interface for cancelling async groups on entity removal.
+    /// Set by Gooey at init; null in tests where cancellation is not used.
+    io: ?std.Io = null,
+
     /// All entity slots, keyed by ID
-    slots: std.AutoHashMapUnmanaged(u64, EntitySlot) = .{},
+    slots: std.AutoHashMapUnmanaged(u64, EntitySlot) = .empty,
 
     /// Next ID to assign
     next_id: u64 = 1,
 
     /// Entities that have been marked dirty this frame
-    pending_notifications: std.ArrayListUnmanaged(EntityId) = .{},
+    pending_notifications: std.ArrayListUnmanaged(EntityId) = .empty,
 
     /// Observations made during current frame (for auto-cleanup)
     /// Stores (observer_id, target_id) pairs
-    frame_observations: std.ArrayListUnmanaged(struct { observer: EntityId, target: EntityId }) = .{},
+    frame_observations: std.ArrayListUnmanaged(struct { observer: EntityId, target: EntityId }) = .empty,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) Self {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, io: ?std.Io) Self {
+        return .{ .allocator = allocator, .io = io };
     }
 
     pub fn deinit(self: *Self) void {
@@ -211,6 +220,11 @@ pub const EntityMap = struct {
         var iter = self.slots.iterator();
         while (iter.next()) |entry| {
             var slot = entry.value_ptr;
+            // Cancel any attached async group before freeing entity data.
+            if (slot.cancel_group) |group| {
+                // io must be set when cancel groups exist — programming error otherwise.
+                group.cancel(self.io.?);
+            }
             slot.deinit_fn(slot.ptr, self.allocator);
             slot.observers.deinit(self.allocator);
             slot.observing.deinit(self.allocator); // NEW
@@ -399,10 +413,42 @@ pub const EntityMap = struct {
             }
         }
 
+        // Cancel any attached async group before freeing entity data.
+        if (slot.cancel_group) |group| {
+            group.cancel(self.io.?);
+        }
+
         // Clean up slot memory
         slot.deinit_fn(slot.ptr, self.allocator);
         slot.observers.deinit(self.allocator);
         slot.observing.deinit(self.allocator);
+    }
+
+    /// Attach a cancellation group to an entity.
+    ///
+    /// When this entity is removed (via `remove` or `deinit`), the group
+    /// will be cancelled automatically — preventing use-after-free from
+    /// stale background tasks that hold pointers to freed entity data.
+    ///
+    /// The entity does not own the group. The caller must ensure the group
+    /// outlives the entity or is detached before the group is freed.
+    pub fn attachCancelGroup(self: *Self, id: EntityId, group: *std.Io.Group) void {
+        if (self.slots.getPtr(id.id)) |slot| {
+            // Only one group per entity. Caller must detach before attaching a new one.
+            std.debug.assert(slot.cancel_group == null);
+            std.debug.assert(self.io != null);
+            slot.cancel_group = group;
+        }
+    }
+
+    /// Detach a cancellation group from an entity without cancelling it.
+    ///
+    /// Use this when the async work has completed normally and the group
+    /// should no longer be cancelled on entity removal.
+    pub fn detachCancelGroup(self: *Self, id: EntityId) void {
+        if (self.slots.getPtr(id.id)) |slot| {
+            slot.cancel_group = null;
+        }
     }
 
     /// Get entity count
@@ -688,7 +734,7 @@ pub fn EntityContext(comptime T: type) type {
 test "Entity creation and access" {
     const allocator = std.testing.allocator;
 
-    var map = EntityMap.init(allocator);
+    var map = EntityMap.init(allocator, null);
     defer map.deinit();
 
     const TestData = struct {
@@ -717,7 +763,7 @@ test "Entity creation and access" {
 test "Entity observation" {
     const allocator = std.testing.allocator;
 
-    var map = EntityMap.init(allocator);
+    var map = EntityMap.init(allocator, null);
     defer map.deinit();
 
     const Model = struct { count: i32 };
@@ -741,7 +787,7 @@ test "Entity observation" {
 test "Entity type safety" {
     const allocator = std.testing.allocator;
 
-    var map = EntityMap.init(allocator);
+    var map = EntityMap.init(allocator, null);
     defer map.deinit();
 
     const TypeA = struct { a: i32 };
@@ -778,7 +824,7 @@ test "Observer auto-cleanup on entity removal" {
 
     const Model = struct { value: i32 };
 
-    var map = EntityMap.init(allocator);
+    var map = EntityMap.init(allocator, null);
     defer map.deinit();
 
     // Create entities
@@ -807,7 +853,7 @@ test "Frame-based observation cleanup" {
 
     const Model = struct { value: i32 };
 
-    var map = EntityMap.init(allocator);
+    var map = EntityMap.init(allocator, null);
     defer map.deinit();
 
     const target = try map.new(Model, .{ .value = 1 });

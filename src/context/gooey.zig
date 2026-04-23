@@ -116,6 +116,24 @@ const Point = geometry.Point;
 
 // Deferred command infrastructure
 const MAX_DEFERRED_COMMANDS = 32;
+const MAX_CANCEL_GROUPS: u32 = 64;
+
+/// Maximum image load results buffered per frame drain.
+const MAX_IMAGE_LOAD_RESULTS: u32 = 32;
+
+/// Maximum concurrent pending image URL fetches.
+const MAX_PENDING_IMAGE_LOADS: u32 = 64;
+
+/// Maximum distinct failed image URL hashes remembered per session.
+///
+/// A URL that fails to fetch (404, DNS failure, TLS error, timeout, etc.) is
+/// recorded here so subsequent frames short-circuit without re-launching the
+/// fetch. Without this, a single 404 would kick off a new fetch every frame
+/// (60 req/s) — a quick way to get the user's IP rate-limited.
+///
+/// Hard cap; if exceeded we fail fast rather than evicting. Retry/backoff
+/// policy and LRU eviction are deferred to Task 4.5b.
+const MAX_FAILED_IMAGE_LOADS: u32 = 128;
 
 const DeferredCommand = struct {
     callback: *const fn (*Gooey, u64) void,
@@ -172,6 +190,9 @@ pub const FontConfig = struct {
 /// Gooey - unified UI context
 pub const Gooey = struct {
     allocator: std.mem.Allocator,
+    // IO interface (Zig 0.16 std.Io — replaces ad-hoc global_single_threaded calls).
+    // Threaded through the framework from main(); see cx.io() accessor.
+    io: std.Io,
 
     // Layout (immediate mode - rebuilt each frame)
     layout: *LayoutEngine,
@@ -261,13 +282,6 @@ pub const Gooey = struct {
     /// Frame counter for periodic screen reader checks
     a11y_check_counter: u32 = 0,
 
-    // Thread Dispatcher (Phase 5: Gooey owns dispatcher)
-    /// Thread dispatcher for cross-thread callbacks to main thread.
-    /// Null on WASM (no threads). Initialized automatically on native platforms.
-    /// Owned by Gooey - automatically cleaned up in deinit().
-    thread_dispatcher: if (platform.is_wasm) void else ?*platform.Dispatcher =
-        if (platform.is_wasm) {} else null,
-
     // Per-window root state for handler callbacks (multi-window support)
     /// Type-erased pointer to this window's root state
     root_state_ptr: ?*anyopaque = null,
@@ -286,6 +300,23 @@ pub const Gooey = struct {
     // Guard to prevent double blur handler invocation within the same focus transition
     blur_handlers_invoked_this_transition: bool = false,
 
+    // Cancel group registry (for structured async cancellation on teardown).
+    // Apps register groups via cx.registerCancelGroup(); all are cancelled in deinit().
+    cancel_groups: [MAX_CANCEL_GROUPS]*std.Io.Group = undefined,
+    cancel_group_count: u32 = 0,
+
+    // Async image loading — URL images are fetched in background via Io.Group,
+    // results delivered via Io.Queue, and cached into the atlas each frame.
+    image_load_result_buffer: [MAX_IMAGE_LOAD_RESULTS]image_mod.loader.ImageLoadResult = undefined,
+    image_load_queue: std.Io.Queue(image_mod.loader.ImageLoadResult) = undefined,
+    image_load_group: std.Io.Group = .init,
+    pending_image_hashes: [MAX_PENDING_IMAGE_LOADS]u64 = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS,
+    pending_image_hash_count: u32 = 0,
+    // URLs that have failed to fetch — short-circuit future attempts to prevent
+    // per-frame retry storms. See MAX_FAILED_IMAGE_LOADS for rationale.
+    failed_image_hashes: [MAX_FAILED_IMAGE_LOADS]u64 = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS,
+    failed_image_hash_count: u32 = 0,
+
     const Self = @This();
 
     /// Get the type ID for a given type. Canonical definition in entity.zig.
@@ -301,6 +332,161 @@ pub const Gooey = struct {
     pub fn clearRootState(self: *Self) void {
         self.root_state_ptr = null;
         self.root_state_type_id = 0;
+    }
+
+    // =========================================================================
+    // Cancel Group Registry
+    // =========================================================================
+
+    /// Register a cancel group for automatic cancellation on teardown.
+    ///
+    /// Registered groups are cancelled in `deinit()` (window close / app exit),
+    /// preventing use-after-free from stale background tasks. Groups are not
+    /// cancelled mid-frame — `Group.cancel()` blocks, so it is only safe at
+    /// teardown boundaries.
+    pub fn registerCancelGroup(self: *Self, group: *std.Io.Group) void {
+        std.debug.assert(self.cancel_group_count < MAX_CANCEL_GROUPS);
+        self.cancel_groups[self.cancel_group_count] = group;
+        self.cancel_group_count += 1;
+    }
+
+    /// Unregister a cancel group (e.g., when async work completes normally).
+    ///
+    /// Swap-removes to keep the operation O(1). Order of cancellation at
+    /// teardown is not guaranteed and should not be relied upon.
+    pub fn unregisterCancelGroup(self: *Self, group: *std.Io.Group) void {
+        for (self.cancel_groups[0..self.cancel_group_count], 0..) |registered, i| {
+            if (registered == group) {
+                self.cancel_group_count -= 1;
+                if (i < self.cancel_group_count) {
+                    self.cancel_groups[i] = self.cancel_groups[self.cancel_group_count];
+                }
+                return;
+            }
+        }
+    }
+
+    /// Cancel all registered groups. Called during deinit (teardown).
+    /// Blocking is acceptable here — we are shutting down.
+    fn cancelAllGroups(self: *Self) void {
+        for (self.cancel_groups[0..self.cancel_group_count]) |group| {
+            group.cancel(self.io);
+        }
+        self.cancel_group_count = 0;
+    }
+
+    // =========================================================================
+    // Async Image Loading — Pending URL Tracking
+    // =========================================================================
+
+    /// Re-initialize the image load queue after the struct has been copied to
+    /// its final heap address.
+    ///
+    /// The Io.Queue stores a pointer to its backing buffer. By-value init
+    /// functions (initOwned, initWithSharedResources) build the struct on the
+    /// stack and return it — the caller copies to heap, leaving the queue's
+    /// internal pointer dangling. This method fixes that.
+    ///
+    /// The Ptr-style init functions (initOwnedPtr, initWithSharedResourcesPtr)
+    /// do NOT need this — self is already at its final address.
+    pub fn fixupImageLoadQueue(self: *Self) void {
+        // Only valid before any async work has been launched.
+        std.debug.assert(self.pending_image_hash_count == 0);
+        std.debug.assert(self.image_load_group.token.raw == null);
+        self.image_load_queue = .init(&self.image_load_result_buffer);
+    }
+
+    /// Check whether a URL image fetch is already in flight.
+    pub fn isImageLoadPending(self: *const Self, url_hash: u64) bool {
+        for (self.pending_image_hashes[0..self.pending_image_hash_count]) |hash| {
+            if (hash == url_hash) return true;
+        }
+        return false;
+    }
+
+    /// Record that a URL image fetch has been started.
+    pub fn addPendingImageLoad(self: *Self, url_hash: u64) void {
+        std.debug.assert(self.pending_image_hash_count < MAX_PENDING_IMAGE_LOADS);
+        std.debug.assert(!self.isImageLoadPending(url_hash));
+        self.pending_image_hashes[self.pending_image_hash_count] = url_hash;
+        self.pending_image_hash_count += 1;
+    }
+
+    /// Remove a pending image load (swap-remove). Called when the result arrives.
+    fn removePendingImageLoad(self: *Self, url_hash: u64) void {
+        for (self.pending_image_hashes[0..self.pending_image_hash_count], 0..) |hash, i| {
+            if (hash == url_hash) {
+                self.pending_image_hash_count -= 1;
+                if (i < self.pending_image_hash_count) {
+                    self.pending_image_hashes[i] = self.pending_image_hashes[self.pending_image_hash_count];
+                }
+                return;
+            }
+        }
+        // Every queued result must have a corresponding pending entry.
+        unreachable;
+    }
+
+    /// Check whether a URL has previously failed to fetch.
+    ///
+    /// Callers should consult this before launching a fetch — a failed URL
+    /// stays failed for the session (retry/backoff is Task 4.5b). This prevents
+    /// 60 req/s retry storms for broken URLs at frame rate.
+    pub fn isImageLoadFailed(self: *const Self, url_hash: u64) bool {
+        for (self.failed_image_hashes[0..self.failed_image_hash_count]) |hash| {
+            if (hash == url_hash) return true;
+        }
+        return false;
+    }
+
+    /// Record that a URL fetch has failed permanently for this session.
+    ///
+    /// All failure modes (404, DNS, TLS, timeout, decode error) are treated
+    /// identically in 4.5a — nuance belongs in 4.5b. At capacity, fail fast
+    /// rather than silently evicting: 128 distinct failed URLs in one session
+    /// is a bug to surface, not to paper over.
+    fn addFailedImageLoad(self: *Self, url_hash: u64) void {
+        // Idempotent: drop duplicates silently. A result can only be reported
+        // once, but defensive against future code paths.
+        if (self.isImageLoadFailed(url_hash)) return;
+        std.debug.assert(self.failed_image_hash_count < MAX_FAILED_IMAGE_LOADS);
+        // Failed and pending are disjoint: the caller of this method has
+        // already swap-removed from pending via removePendingImageLoad.
+        std.debug.assert(!self.isImageLoadPending(url_hash));
+        self.failed_image_hashes[self.failed_image_hash_count] = url_hash;
+        self.failed_image_hash_count += 1;
+    }
+
+    /// Drain the image load queue and cache any completed loads into the atlas.
+    /// Called once per frame in beginFrame.
+    fn drainImageLoadQueue(self: *Self) void {
+        var drain_buffer: [MAX_IMAGE_LOAD_RESULTS]image_mod.loader.ImageLoadResult = undefined;
+        const count = self.image_load_queue.get(self.io, &drain_buffer, 0) catch return;
+
+        for (drain_buffer[0..count]) |*result| {
+            switch (result.*) {
+                .loaded => |*loaded| {
+                    self.removePendingImageLoad(loaded.key.source_hash);
+                    // Cache decoded pixels into the atlas.
+                    _ = self.image_atlas.*.cacheRgba(
+                        loaded.key,
+                        loaded.width,
+                        loaded.height,
+                        loaded.pixels,
+                    ) catch {};
+                    // Free the pixel data now that it is copied into the atlas.
+                    loaded.allocator.free(loaded.pixels);
+                    loaded.pixels = &.{};
+                },
+                .failed => |failed| {
+                    // Remove from pending BEFORE adding to failed — the
+                    // invariant asserted in addFailedImageLoad is that a URL
+                    // is never in both sets at once.
+                    self.removePendingImageLoad(failed.key.source_hash);
+                    self.addFailedImageLoad(failed.key.source_hash);
+                },
+            }
+        }
     }
 
     /// Get the root state pointer with type checking
@@ -409,7 +595,7 @@ pub const Gooey = struct {
     }
 
     /// Initialize Gooey creating and owning all resources
-    pub fn initOwned(allocator: std.mem.Allocator, window: *Window, font_config: FontConfig) !Self {
+    pub fn initOwned(allocator: std.mem.Allocator, window: *Window, font_config: FontConfig, io: std.Io) !Self {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -435,7 +621,7 @@ pub const Gooey = struct {
 
         // Create text system
         const text_system = allocator.create(TextSystem) catch return error.OutOfMemory;
-        text_system.* = try TextSystem.initWithScale(allocator, @floatCast(window.scale_factor));
+        text_system.* = try TextSystem.initWithScale(allocator, @floatCast(window.scale_factor), io);
         errdefer {
             text_system.deinit();
             allocator.destroy(text_system);
@@ -457,7 +643,7 @@ pub const Gooey = struct {
 
         // Create SVG atlas (owned)
         const svg_atlas = allocator.create(svg_mod.SvgAtlas) catch return error.OutOfMemory;
-        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor);
+        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor, io);
         errdefer {
             svg_atlas.deinit();
             allocator.destroy(svg_atlas);
@@ -465,7 +651,7 @@ pub const Gooey = struct {
 
         // Create image atlas (owned)
         const image_atlas = allocator.create(image_mod.ImageAtlas) catch return error.OutOfMemory;
-        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor);
+        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor, io);
         errdefer {
             image_atlas.deinit();
             allocator.destroy(image_atlas);
@@ -473,12 +659,13 @@ pub const Gooey = struct {
 
         var result: Self = .{
             .allocator = allocator,
+            .io = io,
             .layout = layout_engine,
             .layout_owned = true,
             .scene = scene,
             .scene_owned = true,
             .dispatch = dispatch,
-            .entities = EntityMap.init(allocator),
+            .entities = EntityMap.init(allocator, io),
             .keymap = Keymap.init(allocator),
             .focus = FocusManager.init(allocator),
             .text_system = text_system,
@@ -487,7 +674,7 @@ pub const Gooey = struct {
             .svg_atlas_owned = true,
             .image_atlas = image_atlas,
             .image_atlas_owned = true,
-            .widgets = WidgetStore.init(allocator),
+            .widgets = WidgetStore.init(allocator, io),
             .window = window,
             .width = @floatCast(window.size.width),
             .height = @floatCast(window.size.height),
@@ -508,19 +695,6 @@ pub const Gooey = struct {
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
 
-        // Initialize thread dispatcher (native only, Phase 5)
-        if (!platform.is_wasm) {
-            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
-            errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
-            result.thread_dispatcher = dispatcher_ptr;
-
-            // Wire to platform on Linux (automatic, no user action needed)
-            if (platform.is_linux) {
-                window.platform.setDispatcher(dispatcher_ptr);
-            }
-        }
-
         return result;
     }
 
@@ -535,7 +709,7 @@ pub const Gooey = struct {
     /// ```
     /// Marked noinline to prevent stack accumulation in WASM builds.
     /// Without this, the compiler inlines all sub-functions creating a 2MB+ stack frame.
-    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *Window, font_config: FontConfig) !void {
+    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *Window, font_config: FontConfig, io: std.Io) !void {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -561,7 +735,7 @@ pub const Gooey = struct {
 
         // Create text system (initInPlace avoids 1.7MB stack temp)
         const text_system = allocator.create(TextSystem) catch return error.OutOfMemory;
-        try text_system.initInPlace(allocator, @floatCast(window.scale_factor));
+        try text_system.initInPlace(allocator, @floatCast(window.scale_factor), io);
         errdefer {
             text_system.deinit();
             allocator.destroy(text_system);
@@ -585,6 +759,7 @@ pub const Gooey = struct {
         // Field-by-field init avoids ~400KB stack temp from struct literal
         // Core resources
         self.allocator = allocator;
+        self.io = io;
         self.layout = layout_engine;
         self.layout_owned = true;
         self.scene = scene;
@@ -595,20 +770,20 @@ pub const Gooey = struct {
         self.window = window;
 
         // Small structs
-        self.entities = EntityMap.init(allocator);
+        self.entities = EntityMap.init(allocator, io);
         self.keymap = Keymap.init(allocator);
         self.focus = FocusManager.init(allocator);
-        self.widgets = WidgetStore.init(allocator);
+        self.widgets = WidgetStore.init(allocator, io);
 
         // Create SVG atlas (owned)
         const svg_atlas = allocator.create(svg_mod.SvgAtlas) catch return error.OutOfMemory;
-        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor);
+        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor, io);
         self.svg_atlas = svg_atlas;
         self.svg_atlas_owned = true;
 
         // Create image atlas (owned)
         const image_atlas = allocator.create(image_mod.ImageAtlas) catch return error.OutOfMemory;
-        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor);
+        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor, io);
         self.image_atlas = image_atlas;
         self.image_atlas_owned = true;
 
@@ -630,6 +805,18 @@ pub const Gooey = struct {
         self.blur_handler_count = 0;
         self.blur_handlers_invoked_this_transition = false;
 
+        // Cancel group registry (fixed-capacity, no allocation needed)
+        self.cancel_groups = undefined;
+        self.cancel_group_count = 0;
+
+        // Async image loading (fixed-capacity, no allocation needed).
+        self.image_load_result_buffer = undefined;
+        self.image_load_group = .init;
+        self.pending_image_hashes = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS;
+        self.pending_image_hash_count = 0;
+        self.failed_image_hashes = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS;
+        self.failed_image_hash_count = 0;
+
         // Accessibility (initInPlace avoids ~350KB stack temp)
         self.a11y_tree.initInPlace();
         self.a11y_enabled = false;
@@ -640,18 +827,9 @@ pub const Gooey = struct {
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
 
-        // Initialize thread dispatcher (native only, Phase 5)
-        if (!platform.is_wasm) {
-            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
-            errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
-            self.thread_dispatcher = dispatcher_ptr;
-
-            // Wire to platform on Linux (automatic, no user action needed)
-            if (platform.is_linux) {
-                window.platform.setDispatcher(dispatcher_ptr);
-            }
-        }
+        // Initialize image load queue — safe here because self is an out-pointer
+        // already at its final heap address (no copy will occur).
+        self.image_load_queue = .init(&self.image_load_result_buffer);
     }
 
     /// Initialize Gooey with shared resources (text system, SVG atlas, image atlas).
@@ -663,6 +841,7 @@ pub const Gooey = struct {
         shared_text_system: *TextSystem,
         shared_svg_atlas: *svg_mod.SvgAtlas,
         shared_image_atlas: *image_mod.ImageAtlas,
+        io: std.Io,
     ) !Self {
         // Assertions: validate inputs
         std.debug.assert(@intFromPtr(shared_text_system) != 0);
@@ -702,12 +881,13 @@ pub const Gooey = struct {
 
         var result: Self = .{
             .allocator = allocator,
+            .io = io,
             .layout = layout_engine,
             .layout_owned = true,
             .scene = scene,
             .scene_owned = true,
             .dispatch = dispatch,
-            .entities = EntityMap.init(allocator),
+            .entities = EntityMap.init(allocator, io),
             .keymap = Keymap.init(allocator),
             .focus = FocusManager.init(allocator),
             // Shared resources (not owned)
@@ -717,7 +897,7 @@ pub const Gooey = struct {
             .svg_atlas_owned = false,
             .image_atlas = shared_image_atlas,
             .image_atlas_owned = false,
-            .widgets = WidgetStore.init(allocator),
+            .widgets = WidgetStore.init(allocator, io),
             .window = window,
             .width = @floatCast(window.size.width),
             .height = @floatCast(window.size.height),
@@ -736,19 +916,6 @@ pub const Gooey = struct {
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
 
-        // Initialize thread dispatcher (native only, Phase 5)
-        if (!platform.is_wasm) {
-            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
-            errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
-            result.thread_dispatcher = dispatcher_ptr;
-
-            // Wire to platform on Linux (automatic, no user action needed)
-            if (platform.is_linux) {
-                window.platform.setDispatcher(dispatcher_ptr);
-            }
-        }
-
         return result;
     }
 
@@ -762,6 +929,7 @@ pub const Gooey = struct {
         shared_text_system: *TextSystem,
         shared_svg_atlas: *svg_mod.SvgAtlas,
         shared_image_atlas: *image_mod.ImageAtlas,
+        io: std.Io,
     ) !void {
         // Assertions: validate inputs
         std.debug.assert(@intFromPtr(shared_text_system) != 0);
@@ -801,6 +969,7 @@ pub const Gooey = struct {
 
         // Field-by-field init avoids stack temp from struct literal
         self.allocator = allocator;
+        self.io = io;
         self.layout = layout_engine;
         self.layout_owned = true;
         self.scene = scene;
@@ -818,10 +987,10 @@ pub const Gooey = struct {
         self.window = window;
 
         // Small structs
-        self.entities = EntityMap.init(allocator);
+        self.entities = EntityMap.init(allocator, io);
         self.keymap = Keymap.init(allocator);
         self.focus = FocusManager.init(allocator);
-        self.widgets = WidgetStore.init(allocator);
+        self.widgets = WidgetStore.init(allocator, io);
 
         // Scalar fields
         self.width = @floatCast(window.size.width);
@@ -841,6 +1010,18 @@ pub const Gooey = struct {
         self.blur_handler_count = 0;
         self.blur_handlers_invoked_this_transition = false;
 
+        // Cancel group registry (fixed-capacity, no allocation needed)
+        self.cancel_groups = undefined;
+        self.cancel_group_count = 0;
+
+        // Async image loading (fixed-capacity, no allocation needed).
+        self.image_load_result_buffer = undefined;
+        self.image_load_group = .init;
+        self.pending_image_hashes = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS;
+        self.pending_image_hash_count = 0;
+        self.failed_image_hashes = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS;
+        self.failed_image_hash_count = 0;
+
         // Accessibility
         self.a11y_tree.initInPlace();
         self.a11y_enabled = false;
@@ -851,28 +1032,21 @@ pub const Gooey = struct {
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
 
-        // Initialize thread dispatcher (native only, Phase 5)
-        if (!platform.is_wasm) {
-            const dispatcher_ptr = try allocator.create(platform.Dispatcher);
-            errdefer allocator.destroy(dispatcher_ptr);
-            dispatcher_ptr.* = try platform.Dispatcher.init(allocator);
-            self.thread_dispatcher = dispatcher_ptr;
-
-            // Wire to platform on Linux (automatic, no user action needed)
-            if (platform.is_linux) {
-                window.platform.setDispatcher(dispatcher_ptr);
-            }
-        }
+        // Initialize image load queue — must happen after struct is at its final
+        // address because the queue holds a pointer to the backing buffer.
+        self.image_load_queue = .init(&self.image_load_result_buffer);
     }
 
     pub fn deinit(self: *Self) void {
-        // Clean up thread dispatcher (native only, Phase 5)
-        if (!platform.is_wasm) {
-            if (self.thread_dispatcher) |d| {
-                d.deinit();
-                self.allocator.destroy(d);
-            }
-        }
+        // Close the image load queue so background tasks see closure.
+        self.image_load_queue.close(self.io);
+
+        // Cancel in-flight image fetches before any teardown.
+        self.image_load_group.cancel(self.io);
+
+        // Cancel all registered cancel groups before any teardown.
+        // Blocking is acceptable — we are shutting down.
+        self.cancelAllGroups();
 
         // Clean up accessibility bridge
         self.a11y_bridge.deinit();
@@ -913,85 +1087,21 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
-    // Thread Dispatcher API (Phase 5)
-    // =========================================================================
-
-    /// Dispatch a callback to run on the main thread.
-    /// Safe to call from any thread. Returns error on WASM (single-threaded).
-    ///
-    /// Usage:
-    /// ```
-    /// const Ctx = struct { app: *MyApp };
-    /// try gooey.dispatchOnMainThread(Ctx, .{ .app = self }, struct {
-    ///     fn handler(ctx: *Ctx) void {
-    ///         ctx.app.handleOnMain();
-    ///     }
-    /// }.handler);
-    /// ```
-    pub fn dispatchOnMainThread(
-        self: *Self,
-        comptime Context: type,
-        context: Context,
-        comptime callback: fn (*Context) void,
-    ) !void {
-        if (platform.is_wasm) return error.NotSupported;
-        if (self.thread_dispatcher) |d| {
-            try d.dispatchOnMainThread(Context, context, callback);
-        } else {
-            return error.NotInitialized;
-        }
-    }
-
-    /// Dispatch a callback to run on the main thread after a delay.
-    /// Safe to call from any thread. Returns error on WASM (single-threaded).
-    ///
-    /// Usage:
-    /// ```
-    /// // Run after 100ms
-    /// try gooey.dispatchAfter(100_000_000, Ctx, .{ .app = self }, handler);
-    /// ```
-    pub fn dispatchAfter(
-        self: *Self,
-        delay_ns: u64,
-        comptime Context: type,
-        context: Context,
-        comptime callback: fn (*Context) void,
-    ) !void {
-        if (platform.is_wasm) return error.NotSupported;
-        if (self.thread_dispatcher) |d| {
-            try d.dispatchAfter(delay_ns, Context, context, callback);
-        } else {
-            return error.NotInitialized;
-        }
-    }
-
-    /// Check if current thread is the main/UI thread.
-    /// Always returns true on WASM (single-threaded).
-    pub fn isMainThread() bool {
-        if (platform.is_wasm) return true;
-        return platform.Dispatcher.isMainThread();
-    }
-
-    /// Get the underlying dispatcher for advanced usage.
-    /// Returns null on WASM or if not initialized.
-    pub fn getDispatcher(self: *Self) ?*platform.Dispatcher {
-        if (platform.is_wasm) return null;
-        return self.thread_dispatcher;
-    }
-
-    // =========================================================================
     // Frame Lifecycle
     // =========================================================================
 
     /// Call at the start of each frame before building UI
     pub fn beginFrame(self: *Self) void {
         // Start profiler frame timing
-        self.debugger.beginFrame();
+        self.debugger.beginFrame(self.io);
 
         self.frame_count += 1;
         self.widgets.beginFrame();
         self.focus.beginFrame();
         self.image_atlas.*.beginFrame();
+
+        // Drain async image load results and cache into atlas.
+        self.drainImageLoadQueue();
 
         // Clear stale entity observations from last frame
         self.entities.beginFrame();
@@ -1055,9 +1165,9 @@ pub const Gooey = struct {
         }
 
         // End layout and get render commands — time only the actual layout compute
-        self.debugger.beginLayout();
+        self.debugger.beginLayout(self.io);
         const commands = try self.layout.endFrame();
-        self.debugger.endLayout();
+        self.debugger.endLayout(self.io);
 
         // Accessibility: finalize and sync to platform (zero-cost when disabled)
         if (self.a11y_enabled) {
@@ -1075,7 +1185,7 @@ pub const Gooey = struct {
 
     /// Finalize frame timing (call after all rendering is complete)
     pub fn finalizeFrame(self: *Self) void {
-        self.debugger.endFrame(&render_stats.frame_stats);
+        self.debugger.endFrame(self.io, &render_stats.frame_stats);
     }
 
     /// Check if any animations are running (call after endFrame)

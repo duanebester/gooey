@@ -33,7 +33,7 @@ pub fn registerClass() !void {
     // Register NSTextInputClient protocol conformance (required for IME)
     const NSTextInputClient = objc.getProtocol("NSTextInputClient") orelse
         return error.ProtocolNotFound;
-    if (!objc.c.class_addProtocol(cls.value, NSTextInputClient.value)) {
+    if (objc.c.class_addProtocol(cls.value, NSTextInputClient.value) == 0) {
         return error.ProtocolAddFailed;
     }
 
@@ -116,7 +116,7 @@ fn parseMouseEvent(self: objc.c.id, event_id: objc.c.id, comptime kind: std.meta
     const event = objc.Object.fromId(event_id);
 
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
-    const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
+    const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(objc.c.id, @ptrFromInt(0)) });
 
     const button: input.MouseButton = switch (event.msgSend(c_long, "buttonNumber", .{})) {
         0 => .left,
@@ -140,7 +140,7 @@ fn parseEnterExitEvent(self_id: objc.c.id, event_id: objc.c.id) input.MouseEvent
     const event = objc.Object.fromId(event_id);
 
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
-    const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
+    const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(objc.c.id, @ptrFromInt(0)) });
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
 
     return .{
@@ -230,7 +230,7 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
     const event = objc.Object.fromId(event_id);
 
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
-    const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(?objc.c.id, null) });
+    const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(objc.c.id, @ptrFromInt(0)) });
 
     const delta_x = event.msgSend(f64, "scrollingDeltaX", .{});
     const delta_y = event.msgSend(f64, "scrollingDeltaY", .{});
@@ -474,16 +474,20 @@ fn firstRectForCharacterRange(
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
     };
 
-    // Get the view's window
-    const ns_window = view.msgSend(?objc.Object, "window", .{}) orelse {
+    // Get the view's window.
+    // Zig 0.16: ?objc.Object is not allowed as a return type in C calling convention.
+    // Use objc.c.id (which is [*c]T, already nullable) and check for null manually.
+    const ns_window_id: objc.c.id = view.msgSend(objc.c.id, "window", .{});
+    if (ns_window_id == null) {
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
-    };
+    }
+    const ns_window = objc.Object.fromId(ns_window_id);
 
     // Use the IME cursor rect set by the focused TextInput
     const view_rect = window.ime_cursor_rect;
 
     // Convert from view coordinates to window coordinates, then to screen coordinates
-    const window_rect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(?objc.c.id, null) });
+    const window_rect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
     const screen_rect = ns_window.msgSend(NSRect, "convertRectToScreen:", .{window_rect});
 
     return screen_rect;

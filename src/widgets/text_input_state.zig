@@ -23,7 +23,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const platform = @import("../platform/mod.zig");
 
 // Clipboard support (platform-specific)
 const clipboard = if (builtin.os.tag == .macos)
@@ -170,8 +169,8 @@ pub const TextInput = struct {
             .allocator = allocator,
             .bounds = bounds,
             .style = .{},
-            .buffer = .{},
-            .preedit_buffer = .{},
+            .buffer = .empty,
+            .preedit_buffer = .empty,
             .id = ElementId.int(unique_id),
             .edit_history = EditHistory.create(allocator),
         };
@@ -184,8 +183,8 @@ pub const TextInput = struct {
             .allocator = allocator,
             .bounds = bounds,
             .style = .{},
-            .buffer = .{},
-            .preedit_buffer = .{},
+            .buffer = .empty,
+            .preedit_buffer = .empty,
             .id = ElementId.named(id),
             .edit_history = EditHistory.create(allocator),
         };
@@ -1089,8 +1088,22 @@ pub const TextInput = struct {
     }
 };
 
+/// Monotonic millisecond timestamp for edit-history entries and the cursor
+/// blink timer. Edit history only needs a stable ordering and rough deltas,
+/// and the blink path compares `now - last_blink_time` against a small
+/// interval — both are immune to wall-clock adjustments, so `.awake` is
+/// the right clock.
+///
+/// This runs on every keystroke, deep inside widget code that does not
+/// carry a `*Cx`/`Gooey`. Threading `io` through `handleKey`/`insertText`
+/// and all their callers purely to read a timestamp would balloon this
+/// patch; instead we reach for the process-lifetime single-threaded `Io`
+/// (a pair of pointers into a static vtable — the read is essentially
+/// free). Same escape hatch used by the render mutex; see phase-5
+/// option 3 in `docs/zig-0.16-io-migration.md`.
 fn getTimestamp() i64 {
-    return platform.time.milliTimestamp();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }
 
 test "TextInput basic operations" {

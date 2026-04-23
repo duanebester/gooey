@@ -67,16 +67,16 @@ pub const DispatchNodeId = enum(u32) {
 /// on first listener registration. Retained across frames (cleared, not freed).
 /// Size: 10 × ArrayListUnmanaged = 240 bytes (vs 8 bytes for the pointer in DispatchNode).
 pub const ListenerBlock = struct {
-    click_listeners: std.ArrayListUnmanaged(ClickListener) = .{},
-    click_listeners_ctx: std.ArrayListUnmanaged(ClickListenerWithContext) = .{},
-    click_listeners_data: std.ArrayListUnmanaged(ClickListenerWithData) = .{},
-    mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .{},
-    key_down_listeners: std.ArrayListUnmanaged(KeyListener) = .{},
-    simple_key_listeners: std.ArrayListUnmanaged(SimpleKeyListener) = .{},
-    action_listeners: std.ArrayListUnmanaged(ActionListener) = .{},
-    click_listeners_handler: std.ArrayListUnmanaged(ClickListenerHandler) = .{},
-    action_listeners_handler: std.ArrayListUnmanaged(ActionListenerHandler) = .{},
-    click_outside_listeners: std.ArrayListUnmanaged(ClickOutsideListener) = .{},
+    click_listeners: std.ArrayListUnmanaged(ClickListener) = .empty,
+    click_listeners_ctx: std.ArrayListUnmanaged(ClickListenerWithContext) = .empty,
+    click_listeners_data: std.ArrayListUnmanaged(ClickListenerWithData) = .empty,
+    mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .empty,
+    key_down_listeners: std.ArrayListUnmanaged(KeyListener) = .empty,
+    simple_key_listeners: std.ArrayListUnmanaged(SimpleKeyListener) = .empty,
+    action_listeners: std.ArrayListUnmanaged(ActionListener) = .empty,
+    click_listeners_handler: std.ArrayListUnmanaged(ClickListenerHandler) = .empty,
+    action_listeners_handler: std.ArrayListUnmanaged(ActionListenerHandler) = .empty,
+    click_outside_listeners: std.ArrayListUnmanaged(ClickOutsideListener) = .empty,
 
     pub fn deinit(self: *ListenerBlock, allocator: std.mem.Allocator) void {
         self.click_listeners.deinit(allocator);
@@ -309,19 +309,19 @@ pub const DispatchTree = struct {
     allocator: std.mem.Allocator,
 
     /// All nodes in the tree (flat array, indices are DispatchNodeId)
-    nodes: std.ArrayListUnmanaged(DispatchNode) = .{},
+    nodes: std.ArrayListUnmanaged(DispatchNode) = .empty,
 
     /// Stack of open nodes during tree construction
-    node_stack: std.ArrayListUnmanaged(DispatchNodeId) = .{},
+    node_stack: std.ArrayListUnmanaged(DispatchNodeId) = .empty,
 
     /// Map from layout ID to dispatch node (for syncing bounds)
-    layout_to_node: std.AutoHashMapUnmanaged(u32, DispatchNodeId) = .{},
+    layout_to_node: std.AutoHashMapUnmanaged(u32, DispatchNodeId) = .empty,
 
     /// Map from focus ID hash to dispatch node (for keyboard routing)
-    focus_to_node: std.AutoHashMapUnmanaged(u64, DispatchNodeId) = .{},
+    focus_to_node: std.AutoHashMapUnmanaged(u64, DispatchNodeId) = .empty,
 
     /// Nodes with click-outside listeners (for fast iteration instead of scanning all nodes)
-    click_outside_nodes: std.ArrayListUnmanaged(DispatchNodeId) = .{},
+    click_outside_nodes: std.ArrayListUnmanaged(DispatchNodeId) = .empty,
 
     /// Root node ID
     root: DispatchNodeId = .invalid,
@@ -377,7 +377,13 @@ pub const DispatchTree = struct {
             node.resetListeners();
         }
 
-        self.nodes.clearRetainingCapacity();
+        // Zig 0.16.0 changed clearRetainingCapacity to @memset(items, undefined)
+        // before zeroing the length. That poisons the backing buffer and breaks
+        // the high_water_mark reuse pattern in pushNode, which intentionally
+        // reads old node data (especially the `listeners` pointer) from the
+        // backing buffer after bumping items.len. Set length to zero directly
+        // so the backing memory stays intact for reuse.
+        self.nodes.items.len = 0;
         self.node_stack.clearRetainingCapacity();
         self.layout_to_node.clearRetainingCapacity();
         self.focus_to_node.clearRetainingCapacity();

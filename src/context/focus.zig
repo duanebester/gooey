@@ -162,7 +162,7 @@ pub const FocusManager = struct {
 
     /// Tab order for keyboard navigation
     /// Rebuilt each frame during render
-    focus_order: std.ArrayListUnmanaged(FocusHandle) = .{},
+    focus_order: std.ArrayListUnmanaged(FocusHandle) = .empty,
 
     /// Index into focus_order for current focus (-1 if nothing focused)
     focus_index: i32 = -1,

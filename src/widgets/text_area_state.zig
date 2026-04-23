@@ -9,7 +9,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const platform = @import("../platform/mod.zig");
 
 // Clipboard support (platform-specific)
 const clipboard = if (builtin.os.tag == .macos)
@@ -177,16 +176,16 @@ pub const TextArea = struct {
             }
         }.get();
 
-        var line_starts = std.ArrayList(usize){};
+        var line_starts: std.ArrayList(usize) = .empty;
         line_starts.append(allocator, 0) catch {};
 
         return .{
             .allocator = allocator,
             .bounds = bounds,
             .style = .{},
-            .buffer = .{},
+            .buffer = .empty,
             .line_starts = line_starts,
-            .preedit_buffer = .{},
+            .preedit_buffer = .empty,
             .id = ElementId.int(unique_id),
             .edit_history = EditHistory.create(allocator),
         };
@@ -195,16 +194,16 @@ pub const TextArea = struct {
     /// Initialize TextArea with a string ID
     /// Marked noinline to prevent stack accumulation
     pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
-        var line_starts = std.ArrayList(usize){};
+        var line_starts: std.ArrayList(usize) = .empty;
         line_starts.append(allocator, 0) catch {};
 
         return .{
             .allocator = allocator,
             .bounds = bounds,
             .style = .{},
-            .buffer = .{},
+            .buffer = .empty,
             .line_starts = line_starts,
-            .preedit_buffer = .{},
+            .preedit_buffer = .empty,
             .id = ElementId.named(id),
             .edit_history = EditHistory.create(allocator),
         };
@@ -234,7 +233,7 @@ pub const TextArea = struct {
         const aliases = text_start < buf_end and text_end > buf_start;
 
         if (aliases) {
-            var temp = std.ArrayList(u8){};
+            var temp: std.ArrayList(u8) = .empty;
             try temp.appendSlice(self.allocator, text);
             self.buffer.clearRetainingCapacity();
             try self.buffer.appendSlice(self.allocator, temp.items);
@@ -339,7 +338,7 @@ pub const TextArea = struct {
     /// Update line index incrementally after inserting text at position
     fn updateLineIndexAfterInsert(self: *Self, insert_pos: usize, inserted_text: []const u8) void {
         // Count newlines in inserted text and their positions
-        var new_line_offsets = std.ArrayList(usize){};
+        var new_line_offsets: std.ArrayList(usize) = .empty;
         defer new_line_offsets.deinit(self.allocator);
 
         for (inserted_text, 0..) |c, i| {
@@ -1531,8 +1530,16 @@ pub const TextArea = struct {
     }
 };
 
+/// Monotonic millisecond timestamp for edit-history entries and the cursor
+/// blink timer. See the matching comment in `text_input_state.zig` — we
+/// reach for the process-lifetime single-threaded `Io` here because every
+/// keystroke path would otherwise need to thread `io` through
+/// `handleKey`/`insertText` and friends. `.awake` is the correct clock:
+/// edit history wants a stable monotonic ordering, and blink deltas must
+/// not jump if the wall clock is adjusted.
 fn getTimestamp() i64 {
-    return platform.time.milliTimestamp();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }
 
 // =============================================================================
