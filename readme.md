@@ -10,20 +10,11 @@ Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
 [![CI](https://github.com/duanebester/gooey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/duanebester/gooey/actions/workflows/ci.yml)
 
-<table>
-  <tr>
-    <td><img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/gooey-light.png" height="300px" /></td>
-    <td><img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/gooey-dark.png" height="300px" /></td>
-  </tr>
-  <tr>
-    <td><img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/gooey-shader.png" height="300px" /></td>
-    <td><img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/gooey-shader2.png" height="300px" /></td>
-  </tr>
-</table>
+Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/chat-zig), an Anthropic Claude client using the Zig 0.16 `std.Io` stack for async HTTP:
 
-WASM support!
-
-<img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/gooey-wasm.png" height="300px" />
+<a href="https://github.com/duanebester/chat-zig">
+  <img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/chat-zig.png" height="360px" />
+</a>
 
 ## Features
 
