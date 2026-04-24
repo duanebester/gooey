@@ -565,6 +565,12 @@ pub fn build(b: *std.Build) void {
 
         const mod_tests = b.addTest(.{
             .root_module = mod,
+            // Force the LLVM backend on Linux: the self-hosted x86_64 backend
+            // in Zig 0.16 is the default for Debug builds but still segfaults
+            // on larger test binaries (see 0.16.0 release notes — "inferior
+            // machine code quality" and still-stabilizing). Using LLVM trades
+            // a bit of compile time for a backend that actually completes.
+            .use_llvm = true,
         });
         linkLinuxLibraries(mod_tests);
         if (!skip_shader_compile) {
@@ -598,6 +604,10 @@ pub fn build(b: *std.Build) void {
         // Separate test artifact for valgrind with baseline CPU
         const valgrind_tests = b.addTest(.{
             .root_module = valgrind_mod,
+            // Force LLVM for the same reason as mod_tests above. Valgrind
+            // also requires full DWARF, which the self-hosted backend does
+            // not yet emit completely.
+            .use_llvm = true,
         });
         linkLinuxLibraries(valgrind_tests);
         if (!skip_shader_compile) {
