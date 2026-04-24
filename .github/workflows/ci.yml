@@ -28,7 +28,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZIG_VERSION: "0.15.2"
+  # Must be >= 0.16.0: build.zig.zon sets minimum_zig_version to 0.16.0,
+  # and the pinned zig-objc dependency (c8de82f) calls the Zig 0.16
+  # three-argument std.zig.system.darwin.getSdk(allocator, io, target) API.
+  ZIG_VERSION: "0.16.0"
 
 jobs:
   # ==========================================================================
