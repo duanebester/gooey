@@ -8,7 +8,7 @@
 #   - test-macos: Run unit tests on macOS
 #   - build-linux: Build all optimization levels on Linux
 #   - build-macos: Build all optimization levels on macOS
-#   - build-wasm: Build WebAssembly targets
+#   - build-wasm: Build WebAssembly targets (disabled — pending Zig 0.16 support)
 #   - valgrind: Memory leak detection (Linux only)
 #   - zig-fmt: Code formatting check
 # =============================================================================
@@ -45,7 +45,6 @@ jobs:
       - test-macos
       - build-linux
       - build-macos
-      - build-wasm
       - valgrind
       - zig-fmt
       - bench-macos
@@ -226,45 +225,9 @@ jobs:
   # ==========================================================================
   # WebAssembly Build
   # ==========================================================================
-  build-wasm:
-    name: Build (WASM)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Cache Zig
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/zig
-            zig-cache
-          key: zig-cache-wasm-${{ hashFiles('build.zig', 'build.zig.zon') }}
-          restore-keys: |
-            zig-cache-wasm-
-
-      - name: Build WASM (showcase)
-        run: zig build wasm
-
-      - name: Build WASM examples
-        run: |
-          zig build wasm-counter
-          zig build wasm-dynamic-counters
-          zig build wasm-pomodoro
-          zig build wasm-layout
-          zig build wasm-select
-
-      - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: wasm-build
-          path: zig-out/web/
-          retention-days: 7
+  # NOTE: WASM builds are temporarily disabled. The WASM targets are not
+  # yet compatible with Zig 0.16 — re-enable once the WASM build path has
+  # been updated.
 
   # ==========================================================================
   # Benchmarks (macOS)
