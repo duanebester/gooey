@@ -436,11 +436,13 @@ fn urisToPathResult(allocator: std.mem.Allocator, uris: [][]const u8) ?PathPromp
 
 /// Generate a unique token for request handles
 fn generateToken(buf: *[64]u8) [:0]const u8 {
-    // Use timestamp for uniqueness
-    const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{
-        .sec = 0,
-        .nsec = 12345,
-    };
+    // Use timestamp for uniqueness. std.posix.clock_gettime was removed in
+    // Zig 0.16 (see "posix and os.windows removals" in the 0.16.0 release
+    // notes). We link libc on Linux, so call the libc symbol directly and
+    // fall back to a fixed value on failure — the token only needs to be
+    // unique-ish per request.
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 12345 };
+    _ = std.c.clock_gettime(.REALTIME, &ts);
 
     const hash: u64 = @bitCast(ts.sec *% 1000000000 +% ts.nsec);
     const len = std.fmt.bufPrint(buf[0..63], "gooey_{x}", .{hash}) catch return "gooey_token";

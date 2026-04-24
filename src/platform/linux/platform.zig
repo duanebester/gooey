@@ -1112,9 +1112,12 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = keyboard;
-        // Close the fd - we're not using xkbcommon yet
-        // In a full implementation, we'd mmap this and parse the keymap
-        std.posix.close(fd);
+        // Close the fd - we're not using xkbcommon yet.
+        // In a full implementation, we'd mmap this and parse the keymap.
+        // std.posix.close was removed in Zig 0.16 ("posix and os.windows
+        // removals" in the release notes); libc is linked on Linux so we
+        // call the libc symbol directly.
+        _ = std.c.close(fd);
         // Keymap received - in a full implementation we'd parse this with xkbcommon
     }
 

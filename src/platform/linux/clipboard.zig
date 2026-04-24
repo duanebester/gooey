@@ -440,12 +440,15 @@ pub const ClipboardState = struct {
             _ = wayland.wl_display_flush(display);
         }
 
-        // Close write end - we only read
-        std.posix.close(@intCast(write_fd));
+        // Close write end - we only read.
+        // std.posix.close was removed in Zig 0.16 (see "posix and os.windows
+        // removals" in the 0.16.0 release notes). We link libc in this module,
+        // so call the libc symbol directly via std.c.
+        _ = std.c.close(@intCast(write_fd));
 
         // Read data from pipe
         var buffer = allocator.alloc(u8, MAX_CLIPBOARD_SIZE) catch {
-            std.posix.close(@intCast(read_fd));
+            _ = std.c.close(@intCast(read_fd));
             return null;
         };
 
@@ -456,7 +459,7 @@ pub const ClipboardState = struct {
             total_read += n;
         }
 
-        std.posix.close(@intCast(read_fd));
+        _ = std.c.close(@intCast(read_fd));
 
         if (total_read == 0) {
             allocator.free(buffer);
@@ -516,19 +519,28 @@ pub const ClipboardState = struct {
     /// Handle send request - write our data to the fd
     fn handleSend(self: *Self, fd: i32) void {
         if (self.copy_len == 0) {
-            std.posix.close(@intCast(fd));
+            _ = std.c.close(@intCast(fd));
             return;
         }
 
-        // Write data to fd
+        // Write data to fd. std.posix.write was also removed in Zig 0.16;
+        // drop to the libc symbol directly and handle EINTR ourselves since
+        // std.c.write does not retry.
         var written: usize = 0;
         while (written < self.copy_len) {
-            const n = std.posix.write(@intCast(fd), self.copy_buffer[written..self.copy_len]) catch break;
-            if (n == 0) break;
-            written += n;
+            const remaining = self.copy_buffer[written..self.copy_len];
+            const rc = std.c.write(@intCast(fd), remaining.ptr, remaining.len);
+            if (rc < 0) {
+                // Retry on EINTR, otherwise give up.
+                const err = std.posix.errno(rc);
+                if (err == .INTR) continue;
+                break;
+            }
+            if (rc == 0) break;
+            written += @intCast(rc);
         }
 
-        std.posix.close(@intCast(fd));
+        _ = std.c.close(@intCast(fd));
     }
 
     /// Handle cancelled event - our selection was replaced
