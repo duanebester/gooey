@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
@@ -102,7 +102,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cache Zig
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/zig
@@ -122,7 +122,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -130,7 +130,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cache Zig
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/zig
@@ -155,7 +155,7 @@ jobs:
         optimize: [Debug, ReleaseSafe, ReleaseFast, ReleaseSmall]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
@@ -175,7 +175,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cache Zig
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/zig
@@ -201,7 +201,7 @@ jobs:
         optimize: [Debug, ReleaseSafe, ReleaseFast]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -209,7 +209,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cache Zig
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/zig
@@ -238,7 +238,7 @@ jobs:
     needs: test-macos
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -246,7 +246,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cache Zig
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/zig
@@ -260,7 +260,7 @@ jobs:
         run: zig build bench-all -Dbench-json-dir=bench-results
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: bench-macos
@@ -284,7 +284,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -292,7 +292,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cache Zig
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/zig
@@ -407,7 +407,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
@@ -429,7 +429,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cache Zig
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/zig
@@ -450,7 +450,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
