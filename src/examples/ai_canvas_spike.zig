@@ -6,7 +6,7 @@
 //! This is throwaway spike code. It proves:
 //! - canvas(w, h, paintFn) → paintFn(ctx: *DrawContext) → ctx.fillRect(...) chain works
 //! - A global `var state` can hold draw data that the paint callback reads
-//! - The pattern from canvas_drawing.zig generalizes to a command-buffer approach
+//! - The paint-callback pattern generalizes to a command-buffer approach
 //!
 //! What this does NOT have:
 //! - No DrawCommand tagged union, no TextPool, no JSON parsing
