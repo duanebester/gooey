@@ -1,9 +1,9 @@
 //! Animation Demo — Springs, Motion Containers, and Stagger
 //!
 //! Showcases the full animation toolkit:
-//! - `cx.animate` / `cx.animateOn` — basic tween animations
-//! - `cx.springMotionComptime` — interruptible enter/exit with spring physics
-//! - `cx.staggerComptime` — cascading list entry animations
+//! - `cx.animations.tween` / `cx.animations.tweenOn` — basic tween animations
+//! - `cx.animations.springMotionComptime` — interruptible enter/exit with spring physics
+//! - `cx.animations.staggerComptime` — cascading list entry animations
 const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
@@ -63,7 +63,7 @@ fn render(cx: *Cx) void {
     std.debug.assert(size.width > 0);
     std.debug.assert(size.height > 0);
 
-    const fade_in = cx.animate("main-fade", .{ .duration_ms = 500 });
+    const fade_in = cx.animations.tween("main-fade", .{ .duration_ms = 500 });
 
     cx.render(ui.box(.{
         .width = size.width,
@@ -132,7 +132,7 @@ const CounterDisplay = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Restarts each time count changes — velocity not preserved (tween)
-        const pulse = cx.animateOn("count-pulse", self.count, .{
+        const pulse = cx.animations.tweenOn("count-pulse", self.count, .{
             .duration_ms = 200,
             .easing = Easing.easeOutBack,
         });
@@ -170,7 +170,7 @@ const PanelSection = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         // Spring motion: velocity is preserved on rapid toggle.
         // No manual progress reversal, no manual "keep rendering during exit".
-        const m = cx.springMotionComptime("panel-spring", self.show, .snappy);
+        const m = cx.animations.springMotionComptime("panel-spring", self.show, .snappy);
 
         std.debug.assert(m.progress >= 0.0);
         std.debug.assert(m.progress <= 1.0 or m.phase == .entering);
@@ -201,7 +201,7 @@ const StaggeredListSection = struct {
     show: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const m = cx.springMotionComptime("list-container", self.show, .snappy);
+        const m = cx.animations.springMotionComptime("list-container", self.show, .snappy);
 
         std.debug.assert(m.progress >= 0.0);
         std.debug.assert(list_items.len <= 512); // MAX_STAGGER_ITEMS
@@ -268,7 +268,7 @@ const StaggeredRow = struct {
     container_exiting: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const anim = cx.staggerComptime("list-enter", self.index, self.total, .list);
+        const anim = cx.animations.staggerComptime("list-enter", self.index, self.total, .list);
         const item = list_items[self.index];
 
         std.debug.assert(anim.progress >= 0.0);
@@ -304,7 +304,7 @@ const StaggeredRow = struct {
 
 const LoadingSpinner = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        const pulse = cx.animate("spinner", .{
+        const pulse = cx.animations.tween("spinner", .{
             .duration_ms = 1000,
             .easing = Easing.easeInOut,
             .mode = .ping_pong,

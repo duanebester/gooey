@@ -136,7 +136,7 @@ const FileList = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        cx.uniformList(
+        cx.lists.uniform(
             "file-list",
             &s.list_state,
             .{

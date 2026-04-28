@@ -481,7 +481,7 @@ const FormActions = struct {
         const t = cx.theme();
 
         if (s.pending_focus) |field_id| {
-            cx.focusTextField(field_id);
+            cx.focus.widget(field_id);
             s.pending_focus = null;
         }
 

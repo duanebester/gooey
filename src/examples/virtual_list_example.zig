@@ -202,8 +202,8 @@ const ChatList = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        // Use cx.virtualList() - render callback receives *Cx and returns height
-        cx.virtualList(
+        // Use cx.lists.virtual() - render callback receives *Cx and returns height
+        cx.lists.virtual(
             "chat-list",
             &s.list_state,
             .{

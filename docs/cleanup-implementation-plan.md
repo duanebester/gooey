@@ -89,7 +89,7 @@ them out here so they don't get re-litigated in review:
 | 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☑                     |
 | 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☑                     |
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                     |
-| 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☐                     |
+| 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                     |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☐                     |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ☐                     |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                     |
@@ -616,34 +616,76 @@ After this PR, dependency direction is monotonic upward.
 
 ## PR 5 — `cx.zig` sub-namespacing
 
+**Status: ☑ landed.** `wc -l src/cx.zig` = 788 (down from 1,972), all
+1,026/1,026 tests pass. Branch `cleanup/pr-5-cx-namespacing`.
+
 **Goal:** drop `cx.zig` from ~1,971 lines by sub-namespacing the
 widget-coordination APIs. **Additive — no removal yet.**
 
-**Write scope:**
+**Write scope (landed):**
 
-- `src/cx.zig` (mostly deletions / one-line forwarders)
-- `src/cx/lists.zig` (new)
-- `src/cx/animate.zig` (new)
-- `src/cx/entities.zig` (new)
-- `src/cx/focus.zig` (new)
+- `src/cx.zig` — mostly deletions and one-line forwarders.
+- `src/cx_tests.zig` (new) — pattern tests moved out of `cx.zig` to
+  keep it under the line budget; pulled back into the test graph via
+  `comptime _ = @import("cx_tests.zig")` near the top of `cx.zig`.
+- `src/cx/lists.zig` (new) — `Lists` namespace.
+- `src/cx/animations.zig` (new) — `Animations` namespace. Named
+  plural to avoid colliding with the still-deprecated `cx.animate`
+  forwarder; the singular slot frees up in PR 9.
+- `src/cx/entities.zig` (new) — `Entities` namespace.
+- `src/cx/focus.zig` (new) — `Focus` namespace.
 
 **Tasks:**
 
-- [ ] Move all `cx.uniformList`/`treeList`/`virtualList`/`dataTable`
-      bodies into `cx/lists.zig`. `cx.lists.uniform(…)` is the new
-      callsite.
-- [ ] Same shape for animate, entities, focus.
-- [ ] Old top-level methods become one-line forwarders marked with a
+- [x] Move all `cx.uniformList` / `treeList` / `virtualList` /
+      `dataTable` bodies into `cx/lists.zig`. `cx.lists.uniform(…)`
+      is the new callsite.
+- [x] Same shape for animations, entities, focus. Inside each
+      namespace, the redundant prefix is dropped — see the migration
+      tables in the new modules' doc comments
+      (`cx.animate` → `cx.animations.tween`,
+      `cx.createEntity` → `cx.entities.create`,
+      `cx.focusNext` → `cx.focus.next`, etc).
+- [x] Old top-level methods become one-line forwarders marked with a
       `// Deprecated:` comment pointing to the new location.
       Removal happens in PR 9.
-- [ ] Update examples and docs to use the sub-namespaced form.
-- [ ] 0.16: nothing material in this PR.
+- [x] Update examples and docs to use the sub-namespaced form.
+      Updated: `uniform_list_example.zig`, `tree_example.zig`,
+      `code_editor.zig`, `virtual_list_example.zig`,
+      `data_table_example.zig`, `lucide_demo.zig`, `animation.zig`,
+      `dynamic_counters.zig`, `form_validation.zig`.
+- [x] 0.16: nothing material in this PR.
 
 **Definition of done:**
 
-- `wc -l src/cx.zig` < 800.
-- Both `cx.uniformList(…)` and `cx.lists.uniform(…)` work and produce
-  identical output.
+- [x] `wc -l src/cx.zig` < 800 (landed at **788**).
+- [x] Both `cx.uniformList(…)` and `cx.lists.uniform(…)` work — the
+      forwarders on `Cx` are one-line calls into the namespace
+      bodies, so the deprecated and new call shapes route through
+      identical code. New tests in `cx_tests.zig` pin the
+      decl-existence side of this contract and assert that the
+      `DataTableCallbacks` alias produces the _same_ type from both
+      namespaces.
+
+**Implementation notes:**
+
+- Each namespace marker (`Lists`, `Animations`, `Entities`, `Focus`)
+  is a zero-sized struct that lives as a default-initialised field on
+  `Cx`. Methods on those structs recover `*Cx` via
+  `@fieldParentPtr`. That gives the documented `cx.lists.uniform(…)`
+  call shape with no extra parens at the call site, no extra storage,
+  and no aliasing of the `*Cx` pointer (CLAUDE.md §10).
+- Each namespace has a `_align: [0]usize = .{}` field. Without it,
+  the zero-sized field would limit `Cx`'s alignment to 1 and
+  `@fieldParentPtr` would refuse to recover the parent pointer with
+  "increases pointer alignment". `[0]usize` adds zero bytes but
+  bumps the struct's alignment requirement to match the rest of
+  `Cx`. A unit test asserts `@sizeOf` stays zero for every namespace
+  marker so a future field accidentally sneaking in will fail loudly
+  rather than silently bloating the hot context struct.
+- The redundant `computeTriggerHash` helper from the old `cx.zig`
+  was relocated — not duplicated — into `cx/animations.zig`. The
+  deprecated forwarders on `Cx` route through that single copy.
 
 ---
 

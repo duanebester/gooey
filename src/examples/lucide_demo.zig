@@ -144,7 +144,7 @@ const IconGrid = struct {
         std.debug.assert(TOTAL_ROWS > 0);
         std.debug.assert(state.list_state.item_count == TOTAL_ROWS);
 
-        cx.uniformList("icon-grid", &state.list_state, .{
+        cx.lists.uniform("icon-grid", &state.list_state, .{
             .fill_width = true,
             .grow_height = true,
             .background = ui.Color.hex(0x0f172a),

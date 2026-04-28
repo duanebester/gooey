@@ -463,7 +463,7 @@ const DataTable = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        cx.dataTable(
+        cx.lists.dataTable(
             "main-table",
             &s.table_state,
             .{

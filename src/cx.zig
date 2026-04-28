@@ -1,77 +1,37 @@
-//! Cx - The Unified Rendering Context
+//! `Cx` — the unified rendering context.
 //!
-//! Includes `cx.changed()` for per-frame value change detection.
+//! `Cx` is the single entry point that render functions and components
+//! receive each frame. It groups:
 //!
-//! Provides access to:
-//! - Rendering via `cx.render()` with `ui.*` elements
-//! - Application state
-//! - Window operations
-//! - Entity system
-//! - Focus management
+//!   * State access — `cx.state(AppState)` / `cx.stateConst(AppState)`.
+//!   * Rendering    — `cx.render(ui.box(...))`.
+//!   * Handlers     — `cx.update`, `cx.updateWith`, `cx.command`,
+//!                    `cx.commandWith`, `cx.onSelect`, `cx.defer`.
+//!   * Sub-namespaces (PR 5): `cx.lists`, `cx.animations`,
+//!                    `cx.entities`, `cx.focus`.
 //!
-//! ## Rendering Pattern
+//! Handler signatures, in order of "purity":
 //!
-//! Use `cx.render()` with UI primitives from `gooey.ui`:
+//!   | API                          | Method shape                |
+//!   | ---------------------------- | --------------------------- |
+//!   | `cx.update(M)`               | `fn(*State) void`           |
+//!   | `cx.updateWith(arg, M)`      | `fn(*State, Arg) void`      |
+//!   | `cx.command(M)`              | `fn(*State, *Gooey) void`   |
+//!   | `cx.commandWith(arg, M)`     | `fn(*State, *Gooey, A) void`|
 //!
-//! ```zig
-//! const ui = gooey.ui;
-//!
-//! fn render(cx: *gooey.Cx) void {
-//!     const s = cx.state(AppState);
-//!
-//!     cx.render(ui.vstack(.{ .gap = 8 }, .{
-//!         ui.text("Hello", .{}),
-//!         ui.hstack(.{ .gap = 4 }, .{
-//!             ui.text("Count: ", .{}),
-//!             ui.textFmt("{}", .{s.count}, .{}),
-//!         }),
-//!     }));
-//! }
-//! ```
-//!
-//! ## Handler Types
-//!
-//! | API | Signature | Use Case |
-//! |-----|-----------|----------|
-//! | `cx.update(method)` | `fn(*State) void` | Pure state mutation |
-//! | `cx.updateWith(arg, method)` | `fn(*State, Arg) void` | Pure with data |
-//! | `cx.command(method)` | `fn(*State, *Gooey) void` | Framework ops |
-//! | `cx.commandWith(arg, method)` | `fn(*State, *Gooey, Arg) void` | Framework ops + data |
-//!
-//! ## Example
-//!
-//! ```zig
-//! const gooey = @import("gooey");
-//! const ui = gooey.ui;
-//!
-//! const AppState = struct {
-//!     count: i32 = 0,
-//!
-//!     pub fn increment(self: *AppState) void {
-//!         self.count += 1;
-//!     }
-//!
-//!     pub fn setCount(self: *AppState, value: i32) void {
-//!         self.count = value;
-//!     }
-//! };
-//!
-//! fn render(cx: *gooey.Cx) void {
-//!     const s = cx.state(AppState);
-//!     const size = cx.windowSize();
-//!
-//!     cx.render(ui.box(.{
-//!         .width = size.width,
-//!         .height = size.height,
-//!     }, .{
-//!         ui.textFmt("Count: {}", .{s.count}, .{}),
-//!         gooey.Button{ .label = "+", .on_click_handler = cx.update(AppState.increment) },
-//!         gooey.Button{ .label = "Reset", .on_click_handler = cx.updateWith(@as(i32, 0), AppState.setCount) },
-//!     }));
-//! }
-//! ```
+//! Examples live in `examples/` and the integration tests under
+//! `cx_tests.zig`.
 
 const std = @import("std");
+
+// Pull in the split-out test file so `zig build test` discovers its
+// tests through the standard reachability graph. The block runs at
+// comptime and produces no runtime cost. PR 5 of the cleanup plan
+// moved the pattern tests out of `cx.zig` to keep this file under
+// the 800-line budget — see `cx_tests.zig` for the bodies.
+comptime {
+    _ = @import("cx_tests.zig");
+}
 
 // Core imports
 const gooey_mod = @import("context/gooey.zig");
@@ -142,15 +102,17 @@ const EntityContext = entity_mod.EntityContext;
 // UI types (re-exported from root.zig for users)
 const Theme = ui_mod.Theme;
 
-/// Cx - The unified rendering context
-///
-/// Provides a single entry point for:
-/// - State access: `cx.state(AppState)`
-/// - Rendering: `cx.render(ui.box(...))`, `cx.render(ui.vstack(...))`
-/// - Handler creation: `cx.update()`, `cx.command()`, etc.
-/// - Entity operations: `cx.createEntity()`, `cx.entityCx()`, etc.
-/// - Window operations: `cx.windowSize()`, `cx.scaleFactor()`, etc.
-/// - Focus management: `cx.focusNext()`, `cx.blurAll()`, etc.
+// Sub-namespace modules (PR 5). Each exposes a zero-sized struct
+// that lives as a field on `Cx`; methods on those structs recover
+// `*Cx` via `@fieldParentPtr`, giving the `cx.lists.uniform(...)` /
+// `cx.animations.spring(...)` call shape without extra storage
+// (CLAUDE.md §10 — don't take aliases) and without extra parens.
+const lists_mod = @import("cx/lists.zig");
+const animations_mod = @import("cx/animations.zig");
+const entities_mod = @import("cx/entities.zig");
+const focus_mod = @import("cx/focus.zig");
+
+/// `Cx` — see the file-level doc.
 pub const Cx = struct {
     _allocator: std.mem.Allocator,
 
@@ -169,21 +131,30 @@ pub const Cx = struct {
     /// Internal ID counter for generated IDs
     id_counter: u32 = 0,
 
+    // Sub-namespaces (PR 5). Zero-sized fields default-initialised so
+    // existing call-site struct literals (e.g. in `runtime/window_context.zig`)
+    // keep compiling untouched. `animations` is plural to avoid
+    // colliding with the deprecated `cx.animate(...)` method (PR 9
+    // removes the forwarder and frees up the singular name).
+    lists: lists_mod.Lists = .{},
+    animations: animations_mod.Animations = .{},
+    entities: entities_mod.Entities = .{},
+    focus: focus_mod.Focus = .{},
+
     const Self = @This();
 
     // =========================================================================
     // State Access
     // =========================================================================
 
-    /// Get mutable access to the application state.
-    ///
-    /// The type must match the state type passed to `runCx`.
+    /// Mutable access to the application state. The type must match
+    /// the one passed to `runCx`; the assertion enforces that.
     pub fn state(self: *Self, comptime T: type) *T {
         std.debug.assert(self.state_type_id == typeId(T));
         return @ptrCast(@alignCast(self.state_ptr));
     }
 
-    /// Get read-only access to the application state.
+    /// Read-only access to the application state.
     pub fn stateConst(self: *Self, comptime T: type) *const T {
         return self.state(T);
     }
@@ -210,19 +181,14 @@ pub const Cx = struct {
         self._gooey.window.setTitle(title);
     }
 
-    /// Change the font at runtime.
-    /// Clears glyph and shape caches and triggers a re-render.
-    ///
-    /// Example:
-    /// ```
-    /// cx.setFont("JetBrains Mono", 14.0);
-    /// ```
+    /// Change the font at runtime. Clears glyph / shape caches and
+    /// triggers a re-render.
     pub fn setFont(self: *Self, name: []const u8, size: f32) !void {
         try self._gooey.setFont(name, size);
     }
 
-    /// Set the glass/blur effect style for the window.
-    /// Only has an effect on platforms that support glass effects (e.g., macOS).
+    /// Set the glass / blur effect style for the window. No-op on
+    /// platforms without native glass support (currently: web).
     pub fn setGlassStyle(
         self: *Self,
         style: anytype,
@@ -240,8 +206,8 @@ pub const Cx = struct {
         }
     }
 
-    /// Close the window (and exit the application).
-    /// On web platforms, this is a no-op since browser tabs can't be closed programmatically.
+    /// Close the window (and exit the application). No-op on web —
+    /// browser tabs can't be closed programmatically.
     pub fn close(self: *Self) void {
         const platform = @import("platform/mod.zig");
 
@@ -254,25 +220,18 @@ pub const Cx = struct {
         }
     }
 
-    /// Quit the application immediately.
-    /// On web platforms, this is a no-op since browser tabs can't be closed programmatically.
+    /// Quit the application immediately. No-op on web.
     pub fn quit(self: *Self) void {
         self._gooey.quit();
     }
 
     // =========================================================================
-    // Pure State Handlers - update / updateWith
+    // Pure state handlers — `update` / `updateWith`
     // =========================================================================
 
-    /// Create a handler from a pure state method.
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The method should be `fn(*State) void` - no context parameter.
-    /// After the method is called, the UI automatically re-renders.
-    ///
-    /// ```zig
-    /// Button{ .label = "+", .on_click_handler = cx.update(AppState.increment) }
-    /// ```
+    /// Handler from a pure state method `fn(*State) void`. The State
+    /// type is inferred from the method's first parameter; the UI
+    /// re-renders after the method returns.
     pub fn update(
         self: *Self,
         comptime method: anytype,
@@ -294,17 +253,9 @@ pub const Cx = struct {
         };
     }
 
-    /// Create a handler from a pure state method that takes an argument.
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The method should be `fn(*State, ArgType) void`.
-    /// The argument is captured and passed when the handler is invoked.
-    ///
-    /// **Note:** The argument must fit in 8 bytes (u64).
-    ///
-    /// ```zig
-    /// Button{ .label = "Reset", .on_click_handler = cx.updateWith(@as(i32, 0), AppState.setCount) }
-    /// ```
+    /// Handler from `fn(*State, Arg) void`. `arg` is captured at
+    /// handler-creation time and must fit in 8 bytes (use a pointer
+    /// or index for larger payloads — the comptime check enforces it).
     pub fn updateWith(
         self: *Self,
         arg: anytype,
@@ -338,27 +289,14 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Select Handler - onSelect (Index-Based Selection)
+    // Index-based select handler — `onSelect`
     // =========================================================================
 
-    /// Create an index-based selection handler for Select, TabBar, etc.
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The method should be `fn(*State, usize) void`.
-    /// Returns an `OnSelectHandler` that the widget uses internally to
-    /// generate per-option `HandlerRef`s — no manual handler arrays needed.
-    ///
-    /// When used with `Select`, the widget also manages open/close state
-    /// internally, so no toggle/close handlers or `is_open` field required.
-    ///
-    /// ```zig
-    /// Select{
-    ///     .id = "my-select",
-    ///     .options = &.{ "A", "B", "C" },
-    ///     .selected = s.selected,
-    ///     .on_select = cx.onSelect(AppState.selectOption),
-    /// }
-    /// ```
+    /// Index-based selection handler from `fn(*State, usize) void`.
+    /// Used by `Select`, `TabBar`, etc — the widget generates
+    /// per-option `HandlerRef`s internally so callers don't have to
+    /// build a handler array. With `Select`, the widget also manages
+    /// its own open/close state.
     pub fn onSelect(
         self: *Self,
         comptime method: anytype,
@@ -367,13 +305,11 @@ pub const Cx = struct {
         const State = comptime ExtractState("onSelect", @TypeOf(method));
 
         const Wrapper = struct {
-            /// Invoked when an option is clicked.
-            ///
-            /// EntityId packing:
-            ///   - If upper 32 bits != 0: lower 32 = index, upper 32 = select id hash
-            ///     (forIndexAndClose path — also closes internal state)
-            ///   - If upper 32 bits == 0: full u64 = usize index
-            ///     (forIndex path — caller manages open/close)
+            // EntityId packing:
+            //   * upper 32 != 0: lower 32 = index, upper 32 = select
+            //     id hash (forIndexAndClose path — also closes internal state)
+            //   * upper 32 == 0: full u64 = usize index (forIndex
+            //     path — caller manages open/close)
             fn invoke(g: *Gooey, packed_arg: EntityId) void {
                 const id_hash = OnSelectHandler.unpackIdHash(packed_arg);
 
@@ -400,21 +336,11 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Command Handlers - command / commandWith (Framework Access)
+    // Command handlers — `command` / `commandWith`
     // =========================================================================
 
-    /// Create a command handler that has framework access.
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The method should be `fn(*State, *Gooey) void`.
-    /// Use this when you need to perform framework operations like:
-    /// - Focus management (`g.focusTextInput()`, `g.blurAll()`)
-    /// - Window operations
-    /// - Entity creation/removal
-    ///
-    /// ```zig
-    /// Button{ .label = "Save", .on_click_handler = cx.command(AppState.save) }
-    /// ```
+    /// Handler from `fn(*State, *Gooey) void`. Use when the method
+    /// needs framework access — focus, window ops, entity churn.
     pub fn command(
         self: *Self,
         comptime method: anytype,
@@ -436,16 +362,8 @@ pub const Cx = struct {
         };
     }
 
-    /// Create a command handler with an argument that has framework access.
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The method should be `fn(*State, *Gooey, ArgType) void`.
-    ///
-    /// **Note:** The argument must fit in 8 bytes (u64).
-    ///
-    /// ```zig
-    /// Button{ .label = "Open", .on_click_handler = cx.commandWith(@as(u32, idx), AppState.openTab) }
-    /// ```
+    /// Handler from `fn(*State, *Gooey, Arg) void`. `arg` follows the
+    /// same 8-byte capture rule as `updateWith`.
     pub fn commandWith(
         self: *Self,
         arg: anytype,
@@ -479,29 +397,12 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Deferred Commands - defer / deferWith
+    // Deferred commands — `defer` / `deferWith`
     // =========================================================================
 
-    /// Schedule a state method to run after current event handling completes.
-    /// Useful for opening dialogs, avoiding re-entrancy, or deferring heavy work.
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The method signature is `fn(*State, *Gooey) void` - same as `command()`.
-    ///
-    /// Example:
-    /// ```
-    /// pub fn openFolder(self: *State, g: *Gooey) void {
-    ///     // Can't open modal dialog mid-event - defer it
-    ///     g.defer(State.openFolderDeferred);
-    /// }
-    ///
-    /// pub fn openFolderDeferred(self: *State, g: *Gooey) void {
-    ///     // Safe to open modal dialog here
-    ///     if (file_dialog.chooseFolder()) |path| {
-    ///         self.loadDirectory(path);
-    ///     }
-    /// }
-    /// ```
+    /// Schedule `fn(*State, *Gooey) void` to run after current event
+    /// handling completes. Use for modal dialogs and other operations
+    /// that can't safely run mid-event (re-entrancy, heavy work).
     pub fn @"defer"(
         self: *Self,
         comptime method: anytype,
@@ -509,23 +410,8 @@ pub const Cx = struct {
         self._gooey.deferCommand(method);
     }
 
-    /// Schedule a state method with an argument to run after current event handling completes.
-    ///
-    /// The method signature is `fn(*State, *Gooey, ArgType) void`.
-    /// The argument must fit in 8 bytes (use a pointer or index for larger data).
-    ///
-    /// Example:
-    /// ```
-    /// pub fn openFile(self: *State, index: u32) void {
-    ///     // Defer the actual file opening
-    ///     g.deferWith(index, State.openFileDeferred);
-    /// }
-    ///
-    /// pub fn openFileDeferred(self: *State, g: *Gooey, index: u32) void {
-    ///     const path = self.files[index].path;
-    ///     // Open file dialog or load file...
-    /// }
-    /// ```
+    /// Schedule `fn(*State, *Gooey, Arg) void` for after-event
+    /// execution. `arg` follows the 8-byte capture rule.
     pub fn deferWith(
         self: *Self,
         arg: anytype,
@@ -535,58 +421,17 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Async Work — Io.Queue(T) Pattern
+    // Async work — `std.Io.Queue(T)` pattern
     // =========================================================================
     //
-    // Cross-thread communication uses std.Io.Queue(T) — a bounded, lock-free
-    // channel with static backing storage. Background work pushes typed results
-    // into the queue; the render loop drains them without blocking.
-    //
-    // Pattern:
-    //
-    //   // 1. Define a result type (in your app):
-    //   const AppResult = union(enum) {
-    //       image_loaded: ImageData,
-    //       fetch_complete: []const u8,
-    //       fetch_error: anyerror,
-    //   };
-    //
-    //   // 2. Create a queue with static storage (in your app state):
-    //   var result_buffer: [32]AppResult = undefined;
-    //   var result_queue: std.Io.Queue(AppResult) = .init(&result_buffer);
-    //
-    //   // 3. Kick off background work (pushes results into the queue):
-    //   var future = cx.io().async(fetchImage, .{ url, &result_queue });
-    //
-    //   // 4. Drain results in render loop (non-blocking):
-    //   var drain_buf: [32]AppResult = undefined;
-    //   for (cx.drainQueue(AppResult, &result_queue, &drain_buf)) |result| {
-    //       switch (result) {
-    //           .image_loaded => |img| self.loaded_image = img,
-    //           .fetch_complete => |data| self.data = data,
-    //           .fetch_error => |err| self.last_error = err,
-    //       }
-    //   }
-    //
+    // Cross-thread communication uses `std.Io.Queue(T)` — a bounded,
+    // lock-free channel with static backing storage. Background work
+    // pushes typed results in; the render loop drains them without
+    // blocking. See `examples/` for end-to-end usage.
 
-    /// Non-blocking drain of an `std.Io.Queue(T)`.
-    ///
-    /// Returns a slice of results filled into the caller-provided buffer.
-    /// Never blocks — returns an empty slice if no results are available.
-    /// Designed for use in render loops where blocking is not acceptable.
-    ///
-    /// The buffer size determines the maximum results drained per call.
-    /// For most apps, 32 elements is sufficient (one frame's worth of results).
-    ///
-    /// Example:
-    /// ```zig
-    /// var drain_buf: [32]MyResult = undefined;
-    /// for (cx.drainQueue(MyResult, &my_queue, &drain_buf)) |result| {
-    ///     switch (result) {
-    ///         .image_loaded => |img| self.loaded_image = img,
-    ///     }
-    /// }
-    /// ```
+    /// Non-blocking drain of an `std.Io.Queue(T)` into the caller's
+    /// buffer. Returns an empty slice if no results are available, so
+    /// it's safe to call every frame from `render`.
     pub fn drainQueue(self: *Self, comptime T: type, queue: *std.Io.Queue(T), buffer: []T) []const T {
         std.debug.assert(buffer.len > 0);
         // Non-blocking: min=0 guarantees immediate return.
@@ -595,113 +440,47 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Structured Cancellation — Io.Group Lifecycle
+    // Structured cancellation — `std.Io.Group` lifecycle
     // =========================================================================
     //
-    // std.Io.Group manages the lifetime of related async tasks. When a group
-    // is cancelled, all tasks in it receive cancellation and the call blocks
-    // until they finish. This makes Group.cancel() safe at teardown but
-    // unsuitable for mid-frame use.
-    //
-    // Two mechanisms exist for automatic cancellation:
-    //
-    //   1. **Cancel group registry** — for app-level groups not tied to entities.
-    //      Registered groups are cancelled when the window closes (Gooey.deinit).
-    //
-    //      cx.registerCancelGroup(&my_state.io_group);
-    //      // ... later, if work completes normally:
-    //      cx.unregisterCancelGroup(&my_state.io_group);
-    //
-    //   2. **Entity-attached groups** — for groups tied to entity lifecycle.
-    //      Cancelled automatically when the entity is removed.
-    //
-    //      const entity = try cx.createEntity(MyData, .{});
-    //      cx.attachEntityCancelGroup(entity.id, &my_data.io_group);
-    //      // When entity is removed, io_group.cancel() is called automatically.
-    //
-    // Pattern — component with async work:
-    //
-    //   const MyComponent = struct {
-    //       io_group: std.Io.Group = .init,
-    //       result_buffer: [32]AppResult = undefined,
-    //       result_queue: std.Io.Queue(AppResult),
-    //
-    //       pub fn startFetch(self: *MyComponent, io: std.Io, url: []const u8) void {
-    //           self.io_group.async(io, fetchData, .{ url, &self.result_queue });
-    //       }
-    //   };
-    //
-    //   // In app init: register for auto-cancel on window close.
-    //   cx.registerCancelGroup(&my_component.io_group);
-    //
-    //   // In render loop: drain results (non-blocking).
-    //   for (cx.drainQueue(AppResult, &my_component.result_queue, &drain_buf)) |result| {
-    //       switch (result) { ... }
-    //   }
-    //
+    // App-level groups: register here, cancelled at window close.
+    // Entity-scoped groups: see `cx.entities.attachCancel`. Group
+    // cancellation blocks; only run it at teardown, never mid-frame.
 
-    /// Register a cancel group for automatic cancellation on window close.
-    ///
-    /// Groups are cancelled during `Gooey.deinit()` — blocking is acceptable
-    /// at that point because we are shutting down. Groups are never cancelled
-    /// mid-frame.
-    ///
-    /// Call `unregisterCancelGroup` if the async work completes normally and
-    /// the group should no longer be cancelled at teardown.
+    /// Register a cancel group for automatic cancellation on window
+    /// close. Pair with `unregisterCancelGroup` if the async work
+    /// completes normally.
     pub fn registerCancelGroup(self: *Self, group: *std.Io.Group) void {
         self._gooey.registerCancelGroup(group);
     }
 
-    /// Unregister a cancel group (e.g., when async work completes normally).
+    /// Unregister a cancel group (e.g. work completed normally).
     pub fn unregisterCancelGroup(self: *Self, group: *std.Io.Group) void {
         self._gooey.unregisterCancelGroup(group);
     }
 
-    /// Attach a cancellation group to an entity.
-    ///
-    /// When the entity is removed (via `EntityContext.remove`, `EntityMap.remove`,
-    /// or during `Gooey.deinit`), the group is cancelled automatically.
-    /// This prevents use-after-free from background tasks that reference entity data.
-    ///
-    /// Only one group per entity. Detach before attaching a different group.
+    // Deprecated: see `cx.entities.attachCancel` / `detachCancel`.
     pub fn attachEntityCancelGroup(self: *Self, id: EntityId, group: *std.Io.Group) void {
-        self._gooey.entities.attachCancelGroup(id, group);
+        self.entities.attachCancel(id, group);
     }
-
-    /// Detach a cancellation group from an entity without cancelling it.
-    ///
-    /// Use when the async work has completed normally and the group should
-    /// no longer be auto-cancelled on entity removal.
     pub fn detachEntityCancelGroup(self: *Self, id: EntityId) void {
-        self._gooey.entities.detachCancelGroup(id);
+        self.entities.detachCancel(id);
     }
 
     // =========================================================================
-    // Text Measurement
+    // Text measurement
     // =========================================================================
 
-    /// Options for measuring text dimensions.
+    /// Options for `measureText`. `null` fields fall back to "no
+    /// wrapping" / "current font size" respectively.
     pub const MeasureTextOptions = struct {
-        /// Maximum width before wrapping (null = no wrapping).
         max_width: ?f32 = null,
-        /// Font size to measure at (null = use the current font size).
         font_size: ?f32 = null,
     };
 
-    /// Measure the dimensions of a text string, with optional wrapping and font size.
-    ///
-    /// Returns a `TextMeasurement` with `width`, `height`, and `line_count`.
-    /// Uses the platform text shaper (CoreText/HarfBuzz/browser) so kerning
-    /// and wrapping match what gets rendered on screen.
-    ///
-    /// Example:
-    /// ```zig
-    /// const m = try cx.measureText(msg.getText(), .{
-    ///     .max_width = max_bubble_width,
-    ///     .font_size = 15,
-    /// });
-    /// const height = m.height + padding;
-    /// ```
+    /// Measure a text string with optional wrapping and font size.
+    /// Uses the platform text shaper (CoreText / HarfBuzz / browser)
+    /// so kerning and wrapping match rendered output.
     pub fn measureText(self: *Self, text_content: []const u8, opts: MeasureTextOptions) !TextMeasurement {
         std.debug.assert(opts.font_size == null or opts.font_size.? > 0);
         std.debug.assert(opts.max_width == null or opts.max_width.? > 0);
@@ -727,39 +506,20 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Entity Operations
+    // Entities (deprecated forwarders — see `cx/entities.zig`; PR 9 removes)
     // =========================================================================
-
-    /// Create a new entity with the given initial value.
     pub fn createEntity(self: *Self, comptime T: type, value: T) !Entity(T) {
-        return self._gooey.entities.new(T, value);
+        return self.entities.create(T, value);
     }
-
-    /// Read an entity's data (immutable).
     pub fn readEntity(self: *Self, comptime T: type, entity: Entity(T)) ?*const T {
-        return self._gooey.readEntity(T, entity);
+        return self.entities.read(T, entity);
     }
-
-    /// Write to an entity's data (mutable).
     pub fn writeEntity(self: *Self, comptime T: type, entity: Entity(T)) ?*T {
-        return self._gooey.writeEntity(T, entity);
+        return self.entities.write(T, entity);
     }
-
-    /// Get an entity-scoped context for handlers.
-    ///
-    /// Returns null if the entity doesn't exist.
     pub fn entityCx(self: *Self, comptime T: type, entity: Entity(T)) ?EntityContext(T) {
-        if (!self._gooey.entities.exists(entity.id)) return null;
-        return EntityContext(T){
-            .gooey = self._gooey,
-            .entities = &self._gooey.entities,
-            .entity_id = entity.id,
-        };
+        return self.entities.context(T, entity);
     }
-
-    // =========================================================================
-    // Render Lifecycle
-    // =========================================================================
 
     /// Request a UI re-render.
     pub fn notify(self: *Self) void {
@@ -767,380 +527,165 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Focus Management
+    // Focus (deprecated forwarders — see `cx/focus.zig`; removed in PR 9)
     // =========================================================================
 
-    /// Move focus to the next focusable element.
+    // Deprecated: use `cx.focus.*` instead. The text-field /
+    // text-area distinction collapsed in PR 4 — both routed through
+    // `Gooey.focusWidget` already.
     pub fn focusNext(self: *Self) void {
-        self._gooey.focusNext();
+        self.focus.next();
     }
-
-    /// Move focus to the previous focusable element.
     pub fn focusPrev(self: *Self) void {
-        self._gooey.focusPrev();
+        self.focus.prev();
     }
-
-    /// Remove focus from all elements.
     pub fn blurAll(self: *Self) void {
-        self._gooey.blurAll();
+        self.focus.blurAll();
     }
-
-    /// Focus a specific text field by ID.
     pub fn focusTextField(self: *Self, id: []const u8) void {
-        self._gooey.focusWidget(id);
+        self.focus.widget(id);
     }
-
-    /// Focus a specific text area by ID.
     pub fn focusTextArea(self: *Self, id: []const u8) void {
-        self._gooey.focusWidget(id);
+        self.focus.widget(id);
     }
-
-    /// Check if a specific element is focused.
     pub fn isElementFocused(self: *Self, id: []const u8) bool {
-        return self._gooey.isElementFocused(id);
+        return self.focus.isElementFocused(id);
     }
 
-    // =========================================================================
-    // Widget Access (for advanced use cases)
-    // =========================================================================
-
-    /// Get a text field widget by ID.
+    // Widget access (for advanced use cases). Each returns `null` if
+    // no widget with that id has been registered.
     pub fn textField(self: *Self, id: []const u8) ?*text_field_mod.TextInput {
         return self._gooey.widgets.textInput(id);
     }
-
-    /// Get a text area widget by ID.
     pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextArea {
         return self._gooey.widgets.textArea(id);
     }
-
-    /// Get a code editor widget by ID.
     pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {
         return self._gooey.widgets.codeEditor(id);
     }
-
-    /// Get a scroll view widget by ID.
     pub fn scrollView(self: *Self, id: []const u8) ?*scroll_view_mod.ScrollContainer {
         return self._gooey.widgets.scrollContainer(id);
     }
 
-    // =========================================================================
-    // Layout Building - Delegates to Builder
-    // =========================================================================
-
-    /// Render an element tree. This is the primary entry point for the new ui.* API.
-    ///
-    /// Works with any renderable: ui primitives, layout containers, and components
-    /// regardless of whether their `render` method accepts `*Cx` or `*ui.Builder`.
-    /// The framework auto-dispatches to the correct signature, so you never need
-    /// to extract the builder manually to render a built-in component.
-    ///
-    /// Layout containers and primitives:
-    /// ```
-    /// cx.render(ui.box(.{ .background = t.bg }, .{
-    ///     ui.text("Hello", .{}),
-    ///     ui.hstack(.{ .gap = 8 }, .{
-    ///         ui.text("A", .{}),
-    ///         ui.text("B", .{}),
-    ///     }),
-    /// }));
-    /// ```
-    ///
-    /// Built-in components (render takes *Builder — dispatched automatically):
-    /// ```
-    /// cx.render(Button{ .label = "Go", .on_click_handler = cx.update(State.go) });
-    /// ```
-    ///
-    /// User components (render takes *Cx — dispatched automatically):
-    /// ```
-    /// cx.render(MyWidget{ .value = 42 });
-    /// ```
+    /// Render an element tree. Works with any renderable — `ui.*`
+    /// primitives, layout containers, components whose `render`
+    /// accepts `*Cx` *or* `*ui.Builder`. Auto-dispatch picks the right
+    /// signature so callers don't reach for the builder manually.
     pub fn render(self: *Self, element: anytype) void {
         self._builder.processChildren(element);
     }
 
     // =========================================================================
-    // Accessibility API
+    // Accessibility
     // =========================================================================
 
-    /// Begin an accessible element. Call before the visual element.
-    /// Returns true if a11y is active and element was pushed.
-    /// Must be paired with accessibleEnd() when returns true.
-    ///
-    /// ## Example
-    /// ```zig
-    /// const a11y_pushed = cx.accessible(.{ .role = .button, .name = "Submit" });
-    /// defer if (a11y_pushed) cx.accessibleEnd();
-    /// // ... render visual element ...
-    /// ```
+    /// Begin an accessible element. Returns true if a11y is active
+    /// and the element was pushed; pair with `accessibleEnd()` when so.
     pub fn accessible(self: *Self, config: AccessibleConfig) bool {
         return self._builder.accessible(config);
     }
 
-    /// End current accessible element.
-    /// Must be called after accessible() returns true.
+    /// End the current accessible element. Only call after
+    /// `accessible()` returned true.
     pub fn accessibleEnd(self: *Self) void {
         self._builder.accessibleEnd();
     }
 
-    /// Announce a message to screen readers.
-    /// Use .polite for non-urgent updates, .assertive for critical alerts.
-    ///
-    /// ## Example
-    /// ```zig
-    /// cx.announce("Item deleted", .polite);
-    /// cx.announce("Error: connection lost", .assertive);
-    /// ```
+    /// Announce a message to screen readers. `.polite` for routine
+    /// updates, `.assertive` for critical alerts.
     pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
         self._builder.announce(message, priority);
     }
 
-    /// Check if accessibility is currently enabled
+    /// True when accessibility is currently enabled.
     pub fn isA11yEnabled(self: *Self) bool {
         return self._builder.isA11yEnabled();
     }
 
-    // =========================================================================
-    // Internal Access (for advanced use cases / migration)
-    // =========================================================================
-
-    /// Get the underlying Gooey runtime.
+    // Internal access (advanced use cases / migration). Lifetime is
+    // tied to `*Cx` — don't store these across frames.
     pub fn gooey(self: *Self) *Gooey {
         return self._gooey;
     }
-
-    /// Get the underlying Builder.
     pub fn builder(self: *Self) *Builder {
         return self._builder;
     }
-
-    /// Get the allocator.
     pub fn allocator(self: *Self) std.mem.Allocator {
         return self._allocator;
     }
-
-    /// Get the IO interface.
-    /// Mirrors the `cx.allocator()` pattern. Use for filesystem access, async work,
-    /// and any operation that requires an `std.Io` instance.
-    /// Must not be called outside the render function — same lifetime as `*Cx`.
+    /// IO interface for filesystem access and async work. Mirrors
+    /// `cx.allocator()` — same lifetime as `*Cx`.
     pub fn io(self: *Self) std.Io {
         return self._gooey.io;
     }
 
-    // =========================================================================
-    // Theme API
-    // =========================================================================
-
-    /// Set the theme for this context and all child components.
-    /// Call at the start of render to establish theme context.
-    ///
-    /// ```zig
-    /// fn render(cx: *Cx) void {
-    ///     const s = cx.state(AppState);
-    ///     cx.setTheme(s.theme);  // Set theme once
-    ///     // All children auto-inherit theme colors
-    /// }
-    /// ```
+    /// Set the theme for this context and all child components. Call
+    /// once at the top of `render`; children auto-inherit colors.
     pub fn setTheme(self: *Self, theme_ptr: *const Theme) void {
         self._builder.setTheme(theme_ptr);
     }
 
-    /// Get the current theme, falling back to light theme if none set.
-    /// Components use this to resolve null color fields.
+    /// Current theme, falling back to the light theme if none was set.
     pub fn theme(self: *Self) *const Theme {
         return self._builder.theme();
     }
 
     // =========================================================================
-    // Animation API
+    // Animations (deprecated forwarders — see `cx/animations.zig`; PR 9 removes)
     // =========================================================================
 
-    /// Animate with compile-time string hashing (most efficient for literals)
     pub fn animateComptime(self: *Self, comptime id: []const u8, config: Animation) AnimationHandle {
-        const anim_id = comptime animation_mod.hashString(id);
-        return self._gooey.widgets.animateById(anim_id, config);
+        return self.animations.tweenComptime(id, config);
     }
-
-    /// Runtime string API (for dynamic IDs)
     pub fn animate(self: *Self, id: []const u8, config: Animation) AnimationHandle {
-        return self._gooey.widgets.animate(id, config);
+        return self.animations.tween(id, config);
     }
-
-    /// Restart with comptime hashing
     pub fn restartAnimationComptime(self: *Self, comptime id: []const u8, config: Animation) AnimationHandle {
-        const anim_id = comptime animation_mod.hashString(id);
-        return self._gooey.widgets.restartAnimationById(anim_id, config);
+        return self.animations.restartComptime(id, config);
     }
-
-    /// Runtime restart API
     pub fn restartAnimation(self: *Self, id: []const u8, config: Animation) AnimationHandle {
-        return self._gooey.widgets.restartAnimation(id, config);
+        return self.animations.restart(id, config);
     }
-
-    /// animateOn with comptime ID hashing
-    pub fn animateOnComptime(
-        self: *Self,
-        comptime id: []const u8,
-        trigger: anytype,
-        config: Animation,
-    ) AnimationHandle {
-        const anim_id = comptime animation_mod.hashString(id);
-        const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
-        return self._gooey.widgets.animateOnById(anim_id, trigger_hash, config);
+    pub fn animateOnComptime(self: *Self, comptime id: []const u8, trigger: anytype, config: Animation) AnimationHandle {
+        return self.animations.tweenOnComptime(id, trigger, config);
     }
-
-    /// Runtime animateOn API
-    pub fn animateOn(
-        self: *Self,
-        id: []const u8,
-        trigger: anytype,
-        config: Animation,
-    ) AnimationHandle {
-        const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
-        return self._gooey.widgets.animateOn(id, trigger_hash, config);
+    pub fn animateOn(self: *Self, id: []const u8, trigger: anytype, config: Animation) AnimationHandle {
+        return self.animations.tweenOn(id, trigger, config);
     }
-
-    // =========================================================================
-    // Spring API
-    // =========================================================================
-
-    /// Declarative spring animation. Set the target every frame;
-    /// the spring smoothly tracks it, inheriting velocity on interruption.
-    ///
-    /// ```zig
-    /// const s = cx.spring("panel-height", .{
-    ///     .target = if (expanded) 1.0 else 0.0,
-    ///     .stiffness = 200,
-    ///     .damping = 20,
-    /// });
-    /// const height = lerp(0.0, 300.0, s.clamped());
-    /// ```
     pub fn springComptime(self: *Self, comptime id: []const u8, config: SpringConfig) SpringHandle {
-        const spring_id = comptime animation_mod.hashString(id);
-        return self._gooey.widgets.springById(spring_id, config);
+        return self.animations.springComptime(id, config);
     }
-
-    /// Runtime string spring API (for dynamic IDs).
     pub fn spring(self: *Self, id: []const u8, config: SpringConfig) SpringHandle {
-        return self._gooey.widgets.spring(id, config);
+        return self.animations.spring(id, config);
     }
-
-    // =========================================================================
-    // Stagger API
-    // =========================================================================
-
-    /// Staggered animation for list items. Each item gets its own animation
-    /// with a computed delay based on its index and the stagger direction.
-    ///
-    /// ```zig
-    /// for (items, 0..) |item, i| {
-    ///     const anim = cx.stagger("list-enter", @intCast(i), @intCast(items.len), .list);
-    ///     cx.render(ui.box(.{
-    ///         .background = Color.white.withAlpha(anim.progress),
-    ///     }, .{ ui.text(item.name, .{}) }));
-    /// }
-    /// ```
-    pub fn staggerComptime(
-        self: *Self,
-        comptime id: []const u8,
-        index: u32,
-        total_count: u32,
-        config: StaggerConfig,
-    ) AnimationHandle {
-        const base_id = comptime animation_mod.hashString(id);
-        return self._gooey.widgets.staggerById(base_id, index, total_count, config);
+    pub fn staggerComptime(self: *Self, comptime id: []const u8, index: u32, total_count: u32, config: StaggerConfig) AnimationHandle {
+        return self.animations.staggerComptime(id, index, total_count, config);
     }
-
-    /// Runtime string stagger API (for dynamic IDs).
-    pub fn stagger(
-        self: *Self,
-        id: []const u8,
-        index: u32,
-        total_count: u32,
-        config: StaggerConfig,
-    ) AnimationHandle {
-        return self._gooey.widgets.stagger(id, index, total_count, config);
+    pub fn stagger(self: *Self, id: []const u8, index: u32, total_count: u32, config: StaggerConfig) AnimationHandle {
+        return self.animations.stagger(id, index, total_count, config);
     }
-
-    // =========================================================================
-    // Motion API (tween-based)
-    // =========================================================================
-
-    /// Tween-based motion container. Manages enter/exit lifecycle.
-    ///
-    /// ```zig
-    /// const m = cx.motion("panel", show_panel, .fade);
-    /// if (m.visible) {
-    ///     cx.render(ui.box(.{
-    ///         .background = Color.blue.withAlpha(m.progress),
-    ///     }, .{ /* ... */ }));
-    /// }
-    /// ```
     pub fn motionComptime(self: *Self, comptime id: []const u8, show: bool, config: MotionConfig) MotionHandle {
-        const mid = comptime animation_mod.hashString(id);
-        return self._gooey.widgets.motionById(mid, show, config);
+        return self.animations.motionComptime(id, show, config);
     }
-
-    /// Runtime string motion API (for dynamic IDs).
     pub fn motion(self: *Self, id: []const u8, show: bool, config: MotionConfig) MotionHandle {
-        return self._gooey.widgets.motion(id, show, config);
+        return self.animations.motion(id, show, config);
     }
-
-    // =========================================================================
-    // Spring Motion API
-    // =========================================================================
-
-    /// Spring-based motion container. Interruptible enter/exit.
-    ///
-    /// ```zig
-    /// const m = cx.springMotion("modal", show_modal, .bouncy);
-    /// if (m.visible) {
-    ///     cx.render(ui.box(.{
-    ///         .width = lerp(0.0, 400.0, m.progress),
-    ///     }, .{ /* ... */ }));
-    /// }
-    /// ```
     pub fn springMotionComptime(self: *Self, comptime id: []const u8, show: bool, config: SpringMotionConfig) MotionHandle {
-        const mid = comptime animation_mod.hashString(id);
-        return self._gooey.widgets.springMotionById(mid, show, config);
+        return self.animations.springMotionComptime(id, show, config);
     }
-
-    /// Runtime string spring motion API (for dynamic IDs).
     pub fn springMotion(self: *Self, id: []const u8, show: bool, config: SpringMotionConfig) MotionHandle {
-        return self._gooey.widgets.springMotion(id, show, config);
+        return self.animations.springMotion(id, show, config);
     }
 
     // =========================================================================
-    // Change Detection
+    // Change detection
     // =========================================================================
 
-    /// Returns `true` when the value associated with `key` has changed since
-    /// the previous frame. On the first call for a given key, returns `false`
-    /// (no previous value to compare against).
-    ///
-    /// Replaces the common pattern of module-level `var last_foo: ?T = null`
-    /// with manual diffing.
-    ///
-    /// ```zig
-    /// // Before:
-    /// var last_dark_mode: ?bool = null;
-    /// if (last_dark_mode) |prev| { if (prev != s.dark_mode) invalidate(); }
-    /// last_dark_mode = s.dark_mode;
-    ///
-    /// // After:
-    /// if (cx.changed("dark_mode", s.dark_mode)) invalidate();
-    /// ```
-    ///
-    /// Multiple keys compose naturally:
-    ///
-    /// ```zig
-    /// if (cx.changed("dark_mode", s.dark_mode) or cx.changed("window_width", size.width)) {
-    ///     s.invalidateCachedHeights();
-    /// }
-    /// ```
-    ///
-    /// Works with any value type: `bool`, `f32`, `i32`, enums, small structs, etc.
-    /// For pointer types, compares the address (identity), not the pointee.
+    /// True when the value at `key` differs from the previous frame.
+    /// First call for a key returns false — there's no prior value to
+    /// diff against. Replaces the module-level `var last_foo` /
+    /// manual-diff pattern. Works with any value type; pointer types
+    /// compare by address (identity), not pointee.
     pub fn changed(self: *Self, comptime key: []const u8, value: anytype) bool {
         const key_hash = comptime animation_mod.hashString(key);
         const value_hash = change_tracker_mod.hashValue(@TypeOf(value), value);
@@ -1148,24 +693,9 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Uniform List API
+    // Lists / tables (deprecated forwarders — see `cx/lists.zig`; PR 9 removes)
     // =========================================================================
 
-    /// Render a virtualized uniform-height list.
-    /// The render callback receives *Cx for full access to state and handlers.
-    ///
-    /// Example:
-    /// ```zig
-    /// cx.uniformList("my-list", &state.list_state, .{ .grow_height = true }, renderItem);
-    ///
-    /// fn renderItem(index: u32, cx: *Cx) void {
-    ///     const s = cx.stateConst(State);
-    ///     cx.render(ui.box(.{
-    ///         .height = 32,
-    ///         .on_click_handler = cx.updateWith(index, State.selectItem),
-    ///     }, .{ ui.text(s.items[index].name, .{}) }));
-    /// }
-    /// ```
     pub fn uniformList(
         self: *Self,
         id: []const u8,
@@ -1173,61 +703,9 @@ pub const Cx = struct {
         style: UniformListStyle,
         comptime render_item: fn (index: u32, cx: *Self) void,
     ) void {
-        const b = self._builder;
-
-        // Sync gap and scroll state
-        list_state.gap_px = style.gap;
-        uniform_list_mod.syncScroll(b, id, list_state);
-
-        // Compute layout parameters
-        const params = uniform_list_mod.computeLayout(id, list_state, style);
-
-        // Open viewport and content elements
-        const content_id = uniform_list_mod.openElements(b, params, style, list_state.scroll_offset_px) orelse return;
-
-        // Top spacer (items above visible range)
-        uniform_list_mod.renderSpacer(b, params.top_spacer_height);
-
-        // Render visible items with Cx access
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            render_item(i, self);
-        }
-
-        // Bottom spacer (items below visible range)
-        uniform_list_mod.renderSpacer(b, params.bottom_spacer_height);
-
-        // Close content container and viewport
-        b.layout.closeElement();
-        b.layout.closeElement();
-
-        // Register for scroll handling
-        uniform_list_mod.registerScroll(b, id, params, content_id, style);
+        self.lists.uniform(id, list_state, style, render_item);
     }
 
-    // =========================================================================
-    // Tree List API
-    // =========================================================================
-
-    /// Render a virtualized tree list with expandable/collapsible nodes.
-    /// The render callback receives the TreeEntry and *Cx for full access.
-    ///
-    /// Example:
-    /// ```zig
-    /// cx.treeList("file-tree", &state.tree_state, .{ .grow_height = true }, renderNode);
-    ///
-    /// fn renderNode(entry: *const TreeEntry, cx: *Cx) void {
-    ///     const s = cx.stateConst(State);
-    ///     const indent = @as(f32, @floatFromInt(entry.depth)) * 16;
-    ///     cx.render(ui.hstack(.{ .padding = .{ .each = .{ .top = 0, .right = 0, .bottom = 0, .left = indent } } }, .{
-    ///         if (entry.is_folder)
-    ///             ui.text(if (entry.is_expanded) "▼" else "▶", .{})
-    ///         else
-    ///             ui.text("  ", .{}),
-    ///         ui.text(s.node_names[entry.node_index], .{}),
-    ///     }));
-    /// }
-    /// ```
     pub fn treeList(
         self: *Self,
         id: []const u8,
@@ -1235,89 +713,9 @@ pub const Cx = struct {
         style: TreeListStyle,
         comptime render_item: fn (entry: *const TreeEntry, cx: *Self) void,
     ) void {
-        const b = self._builder;
-
-        // Rebuild flattened entries if needed
-        if (tree_state.needs_flatten) {
-            tree_state.rebuild();
-        }
-
-        // Sync indent from style
-        tree_state.indent_px = style.indent_px;
-
-        // Convert TreeListStyle to UniformListStyle for delegation
-        const list_style = UniformListStyle{
-            .width = style.width,
-            .height = style.height,
-            .grow = style.grow,
-            .grow_width = style.grow_width,
-            .grow_height = style.grow_height,
-            .fill_width = style.fill_width,
-            .fill_height = style.fill_height,
-            .padding = style.padding,
-            .gap = style.gap,
-            .background = style.background,
-            .corner_radius = style.corner_radius,
-            .scrollbar_size = style.scrollbar_size,
-            .track_color = style.track_color,
-            .thumb_color = style.thumb_color,
-        };
-
-        // Sync gap and scroll state
-        tree_state.list_state.gap_px = style.gap;
-        uniform_list_mod.syncScroll(b, id, &tree_state.list_state);
-
-        // Compute layout parameters
-        const params = uniform_list_mod.computeLayout(id, &tree_state.list_state, list_style);
-
-        // Open viewport and content elements
-        const content_id = uniform_list_mod.openElements(b, params, list_style, tree_state.list_state.scroll_offset_px) orelse return;
-
-        // Top spacer (items above visible range)
-        uniform_list_mod.renderSpacer(b, params.top_spacer_height);
-
-        // Render visible entries with Cx access
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            if (i < tree_state.entry_count) {
-                render_item(&tree_state.entries[i], self);
-            }
-        }
-
-        // Bottom spacer (items below visible range)
-        uniform_list_mod.renderSpacer(b, params.bottom_spacer_height);
-
-        // Close content container and viewport
-        b.layout.closeElement();
-        b.layout.closeElement();
-
-        // Register for scroll handling
-        uniform_list_mod.registerScroll(b, id, params, content_id, list_style);
+        self.lists.tree(id, tree_state, style, render_item);
     }
 
-    // =========================================================================
-    // Virtual List API
-    // =========================================================================
-
-    /// Render a virtualized variable-height list.
-    /// The render callback receives *Cx for full access to state and handlers,
-    /// and must return the actual height of the rendered item for caching.
-    ///
-    /// Example:
-    /// ```zig
-    /// cx.virtualList("my-list", &state.list_state, .{ .grow_height = true }, renderItem);
-    ///
-    /// fn renderItem(index: u32, cx: *Cx) f32 {
-    ///     const s = cx.stateConst(State);
-    ///     const item = s.items[index];
-    ///     const height: f32 = if (item.expanded) 100.0 else 40.0;
-    ///     cx.render(ui.box(.{
-    ///         .height = height,
-    ///         .on_click_handler = cx.updateWith(index, State.selectItem),
-    ///     }, .{ ui.text(item.description, .{}) }));
-    ///     return height;
-    /// }
-    /// ```
     pub fn virtualList(
         self: *Self,
         id: []const u8,
@@ -1325,122 +723,14 @@ pub const Cx = struct {
         style: VirtualListStyle,
         comptime render_item: fn (index: u32, cx: *Self) f32,
     ) void {
-        const b = self._builder;
-
-        // Sync gap and scroll state
-        list_state.gap_px = style.gap;
-        virtual_list_mod.syncScroll(b, id, list_state);
-
-        // Compute layout parameters
-        const params = virtual_list_mod.computeLayout(id, list_state, style);
-
-        // Open viewport and content elements
-        const content_id = virtual_list_mod.openElements(b, params, style, list_state.scroll_offset_px) orelse return;
-
-        // Top spacer (items above visible range)
-        virtual_list_mod.renderSpacer(b, params.top_spacer_height);
-
-        // Render visible items with Cx access and cache their heights
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            const height = render_item(i, self);
-            list_state.setHeight(i, height);
-        }
-
-        // Bottom spacer (items below visible range)
-        virtual_list_mod.renderSpacer(b, params.bottom_spacer_height);
-
-        // Close content container and viewport
-        b.layout.closeElement();
-        b.layout.closeElement();
-
-        // Register for scroll handling
-        virtual_list_mod.registerScroll(b, id, params, content_id, style);
+        self.lists.virtual(id, list_state, style, render_item);
     }
 
-    // =========================================================================
-    // Data Table API
-    // =========================================================================
-
-    /// Callbacks for data table rendering.
-    /// All callbacks receive *Cx for full state/handler access.
+    /// Deprecated alias: same type as `cx.lists.DataTableCallbacks(Cx)`.
     pub fn DataTableCallbacks(comptime CxType: type) type {
-        return struct {
-            /// Render a header cell. Required.
-            render_header: *const fn (col: u32, cx: *CxType) void,
-
-            /// Render a data cell. Required.
-            render_cell: *const fn (row: u32, col: u32, cx: *CxType) void,
-
-            /// Optional: Custom row wrapper for row-level styling/click handling.
-            /// If null, framework renders a default row container.
-            ///
-            /// Parameters:
-            /// - row: The row index
-            /// - visible_cols: The range of visible columns to render
-            /// - cx: Context for state access and handlers
-            ///
-            /// User is responsible for:
-            /// 1. Opening a row container with b.layout.openElement()
-            /// 2. Iterating visible_cols and calling render_cell for each
-            /// 3. Closing the container with b.layout.closeElement()
-            render_row: ?*const fn (row: u32, visible_cols: ColRange, cx: *CxType) void = null,
-        };
+        return lists_mod.Lists.DataTableCallbacks(CxType);
     }
 
-    /// Render a virtualized data table.
-    ///
-    /// Example:
-    /// ```zig
-    /// cx.dataTable("table", &state.table_state, .{ .grow = true }, .{
-    ///     .render_header = renderHeader,
-    ///     .render_cell = renderCell,
-    ///     .render_row = renderRow,  // Optional
-    /// });
-    ///
-    /// fn renderHeader(col: u32, cx: *Cx) void {
-    ///     const s = cx.stateConst(State);
-    ///     cx.render(ui.box(.{
-    ///         .on_click_handler = cx.updateWith(col, State.sortBy),
-    ///     }, .{ ui.text(s.columns[col].name, .{ .weight = .bold }) }));
-    /// }
-    ///
-    /// fn renderCell(row: u32, col: u32, cx: *Cx) void {
-    ///     const s = cx.stateConst(State);
-    ///     cx.render(ui.box(.{}, .{
-    ///         ui.text(s.getCellText(row, col), .{}),
-    ///     }));
-    /// }
-    ///
-    /// // Optional: custom row with click handler
-    /// fn renderRow(row: u32, visible_cols: ColRange, cx: *Cx) void {
-    ///     const s = cx.stateConst(State);
-    ///     const b = cx.builder();
-    ///     const is_selected = s.selected_row == row;
-    ///
-    ///     // Open custom row container
-    ///     b.layout.openElement(.{
-    ///         .layout = .{
-    ///             .sizing = .{ .width = .grow(), .height = .fixed(ROW_HEIGHT) },
-    ///             .layout_direction = .left_to_right,
-    ///         },
-    ///         .background_color = if (is_selected) theme.primary else null,
-    ///     }) catch return;
-    ///
-    ///     // Set up click handler on the row
-    ///     if (b.dispatch) |d| {
-    ///         d.onClickHandler(cx.updateWith(row, State.selectRow));
-    ///     }
-    ///
-    ///     // Render visible cells
-    ///     var col = visible_cols.start;
-    ///     while (col < visible_cols.end) : (col += 1) {
-    ///         renderCell(row, col, cx);
-    ///     }
-    ///
-    ///     b.layout.closeElement();
-    /// }
-    /// ```
     pub fn dataTable(
         self: *Self,
         id: []const u8,
@@ -1448,60 +738,7 @@ pub const Cx = struct {
         style: DataTableStyle,
         comptime callbacks: DataTableCallbacks(Self),
     ) void {
-        const b = self._builder;
-
-        // Sync gap from style to state
-        table_state.row_gap_px = style.row_gap;
-
-        // Sync scroll state
-        data_table_mod.syncScroll(b, id, table_state);
-
-        // Compute layout parameters
-        const params = data_table_mod.computeLayout(id, table_state, style);
-
-        // Open viewport and content elements
-        const content_id = data_table_mod.openElements(
-            b,
-            params,
-            style,
-            table_state.scroll_offset_x,
-            table_state.scroll_offset_y,
-        ) orelse return;
-
-        // Render header row if enabled
-        if (table_state.show_header) {
-            data_table_mod.renderHeaderCx(b, table_state, params, style, self, callbacks.render_header);
-        }
-
-        // Top spacer (rows above visible range)
-        if (params.top_spacer > 0) {
-            data_table_mod.renderSpacer(b, params.content_width, params.top_spacer);
-        }
-
-        // Render visible rows
-        const range = params.visible_range;
-        var row = range.rows.start;
-        while (row < range.rows.end) : (row += 1) {
-            if (callbacks.render_row) |render_row| {
-                // User controls row container - pass visible column range
-                render_row(row, range.cols, self);
-            } else {
-                // Default row container
-                data_table_mod.renderRowCx(b, table_state, row, range.cols, params, style, self, callbacks.render_cell);
-            }
-        }
-
-        // Bottom spacer (rows below visible range)
-        if (params.bottom_spacer > 0) {
-            data_table_mod.renderSpacer(b, params.content_width, params.bottom_spacer);
-        }
-
-        // Close content container and viewport
-        b.layout.closeElement();
-        b.layout.closeElement();
-
-        // Register for scroll handling
-        data_table_mod.registerScroll(b, id, params, content_id, style);
+        self.lists.dataTable(id, table_state, style, callbacks);
     }
 };
 
@@ -1537,436 +774,15 @@ fn ExtractState(comptime caller: []const u8, comptime Fn: type) type {
     return ptr_info.pointer.child;
 }
 
-/// Compute a hash for any trigger value for use with animateOn.
-/// Uses type-specific handling for common types.
-fn computeTriggerHash(comptime T: type, value: T) u64 {
-    const info = @typeInfo(T);
-    if (info == .bool) return if (value) 1 else 0;
-    if (info == .@"enum") return @intFromEnum(value);
-    return std.hash.Wyhash.hash(0, std.mem.asBytes(&value));
-}
+// `computeTriggerHash` used to live here; it now lives next to the
+// `tweenOn` / `tweenOnComptime` callers in `cx/animations.zig`. The
+// deprecated forwarders on `Cx` route through that copy, so a single
+// implementation drives both call paths.
 
 // =============================================================================
 // Tests
 // =============================================================================
 
-// Note: Tests for typeId, packArg, unpackArg are in core/handler.zig
-
-test "pure state methods are fully testable" {
-    // This demonstrates the key benefit of the Cx pattern:
-    // State methods have no framework dependencies!
-    const AppState = struct {
-        count: i32 = 0,
-        step: i32 = 1,
-        message: []const u8 = "",
-
-        pub fn increment(self: *@This()) void {
-            self.count += self.step;
-        }
-
-        pub fn decrement(self: *@This()) void {
-            self.count -= self.step;
-        }
-
-        pub fn setStep(self: *@This(), new_step: i32) void {
-            self.step = new_step;
-        }
-
-        pub fn reset(self: *@This()) void {
-            self.count = 0;
-            self.message = "Reset!";
-        }
-
-        pub fn addAmount(self: *@This(), amount: i32) void {
-            self.count += amount;
-        }
-    };
-
-    var s = AppState{};
-
-    // Test increment
-    s.increment();
-    try std.testing.expectEqual(@as(i32, 1), s.count);
-
-    // Test with custom step
-    s.setStep(5);
-    s.increment();
-    try std.testing.expectEqual(@as(i32, 6), s.count);
-
-    // Test decrement
-    s.decrement();
-    try std.testing.expectEqual(@as(i32, 1), s.count);
-
-    // Test addAmount (simulates updateWith pattern)
-    s.addAmount(100);
-    try std.testing.expectEqual(@as(i32, 101), s.count);
-
-    // Test reset
-    s.reset();
-    try std.testing.expectEqual(@as(i32, 0), s.count);
-    try std.testing.expectEqualStrings("Reset!", s.message);
-}
-
-test "command method signatures are valid" {
-    // Verify that command method signatures compile correctly
-    const AppState = struct {
-        value: i32 = 0,
-        focused: bool = false,
-
-        // Command: fn(*State, *Gooey) void
-        pub fn doSomethingWithFramework(self: *@This(), g: *Gooey) void {
-            _ = g; // Would call g.blurAll(), g.focusTextInput(), etc.
-            self.value += 1;
-        }
-
-        // CommandWith: fn(*State, *Gooey, Arg) void
-        pub fn setValueWithFramework(self: *@This(), g: *Gooey, value: i32) void {
-            _ = g;
-            self.value = value;
-        }
-
-        pub fn focusAndSet(self: *@This(), g: *Gooey, field_id: usize) void {
-            _ = g; // Would call g.focusTextInput(...)
-            _ = field_id;
-            self.focused = true;
-        }
-    };
-
-    // Just verify the types compile - actual invocation needs Gooey instance
-    const s = AppState{};
-    try std.testing.expectEqual(@as(i32, 0), s.value);
-
-    // We can still test the logic by calling directly (without Gooey)
-    // This shows the pattern encourages testable code
-    const MockGooey = Gooey;
-    _ = MockGooey;
-}
-
-test "root state registration via Gooey instance" {
-    const StateA = struct {
-        a: i32 = 10,
-        pub fn inc(self: *@This()) void {
-            self.a += 1;
-        }
-    };
-
-    const StateB = struct {
-        b: []const u8 = "hello",
-    };
-
-    // Heap-allocate Gooey (>400KB — too large for stack per CLAUDE.md).
-    const gooey = try std.testing.allocator.create(Gooey);
-    defer std.testing.allocator.destroy(gooey);
-
-    gooey.root_state_ptr = null;
-    gooey.root_state_type_id = 0;
-
-    var state_a = StateA{};
-
-    // Set root state on the Gooey instance.
-    gooey.setRootState(StateA, &state_a);
-    defer gooey.clearRootState();
-
-    // Retrieve with correct type.
-    const retrieved = gooey.getRootState(StateA);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqual(@as(i32, 10), retrieved.?.a);
-
-    // Modify through pointer.
-    retrieved.?.inc();
-    try std.testing.expectEqual(@as(i32, 11), state_a.a);
-
-    // Wrong type returns null.
-    const wrong = gooey.getRootState(StateB);
-    try std.testing.expect(wrong == null);
-}
-
-test "Cx.update creates valid HandlerRef" {
-    const TestState = struct {
-        count: i32 = 0,
-
-        pub fn increment(self: *@This()) void {
-            self.count += 1;
-        }
-    };
-
-    var state = TestState{};
-
-    // Create a minimal Cx (we only need it for the update() method).
-    // No root state registration needed — the handler is not invoked here.
-    var cx = Cx{
-        ._allocator = undefined, // Not used by update()
-        ._gooey = undefined, // Not used by update()
-        ._builder = undefined, // Not used by update()
-        .state_ptr = @ptrCast(&state),
-        .state_type_id = typeId(TestState),
-    };
-
-    // Create handler
-    const handler = cx.update(TestState.increment);
-
-    // update() handlers use EntityId.invalid (they operate on root state, not an entity)
-    try std.testing.expectEqual(EntityId.invalid, handler.entity_id);
-}
-
-test "Cx.updateWith creates handler with packed argument" {
-    const TestState = struct {
-        value: i32 = 0,
-
-        pub fn setValue(self: *@This(), new_value: i32) void {
-            self.value = new_value;
-        }
-    };
-
-    var state = TestState{};
-
-    // No root state registration needed — the handler is not invoked here.
-    var cx = Cx{
-        ._allocator = undefined,
-        ._gooey = undefined,
-        ._builder = undefined,
-        .state_ptr = @ptrCast(&state),
-        .state_type_id = typeId(TestState),
-    };
-
-    // Create handler with argument 42
-    const handler = cx.updateWith(@as(i32, 42), TestState.setValue);
-
-    // The argument (42) is packed into entity_id for transport
-    const unpacked = unpackArg(i32, handler.entity_id);
-    try std.testing.expectEqual(@as(i32, 42), unpacked);
-}
-
-test "navigation state pattern" {
-    // Common pattern: enum-based page navigation
-    const AppState = struct {
-        const Page = enum { home, settings, profile, about };
-
-        page: Page = .home,
-        previous_page: Page = .home,
-
-        pub fn goToPage(self: *@This(), page: Page) void {
-            self.previous_page = self.page;
-            self.page = page;
-        }
-
-        pub fn goBack(self: *@This()) void {
-            const temp = self.page;
-            self.page = self.previous_page;
-            self.previous_page = temp;
-        }
-
-        pub fn goHome(self: *@This()) void {
-            self.goToPage(.home);
-        }
-    };
-
-    var s = AppState{};
-
-    s.goToPage(.settings);
-    try std.testing.expectEqual(AppState.Page.settings, s.page);
-    try std.testing.expectEqual(AppState.Page.home, s.previous_page);
-
-    s.goToPage(.profile);
-    try std.testing.expectEqual(AppState.Page.profile, s.page);
-
-    s.goBack();
-    try std.testing.expectEqual(AppState.Page.settings, s.page);
-
-    s.goHome();
-    try std.testing.expectEqual(AppState.Page.home, s.page);
-}
-
-test "form state pattern" {
-    // Common pattern: form with validation
-    const FormState = struct {
-        name: []const u8 = "",
-        email: []const u8 = "",
-        agreed_to_terms: bool = false,
-        submitted: bool = false,
-        error_message: []const u8 = "",
-
-        pub fn setName(self: *@This(), name: []const u8) void {
-            self.name = name;
-            self.error_message = "";
-        }
-
-        pub fn setEmail(self: *@This(), email: []const u8) void {
-            self.email = email;
-            self.error_message = "";
-        }
-
-        pub fn toggleTerms(self: *@This()) void {
-            self.agreed_to_terms = !self.agreed_to_terms;
-        }
-
-        pub fn submit(self: *@This()) void {
-            if (self.name.len == 0) {
-                self.error_message = "Name is required";
-                return;
-            }
-            if (self.email.len == 0) {
-                self.error_message = "Email is required";
-                return;
-            }
-            if (!self.agreed_to_terms) {
-                self.error_message = "You must agree to terms";
-                return;
-            }
-            self.submitted = true;
-            self.error_message = "";
-        }
-
-        pub fn reset(self: *@This()) void {
-            self.* = .{};
-        }
-    };
-
-    var form = FormState{};
-
-    // Test validation
-    form.submit();
-    try std.testing.expectEqualStrings("Name is required", form.error_message);
-    try std.testing.expect(!form.submitted);
-
-    form.setName("John");
-    form.submit();
-    try std.testing.expectEqualStrings("Email is required", form.error_message);
-
-    form.setEmail("john@example.com");
-    form.submit();
-    try std.testing.expectEqualStrings("You must agree to terms", form.error_message);
-
-    form.toggleTerms();
-    form.submit();
-    try std.testing.expectEqualStrings("", form.error_message);
-    try std.testing.expect(form.submitted);
-
-    // Test reset
-    form.reset();
-    try std.testing.expectEqualStrings("", form.name);
-    try std.testing.expect(!form.submitted);
-}
-
-test "counter with bounds pattern" {
-    // Common pattern: bounded counter
-    const BoundedCounter = struct {
-        value: i32 = 0,
-        min: i32 = 0,
-        max: i32 = 100,
-
-        pub fn increment(self: *@This()) void {
-            if (self.value < self.max) {
-                self.value += 1;
-            }
-        }
-
-        pub fn decrement(self: *@This()) void {
-            if (self.value > self.min) {
-                self.value -= 1;
-            }
-        }
-
-        pub fn setValue(self: *@This(), value: i32) void {
-            self.value = @max(self.min, @min(self.max, value));
-        }
-
-        pub fn isAtMin(self: *const @This()) bool {
-            return self.value == self.min;
-        }
-
-        pub fn isAtMax(self: *const @This()) bool {
-            return self.value == self.max;
-        }
-    };
-
-    var counter = BoundedCounter{ .min = -10, .max = 10 };
-
-    // Test bounds
-    counter.setValue(100);
-    try std.testing.expectEqual(@as(i32, 10), counter.value);
-    try std.testing.expect(counter.isAtMax());
-
-    counter.setValue(-100);
-    try std.testing.expectEqual(@as(i32, -10), counter.value);
-    try std.testing.expect(counter.isAtMin());
-
-    // Can't go past bounds
-    counter.decrement();
-    try std.testing.expectEqual(@as(i32, -10), counter.value);
-
-    counter.setValue(10);
-    counter.increment();
-    try std.testing.expectEqual(@as(i32, 10), counter.value);
-}
-
-test "toggle collection pattern" {
-    // Common pattern: multi-select with toggles
-    const SelectionState = struct {
-        selected: [8]bool = [_]bool{false} ** 8,
-        count: usize = 8,
-
-        pub fn toggle(self: *@This(), index: usize) void {
-            if (index < self.count) {
-                self.selected[index] = !self.selected[index];
-            }
-        }
-
-        pub fn selectAll(self: *@This()) void {
-            for (0..self.count) |i| {
-                self.selected[i] = true;
-            }
-        }
-
-        pub fn clearAll(self: *@This()) void {
-            for (0..self.count) |i| {
-                self.selected[i] = false;
-            }
-        }
-
-        pub fn selectedCount(self: *const @This()) usize {
-            var c: usize = 0;
-            for (0..self.count) |i| {
-                if (self.selected[i]) c += 1;
-            }
-            return c;
-        }
-    };
-
-    var sel = SelectionState{};
-
-    try std.testing.expectEqual(@as(usize, 0), sel.selectedCount());
-
-    sel.toggle(0);
-    sel.toggle(3);
-    sel.toggle(5);
-    try std.testing.expectEqual(@as(usize, 3), sel.selectedCount());
-
-    sel.toggle(3); // Deselect
-    try std.testing.expectEqual(@as(usize, 2), sel.selectedCount());
-
-    sel.selectAll();
-    try std.testing.expectEqual(@as(usize, 8), sel.selectedCount());
-
-    sel.clearAll();
-    try std.testing.expectEqual(@as(usize, 0), sel.selectedCount());
-}
-
-test "DataTableCallbacks type structure" {
-    // Verify that DataTableCallbacks can be instantiated with the expected fields
-    const TestCx = Cx;
-
-    const Callbacks = TestCx.DataTableCallbacks(TestCx);
-
-    // Verify the struct has the expected fields
-    const info = @typeInfo(Callbacks);
-    try std.testing.expectEqual(@as(usize, 3), info.@"struct".fields.len);
-
-    // Verify field names
-    try std.testing.expectEqualStrings("render_header", info.@"struct".fields[0].name);
-    try std.testing.expectEqualStrings("render_cell", info.@"struct".fields[1].name);
-    try std.testing.expectEqualStrings("render_row", info.@"struct".fields[2].name);
-
-    // Verify render_row has a default value (is optional)
-    try std.testing.expect(info.@"struct".fields[2].default_value_ptr != null);
-}
+// Tests live in `cx_tests.zig` — see the `comptime _ = @import(...)`
+// block near the top of this file for the discovery hook. PR 5 moved
+// them out so this file could shed ~420 lines.

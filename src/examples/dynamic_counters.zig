@@ -4,7 +4,7 @@
 //! - Pure state methods with cx.update() for simple mutations
 //! - Command methods with cx.command() when entity ops needed
 //! - Dynamic entity creation and deletion
-//! - Entity-scoped operations with cx.entityCx()
+//! - Entity-scoped operations with cx.entities.context()
 //! - Auto-cleanup when entities are removed
 
 const std = @import("std");
@@ -128,7 +128,7 @@ const CounterButtons = struct {
     counter: gooey.Entity(Counter),
 
     pub fn render(self: @This(), cx: *Cx) void {
-        var entity_cx = cx.entityCx(Counter, self.counter) orelse return;
+        var entity_cx = cx.entities.context(Counter, self.counter) orelse return;
 
         var dec_id_buf: [32]u8 = undefined;
         var inc_id_buf: [32]u8 = undefined;

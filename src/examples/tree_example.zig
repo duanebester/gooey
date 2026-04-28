@@ -229,7 +229,7 @@ const TreeView = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        cx.treeList(
+        cx.lists.tree(
             "file-tree",
             &s.tree,
             .{

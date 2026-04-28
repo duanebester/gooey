@@ -647,7 +647,7 @@ const TreeListContent = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.treeList(
+        cx.lists.tree(
             "file-tree",
             &s.tree_state,
             .{
