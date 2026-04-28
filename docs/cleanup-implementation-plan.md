@@ -86,7 +86,7 @@ them out here so they don't get re-litigated in review:
 | --- | ------------------------ | -------------------------------------------------- | ---------------------------------------------------------- | ----------- | --------------------- |
 | 0   | Mechanical sweep         | —                                                  | `@Type` split, local-address returns, `ArrayList` `.empty` | Low         | ☑ (no-op, audit only) |
 | 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☑                     |
-| 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☐                     |
+| 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☑                     |
 | 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☐                     |
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☐                     |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☐                     |
@@ -254,27 +254,79 @@ There should be exactly one SVG module.
 - `src/svg/path.zig` (new — receives the path parser)
 - `src/svg/mod.zig` (updated)
 - `src/scene/mod.zig` (drop re-export)
+- `src/core/vec2.zig` (extend — `Vec2.init` + `IndexSlice.closed`)
+- `src/root.zig` (re-point top-level `svg` namespace)
+- `src/svg/backends/{cairo,coregraphics}.zig` (import path update)
 
 **Tasks:**
 
-- [ ] Move the path-parser code from `scene/svg.zig` into
+- [x] Move the path-parser code from `scene/svg.zig` into
       `svg/path.zig`. Keep type names but rehome them.
-- [ ] Delete `scene/svg.zig`.
+- [x] Delete `scene/svg.zig`.
 - [ ] Adopt `AssetCache(SvgDocument, MAX_SVG_DOCS)` from PR 1 for the
-      SVG document cache.
-- [ ] 0.16: any comptime path-parser tables that used `@Type` get
-      converted (PR 0 should have done this; verify).
-- [ ] 0.16: rasterizer SIMD audit — if any
+      SVG document cache. **Deferred** — see "Landed" notes; the SVG
+      hot path does not currently keep `SvgPath` documents alive
+      across frames (each rasterization parses then drops), so there
+      is no second `AssetCache` consumer to validate the trait
+      against. PR 1's `AssetCache` skeleton stays a `@compileError`
+      stub until a real second caller appears.
+- [x] 0.16: any comptime path-parser tables that used `@Type` get
+      converted (PR 0 should have done this; verify) — `grep @Type src/svg`
+      → no matches.
+- [x] 0.16: rasterizer SIMD audit — if any
       `@Vector(N, f32)[runtime_index]` exists, coerce to array first
-      per [§21](./zig-0.16-changes.md#vectors).
-- [ ] Resolve the `Vec2` name collision between `scene/` and `svg/` —
-      keep `core.Point` everywhere and delete the duplicates.
+      per [§21](./zig-0.16-changes.md#vectors) — `grep @Vector src/svg`
+      → no matches.
+- [x] Resolve the `Vec2` name collision between `scene/` and `svg/` —
+      `svg/path.zig` re-exports `core.Vec2` / `core.IndexSlice`; the
+      duplicate `Vec2` struct is gone. (Plan originally said
+      "`core.Point` everywhere" but `core.Point(T)` is a layout
+      type with unit semantics; raw geometry math uses `core.Vec2`
+      per `core/vec2.zig` doc comment.)
 
 **Definition of done:**
 
 - `find_path src/scene/svg.zig` returns nothing.
 - No two distinct types named `Vec2`.
 - All SVG-rendering examples still render.
+
+**Landed:**
+
+- ✅ `src/svg/path.zig` (new) holds `PathCommand`, `CubicBez`,
+  `QuadraticBez`, `flattenArc`, `SvgPath`, `PathParser`,
+  `SvgElementParser`, `flattenPath` — verbatim move from the old
+  `scene/svg.zig`, with the local `Vec2` / `IndexSlice` declarations
+  replaced by re-exports of `core.vec2.Vec2` / `core.vec2.IndexSlice`.
+- ✅ `src/core/vec2.zig` gained `Vec2.init(x, y)` (used everywhere in
+  the path parser instead of struct-literal noise) and an optional
+  `closed: bool = false` field on `IndexSlice` so stroke rasterization
+  can distinguish `Z`-terminated subpaths from open ones. Default
+  keeps non-SVG callers (triangulator, mesh builder, benchmarks)
+  source-compatible.
+- ✅ `src/svg/mod.zig` re-exports the parser surface
+  (`Vec2`, `IndexSlice`, `PathCommand`, `CubicBez`, `QuadraticBez`,
+  `SvgPath`, `PathParser`, `SvgElementParser`, `flattenArc`,
+  `flattenPath`) plus the `path` namespace, so backends keep using
+  `svg_mod.SvgPath`-style names without reaching across modules.
+- ✅ `src/svg/backends/cairo.zig` and
+  `src/svg/backends/coregraphics.zig` switched their `svg_mod` import
+  from `../../scene/svg.zig` to `../path.zig`. No call-site changes
+  needed — types live behind the same `svg_mod.*` names.
+- ✅ `src/scene/mod.zig` dropped the `pub const svg = @import("svg.zig")`
+  re-export.
+- ✅ `src/root.zig` top-level `pub const svg` now points at the
+  consolidated `svg/mod.zig` (was `scene.svg`). Public surface
+  preserved: `gooey.svg.SvgAtlas`, `gooey.svg.rasterize`, etc.
+- ✅ `src/scene/svg.zig` deleted (`find src -name svg.zig` now only
+  returns `src/components/svg.zig`, which is the unrelated UI
+  component).
+- ✅ `Vec2` collision audit:
+  `grep -rn "^pub const Vec2 = struct" src/` → exactly one match,
+  `src/core/vec2.zig`.
+- ✅ `zig build` green; `zig build test --summary all` reports
+  `Build Summary: 9/9 steps succeeded; 983/983 tests passed`
+  (unchanged from PR 1 — this PR is a pure consolidation, no new
+  tests, no test removals).
 
 ---
 

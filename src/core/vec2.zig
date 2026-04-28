@@ -22,6 +22,13 @@ pub const Vec2 = struct {
     x: f32,
     y: f32,
 
+    /// Construct from explicit (x, y). Useful in expressions where field
+    /// initialization syntax would be noisy (e.g. inside path-flattening
+    /// loops that emit many transient vectors).
+    pub fn init(x: f32, y: f32) Vec2 {
+        return .{ .x = x, .y = y };
+    }
+
     pub fn sub(self: Vec2, other: Vec2) Vec2 {
         return .{ .x = self.x - other.x, .y = self.y - other.y };
     }
@@ -81,9 +88,17 @@ pub const Vec2 = struct {
 
 /// A half-open range [start, end) of vertex indices within a shared buffer.
 /// Used to delineate individual polygons inside a flattened multi-polygon path.
+///
+/// `closed` records whether the source subpath ended with an explicit close
+/// command (SVG `Z`). Fill rasterization wraps polygons implicitly and
+/// ignores this; stroke rendering needs it so that open subpaths (arcs,
+/// curves without `Z`) do not get a phantom segment joining their endpoints.
+/// Defaults to `false` so non-SVG callers (triangulator, mesh builder) can
+/// keep using positional `IndexSlice{ .start = ..., .end = ... }` literals.
 pub const IndexSlice = struct {
     start: u32,
     end: u32,
+    closed: bool = false,
 
     /// Number of indices in the range. Asserts `end >= start`.
     pub fn len(self: IndexSlice) u32 {

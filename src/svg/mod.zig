@@ -21,6 +21,31 @@
 const builtin = @import("builtin");
 
 // =============================================================================
+// Path Parsing & Flattening
+// =============================================================================
+//
+// Path parser, element parser (circle/rect/line/polyline/polygon/ellipse),
+// bezier flattening, and arc flattening. Lifted out of `scene/svg.zig` in
+// PR 2 (cleanup plan §"PR 2 — SVG consolidation") so the codebase has
+// exactly one SVG module. Vector math reuses `core.Vec2` / `core.IndexSlice`
+// — there is no longer a parallel `Vec2` declaration here.
+
+pub const path = @import("path.zig");
+
+// Re-exports of the public SVG-parsing surface. Backends (CoreGraphics,
+// Cairo, Canvas2D) and tests reach for these via `svg_mod.SvgPath` etc.
+pub const Vec2 = path.Vec2;
+pub const IndexSlice = path.IndexSlice;
+pub const PathCommand = path.PathCommand;
+pub const CubicBez = path.CubicBez;
+pub const QuadraticBez = path.QuadraticBez;
+pub const SvgPath = path.SvgPath;
+pub const PathParser = path.PathParser;
+pub const SvgElementParser = path.SvgElementParser;
+pub const flattenArc = path.flattenArc;
+pub const flattenPath = path.flattenPath;
+
+// =============================================================================
 // Atlas (Caching)
 // =============================================================================
 

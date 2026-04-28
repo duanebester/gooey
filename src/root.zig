@@ -221,8 +221,8 @@ pub const Shadow = scene.Shadow;
 pub const Hsla = scene.Hsla;
 pub const GlyphInstance = scene.GlyphInstance;
 
-// SVG support (from scene module)
-pub const svg = scene.svg;
+/// SVG parsing, rasterization, and atlas caching
+pub const svg = @import("svg/mod.zig");
 
 // Image support
 pub const ImageAtlas = image.ImageAtlas;
