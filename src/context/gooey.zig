@@ -118,22 +118,11 @@ const Point = geometry.Point;
 const MAX_DEFERRED_COMMANDS = 32;
 const MAX_CANCEL_GROUPS: u32 = 64;
 
-/// Maximum image load results buffered per frame drain.
-const MAX_IMAGE_LOAD_RESULTS: u32 = 32;
-
-/// Maximum concurrent pending image URL fetches.
-const MAX_PENDING_IMAGE_LOADS: u32 = 64;
-
-/// Maximum distinct failed image URL hashes remembered per session.
-///
-/// A URL that fails to fetch (404, DNS failure, TLS error, timeout, etc.) is
-/// recorded here so subsequent frames short-circuit without re-launching the
-/// fetch. Without this, a single 404 would kick off a new fetch every frame
-/// (60 req/s) — a quick way to get the user's IP rate-limited.
-///
-/// Hard cap; if exceeded we fail fast rather than evicting. Retry/backoff
-/// policy and LRU eviction are deferred to Task 4.5b.
-const MAX_FAILED_IMAGE_LOADS: u32 = 128;
+// Image-loader caps live in `image/loader.zig` now (PR 1 extraction).
+// `Gooey` no longer owns the result buffer, queue, group, or pending /
+// failed sets — `image_loader: ImageLoader` does. The forwarder methods
+// below preserve the public-API surface that callers in `runtime/` and
+// `widgets/` already depend on.
 
 const DeferredCommand = struct {
     callback: *const fn (*Gooey, u64) void,
@@ -305,17 +294,15 @@ pub const Gooey = struct {
     cancel_groups: [MAX_CANCEL_GROUPS]*std.Io.Group = undefined,
     cancel_group_count: u32 = 0,
 
-    // Async image loading — URL images are fetched in background via Io.Group,
-    // results delivered via Io.Queue, and cached into the atlas each frame.
-    image_load_result_buffer: [MAX_IMAGE_LOAD_RESULTS]image_mod.loader.ImageLoadResult = undefined,
-    image_load_queue: std.Io.Queue(image_mod.loader.ImageLoadResult) = undefined,
-    image_load_group: std.Io.Group = .init,
-    pending_image_hashes: [MAX_PENDING_IMAGE_LOADS]u64 = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS,
-    pending_image_hash_count: u32 = 0,
-    // URLs that have failed to fetch — short-circuit future attempts to prevent
-    // per-frame retry storms. See MAX_FAILED_IMAGE_LOADS for rationale.
-    failed_image_hashes: [MAX_FAILED_IMAGE_LOADS]u64 = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS,
-    failed_image_hash_count: u32 = 0,
+    // Async image loading — URL fetch + decode + atlas cache.
+    //
+    // Owned subsystem (PR 1 extraction): see `src/image/loader.zig`.
+    // Initialized in place so the embedded `Io.Queue`'s pointer to the
+    // backing result buffer is stable. Forwarder methods on `Gooey`
+    // (`isImageLoadPending`, `isImageLoadFailed`, ...) preserve the call
+    // surface used by `runtime/render.zig` until PR 7 reroutes call
+    // sites to `gooey.image_loader.*` directly.
+    image_loader: image_mod.ImageLoader = undefined,
 
     const Self = @This();
 
@@ -376,117 +363,33 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
-    // Async Image Loading — Pending URL Tracking
+    // Async Image Loading — forwarders to `image_loader`
     // =========================================================================
+    //
+    // Body lives in `src/image/loader.zig` (`ImageLoader`). The wrappers
+    // here preserve the existing call surface used by `runtime/render.zig`
+    // (`gooey_ctx.isImageLoadPending`, `gooey_ctx.isImageLoadFailed`, ...)
+    // so PR 1 stays a focused move. PR 7 reroutes call sites directly
+    // to `gooey.image_loader.*`.
 
-    /// Re-initialize the image load queue after the struct has been copied to
-    /// its final heap address.
+    /// Re-bind the loader's queue pointer after a by-value copy.
     ///
-    /// The Io.Queue stores a pointer to its backing buffer. By-value init
-    /// functions (initOwned, initWithSharedResources) build the struct on the
-    /// stack and return it — the caller copies to heap, leaving the queue's
-    /// internal pointer dangling. This method fixes that.
-    ///
-    /// The Ptr-style init functions (initOwnedPtr, initWithSharedResourcesPtr)
-    /// do NOT need this — self is already at its final address.
+    /// Required after `initOwned` / `initWithSharedResources` because those
+    /// build `Self` on the stack and copy to heap, leaving the queue's
+    /// internal pointer dangling. The `Ptr`-style init paths do NOT need
+    /// this — they write at the final address.
     pub fn fixupImageLoadQueue(self: *Self) void {
-        // Only valid before any async work has been launched.
-        std.debug.assert(self.pending_image_hash_count == 0);
-        std.debug.assert(self.image_load_group.token.raw == null);
-        self.image_load_queue = .init(&self.image_load_result_buffer);
+        self.image_loader.fixupQueue();
     }
 
     /// Check whether a URL image fetch is already in flight.
     pub fn isImageLoadPending(self: *const Self, url_hash: u64) bool {
-        for (self.pending_image_hashes[0..self.pending_image_hash_count]) |hash| {
-            if (hash == url_hash) return true;
-        }
-        return false;
-    }
-
-    /// Record that a URL image fetch has been started.
-    pub fn addPendingImageLoad(self: *Self, url_hash: u64) void {
-        std.debug.assert(self.pending_image_hash_count < MAX_PENDING_IMAGE_LOADS);
-        std.debug.assert(!self.isImageLoadPending(url_hash));
-        self.pending_image_hashes[self.pending_image_hash_count] = url_hash;
-        self.pending_image_hash_count += 1;
-    }
-
-    /// Remove a pending image load (swap-remove). Called when the result arrives.
-    fn removePendingImageLoad(self: *Self, url_hash: u64) void {
-        for (self.pending_image_hashes[0..self.pending_image_hash_count], 0..) |hash, i| {
-            if (hash == url_hash) {
-                self.pending_image_hash_count -= 1;
-                if (i < self.pending_image_hash_count) {
-                    self.pending_image_hashes[i] = self.pending_image_hashes[self.pending_image_hash_count];
-                }
-                return;
-            }
-        }
-        // Every queued result must have a corresponding pending entry.
-        unreachable;
+        return self.image_loader.isPending(url_hash);
     }
 
     /// Check whether a URL has previously failed to fetch.
-    ///
-    /// Callers should consult this before launching a fetch — a failed URL
-    /// stays failed for the session (retry/backoff is Task 4.5b). This prevents
-    /// 60 req/s retry storms for broken URLs at frame rate.
     pub fn isImageLoadFailed(self: *const Self, url_hash: u64) bool {
-        for (self.failed_image_hashes[0..self.failed_image_hash_count]) |hash| {
-            if (hash == url_hash) return true;
-        }
-        return false;
-    }
-
-    /// Record that a URL fetch has failed permanently for this session.
-    ///
-    /// All failure modes (404, DNS, TLS, timeout, decode error) are treated
-    /// identically in 4.5a — nuance belongs in 4.5b. At capacity, fail fast
-    /// rather than silently evicting: 128 distinct failed URLs in one session
-    /// is a bug to surface, not to paper over.
-    fn addFailedImageLoad(self: *Self, url_hash: u64) void {
-        // Idempotent: drop duplicates silently. A result can only be reported
-        // once, but defensive against future code paths.
-        if (self.isImageLoadFailed(url_hash)) return;
-        std.debug.assert(self.failed_image_hash_count < MAX_FAILED_IMAGE_LOADS);
-        // Failed and pending are disjoint: the caller of this method has
-        // already swap-removed from pending via removePendingImageLoad.
-        std.debug.assert(!self.isImageLoadPending(url_hash));
-        self.failed_image_hashes[self.failed_image_hash_count] = url_hash;
-        self.failed_image_hash_count += 1;
-    }
-
-    /// Drain the image load queue and cache any completed loads into the atlas.
-    /// Called once per frame in beginFrame.
-    fn drainImageLoadQueue(self: *Self) void {
-        var drain_buffer: [MAX_IMAGE_LOAD_RESULTS]image_mod.loader.ImageLoadResult = undefined;
-        const count = self.image_load_queue.get(self.io, &drain_buffer, 0) catch return;
-
-        for (drain_buffer[0..count]) |*result| {
-            switch (result.*) {
-                .loaded => |*loaded| {
-                    self.removePendingImageLoad(loaded.key.source_hash);
-                    // Cache decoded pixels into the atlas.
-                    _ = self.image_atlas.*.cacheRgba(
-                        loaded.key,
-                        loaded.width,
-                        loaded.height,
-                        loaded.pixels,
-                    ) catch {};
-                    // Free the pixel data now that it is copied into the atlas.
-                    loaded.allocator.free(loaded.pixels);
-                    loaded.pixels = &.{};
-                },
-                .failed => |failed| {
-                    // Remove from pending BEFORE adding to failed — the
-                    // invariant asserted in addFailedImageLoad is that a URL
-                    // is never in both sets at once.
-                    self.removePendingImageLoad(failed.key.source_hash);
-                    self.addFailedImageLoad(failed.key.source_hash);
-                },
-            }
-        }
+        return self.image_loader.isFailed(url_hash);
     }
 
     /// Get the root state pointer with type checking
@@ -686,6 +589,11 @@ pub const Gooey = struct {
             // Blur handlers for text fields (fixed-capacity, no allocation needed)
             .blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
             .blur_handler_count = 0,
+            // Image loader: zero-init the slot. Caller MUST invoke
+            // `fixupImageLoadQueue` after copying `result` to its final
+            // heap address — the embedded `Io.Queue` holds a pointer
+            // into `result_buffer` that dangles after the by-value copy.
+            .image_loader = undefined,
         };
 
         // Initialize platform-specific accessibility bridge (Phase 2)
@@ -694,6 +602,11 @@ pub const Gooey = struct {
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
+
+        // Initialize the image loader subsystem in place. The result is
+        // about to be copied to the caller's heap address; the queue
+        // pointer will dangle until `fixupImageLoadQueue` re-binds it.
+        result.image_loader.initInPlace(io, allocator, image_atlas);
 
         return result;
     }
@@ -809,14 +722,6 @@ pub const Gooey = struct {
         self.cancel_groups = undefined;
         self.cancel_group_count = 0;
 
-        // Async image loading (fixed-capacity, no allocation needed).
-        self.image_load_result_buffer = undefined;
-        self.image_load_group = .init;
-        self.pending_image_hashes = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS;
-        self.pending_image_hash_count = 0;
-        self.failed_image_hashes = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS;
-        self.failed_image_hash_count = 0;
-
         // Accessibility (initInPlace avoids ~350KB stack temp)
         self.a11y_tree.initInPlace();
         self.a11y_enabled = false;
@@ -827,9 +732,10 @@ pub const Gooey = struct {
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
 
-        // Initialize image load queue — safe here because self is an out-pointer
-        // already at its final heap address (no copy will occur).
-        self.image_load_queue = .init(&self.image_load_result_buffer);
+        // Initialize image loader in place — safe here because `self` is
+        // already at its final heap address (no struct-literal copy can
+        // dangle the embedded queue pointer).
+        self.image_loader.initInPlace(io, allocator, image_atlas);
     }
 
     /// Initialize Gooey with shared resources (text system, SVG atlas, image atlas).
@@ -909,12 +815,19 @@ pub const Gooey = struct {
             // Blur handlers for text fields (fixed-capacity, no allocation needed)
             .blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
             .blur_handler_count = 0,
+            // Image loader: see comment in `initOwned` — by-value copy
+            // requires a `fixupImageLoadQueue` call after the result is
+            // moved to its final heap address.
+            .image_loader = undefined,
         };
 
         // Initialize platform-specific accessibility bridge
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
+
+        // Initialize the image loader against the SHARED atlas.
+        result.image_loader.initInPlace(io, allocator, shared_image_atlas);
 
         return result;
     }
@@ -1014,14 +927,6 @@ pub const Gooey = struct {
         self.cancel_groups = undefined;
         self.cancel_group_count = 0;
 
-        // Async image loading (fixed-capacity, no allocation needed).
-        self.image_load_result_buffer = undefined;
-        self.image_load_group = .init;
-        self.pending_image_hashes = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS;
-        self.pending_image_hash_count = 0;
-        self.failed_image_hashes = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS;
-        self.failed_image_hash_count = 0;
-
         // Accessibility
         self.a11y_tree.initInPlace();
         self.a11y_enabled = false;
@@ -1032,17 +937,18 @@ pub const Gooey = struct {
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
         self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
 
-        // Initialize image load queue — must happen after struct is at its final
-        // address because the queue holds a pointer to the backing buffer.
-        self.image_load_queue = .init(&self.image_load_result_buffer);
+        // Initialize image loader against the SHARED atlas. Safe to do
+        // here without a fixup because `self` is already at its final
+        // heap address (the embedded queue pointer cannot dangle).
+        self.image_loader.initInPlace(io, allocator, shared_image_atlas);
     }
 
     pub fn deinit(self: *Self) void {
-        // Close the image load queue so background tasks see closure.
-        self.image_load_queue.close(self.io);
-
-        // Cancel in-flight image fetches before any teardown.
-        self.image_load_group.cancel(self.io);
+        // Tear down the image loader subsystem first: closes the result
+        // queue (background tasks see closure on next put), cancels the
+        // fetch group (in-flight tasks unwind cleanly). Blocking is
+        // acceptable here — we are shutting down.
+        self.image_loader.deinit();
 
         // Cancel all registered cancel groups before any teardown.
         // Blocking is acceptable — we are shutting down.
@@ -1101,7 +1007,10 @@ pub const Gooey = struct {
         self.image_atlas.*.beginFrame();
 
         // Drain async image load results and cache into atlas.
-        self.drainImageLoadQueue();
+        // Order matters: must run after `image_atlas.beginFrame()` so
+        // any per-frame atlas reset has completed before we write
+        // freshly-decoded pixels into it.
+        self.image_loader.drain();
 
         // Clear stale entity observations from last frame
         self.entities.beginFrame();

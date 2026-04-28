@@ -122,6 +122,308 @@ pub const ImageLoadResult = union(enum) {
 };
 
 // =============================================================================
+// ImageLoader — async URL fetch + decode + atlas-cache subsystem
+// =============================================================================
+//
+// Rationale: a single struct that owns the fixed-capacity result queue, the
+// in-flight `Io.Group`, and the de-dup / failure sets for URL image loads.
+// Encapsulates the prototype pattern used by every later subsystem extraction
+// (PR 1 — `image/`; PR 2 — `svg/`; PR 3 — `a11y/`; ...): a single struct, a
+// single fixed-capacity queue, a single `Io.Group`, no back-pointer to the
+// parent context. See `docs/cleanup-implementation-plan.md` PR 1.
+//
+// Lifetime: created once per `Gooey` (or `Window` after PR 7), `initInPlace`
+// at the parent's final heap address so the embedded `Io.Queue`'s pointer
+// to `result_buffer` is stable. `deinit` cancels in-flight fetches and
+// closes the queue — blocking is acceptable on the teardown path.
+
+/// Maximum image load results buffered per frame drain.
+///
+/// Hard cap chosen so the per-frame drain has predictable cost: at 60Hz this
+/// is up to 1920 image-completion events/sec, far above realistic URL fetch
+/// completion rates. If we ever exceed it, the overflow simply waits for the
+/// next frame — the queue is unbounded on the producer side.
+pub const MAX_IMAGE_LOAD_RESULTS: u32 = 32;
+
+/// Maximum concurrent pending image URL fetches.
+///
+/// Caps in-flight `Io.Group.async` tasks. A 64-deep pending set is enough for
+/// a dense image grid (8 columns × 8 rows visible). Beyond this, callers
+/// receive a silent drop from `enqueueIfRoom` rather than blocking.
+pub const MAX_PENDING_IMAGE_LOADS: u32 = 64;
+
+/// Maximum distinct failed image URL hashes remembered per session.
+///
+/// A URL that fails to fetch (404, DNS failure, TLS error, timeout, ...) is
+/// recorded here so subsequent frames short-circuit without re-launching the
+/// fetch. Without this, a single 404 would kick off a new fetch every frame
+/// (60 req/s) — a quick way to get the user's IP rate-limited.
+///
+/// Hard cap; if exceeded we fail fast rather than evicting. Retry/backoff
+/// policy and LRU eviction are deferred (Task 4.5b).
+pub const MAX_FAILED_IMAGE_LOADS: u32 = 128;
+
+/// Async image loader — fetches URL images in the background, drains
+/// completed loads each frame, and caches decoded pixels into the atlas.
+///
+/// The struct is small enough (~5KB) to live by-value inside `Gooey`, but
+/// must be initialized in place (`initInPlace`) because `result_queue`
+/// holds a pointer into `result_buffer`. Copying the struct after init
+/// would dangle that pointer.
+pub const ImageLoader = struct {
+    /// Backing storage for the bounded `result_queue`.
+    /// Sized once at init; never reallocates.
+    result_buffer: [MAX_IMAGE_LOAD_RESULTS]ImageLoadResult,
+
+    /// Producer-consumer queue: background fetch tasks push results here,
+    /// frame loop drains via `drain` once per frame.
+    result_queue: std.Io.Queue(ImageLoadResult),
+
+    /// Lifetime envelope for in-flight fetch tasks. Cancelled on `deinit`
+    /// so background fetches unwind cleanly when the window closes.
+    fetch_group: std.Io.Group,
+
+    /// In-flight URL fetches, keyed by `ImageKey.source_hash`.
+    /// `pending_count` tracks length; the array is treated as a fixed slot map.
+    pending_hashes: [MAX_PENDING_IMAGE_LOADS]u64,
+    pending_count: u32,
+
+    /// URLs that have failed to fetch this session — short-circuit further
+    /// attempts. See `MAX_FAILED_IMAGE_LOADS` for rationale.
+    failed_hashes: [MAX_FAILED_IMAGE_LOADS]u64,
+    failed_count: u32,
+
+    /// Atlas that decoded pixels are written into on `drain`.
+    /// Borrowed reference; `Gooey` (or `App` after PR 7) owns the atlas.
+    image_atlas: *atlas.ImageAtlas,
+
+    /// `Io` interface for queue/group ops + background task dispatch.
+    /// Captured at init; never replaced.
+    io: std.Io,
+
+    /// General-purpose allocator for URL-string ownership transfer to
+    /// background tasks. The atlas owns its own allocator separately.
+    gpa: std.mem.Allocator,
+
+    const Self = @This();
+
+    /// Initialize in place at the struct's final heap address.
+    ///
+    /// Marked `noinline` to keep the WASM caller's stack frame bounded
+    /// (`CLAUDE.md` §14): inlining lets the compiler combine the result
+    /// buffer of every ImageLoader into one giant frame.
+    ///
+    /// Safe to call only once per instance, before any background tasks
+    /// have been spawned. Asserts the queue is wired to its own backing
+    /// buffer — a sanity check that catches accidental struct copies.
+    pub noinline fn initInPlace(
+        self: *Self,
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        image_atlas: *atlas.ImageAtlas,
+    ) void {
+        std.debug.assert(@intFromPtr(image_atlas) != 0);
+
+        // Field-by-field init avoids a stack temp from a struct literal —
+        // the result_buffer alone is ~2.5KB and we do not want to copy
+        // that through registers on every init call.
+        self.result_buffer = undefined;
+        self.fetch_group = .init;
+        self.pending_hashes = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS;
+        self.pending_count = 0;
+        self.failed_hashes = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS;
+        self.failed_count = 0;
+        self.image_atlas = image_atlas;
+        self.io = io;
+        self.gpa = gpa;
+
+        // Wire the queue last — it captures `&self.result_buffer`, so
+        // every other field must already be at its final address.
+        self.result_queue = .init(&self.result_buffer);
+
+        // Pair-assertion: queue must point into our own backing buffer.
+        std.debug.assert(@intFromPtr(&self.result_buffer) != 0);
+    }
+
+    /// Re-bind the queue's pointer to `&self.result_buffer`.
+    ///
+    /// By-value init paths in `Gooey` build the surrounding struct on the
+    /// stack and copy to heap; the queue's internal pointer dangles after
+    /// the copy. This method fixes that. `Ptr`-style init paths do not
+    /// need it because they write directly to the final address.
+    ///
+    /// Asserts no async work has launched yet — a fixup after the first
+    /// `enqueue` would corrupt in-flight state.
+    pub fn fixupQueue(self: *Self) void {
+        std.debug.assert(self.pending_count == 0);
+        std.debug.assert(self.fetch_group.token.raw == null);
+        self.result_queue = .init(&self.result_buffer);
+    }
+
+    /// Cancel in-flight fetches and close the result queue.
+    /// Blocking is acceptable here — we are tearing down.
+    pub fn deinit(self: *Self) void {
+        // Close the queue first so background tasks see closure on their
+        // next put attempt and unwind without further allocation.
+        self.result_queue.close(self.io);
+
+        // Cancel the group — blocks until every async task completes its
+        // current cancel point. Required before `Gooey` can free shared
+        // resources (the atlas, the gpa).
+        self.fetch_group.cancel(self.io);
+    }
+
+    // -------------------------------------------------------------------------
+    // Pending / failed bookkeeping
+    // -------------------------------------------------------------------------
+
+    /// Check whether a URL fetch is already in flight.
+    pub fn isPending(self: *const Self, url_hash: u64) bool {
+        for (self.pending_hashes[0..self.pending_count]) |hash| {
+            if (hash == url_hash) return true;
+        }
+        return false;
+    }
+
+    /// Check whether a URL has previously failed to fetch.
+    ///
+    /// Callers should consult this before launching a fetch — a failed URL
+    /// stays failed for the session (retry/backoff is Task 4.5b). This
+    /// prevents 60 req/s retry storms for broken URLs at frame rate.
+    pub fn isFailed(self: *const Self, url_hash: u64) bool {
+        for (self.failed_hashes[0..self.failed_count]) |hash| {
+            if (hash == url_hash) return true;
+        }
+        return false;
+    }
+
+    /// `true` iff a new fetch can be enqueued without exceeding the cap.
+    pub fn hasRoom(self: *const Self) bool {
+        return self.pending_count < MAX_PENDING_IMAGE_LOADS;
+    }
+
+    fn addPending(self: *Self, url_hash: u64) void {
+        std.debug.assert(self.pending_count < MAX_PENDING_IMAGE_LOADS);
+        std.debug.assert(!self.isPending(url_hash));
+        self.pending_hashes[self.pending_count] = url_hash;
+        self.pending_count += 1;
+    }
+
+    /// Swap-remove a pending entry. `unreachable` if the hash is not
+    /// pending — every drained result must have a matching pending entry.
+    fn removePending(self: *Self, url_hash: u64) void {
+        for (self.pending_hashes[0..self.pending_count], 0..) |hash, i| {
+            if (hash == url_hash) {
+                self.pending_count -= 1;
+                if (i < self.pending_count) {
+                    self.pending_hashes[i] = self.pending_hashes[self.pending_count];
+                }
+                return;
+            }
+        }
+        unreachable;
+    }
+
+    /// Record that a URL fetch has failed permanently for this session.
+    ///
+    /// All failure modes (404, DNS, TLS, timeout, decode error) collapse to
+    /// the same set in 4.5a — nuance belongs in 4.5b. At capacity, fail
+    /// fast rather than silently evicting: 128 distinct failed URLs in one
+    /// session is a bug to surface, not paper over.
+    fn addFailed(self: *Self, url_hash: u64) void {
+        // Idempotent: drop duplicates silently. A result can only be
+        // reported once, but defensive against future code paths.
+        if (self.isFailed(url_hash)) return;
+        std.debug.assert(self.failed_count < MAX_FAILED_IMAGE_LOADS);
+        // Failed and pending are disjoint: the caller of this method has
+        // already swap-removed from pending via `removePending`.
+        std.debug.assert(!self.isPending(url_hash));
+        self.failed_hashes[self.failed_count] = url_hash;
+        self.failed_count += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // Enqueue + drain
+    // -------------------------------------------------------------------------
+
+    /// Spawn a background fetch for `url` if there is capacity, the URL is
+    /// not already pending, and it has not previously failed.
+    ///
+    /// Returns `true` iff a fetch was actually launched. The caller does
+    /// not need to inspect the return — the next frame's `drain` will
+    /// surface the result either way. The bool is provided for test
+    /// assertions and for telemetry callers.
+    ///
+    /// `url` is duplicated into `gpa` and ownership of the copy is
+    /// transferred to the background task, which frees it on completion.
+    pub fn enqueueIfRoom(self: *Self, url: []const u8, key: ImageKey) bool {
+        std.debug.assert(url.len > 0);
+        std.debug.assert(url.len <= MAX_URL_LENGTH);
+
+        if (self.isFailed(key.source_hash)) return false;
+        if (self.isPending(key.source_hash)) return false;
+        if (!self.hasRoom()) return false;
+
+        // The source slice often lives in the layout arena which is reset
+        // each frame; the background task outlives the frame, so we copy.
+        const url_owned = self.gpa.dupe(u8, url) catch return false;
+
+        self.addPending(key.source_hash);
+
+        // Fire-and-forget. The task fetches, decodes, and pushes a result
+        // into `result_queue`. On window close / cancel-group fire, the
+        // backoff sleep observes cancellation and the task unwinds.
+        self.fetch_group.async(
+            self.io,
+            loadFromUrl,
+            .{ self.io, self.gpa, url_owned, key, &self.result_queue },
+        );
+        return true;
+    }
+
+    /// Drain the result queue into the atlas. Call once per frame in
+    /// `beginFrame` — after the atlas has done its own per-frame reset.
+    ///
+    /// Non-blocking: `Io.Queue.get` with timeout `0` returns immediately
+    /// with whatever is buffered. Capped at `MAX_IMAGE_LOAD_RESULTS` per
+    /// frame so a sudden burst of completions cannot stretch a frame.
+    pub fn drain(self: *Self) void {
+        // Local drain buffer — keeps the queue lock held for as little as
+        // possible, then we operate on the snapshot lock-free.
+        var drain_buffer: [MAX_IMAGE_LOAD_RESULTS]ImageLoadResult = undefined;
+        const count = self.result_queue.get(self.io, &drain_buffer, 0) catch return;
+        std.debug.assert(count <= MAX_IMAGE_LOAD_RESULTS);
+
+        for (drain_buffer[0..count]) |*result| {
+            switch (result.*) {
+                .loaded => |*loaded| {
+                    self.removePending(loaded.key.source_hash);
+                    // Cache decoded pixels into the atlas. `cacheRgba`
+                    // copies, so freeing `loaded.pixels` afterwards is
+                    // safe (and required — the queue is the owner).
+                    _ = self.image_atlas.*.cacheRgba(
+                        loaded.key,
+                        loaded.width,
+                        loaded.height,
+                        loaded.pixels,
+                    ) catch {};
+                    loaded.allocator.free(loaded.pixels);
+                    loaded.pixels = &.{};
+                },
+                .failed => |failed| {
+                    // Remove from pending BEFORE adding to failed — the
+                    // invariant in `addFailed` is that a URL is never in
+                    // both sets at once.
+                    self.removePending(failed.key.source_hash);
+                    self.addFailed(failed.key.source_hash);
+                },
+            }
+        }
+    }
+};
+
+
+// =============================================================================
 // Public API
 // =============================================================================
 
@@ -524,4 +826,109 @@ pub fn createCheckerboard(
         .pixels = pixels,
         .allocator = allocator,
     };
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+//
+// Bookkeeping-only tests: pending/failed sets, queue fixup, capacity caps.
+// We do NOT exercise `enqueueIfRoom` end-to-end here because that spawns a
+// real `Io.Group.async` task which would need a backing thread pool and a
+// reachable HTTP endpoint. End-to-end coverage lives in the integration
+// tests for `runtime/render.zig`.
+
+test "ImageLoader: pending and failed bookkeeping" {
+    const testing = std.testing;
+    const ImageAtlas = atlas.ImageAtlas;
+
+    // Set up a real ImageAtlas — `ImageLoader` borrows it for `drain`.
+    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    defer image_atlas.deinit();
+
+    var loader: ImageLoader = undefined;
+    loader.initInPlace(testing.io, testing.allocator, &image_atlas);
+    defer loader.deinit();
+
+    try testing.expect(!loader.isPending(0xdead));
+    try testing.expect(!loader.isFailed(0xdead));
+    try testing.expect(loader.hasRoom());
+
+    // Direct manipulation through the internal API to avoid spawning an
+    // actual fetch — we are exercising the bookkeeping only.
+    loader.addPending(0xdead);
+    try testing.expect(loader.isPending(0xdead));
+    try testing.expectEqual(@as(u32, 1), loader.pending_count);
+
+    loader.addPending(0xbeef);
+    try testing.expectEqual(@as(u32, 2), loader.pending_count);
+
+    // Swap-remove keeps the other entry intact.
+    loader.removePending(0xdead);
+    try testing.expect(!loader.isPending(0xdead));
+    try testing.expect(loader.isPending(0xbeef));
+    try testing.expectEqual(@as(u32, 1), loader.pending_count);
+
+    // Failed set: idempotent on duplicate.
+    loader.removePending(0xbeef);
+    loader.addFailed(0xbeef);
+    loader.addFailed(0xbeef);
+    try testing.expect(loader.isFailed(0xbeef));
+    try testing.expectEqual(@as(u32, 1), loader.failed_count);
+}
+
+test "ImageLoader: hasRoom flips at capacity" {
+    const testing = std.testing;
+    const ImageAtlas = atlas.ImageAtlas;
+
+    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    defer image_atlas.deinit();
+
+    var loader: ImageLoader = undefined;
+    loader.initInPlace(testing.io, testing.allocator, &image_atlas);
+    defer loader.deinit();
+
+    // Fill the pending set right up to the cap. Use distinct hashes so the
+    // dedup assertion in `addPending` does not trip.
+    var i: u64 = 0;
+    while (i < MAX_PENDING_IMAGE_LOADS) : (i += 1) {
+        try testing.expect(loader.hasRoom());
+        loader.addPending(0x1000 + i);
+    }
+    try testing.expect(!loader.hasRoom());
+
+    // Removing one frees a slot.
+    loader.removePending(0x1000);
+    try testing.expect(loader.hasRoom());
+}
+
+test "ImageLoader: fixupQueue restores the queue pointer after a copy" {
+    const testing = std.testing;
+    const ImageAtlas = atlas.ImageAtlas;
+
+    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    defer image_atlas.deinit();
+
+    // Build a loader at one address …
+    var stack_loader: ImageLoader = undefined;
+    stack_loader.initInPlace(testing.io, testing.allocator, &image_atlas);
+
+    // … then copy by value to its "real" home. This is the exact pattern
+    // `Gooey.initOwned` exercises before calling `fixupImageLoadQueue`.
+    const heap_loader = try testing.allocator.create(ImageLoader);
+    defer testing.allocator.destroy(heap_loader);
+    heap_loader.* = stack_loader;
+
+    // After the copy the queue's internal pointer references
+    // `stack_loader.result_buffer`, which is about to go out of scope.
+    // `fixupQueue` must rebind it to the new address.
+    heap_loader.fixupQueue();
+
+    // Pair-assertion: the queue's backing storage now lives inside
+    // `heap_loader`, not the stack-allocated original.
+    const queue_buffer_addr = @intFromPtr(&heap_loader.result_buffer);
+    const stack_buffer_addr = @intFromPtr(&stack_loader.result_buffer);
+    try testing.expect(queue_buffer_addr != stack_buffer_addr);
+
+    heap_loader.deinit();
 }

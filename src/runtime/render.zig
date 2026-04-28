@@ -375,7 +375,7 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
     //
     // Atlas-eviction re-fetch (Task 4.5b): if the LRU atlas previously held
     // this URL's pixels but evicted them to make room, we land here on a cache
-    // miss. The URL is not in `failed_image_hashes` (only outright fetch
+    // miss. The URL is not in `ImageLoader.failed_hashes` (only outright fetch
     // failures go there), so `ensureNativeUrlLoading` will kick off a fresh
     // fetch — the correct behavior. The only visible effect to the user is a
     // brief placeholder flash while the refetch completes.
@@ -520,32 +520,18 @@ fn ensureNativeUrlLoading(gooey_ctx: *Gooey, source: []const u8, key: image_mod.
     std.debug.assert(isUrlSource(source));
 
     // URL too long — silently drop rather than crashing in the background task.
+    // Bounded check at the call site so the loader's `enqueueIfRoom` assertion
+    // (`url.len <= MAX_URL_LENGTH`) cannot trip from a render-path caller.
     if (source.len > image_mod.loader.MAX_URL_LENGTH) return;
 
-    // Previously failed — short-circuit to avoid per-frame retry storms.
-    // Ordered before the pending check: a failed URL is the cheapest to reject,
-    // and failed + pending are disjoint (see Gooey.addFailedImageLoad).
-    if (gooey_ctx.isImageLoadFailed(key.source_hash)) return;
-
-    // Already in flight — nothing to do.
-    if (gooey_ctx.isImageLoadPending(key.source_hash)) return;
-
-    // At capacity — drop this request rather than blocking.
-    if (gooey_ctx.pending_image_hash_count >= gooey_ctx.pending_image_hashes.len) return;
-
-    // Duplicate the URL — the source slice lives in the layout arena which
-    // is reset each frame, but the background task outlives the frame.
-    const url_owned = gooey_ctx.allocator.dupe(u8, source) catch return;
-
-    gooey_ctx.addPendingImageLoad(key.source_hash);
-
-    // Fire-and-forget into the image load group.
-    // The task fetches, decodes, and pushes the result into the queue.
-    gooey_ctx.image_load_group.async(
-        gooey_ctx.io,
-        image_mod.loader.loadFromUrl,
-        .{ gooey_ctx.io, gooey_ctx.allocator, url_owned, key, &gooey_ctx.image_load_queue },
-    );
+    // Delegate to the extracted ImageLoader subsystem (PR 1). All the
+    // de-dup / failed-set / capacity / spawn logic lives there now —
+    // the render path just hands off the URL and key.
+    //
+    // Return value (`true` if a fetch was actually launched) is ignored:
+    // the next frame's drain will surface the result either way, and the
+    // render path has no use for the launch signal.
+    _ = gooey_ctx.image_loader.enqueueIfRoom(source, key);
 }
 
 /// Snap coordinates to device pixel grid for crisp rendering

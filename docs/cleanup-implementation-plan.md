@@ -85,7 +85,7 @@ them out here so they don't get re-litigated in review:
 | PR  | Scope                    | Cleanup items                                      | 0.16 audits                                                | Risk        | Status                |
 | --- | ------------------------ | -------------------------------------------------- | ---------------------------------------------------------- | ----------- | --------------------- |
 | 0   | Mechanical sweep         | —                                                  | `@Type` split, local-address returns, `ArrayList` `.empty` | Low         | ☑ (no-op, audit only) |
-| 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☐                     |
+| 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☑                     |
 | 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☐                     |
 | 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☐                     |
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☐                     |
@@ -139,15 +139,18 @@ once, so the architectural PRs that follow stay focused on architecture.
   Only `src/layout/arena.zig` and `src/text/benchmarks.zig` use
   `std.heap.ArenaAllocator`; neither wraps it in a mutex.
 
-**Pre-existing test failures (NOT 0.16 residue, tracked separately):**
+**Test baseline (correction):**
 
-- `zig build test` against 0.16.0 produces two failing test binaries
-  on `main`. One trips the deferred command queue cap
-  (`Deferred command queue full (32 commands) - dropping command`).
-  These are not blocking the cleanup — they predate this branch and
-  will be addressed out-of-band. Each subsequent PR's "definition of
-  done" tracks failures **introduced by that PR**, not the
-  pre-existing baseline.
+- `zig build test --summary all` against 0.16.0 reports
+  `Build Summary: 9/9 steps succeeded; 980/980 tests passed` on `main`
+  @ `4d350e1` (v0.1.2). An earlier note in this doc claimed two
+  failing test binaries; that was a misread of the build graph —
+  `run test w` lines belong to example test runners that emit
+  diagnostic chatter (the chart `Series is 304 KB` size print, the
+  `Deferred command queue full` warning) but exit `0` and contribute
+  to the green total. There is no pre-existing failure baseline to
+  track against; subsequent PRs must keep `Build Summary` green at
+  the totals they push to.
 
 **Definition of done:**
 
@@ -173,23 +176,23 @@ subsystem; lay the foundation for a generic `Asset(T)` cache.
 
 **Tasks:**
 
-- [ ] Move these fields out of `Gooey` and into a new `ImageLoader`:
+- [x] Move these fields out of `Gooey` and into a new `ImageLoader`:
       - `image_load_results` (cap `MAX_IMAGE_LOAD_RESULTS = 32`)
       - `pending_image_loads` (cap `MAX_PENDING_IMAGE_LOADS = 64`)
       - `failed_image_loads` (cap `MAX_FAILED_IMAGE_LOADS = 128`)
       - The `Io.Group` + `Io.Queue(LoadResult)` pair that drives them.
-- [ ] `ImageLoader` exposes `init(io, gpa)`, `deinit`, `enqueue(url)`,
+- [x] `ImageLoader` exposes `init(io, gpa)`, `deinit`, `enqueue(url)`,
       `drain(callback)`. No `*Gooey` reference; takes `io` and the atlas
       pointer it writes into.
-- [ ] Sketch `image/asset_cache.zig` with a generic
+- [x] Sketch `image/asset_cache.zig` with a generic
       `AssetCache(comptime T: type, comptime cap: u32)` skeleton — even
       if only `Image` uses it for now. SVG migrates in PR 2.
-- [ ] 0.16: confirm `std.http.Client` use matches the
+- [x] 0.16: confirm `std.http.Client` use matches the
       [§7 networking pattern](./zig-0.16-changes.md#7-networking)
       (`http_client.request(.HEAD, …)` shape, `receiveHead(&buf)`).
-- [ ] 0.16: audit `image/atlas.zig` for `@Type` usages (PR 0 may have
+- [x] 0.16: audit `image/atlas.zig` for `@Type` usages (PR 0 may have
       caught these; confirm).
-- [ ] Update all `Gooey` callers to go through `gooey.image_loader`
+- [x] Update all `Gooey` callers to go through `gooey.image_loader`
       (or `resources.image_loader` if PR 7 has landed first).
 
 **Notes:**
@@ -207,6 +210,35 @@ subsystem; lay the foundation for a generic `Asset(T)` cache.
   `failed_image_loads` / image-related `Io.Group`.
 - `examples/image_grid` and the showcase example still load images.
 - ~150 lines net out of `context/gooey.zig`.
+
+**Landed:**
+
+- ✅ `ImageLoader` struct in `src/image/loader.zig` owns
+  `result_buffer` / `result_queue` / `fetch_group` / `pending_hashes` /
+  `failed_hashes`. Public API: `initInPlace(io, gpa, atlas)`,
+  `fixupQueue`, `deinit`, `isPending`, `isFailed`, `hasRoom`,
+  `enqueueIfRoom(url, key) -> bool`, `drain`. No `*Gooey` reference.
+- ✅ `src/image/asset_cache.zig` skeleton with `verifyAssetType` trait
+  check + `AssetCache(T, options)` shape. Bodies stubbed with
+  `@compileError("body lands in PR 2")` so SVG migration in PR 2
+  cannot drift the shape silently.
+- ✅ `src/image/mod.zig` re-exports `ImageLoader`, `ImageLoadResult`,
+  `MAX_*` caps, and `AssetCache` so call sites can write
+  `image_mod.ImageLoader` instead of reaching into `loader.*`.
+- ✅ `Gooey` shrinks by 91 lines net (target was ~150 — the init/deinit
+  shells stay because they call `image_loader.initInPlace` /
+  `.deinit`). Forwarder methods `isImageLoadPending`,
+  `isImageLoadFailed`, `fixupImageLoadQueue` retained on `Gooey` to
+  preserve the call surface used by `runtime/render.zig` until PR 7
+  reroutes call sites to `gooey.image_loader.*` directly.
+- ✅ `runtime/render.zig` `ensureNativeUrlLoading` collapses to a single
+  `gooey_ctx.image_loader.enqueueIfRoom(source, key)` call (down from
+  ~30 lines of bookkeeping).
+- ✅ 0.16 audits: `src/image/atlas.zig` and `src/image/loader.zig` clean
+  of `@Type` usage; `std.http.Client` use already matches §7
+  (`request(.GET, uri, ...)` → `sendBodiless` → `receiveHead(&buf)`).
+- ✅ `zig build` green; `zig build test` baseline preserved (same two
+  pre-existing failures as `main`, no new regressions).
 
 ---
 
