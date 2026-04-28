@@ -414,7 +414,7 @@ pub const Builder = struct {
     /// ```
     pub fn accessible(self: *Self, config: AccessibleConfig) bool {
         const g = self.gooey orelse return false;
-        if (!g.a11y_enabled) return false;
+        if (!g.a11y.isEnabled()) return false;
 
         // Phase 3: Auto-inject focus state from FocusManager
         // This centralizes focus tracking - components don't need to know about it
@@ -429,22 +429,23 @@ pub const Builder = struct {
 
         // Resolve string-based relationship IDs to element indices
         // Note: Target elements must be rendered earlier in the same frame
+        const a11y_tree = g.a11y.getTree();
         const labelled_by: ?u16 = if (config.labelled_by_id) |id|
-            g.a11y_tree.findElementByStringId(id)
+            a11y_tree.findElementByStringId(id)
         else
             null;
 
         const described_by: ?u16 = if (config.described_by_id) |id|
-            g.a11y_tree.findElementByStringId(id)
+            a11y_tree.findElementByStringId(id)
         else
             null;
 
         const controls: ?u16 = if (config.controls_id) |id|
-            g.a11y_tree.findElementByStringId(id)
+            a11y_tree.findElementByStringId(id)
         else
             null;
 
-        _ = g.a11y_tree.pushElement(.{
+        _ = a11y_tree.pushElement(.{
             .layout_id = config.layout_id,
             .role = config.role,
             .name = config.name,
@@ -471,8 +472,8 @@ pub const Builder = struct {
     /// Must be called after accessible() returns true.
     pub fn accessibleEnd(self: *Self) void {
         const g = self.gooey orelse return;
-        if (g.a11y_enabled) {
-            g.a11y_tree.popElement();
+        if (g.a11y.isEnabled()) {
+            g.a11y.getTree().popElement();
         }
     }
 
@@ -486,15 +487,13 @@ pub const Builder = struct {
     /// ```
     pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
         const g = self.gooey orelse return;
-        if (g.a11y_enabled) {
-            g.a11y_tree.announce(message, priority);
-        }
+        g.a11y.announce(message, priority);
     }
 
     /// Check if accessibility is currently enabled
     pub fn isA11yEnabled(self: *Self) bool {
         const g = self.gooey orelse return false;
-        return g.a11y_enabled;
+        return g.a11y.isEnabled();
     }
 
     // =========================================================================

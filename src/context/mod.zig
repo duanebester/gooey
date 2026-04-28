@@ -66,6 +66,38 @@ pub const ActionTypeId = dispatch.ActionTypeId;
 pub const actionTypeId = dispatch.actionTypeId;
 
 // =============================================================================
+// PR 3 — context/ subsystem extractions
+// =============================================================================
+//
+// These four subsystems used to live as fields and methods directly on
+// `Gooey`. They are now peer modules. Re-exported here so consumers can
+// `@import("context/mod.zig")` and reach the types via the same path as
+// the rest of the context API.
+
+pub const hover = @import("hover.zig");
+pub const HoverState = hover.HoverState;
+pub const MAX_HOVERED_ANCESTORS = hover.MAX_HOVERED_ANCESTORS;
+
+pub const blur_handlers = @import("blur_handlers.zig");
+pub const BlurHandlerRegistry = blur_handlers.BlurHandlerRegistry;
+pub const MAX_BLUR_HANDLERS = blur_handlers.MAX_BLUR_HANDLERS;
+
+pub const cancel_registry = @import("cancel_registry.zig");
+pub const CancelRegistry = cancel_registry.CancelRegistry;
+pub const MAX_CANCEL_GROUPS = cancel_registry.MAX_CANCEL_GROUPS;
+
+pub const a11y_system = @import("a11y_system.zig");
+pub const A11ySystem = a11y_system.A11ySystem;
+
+// Generic fixed-capacity slot map (cleanup item #8). Backs both
+// `BlurHandlerRegistry` and `CancelRegistry` in PR 3, and will back
+// `element_states` in PR 8.
+pub const subscriber_set = @import("subscriber_set.zig");
+pub const SubscriberSet = subscriber_set.SubscriberSet;
+pub const SubscriberSetOptions = subscriber_set.Options;
+pub const SubscriberInsertion = subscriber_set.Insertion;
+
+// =============================================================================
 // Drag & Drop
 // =============================================================================
 

@@ -309,7 +309,7 @@ fn handleMouseDownEvent(
 
     // 7. Debugger: handle click to select element for inspection
     if (gooey.debugger.isActive()) {
-        gooey.debugger.handleClick(gooey.hovered_layout_id);
+        gooey.debugger.handleClick(gooey.hover.hovered_layout_id);
         cx.notify();
     }
 

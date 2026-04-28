@@ -357,8 +357,8 @@ fn renderDebugOverlays(gooey: *Gooey) !void {
     if (!gooey.debugger.isActive()) return;
 
     gooey.debugger.generateOverlays(
-        gooey.hovered_layout_id,
-        gooey.hovered_ancestors[0..gooey.hovered_ancestor_count],
+        gooey.hover.hovered_layout_id,
+        gooey.hover.ancestors(),
         gooey.layout,
     );
     try gooey.debugger.renderOverlays(gooey.scene);

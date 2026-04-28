@@ -21,6 +21,26 @@
 //! const commands = ui.endFrame();
 //! // Render commands to scene...
 //! ```
+//!
+//! ## PR 3 — context/ subsystem extractions
+//!
+//! Per `docs/cleanup-implementation-plan.md` PR 3, four subsystems that were
+//! previously bolted directly onto `Gooey` now live as peer modules:
+//!
+//!   - `hover: HoverState`        — see `hover.zig`         (was 6 fields here)
+//!   - `blur_handlers: BlurHandlerRegistry` — see `blur_handlers.zig`
+//!   - `cancel_registry: CancelRegistry`    — see `cancel_registry.zig`
+//!   - `a11y: A11ySystem`         — see `a11y_system.zig`   (was 5 fields here)
+//!
+//! Both `BlurHandlerRegistry` and `CancelRegistry` are backed by the new
+//! generic `SubscriberSet` (cleanup item #8) — two distinct call shapes
+//! validating the trait before PR 8 leans on it for `element_states`.
+//!
+//! No public API change: every method that previously sat on `Gooey`
+//! (`updateHover`, `registerBlurHandler`, `registerCancelGroup`,
+//! `isA11yEnabled`, …) is preserved as a one-line forwarder. Internal
+//! framework callers (`runtime/*.zig`, `ui/builder.zig`) reach into the
+//! sub-fields directly via `gooey.hover.*` / `gooey.a11y.*` / etc.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -46,7 +66,8 @@ else
 const debugger_mod = @import("../debug/debugger.zig");
 const render_stats = @import("../debug/render_stats.zig");
 
-// Accessibility
+// Accessibility (re-exported types only — owning subsystem lives in
+// `a11y_system.zig` per PR 3).
 const a11y = @import("../accessibility/accessibility.zig");
 
 // Layout
@@ -114,15 +135,27 @@ pub const DragState = drag_mod.DragState;
 const geometry = @import("../core/geometry.zig");
 const Point = geometry.Point;
 
-// Deferred command infrastructure
-const MAX_DEFERRED_COMMANDS = 32;
-const MAX_CANCEL_GROUPS: u32 = 64;
+// Extracted subsystems (PR 3). Body lives in the named files; `Gooey`
+// composes them as ordinary fields.
+const hover_mod = @import("hover.zig");
+const HoverState = hover_mod.HoverState;
+const blur_handlers_mod = @import("blur_handlers.zig");
+const BlurHandlerRegistry = blur_handlers_mod.BlurHandlerRegistry;
+const cancel_registry_mod = @import("cancel_registry.zig");
+const CancelRegistry = cancel_registry_mod.CancelRegistry;
+const a11y_system_mod = @import("a11y_system.zig");
+const A11ySystem = a11y_system_mod.A11ySystem;
 
-// Image-loader caps live in `image/loader.zig` now (PR 1 extraction).
-// `Gooey` no longer owns the result buffer, queue, group, or pending /
-// failed sets — `image_loader: ImageLoader` does. The forwarder methods
-// below preserve the public-API surface that callers in `runtime/` and
-// `widgets/` already depend on.
+// =============================================================================
+// Local infrastructure (deferred command queue)
+// =============================================================================
+//
+// The deferred-command queue stays on `Gooey` — unlike the four registries
+// extracted in PR 3, it is not a self-contained subsystem; it reaches into
+// the root-state pointer and the render-request flag every flush. Pulling
+// it out would require dragging both back through a parameter list.
+
+const MAX_DEFERRED_COMMANDS = 32;
 
 const DeferredCommand = struct {
     callback: *const fn (*Gooey, u64) void,
@@ -153,14 +186,6 @@ fn extractState(comptime caller: []const u8, comptime Fn: type) type {
     }
     return ptr_info.pointer.child;
 }
-
-// Blur handler infrastructure (fixed-capacity to avoid dynamic allocation)
-const MAX_BLUR_HANDLERS: usize = 64;
-
-const BlurHandlerEntry = struct {
-    id: []const u8,
-    handler: HandlerRef,
-};
 
 /// Font configuration for app initialization.
 /// Pass to `initOwned` / `initOwnedPtr` to control the default font.
@@ -207,21 +232,11 @@ pub const Gooey = struct {
     // Focus management
     focus: FocusManager,
 
-    // Hover state - tracks which layout element is currently hovered
-    // This is the layout_id (hash) of the hovered element, persists across frames
-    hovered_layout_id: ?u32 = null,
-
-    // Last known mouse position (for re-hit-testing after bounds sync)
-    last_mouse_x: f32 = 0,
-    last_mouse_y: f32 = 0,
-
-    // Cached ancestor layout_ids of the hovered element (for isHoveredOrDescendant)
-    // This is populated in updateHover before dispatch tree is reset
-    hovered_ancestors: [32]u32 = [_]u32{0} ** 32,
-    hovered_ancestor_count: u8 = 0,
-
-    // Track if hover changed to trigger re-render
-    hover_changed: bool = false,
+    /// Hover state (PR 3 extraction — see `hover.zig`).
+    /// Owns: hovered layout id, last cursor pos, ancestor chain cache,
+    /// hover-changed latch. Public field — internal callers reach in
+    /// via `gooey.hover.*` to avoid yet another forwarder layer.
+    hover: HoverState = .{},
 
     // Drag & Drop state
     /// Pending drag (mouse down, threshold not yet exceeded)
@@ -255,21 +270,11 @@ pub const Gooey = struct {
     height: f32 = 0,
     scale_factor: f32 = 1.0,
 
-    // Accessibility (Phase 1: Gooey Integration, Phase 2: Platform Bridges)
-    /// Accessibility tree (rebuilt each frame, zero-alloc after init)
-    a11y_tree: a11y.Tree,
-
-    /// Platform-specific bridge storage (macOS: MacBridge, others: null)
-    a11y_platform_bridge: a11y.PlatformBridge,
-
-    /// Platform accessibility bridge interface (VoiceOver, AT-SPI2, ARIA)
-    a11y_bridge: a11y.Bridge,
-
-    /// Is accessibility enabled? (cached, checked periodically)
-    a11y_enabled: bool = false,
-
-    /// Frame counter for periodic screen reader checks
-    a11y_check_counter: u32 = 0,
+    /// Accessibility subsystem (PR 3 extraction — see `a11y_system.zig`).
+    /// Owns: tree, platform bridge storage, bridge dispatcher, the
+    /// "screen reader active" flag, and the periodic poll counter.
+    /// `undefined` until `initOwned` / `initOwnedPtr` etc wire it.
+    a11y: A11ySystem = undefined,
 
     // Per-window root state for handler callbacks (multi-window support)
     /// Type-erased pointer to this window's root state
@@ -281,18 +286,17 @@ pub const Gooey = struct {
     deferred_commands: [MAX_DEFERRED_COMMANDS]DeferredCommand = undefined,
     deferred_count: u8 = 0,
 
-    // Blur handlers for text fields (registered per frame from pending items)
-    // Fixed-capacity storage to avoid dynamic allocation during rendering
-    blur_handlers: [MAX_BLUR_HANDLERS]?BlurHandlerEntry = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
-    blur_handler_count: usize = 0,
+    /// Blur handler registry (PR 3 extraction — see `blur_handlers.zig`).
+    /// Backed by the generic `SubscriberSet`; cap is `MAX_BLUR_HANDLERS`
+    /// (64). `undefined` here so the parent's by-pointer init paths can
+    /// `initInPlace` without a stack temp; struct-literal init paths set
+    /// it explicitly.
+    blur_handlers: BlurHandlerRegistry = undefined,
 
-    // Guard to prevent double blur handler invocation within the same focus transition
-    blur_handlers_invoked_this_transition: bool = false,
-
-    // Cancel group registry (for structured async cancellation on teardown).
-    // Apps register groups via cx.registerCancelGroup(); all are cancelled in deinit().
-    cancel_groups: [MAX_CANCEL_GROUPS]*std.Io.Group = undefined,
-    cancel_group_count: u32 = 0,
+    /// Cancel-group registry (PR 3 extraction — see `cancel_registry.zig`).
+    /// Backed by the generic `SubscriberSet`; cap is `MAX_CANCEL_GROUPS`
+    /// (64). All registered groups are cancelled in `deinit`.
+    cancel_registry: CancelRegistry = undefined,
 
     // Async image loading — URL fetch + decode + atlas cache.
     //
@@ -322,8 +326,12 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
-    // Cancel Group Registry
+    // Cancel Group Registry — forwarders to `cancel_registry`
     // =========================================================================
+    //
+    // Body lives in `cancel_registry.zig`. The wrappers here preserve the
+    // call surface used by `cx.registerCancelGroup` / external apps until
+    // a future PR threads `*CancelRegistry` directly through `Cx`.
 
     /// Register a cancel group for automatic cancellation on teardown.
     ///
@@ -332,34 +340,17 @@ pub const Gooey = struct {
     /// cancelled mid-frame — `Group.cancel()` blocks, so it is only safe at
     /// teardown boundaries.
     pub fn registerCancelGroup(self: *Self, group: *std.Io.Group) void {
-        std.debug.assert(self.cancel_group_count < MAX_CANCEL_GROUPS);
-        self.cancel_groups[self.cancel_group_count] = group;
-        self.cancel_group_count += 1;
+        self.cancel_registry.register(group);
     }
 
     /// Unregister a cancel group (e.g., when async work completes normally).
     ///
-    /// Swap-removes to keep the operation O(1). Order of cancellation at
-    /// teardown is not guaranteed and should not be relied upon.
+    /// Silent no-op when the group is not registered, matching the
+    /// pre-extraction behaviour. The boolean returned by the underlying
+    /// `CancelRegistry.unregister` is discarded — callers that need it
+    /// should use the registry directly.
     pub fn unregisterCancelGroup(self: *Self, group: *std.Io.Group) void {
-        for (self.cancel_groups[0..self.cancel_group_count], 0..) |registered, i| {
-            if (registered == group) {
-                self.cancel_group_count -= 1;
-                if (i < self.cancel_group_count) {
-                    self.cancel_groups[i] = self.cancel_groups[self.cancel_group_count];
-                }
-                return;
-            }
-        }
-    }
-
-    /// Cancel all registered groups. Called during deinit (teardown).
-    /// Blocking is acceptable here — we are shutting down.
-    fn cancelAllGroups(self: *Self) void {
-        for (self.cancel_groups[0..self.cancel_group_count]) |group| {
-            group.cancel(self.io);
-        }
-        self.cancel_group_count = 0;
+        _ = self.cancel_registry.unregister(group);
     }
 
     // =========================================================================
@@ -582,13 +573,17 @@ pub const Gooey = struct {
             .width = @floatCast(window.size.width),
             .height = @floatCast(window.size.height),
             .scale_factor = @floatCast(window.scale_factor),
-            // Accessibility: static init, no allocations
-            .a11y_tree = a11y.Tree.init(),
-            .a11y_platform_bridge = undefined,
-            .a11y_bridge = undefined, // Initialized below
-            // Blur handlers for text fields (fixed-capacity, no allocation needed)
-            .blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
-            .blur_handler_count = 0,
+            // Hover state — small, by-value default is fine.
+            .hover = HoverState.init(),
+            // Blur handler registry — by-value init is safe (no internal pointers).
+            .blur_handlers = BlurHandlerRegistry.init(),
+            // Cancel registry — same.
+            .cancel_registry = CancelRegistry.init(),
+            // Accessibility: filled in below by `initInPlace`. The bridge
+            // dispatcher embeds a pointer into `result.a11y.platform_bridge`;
+            // see `initOwnedPtr` for the version without the by-value copy
+            // dangling-pointer caveat.
+            .a11y = undefined,
             // Image loader: zero-init the slot. Caller MUST invoke
             // `fixupImageLoadQueue` after copying `result` to its final
             // heap address — the embedded `Io.Queue` holds a pointer
@@ -596,12 +591,12 @@ pub const Gooey = struct {
             .image_loader = undefined,
         };
 
-        // Initialize platform-specific accessibility bridge (Phase 2)
-        // On macOS: MacBridge with VoiceOver support
-        // On other platforms: NullBridge (no-op)
+        // Initialize accessibility subsystem in place. On macOS, the
+        // bridge captures the NSWindow / NSView handles passed here; on
+        // other platforms they are ignored.
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
-        result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
+        result.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize the image loader subsystem in place. The result is
         // about to be copied to the caller's heap address; the queue
@@ -706,31 +701,35 @@ pub const Gooey = struct {
         self.scale_factor = @floatCast(window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
-        self.hovered_layout_id = null;
-        self.last_mouse_x = 0;
-        self.last_mouse_y = 0;
-        self.hovered_ancestor_count = 0;
-        self.hover_changed = false;
         self.debugger = .{};
 
-        // Blur handlers for text fields (fixed-capacity, no allocation needed)
-        self.blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS;
-        self.blur_handler_count = 0;
-        self.blur_handlers_invoked_this_transition = false;
+        // Pending/active drag state (re-init explicitly — `self` was raw memory)
+        self.pending_drag = null;
+        self.active_drag = null;
+        self.drag_over_target = null;
 
-        // Cancel group registry (fixed-capacity, no allocation needed)
-        self.cancel_groups = undefined;
-        self.cancel_group_count = 0;
+        // Root state slots
+        self.root_state_ptr = null;
+        self.root_state_type_id = 0;
 
-        // Accessibility (initInPlace avoids ~350KB stack temp)
-        self.a11y_tree.initInPlace();
-        self.a11y_enabled = false;
-        self.a11y_check_counter = 0;
+        // Deferred command queue
+        self.deferred_commands = undefined;
+        self.deferred_count = 0;
 
-        // Platform-specific accessibility bridge
+        // Hover, blur, cancel — every subsystem with internal arrays gets
+        // an in-place init to avoid a stack temp. The `self` pointer is
+        // already at its final heap address, so no fixup is needed later.
+        self.hover.initInPlace();
+        self.blur_handlers.initInPlace();
+        self.cancel_registry.initInPlace();
+
+        // Accessibility (initInPlace avoids ~350KB stack temp). The
+        // bridge dispatcher captures `&self.a11y.platform_bridge`,
+        // which is correct here because `self` is at its final heap
+        // address.
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
-        self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
+        self.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize image loader in place — safe here because `self` is
         // already at its final heap address (no struct-literal copy can
@@ -808,13 +807,10 @@ pub const Gooey = struct {
             .width = @floatCast(window.size.width),
             .height = @floatCast(window.size.height),
             .scale_factor = @floatCast(window.scale_factor),
-            // Accessibility: static init, no allocations
-            .a11y_tree = a11y.Tree.init(),
-            .a11y_platform_bridge = undefined,
-            .a11y_bridge = undefined,
-            // Blur handlers for text fields (fixed-capacity, no allocation needed)
-            .blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS,
-            .blur_handler_count = 0,
+            .hover = HoverState.init(),
+            .blur_handlers = BlurHandlerRegistry.init(),
+            .cancel_registry = CancelRegistry.init(),
+            .a11y = undefined,
             // Image loader: see comment in `initOwned` — by-value copy
             // requires a `fixupImageLoadQueue` call after the result is
             // moved to its final heap address.
@@ -824,7 +820,7 @@ pub const Gooey = struct {
         // Initialize platform-specific accessibility bridge
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
-        result.a11y_bridge = a11y.createPlatformBridge(&result.a11y_platform_bridge, window_obj, view_obj);
+        result.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize the image loader against the SHARED atlas.
         result.image_loader.initInPlace(io, allocator, shared_image_atlas);
@@ -911,31 +907,30 @@ pub const Gooey = struct {
         self.scale_factor = @floatCast(window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
-        self.hovered_layout_id = null;
-        self.last_mouse_x = 0;
-        self.last_mouse_y = 0;
-        self.hovered_ancestor_count = 0;
-        self.hover_changed = false;
         self.debugger = .{};
 
-        // Blur handlers for text fields (fixed-capacity, no allocation needed)
-        self.blur_handlers = [_]?BlurHandlerEntry{null} ** MAX_BLUR_HANDLERS;
-        self.blur_handler_count = 0;
-        self.blur_handlers_invoked_this_transition = false;
+        // Pending/active drag state
+        self.pending_drag = null;
+        self.active_drag = null;
+        self.drag_over_target = null;
 
-        // Cancel group registry (fixed-capacity, no allocation needed)
-        self.cancel_groups = undefined;
-        self.cancel_group_count = 0;
+        // Root state slots
+        self.root_state_ptr = null;
+        self.root_state_type_id = 0;
 
-        // Accessibility
-        self.a11y_tree.initInPlace();
-        self.a11y_enabled = false;
-        self.a11y_check_counter = 0;
+        // Deferred command queue
+        self.deferred_commands = undefined;
+        self.deferred_count = 0;
 
-        // Platform-specific accessibility bridge
+        // Hover, blur, cancel subsystems (in-place to avoid stack temps)
+        self.hover.initInPlace();
+        self.blur_handlers.initInPlace();
+        self.cancel_registry.initInPlace();
+
+        // Accessibility (initInPlace avoids ~350KB stack temp)
         const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
         const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
-        self.a11y_bridge = a11y.createPlatformBridge(&self.a11y_platform_bridge, window_obj, view_obj);
+        self.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize image loader against the SHARED atlas. Safe to do
         // here without a fixup because `self` is already at its final
@@ -952,10 +947,10 @@ pub const Gooey = struct {
 
         // Cancel all registered cancel groups before any teardown.
         // Blocking is acceptable — we are shutting down.
-        self.cancelAllGroups();
+        self.cancel_registry.cancelAll(self.io);
 
-        // Clean up accessibility bridge
-        self.a11y_bridge.deinit();
+        // Clean up accessibility subsystem (deinit drops the bridge).
+        self.a11y.deinit();
 
         // Blur handlers use fixed-capacity storage, no cleanup needed
 
@@ -1040,23 +1035,16 @@ pub const Gooey = struct {
         // Begin layout pass (timer moved to endFrame to cover only actual layout compute)
         self.layout.beginFrame(self.width, self.height);
 
-        // Clear hover_changed flag at frame start
-        self.hover_changed = false;
+        // Hover: clear hover_changed latch so a downstream observer
+        // that didn't react in the previous frame won't see a stale `true`.
+        self.hover.beginFrame();
 
         // Clear drag-over target (recalculated each frame during drag)
         self.drag_over_target = null;
 
-        // Accessibility: periodic screen reader check (not every frame)
-        self.a11y_check_counter += 1;
-        if (self.a11y_check_counter >= a11y.constants.SCREEN_READER_CHECK_INTERVAL) {
-            self.a11y_check_counter = 0;
-            self.a11y_enabled = self.a11y_bridge.isActive();
-        }
-
-        // Begin a11y tree if enabled (zero-cost when disabled)
-        if (self.a11y_enabled) {
-            self.a11y_tree.beginFrame();
-        }
+        // Accessibility: periodic screen reader poll + tree begin
+        // (a11y subsystem owns the counter and the enabled latch).
+        self.a11y.beginFrame();
     }
 
     /// Call at the end of each frame after building UI
@@ -1078,16 +1066,9 @@ pub const Gooey = struct {
         const commands = try self.layout.endFrame();
         self.debugger.endLayout(self.io);
 
-        // Accessibility: finalize and sync to platform (zero-cost when disabled)
-        if (self.a11y_enabled) {
-            self.a11y_tree.endFrame();
-
-            // Sync bounds from layout to accessibility elements
-            self.a11y_tree.syncBounds(self.layout);
-
-            // Use syncFrame for complete frame sync
-            self.a11y_bridge.syncFrame(&self.a11y_tree);
-        }
+        // Accessibility: finalize tree, sync bounds, push to platform
+        // (zero cost when disabled — the subsystem early-outs).
+        self.a11y.endFrame(self.layout);
 
         return commands;
     }
@@ -1103,89 +1084,41 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
-    // Hover State
+    // Hover State — forwarders to `hover` (PR 3 extraction, see `hover.zig`)
     // =========================================================================
 
     /// Update hover state based on mouse position.
     /// Call this on mouse_moved events AFTER bounds have been synced.
     /// Returns true if hover state changed (requires re-render).
     pub fn updateHover(self: *Self, x: f32, y: f32) bool {
-        // Store mouse position for re-hit-testing after bounds sync
-        self.last_mouse_x = x;
-        self.last_mouse_y = y;
-
-        const old_hovered = self.hovered_layout_id;
-
-        // Reset ancestor cache
-        self.hovered_ancestor_count = 0;
-
-        // Hit test using dispatch tree (which has bounds from last frame)
-        if (self.dispatch.hitTest(x, y)) |node_id| {
-            if (self.dispatch.getNodeConst(node_id)) |node| {
-                self.hovered_layout_id = node.layout_id;
-
-                // Cache the ancestor chain (walk up parent links)
-                // This must happen NOW before dispatch tree is reset next frame
-                var current = node_id;
-                while (current.isValid() and self.hovered_ancestor_count < 32) {
-                    if (self.dispatch.getNodeConst(current)) |n| {
-                        if (n.layout_id) |lid| {
-                            self.hovered_ancestors[self.hovered_ancestor_count] = lid;
-                            self.hovered_ancestor_count += 1;
-                        }
-                        current = n.parent;
-                    } else {
-                        break;
-                    }
-                }
-            } else {
-                self.hovered_layout_id = null;
-            }
-        } else {
-            self.hovered_layout_id = null;
-        }
-
-        // Check if hover changed
-        const changed = old_hovered != self.hovered_layout_id;
-        if (changed) {
-            self.hover_changed = true;
-        }
-        return changed;
+        return self.hover.update(self.dispatch, x, y);
     }
 
     /// Refresh hover state using last known mouse position.
     /// Call this after bounds have been synced to fix frame delay issues.
     pub fn refreshHover(self: *Self) void {
-        _ = self.updateHover(self.last_mouse_x, self.last_mouse_y);
+        self.hover.refresh(self.dispatch);
     }
 
     /// Check if a specific layout element is currently hovered.
     pub fn isHovered(self: *const Self, layout_id: u32) bool {
-        return self.hovered_layout_id == layout_id;
+        return self.hover.isHovered(layout_id);
     }
 
     /// Check if a layout element (by LayoutId) is currently hovered.
     pub fn isLayoutIdHovered(self: *const Self, id: LayoutId) bool {
-        return self.hovered_layout_id == id.id;
+        return self.hover.isLayoutIdHovered(id);
     }
 
     /// Check if the hovered element is the given layout_id OR a descendant of it.
-    /// This is useful for tooltips where we want to show when hovering any child element.
-    /// Uses the cached ancestor chain from the last updateHover call.
+    /// Useful for tooltips where we want to show when hovering any child element.
     pub fn isHoveredOrDescendant(self: *const Self, layout_id: u32) bool {
-        // Check cached ancestor chain (populated during updateHover, before dispatch reset)
-        for (self.hovered_ancestors[0..self.hovered_ancestor_count]) |ancestor_id| {
-            if (ancestor_id == layout_id) return true;
-        }
-        return false;
+        return self.hover.isHoveredOrDescendant(layout_id);
     }
 
-    /// Clear hover state (e.g., when mouse exits window)
+    /// Clear hover state (e.g., when mouse exits window).
     pub fn clearHover(self: *Self) void {
-        if (self.hovered_layout_id != null) {
-            self.hovered_layout_id = null;
-            self.hover_changed = true;
-        }
+        self.hover.clear();
     }
 
     // =========================================================================
@@ -1341,7 +1274,7 @@ pub const Gooey = struct {
         self.focus.blur();
         self.widgets.blurAll();
         // Reset guard after complete focus transition to allow subsequent focus changes
-        self.blur_handlers_invoked_this_transition = false;
+        self.blur_handlers.endTransition();
         self.requestRender();
     }
 
@@ -1366,82 +1299,50 @@ pub const Gooey = struct {
             ce.focus();
         }
         // Reset guard after complete focus transition to allow subsequent focus changes.
-        self.blur_handlers_invoked_this_transition = false;
+        self.blur_handlers.endTransition();
     }
 
     // =========================================================================
-    // Blur Handler Management
+    // Blur Handler Management — forwarders to `blur_handlers`
     // =========================================================================
+    //
+    // Body lives in `blur_handlers.zig`. The handler registry is a generic
+    // `SubscriberSet` instance; the wrappers here preserve the call surface
+    // used by `runtime/frame.zig` (`gooey.registerBlurHandler` /
+    // `gooey.clearBlurHandlers`).
 
     /// Register a blur handler for a text field ID.
     /// Called during frame rendering to register handlers from pending items.
-    /// Uses fixed-capacity storage - logs warning if limit exceeded.
+    /// Uses fixed-capacity storage — logs warning if limit exceeded.
     pub fn registerBlurHandler(self: *Self, id: []const u8, handler: HandlerRef) void {
-        std.debug.assert(id.len > 0); // ID must not be empty
-        std.debug.assert(id.len <= 256); // Reasonable ID length limit
-
-        // Check if already registered (update existing)
-        // Only iterate up to blur_handler_count - slots beyond are guaranteed null
-        for (self.blur_handlers[0..self.blur_handler_count]) |*slot| {
-            if (slot.*) |*entry| {
-                if (std.mem.eql(u8, entry.id, id)) {
-                    entry.handler = handler;
-                    return;
-                }
-            }
-        }
-
-        // Find empty slot
-        if (self.blur_handler_count < MAX_BLUR_HANDLERS) {
-            self.blur_handlers[self.blur_handler_count] = .{ .id = id, .handler = handler };
-            self.blur_handler_count += 1;
-        } else {
-            std.log.warn("Blur handler limit ({d}) exceeded - dropping handler for '{s}'", .{ MAX_BLUR_HANDLERS, id });
-        }
+        self.blur_handlers.register(id, handler);
     }
 
     /// Clear all registered blur handlers.
     /// Called at the start of each frame before processing pending items.
     pub fn clearBlurHandlers(self: *Self) void {
-        // Only clear slots that were actually used
-        for (self.blur_handlers[0..self.blur_handler_count]) |*slot| {
-            slot.* = null;
-        }
-        self.blur_handler_count = 0;
-        self.blur_handlers_invoked_this_transition = false;
-    }
-
-    /// Look up a blur handler by field ID.
-    fn getBlurHandler(self: *const Self, id: []const u8) ?HandlerRef {
-        // Only search slots that are actually populated
-        for (self.blur_handlers[0..self.blur_handler_count]) |slot| {
-            if (slot) |entry| {
-                if (std.mem.eql(u8, entry.id, id)) {
-                    return entry.handler;
-                }
-            }
-        }
-        return null;
+        self.blur_handlers.clearAll();
     }
 
     /// Invoke blur handlers for any currently focused text widgets.
     /// Called before focus changes to notify the old focused element.
     ///
-    /// The guard (`blur_handlers_invoked_this_frame`) prevents double invocation within
-    /// a single focus transition. For example, when `blurAll()` is called, it invokes
-    /// this function and then calls `widgets.blurAll()`. Without the guard, nested calls
-    /// could fire handlers twice. The guard is reset after each complete focus transition
-    /// in `syncWidgetFocus()` and `blurAll()`, allowing multiple focus changes per frame.
+    /// The transition guard (in `BlurHandlerRegistry`) prevents double
+    /// invocation within a single focus transition. For example, when
+    /// `blurAll()` is called, it invokes this function and then calls
+    /// `widgets.blurAll()`. Without the guard, nested calls could fire
+    /// handlers twice. The guard is reset by `endTransition()` from
+    /// `syncWidgetFocus()` and `blurAll()` after a complete transition,
+    /// allowing multiple focus changes per frame.
     fn invokeBlurHandlersForFocusedWidgets(self: *Self) void {
-        // Guard against double invocation within a single focus transition
-        if (self.blur_handlers_invoked_this_transition) return;
-        self.blur_handlers_invoked_this_transition = true;
+        // Guard against double invocation within a single focus transition.
+        if (!self.blur_handlers.beginTransition()) return;
 
         // Check TextInputs
         var ti_it = self.widgets.text_inputs.iterator();
         while (ti_it.next()) |entry| {
             if (entry.value_ptr.*.isFocused()) {
-                if (self.getBlurHandler(entry.key_ptr.*)) |handler| {
+                if (self.blur_handlers.getHandler(entry.key_ptr.*)) |handler| {
                     handler.invoke(self);
                 }
             }
@@ -1450,7 +1351,7 @@ pub const Gooey = struct {
         var ta_it = self.widgets.text_areas.iterator();
         while (ta_it.next()) |entry| {
             if (entry.value_ptr.*.isFocused()) {
-                if (self.getBlurHandler(entry.key_ptr.*)) |handler| {
+                if (self.blur_handlers.getHandler(entry.key_ptr.*)) |handler| {
                     handler.invoke(self);
                 }
             }
@@ -1459,7 +1360,7 @@ pub const Gooey = struct {
         var ce_it = self.widgets.code_editors.iterator();
         while (ce_it.next()) |entry| {
             if (entry.value_ptr.*.isFocused()) {
-                if (self.getBlurHandler(entry.key_ptr.*)) |handler| {
+                if (self.blur_handlers.getHandler(entry.key_ptr.*)) |handler| {
                     handler.invoke(self);
                 }
             }
@@ -1665,36 +1566,34 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
-    // Accessibility (Phase 1)
+    // Accessibility — forwarders to `a11y` (PR 3 extraction, see `a11y_system.zig`)
     // =========================================================================
 
     /// Check if accessibility is currently active (screen reader detected)
     pub fn isA11yEnabled(self: *const Self) bool {
-        return self.a11y_enabled;
+        return self.a11y.isEnabled();
     }
 
     /// Force enable accessibility (for testing/debugging)
     pub fn enableA11y(self: *Self) void {
-        self.a11y_enabled = true;
+        self.a11y.forceEnable();
     }
 
     /// Force disable accessibility
     pub fn disableA11y(self: *Self) void {
-        self.a11y_enabled = false;
+        self.a11y.forceDisable();
     }
 
     /// Get a mutable reference to the accessibility tree
     /// Only valid during frame (between beginFrame/endFrame)
     pub fn getA11yTree(self: *Self) *a11y.Tree {
-        return &self.a11y_tree;
+        return self.a11y.getTree();
     }
 
     /// Announce a message to screen readers
-    /// Convenience wrapper for a11y_tree.announce()
+    /// Convenience wrapper for a11y.announce()
     pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
-        if (self.a11y_enabled) {
-            self.a11y_tree.announce(message, priority);
-        }
+        self.a11y.announce(message, priority);
     }
 };
 
@@ -1736,109 +1635,105 @@ fn measureTextCallback(
 // =============================================================================
 // Tests
 // =============================================================================
+//
+// These tests cover the deferred-command queue, which stays on `Gooey`.
+// They construct a minimal `Gooey` value via field-by-field init, leaving
+// every resource pointer at `undefined` — the deferred-command path
+// reads only `deferred_commands`, `deferred_count`, `root_state_*`,
+// `needs_render`, and `window`, so the test exercise the path without
+// standing up a full UI stack.
+//
+// Hover / blur / cancel / a11y subsystems have their own unit tests in
+// the respective modules; this file no longer needs to test them.
+
+const testing = std.testing;
+
+/// Build a stub `Gooey` for deferred-command tests. Resources stay
+/// `undefined` because the tested path does not touch them; `window`
+/// is `null` so `requestRender` is a no-op.
+fn testGooey() Gooey {
+    return .{
+        .allocator = testing.allocator,
+        .io = undefined,
+        .layout = undefined,
+        .scene = undefined,
+        .text_system = undefined,
+        .svg_atlas = undefined,
+        .image_atlas = undefined,
+        .widgets = undefined,
+        .focus = undefined,
+        .dispatch = undefined,
+        .keymap = undefined,
+        .entities = undefined,
+        .window = null,
+        .hover = HoverState.init(),
+        .blur_handlers = BlurHandlerRegistry.init(),
+        .cancel_registry = CancelRegistry.init(),
+        .a11y = undefined,
+        .image_loader = undefined,
+        .deferred_count = 0,
+        .deferred_commands = undefined,
+        .needs_render = false,
+    };
+}
 
 test "deferCommand queues command" {
     const TestState = struct {
         value: i32 = 0,
-
         pub fn increment(self: *@This(), _: *Gooey) void {
             self.value += 1;
         }
     };
 
-    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
-    const gooey = try std.testing.allocator.create(Gooey);
-    defer std.testing.allocator.destroy(gooey);
-
-    gooey.deferred_count = 0;
-    gooey.root_state_ptr = null;
-    gooey.root_state_type_id = 0;
-    gooey.needs_render = false;
-    gooey.window = null; // No window for tests
-
     var state = TestState{};
-    gooey.setRootState(TestState, &state);
+    var g = testGooey();
+    g.setRootState(TestState, &state);
 
-    // Queue a deferred command
-    gooey.deferCommand(TestState.increment);
+    g.deferCommand(TestState.increment);
+    try testing.expectEqual(@as(u8, 1), g.deferred_count);
+    try testing.expect(g.hasDeferredCommands());
 
-    // Should be queued but not executed yet
-    try std.testing.expectEqual(@as(u8, 1), gooey.deferred_count);
-    try std.testing.expectEqual(@as(i32, 0), state.value);
-
-    // Flush should execute the command
-    gooey.flushDeferredCommands();
-
-    try std.testing.expectEqual(@as(u8, 0), gooey.deferred_count);
-    try std.testing.expectEqual(@as(i32, 1), state.value);
+    g.flushDeferredCommands();
+    try testing.expectEqual(@as(i32, 1), state.value);
+    try testing.expectEqual(@as(u8, 0), g.deferred_count);
 }
 
 test "deferCommandWith passes argument" {
     const TestState = struct {
         value: i32 = 0,
-
-        pub fn setValue(self: *@This(), _: *Gooey, val: i32) void {
-            self.value = val;
+        pub fn setValue(self: *@This(), _: *Gooey, new_value: i32) void {
+            self.value = new_value;
         }
     };
 
-    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
-    const gooey = try std.testing.allocator.create(Gooey);
-    defer std.testing.allocator.destroy(gooey);
-
-    gooey.deferred_count = 0;
-    gooey.root_state_ptr = null;
-    gooey.root_state_type_id = 0;
-    gooey.needs_render = false;
-    gooey.window = null; // No window for tests
-
     var state = TestState{};
-    gooey.setRootState(TestState, &state);
+    var g = testGooey();
+    g.setRootState(TestState, &state);
 
-    // Queue a deferred command with argument
-    gooey.deferCommandWith(@as(i32, 42), TestState.setValue);
-
-    try std.testing.expectEqual(@as(u8, 1), gooey.deferred_count);
-    try std.testing.expectEqual(@as(i32, 0), state.value);
-
-    gooey.flushDeferredCommands();
-
-    try std.testing.expectEqual(@as(i32, 42), state.value);
+    g.deferCommandWith(@as(i32, 42), TestState.setValue);
+    g.flushDeferredCommands();
+    try testing.expectEqual(@as(i32, 42), state.value);
 }
 
 test "multiple deferWith calls preserve their arguments" {
     const TestState = struct {
         sum: i32 = 0,
-
-        pub fn addValue(self: *@This(), _: *Gooey, val: i32) void {
-            self.sum += val;
+        pub fn addValue(self: *@This(), _: *Gooey, value: i32) void {
+            self.sum += value;
         }
     };
 
-    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
-    const gooey = try std.testing.allocator.create(Gooey);
-    defer std.testing.allocator.destroy(gooey);
-
-    gooey.deferred_count = 0;
-    gooey.root_state_ptr = null;
-    gooey.root_state_type_id = 0;
-    gooey.needs_render = false;
-    gooey.window = null; // No window for tests
-
     var state = TestState{};
-    gooey.setRootState(TestState, &state);
+    var g = testGooey();
+    g.setRootState(TestState, &state);
 
-    // Queue multiple commands with different arguments
-    gooey.deferCommandWith(@as(i32, 10), TestState.addValue);
-    gooey.deferCommandWith(@as(i32, 20), TestState.addValue);
-    gooey.deferCommandWith(@as(i32, 30), TestState.addValue);
+    g.deferCommandWith(@as(i32, 1), TestState.addValue);
+    g.deferCommandWith(@as(i32, 10), TestState.addValue);
+    g.deferCommandWith(@as(i32, 100), TestState.addValue);
+    try testing.expectEqual(@as(u8, 3), g.deferred_count);
 
-    try std.testing.expectEqual(@as(u8, 3), gooey.deferred_count);
-
-    gooey.flushDeferredCommands();
-
-    // All three should have executed with their own arguments
-    try std.testing.expectEqual(@as(i32, 60), state.sum);
+    g.flushDeferredCommands();
+    try testing.expectEqual(@as(i32, 111), state.sum);
 }
 
 test "deferred queue overflow is handled gracefully" {
@@ -1846,48 +1741,40 @@ test "deferred queue overflow is handled gracefully" {
         pub fn noop(_: *@This(), _: *Gooey) void {}
     };
 
-    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
-    const gooey = try std.testing.allocator.create(Gooey);
-    defer std.testing.allocator.destroy(gooey);
-
-    gooey.deferred_count = 0;
-    gooey.root_state_ptr = null;
-    gooey.root_state_type_id = 0;
-    gooey.needs_render = false;
-    gooey.window = null; // No window for tests
-
     var state = TestState{};
-    gooey.setRootState(TestState, &state);
+    var g = testGooey();
+    g.setRootState(TestState, &state);
 
-    // Fill the queue
-    for (0..MAX_DEFERRED_COMMANDS) |_| {
-        gooey.deferCommand(TestState.noop);
+    // Fill queue to capacity.
+    var i: u32 = 0;
+    while (i < MAX_DEFERRED_COMMANDS) : (i += 1) {
+        g.deferCommand(TestState.noop);
     }
+    try testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), g.deferred_count);
 
-    try std.testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), gooey.deferred_count);
+    // Overflow attempts must not corrupt the queue or the count.
+    g.deferCommand(TestState.noop);
+    g.deferCommand(TestState.noop);
+    try testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), g.deferred_count);
 
-    // This should not crash, just log a warning and drop the command
-    gooey.deferCommand(TestState.noop);
-
-    // Queue size should not exceed max
-    try std.testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), gooey.deferred_count);
-
-    // Clean up
-    gooey.flushDeferredCommands();
+    g.flushDeferredCommands();
+    try testing.expectEqual(@as(u8, 0), g.deferred_count);
 }
 
 test "hasDeferredCommands returns correct state" {
-    // Heap-allocate Gooey (>400KB - too large for stack per CLAUDE.md)
-    const gooey = try std.testing.allocator.create(Gooey);
-    defer std.testing.allocator.destroy(gooey);
+    const TestState = struct {
+        pub fn noop(_: *@This(), _: *Gooey) void {}
+    };
 
-    gooey.deferred_count = 0;
+    var state = TestState{};
+    var g = testGooey();
+    g.setRootState(TestState, &state);
 
-    try std.testing.expect(!gooey.hasDeferredCommands());
+    try testing.expect(!g.hasDeferredCommands());
 
-    gooey.deferred_count = 1;
-    try std.testing.expect(gooey.hasDeferredCommands());
+    g.deferCommand(TestState.noop);
+    try testing.expect(g.hasDeferredCommands());
 
-    gooey.deferred_count = 0;
-    try std.testing.expect(!gooey.hasDeferredCommands());
+    g.flushDeferredCommands();
+    try testing.expect(!g.hasDeferredCommands());
 }
