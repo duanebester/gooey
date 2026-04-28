@@ -237,8 +237,9 @@ subsystem; lay the foundation for a generic `Asset(T)` cache.
 - ✅ 0.16 audits: `src/image/atlas.zig` and `src/image/loader.zig` clean
   of `@Type` usage; `std.http.Client` use already matches §7
   (`request(.GET, uri, ...)` → `sendBodiless` → `receiveHead(&buf)`).
-- ✅ `zig build` green; `zig build test` baseline preserved (same two
-  pre-existing failures as `main`, no new regressions).
+- ✅ `zig build` green; `zig build test --summary all` reports
+  `Build Summary: 9/9 steps succeeded; 983/983 tests passed`
+  (vs. 980/980 on `main` — the +3 are the new ImageLoader tests).
 
 ---
 
