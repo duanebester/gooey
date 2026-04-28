@@ -1715,7 +1715,7 @@ fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
     const g = cx.gooey();
 
     // Let text widgets handle their input first
-    if (g.getFocusedTextInput() != null or g.getFocusedTextArea() != null) {
+    if (g.widgets.getFocusedTextInput() != null or g.widgets.getFocusedTextArea() != null) {
         return false;
     }
 

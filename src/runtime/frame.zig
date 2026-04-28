@@ -231,7 +231,7 @@ fn renderCanvasElements(gooey: *Gooey, builder: *const Builder) void {
 fn renderTextInputs(gooey: *Gooey, builder: *const Builder) !void {
     for (builder.pending_inputs.items) |pending| {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const input_widget = gooey.textInput(pending.id) orelse continue;
+        const input_widget = gooey.widgets.textInput(pending.id) orelse continue;
 
         // If disabled and currently focused, blur it
         if (pending.style.disabled and input_widget.isFocused()) {
@@ -268,7 +268,7 @@ fn renderTextInputs(gooey: *Gooey, builder: *const Builder) !void {
 fn renderTextAreas(gooey: *Gooey, builder: *const Builder) !void {
     for (builder.pending_text_areas.items) |pending| {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ta_widget = gooey.textArea(pending.id) orelse continue;
+        const ta_widget = gooey.widgets.textArea(pending.id) orelse continue;
 
         const inset = pending.style.padding + pending.style.border_width;
         // Compute inner_width from layout bounds when fill_width is true
@@ -296,7 +296,7 @@ fn renderTextAreas(gooey: *Gooey, builder: *const Builder) !void {
 fn renderCodeEditors(gooey: *Gooey, builder: *const Builder) !void {
     for (builder.pending_code_editors.items) |pending| {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ce_widget = gooey.codeEditor(pending.id) orelse continue;
+        const ce_widget = gooey.widgets.codeEditor(pending.id) orelse continue;
 
         const inset = pending.style.padding + pending.style.border_width;
         ce_widget.setBounds(.{
@@ -340,13 +340,18 @@ fn renderCodeEditors(gooey: *Gooey, builder: *const Builder) !void {
 /// Update IME cursor position for focused text widget
 fn updateImeCursorPosition(gooey: *Gooey) void {
     const window = gooey.getWindow() orelse return;
-    if (gooey.getFocusedTextInput()) |input| {
+    // PR 4: per-type forwarders (`getFocusedTextInput` etc.) moved off
+    // `Gooey`; reach through `gooey.widgets.*` directly. Order matches
+    // pre-PR-4 priority — text input first, then text area, then code
+    // editor — because at most one of them is focused at a time and
+    // the IME only needs one rect.
+    if (gooey.widgets.getFocusedTextInput()) |input| {
         const rect = input.cursor_rect;
         window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
-    } else if (gooey.getFocusedTextArea()) |ta| {
+    } else if (gooey.widgets.getFocusedTextArea()) |ta| {
         const rect = ta.cursor_rect;
         window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
-    } else if (gooey.getFocusedCodeEditor()) |ce| {
+    } else if (gooey.widgets.getFocusedCodeEditor()) |ce| {
         const rect = ce.getCursorRect();
         window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }

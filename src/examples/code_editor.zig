@@ -263,7 +263,7 @@ const AppState = struct {
             }
             // Clear the editor content
             self.source_code = "";
-            if (g.codeEditor("source")) |editor| {
+            if (g.widgets.codeEditor("source")) |editor| {
                 editor.setText("") catch {};
             }
             return;
@@ -281,7 +281,7 @@ const AppState = struct {
             error.StreamTooLong => {
                 self.file_status = .file_too_large;
                 self.source_code = "";
-                if (g.codeEditor("source")) |editor| {
+                if (g.widgets.codeEditor("source")) |editor| {
                     editor.setText("") catch {};
                 }
                 return;
@@ -293,7 +293,7 @@ const AppState = struct {
         if (!std.unicode.utf8ValidateSlice(content)) {
             self.file_status = .binary_file;
             self.source_code = "";
-            if (g.codeEditor("source")) |editor| {
+            if (g.widgets.codeEditor("source")) |editor| {
                 editor.setText("") catch {};
             }
             return;
@@ -303,7 +303,7 @@ const AppState = struct {
         self.source_code = content;
 
         // Update the code editor widget directly
-        if (g.codeEditor("source")) |editor| {
+        if (g.widgets.codeEditor("source")) |editor| {
             editor.setText(content) catch {};
         }
     }

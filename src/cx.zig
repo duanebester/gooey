@@ -787,12 +787,12 @@ pub const Cx = struct {
 
     /// Focus a specific text field by ID.
     pub fn focusTextField(self: *Self, id: []const u8) void {
-        self._gooey.focusTextInput(id);
+        self._gooey.focusWidget(id);
     }
 
     /// Focus a specific text area by ID.
     pub fn focusTextArea(self: *Self, id: []const u8) void {
-        self._gooey.focusTextArea(id);
+        self._gooey.focusWidget(id);
     }
 
     /// Check if a specific element is focused.
@@ -806,17 +806,17 @@ pub const Cx = struct {
 
     /// Get a text field widget by ID.
     pub fn textField(self: *Self, id: []const u8) ?*text_field_mod.TextInput {
-        return self._gooey.textInput(id);
+        return self._gooey.widgets.textInput(id);
     }
 
     /// Get a text area widget by ID.
     pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextArea {
-        return self._gooey.textArea(id);
+        return self._gooey.widgets.textArea(id);
     }
 
     /// Get a code editor widget by ID.
     pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {
-        return self._gooey.codeEditor(id);
+        return self._gooey.widgets.codeEditor(id);
     }
 
     /// Get a scroll view widget by ID.
@@ -1177,16 +1177,16 @@ pub const Cx = struct {
 
         // Sync gap and scroll state
         list_state.gap_px = style.gap;
-        b.syncUniformListScroll(id, list_state);
+        uniform_list_mod.syncScroll(b, id, list_state);
 
         // Compute layout parameters
-        const params = Builder.computeUniformListLayout(id, list_state, style);
+        const params = uniform_list_mod.computeLayout(id, list_state, style);
 
         // Open viewport and content elements
-        const content_id = b.openUniformListElements(params, style, list_state.scroll_offset_px) orelse return;
+        const content_id = uniform_list_mod.openElements(b, params, style, list_state.scroll_offset_px) orelse return;
 
         // Top spacer (items above visible range)
-        b.renderUniformListSpacer(params.top_spacer_height);
+        uniform_list_mod.renderSpacer(b, params.top_spacer_height);
 
         // Render visible items with Cx access
         var i = params.range.start;
@@ -1195,14 +1195,14 @@ pub const Cx = struct {
         }
 
         // Bottom spacer (items below visible range)
-        b.renderUniformListSpacer(params.bottom_spacer_height);
+        uniform_list_mod.renderSpacer(b, params.bottom_spacer_height);
 
         // Close content container and viewport
         b.layout.closeElement();
         b.layout.closeElement();
 
         // Register for scroll handling
-        b.registerUniformListScroll(id, params, content_id, style);
+        uniform_list_mod.registerScroll(b, id, params, content_id, style);
     }
 
     // =========================================================================
@@ -1265,16 +1265,16 @@ pub const Cx = struct {
 
         // Sync gap and scroll state
         tree_state.list_state.gap_px = style.gap;
-        b.syncUniformListScroll(id, &tree_state.list_state);
+        uniform_list_mod.syncScroll(b, id, &tree_state.list_state);
 
         // Compute layout parameters
-        const params = Builder.computeUniformListLayout(id, &tree_state.list_state, list_style);
+        const params = uniform_list_mod.computeLayout(id, &tree_state.list_state, list_style);
 
         // Open viewport and content elements
-        const content_id = b.openUniformListElements(params, list_style, tree_state.list_state.scroll_offset_px) orelse return;
+        const content_id = uniform_list_mod.openElements(b, params, list_style, tree_state.list_state.scroll_offset_px) orelse return;
 
         // Top spacer (items above visible range)
-        b.renderUniformListSpacer(params.top_spacer_height);
+        uniform_list_mod.renderSpacer(b, params.top_spacer_height);
 
         // Render visible entries with Cx access
         var i = params.range.start;
@@ -1285,14 +1285,14 @@ pub const Cx = struct {
         }
 
         // Bottom spacer (items below visible range)
-        b.renderUniformListSpacer(params.bottom_spacer_height);
+        uniform_list_mod.renderSpacer(b, params.bottom_spacer_height);
 
         // Close content container and viewport
         b.layout.closeElement();
         b.layout.closeElement();
 
         // Register for scroll handling
-        b.registerUniformListScroll(id, params, content_id, list_style);
+        uniform_list_mod.registerScroll(b, id, params, content_id, list_style);
     }
 
     // =========================================================================
@@ -1329,16 +1329,16 @@ pub const Cx = struct {
 
         // Sync gap and scroll state
         list_state.gap_px = style.gap;
-        b.syncVirtualListScroll(id, list_state);
+        virtual_list_mod.syncScroll(b, id, list_state);
 
         // Compute layout parameters
-        const params = Builder.computeVirtualListLayout(id, list_state, style);
+        const params = virtual_list_mod.computeLayout(id, list_state, style);
 
         // Open viewport and content elements
-        const content_id = b.openVirtualListElements(params, style, list_state.scroll_offset_px) orelse return;
+        const content_id = virtual_list_mod.openElements(b, params, style, list_state.scroll_offset_px) orelse return;
 
         // Top spacer (items above visible range)
-        b.renderVirtualListSpacer(params.top_spacer_height);
+        virtual_list_mod.renderSpacer(b, params.top_spacer_height);
 
         // Render visible items with Cx access and cache their heights
         var i = params.range.start;
@@ -1348,14 +1348,14 @@ pub const Cx = struct {
         }
 
         // Bottom spacer (items below visible range)
-        b.renderVirtualListSpacer(params.bottom_spacer_height);
+        virtual_list_mod.renderSpacer(b, params.bottom_spacer_height);
 
         // Close content container and viewport
         b.layout.closeElement();
         b.layout.closeElement();
 
         // Register for scroll handling
-        b.registerVirtualListScroll(id, params, content_id, style);
+        virtual_list_mod.registerScroll(b, id, params, content_id, style);
     }
 
     // =========================================================================
@@ -1454,13 +1454,14 @@ pub const Cx = struct {
         table_state.row_gap_px = style.row_gap;
 
         // Sync scroll state
-        b.syncDataTableScroll(id, table_state);
+        data_table_mod.syncScroll(b, id, table_state);
 
         // Compute layout parameters
-        const params = Builder.computeDataTableLayout(id, table_state, style);
+        const params = data_table_mod.computeLayout(id, table_state, style);
 
         // Open viewport and content elements
-        const content_id = b.openDataTableElements(
+        const content_id = data_table_mod.openElements(
+            b,
             params,
             style,
             table_state.scroll_offset_x,
@@ -1469,12 +1470,12 @@ pub const Cx = struct {
 
         // Render header row if enabled
         if (table_state.show_header) {
-            b.renderDataTableHeaderCx(table_state, params, style, self, callbacks.render_header);
+            data_table_mod.renderHeaderCx(b, table_state, params, style, self, callbacks.render_header);
         }
 
         // Top spacer (rows above visible range)
         if (params.top_spacer > 0) {
-            b.renderDataTableSpacer(params.content_width, params.top_spacer);
+            data_table_mod.renderSpacer(b, params.content_width, params.top_spacer);
         }
 
         // Render visible rows
@@ -1486,13 +1487,13 @@ pub const Cx = struct {
                 render_row(row, range.cols, self);
             } else {
                 // Default row container
-                b.renderDataTableRowCx(table_state, row, range.cols, params, style, self, callbacks.render_cell);
+                data_table_mod.renderRowCx(b, table_state, row, range.cols, params, style, self, callbacks.render_cell);
             }
         }
 
         // Bottom spacer (rows below visible range)
         if (params.bottom_spacer > 0) {
-            b.renderDataTableSpacer(params.content_width, params.bottom_spacer);
+            data_table_mod.renderSpacer(b, params.content_width, params.bottom_spacer);
         }
 
         // Close content container and viewport
@@ -1500,7 +1501,7 @@ pub const Cx = struct {
         b.layout.closeElement();
 
         // Register for scroll handling
-        b.registerDataTableScroll(id, params, content_id, style);
+        data_table_mod.registerScroll(b, id, params, content_id, style);
     }
 };
 

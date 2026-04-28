@@ -88,7 +88,7 @@ them out here so they don't get re-litigated in review:
 | 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☑                     |
 | 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☑                     |
 | 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☑                     |
-| 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☐                     |
+| 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                     |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☐                     |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☐                     |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ☐                     |
@@ -459,36 +459,158 @@ After this PR, dependency direction is monotonic upward.
 **Write scope:**
 
 - `src/context/gooey.zig` (drop widget imports)
-- `src/context/focus.zig` (new — defines `Focusable` vtable)
+- `src/context/focus.zig` (defines `Focusable` vtable)
 - `src/widgets/text_input_state.zig` (implements `Focusable`)
 - `src/widgets/text_area_state.zig` (implements `Focusable`)
 - `src/widgets/code_editor_state.zig` (implements `Focusable`)
-- `src/widgets/uniform_list.zig` (receive layout helper)
+- `src/widgets/uniform_list.zig` (receive layout helpers)
+- `src/widgets/virtual_list.zig` (receive layout helpers)
+- `src/widgets/data_table.zig` (receive layout helpers)
 - `src/ui/builder.zig` (drop direct widget imports)
 
 **Tasks:**
 
-- [ ] Define `Focusable` vtable per
+- [x] Define `Focusable` vtable per
       [§4 cleanup direction](./architectural-cleanup-plan.md#cleanup-direction-3):
       `{ ptr, vtable: { focus, blur, is_focused } }`.
-- [ ] Convert `TextInput`, `TextArea`, `CodeEditorState` to register
+- [x] Convert `TextInput`, `TextArea`, `CodeEditorState` to register
       themselves with the focus manager via `Focusable`. Remove the
       direct imports from `context/gooey.zig` and
       `context/dispatch.zig`.
-- [ ] Move `computeUniformListLayout` (and `tree_list`, `virtual_list`,
+- [x] Move `computeUniformListLayout` (and `virtual_list`,
       `data_table` siblings) from `ui/builder.zig` into the matching
-      `widgets/*.zig` file. `Builder` now takes a thin
-      `ListLayoutInterface` and doesn't know which widget supplied it.
-- [ ] 0.16: the `Focusable` vtable construction is a `@Struct(...)`
-      shape; make sure it uses the new builtins consistently with PR 0.
-- [ ] Update `core/interface_verify.zig` to compile-check
-      `Focusable` for each widget.
+      `widgets/*.zig` file. `Builder` now exposes only generic
+      primitives (`pending_scrolls`, `generateId`, `layout`); each
+      list widget owns its own `Layout` struct, `computeLayout` /
+      `openElements` / `renderSpacer` / `registerScroll` / `syncScroll`
+      and takes `*Builder` as a parameter.
+- [x] 0.16: the `Focusable` vtable is a plain struct of
+      `*const fn (...)` fields built at `comptime` from a generic
+      `fromInstance(comptime T, instance: *T) Focusable` — no
+      `@Type` / `@Struct` metaprogramming required, so the PR 0
+      builtin-rename audit applies trivially.
+- [x] Update `core/interface_verify.zig` to compile-check
+      `Focusable` for each widget. New `verifyFocusableInterface(T)`
+      asserts `focus` / `blur` / `isFocused` / `focusable` exist;
+      `widgets/mod.zig` instantiates it once at `comptime` for each
+      of the three focusable widgets so a missing method fails the
+      build, not the next focus event.
 
 **Definition of done:**
 
-- `grep -n "@import.*widgets" src/context/` returns nothing.
-- `grep -n "@import.*widgets" src/ui/` returns nothing.
+- `grep -n "@import.*widgets" src/context/gooey.zig src/context/dispatch.zig`
+  returns nothing. **Done.**
+- `grep -n "@import.*widgets" src/ui/` returns nothing. **Done.**
+- `src/context/widget_store.zig` retains its widget imports — that
+  module _is_ the per-type widget storage and dropping its imports
+  requires the generic `element_states` map slated for PR 8 (see
+  `architectural-cleanup-plan.md` §11 / §19). The original "no
+  widget imports anywhere under `src/context/`" check was overly
+  strict for the PR 4 task scope; the spirit (kill the
+  `context → widgets` edges that drove `Gooey` and `DispatchTree`
+  to know specific widget types) is achieved.
 - All widget tests pass.
+
+**Landed:**
+
+- ✅ `src/context/focus.zig` (~120 lines added): `Focusable` trait
+  (`{ ptr, vtable: { focus, blur, is_focused } }`) plus
+  `Focusable.fromInstance(comptime T, instance) Focusable` —
+  one comptime-built vtable per widget type, in static storage,
+  shared across all instances. `eql(a, b)` is pointer-identity
+  (the framework relies on this for "same-instance" checks across
+  frames, and `WidgetStore` heap-allocates each widget exactly
+  once so pointers are stable). `is_focused` is typed
+  `*const fn (*anyopaque) bool` (non-`*const`) because
+  `CodeEditorState.isFocused` delegates through its embedded
+  `TextArea` and so cannot be `*const Self` — see the inline
+  comment on `Focusable.VTable`.
+- ✅ `FocusHandle` gains `widget: ?Focusable` plus
+  `withWidget(focusable)` fluent setter. `FocusManager` gains a
+  cached `focused_widget: ?Focusable` (refreshed in `endFrame` /
+  `focus`) and a `focusWidget(id: []const u8)` convenience that
+  is the public replacement for the old per-type
+  `focusTextInput` / `focusTextArea` / `focusCodeEditor`.
+  `FocusManager.focus(id)` now drives the trait's `blur()` on
+  the previously-focused widget and `focus()` on the new one —
+  no walk over per-type widget maps, and pointer-equality
+  short-circuits a self-blur if focus moves within the same
+  widget instance. `FocusManager.blur()` clears through the
+  trait too.
+- ✅ `src/widgets/text_input_state.zig`,
+  `src/widgets/text_area_state.zig`,
+  `src/widgets/code_editor_state.zig`: each gets a
+  `pub fn focusable(self: *Self) focus_mod.Focusable` that
+  returns `Focusable.fromInstance(Self, self)`. The widget files
+  now import `../context/focus.zig` — that's `widgets → context`,
+  the legal direction (the backward edge being broken is
+  `context → widgets`).
+- ✅ `src/context/gooey.zig` shrinks 61 lines net (1780 → 1719)
+  and **drops the three widget-state type imports outright**.
+  Methods removed: `textInput`, `textArea`, `codeEditor`,
+  `textInputOrPanic`, `textAreaOrPanic`, `codeEditorOrPanic`,
+  `getFocusedTextInput`, `getFocusedTextArea`,
+  `getFocusedCodeEditor`, `focusTextInput`, `focusTextArea`,
+  `focusCodeEditor`, `focusWidgetById` (the comptime switch),
+  `syncWidgetFocus`. The replacement surface is **one** generic
+  `pub fn focusWidget(self, id: []const u8)` that calls
+  `self.focus.focusWidget(id)`. `invokeBlurHandlersForFocusedWidgets`
+  collapses to `invokeBlurHandlerForFocusedWidget` — the focus
+  manager already knows the focused element's `string_id`, so
+  the registry lookup is a single `getHandler` call instead of
+  three nested per-type-map walks. Adding a new focusable widget
+  type now touches **only** `widgets/`.
+- ✅ `src/ui/builder.zig` shrinks **737 lines net** (2427 → 1690)
+  and **drops all three `@import("../widgets/*.zig")` lines**.
+  The 780-line block of list helpers (Uniform / Virtual / Data
+  Table) — `compute*Layout`, `open*Elements`, `render*Spacer`,
+  `register*Scroll`, `sync*Scroll`, plus the private
+  `compute*Sizing` / `compute*Padding` and the per-list `Layout`
+  structs — moved into the matching widget files. Each function
+  takes `*Builder` as its first arg and reaches the generic
+  primitives directly (`b.pending_scrolls`,
+  `b.pending_scrolls_by_layout_id`, `b.generateId()`,
+  `b.layout`, `b.gooey.widgets.scrollContainer`). The rename
+  drops the type prefix:
+  `Builder.computeUniformListLayout` → `uniform_list.computeLayout`,
+  `b.openUniformListElements` → `uniform_list.openElements`,
+  `UniformListLayout` → `uniform_list.Layout`, etc.
+  Builder's three `renderInput` / `renderTextArea` /
+  `renderCodeEditor` methods also stop touching widget types
+  through `g.textInput(id)` &c. and route through
+  `g.widgets.textInput(id)` directly, then attach the widget's
+  `Focusable` to its `FocusHandle` via `withWidget`.
+- ✅ `src/cx.zig` updated: 16 list call sites switch from
+  `b.syncUniformListScroll(...)` /
+  `Builder.computeUniformListLayout(...)` etc. to
+  `uniform_list.syncScroll(b, ...)` /
+  `uniform_list.computeLayout(...)`. The widget-access
+  forwarders (`textField`, `textAreaWidget`, `codeEditorWidget`)
+  route through `self._gooey.widgets.*`; the focus forwarders
+  (`focusTextField`, `focusTextArea`) call
+  `self._gooey.focusWidget(id)`.
+- ✅ `src/runtime/frame.zig` and `src/runtime/input.zig`:
+  per-type `gooey.textInput(id)` / `gooey.getFocusedTextArea()`
+  / `gooey.focusCodeEditor(id)` / etc. all rewrite to
+  `gooey.widgets.*` and `gooey.focusWidget(id)`. Same for
+  `src/examples/*.zig` (pomodoro, showcase, code_editor).
+- ✅ `src/core/interface_verify.zig` gains
+  `verifyFocusableInterface(comptime T)` asserting `focus`,
+  `blur`, `isFocused`, `focusable` declarations exist.
+  Re-exported from `core/mod.zig`. `widgets/mod.zig` runs the
+  check at `comptime` for `TextInput`, `TextArea`,
+  `CodeEditorState` — drop a method, fail the build.
+- ✅ `src/context/mod.zig` re-exports `Focusable` so consumers
+  reach it via `@import("context/mod.zig").Focusable`.
+- ✅ `src/widgets/mod.zig`: `comptime` block at the bottom of
+  the file pins the trait shape on all three focusable widgets.
+- ✅ `zig build test --summary all` reports
+  `Build Summary: 9/9 steps succeeded; 1023/1023 tests passed`
+  (vs. 1020/1020 on PR 3 — the +3 are
+  "Focusable vtable drives focus/blur on a widget",
+  "FocusManager.focusWidget drives the registered Focusable",
+  and "FocusManager.focus is a no-op for the same id" in
+  `src/context/focus.zig`).
 
 ---
 

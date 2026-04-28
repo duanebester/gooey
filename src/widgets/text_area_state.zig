@@ -34,6 +34,7 @@ const element_id_mod = @import("../core/element_id.zig");
 const event = @import("../input/event.zig");
 const common = @import("text_common.zig");
 const history_mod = @import("edit_history.zig");
+const focus_mod = @import("../context/focus.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
@@ -384,6 +385,15 @@ pub const TextArea = struct {
 
     pub fn isFocused(self: *const Self) bool {
         return self.focused;
+    }
+
+    /// Build a `Focusable` trait for this widget instance. Called by
+    /// the UI builder during render so the framework can drive focus
+    /// without importing the widget type — see PR 4 in
+    /// `docs/cleanup-implementation-plan.md`. The vtable is shared
+    /// across all `TextArea` instances and lives in static storage.
+    pub fn focusable(self: *Self) focus_mod.Focusable {
+        return focus_mod.Focusable.fromInstance(Self, self);
     }
 
     // =========================================================================

@@ -54,6 +54,7 @@ const Edit = history_mod.Edit;
 const element_id_mod = @import("../core/element_id.zig");
 const event = @import("../input/event.zig");
 const geometry = @import("../core/geometry.zig");
+const focus_mod = @import("../context/focus.zig");
 
 const ElementId = element_id_mod.ElementId;
 const Event = event.Event;
@@ -261,6 +262,16 @@ pub const TextInput = struct {
 
     pub fn isFocused(self: *const Self) bool {
         return self.focused;
+    }
+
+    /// Build a `Focusable` trait for this widget instance. Called by
+    /// the UI builder during render so the framework can drive focus
+    /// without importing the widget type — see PR 4 in
+    /// `docs/cleanup-implementation-plan.md`. The `Focusable.ptr` field
+    /// captures the heap-stable widget pointer; the vtable is shared
+    /// across all `TextInput` instances and lives in static storage.
+    pub fn focusable(self: *Self) focus_mod.Focusable {
+        return focus_mod.Focusable.fromInstance(Self, self);
     }
 
     // =========================================================================

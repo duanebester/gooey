@@ -107,7 +107,7 @@ fn handleScrollEvent(
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (!pointInBounds(x, y, bounds)) continue;
 
-        const ta = gooey.textArea(pending.id) orelse continue;
+        const ta = gooey.widgets.textArea(pending.id) orelse continue;
         if (ta.line_height > 0 and ta.viewport_height > 0) {
             const delta_y: f32 = @floatCast(scroll_ev.delta.y);
             const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
@@ -124,7 +124,7 @@ fn handleScrollEvent(
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (!pointInBounds(x, y, bounds)) continue;
 
-        const ce = gooey.codeEditor(pending.id) orelse continue;
+        const ce = gooey.widgets.codeEditor(pending.id) orelse continue;
         const ta = &ce.text_area;
         if (ta.line_height > 0 and ta.viewport_height > 0) {
             const delta_y: f32 = @floatCast(scroll_ev.delta.y);
@@ -386,7 +386,7 @@ fn handleTextAreaClick(
     for (builder.pending_text_areas.items) |pending| {
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (pointInBounds(x, y, bounds)) {
-            gooey.focusTextArea(pending.id);
+            gooey.focusWidget(pending.id);
             cx.notify();
             return true;
         }
@@ -410,12 +410,12 @@ fn handleCodeEditorClick(
         const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (pointInBounds(x, y, bounds)) {
             // Get the code editor widget and pass the event to it
-            if (gooey.codeEditor(pending.id)) |ce| {
+            if (gooey.widgets.codeEditor(pending.id)) |ce| {
                 // Pass mouse event to widget for gutter click handling
                 const input_event = InputEvent{ .mouse_down = down_ev };
                 _ = ce.handleEvent(input_event);
             }
-            gooey.focusCodeEditor(pending.id);
+            gooey.focusWidget(pending.id);
             cx.notify();
             return true;
         }
@@ -521,9 +521,9 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
 
     // Escape to blur focused text widgets (TextInput, TextArea, CodeEditor)
     if (k.key == .escape) {
-        const has_focused_widget = gooey.getFocusedTextInput() != null or
-            gooey.getFocusedTextArea() != null or
-            gooey.getFocusedCodeEditor() != null;
+        const has_focused_widget = gooey.widgets.getFocusedTextInput() != null or
+            gooey.widgets.getFocusedTextArea() != null or
+            gooey.widgets.getFocusedCodeEditor() != null;
         if (has_focused_widget) {
             gooey.blurAll();
             cx.notify();
@@ -541,7 +541,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     // Tab navigation - but let CodeEditor handle Tab for indentation
     if (k.key == .tab) {
         // CodeEditor intercepts Tab for indentation (not focus navigation)
-        if (gooey.getFocusedCodeEditor()) |ce| {
+        if (gooey.widgets.getFocusedCodeEditor()) |ce| {
             if (!k.modifiers.shift and !k.modifiers.ctrl and !k.modifiers.alt) {
                 _ = ce.handleKey(k.key, k.modifiers);
                 syncCodeEditorBoundVariablesCx(cx);
@@ -562,7 +562,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     if (handleFocusedKeyAction(cx, gooey, k)) return true;
 
     // Handle focused TextInput
-    if (gooey.getFocusedTextInput()) |input| {
+    if (gooey.widgets.getFocusedTextInput()) |input| {
         if (isControlKey(k.key, k.modifiers)) {
             input.handleKey(k) catch {};
             syncBoundVariablesCx(cx);
@@ -572,7 +572,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     }
 
     // Handle focused TextArea
-    if (gooey.getFocusedTextArea()) |ta| {
+    if (gooey.widgets.getFocusedTextArea()) |ta| {
         if (isControlKey(k.key, k.modifiers)) {
             ta.handleKey(k) catch {};
             syncTextAreaBoundVariablesCx(cx);
@@ -582,7 +582,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     }
 
     // Handle focused CodeEditor
-    if (gooey.getFocusedCodeEditor()) |ce| {
+    if (gooey.widgets.getFocusedCodeEditor()) |ce| {
         if (isControlKey(k.key, k.modifiers)) {
             _ = ce.handleKey(k.key, k.modifiers);
             syncCodeEditorBoundVariablesCx(cx);
@@ -631,19 +631,19 @@ fn handleFocusedKeyAction(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
 
 /// Handle text input events (character insertion)
 fn handleTextInputEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
-    if (gooey.getFocusedTextInput()) |input| {
+    if (gooey.widgets.getFocusedTextInput()) |input| {
         input.insertText(text) catch {};
         syncBoundVariablesCx(cx);
         cx.notify();
         return true;
     }
-    if (gooey.getFocusedTextArea()) |ta| {
+    if (gooey.widgets.getFocusedTextArea()) |ta| {
         ta.insertText(text) catch {};
         syncTextAreaBoundVariablesCx(cx);
         cx.notify();
         return true;
     }
-    if (gooey.getFocusedCodeEditor()) |ce| {
+    if (gooey.widgets.getFocusedCodeEditor()) |ce| {
         ce.insertText(text);
         syncCodeEditorBoundVariablesCx(cx);
         cx.notify();
@@ -654,17 +654,17 @@ fn handleTextInputEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
 
 /// Handle IME composition events
 fn handleCompositionEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
-    if (gooey.getFocusedTextInput()) |input| {
+    if (gooey.widgets.getFocusedTextInput()) |input| {
         input.setComposition(text) catch {};
         cx.notify();
         return true;
     }
-    if (gooey.getFocusedTextArea()) |ta| {
+    if (gooey.widgets.getFocusedTextArea()) |ta| {
         ta.setComposition(text) catch {};
         cx.notify();
         return true;
     }
-    if (gooey.getFocusedCodeEditor()) |ce| {
+    if (gooey.widgets.getFocusedCodeEditor()) |ce| {
         ce.setComposition(text);
         cx.notify();
         return true;
@@ -683,7 +683,7 @@ pub fn syncBoundVariablesCx(cx: *Cx) void {
 
     for (builder.pending_inputs.items) |pending| {
         if (pending.style.bind) |bind_ptr| {
-            if (gooey.textInput(pending.id)) |input| {
+            if (gooey.widgets.textInput(pending.id)) |input| {
                 bind_ptr.* = input.getText();
             }
         }
@@ -697,7 +697,7 @@ pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
 
     for (builder.pending_text_areas.items) |pending| {
         if (pending.style.bind) |bind_ptr| {
-            if (gooey.textArea(pending.id)) |ta| {
+            if (gooey.widgets.textArea(pending.id)) |ta| {
                 bind_ptr.* = ta.getText();
             }
         }
@@ -711,7 +711,7 @@ pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
 
     for (builder.pending_code_editors.items) |pending| {
         if (pending.style.bind) |bind_ptr| {
-            if (gooey.codeEditor(pending.id)) |ce| {
+            if (gooey.widgets.codeEditor(pending.id)) |ce| {
                 bind_ptr.* = ce.getText();
             }
         }

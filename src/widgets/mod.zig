@@ -25,6 +25,7 @@
 //! - `scroll_container` - Scrollable container state
 
 const std = @import("std");
+const interface_verify = @import("../core/interface_verify.zig");
 
 // =============================================================================
 // Text Input (single-line)
@@ -139,6 +140,27 @@ pub const MAX_VISIBLE_ENTRIES = tree_list.MAX_VISIBLE_ENTRIES;
 pub const MAX_TREE_DEPTH = tree_list.MAX_TREE_DEPTH;
 pub const MAX_ROOT_NODES = tree_list.MAX_ROOT_NODES;
 pub const DEFAULT_INDENT_PX = tree_list.DEFAULT_INDENT_PX;
+
+// =============================================================================
+// Compile-time interface checks (PR 4)
+// =============================================================================
+//
+// Pin the `Focusable` trait shape on every focusable widget at the type
+// boundary. Per CLAUDE.md §3 and `docs/cleanup-implementation-plan.md` PR 4,
+// the failure mode for a missing method must be a compile error here, not a
+// silent runtime no-op when the builder skips `withWidget` or the focus
+// manager can't drive `blur()`.
+//
+// Adding a new focusable widget type means: (1) implement `focus`, `blur`,
+// `isFocused`, and `focusable` on the widget; (2) add a line below. The
+// rest of the framework — `context/`, `ui/`, `cx.zig` — does not need to
+// learn about the new type.
+
+comptime {
+    interface_verify.verifyFocusableInterface(TextInput);
+    interface_verify.verifyFocusableInterface(TextArea);
+    interface_verify.verifyFocusableInterface(CodeEditorState);
+}
 
 // =============================================================================
 // Tests

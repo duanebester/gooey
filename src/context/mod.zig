@@ -33,6 +33,14 @@ pub const FocusEvent = focus.FocusEvent;
 pub const FocusEventType = focus.FocusEventType;
 pub const FocusCallback = focus.FocusCallback;
 
+// PR 4 — `Focusable` vtable. Lets `FocusManager` drive a widget's
+// `focus()` / `blur()` without the focus manager (which lives in
+// `context/`) having to import widget types. Each focusable widget
+// exposes `pub fn focusable(self) Focusable` and registers the trait
+// alongside its `FocusHandle` — see `docs/cleanup-implementation-plan.md`
+// PR 4 and `docs/architectural-cleanup-plan.md` §4.
+pub const Focusable = focus.Focusable;
+
 // =============================================================================
 // Dispatch Tree (Event Routing)
 // =============================================================================

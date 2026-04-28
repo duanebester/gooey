@@ -15,6 +15,7 @@ const text_area_mod = @import("text_area_state.zig");
 const TextArea = text_area_mod.TextArea;
 const TextAreaBounds = text_area_mod.Bounds;
 const TextAreaStyle = text_area_mod.Style;
+const focus_mod = @import("../context/focus.zig");
 
 const scene_mod = @import("../scene/mod.zig");
 const Scene = scene_mod.Scene;
@@ -332,6 +333,16 @@ pub const CodeEditorState = struct {
 
     pub fn isFocused(self: *Self) bool {
         return self.text_area.isFocused();
+    }
+
+    /// Build a `Focusable` trait for this widget instance. Called by
+    /// the UI builder during render so the framework can drive focus
+    /// without importing the widget type — see PR 4 in
+    /// `docs/cleanup-implementation-plan.md`. The vtable is shared
+    /// across all `CodeEditorState` instances and lives in static
+    /// storage. `isFocused` delegates through the embedded `TextArea`.
+    pub fn focusable(self: *Self) focus_mod.Focusable {
+        return focus_mod.Focusable.fromInstance(Self, self);
     }
 
     pub fn canFocus(self: *Self) bool {

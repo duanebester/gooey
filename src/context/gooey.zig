@@ -104,9 +104,15 @@ const TextSystem = text_mod.TextSystem;
 // Widgets
 const widget_store_mod = @import("widget_store.zig");
 const WidgetStore = widget_store_mod.WidgetStore;
-const TextInput = @import("../widgets/text_input_state.zig").TextInput;
-const TextArea = @import("../widgets/text_area_state.zig").TextArea;
-const CodeEditorState = @import("../widgets/code_editor_state.zig").CodeEditorState;
+
+// PR 4 — break the `context → widgets` backward edge.
+//
+// Concrete widget state types (`TextInput`, `TextArea`, `CodeEditorState`)
+// no longer leak into `Gooey`. Focus is driven through the `Focusable`
+// vtable in `context/focus.zig`, and direct widget access goes through
+// `gooey.widgets.*` from callers higher up the stack (`runtime/`, `cx.zig`,
+// user examples). See `docs/cleanup-implementation-plan.md` PR 4 and the
+// cleanup direction in `docs/architectural-cleanup-plan.md` §4.
 
 // Platform
 const platform = @import("../platform/mod.zig");
@@ -1141,80 +1147,43 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
-    // Widget Access
+    // Widget Access — moved to `gooey.widgets.*`
     // =========================================================================
+    //
+    // PR 4 (`docs/cleanup-implementation-plan.md`): the per-widget-type
+    // forwarders (`textInput` / `textArea` / `codeEditor` / their
+    // `*OrPanic` siblings, `getFocused*`, and `focusText*` /
+    // `focusCodeEditor`) used to live here, each one importing the
+    // concrete widget state type and so dragging the
+    // `context → widgets` backward edge into `Gooey`. They are deleted
+    // outright — callers in `runtime/`, `cx.zig`, and user code reach
+    // through `gooey.widgets.textInput(id)` / `gooey.widgets.textArea(id)`
+    // / `gooey.widgets.codeEditor(id)` directly, and trigger focus via
+    // the generic `gooey.focusWidget(id)` below (which routes through
+    // the `Focusable` vtable on `FocusManager` — no widget-type switch).
+    //
+    // Adding a new focusable widget type now touches only `widgets/`:
+    // the widget exposes `pub fn focusable(self) Focusable` and the
+    // builder registers that vtable on its `FocusHandle`. `Gooey`
+    // doesn't need to learn about the new type.
 
-    /// Get or create a TextInput by ID
-    /// Returns null on allocation failure
-    pub fn textInput(self: *Self, id: []const u8) ?*TextInput {
-        return self.widgets.textInput(id);
-    }
-
-    /// Blur all focusable widgets, focus the widget of type `T` with the given
-    /// id (get-or-create), update FocusManager, and request a render. Adding a
-    /// new focusable widget type requires updating only this switch.
-    fn focusWidgetById(self: *Self, comptime T: type, id: []const u8) void {
-        self.widgets.blurAll();
-        const maybe_widget = if (T == TextInput)
-            self.widgets.textInput(id)
-        else if (T == TextArea)
-            self.widgets.textArea(id)
-        else if (T == CodeEditorState)
-            self.widgets.codeEditor(id)
-        else
-            @compileError("focusWidgetById: unsupported widget type");
-        if (maybe_widget) |w| {
-            w.focus();
-        }
-        self.focus.focusByName(id);
+    /// Focus a widget by string ID. Generic over widget type — the
+    /// `FocusManager` uses the `Focusable` vtable registered on the
+    /// matching `FocusHandle` to drive `blur()` on the previously
+    /// focused widget and `focus()` on the new one. Replaces the old
+    /// per-type `focusTextInput` / `focusTextArea` / `focusCodeEditor`
+    /// (and the `focusWidgetById(comptime T, id)` switch).
+    pub fn focusWidget(self: *Self, id: []const u8) void {
+        // Invoke any registered blur handler for the currently-focused
+        // widget before the trait flips its `focused` flag — keeps the
+        // existing on-blur semantics that `focusTextInput` &c. used to
+        // provide via `syncWidgetFocus`.
+        self.invokeBlurHandlerForFocusedWidget();
+        self.focus.focusWidget(id);
+        // Reset the transition latch so subsequent focus changes within
+        // the same frame can fire their handlers too.
+        self.blur_handlers.endTransition();
         self.requestRender();
-    }
-
-    /// Focus a TextInput by ID.
-    /// Blurs all focusable widgets first (TextInput, TextArea, CodeEditor).
-    pub fn focusTextInput(self: *Self, id: []const u8) void {
-        self.focusWidgetById(TextInput, id);
-    }
-
-    /// Get currently focused TextInput
-    pub fn getFocusedTextInput(self: *Self) ?*TextInput {
-        return self.widgets.getFocusedTextInput();
-    }
-
-    pub fn textArea(self: *Self, id: []const u8) ?*TextArea {
-        return self.widgets.textArea(id);
-    }
-
-    pub fn textAreaOrPanic(self: *Self, id: []const u8) *TextArea {
-        return self.widgets.textAreaOrPanic(id);
-    }
-
-    pub fn focusTextArea(self: *Self, id: []const u8) void {
-        self.focusWidgetById(TextArea, id);
-    }
-
-    pub fn getFocusedTextArea(self: *Self) ?*TextArea {
-        return self.widgets.getFocusedTextArea();
-    }
-
-    // =========================================================================
-    // Code Editor
-    // =========================================================================
-
-    pub fn codeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
-        return self.widgets.codeEditor(id);
-    }
-
-    pub fn codeEditorOrPanic(self: *Self, id: []const u8) *CodeEditorState {
-        return self.widgets.codeEditorOrPanic(id);
-    }
-
-    pub fn focusCodeEditor(self: *Self, id: []const u8) void {
-        self.focusWidgetById(CodeEditorState, id);
-    }
-
-    pub fn getFocusedCodeEditor(self: *Self) ?*CodeEditorState {
-        return self.widgets.getFocusedCodeEditor();
     }
 
     // =========================================================================
@@ -1240,40 +1209,40 @@ pub const Gooey = struct {
         self.focus.register(FocusHandle.init(id).tabIndex(tab_index).tabStop(tab_stop));
     }
 
-    /// Focus a specific element by ID
+    /// Focus a specific element by ID. Routes through the `Focusable`
+    /// trait on the matching `FocusHandle` — see `focusWidget` for the
+    /// rationale and the PR 4 cleanup direction.
     pub fn focusElement(self: *Self, id: []const u8) void {
+        self.invokeBlurHandlerForFocusedWidget();
         self.focus.focusByName(id);
-        // Also update widget focus state
-        self.syncWidgetFocus(id);
+        self.blur_handlers.endTransition();
         self.requestRender();
     }
 
-    /// Move focus to next element in tab order
+    /// Move focus to next element in tab order. The `FocusManager`
+    /// drives the underlying widget's `blur()` / `focus()` through the
+    /// `Focusable` vtable; `Gooey` only owns the blur-handler dispatch.
     pub fn focusNext(self: *Self) void {
+        self.invokeBlurHandlerForFocusedWidget();
         self.focus.focusNext();
-        // Sync widget focus
-        if (self.focus.getFocusedHandle()) |handle| {
-            self.syncWidgetFocus(handle.string_id);
-        }
+        self.blur_handlers.endTransition();
         self.requestRender();
     }
 
-    /// Move focus to previous element in tab order
+    /// Move focus to previous element in tab order.
     pub fn focusPrev(self: *Self) void {
+        self.invokeBlurHandlerForFocusedWidget();
         self.focus.focusPrev();
-        if (self.focus.getFocusedHandle()) |handle| {
-            self.syncWidgetFocus(handle.string_id);
-        }
+        self.blur_handlers.endTransition();
         self.requestRender();
     }
 
-    /// Clear all focus
+    /// Clear all focus. The `FocusManager` blurs the focused widget
+    /// (if any) through its `Focusable` vtable — no walk over per-type
+    /// widget maps required (PR 4).
     pub fn blurAll(self: *Self) void {
-        // Invoke blur handlers for any focused text fields before blurring
-        self.invokeBlurHandlersForFocusedWidgets();
+        self.invokeBlurHandlerForFocusedWidget();
         self.focus.blur();
-        self.widgets.blurAll();
-        // Reset guard after complete focus transition to allow subsequent focus changes
         self.blur_handlers.endTransition();
         self.requestRender();
     }
@@ -1281,25 +1250,6 @@ pub const Gooey = struct {
     /// Check if element is focused
     pub fn isElementFocused(self: *Self, id: []const u8) bool {
         return self.focus.isFocusedByName(id);
-    }
-
-    /// Sync widget focus state with FocusManager.
-    /// Invokes blur handlers for the previously focused widget, then focuses the new one.
-    fn syncWidgetFocus(self: *Self, id: []const u8) void {
-        // Invoke blur handlers for any focused text fields before blurring.
-        self.invokeBlurHandlersForFocusedWidgets();
-        // Blur all widgets first.
-        self.widgets.blurAll();
-        // Focus the specific widget if it exists (check all focusable types).
-        if (self.widgets.text_inputs.get(id)) |input| {
-            input.focus();
-        } else if (self.widgets.text_areas.get(id)) |ta| {
-            ta.focus();
-        } else if (self.widgets.code_editors.get(id)) |ce| {
-            ce.focus();
-        }
-        // Reset guard after complete focus transition to allow subsequent focus changes.
-        self.blur_handlers.endTransition();
     }
 
     // =========================================================================
@@ -1328,42 +1278,31 @@ pub const Gooey = struct {
     /// Called before focus changes to notify the old focused element.
     ///
     /// The transition guard (in `BlurHandlerRegistry`) prevents double
-    /// invocation within a single focus transition. For example, when
-    /// `blurAll()` is called, it invokes this function and then calls
-    /// `widgets.blurAll()`. Without the guard, nested calls could fire
-    /// handlers twice. The guard is reset by `endTransition()` from
-    /// `syncWidgetFocus()` and `blurAll()` after a complete transition,
-    /// allowing multiple focus changes per frame.
-    fn invokeBlurHandlersForFocusedWidgets(self: *Self) void {
+    /// invocation within a single focus transition. The guard is reset
+    /// by `endTransition()` from each focus-changing public method
+    /// (`focusWidget`, `focusElement`, `focusNext`, `focusPrev`,
+    /// `blurAll`) after a complete transition, allowing multiple focus
+    /// changes per frame.
+    ///
+    /// PR 4: previously this walked every per-type widget map in
+    /// `WidgetStore` to find the focused widget — that walk is gone now
+    /// that `FocusManager` knows the focused element's `FocusId`
+    /// directly. We just ask the registry for `getHandler(id)` against
+    /// the focus manager's tracked `string_id` and dispatch.
+    fn invokeBlurHandlerForFocusedWidget(self: *Self) void {
         // Guard against double invocation within a single focus transition.
         if (!self.blur_handlers.beginTransition()) return;
 
-        // Check TextInputs
-        var ti_it = self.widgets.text_inputs.iterator();
-        while (ti_it.next()) |entry| {
-            if (entry.value_ptr.*.isFocused()) {
-                if (self.blur_handlers.getHandler(entry.key_ptr.*)) |handler| {
-                    handler.invoke(self);
-                }
-            }
-        }
-        // Check TextAreas
-        var ta_it = self.widgets.text_areas.iterator();
-        while (ta_it.next()) |entry| {
-            if (entry.value_ptr.*.isFocused()) {
-                if (self.blur_handlers.getHandler(entry.key_ptr.*)) |handler| {
-                    handler.invoke(self);
-                }
-            }
-        }
-        // Check CodeEditors
-        var ce_it = self.widgets.code_editors.iterator();
-        while (ce_it.next()) |entry| {
-            if (entry.value_ptr.*.isFocused()) {
-                if (self.blur_handlers.getHandler(entry.key_ptr.*)) |handler| {
-                    handler.invoke(self);
-                }
-            }
+        // Find the focused handle's string_id — that's the registry key.
+        // `getFocusedHandle` returns the handle from the current frame's
+        // `focus_order`; if the focused element wasn't re-registered
+        // this frame there's nothing for the handler to fire against,
+        // and the registry would not have stored a handler for it
+        // anyway (handlers are re-registered each frame alongside the
+        // widget primitive).
+        const handle = self.focus.getFocusedHandle() orelse return;
+        if (self.blur_handlers.getHandler(handle.string_id)) |handler| {
+            handler.invoke(self);
         }
     }
 

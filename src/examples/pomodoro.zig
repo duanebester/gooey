@@ -242,7 +242,7 @@ const AppState = struct {
         self.tasks[self.task_count] = task;
         self.task_count += 1;
 
-        if (g.textInput("task-input")) |input| {
+        if (g.widgets.textInput("task-input")) |input| {
             input.clear();
         }
         self.input_text = "";
