@@ -259,6 +259,29 @@ fn handleInput(window: *Window, event: input.InputEvent) bool {
             }
             return true;
         },
+
+        .touch_down => |t| {
+            state.cursor_x = t.position.x;
+            state.cursor_y = t.position.y;
+            std.debug.print("Touch down: id={d} at ({d:.1}, {d:.1})\n", .{ t.id, t.position.x, t.position.y });
+            return true;
+        },
+
+        .touch_up => |t| {
+            std.debug.print("Touch up: id={d}\n", .{t.id});
+            return true;
+        },
+
+        .touch_moved => |t| {
+            state.cursor_x = t.position.x;
+            state.cursor_y = t.position.y;
+            return false;
+        },
+
+        .touch_cancelled => {
+            std.debug.print("Touch cancelled\n", .{});
+            return true;
+        },
     }
 }
 
