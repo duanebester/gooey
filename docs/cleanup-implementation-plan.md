@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2 landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/6 landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -855,12 +855,29 @@ so each lands green on its own.
     shared queue with per-window draining and (b) per-window
     loaders pointing at the shared atlas; the choice has
     cross-window cache-hit-rate UX implications.
-  - ☐ 7b.6 — Retire `Window.text_system` / `svg_atlas` /
-    `image_atlas` back-compat aliases. Rewrite the 124 existing
-    `window.text_system` / etc. call sites through
-    `window.resources.*` (or a `Cx` accessor). Collapses the four
-    `Window.init*` paths toward two now that the renames have
-    landed.
+  - ☑ **7b.6 — Retire `Window.text_system` / `svg_atlas` /
+    `image_atlas` back-compat aliases.** Landed on
+    `cleanup/pr-7b6-retire-aliases`. ~28 internal call sites
+    (the doc's pre-flight estimate of 124 was conservative —
+    user examples never reached the aliases) rewritten through
+    `window.resources.*` across `ui/builder.zig`,
+    `runtime/{window_context,frame,render}.zig`, `app.zig`, and
+    `context/window.zig`'s own self-references. The three
+    pointer fields dropped from `Window`'s field list, taking
+    their assignments out of every `init*` path with them.
+    `Window.initWithSharedResources` /
+    `initWithSharedResourcesPtr` and
+    `WindowContext.initWithSharedResources` collapsed to take a
+    single `*const AppResources` parameter; the bundle now
+    stays bundled across the `App → WindowContext → Window`
+    call chain. `9/9 steps; 1057/1057 tests passed`. Note: the
+    four named `init*` entry points still exist on `Window`
+    (`initOwned` / `initOwnedPtr` /
+    `initWithSharedResources` / `initWithSharedResourcesPtr`);
+    the parameter shape of the two shared-resources arms is
+    now identical, but reducing to two named entry points
+    requires a real `App` struct in the single-window flow,
+    which lands later in 7b. See "Sub-PR 7b.6" below.
 - ☐ 7c — `Frame` double buffer + `mem.swap` at frame boundary.
 - ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
@@ -1208,6 +1225,154 @@ shape — `App` owns, every `Window` borrows). The `AppResources`
 discriminator is still the only ownership flag in the new
 world; just instantiated in two places now that `App` and
 `Window` both embed one.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1057/1057
+tests passed`. `zig build install` builds all examples without
+warnings.
+
+---
+
+**Sub-PR 7b.6 — Retire `AppResources` back-compat aliases (landed):**
+
+Closes the back-compat shim that PR 7a stood up to keep the
+~28 internal call sites of `window.text_system` /
+`window.svg_atlas` / `window.image_atlas` working across the
+bundle extraction. With `AppResources` proven (PR 7a + 7b.2),
+the alias fields are pure surface duplication of
+`window.resources.*` and were retired wholesale. Goal: shrink
+`Window`'s field list, eliminate the duplicate pointer storage,
+and collapse the shared-resources `init*` parameter shape to
+one `*const AppResources` argument so the bundle stays bundled
+across the full `App → WindowContext → Window` call chain.
+
+**Write scope (landed):**
+
+- `src/context/window.zig` — drops the three back-compat alias
+  fields (`text_system: *TextSystem` / `svg_atlas: *SvgAtlas` /
+  `image_atlas: *ImageAtlas`), removes their assignments from
+  `initOwned` / `initOwnedPtr` / `initWithSharedResources` /
+  `initWithSharedResourcesPtr` and the `testWindow` fixture,
+  rewrites the file's own self-references (`self.text_system`
+  in `setFont` / `getTextSystem`, `self.image_atlas.*.beginFrame`
+  in `beginFrame`) to reach through `self.resources.*`. Both
+  `initWithSharedResources` and `initWithSharedResourcesPtr`
+  collapse to take a single `shared_resources: *const AppResources`
+  parameter; the per-pointer null assertions become per-bundle-slot
+  assertions through that pointer. The bundle is wrapped in
+  `AppResources.borrowed(...)` at the bottom of each function,
+  same as before — only the parameter shape changes.
+- `src/runtime/window_context.zig` — `initWithSharedResources`
+  collapses likewise; new `app_resources_mod` import. Reach
+  through `self.window.resources.*` for the four `setupWindow`
+  / `*UploadCallback` call sites. The `TextSystem` / `SvgAtlas`
+  / `ImageAtlas` type-alias imports survive because they're
+  still named in the macOS thread-safe upload-callback signatures
+  (`uploadTextAtlasLocked` / `uploadSvgAtlasLocked` /
+  `uploadImageAtlasLocked`) and the `@ptrCast(@alignCast(ctx))`
+  pattern needs the named types.
+- `src/runtime/multi_window_app.zig` — `createWindowContext`
+  passes `&self.resources` directly. Pre-7b.6 it unbundled the
+  three pointers out of `self.resources.*` only for
+  `Window.initWithSharedResources` to rebundle them inside
+  `AppResources.borrowed(...)` two layers down — pure ceremony
+  the collapsed signature retires. The orphaned `TextSystem` /
+  `SvgAtlas` / `ImageAtlas` type-alias imports drop with the
+  call site; every remaining reference in this file is
+  value-level via `self.resources.*`.
+- `src/runtime/frame.zig` — 8 call sites (`window.text_system` /
+  `window.svg_atlas`) rewritten to `window.resources.*`.
+- `src/runtime/render.zig` — 8 call sites
+  (`window_ctx.text_system` / `window_ctx.svg_atlas` /
+  `window_ctx.image_atlas`) rewritten likewise.
+- `src/ui/builder.zig` — 3 call sites (`g.text_system.getMetrics`
+  inside `renderInput` / `renderTextArea` / `renderCodeEditor`)
+  rewritten to `g.resources.text_system.getMetrics`.
+- `src/app.zig` — 5 WASM call sites in `WebApp.initImpl` and
+  `WebApp.frame` (`g_window.?.text_system` / `svg_atlas` /
+  `image_atlas`) rewritten to `g_window.?.resources.*`.
+
+**Tasks landed:**
+
+- [x] Migrate every internal `window.text_system` /
+      `window.svg_atlas` / `window.image_atlas` call site
+      (~28 in framework code; user examples never reached the
+      aliases) to `window.resources.*`.
+- [x] Drop the three back-compat alias fields from `Window`'s
+      field list and every assignment in the four `init*` paths
+      plus the `testWindow` fixture.
+- [x] Collapse `Window.initWithSharedResources` /
+      `initWithSharedResourcesPtr` and
+      `WindowContext.initWithSharedResources` to take a single
+      `*const AppResources` parameter.
+- [x] Rewrite `multi_window_app::App.createWindowContext` to
+      pass `&self.resources` directly. Drop now-orphaned
+      type-alias imports.
+- [x] `Build Summary: 9/9 steps succeeded; 1057/1057 tests
+      passed` (same count as 7a/7b.1a/7b.1b/7b.2 baseline; this
+      sub-PR adds no new tests — it's a pure surface-area
+      reduction and the existing 1057 tests already cover every
+      code path that crosses the rewritten boundary).
+- [x] `zig build install` builds all examples (single-window
+      and multi-window) without warnings.
+
+**Implementation notes:**
+
+- **Alias retirement was lossless.** Every alias field on
+  `Window` was assigned exactly once (during init, from the
+  same heap address `resources.*` pointed at) and never
+  mutated thereafter. The pre-7b.6 aliases were structurally
+  pure duplicates — the same pointer reachable via two paths.
+  Dropping them removes the second path; no assertion or
+  pointer-equality invariant on the framework side was
+  relying on the duplication. The audit grepped every
+  `\.text_system\b` / `\.svg_atlas\b` / `\.image_atlas\b`
+  reference outside `app_resources.zig` and confirmed they
+  all routed to either (a) the now-renamed `window.resources.*`
+  field, (b) `DrawContext.text_system` on `ui/canvas.zig`
+  (an unrelated optional field on a different struct), or
+  (c) the per-OS internal `svg_atlas` / `image_atlas` fields
+  on `platform/macos/window.zig` and `platform/linux/window.zig`
+  (the GPU-upload pointers set by `setSvgAtlas` /
+  `setImageAtlas`, again on a different struct).
+- **Why the count was 28, not 124.** The pre-flight estimate
+  in the 7a / 7b.2 landing notes anticipated ~124 sites
+  because the doc author was extrapolating from the broader
+  `gooey.*` field-access surface (the pre-7b.1b name).
+  After the `Gooey → Window` rename in 7b.1b the actual
+  aliased-field surface narrowed to the rendering-callback
+  paths in `runtime/`, the WASM bootstrap in `app.zig`, and
+  three `getMetrics` calls in `ui/builder.zig`. User examples
+  reach the framework through `Cx`, not through the framework
+  `Window` directly, so the alias retirement didn't ripple
+  out to `examples/`.
+- **Signature collapse keeps the bundle bundled.** The
+  pre-7b.6 chain `App.createWindowContext →
+  WindowContext.initWithSharedResources →
+  Window.initWithSharedResources` unbundled
+  `self.resources.{text_system, svg_atlas, image_atlas}` at
+  the top, threaded the three pointers as separate
+  parameters through two function boundaries, and rebundled
+  them via `AppResources.borrowed(...)` inside the third —
+  three unbundle/rebundle ceremonies that produced the same
+  `AppResources` shape on both ends. Post-7b.6, the bundle
+  is the parameter; the only construction is the
+  `borrowed(...)` wrap inside `Window` to flip `owned` to
+  `false`. This also aligns the call-chain with how
+  `App.openWindow` already reasons about lifetime — the
+  bundle is the unit of ownership on `App`, and now the
+  unit of ownership on the wire too.
+- **Four `init*` paths still survive 7b.6.** The
+  shared-resources arms now share a parameter shape, but
+  there are still four named entry points on `Window`
+  (`initOwned` / `initOwnedPtr` / `initWithSharedResources` /
+  `initWithSharedResourcesPtr`). The pre-7a plan in PR 7's
+  goal section called for collapsing toward two; that
+  collapse requires a real `App` struct in the single-window
+  flow (so `runtime/runner.zig` can build an owning
+  `AppResources` once and hand `*AppResources` to the lone
+  `Window` via the same shared path), which lands in a
+  later 7b slice alongside the entity / keymap /
+  image-loader lifts.
 
 **Result:** `Build Summary: 9/9 steps succeeded; 1057/1057
 tests passed`. `zig build install` builds all examples without
