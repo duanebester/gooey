@@ -555,6 +555,92 @@ pub const App = struct {
             std.debug.panic("App.keymap(): no Keymap registered in globals (init* did not run?)", .{});
         };
     }
+
+    // =========================================================================
+    // Per-frame hooks
+    // =========================================================================
+    //
+    // PR 7c.1 — finishes the forward-looking debt called out in
+    // PR 7b.3 ("the per-tick begin/end pair moves to app-scope")
+    // and PR 7b.5 ("PR 7c retires the per-window-redundant
+    // drain"). Pre-7c.1 `Window.beginFrame` / `endFrame` ran
+    // `entities.beginFrame` / `endFrame` and `image_loader.drain`
+    // through `self.app.*` — once per window per tick. With N
+    // windows borrowing one `App` that's N redundant calls;
+    // worse for `entities.beginFrame`, the redundancy is *not*
+    // idempotent (a window-A-render-then-window-B-begin sequence
+    // discards window-A's frame observations made earlier in
+    // the same tick).
+    //
+    // The fix is structural: the app-scoped per-tick work lives
+    // on `App.beginFrame` / `endFrame`, called exactly once per
+    // tick at the runtime layer. This sub-PR introduces the API
+    // surface and routes `Window.beginFrame` / `endFrame` through
+    // it so the per-window forwarder still behaves correctly
+    // (idempotent in single-window flows; multi-window callers
+    // lift the call out of the per-window path in a follow-up
+    // 7c slice once a runtime tick driver exists).
+    //
+    // The methods are deliberately thin — `beginFrame` drains
+    // image-load results then clears stale entity observations;
+    // `endFrame` is a forward-looking hook for batching that
+    // future PRs can hang work off without churning every
+    // `Window.endFrame` call site again.
+
+    /// Per-tick app-scoped work — call once per tick before any
+    /// `Window.beginFrame` runs.
+    ///
+    /// Drains async image-load results into the shared atlas
+    /// (idempotent: a second call this tick gets 0 results
+    /// because the queue was emptied by the first), then clears
+    /// stale entity observations from the previous tick (NOT
+    /// idempotent within a tick — every observation made by a
+    /// window's render this tick must happen *after* this call).
+    ///
+    /// Order matters: the loader drain must run before any
+    /// `Window` reads the atlas this tick (so freshly-decoded
+    /// pixels are visible to the first window that renders),
+    /// and the entity-observation clear must run before any
+    /// `cx.entities.read(...)` this tick (so observations made
+    /// last tick don't leak forward).
+    ///
+    /// `image_loader_bound = false` means no `bindImageLoader`
+    /// has run yet (test fixtures only — production framework
+    /// code paths always bind before the first frame). Skip
+    /// the drain in that case rather than walking undefined
+    /// memory.
+    pub fn beginFrame(self: *Self) void {
+        std.debug.assert(@intFromPtr(self) != 0);
+
+        // PR 7b.5 — drain async image-load results. Guarded by
+        // `image_loader_bound` so test fixtures that construct
+        // an `App` without binding can still call this hook
+        // without tripping the loader's internal asserts.
+        if (self.image_loader_bound) {
+            self.image_loader.drain();
+        }
+
+        // PR 7b.3 — clear stale entity observations from the
+        // previous tick. Idempotent across consecutive ticks (a
+        // second call same tick re-clears an already-empty list,
+        // but `Window.beginFrame` is the only caller and runs
+        // once per tick post-7c.1).
+        self.entities.beginFrame();
+    }
+
+    /// Per-tick app-scoped finalisation — call once per tick
+    /// after every `Window.endFrame` has run.
+    ///
+    /// Currently a no-op hook. `EntityMap.endFrame` is itself a
+    /// no-op (frame observations are registered eagerly via
+    /// `observe()`); the call stays here for symmetry with
+    /// `beginFrame` and so future batching optimisations
+    /// `EntityMap.endFrame` is reserved for don't silently
+    /// skip the app.
+    pub fn endFrame(self: *Self) void {
+        std.debug.assert(@intFromPtr(self) != 0);
+        self.entities.endFrame();
+    }
 };
 
 // =============================================================================
@@ -712,4 +798,80 @@ test "App: image_loader is shared across simulated windows" {
     // background task does not race the test allocator.
     // `App.deinit` (run via the outer `defer`) handles this
     // via `image_loader.deinit()`.
+}
+
+test "App: beginFrame clears stale entity observations" {
+    // PR 7c.1 — `App.beginFrame` must clear frame observations
+    // made during the previous tick, just like the pre-7c.1
+    // `Window.beginFrame` did inline. The test simulates one
+    // tick: an observer reads a target (which calls `observe`
+    // and registers a frame observation), then `beginFrame`
+    // runs at the start of the next tick and clears the slot.
+    var app = try App.init(testing.allocator, undefined);
+    defer app.deinit();
+
+    const Counter = struct { value: i32 };
+    const Observer = struct { last_seen: i32 };
+
+    const target = try app.entities.new(Counter, .{ .value = 1 });
+    const observer = try app.entities.new(Observer, .{ .last_seen = 0 });
+
+    // Simulate a read-with-observation (the path widgets take
+    // when they call `cx.entities.read(...)`). `observe` takes
+    // raw `EntityId` values, not the typed `Entity(T)` wrapper —
+    // unwrap via `.id` to match the call shape.
+    app.entities.observe(target.id, observer.id);
+    try testing.expectEqual(@as(usize, 1), app.entities.frameObservationCount());
+
+    // The next tick's `beginFrame` must clear the observation.
+    app.beginFrame();
+    try testing.expectEqual(@as(usize, 0), app.entities.frameObservationCount());
+}
+
+test "App: beginFrame is a no-op when image_loader is unbound" {
+    // PR 7c.1 — `beginFrame` must be safe to call on test-fixture
+    // `App` instances that never bound an `ImageLoader`. The
+    // guard inside `beginFrame` skips the loader drain when
+    // `image_loader_bound = false`; without that guard the call
+    // would walk undefined memory and trip the loader's internal
+    // queue asserts.
+    var app = try App.init(testing.allocator, undefined);
+    defer app.deinit();
+
+    try testing.expect(!app.image_loader_bound);
+    app.beginFrame();
+    // Reaching this line without an assertion failure is the
+    // contract; the entity-observation clear is a no-op on a
+    // fresh `App` (zero observations), so the only behavioural
+    // surface this test pins is the unbound-loader guard.
+    app.endFrame();
+}
+
+test "App: beginFrame drains image_loader when bound" {
+    // PR 7c.1 — `beginFrame` must drain the image loader's
+    // result queue, just like the pre-7c.1 `Window.beginFrame`
+    // did inline. With no in-flight fetches the drain is a
+    // 0-result no-op; the test pins that the call reaches
+    // through to the loader (instead of silently skipping when
+    // `image_loader_bound` is true) by exercising the bound
+    // path with a real `ImageAtlas`.
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app = try App.init(testing.allocator, io);
+    defer app.deinit();
+
+    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0, io);
+    defer image_atlas.deinit();
+
+    app.bindImageLoader(&image_atlas);
+    try testing.expect(app.image_loader_bound);
+
+    // No fetches enqueued; drain is a 0-result no-op. The
+    // pending / failed counts must remain zero across the
+    // begin / end pair.
+    app.beginFrame();
+    app.endFrame();
+
+    try testing.expectEqual(@as(u32, 0), app.image_loader.pending_count);
+    try testing.expectEqual(@as(u32, 0), app.image_loader.failed_count);
 }

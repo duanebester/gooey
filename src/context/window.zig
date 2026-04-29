@@ -1303,40 +1303,24 @@ pub const Window = struct {
         self.focus.beginFrame();
         self.resources.image_atlas.beginFrame();
 
-        // Drain async image load results and cache into atlas.
-        // Order matters: must run after `image_atlas.beginFrame()` so
-        // any per-frame atlas reset has completed before we write
-        // freshly-decoded pixels into it.
+        // PR 7c.1 — app-scoped per-tick hook. Pre-7c.1 this
+        // function ran `self.app.image_loader.drain()` and
+        // `self.app.entities.beginFrame()` inline; the work
+        // moved onto `App.beginFrame` so the API surface
+        // matches the layer the work belongs to. With one
+        // `Window` per `App` (single-window, WASM) this is a
+        // pure refactor; with N windows borrowing one `App`
+        // (multi-window) the call is still per-window-per-tick
+        // here, but a follow-up 7c slice that introduces a
+        // runtime tick driver lifts it out of the per-window
+        // path so it runs exactly once per tick.
         //
-        // PR 7b.5 — the loader lives on `App` now, so the
-        // drain reaches through `self.app.image_loader`. With
-        // multiple windows borrowing the same `*App`, this
-        // call is redundantly invoked once per window per
-        // tick; `drain` is idempotent (a second call gets 0
-        // results because the queue was already emptied by
-        // the first window's drain this tick), but the
-        // window-A-drains-then-window-B-begins sequence means
-        // late-arriving results land in window B's atlas
-        // pass. Same forward-looking redundancy story as
-        // `entities.beginFrame` below — both retire alongside
-        // the `Frame` double-buffer move in PR 7c, where the
-        // per-tick begin/end pair moves to app-scope.
-        self.app.image_loader.drain();
-
-        // Clear stale entity observations from last frame.
-        // PR 7b.3 — entities live on `App` now. With multiple
-        // windows borrowing the same `*App`, this call is
-        // redundantly invoked once per window per tick;
-        // `beginFrame` is idempotent (re-clearing an already-
-        // empty `frame_observations` is a no-op), but the
-        // window-A-render-then-window-B-begin sequence DOES
-        // discard window-A's frame observations made earlier
-        // this tick. That's a known limitation tracked for
-        // PR 7c (Frame double-buffer), where the per-tick
-        // begin/end pair moves to app-scope. No current code
-        // path shares entities across windows, so the issue is
-        // forward-looking.
-        self.app.entities.beginFrame();
+        // Order matters: must run after `image_atlas.beginFrame`
+        // (so freshly-decoded pixels write into the post-reset
+        // atlas) and before any element renders this frame (so
+        // observations made by widget renders this frame are
+        // not discarded by the entity-observation clear).
+        self.app.beginFrame();
 
         // Update cached window dimensions
         if (self.platform_window) |w| {
@@ -1381,15 +1365,15 @@ pub const Window = struct {
         self.widgets.endFrame();
         self.focus.endFrame();
 
-        // Finalize frame observations.
-        // PR 7b.3 — entities live on `App` now. `endFrame` is
-        // currently a no-op hook on `EntityMap`, so the
-        // multi-window-redundant-call concern noted on the
-        // matching `beginFrame` site does not apply here yet —
-        // but the call stays for symmetry and so future
-        // optimisations the hook is reserved for don't silently
-        // skip windows.
-        self.app.entities.endFrame();
+        // PR 7c.1 — app-scoped per-tick finalisation. Pre-7c.1
+        // this function ran `self.app.entities.endFrame()`
+        // inline; the work moved onto `App.endFrame` for
+        // symmetry with `App.beginFrame` and so future
+        // batching optimisations have a single hook to hang
+        // off. Currently a no-op (`EntityMap.endFrame` itself
+        // is a no-op), but the call stays for layering and
+        // forward-compatibility.
+        self.app.endFrame();
 
         // Request another frame if animations are running
         if (self.hasActiveAnimations()) {
