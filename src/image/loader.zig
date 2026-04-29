@@ -422,7 +422,6 @@ pub const ImageLoader = struct {
     }
 };
 
-
 // =============================================================================
 // Public API
 // =============================================================================
@@ -913,8 +912,14 @@ test "ImageLoader: fixupQueue restores the queue pointer after a copy" {
     var stack_loader: ImageLoader = undefined;
     stack_loader.initInPlace(testing.io, testing.allocator, &image_atlas);
 
-    // … then copy by value to its "real" home. This is the exact pattern
-    // `Gooey.initOwned` exercises before calling `fixupImageLoadQueue`.
+    // … then copy by value to its "real" home. Pre-7b.5 this was the
+    // exact pattern `Window.initOwned` exercised before calling
+    // `Window.fixupImageLoadQueue`. PR 7b.5 retired both — the loader
+    // lives on `App` now, which is always heap-allocated and runs
+    // `initInPlace` directly at its final address. `fixupQueue` is
+    // preserved on `ImageLoader` because it remains a useful primitive
+    // for any future caller that needs by-value construction; this
+    // test pins that primitive's contract.
     const heap_loader = try testing.allocator.create(ImageLoader);
     defer testing.allocator.destroy(heap_loader);
     heap_loader.* = stack_loader;

@@ -531,7 +531,19 @@ fn ensureNativeUrlLoading(window_ctx: *Window, source: []const u8, key: image_mo
     // Return value (`true` if a fetch was actually launched) is ignored:
     // the next frame's drain will surface the result either way, and the
     // render path has no use for the launch signal.
-    _ = window_ctx.image_loader.enqueueIfRoom(source, key);
+    //
+    // PR 7b.5 — the loader lives on `App` now. Reaching through
+    // `window_ctx.app.image_loader` (instead of the pre-7b.5
+    // `window_ctx.image_loader`) means two windows requesting
+    // the same URL in the same frame share one in-flight fetch:
+    // the second window's `enqueueIfRoom` call short-circuits on
+    // the app-scoped pending set without spawning a duplicate
+    // background task. The pair-assert on `image_loader_bound`
+    // surfaces a missing `App.bindImageLoader` call here, at the
+    // first place the loader's queue is touched, instead of
+    // letting it corrupt later state.
+    std.debug.assert(window_ctx.app.image_loader_bound);
+    _ = window_ctx.app.image_loader.enqueueIfRoom(source, key);
 }
 
 /// Snap coordinates to device pixel grid for crisp rendering

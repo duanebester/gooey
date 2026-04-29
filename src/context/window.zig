@@ -418,15 +418,24 @@ pub const Window = struct {
     /// (64). All registered groups are cancelled in `deinit`.
     cancel_registry: CancelRegistry = undefined,
 
-    // Async image loading — URL fetch + decode + atlas cache.
+    // PR 7b.5 — `image_loader` lifted off `Window` onto `App`.
+    // Pre-7b.5 every `Window` carried its own `ImageLoader`,
+    // which made cross-window dedup of in-flight URL fetches
+    // structurally impossible (window A and window B fetching
+    // the same URL in the same frame would each launch a
+    // background task and double the bandwidth). Post-7b.5 a
+    // single `ImageLoader` lives on `App`, the pending /
+    // failed sets are app-scoped, and the fetch group covers
+    // every window.
     //
-    // Owned subsystem (PR 1 extraction): see `src/image/loader.zig`.
-    // Initialized in place so the embedded `Io.Queue`'s pointer to the
-    // backing result buffer is stable. Forwarder methods on `Window`
-    // (`isImageLoadPending`, `isImageLoadFailed`, ...) preserve the call
-    // surface used by `runtime/render.zig` until PR 7 reroutes call
-    // sites to `window.image_loader.*` directly.
-    image_loader: image_mod.ImageLoader = undefined,
+    // The forwarder methods below (`isImageLoadPending` /
+    // `isImageLoadFailed`) and `beginFrame`'s drain reach
+    // through `self.app.image_loader.*` now. The
+    // `fixupImageLoadQueue` method retired alongside this
+    // field — `App` is initialised at its final heap address
+    // and `App.bindImageLoader` runs `initInPlace` directly,
+    // so the by-value-copy queue dangle that `fixupQueue`
+    // was guarding against cannot happen on the new path.
 
     const Self = @This();
 
@@ -474,33 +483,34 @@ pub const Window = struct {
     }
 
     // =========================================================================
-    // Async Image Loading — forwarders to `image_loader`
+    // Async Image Loading — forwarders to `app.image_loader`
     // =========================================================================
     //
-    // Body lives in `src/image/loader.zig` (`ImageLoader`). The wrappers
-    // here preserve the existing call surface used by `runtime/render.zig`
-    // (`window_ctx.isImageLoadPending`, `window_ctx.isImageLoadFailed`, ...)
-    // so PR 1 stays a focused move. PR 7 reroutes call sites directly
-    // to `window.image_loader.*`.
-
-    /// Re-bind the loader's queue pointer after a by-value copy.
-    ///
-    /// Required after `initOwned` / `initWithSharedResources` because those
-    /// build `Self` on the stack and copy to heap, leaving the queue's
-    /// internal pointer dangling. The `Ptr`-style init paths do NOT need
-    /// this — they write at the final address.
-    pub fn fixupImageLoadQueue(self: *Self) void {
-        self.image_loader.fixupQueue();
-    }
+    // Body lives in `src/image/loader.zig` (`ImageLoader`). PR 7b.5
+    // lifted the loader off `Window` onto `App`; these forwarders
+    // route through `self.app.image_loader.*` so existing call
+    // sites in `runtime/render.zig` keep working without churn.
+    // The pre-7b.5 `fixupImageLoadQueue` forwarder retired
+    // alongside the field — `App.bindImageLoader` runs
+    // `initInPlace` at the loader's final heap address, so no
+    // by-value-copy queue dangle can happen on the new path.
+    //
+    // Forwarders rather than direct `window.app.image_loader.*`
+    // access at every call site keeps PR 7b.5 a focused lift —
+    // a follow-up cleanup can retire the forwarders once
+    // `runtime/render.zig` is comfortable reaching through
+    // `window.app` directly.
 
     /// Check whether a URL image fetch is already in flight.
+    /// Routed through the app-scoped loader (PR 7b.5).
     pub fn isImageLoadPending(self: *const Self, url_hash: u64) bool {
-        return self.image_loader.isPending(url_hash);
+        return self.app.image_loader.isPending(url_hash);
     }
 
     /// Check whether a URL has previously failed to fetch.
+    /// Routed through the app-scoped loader (PR 7b.5).
     pub fn isImageLoadFailed(self: *const Self, url_hash: u64) bool {
-        return self.image_loader.isFailed(url_hash);
+        return self.app.image_loader.isFailed(url_hash);
     }
 
     /// Get the root state pointer with type checking
@@ -699,11 +709,17 @@ pub const Window = struct {
             // see `initOwnedPtr` for the version without the by-value copy
             // dangling-pointer caveat.
             .a11y = undefined,
-            // Image loader: zero-init the slot. Caller MUST invoke
-            // `fixupImageLoadQueue` after copying `result` to its final
-            // heap address — the embedded `Io.Queue` holds a pointer
-            // into `result_buffer` that dangles after the by-value copy.
-            .image_loader = undefined,
+            // PR 7b.5 — `image_loader` retired from `Window`'s
+            // field list. The shared loader lives on `App` now;
+            // `WindowContext.init` (the caller of this function)
+            // calls `app.bindImageLoader(window.resources.image_atlas)`
+            // after `Window.initOwned` returns and `window.app`
+            // has been wired. The pre-7b.5 `.image_loader =
+            // undefined` slot + `fixupImageLoadQueue` call below
+            // both retired — `App.bindImageLoader` runs
+            // `initInPlace` at the loader's final heap address,
+            // so the by-value-copy queue dangle that the fixup
+            // was guarding against cannot happen on the new path.
         };
         // PR 7a — `result.resources` was set by-value above. Now
         // that `result` is the canonical owner of the heap atlases,
@@ -721,13 +737,13 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         result.a11y.initInPlace(window_obj, view_obj);
 
-        // Initialize the image loader subsystem in place. The result is
-        // about to be copied to the caller's heap address; the queue
-        // pointer will dangle until `fixupImageLoadQueue` re-binds it.
-        // PR 7a — atlas pointer reaches through the bundled resources;
-        // the heap address is the same as the pre-extraction local
-        // `image_atlas`, so loader semantics are unchanged.
-        result.image_loader.initInPlace(io, allocator, result.resources.image_atlas);
+        // PR 7b.5 — image-loader init retired from `Window`. The
+        // caller (`runtime/window_context.zig::WindowContext.init`)
+        // calls `app.bindImageLoader(window.resources.image_atlas)`
+        // after this function returns and `window.app` has been
+        // assigned. The atlas pointer reached here is the same
+        // heap address either way (lives on `Window.resources`
+        // for single-window mode); only the binder moved.
 
         // PR 6 / 7b.4 — populate per-window globals. Only
         // `Debugger` remains here; `Keymap` lifted onto
@@ -880,11 +896,15 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 
-        // Initialize image loader in place — safe here because `self` is
-        // already at its final heap address (no struct-literal copy can
-        // dangle the embedded queue pointer). PR 7a — atlas reached
-        // through `self.resources` (same heap address as before).
-        self.image_loader.initInPlace(io, allocator, self.resources.image_atlas);
+        // PR 7b.5 — image-loader init retired from `Window`. The
+        // caller (`runtime/window_context.zig::WindowContext.init`
+        // on native, `app.zig::WebApp.initImpl` on WASM) calls
+        // `app.bindImageLoader(window.resources.image_atlas)` after
+        // this function returns and `window.app` has been wired.
+        // The shared loader runs `initInPlace` directly at its
+        // final `App` heap address, so the by-value-copy queue
+        // dangle that the pre-7b.5 fixup was guarding against
+        // cannot happen on the new path.
 
         // PR 6 / 7b.4 — populate per-window globals. Only
         // `Debugger` remains here; `Keymap` lifted onto
@@ -991,10 +1011,14 @@ pub const Window = struct {
             .blur_handlers = BlurHandlerRegistry.init(),
             .cancel_registry = CancelRegistry.init(),
             .a11y = undefined,
-            // Image loader: see comment in `initOwned` — by-value copy
-            // requires a `fixupImageLoadQueue` call after the result is
-            // moved to its final heap address.
-            .image_loader = undefined,
+            // PR 7b.5 — `image_loader` retired from `Window`'s
+            // field list. In multi-window mode the parent
+            // `multi_window_app::App.init` has already called
+            // `context_app.bindImageLoader(resources.image_atlas)`
+            // against the same shared atlas every window's
+            // borrowed `AppResources` points at; this function
+            // does NOT re-bind. See the matching comment block
+            // in `initOwned` and the file header.
         };
 
         // Initialize platform-specific accessibility bridge
@@ -1002,8 +1026,16 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         result.a11y.initInPlace(window_obj, view_obj);
 
-        // Initialize the image loader against the SHARED atlas.
-        result.image_loader.initInPlace(io, allocator, shared_resources.image_atlas);
+        // PR 7b.5 — image-loader init retired from `Window`. The
+        // shared loader on `App` (already bound by
+        // `multi_window_app::App.init` against the same atlas
+        // this function's `shared_resources.image_atlas` points
+        // at) handles every window's URL fetches. The
+        // `shared_resources.image_atlas` here is identical heap
+        // address to what `bindImageLoader` was called with —
+        // every window in a multi-window app has the same
+        // shared atlas in its borrowed `AppResources`, and
+        // there is exactly one bind per `App` lifetime.
 
         // PR 6 / 7b.4 — same globals registration as `initOwned`.
         // Only `Debugger` is per-window here; `Keymap` lives on
@@ -1133,10 +1165,13 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 
-        // Initialize image loader against the SHARED atlas. Safe to do
-        // here without a fixup because `self` is already at its final
-        // heap address (the embedded queue pointer cannot dangle).
-        self.image_loader.initInPlace(io, allocator, shared_resources.image_atlas);
+        // PR 7b.5 — image-loader init retired from `Window`. The
+        // shared loader on `App` (bound once by
+        // `multi_window_app::App.init` against the same atlas
+        // `shared_resources.image_atlas` points at) handles
+        // every window's URL fetches. See the matching comment
+        // in `initWithSharedResources` and the file header on
+        // `App` for the two-phase init rationale.
 
         // PR 6 / 7b.4 — same per-window globals registration as
         // `initOwnedPtr`. Only `Debugger` here; `Keymap` lives on
@@ -1146,11 +1181,18 @@ pub const Window = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Tear down the image loader subsystem first: closes the result
-        // queue (background tasks see closure on next put), cancels the
-        // fetch group (in-flight tasks unwind cleanly). Blocking is
-        // acceptable here — we are shutting down.
-        self.image_loader.deinit();
+        // PR 7b.5 — image-loader teardown retired from
+        // `Window.deinit`. The shared loader lives on `App`
+        // now; `App.deinit` is responsible for closing the
+        // result queue and cancelling the fetch group. The
+        // upstream owner (`runtime/runner.zig` in single-window
+        // mode, `multi_window_app::App.deinit` in multi-window
+        // mode) tears the `App` down *after* every
+        // `Window.deinit` has run, which is the correct order:
+        // background fetches need a live result queue to
+        // unwind against, and `App.deinit`'s `cancel` of the
+        // fetch group needs the queue still open during the
+        // cancel-point check on background tasks.
 
         // Cancel all registered cancel groups before any teardown.
         // Blocking is acceptable — we are shutting down.
@@ -1265,7 +1307,21 @@ pub const Window = struct {
         // Order matters: must run after `image_atlas.beginFrame()` so
         // any per-frame atlas reset has completed before we write
         // freshly-decoded pixels into it.
-        self.image_loader.drain();
+        //
+        // PR 7b.5 — the loader lives on `App` now, so the
+        // drain reaches through `self.app.image_loader`. With
+        // multiple windows borrowing the same `*App`, this
+        // call is redundantly invoked once per window per
+        // tick; `drain` is idempotent (a second call gets 0
+        // results because the queue was already emptied by
+        // the first window's drain this tick), but the
+        // window-A-drains-then-window-B-begins sequence means
+        // late-arriving results land in window B's atlas
+        // pass. Same forward-looking redundancy story as
+        // `entities.beginFrame` below — both retire alongside
+        // the `Frame` double-buffer move in PR 7c, where the
+        // per-tick begin/end pair moves to app-scope.
+        self.app.image_loader.drain();
 
         // Clear stale entity observations from last frame.
         // PR 7b.3 — entities live on `App` now. With multiple
@@ -1929,7 +1985,10 @@ fn testWindow() Window {
         .blur_handlers = BlurHandlerRegistry.init(),
         .cancel_registry = CancelRegistry.init(),
         .a11y = undefined,
-        .image_loader = undefined,
+        // PR 7b.5 — `image_loader` retired from `Window`'s
+        // field list; lives on `App` now. The deferred-command
+        // tests this fixture is built for never reach the
+        // loader, so the field's removal is invisible to them.
         .deferred_count = 0,
         .deferred_commands = undefined,
         .needs_render = false,

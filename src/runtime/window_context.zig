@@ -185,8 +185,22 @@ pub fn WindowContext(comptime State: type) type {
             // would not have happened yet). Every code path that
             // reaches `window.app.*` runs after this point.
             window.app = app;
-            window.fixupImageLoadQueue();
             errdefer window.deinit();
+
+            // PR 7b.5 — bind the app-scoped `ImageLoader` against
+            // the window's owning `image_atlas`. `Window.initOwned`
+            // creates the owning `AppResources` (and therefore the
+            // backing `ImageAtlas`) on the single-window path, so
+            // this is the first moment a stable `*ImageAtlas` is
+            // available to hand to the loader. Single-bind is
+            // asserted inside `bindImageLoader`; the pre-7b.5
+            // `window.fixupImageLoadQueue` call retired alongside
+            // the `Window.image_loader` field — the loader now
+            // runs `initInPlace` directly at its `App` heap
+            // address, so no by-value-copy queue dangle is
+            // possible on this path. See `context/app.zig` file
+            // header for the two-phase init rationale.
+            app.bindImageLoader(window.resources.image_atlas);
 
             // Initialize UI Builder
             const builder = try allocator.create(Builder);
@@ -279,8 +293,26 @@ pub fn WindowContext(comptime State: type) type {
             // which is exactly what enables cross-window entity
             // observation.
             window.app = app;
-            window.fixupImageLoadQueue();
             errdefer window.deinit();
+
+            // PR 7b.5 — bind the app-scoped `ImageLoader` against
+            // the shared `image_atlas`. `App.bindImageLoader` is
+            // idempotent on same-atlas re-binds: the first window
+            // opened in this `App` runs `initInPlace` on the
+            // loader at its final heap address; every subsequent
+            // window hits the same-atlas short-circuit because
+            // every borrowed `AppResources` in this `App`'s
+            // lifetime points at the same upstream-owned
+            // `ImageAtlas`. Reaching through `shared_resources`
+            // (rather than `window.resources`) is a stylistic
+            // choice — both refer to the same heap address — but
+            // it makes the lifetime story explicit at the call
+            // site: the atlas is owned upstream, this window
+            // borrows. The pre-7b.5 `window.fixupImageLoadQueue`
+            // call retired alongside the `Window.image_loader`
+            // field; see the matching comment block in `init`
+            // and the `context/app.zig` file header.
+            app.bindImageLoader(shared_resources.image_atlas);
 
             // Initialize UI Builder
             const builder = try allocator.create(Builder);

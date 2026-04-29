@@ -249,6 +249,21 @@ pub fn WebApp(
             // every `cx.entities.*` access reaches through this
             // pointer.
             window_ptr.app = app_ptr;
+            // PR 7b.5 — bind the app-scoped `ImageLoader` against
+            // the window's owning `image_atlas`. Mirrors the
+            // single-window native path in
+            // `runtime/window_context.zig::WindowContext.init`:
+            // `Window.initOwnedPtr` creates the owning
+            // `AppResources` (and the backing `ImageAtlas`), so
+            // this is the first moment a stable `*ImageAtlas` is
+            // available to hand to the loader. `bindImageLoader`
+            // is idempotent on same-atlas re-binds (no-op on the
+            // second call), so the WASM-vs-native split here is
+            // structural rather than behavioural — both bind once
+            // per `App` lifetime against the same single window's
+            // atlas. See `context/app.zig` file header for the
+            // two-phase init rationale.
+            app_ptr.bindImageLoader(window_ptr.resources.image_atlas);
             g_window = window_ptr;
 
             // Initialize Builder
