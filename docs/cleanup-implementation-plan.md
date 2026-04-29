@@ -82,20 +82,20 @@ them out here so they don't get re-litigated in review:
 
 ## 2. Tracker — at-a-glance
 
-| PR  | Scope                    | Cleanup items                                      | 0.16 audits                                                | Risk        | Status                |
-| --- | ------------------------ | -------------------------------------------------- | ---------------------------------------------------------- | ----------- | --------------------- |
-| 0   | Mechanical sweep         | —                                                  | `@Type` split, local-address returns, `ArrayList` `.empty` | Low         | ☑ (no-op, audit only) |
-| 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☑                     |
-| 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☑                     |
-| 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☑                     |
-| 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                     |
-| 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                     |
-| 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                     |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a landed)         |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                     |
-| 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                     |
-| 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                     |
-| 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                     |
+| PR  | Scope                    | Cleanup items                                      | 0.16 audits                                                | Risk        | Status                     |
+| --- | ------------------------ | -------------------------------------------------- | ---------------------------------------------------------- | ----------- | -------------------------- |
+| 0   | Mechanical sweep         | —                                                  | `@Type` split, local-address returns, `ArrayList` `.empty` | Low         | ☑ (no-op, audit only)      |
+| 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☑                          |
+| 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☑                          |
+| 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☑                          |
+| 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
+| 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
+| 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2 landed) |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
+| 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
+| 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
+| 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
 
 Cleanup item numbers reference the synthesis table in
 [`architectural-cleanup-plan.md` §Synthesis](./architectural-cleanup-plan.md#synthesis-the-cleanup-plan).
@@ -828,8 +828,39 @@ so each lands green on its own.
   `AppResources`'s own ownership-shape tests). Five of six `_owned`
   flags retired; remaining `image_loader` per-window placement
   reserved for 7b. See "Sub-PR 7a" below.
-- ☐ 7b — Rename `Gooey → Window`, lift `keymap` / `globals` /
-  `entities` / `image_loader` into a real `App`.
+- ◐ **7b — Rename `Gooey → Window`, lift `keymap` / `globals` /
+  `entities` / `image_loader` into a real `App`.** In progress on
+  `cleanup/pr-7b-app-window-split`. The work split into six
+  landable slices once the surface area was mapped:
+  - ☑ **7b.1a — `platform.Window → platform.PlatformWindow`.**
+    Pure mechanical rename to free the `Window` name for the
+    framework wrapper. `9/9 steps; 1057/1057 tests passed`.
+  - ☑ **7b.1b — `Gooey → Window` (framework wrapper).** File
+    rename `context/gooey.zig → context/window.zig`, struct
+    rename, ~220 internal uses + 124 call-site references update
+    in lockstep. `9/9 steps; 1057/1057 tests passed`.
+  - ☑ **7b.2 — `multi_window_app::App` embeds `AppResources`.**
+    Closes the 7a inconsistency where the multi-window owner
+    still carried the pre-7a `*TextSystem` / `*SvgAtlas` /
+    `*ImageAtlas` triplet. `9/9 steps; 1057/1057 tests passed`.
+  - ☐ 7b.3 — Lift `entities: EntityMap` off `Window` onto `App`.
+    Plumb `*App` through `Cx` so `cx.entities()` reaches
+    app-scope storage.
+  - ☐ 7b.4 — Lift `keymap` and `globals` off `Window` onto `App`,
+    keeping `Debugger` on `Window.globals` (audited per-window:
+    overlay quads, frame timing, selected layout id all bound to
+    one scene). `Keymap` and `*const Theme` move to
+    `App.globals`.
+  - ☐ 7b.5 — Lift `image_loader` to `App`. Pick between (a)
+    shared queue with per-window draining and (b) per-window
+    loaders pointing at the shared atlas; the choice has
+    cross-window cache-hit-rate UX implications.
+  - ☐ 7b.6 — Retire `Window.text_system` / `svg_atlas` /
+    `image_atlas` back-compat aliases. Rewrite the 124 existing
+    `window.text_system` / etc. call sites through
+    `window.resources.*` (or a `Cx` accessor). Collapses the four
+    `Window.init*` paths toward two now that the renames have
+    landed.
 - ☐ 7c — `Frame` double buffer + `mem.swap` at frame boundary.
 - ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
@@ -996,6 +1027,191 @@ and §17 (no ownership flags).
   introduce if the loader moves to `App` in 7b. Net `_owned`
   count after 7a: zero on `Gooey`, one on `AppResources` (the
   bundle's own discriminator).
+
+---
+
+**Sub-PR 7b.1a — `platform.Window → platform.PlatformWindow` (landed):**
+
+First slice of PR 7b. Pure mechanical rename of the public
+`platform.Window` alias to `platform.PlatformWindow`, freeing the
+`Window` name for the framework-level wrapper landing in 7b.1b. The
+GPUI mapping in
+[`architectural-cleanup-plan.md` §10](./architectural-cleanup-plan.md#10-the-app--window--contextt-split)
+calls the OS-level handle `platform_window: PlatformWindow` for
+exactly this reason — the two used to coexist only because nobody
+had to talk about both at the same time, and PR 7b makes that
+contradiction explicit.
+
+**Write scope (landed):**
+
+- `src/platform/mod.zig` — public alias `Window` → `PlatformWindow`.
+- `src/root.zig` — re-export `pub const Window` →
+  `pub const PlatformWindow`.
+- 11 files across `src/app.zig`, `src/context/gooey.zig`,
+  `src/runtime/{runner,multi_window_app,window_context,window_handle}.zig`,
+  `src/examples/{linux_demo,glass}.zig`,
+  `src/platform/interface.zig` — every `const Window =
+platform.Window` import alias renames; every field /
+  parameter / cast / test signature that referenced the
+  framework-facing alias updates to match.
+
+**Out of scope:**
+
+- The per-OS internal aliases (`platform.macos.window.Window`,
+  `platform.linux.window.Window`, `platform/web/window.zig::Window`)
+  are untouched. They're internal to each backend and only one
+  call site (`cx.zig::setGlassStyle`) reaches in via
+  `platform.mac.window.Window`. Renaming them would muddy the PR
+  with backend-specific churn for no clarity gain.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1057/1057 tests
+passed` (same count as 7a baseline; pure rename, no test
+additions).
+
+---
+
+**Sub-PR 7b.1b — `Gooey → Window` framework wrapper (landed):**
+
+Second mechanical slice. With 7b.1a having freed the `Window`
+name, the framework wrapper struct collapses from the project's
+working title `Gooey` to its real role: a per-window framework
+context. Both
+[`architectural-cleanup-plan.md` §10](./architectural-cleanup-plan.md#10-the-app--window--contextt-split)
+and the original PR 7 sketch above call this struct `Window`; the
+rename brings the code in line with the design docs.
+
+**Write scope (landed):**
+
+- `src/context/gooey.zig` renamed to `src/context/window.zig`.
+  `pub const Gooey = struct { ... }` becomes `pub const Window =
+struct { ... }`. The `gooey:` / `self.gooey` / `*Gooey` usages
+  inside the file get the bulk rename in step.
+- The struct's `window: ?*PlatformWindow` field renames to
+  `platform_window: ?*PlatformWindow` so `self.window` inside
+  `Window` methods isn't a self-reference shadow. The §10 GPUI
+  sketch uses the same naming.
+- `pub fn getWindow(self) ?*PlatformWindow` on `Window` renames
+  to `getPlatformWindow` for the same reason.
+- Every `gooey_mod` import alias renames to `window_mod`. Every
+  `const Gooey = gooey_mod.Gooey` to
+  `const Window = window_mod.Window`. Every
+  `@import("gooey.zig")` to `@import("window.zig")`.
+- `Cx` field `_gooey: *Gooey` renames to `_window: *Window`.
+  `cx.gooey()` accessor renames to `cx.window()`. The
+  `pub fn gooey(self: *Self)` declaration on `Cx` renames to
+  `pub fn window(self: *Self)`.
+- `Builder` field `gooey: ?*Gooey` renames to `window: ?*Window`.
+  Every `b.gooey` / `self.gooey` on `Builder` accordingly.
+- WASM globals on `app.zig`: `g_gooey: ?*Gooey` renames to
+  `g_window: ?*Window`. The pre-existing `g_window:
+?*PlatformWindow` (the OS handle global) renames first to
+  `g_platform_window` to free the slot — same field-rename
+  rationale as inside `Window`.
+- `runtime/window_context.zig::init` /
+  `initWithSharedResources` had a param `window: *PlatformWindow`
+  that collided with the new local `window` (the framework
+  wrapper). Renamed those two params (and only those two — the
+  `WindowVTable`-shaped callbacks like `onRender` reach the
+  framework wrapper through `self.window` so `window` remains
+  the platform handle there) to `platform_window`.
+- `runtime/frame.zig::updateImeCursorPosition` had a similar
+  shadow (`const window = window.getWindow() orelse return`)
+  that the bulk rename converted into a self-shadow; rewritten
+  to `const platform_window = window.getPlatformWindow() orelse
+return`.
+- `src/cx.zig::setGlassStyle` and `src/cx.zig::close` had local
+  `window` captures that now shadow the new `pub fn window`
+  accessor on `Cx`; captures renamed to `pw`.
+  `setGlassStyle`'s broken pre-rename `?*Window.ptr` access
+  (dead code, never instantiated) fixed to a proper `if (...)
+|pw|` unwrap while we were here.
+
+**Out of scope:**
+
+- Banner strings (`Gooey Layout Engine Benchmarks ...`) and
+  package-import uses (`const gooey = @import("gooey")`) stay
+  as is. The framework brand is still "gooey"; this slice only
+  renames the framework wrapper struct.
+- Historical doc comments in `context/focus.zig`,
+  `context/global.zig`, `context/hover.zig`,
+  `context/a11y_system.zig`, `context/cancel_registry.zig`,
+  `context/draw_phase.zig` still reference `Gooey` when
+  describing the pre-extraction state. They read naturally as
+  historical context and are out of scope for the rename; a
+  separate doc-touchup pass can polish them.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1057/1057 tests
+passed`. `zig build install` builds all examples (single- and
+multi-window) without warnings.
+
+---
+
+**Sub-PR 7b.2 — `multi_window_app::App` embeds `AppResources`
+(landed):**
+
+Closes a 7a inconsistency. After PR 7a, the single-window
+`Window.init*` paths embed an owning `AppResources` and the
+`Window.initWithSharedResources*` paths embed a borrowed view of
+some upstream-owned `AppResources`. But the `App` struct in
+`src/runtime/multi_window_app.zig` — the actual upstream owner in
+the multi-window case — still carried the pre-7a triplet of
+separate `*TextSystem` / `*SvgAtlas` / `*ImageAtlas` pointers
+built through three parallel allocate-and-init blocks. PR 7b.2
+swaps that triplet for one `resources: AppResources` field, so
+both ownership shapes now flow through the same struct.
+
+**Why this lands as its own slice:** it has no API surface
+change for `App` callers (the `init` / `deinit` / `openWindow`
+signatures are unchanged), but the next slices in PR 7b are
+about lifting four subsystems off `Window` onto `App`
+(`entities`, `keymap`, `globals`, `image_loader`). Those slices
+grow new fields on `App` under the `AppResources` / `App`
+lifetime split — landing the resource bundle first means each
+subsequent slice adds exactly the field it needs, without also
+having to reshape the resource-ownership story mid-flight.
+
+**Write scope (landed):**
+
+- `App.text_system: *TextSystem`, `App.svg_atlas: *SvgAtlas`,
+  `App.image_atlas: *ImageAtlas` three fields collapse to one
+  `resources: AppResources` field. The `AppResources` import
+  sits alongside the existing `TextSystem` / `SvgAtlas` /
+  `ImageAtlas` imports (kept because some shared-resource
+  pass-through still names the pointee types in signatures —
+  those go in 7b.6).
+- `App.init` replaces the ~30 lines of three parallel
+  `allocator.create` / init / errdefer / `loadFont` blocks with
+  a single `AppResources.initOwned(allocator, io, 1.0,
+font_config)` call plus an `errdefer resources.deinit()`.
+  Same precedent as `Window.initOwned` after PR 7a.
+- `App.init` disarms the local `resources.owned = false` after
+  the by-value copy into `self.resources` so an unwinding
+  errdefer in this function doesn't tear the heap pointees down
+  out from under the successfully-copied `self`. Carries the
+  idiom from `Window.initOwned` verbatim.
+- `App.deinit` replaces three flag-guarded free blocks (image
+  atlas → svg atlas → text system) with one
+  `self.resources.deinit()` call.
+- All five internal call sites that reached `self.text_system`
+  / `self.svg_atlas` / `self.image_atlas` rewrite to
+  `self.resources.text_system` / etc. The three call sites in
+  `createWindowContext` that pass these pointers into
+  `WinCtx.initWithSharedResources` route through
+  `self.resources.*` now; the three-arg call signature is
+  preserved here and collapses to a single `*AppResources` arg
+  in 7b.6.
+
+**Updated `_owned` count:** zero on `Window`, one on
+`Window.resources` (single-window owning shape) **or** zero on
+`Window.resources` plus one on `App.resources` (multi-window
+shape — `App` owns, every `Window` borrows). The `AppResources`
+discriminator is still the only ownership flag in the new
+world; just instantiated in two places now that `App` and
+`Window` both embed one.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1057/1057
+tests passed`. `zig build install` builds all examples without
+warnings.
 
 ---
 
