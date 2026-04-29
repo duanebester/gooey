@@ -447,6 +447,22 @@ pub fn build(b: *std.Build) void {
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "drag-drop", "src/examples/drag_drop.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "lucide-demo", "src/examples/lucide_demo.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "animation", "src/examples/animation.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "counter", "src/examples/counter.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "code-editor", "src/examples/code_editor.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "pomodoro", "src/examples/pomodoro.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "spaceship", "src/examples/spaceship.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "dynamic-counters", "src/examples/dynamic_counters.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "layout", "src/examples/layout.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "actions", "src/examples/actions.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "select", "src/examples/select.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "tooltip", "src/examples/tooltip.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "modal", "src/examples/modal.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "images", "src/examples/images.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "a11y-demo", "src/examples/a11y_demo.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "accessible-form", "src/examples/accessible_form.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "uniform-list", "src/examples/uniform_list_example.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "virtual-list", "src/examples/virtual_list_example.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "data-table", "src/examples/data_table_example.zig");
 
         // =====================================================================
         // Layout Benchmarks
