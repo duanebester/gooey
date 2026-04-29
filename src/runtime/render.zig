@@ -225,7 +225,7 @@ fn renderText(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const font_size_f: f32 = @floatFromInt(text_data.font_size);
 
     // Calculate baseline using requested font size
-    const baseline_y = if (window_ctx.text_system.getMetrics()) |metrics| blk: {
+    const baseline_y = if (window_ctx.resources.text_system.getMetrics()) |metrics| blk: {
         const scale = font_size_f / metrics.point_size;
         const scaled_ascender = metrics.ascender * scale;
         break :blk cmd.bounding_box.y + scaled_ascender;
@@ -242,7 +242,7 @@ fn renderText(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     };
     _ = try text_mod.renderText(
         window_ctx.scene,
-        window_ctx.text_system,
+        window_ctx.resources.text_system,
         text_data.text,
         cmd.bounding_box.x,
         baseline_y,
@@ -266,7 +266,7 @@ fn renderSvg(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         null;
 
     // Get from atlas (rasterizes if not cached)
-    const cached = window_ctx.svg_atlas.*.getOrRasterize(
+    const cached = window_ctx.resources.svg_atlas.*.getOrRasterize(
         svg_data.path,
         svg_data.viewbox,
         @max(b.width, b.height),
@@ -351,7 +351,7 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
             return;
         }
         // Check if already cached
-        if (window_ctx.image_atlas.*.get(key) == null) {
+        if (window_ctx.resources.image_atlas.*.get(key) == null) {
             // Not cached - check/start async load
             const status = ensureWasmImageLoading(img_data.source, key, window_ctx);
 
@@ -379,7 +379,7 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     // failures go there), so `ensureNativeUrlLoading` will kick off a fresh
     // fetch — the correct behavior. The only visible effect to the user is a
     // brief placeholder flash while the refetch completes.
-    const cached = window_ctx.image_atlas.*.get(key) orelse blk: {
+    const cached = window_ctx.resources.image_atlas.*.get(key) orelse blk: {
         if (is_url) {
             // Known-failed URLs show an error placeholder rather than a loading
             // placeholder — otherwise the user sees a perpetual "loading" state
@@ -409,7 +409,7 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         ) catch return;
         defer decoded.deinit();
 
-        break :blk window_ctx.image_atlas.*.cacheImage(key, decoded.toImageData()) catch return;
+        break :blk window_ctx.resources.image_atlas.*.cacheImage(key, decoded.toImageData()) catch return;
     };
 
     if (cached.region.width == 0) return;
@@ -628,7 +628,7 @@ fn ensureWasmImageLoading(source: []const u8, key: image_mod.ImageKey, window_ct
     }
 
     // Check if already cached in atlas
-    if (window_ctx.image_atlas.*.contains(key)) {
+    if (window_ctx.resources.image_atlas.*.contains(key)) {
         // Clean up any stale pending entry
         _ = g_pending_loads.remove(key);
         return .cached;
@@ -704,7 +704,7 @@ fn onWasmImageLoaded(request_id: u32, result: ?wasm_loader.DecodedImage) void {
         // Cache the decoded image
         var cache_success = false;
         if (g_window_ctx) |window_ctx| {
-            cache_success = if (window_ctx.image_atlas.*.cacheRgba(
+            cache_success = if (window_ctx.resources.image_atlas.*.cacheRgba(
                 key,
                 decoded.width,
                 decoded.height,

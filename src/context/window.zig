@@ -263,19 +263,15 @@ pub const Window = struct {
     /// `docs/cleanup-implementation-plan.md` PR 7a.
     resources: AppResources = undefined,
 
-    /// Back-compat alias — mirrors `resources.text_system` so the
-    /// 124 existing `window.text_system` call sites keep working
-    /// across the PR 7a landing. Set once at init from the same
-    /// heap address that `resources.text_system` points at; never
-    /// mutated post-init. PR 7b will rewrite call sites to
-    /// `window.resources.text_system` and retire this alias.
-    text_system: *TextSystem,
-
-    /// Back-compat alias — see `text_system` doc-comment.
-    svg_atlas: *svg_mod.SvgAtlas,
-
-    /// Back-compat alias — see `text_system` doc-comment.
-    image_atlas: *image_mod.ImageAtlas,
+    // PR 7b.6 — back-compat aliases retired. The pre-7b.6 fields
+    // `text_system: *TextSystem` / `svg_atlas: *SvgAtlas` /
+    // `image_atlas: *ImageAtlas` mirrored `resources.*` to keep
+    // the ~28 internal `window.text_system` / `window.svg_atlas` /
+    // `window.image_atlas` call sites working across the 7a
+    // landing. PR 7b.6 rewrites every call site to reach through
+    // `window.resources.*` and drops the three pointer fields,
+    // collapsing the duplicate ownership-shape footprint on
+    // `Window` to a single `resources` field.
 
     // Widgets (retained across frames)
     widgets: WidgetStore,
@@ -635,9 +631,6 @@ pub const Window = struct {
             // below are back-compat aliases populated from the same
             // heap addresses (see field-decl doc-comments).
             .resources = resources,
-            .text_system = resources.text_system,
-            .svg_atlas = resources.svg_atlas,
-            .image_atlas = resources.image_atlas,
             .widgets = WidgetStore.init(allocator, io),
             .platform_window = platform_window,
             .width = @floatCast(platform_window.size.width),
@@ -764,13 +757,10 @@ pub const Window = struct {
         self.layout = layout_engine;
         self.scene = scene;
         self.dispatch = dispatch;
-        // PR 7a — back-compat aliases mirror `self.resources.*`,
-        // already initialised above. Setting them here (rather than
-        // letting them be undefined) keeps the 124 `window.text_system`
-        // / etc. call sites working until PR 7b retires them.
-        self.text_system = self.resources.text_system;
-        self.svg_atlas = self.resources.svg_atlas;
-        self.image_atlas = self.resources.image_atlas;
+        // PR 7b.6 — back-compat aliases removed. The three pointer
+        // fields that mirrored `self.resources.*` retired alongside
+        // the call-site sweep; reach through `self.resources.*` for
+        // the shared atlases now.
         self.platform_window = platform_window;
 
         // Small structs
@@ -843,18 +833,29 @@ pub const Window = struct {
     /// Initialize Window with shared resources (text system, SVG atlas, image atlas).
     /// Used by MultiWindowApp to share expensive resources across windows.
     /// The caller retains ownership of the shared resources.
+    ///
+    /// PR 7b.6 — collapsed signature: takes a single `*const AppResources`
+    /// borrowed-or-owned view from the parent (e.g. `App`'s own owning
+    /// `AppResources`). Replaces the pre-7b.6 triplet of
+    /// `shared_text_system: *TextSystem` / `shared_svg_atlas: *SvgAtlas`
+    /// / `shared_image_atlas: *ImageAtlas` parameters that this function
+    /// inherited from before the `AppResources` extraction. The caller
+    /// retains ownership of the `*const AppResources` pointee — every
+    /// `Window` produced this way embeds an `owned = false` borrowed
+    /// view, so `Window.deinit` is a no-op for the shared atlases.
     pub fn initWithSharedResources(
         allocator: std.mem.Allocator,
         platform_window: *PlatformWindow,
-        shared_text_system: *TextSystem,
-        shared_svg_atlas: *svg_mod.SvgAtlas,
-        shared_image_atlas: *image_mod.ImageAtlas,
+        shared_resources: *const AppResources,
         io: std.Io,
     ) !Self {
-        // Assertions: validate inputs
-        std.debug.assert(@intFromPtr(shared_text_system) != 0);
-        std.debug.assert(@intFromPtr(shared_svg_atlas) != 0);
-        std.debug.assert(@intFromPtr(shared_image_atlas) != 0);
+        // Assertions: validate inputs. Reach through the bundle so the
+        // pre-7b.6 per-pointer null checks survive — every later
+        // expression in this function indexes the same three slots.
+        std.debug.assert(@intFromPtr(shared_resources) != 0);
+        std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
+        std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
+        std.debug.assert(@intFromPtr(shared_resources.image_atlas) != 0);
 
         // Create layout engine (owned)
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
@@ -880,7 +881,7 @@ pub const Window = struct {
         scene.enableCulling();
 
         // Set up text measurement callback using shared text system
-        layout_engine.setMeasureTextFn(measureTextCallback, shared_text_system);
+        layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
 
         // Create dispatch tree (owned)
         const dispatch = try allocator.create(DispatchTree);
@@ -896,22 +897,19 @@ pub const Window = struct {
             .entities = EntityMap.init(allocator, io),
             // PR 6 — `keymap` / `debugger` move to `globals` below.
             .focus = FocusManager.init(allocator),
-            // PR 7a — borrowed `AppResources` view; the parent (e.g.
-            // `MultiWindowApp`) owns the underlying pointees.
+            // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
+            // (e.g. `MultiWindowApp`) owns the underlying pointees.
             // `AppResources.deinit` is a no-op for `owned = false`,
             // matching the pre-extraction `*_owned = false` semantics.
+            // The bundle's three pointer fields are copied through
+            // unchanged — same heap addresses as `shared_resources.*`.
             .resources = AppResources.borrowed(
                 allocator,
                 io,
-                shared_text_system,
-                shared_svg_atlas,
-                shared_image_atlas,
+                shared_resources.text_system,
+                shared_resources.svg_atlas,
+                shared_resources.image_atlas,
             ),
-            // Back-compat aliases — same heap addresses as
-            // `result.resources.*`. PR 7b retires these.
-            .text_system = shared_text_system,
-            .svg_atlas = shared_svg_atlas,
-            .image_atlas = shared_image_atlas,
             .widgets = WidgetStore.init(allocator, io),
             .platform_window = platform_window,
             .width = @floatCast(platform_window.size.width),
@@ -933,7 +931,7 @@ pub const Window = struct {
         result.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize the image loader against the SHARED atlas.
-        result.image_loader.initInPlace(io, allocator, shared_image_atlas);
+        result.image_loader.initInPlace(io, allocator, shared_resources.image_atlas);
 
         // PR 6 — same globals registration as `initOwned`. The
         // shared-resources path doesn't change the lifetime of
@@ -949,19 +947,22 @@ pub const Window = struct {
     /// Initialize Window in-place with shared resources.
     /// Used by MultiWindowApp on WASM to avoid stack overflow.
     /// Marked noinline to prevent stack accumulation.
+    ///
+    /// PR 7b.6 — collapsed signature: takes `*const AppResources`
+    /// instead of three separate pointers. See the comment on
+    /// `initWithSharedResources` above for the rationale.
     pub noinline fn initWithSharedResourcesPtr(
         self: *Self,
         allocator: std.mem.Allocator,
         platform_window: *PlatformWindow,
-        shared_text_system: *TextSystem,
-        shared_svg_atlas: *svg_mod.SvgAtlas,
-        shared_image_atlas: *image_mod.ImageAtlas,
+        shared_resources: *const AppResources,
         io: std.Io,
     ) !void {
-        // Assertions: validate inputs
-        std.debug.assert(@intFromPtr(shared_text_system) != 0);
-        std.debug.assert(@intFromPtr(shared_svg_atlas) != 0);
-        std.debug.assert(@intFromPtr(shared_image_atlas) != 0);
+        // Assertions: validate inputs.
+        std.debug.assert(@intFromPtr(shared_resources) != 0);
+        std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
+        std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
+        std.debug.assert(@intFromPtr(shared_resources.image_atlas) != 0);
 
         // Create layout engine (owned)
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
@@ -987,7 +988,7 @@ pub const Window = struct {
         scene.enableCulling();
 
         // Set up text measurement callback using shared text system
-        layout_engine.setMeasureTextFn(measureTextCallback, shared_text_system);
+        layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
 
         // Create dispatch tree (owned)
         const dispatch = try allocator.create(DispatchTree);
@@ -1001,23 +1002,18 @@ pub const Window = struct {
         self.scene = scene;
         self.dispatch = dispatch;
 
-        // PR 7a — borrowed `AppResources` view; the parent owns the
-        // pointees. By-value init is safe — the struct only carries
-        // the three pointers plus the `owned = false` flag, no
-        // internal self-references.
+        // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
+        // owns the pointees. By-value init is safe — the struct only
+        // carries the three pointers plus the `owned = false` flag,
+        // no internal self-references. The bundle's pointer fields
+        // are copied through unchanged.
         self.resources = AppResources.borrowed(
             allocator,
             io,
-            shared_text_system,
-            shared_svg_atlas,
-            shared_image_atlas,
+            shared_resources.text_system,
+            shared_resources.svg_atlas,
+            shared_resources.image_atlas,
         );
-
-        // Back-compat aliases — same heap addresses as
-        // `self.resources.*`. PR 7b retires these.
-        self.text_system = shared_text_system;
-        self.svg_atlas = shared_svg_atlas;
-        self.image_atlas = shared_image_atlas;
 
         self.platform_window = platform_window;
 
@@ -1065,7 +1061,7 @@ pub const Window = struct {
         // Initialize image loader against the SHARED atlas. Safe to do
         // here without a fixup because `self` is already at its final
         // heap address (the embedded queue pointer cannot dangle).
-        self.image_loader.initInPlace(io, allocator, shared_image_atlas);
+        self.image_loader.initInPlace(io, allocator, shared_resources.image_atlas);
 
         // PR 6 — same globals registration as `initOwnedPtr`.
         try self.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
@@ -1174,7 +1170,7 @@ pub const Window = struct {
         self.frame_count += 1;
         self.widgets.beginFrame();
         self.focus.beginFrame();
-        self.image_atlas.*.beginFrame();
+        self.resources.image_atlas.beginFrame();
 
         // Drain async image load results and cache into atlas.
         // Order matters: must run after `image_atlas.beginFrame()` so
@@ -1193,7 +1189,7 @@ pub const Window = struct {
         }
 
         // Sync scale factor to text system for correct glyph rasterization
-        // self.text_system.setScaleFactor(self.scale_factor);
+        // self.resources.text_system.setScaleFactor(self.scale_factor);
 
         // Clear scene for new frame
         self.scene.clear();
@@ -1642,7 +1638,7 @@ pub const Window = struct {
         std.debug.assert(name.len > 0);
         std.debug.assert(size > 0 and size < 1000);
 
-        try self.text_system.loadFont(name, size);
+        try self.resources.text_system.loadFont(name, size);
         self.requestRender();
     }
 
@@ -1683,7 +1679,7 @@ pub const Window = struct {
     }
 
     pub fn getTextSystem(self: *Self) *TextSystem {
-        return self.text_system;
+        return self.resources.text_system;
     }
 
     pub fn getLayout(self: *Self) *LayoutEngine {
@@ -1799,9 +1795,6 @@ fn testWindow() Window {
         .io = undefined,
         .layout = undefined,
         .scene = undefined,
-        .text_system = undefined,
-        .svg_atlas = undefined,
-        .image_atlas = undefined,
         .widgets = undefined,
         .focus = undefined,
         .dispatch = undefined,

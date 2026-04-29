@@ -113,7 +113,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Reset SVG atlas per-frame rasterization budget so that expensive
     // software rasterizations are spread across multiple frames instead
     // of stalling a single frame when many uncached icons scroll into view.
-    window.svg_atlas.resetFrameBudget();
+    window.resources.svg_atlas.resetFrameBudget();
 
     // Start render timing for profiler
     window.debugger().beginRender(window.io);
@@ -151,7 +151,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // If SVG rasterizations were deferred due to per-frame budget, request
     // another render so the remaining icons progressively appear.
-    if (window.svg_atlas.hasDeferredWork()) {
+    if (window.resources.svg_atlas.hasDeferredWork()) {
         window.requestRender();
     }
 
@@ -223,7 +223,7 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
             bounds.y,
             bounds.width,
             bounds.height,
-        ), window.text_system);
+        ), window.resources.text_system);
     }
 }
 
@@ -260,7 +260,7 @@ fn renderTextInputs(window: *Window, builder: *const Builder) !void {
         input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         input_widget.secure = pending.style.secure;
-        try input_widget.render(window.scene, window.text_system, window.scale_factor);
+        try input_widget.render(window.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -288,7 +288,7 @@ fn renderTextAreas(window: *Window, builder: *const Builder) !void {
         ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         ta_widget.setPlaceholder(pending.style.placeholder);
-        try ta_widget.render(window.scene, window.text_system, window.scale_factor);
+        try ta_widget.render(window.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -333,7 +333,7 @@ fn renderCodeEditors(window: *Window, builder: *const Builder) !void {
         ce_widget.encoding = pending.style.encoding;
 
         ce_widget.setPlaceholder(pending.style.placeholder);
-        try ce_widget.render(window.scene, window.text_system, window.scale_factor);
+        try ce_widget.render(window.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -380,7 +380,7 @@ fn renderDebugOverlays(window: *Window) !void {
     if (window.debugger().showInspector()) {
         try window.debugger().renderInspectorPanel(
             window.scene,
-            window.text_system,
+            window.resources.text_system,
             window.width,
             window.height,
             window.scale_factor,
@@ -391,7 +391,7 @@ fn renderDebugOverlays(window: *Window) !void {
     if (window.debugger().showProfiler()) {
         try window.debugger().renderProfilerPanel(
             window.scene,
-            window.text_system,
+            window.resources.text_system,
             window.width,
             window.scale_factor,
         );

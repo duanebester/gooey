@@ -257,8 +257,8 @@ pub fn WebApp(
             }
 
             // Upload initial atlases
-            g_renderer.?.uploadAtlas(g_window.?.text_system);
-            g_renderer.?.uploadSvgAtlas(g_window.?.svg_atlas);
+            g_renderer.?.uploadAtlas(g_window.?.resources.text_system);
+            g_renderer.?.uploadSvgAtlas(g_window.?.resources.svg_atlas);
 
             g_initialized = true;
 
@@ -348,9 +348,9 @@ pub fn WebApp(
             const vh: f32 = @floatCast(w.size.height);
 
             // Sync atlas textures if glyphs/icons/images were added
-            g_renderer.?.syncAtlas(g_window.?.text_system);
-            g_renderer.?.syncSvgAtlas(g_window.?.svg_atlas);
-            g_renderer.?.syncImageAtlas(g_window.?.image_atlas);
+            g_renderer.?.syncAtlas(g_window.?.resources.text_system);
+            g_renderer.?.syncSvgAtlas(g_window.?.resources.svg_atlas);
+            g_renderer.?.syncImageAtlas(g_window.?.resources.image_atlas);
 
             // Render to GPU
             const bg = w.background_color;

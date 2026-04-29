@@ -52,15 +52,14 @@ const geometry = @import("../core/geometry.zig");
 const Color = geometry.Color;
 const shader_mod = @import("../core/shader.zig");
 
-// Text
-const text_mod = @import("../text/mod.zig");
-const TextSystem = text_mod.TextSystem;
-
-// Atlases
-const svg_mod = @import("../svg/mod.zig");
-const SvgAtlas = svg_mod.SvgAtlas;
-const image_mod = @import("../image/mod.zig");
-const ImageAtlas = image_mod.ImageAtlas;
+// PR 7b.6 — `TextSystem` / `SvgAtlas` / `ImageAtlas` type-alias
+// imports retired alongside the call-site collapse to
+// `&self.resources` in `createWindowContext`. Every reference left
+// in this file (`self.resources.text_system.setScaleFactor`,
+// `self.resources.svg_atlas.getAtlas`, …) is value-level — the
+// types are reached through `AppResources` now, never named
+// directly. The `text_mod` / `svg_mod` / `image_mod` imports were
+// only ever used to surface those three aliases, so they go too.
 
 // PR 7b.2 — bundle the three "expensive to duplicate per window"
 // resources (text system + svg atlas + image atlas) into a single
@@ -485,20 +484,21 @@ pub const App = struct {
 
         // Use shared resources mode - all windows share the same text system and atlases
         // This fixes font glitching where layout used one atlas but rendering used another
-        // PR 7b.2 — pass through the three pointees from the bundled
-        // `AppResources`. The `WinCtx.initWithSharedResources`
-        // signature still takes three separate pointers; PR 7b.6
-        // collapses it to a single `*AppResources` parameter once
-        // the back-compat aliases on `Window` retire and the call
-        // surface is free to change shape.
+        // PR 7b.6 — pass `&self.resources` as a single
+        // `*const AppResources` borrowed view. Replaces the pre-7b.6
+        // call site that unbundled `self.resources.*` into three
+        // separate pointer arguments — same heap addresses, but the
+        // bundle stays bundled across the `App → WindowContext →
+        // Window` call chain. Down-tree, `Window.initWithSharedResources`
+        // wraps it in `AppResources.borrowed(...)` so each window's
+        // own `resources` field is `owned = false` and `Window.deinit`
+        // is a no-op for the shared atlases.
         const ctx = try WinCtx.initWithSharedResources(
             self.allocator,
             window,
             state,
             render,
-            self.resources.text_system,
-            self.resources.svg_atlas,
-            self.resources.image_atlas,
+            &self.resources,
             self.io,
         );
 

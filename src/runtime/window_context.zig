@@ -69,6 +69,15 @@ const image_mod = @import("../image/mod.zig");
 const MetalRenderer = if (is_mac) @import("../platform/macos/metal/metal.zig").Renderer else void;
 const ImageAtlas = image_mod.ImageAtlas;
 
+// PR 7b.6 — `initWithSharedResources` collapsed to take a single
+// `*const AppResources` parameter instead of three separate
+// `*TextSystem` / `*SvgAtlas` / `*ImageAtlas` pointers. The
+// pointee bundle is owned upstream (typically by `App` in
+// `multi_window_app.zig`) and lent borrowed-shape into every
+// per-window `Window`.
+const app_resources_mod = @import("../context/app_resources.zig");
+const AppResources = app_resources_mod.AppResources;
+
 /// Per-window context that replaces static CallbackState.
 /// Stored in window.user_data for callback access.
 pub fn WindowContext(comptime State: type) type {
@@ -181,22 +190,30 @@ pub fn WindowContext(comptime State: type) type {
 
         /// Initialize a WindowContext with shared resources (multi-window mode).
         /// The shared resources are owned by the App, not this context.
+        ///
+        /// PR 7b.6 — collapsed signature: takes a single
+        /// `*const AppResources` borrowed view from the parent
+        /// (`multi_window_app.zig::App`'s own owning `AppResources`).
+        /// Replaces the pre-7b.6 triplet of separate
+        /// `shared_text_system` / `shared_svg_atlas` /
+        /// `shared_image_atlas` pointers; the bundle was already
+        /// the unit of ownership in `App`, the pre-7b.6 signature
+        /// just unbundled it three times across the call chain.
         pub fn initWithSharedResources(
             allocator: std.mem.Allocator,
             platform_window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
-            shared_text_system: *TextSystem,
-            shared_svg_atlas: *SvgAtlas,
-            shared_image_atlas: *ImageAtlas,
+            shared_resources: *const AppResources,
             io: std.Io,
         ) !*Self {
-            // Assertions: validate inputs
+            // Assertions: validate inputs.
             std.debug.assert(@intFromPtr(state) != 0);
             std.debug.assert(@intFromPtr(render_fn) != 0);
-            std.debug.assert(@intFromPtr(shared_text_system) != 0);
-            std.debug.assert(@intFromPtr(shared_svg_atlas) != 0);
-            std.debug.assert(@intFromPtr(shared_image_atlas) != 0);
+            std.debug.assert(@intFromPtr(shared_resources) != 0);
+            std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
+            std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
+            std.debug.assert(@intFromPtr(shared_resources.image_atlas) != 0);
 
             // Allocate self on heap
             const self = try allocator.create(Self);
@@ -211,9 +228,7 @@ pub fn WindowContext(comptime State: type) type {
             window.* = try Window.initWithSharedResources(
                 allocator,
                 platform_window,
-                shared_text_system,
-                shared_svg_atlas,
-                shared_image_atlas,
+                shared_resources,
                 io,
             );
             window.fixupImageLoadQueue();
@@ -365,9 +380,9 @@ pub fn WindowContext(comptime State: type) type {
             window.setPostInputCallback(Self.onPostInput);
 
             // Set atlases and scene
-            window.setTextAtlas(self.window.text_system.getAtlas());
-            window.setSvgAtlas(self.window.svg_atlas.*.getAtlas());
-            window.setImageAtlas(self.window.image_atlas.*.getAtlas());
+            window.setTextAtlas(self.window.resources.text_system.getAtlas());
+            window.setSvgAtlas(self.window.resources.svg_atlas.*.getAtlas());
+            window.setImageAtlas(self.window.resources.image_atlas.*.getAtlas());
             window.setScene(self.window.scene);
 
             // Set thread-safe atlas upload callbacks for multi-window scenarios (macOS only).
@@ -375,15 +390,15 @@ pub fn WindowContext(comptime State: type) type {
             // where another window's DisplayLink thread modifies the atlas concurrently.
             if (comptime is_mac) {
                 window.setTextAtlasUploadCallback(
-                    @ptrCast(self.window.text_system),
+                    @ptrCast(self.window.resources.text_system),
                     Self.uploadTextAtlasLocked,
                 );
                 window.setSvgAtlasUploadCallback(
-                    @ptrCast(self.window.svg_atlas),
+                    @ptrCast(self.window.resources.svg_atlas),
                     Self.uploadSvgAtlasLocked,
                 );
                 window.setImageAtlasUploadCallback(
-                    @ptrCast(self.window.image_atlas),
+                    @ptrCast(self.window.resources.image_atlas),
                     Self.uploadImageAtlasLocked,
                 );
             }

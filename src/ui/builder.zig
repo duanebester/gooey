@@ -1265,7 +1265,7 @@ pub const Builder = struct {
         const input_height = inp.style.height orelse blk: {
             // Auto-size: get line height from font metrics
             const line_height = if (self.window) |g|
-                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+                if (g.resources.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0; // Fallback
             break :blk line_height + chrome;
@@ -1351,7 +1351,7 @@ pub const Builder = struct {
         const chrome = (ta.style.padding + ta.style.border_width) * 2;
         const textarea_height = ta.style.height orelse blk: {
             const line_height = if (self.window) |g|
-                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+                if (g.resources.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0;
             const rows_f: f32 = @floatFromInt(ta.style.rows);
@@ -1437,7 +1437,7 @@ pub const Builder = struct {
         const chrome = (ce.style.padding + ce.style.border_width) * 2;
         const editor_height = ce.style.height orelse blk: {
             const line_height = if (self.window) |g|
-                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+                if (g.resources.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0;
             const rows_f: f32 = @floatFromInt(ce.style.rows);
