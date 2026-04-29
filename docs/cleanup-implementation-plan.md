@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/6 landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/6 landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -843,9 +843,20 @@ so each lands green on its own.
     Closes the 7a inconsistency where the multi-window owner
     still carried the pre-7a `*TextSystem` / `*SvgAtlas` /
     `*ImageAtlas` triplet. `9/9 steps; 1057/1057 tests passed`.
-  - ☐ 7b.3 — Lift `entities: EntityMap` off `Window` onto `App`.
-    Plumb `*App` through `Cx` so `cx.entities()` reaches
-    app-scope storage.
+  - ☑ **7b.3 — Lift `entities: EntityMap` off `Window` onto
+    `App`.** Landed on `cleanup/pr-7b3-entities-on-app`. New
+    `src/context/app.zig` introduces a focused `App` struct
+    (currently `allocator` + `io` + `entities`; subsequent 7b
+    slices add `keymap` / `globals` / `image_loader`).
+    Single-window flow heap-allocates one `App` in
+    `runtime/runner.zig` (and on WASM in `app.zig::WebApp`);
+    multi-window flow embeds a `context.App` by value inside
+    `multi_window_app.zig::App`. Either way every `Window`
+    borrows `*App` so cross-window entity observation becomes
+    structurally possible. `Build Summary: 9/9 steps succeeded;
+    1061/1061 tests passed` (+4 vs. 1057 — the four `App`
+    init/deinit/cross-window-share tests). See "Sub-PR 7b.3"
+    below.
   - ☐ 7b.4 — Lift `keymap` and `globals` off `Window` onto `App`,
     keeping `Debugger` on `Window.globals` (audited per-window:
     overlay quads, frame timing, selected layout id all bound to
@@ -1227,6 +1238,191 @@ world; just instantiated in two places now that `App` and
 `Window` both embed one.
 
 **Result:** `Build Summary: 9/9 steps succeeded; 1057/1057
+tests passed`. `zig build install` builds all examples without
+warnings.
+
+---
+
+**Sub-PR 7b.3 — Lift `entities: EntityMap` off `Window` onto `App` (landed):**
+
+Third functional slice of PR 7b. Goal: lift the entity map
+from per-window storage to application-scope storage so models
+can be observed across windows, matching the GPUI mapping in
+[`architectural-cleanup-plan.md` §10](./architectural-cleanup-plan.md#10-the-app--window--contextt-split).
+Pre-7b.3 each `Window` carried its own `entities: EntityMap`,
+which made cross-window observation structurally impossible —
+a `Counter` entity created in window A could not be observed
+by a view in window B because the two `EntityMap`s were
+separate islands of state. Post-7b.3 the map lives on a shared
+`App`, and every `Window` borrows `*App` to reach it.
+
+**Why this lands as its own slice:** the lift is small in
+mechanical terms (one field move + one borrowed pointer +
+forwarder updates), but it introduces the `context.App` struct
+that subsequent 7b slices accumulate state on (`keymap` /
+`globals` in 7b.4, `image_loader` in 7b.5). Landing the struct
+first means each subsequent slice adds one field at a time
+without also having to introduce the ownership story.
+
+**Write scope (landed):**
+
+- `src/context/app.zig` (new) — `App` struct with
+  `allocator: Allocator`, `io: std.Io`, `entities: EntityMap`.
+  Two init shapes (`init` returning by value for embedded use,
+  `initInPlace` for heap-allocated single-window use, marked
+  `noinline` per CLAUDE.md §14 — consistency with
+  `Window.initOwnedPtr` and `AppResources.initOwnedInPlace`,
+  even though the current footprint is well under the 50KB
+  threshold). Four tests pin the init/deinit shapes and the
+  cross-window-share property against `std.testing.allocator`.
+- `src/context/mod.zig` — re-exports `App`.
+- `src/context/window.zig` —
+  - **Drops** `entities: EntityMap` from the field list.
+  - **Adds** `app: *App = undefined` borrowed-pointer field.
+    Default `undefined` so the `testWindow` fixture and the
+    intermediate state between `Window.initOwned` (which
+    leaves `app` unset) and the caller's post-init assignment
+    keep compiling. Every framework `init*` path is followed
+    by an immediate `window.app = app` assignment in the
+    caller, before any frame runs.
+  - `Window.deinit` no longer calls `entities.deinit` —
+    deliberately. The borrowed `*App` is owned upstream and
+    freeing the `EntityMap` from `Window.deinit` would be a
+    use-after-free in the multi-window case where one `App`
+    outlives many windows.
+  - `Window.beginFrame` / `endFrame` route through
+    `self.app.entities.*` for the per-frame observation
+    begin/end pair. With multi-window the call is redundantly
+    invoked once per window per tick; `beginFrame` is
+    idempotent (re-clearing an empty `frame_observations` is
+    a no-op) and `endFrame` is currently a no-op hook.
+    Documented in the field comment as forward-looking.
+  - The five entity-related forwarder methods (`createEntity`
+    / `readEntity` / `writeEntity` /
+    `processEntityNotifications` / `getEntities`) all reach
+    through `self.app.entities.*`. Call surface is preserved.
+- `src/cx/entities.zig` — every `_window.entities.*` access
+  rewritten to `_window.app.entities.*` (5 sites).
+- `src/runtime/window_context.zig` —
+  - `WindowContext.init` and `initWithSharedResources` both
+    take a new `app: *App` parameter. Both write
+    `window.app = app` immediately after constructing the
+    `Window` (before `fixupImageLoadQueue`), so the field is
+    non-`undefined` before any code that might reach through
+    it runs.
+  - `WindowContext` itself stores the borrowed `*App` for
+    symmetry, although nothing on `WindowContext` reaches
+    through it directly today — every consumer reaches
+    through `self.window.app`. Reserved for future plumbing.
+  - Pair-asserts `window.app == app` post-init in both paths
+    (CLAUDE.md §3).
+- `src/runtime/runner.zig` — `runCx` heap-allocates one
+  `App` via `try allocator.create(App)` +
+  `app_ptr.initInPlace(allocator, io)`, defers
+  `app_ptr.deinit()` and `allocator.destroy(app_ptr)` so the
+  `App` outlives the `Window`. Passes `app_ptr` to
+  `WindowContext.init`.
+- `src/runtime/multi_window_app.zig` — `App` (the
+  multi-window owner) gains a `context_app: ContextApp` field
+  initialised by-value in `App.init`, torn down in
+  `App.deinit` after `closeAllWindows` and before
+  `resources.deinit`. `createWindowContext` passes
+  `&self.context_app` through the
+  `WindowContext.initWithSharedResources` signature so every
+  per-window `Window` borrows the same `EntityMap`.
+- `src/app.zig` (WASM bootstrap) — `WebApp.initImpl`
+  heap-allocates a `ContextApp` alongside the existing
+  `Window`-on-WASM `initOwnedPtr` path, wires
+  `window_ptr.app = app_ptr` immediately after the window
+  init completes. New `g_app: ?*ContextApp` global mirrors
+  the existing `g_*` pattern in this struct.
+
+**Tasks landed:**
+
+- [x] New `src/context/app.zig` with `App` struct holding
+      `allocator` + `io` + `entities`.
+- [x] Drop `entities: EntityMap` from `Window`; add
+      `app: *App = undefined` borrowed pointer.
+- [x] Route every `entities.*` access on `Window` and in
+      `cx/entities.zig` through `self.app.entities.*`.
+- [x] `WindowContext.init` and
+      `WindowContext.initWithSharedResources` take a new
+      `app: *App` parameter and wire it onto the freshly-
+      constructed `Window`.
+- [x] Single-window `runtime/runner.zig` heap-allocates one
+      `App` per `runCx` call.
+- [x] Multi-window `runtime/multi_window_app.zig::App` embeds
+      `context_app: ContextApp` by value and passes
+      `&self.context_app` to every window.
+- [x] WASM `WebApp.initImpl` heap-allocates a `ContextApp`
+      and wires it onto the single window.
+- [x] `Build Summary: 9/9 steps succeeded; 1061/1061 tests
+      passed` (+4 vs. 1057 — the four new `App` tests).
+- [x] `zig build install` builds all examples (single-window
+      and multi-window) without warnings.
+
+**Implementation notes:**
+
+- **`Window.deinit` deliberately does NOT touch `self.app`.**
+  This is the central ownership invariant of 7b.3: the
+  `*App` is borrowed, not owned. Tearing it down from
+  `Window.deinit` would be a use-after-free in the
+  multi-window case where one `App` services N windows; the
+  upstream owner (`runner.zig`'s `defer` chain or
+  `multi_window_app.zig::App.deinit`) tears the `App` down
+  exactly once, after every `Window.deinit` has run.
+- **Order of teardown in
+  `multi_window_app.zig::App.deinit`:** `closeAllWindows` →
+  `context_app.deinit` → `resources.deinit`. Rationale:
+  `EntityMap.deinit` cancels any attached async groups,
+  which today are user-driven but in the future may include
+  framework-level cancel groups holding pointers into the
+  image atlas's pixel buffers (if `ImageLoader` lands on
+  `App` in 7b.5). Doing entity teardown before atlas
+  teardown means those cancellation paths unwind against
+  still-live atlases; the reverse order would risk
+  use-after-free.
+- **Multi-window `frame_observations` redundancy is
+  forward-looking.** With one shared `EntityMap` and N
+  windows each calling `entities.beginFrame` / `endFrame`
+  per frame, the begin call discards `frame_observations`
+  made by previously-rendered windows in the same tick. No
+  current code path shares entities across windows (the
+  multi-window example doesn't use entities), so the issue
+  is documented in the comment but not fixed in 7b.3 — the
+  proper fix lands in PR 7c alongside the `Frame`
+  double-buffer move, where the per-tick begin/end pair
+  becomes app-scoped instead of per-window.
+- **`Window.app: *App = undefined` default is intentional.**
+  `Window.initOwned` returns by value, leaving `app` unset;
+  the caller assigns `window.app = app` immediately after
+  the by-value copy lands at its final heap address.
+  Threading `app` through `Window.initOwned`'s signature
+  would be cleaner but conflicts with the four-init-path
+  shape PR 7b.6 already documented as needing collapse —
+  doing both reshapings in the same slice would muddy the
+  diff. The follow-up 7b slice that collapses the init paths
+  to two will thread `app` through the new shared signature
+  in step.
+- **WASM `g_app` leaks at process exit.** Same lifecycle as
+  every other `g_*` global in `WebApp` — the browser tab
+  teardown reclaims the entire WASM heap. Documented in the
+  new global's comment for the next reader.
+- **`context_app` vs. `App` naming.** The runtime
+  multi-window owner is already named `App`
+  (`multi_window_app.zig::App`); the new context-level
+  struct is also `App` (`context/app.zig::App`). Inside
+  `multi_window_app.zig` the alias
+  `ContextApp = context_app_mod.App` disambiguates them at
+  every call site. The `context_app` field name carries the
+  disambiguation forward. A future cleanup that renames the
+  multi-window `App` to `MultiWindowApp` (matching the
+  `runtime.MultiWindowApp` re-export) would let both
+  collapse to plain `App`, but that ripples through every
+  `multi_window_app::App` call site and is out of scope for
+  7b.3.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1061/1061
 tests passed`. `zig build install` builds all examples without
 warnings.
 
