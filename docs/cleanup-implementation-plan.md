@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2 landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -1016,10 +1016,60 @@ so each lands green on its own.
     method-level contract, and every example exercises
     the relocated call site through `zig build
     install`). See "Sub-PR 7c.2" below.
-  - ☐ 7c.3 — Introduce `Frame` struct holding `scene` +
+  - ◐ 7c.3 — Introduce `Frame` struct holding `scene` +
     `dispatch` + per-frame transient state; double-buffer
     `rendered_frame` / `next_frame` with `mem.swap` at
-    frame boundary.
+    frame boundary. Slicing across landable sub-PRs once
+    the surface area was mapped:
+    - ☑ **7c.3a — `Frame` struct bundling `scene` +
+      `dispatch`.** Landed on
+      `cleanup/pr-7c3a-frame-struct`. New
+      `src/context/frame.zig` introduces a `Frame`
+      struct owning `scene: *Scene` + `dispatch:
+      *DispatchTree` behind a single `owned: bool` flag
+      — same shape as `AppResources` from PR 7a, the
+      symmetry deliberate since `Window` will end up
+      holding one `AppResources` (app-lifetime shared)
+      and one `Frame` (per-window per-tick) as its two
+      ownership-bundle fields. All four `Window.init*`
+      paths replace their previous two pairs of
+      `allocator.create` + `T.init` + `setViewport`/
+      `enableCulling` + `errdefer` blocks with a single
+      `Frame.initOwned` / `Frame.initOwnedInPlace`
+      call; `Window.deinit` replaces the matching two
+      pairs of `T.deinit` + `allocator.destroy` with a
+      single `self.frame.deinit()`. `window.scene` /
+      `window.dispatch` are kept as back-compat alias
+      fields populated from `frame.scene` /
+      `frame.dispatch` by every init path; PR 7c.3b
+      retires them by rewriting the ~167 internal call
+      sites to reach through `window.frame.*`. The
+      `borrowed` constructor on `Frame` exists today
+      as a complete API surface so PR 7c.3c's
+      double-buffer landing only has to wire callers,
+      not introduce a third constructor on a stable
+      type. `Build Summary: 9/9 steps succeeded;
+      1073/1073 tests passed` (+4 vs. 7c.2's 1069 —
+      the four new `Frame` tests covering `initOwned`,
+      `initOwnedInPlace`, `borrowed` deinit no-op, and
+      zero-viewport tolerance). See "Sub-PR 7c.3a"
+      below.
+    - ☐ 7c.3b — Retire `window.scene` /
+      `window.dispatch` back-compat aliases. Rewrite
+      the ~167 internal call sites to reach through
+      `window.frame.*`; drop the two pointer fields
+      off `Window`'s field list. Same sweep shape as
+      PR 7b.6 did for the `text_system` / `svg_atlas`
+      / `image_atlas` triplet.
+    - ☐ 7c.3c — Add `next_frame: Frame` for the
+      `rendered_frame` / `next_frame` double buffer.
+      `mem.swap(&window.rendered_frame,
+      &window.next_frame)` at frame boundary;
+      `next_frame.scene.clear()` post-swap replaces
+      the current `scene.clear()` in `beginFrame`.
+      The `borrowed` constructor on `Frame` (landed
+      in 7c.3a) becomes load-bearing here for transient
+      swap views.
 - ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
 
@@ -2670,6 +2720,425 @@ change for single-window flows.
 1069/1069 tests passed` (no delta vs. PR 7c.1's 1069).
 `zig build install` builds all examples (single-window
 and multi-window) without warnings.
+
+---
+
+**Sub-PR 7c.3a — `Frame` struct bundling `scene` +
+`dispatch` (landed):**
+
+First slice of PR 7c.3. Goal: introduce the `Frame`
+struct that bundles `Window`'s two "rebuilt every
+frame, owned by one window" rendering subsystems
+(`Scene`, `DispatchTree`) into one struct with a
+single ownership flag, so the four parallel
+`Window.init*` paths each collapse two
+`allocator.create` + init + `setViewport` /
+`enableCulling` + `errdefer` blocks into a single
+`Frame.initOwned*` call, and `Window.deinit`
+collapses the matching two pairs of `T.deinit` +
+`allocator.destroy` into a single
+`self.frame.deinit()`. Reference:
+[`architectural-cleanup-plan.md` §11 frame
+double-buffering with `mem::swap`](./architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap).
+
+**Why this lands as its own slice:** PR 7c.3 in the
+original sketch was "introduce `Frame` *and* wire
+the double-buffer *and* sweep call sites" — a
+single PR touching the struct definition, ~167
+call sites, the swap point, and the borrowed-view
+shape would have dwarfed every previous 7-slice's
+review surface. The PR 7a → 7b.6 pattern (bundle
+the type first, retire back-compat aliases next,
+fold in behavioural changes last) maps cleanly
+onto 7c.3 → 7c.3a (bundle) → 7c.3b (retire
+aliases) → 7c.3c (double-buffer behaviour). 7c.3a
+is small (one new file, four init paths edited,
+one deinit edited, four tests added) and
+reviewable in isolation; the call-site sweep that
+made 7b.6's diff visible in this slice would have
+buried the structural change under mechanical
+churn. Splitting them lets each land on a
+green-on-its-own basis.
+
+**Pre-flight choice (single ownership flag vs.
+per-pointer flags):**
+
+- **Option (a) — single `owned: bool` on `Frame`**
+  (chosen). Mirrors `AppResources` from PR 7a — the
+  symmetry between the two ownership bundles is
+  load-bearing for readers who internalise the
+  pattern from one and want to read the other. The
+  two pointees (`*Scene`, `*DispatchTree`) are
+  always either both owned (single `Frame` shape,
+  every init path today) or both borrowed (PR
+  7c.3c double-buffer transient views, where the
+  swap point produces a view backed by another
+  `Frame`'s pointees). A per-pointer
+  `scene_owned` / `dispatch_owned` flag pair
+  would be tautological — no init path in 7c.3a
+  or 7c.3c can produce a shape where one is owned
+  and the other isn't.
+- **Option (b) — no flag, ownership encoded in
+  `T` vs `*T`** (rejected for this slice). The
+  "right" final shape per CLAUDE.md §17 is to
+  encode ownership in the field type, not a flag.
+  But the 7c.3c double-buffer needs a borrowed
+  shape (the post-swap transient view), and
+  inverting the `Frame` / `*Frame` distinction at
+  the field level would require every per-frame
+  call site to learn about two `Frame` shapes
+  simultaneously. Landing the flag now matches
+  what 7a did for `AppResources`; PR 9
+  ("`prelude.zig` trim + ownership flag drop")
+  is where every flag-style ownership
+  discriminator gets retired together, after
+  every consumer has migrated.
+
+**Pre-flight choice (which subsystems migrate in
+7c.3a vs. later 7c.3 slices):**
+
+- **Scope-of-7c.3a — just `scene` + `dispatch`**
+  (chosen). The §11 sketch lists `focus`,
+  `element_states`, `mouse_listeners`,
+  `dispatch_tree`, `scene`, `hitboxes`,
+  `deferred_draws`, `input_handlers`,
+  `tooltip_requests`, `cursor_styles`, `tab_stops`
+  as `Frame` fields. Migrating all eleven in one
+  PR would touch every per-frame subsystem
+  simultaneously — every test fixture, every
+  render callback, every event handler. Picking
+  the two heaviest pointee subsystems (each with
+  its own `allocator.create` + init + `errdefer`
+  block in every `Window.init*` path) gives the
+  bundle a real structural anchor without
+  dragging in unrelated subsystems. `focus` /
+  `hover` / `mouse_listeners` / `tab_stops`
+  migrate in later 7c.3 slices once the
+  call-site sweep against `scene` and `dispatch`
+  is complete; `element_states` is reserved for
+  PR 8 (a keyed pool replacing `WidgetStore`'s
+  per-type maps, not a simple field migration).
+- **Why not push `layout: *LayoutEngine` into
+  `Frame` too** (considered, rejected). Layout
+  is rebuilt every frame, which fits the `Frame`
+  bucket on first read. But the layout engine is
+  the one subsystem `Window` needs to keep
+  distinct from the `Frame` bundle for the 7c.3c
+  swap to make sense: the swap point lives
+  *between* `endFrame` (which produces commands
+  from `layout`) and the next `beginFrame`
+  (which clears `next_frame.scene`). If layout
+  were inside `Frame`, the swap would also swap
+  layout state, which would invalidate
+  `LayoutId`s mid-frame for any retained widget
+  (text-input cursors, scroll positions). The
+  GPUI sketch in §10 keeps `layout_engine`
+  directly on `Window` for the same reason —
+  it's the only "rebuilt every frame" subsystem
+  that doesn't double-buffer.
+
+**Write scope (landed):**
+
+- `src/context/frame.zig` (new, ~385 lines
+  including the file-header rationale, the
+  struct definition with three constructors,
+  four tests, and the `borrowed`-shape API
+  surface reserved for 7c.3c) —
+  - `Frame.initOwned(allocator, viewport_width,
+    viewport_height) !Self` —
+    heap-allocates `Scene` + `DispatchTree`,
+    calls `scene.setViewport` +
+    `scene.enableCulling` inline so callers
+    don't need a separate viewport-config
+    step. Pair-asserts at entry (viewport ≥ 0,
+    not NaN) and exit (pointers non-null,
+    distinct heap addresses).
+  - `Frame.initOwnedInPlace(self, allocator,
+    viewport_width, viewport_height) !void` —
+    same semantics, marked `noinline` per
+    CLAUDE.md §14 so the WASM stack budget
+    stays bounded across the two internal
+    subsystems. Used by `Window.initOwnedPtr`
+    / `Window.initWithSharedResourcesPtr` (the
+    WASM stack-overflow-safe init paths).
+  - `Frame.borrowed(allocator, scene, dispatch)
+    Self` — reserved for PR 7c.3c. Builds an
+    `owned = false` view over
+    already-initialised pointees; `deinit`
+    becomes a no-op so the same backing
+    storage isn't double-freed when the swap
+    point produces a transient view. Exposing
+    the constructor today (even unused) means
+    the double-buffer landing only has to
+    wire callers, not introduce a third
+    constructor on a stable type.
+  - `Frame.deinit(self) void` — frees both
+    pointees in `dispatch → scene` order if
+    `owned`, otherwise no-op. Order matches
+    the pre-7c.3a free order in
+    `Window.deinit`; the reverse would also
+    be safe (no inter-pointer references
+    between the two) but matching keeps the
+    PR 7c.3a diff minimal at the
+    `Window.deinit` site.
+  - Four tests: `initOwned allocates and
+    frees cleanly`, `initOwnedInPlace produces
+    an owned instance`, `borrowed deinit is a
+    no-op (no double-free)`, `zero viewport
+    is accepted`. The third test is the
+    load-bearing one — it constructs an
+    owning parent, borrows from it, tears the
+    borrowed view down, then lets `defer
+    parent.deinit()` run; if the borrowed
+    `deinit` had freed the parent's pointees,
+    the parent's teardown would double-free
+    under `testing.allocator`. Same coverage
+    shape as `app_resources.zig`'s test
+    block.
+
+- `src/context/window.zig` —
+  - New `frame: Frame = undefined` field on
+    `Window`, placed adjacent to `layout:
+    *LayoutEngine` so the two "rebuilt every
+    frame" subsystems read together in the
+    struct header. The field's doc-comment
+    spells out the ownership-uniform
+    single-window shape that lands in 7c.3a,
+    the borrowed shape reserved for 7c.3c, and
+    the `undefined` default for `testWindow`
+    test fixtures.
+  - `scene: *Scene` and `dispatch:
+    *DispatchTree` doc-comments rewritten to
+    mark the fields as PR 7c.3a back-compat
+    aliases. They still exist as plain
+    pointer fields (mirror of `frame.scene` /
+    `frame.dispatch`); the pointer values are
+    populated from the bundle by every init
+    path at the same heap address. PR 7c.3b
+    sweeps the ~167 call sites and drops the
+    two fields.
+  - `Window.initOwned` — the inline
+    `allocator.create(Scene)` + `Scene.init`
+    + `setViewport` + `enableCulling` +
+    `errdefer` block (8 lines) and the inline
+    `allocator.create(DispatchTree)` +
+    `DispatchTree.init` + `errdefer` block
+    (3 lines) replaced with a single `var
+    frame = try Frame.initOwned(allocator, w,
+    h)` + `errdefer frame.deinit()` (4
+    lines). The struct literal grows a
+    `.frame = frame` line; `.scene` and
+    `.dispatch` reach into `frame.scene` /
+    `frame.dispatch` so the back-compat
+    aliases land at the same heap addresses.
+    Post-literal, `frame.owned = false` is
+    set so a later errdefer can't
+    double-free against `result.frame.deinit()`
+    in the caller — exact mirror of the
+    `resources.owned = false` line PR 7a
+    added.
+  - `Window.initOwnedPtr` — same shape, but
+    `Frame.initOwnedInPlace(&self.frame,
+    allocator, w, h)` writes directly into
+    the heap-allocated `Window`'s `frame`
+    slot, avoiding the by-value-copy disarm.
+    The field-by-field block sets `self.scene
+    = self.frame.scene` and `self.dispatch =
+    self.frame.dispatch` for the alias
+    mirror.
+  - `Window.initWithSharedResources` /
+    `Window.initWithSharedResourcesPtr` —
+    same shape as the matching owned paths.
+    The scene + dispatch tree are per-window
+    state and remain owned per-window even
+    in multi-window mode (only `AppResources`
+    is borrowed). Sharing them across
+    windows would break hit-testing — every
+    window has its own draw-order space and
+    its own dispatch tree.
+  - `Window.deinit` — the previous two pairs
+    of `T.deinit` + `allocator.destroy` (4
+    lines) replaced with a single
+    `self.frame.deinit()` call. The free
+    order (`dispatch → scene`) matches the
+    historical sequence inside
+    `Frame.deinit`; the back-compat aliases
+    (`self.scene` / `self.dispatch`) are NOT
+    separately freed — they're mirror
+    pointers into the same heap addresses
+    `frame.deinit` just released, so
+    touching them after this point would be
+    a use-after-free. The comment block
+    spells out the invariant for a future
+    reader.
+
+- `src/context/mod.zig` — add `pub const
+  frame = @import("frame.zig"); pub const
+  Frame = frame.Frame;` re-export alongside
+  the existing `app_resources` block. The
+  header comment summarises the symmetry
+  between `AppResources` and `Frame` so a
+  reader landing in this file sees both
+  bundles together.
+
+**Tasks landed:**
+
+- [x] Create `src/context/frame.zig` with
+      `Frame` struct, three constructors
+      (`initOwned` / `initOwnedInPlace` /
+      `borrowed`), `deinit`, and four tests.
+- [x] Add `frame: Frame = undefined` field on
+      `Window`; mark `scene` / `dispatch` as
+      PR 7c.3a back-compat aliases via
+      doc-comment rewrites.
+- [x] Rewrite all four `Window.init*` paths
+      to use `Frame.initOwned` /
+      `Frame.initOwnedInPlace` and populate
+      `scene` / `dispatch` aliases from
+      `frame.scene` / `frame.dispatch`.
+- [x] Replace the inline scene + dispatch
+      teardown in `Window.deinit` with a
+      single `self.frame.deinit()` call.
+- [x] Re-export `Frame` from
+      `src/context/mod.zig` alongside
+      `AppResources`.
+- [x] `Build Summary: 9/9 steps succeeded;
+      1073/1073 tests passed` (+4 vs. PR
+      7c.2's 1069 — the four new `Frame`
+      ownership tests).
+- [x] `zig build install` builds all examples
+      (single-window and multi-window)
+      without warnings.
+
+**Implementation notes:**
+
+- **No call-site sweep in this slice.** The
+  ~167 internal `window.scene.*` /
+  `window.dispatch.*` references stay
+  unchanged in 7c.3a; they reach through the
+  back-compat alias fields, which are
+  populated from the bundle at the same heap
+  addresses. PR 7c.3b rewrites every site to
+  reach through `window.frame.scene` /
+  `window.frame.dispatch` and drops the alias
+  fields. Splitting the type introduction
+  from the call-site sweep means each PR has
+  a manageable review surface — 7c.3a's diff
+  is +555 / −83 across 3 files (mostly the
+  new `frame.zig`); 7c.3b will be a much
+  wider but mechanical sweep across runtime,
+  scene, layout, builder, examples, and the
+  platform layer.
+- **`testWindow` fixture stays as-is.** The
+  fixture leaves every resource pointer at
+  `undefined` (the deferred-command tests
+  never reach through `scene` or
+  `dispatch`). The new `frame: Frame =
+  undefined` field default keeps the same
+  shape — no test edits needed. Adding a
+  real `Frame` to the fixture would pull in
+  `Scene` + `DispatchTree` heap allocations
+  the tests don't exercise; the existing
+  minimum is the right shape for those
+  tests.
+- **Why disarm `frame.owned` post-literal in
+  `initOwned` / `initWithSharedResources`.**
+  The by-value paths build a local `frame`,
+  copy it into `result.frame`, then continue
+  with more `try` calls (`globals.setOwned`).
+  If one of those `try`s unwinds, the local
+  `frame`'s `errdefer frame.deinit()` would
+  tear down the pointees that `result.frame`
+  is now the canonical owner of. Setting
+  `frame.owned = false` post-literal disables
+  the local `errdefer` cleanup —
+  `result.frame` (which copied through with
+  `owned = true` because it captured the
+  literal *before* the disarm) is the only
+  one that will free the pointees. Exact
+  mirror of the `resources.owned = false`
+  line PR 7a added for the `AppResources`
+  bundle.
+- **No disarm needed in the `*Ptr` paths.**
+  `Frame.initOwnedInPlace` writes directly
+  into `self.frame` (the final heap
+  address), so there's no intermediate
+  by-value copy to disarm against. `errdefer
+  self.frame.deinit()` is wired correctly —
+  if a later `try` unwinds, the bundle tears
+  down exactly once at its final heap
+  address. Same shape as
+  `self.resources.initOwnedInPlace` from PR
+  7a.
+- **Free order mirrors pre-7c.3a
+  `Window.deinit`.** Pre-7c.3a,
+  `Window.deinit` freed `dispatch` first,
+  then `scene` (after `globals.deinit`).
+  7c.3a's `Frame.deinit` preserves that
+  order exactly. The reverse would also be
+  safe — no inter-pointer references between
+  the two — but matching keeps the diff at
+  the `Window.deinit` call site minimal:
+  only the two pairs of `T.deinit` +
+  `allocator.destroy` collapse into the
+  single `self.frame.deinit()`, every other
+  line in `deinit` stays put.
+- **Viewport tolerance preserved.** Every
+  pre-7c.3a `Window.init*` path called
+  `scene.setViewport(w, h)` with values
+  pulled from the platform window. Tests and
+  stub fixtures sometimes construct a
+  `Window` before the platform layer has
+  reported a real surface size; the
+  pre-7c.3a code tolerated a zero-sized
+  viewport (culling becomes a no-op until
+  the first resize event).
+  `Frame.initOwned` / `initOwnedInPlace`
+  assert `viewport_width >= 0` and
+  `viewport_height >= 0` (not `> 0`),
+  matching the pre-7c.3a behaviour. The
+  fourth `Frame` test pins this tolerance
+  so a future tightening of the assertion
+  surfaces a regression.
+- **Symmetric API surface to
+  `AppResources`.** The `Frame` struct
+  exposes `initOwned` / `initOwnedInPlace`
+  / `borrowed` / `deinit` with identical
+  signatures (modulo the type-specific
+  parameters) to `AppResources`. A reader
+  who has internalised one can read the
+  other without re-learning the shape. The
+  `borrowed` constructor on `Frame` is
+  unused today; the `borrowed` constructor
+  on `AppResources` is used by the
+  multi-window flow. Same shape, different
+  fill rate — when 7c.3c lands the
+  double-buffer, `Frame`'s `borrowed`
+  becomes load-bearing.
+- **Scoping for the `borrowed` shape's
+  future use.** PR 7c.3c will introduce
+  `next_frame: Frame` alongside
+  `rendered_frame: Frame` (renaming the
+  current `frame` field) and call
+  `mem.swap(&window.rendered_frame,
+  &window.next_frame)` at frame boundary.
+  Post-swap, the `Frame` whose pointees
+  were consumed becomes the "next frame"
+  target. The borrowed shape is reserved
+  for transient views (e.g. the runtime
+  driver may want to hand a borrowed
+  `Frame` to a hit-test pass without
+  taking responsibility for its teardown).
+  7c.3a lands the API surface so 7c.3c
+  only needs to wire callers; the type's
+  shape is stable across the two slices.
+
+**Result:** `Build Summary: 9/9 steps
+succeeded; 1073/1073 tests passed` (+4 vs.
+PR 7c.2's 1069 — the four new `Frame`
+tests). `zig build install` builds all
+examples (single-window and multi-window)
+without warnings.
 
 ---
 
