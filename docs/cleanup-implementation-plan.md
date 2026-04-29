@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1 landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2 landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -979,10 +979,43 @@ so each lands green on its own.
     succeeded; 1069/1069 tests passed` (+3 vs. 7b.5's 1066
     — three new `App.beginFrame` / `endFrame` tests). See
     "Sub-PR 7c.1" below.
-  - ☐ 7c.2 — Hoist the `App.beginFrame` / `App.endFrame`
-    call out of `Window.beginFrame` / `Window.endFrame` to
-    a runtime tick driver so app-scoped work runs exactly
-    once per tick.
+  - ☑ **7c.2 — Hoist `App.beginFrame` / `App.endFrame`
+    out of `Window` into the runtime frame driver.**
+    Landed on `cleanup/pr-7c2-hoist-app-frame-hooks`.
+    Pre-7c.2 the per-tick app-scoped pair lived inline
+    in `Window.beginFrame` / `Window.endFrame`,
+    reaching through `self.app.*`. The layering was
+    wrong: app-scoped work belonged at the layer that
+    owns the `App`, not in a per-window forwarder.
+    Post-7c.2 `runtime/frame.zig::renderFrameImpl`
+    drives the pair directly — `app.beginFrame()` runs
+    after `window.beginFrame()` (so the per-window
+    `image_atlas.beginFrame` has already reset the
+    frame counter) and before `render_fn(cx)` (so
+    observations made by widget renders this tick are
+    not discarded by the entity-observation clear);
+    `app.endFrame()` runs after `window.endFrame()`
+    returns commands. Visible behaviour is unchanged
+    for single-window flows (one window per render
+    callback per tick, identical to pre-7c.2).
+    Multi-window flows still hit the call once per
+    window per tick because the platform layer
+    dispatches each window's render callback
+    independently — the centralised "all windows,
+    this tick" driver lands in 7c.3+. The 7c.1 inline
+    comment block on `App.beginFrame` was rewritten to
+    call out the new caller (`renderFrameImpl`, not
+    `Window`), and the matching block on
+    `Window.beginFrame` / `Window.endFrame` documents
+    that the hoisted call runs *outside* the function,
+    with the order constraint preserved by the runtime
+    driver. `Build Summary: 9/9 steps succeeded;
+    1069/1069 tests passed` (no delta vs. 7c.1 — pure
+    relocation; the three 7c.1 tests on
+    `App.beginFrame` / `App.endFrame` still pin the
+    method-level contract, and every example exercises
+    the relocated call site through `zig build
+    install`). See "Sub-PR 7c.2" below.
   - ☐ 7c.3 — Introduce `Frame` struct holding `scene` +
     `dispatch` + per-frame transient state; double-buffer
     `rendered_frame` / `next_frame` with `mem.swap` at
@@ -2421,6 +2454,222 @@ along the way.
 **Result:** `Build Summary: 9/9 steps succeeded; 1069/1069
 tests passed`. `zig build install` builds all examples
 (single-window and multi-window) without warnings.
+
+---
+
+**Sub-PR 7c.2 — Hoist `App.beginFrame` / `App.endFrame`
+out of `Window` into the runtime frame driver (landed):**
+
+Second slice of PR 7c. Goal: get the app-scoped per-tick
+begin/end pair off `Window` and onto the layer that owns
+the `App`. 7c.1 introduced the API surface
+(`App.beginFrame` / `App.endFrame`) and routed
+`Window.beginFrame` / `Window.endFrame` through it; 7c.2
+finishes the relocation by calling the pair directly from
+`runtime/frame.zig::renderFrameImpl` (the per-window
+render callback the platform layer dispatches) and
+removing the inline calls from `Window.beginFrame` /
+`Window.endFrame`.
+
+**Why this lands as its own slice:** 7c.1 deliberately
+landed the API surface first so the follow-up (this
+slice) would only need to relocate one method call rather
+than split bundled work along the way. Splitting the work
+that way meant 7c.2 is small and reviewable in isolation
+— three files touched, one call site moved, no semantic
+change for single-window flows.
+
+**Pre-flight choice (where the hoisted call lives):**
+
+- **Option (a) — In `runtime/frame.zig::renderFrameImpl`,
+  bracketing `window.beginFrame()` / `window.endFrame()`**
+  (chosen). This is the per-window render callback the
+  platform dispatches; one call to `renderFrameImpl` ↔
+  one render tick for that window. Reaching `window.app`
+  once at the top of the function keeps the call sites
+  visually adjacent to `window.beginFrame` /
+  `window.endFrame` so a reader sees the four calls in
+  order.
+- **Option (b) — In a new tick driver behind
+  `Platform.run`** (rejected for this slice). The "real"
+  multi-window fix needs a centralised driver that fires
+  `app.beginFrame` once across all windows, then drives
+  each window's render. Building that requires
+  platform-specific tick coordination (CVDisplayLink →
+  GCD bounce on macOS, Wayland frame callbacks on Linux,
+  `requestAnimationFrame` on web) that's out of scope
+  for this slice. Landing the relocation now removes the
+  layering wart even though the multi-window-per-tick
+  redundancy survives unchanged. The driver lands in
+  7c.3+ alongside the `Frame` double-buffer, where the
+  `mem.swap` at frame boundary needs the same
+  once-per-tick anchor.
+
+**Write scope (landed):**
+
+- `src/runtime/frame.zig` —
+  - `renderFrameImpl` caches `window.app` once at the
+    top so the begin/end pair reaches the same `App`
+    even if a future code path mutates `cx.window()`
+    mid-frame (no such path exists today; the cache is
+    also the natural place for the explanatory comment
+    that the layer-correct caller is now this function,
+    not `Window`).
+  - `app.beginFrame()` call inserted between
+    `window.beginFrame()` and `render_fn(cx)`. Order
+    constraint documented inline: must follow
+    `window.beginFrame()` (so the per-window
+    `image_atlas.beginFrame()` has reset the frame
+    counter) and must precede `render_fn` (so widget
+    renders' observations are not discarded by the
+    entity-observation clear). A future tick-driver in
+    7c.3+ that drives N windows per tick must preserve
+    the same order across the N-way fan-out.
+  - `app.endFrame()` call inserted immediately after
+    `window.endFrame()` returns commands. Position
+    rationale: `App.endFrame` is currently a no-op, so
+    any position that follows `window.endFrame()` is
+    correct today; the chosen spot is symmetric with
+    `app.beginFrame` (both bracket the per-window
+    calls), which means future work the `App.endFrame`
+    hook is reserved for can rely on the layout / a11y
+    finalisation having already run.
+- `src/context/window.zig` —
+  - `Window.beginFrame()` and `Window.endFrame()` lose
+    their inline `self.app.beginFrame()` /
+    `self.app.endFrame()` calls. The 7c.1 comment block
+    inside each function rewrites to call out that the
+    work has moved up to `renderFrameImpl`, with the
+    order invariant the caller upholds spelled out so a
+    future reader of `Window.beginFrame` is not
+    surprised by the absence.
+  - The two functions' doc comments grow a "Per-tick
+    app-scoped work is NOT done here" preamble that
+    points at `runtime/frame.zig` for the actual call
+    site. This is load-bearing for callers reading the
+    `Window` struct in isolation: pre-7c.2 the
+    self-contained shape ("call `beginFrame`, call
+    `endFrame`, app-scoped work happens for free") was
+    a reasonable expectation; post-7c.2 it isn't, and
+    the doc needs to say so.
+- `src/context/app.zig` —
+  - The "Per-frame hooks" comment block on `App`
+    rewrote to summarise the three-step history
+    (7b.3/5 lifted state, 7c.1 introduced API, 7c.2
+    relocated call) so a reader landing in this file
+    sees the full arc without cross-referencing PR
+    notes.
+  - The doc comment on `App.beginFrame` /
+    `App.endFrame` points at `renderFrameImpl` as the
+    caller (was "called once per tick before any
+    `Window.beginFrame` runs"). The
+    `entities.beginFrame` inline comment drops the
+    stale "`Window.beginFrame` is the only caller"
+    claim and replaces it with the per-render-callback
+    caller scoping.
+
+**Tasks landed:**
+
+- [x] Cache `window.app` in `renderFrameImpl` and call
+      `app.beginFrame()` / `app.endFrame()` bracketing
+      `window.beginFrame()` / `window.endFrame()`.
+- [x] Drop the inline `self.app.beginFrame()` /
+      `self.app.endFrame()` from `Window.beginFrame` /
+      `Window.endFrame`. Update the inline comment
+      block to point at the new caller.
+- [x] Update doc comments on `App.beginFrame` /
+      `App.endFrame` and the surrounding "Per-frame
+      hooks" block in `app.zig` to reflect the
+      relocated caller.
+- [x] `Build Summary: 9/9 steps succeeded; 1069/1069
+      tests passed` (no delta vs. 7c.1 — the
+      relocation is pure, so the three 7c.1
+      method-level tests on `App.beginFrame` /
+      `App.endFrame` still pin the same contract).
+- [x] `zig build install` builds all examples
+      (single-window and multi-window) without
+      warnings.
+
+**Implementation notes:**
+
+- **No new tests.** The natural unit boundary for
+  testing this slice would be a runtime-frame test that
+  constructs a `Cx`, calls `renderFrameImpl`, and
+  asserts `app.beginFrame` ran. But `renderFrameImpl`
+  requires a full UI stack (platform window, layout
+  engine, scene, builder, debugger) that's expensive to
+  construct in a test fixture — every existing test
+  that exercises `renderFrameImpl` does so through a
+  real example, which `zig build install` already
+  covers. The 7c.1 tests on `App.beginFrame` /
+  `App.endFrame` continue to pin the method-level
+  contract (entity-observation clear, image-loader
+  drain guard, symmetric `endFrame`); 7c.2 is a pure
+  call-site relocation, so pinning the new caller would
+  test the test fixture, not the code under test.
+  Verified via the test count being unchanged at 1069 —
+  every prior property still holds.
+- **Multi-window redundancy survives this slice
+  unchanged.** With N windows borrowing one `App`, the
+  platform layer fires N render callbacks per tick;
+  each call to `renderFrameImpl` runs `app.beginFrame()`
+  once. Net: the begin/end pair fires N times per tick,
+  same as pre-7c.2. The `image_loader.drain` is
+  idempotent (acceptable); the `entities.beginFrame`
+  clear is NOT — the structural correctness gap that
+  7c.1's comment block flagged carries forward to 7c.2
+  unchanged. Fixing it requires a centralised tick
+  driver at the platform → runtime boundary that fires
+  `app.beginFrame()` once *before* any window's render
+  callback runs, then drives each window's render in
+  sequence, then fires `app.endFrame()` once *after*
+  the last window has finished. That driver lands in
+  7c.3+ alongside the `Frame` double-buffer, which
+  needs the same once-per-tick anchor for its
+  `mem.swap` at frame boundary.
+- **Why hoist now if the multi-window fix waits.** Two
+  reasons. (1) Layering — even without the
+  multi-window-per-tick fix, calling app-scoped work
+  through a per-window forwarder was a layering bug
+  that misled readers (the 7c.1 comment block inside
+  `Window.beginFrame` had to keep apologising for the
+  shape). Moving the call to the runtime layer puts
+  the work at the layer that owns the `App`. (2)
+  Forward-compatibility — when 7c.3 lands the
+  centralised tick driver, the relocation done here is
+  what the driver replaces: lifting one method call
+  out of `renderFrameImpl` into a wrapper, not
+  unbundling work from inside `Window.beginFrame`.
+  Splitting the move from the multi-window fix is the
+  same staging strategy that 7a → 7b used (move the
+  type / API first, fix the behaviour next).
+- **Order constraint preserved at the new call site.**
+  Pre-7c.2 the inline call inside `Window.beginFrame`
+  ran after `image_atlas.beginFrame` and before any
+  element render — the function's body order
+  guaranteed it. Post-7c.2 the runtime driver
+  preserves the same order: `window.beginFrame()`
+  (which calls `image_atlas.beginFrame` internally)
+  finishes before `app.beginFrame()` runs, and
+  `app.beginFrame()` finishes before the user's
+  `render_fn(cx)` runs. The constraint is now spelled
+  out in the inline comment block on `renderFrameImpl`
+  so a future reader doesn't have to reverse-engineer
+  it from the call order.
+- **No cleanup of the 7c.1 tests required.** The three
+  tests added in 7c.1 (`App: beginFrame clears stale
+  entity observations`, `App: beginFrame is a no-op
+  when image_loader is unbound`, `App: beginFrame
+  drains image_loader when bound`) all exercise the
+  methods directly, not through `Window`. They keep
+  pinning the method-level contract regardless of who
+  calls them; 7c.2 is invisible from their
+  perspective.
+
+**Result:** `Build Summary: 9/9 steps succeeded;
+1069/1069 tests passed` (no delta vs. PR 7c.1's 1069).
+`zig build install` builds all examples (single-window
+and multi-window) without warnings.
 
 ---
 
