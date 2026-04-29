@@ -31,6 +31,19 @@ pub const PlatformVTable = interface.PlatformVTable;
 /// Window interface for runtime polymorphism
 pub const WindowVTable = interface.WindowVTable;
 
+// PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the upcoming `Gooey → Window` rename
+// in PR 7b.1b. The two are very different things — `PlatformWindow` is
+// the OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas
+// on web); the framework-level `Window` will hold per-window frame
+// state. Keeping them under one name was always going to bite once the
+// `Gooey` god object split landed; this PR pre-empts the collision.
+//
+// See `docs/cleanup-implementation-plan.md` PR 7b for the broader
+// App/Window split, and `architectural-cleanup-plan.md` §10 for the
+// GPUI mapping where `platform_window: PlatformWindow` is the pattern
+// being adopted.
+
 /// Platform capabilities
 pub const PlatformCapabilities = interface.PlatformCapabilities;
 
@@ -88,8 +101,18 @@ else if (is_linux)
 else
     backend.MacPlatform;
 
-/// Window type for the current OS (compile-time selected)
-pub const Window = if (is_wasm)
+/// OS-level window handle for the current target (compile-time selected).
+///
+/// This is the platform's native window object — `NSWindow` on macOS
+/// (wrapped), `wl_surface` plus xdg-shell state on Linux/Wayland, an
+/// `HTMLCanvasElement`-backed shim on web. Framework code should
+/// generally treat it as opaque and reach for it through `Window`
+/// (the framework-level wrapper, see `context/gooey.zig`) rather than
+/// here.
+///
+/// Renamed from `Window` in PR 7b.1a so the framework wrapper can
+/// claim that name in PR 7b.1b without a `platform.Window` collision.
+pub const PlatformWindow = if (is_wasm)
     backend.WebWindow
 else if (is_linux)
     backend.Window

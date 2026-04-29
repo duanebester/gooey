@@ -19,7 +19,10 @@ const builtin = @import("builtin");
 
 // Platform
 const platform = @import("../platform/mod.zig");
-const Window = platform.Window;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+const PlatformWindow = platform.PlatformWindow;
 const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .macos;
 
 // Core imports
@@ -113,7 +116,7 @@ pub fn WindowContext(comptime State: type) type {
         /// Allocates Gooey and Builder on the heap.
         pub fn init(
             allocator: std.mem.Allocator,
-            window: *Window,
+            window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
             font_config: FontConfig,
@@ -175,7 +178,7 @@ pub fn WindowContext(comptime State: type) type {
         /// The shared resources are owned by the App, not this context.
         pub fn initWithSharedResources(
             allocator: std.mem.Allocator,
-            window: *Window,
+            window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
             shared_text_system: *TextSystem,
@@ -266,7 +269,7 @@ pub fn WindowContext(comptime State: type) type {
 
         /// Render callback - called by the window on each frame.
         /// Retrieves WindowContext from window.user_data.
-        pub fn onRender(window: *Window) void {
+        pub fn onRender(window: *PlatformWindow) void {
             const self = window.getUserData(Self) orelse return;
 
             // Guard against re-entrant rendering
@@ -303,20 +306,20 @@ pub fn WindowContext(comptime State: type) type {
         }
 
         /// Input callback - called by the window for input events.
-        pub fn onInput(window: *Window, event: InputEvent) bool {
+        pub fn onInput(window: *PlatformWindow, event: InputEvent) bool {
             const self = window.getUserData(Self) orelse return false;
             return input_handler.handleInputCx(&self.cx, self.on_event, event);
         }
 
         /// Post-input callback - called after input handling with mutex released.
         /// Flushes deferred commands which may run nested event loops (modal dialogs).
-        pub fn onPostInput(window: *Window) void {
+        pub fn onPostInput(window: *PlatformWindow) void {
             const self = window.getUserData(Self) orelse return;
             self.gooey.flushDeferredCommands();
         }
 
         /// Close callback - called when window is about to close.
-        pub fn onClose(window: *Window) bool {
+        pub fn onClose(window: *PlatformWindow) bool {
             const self = window.getUserData(Self) orelse return true;
             if (self.on_close) |callback| {
                 return callback(&self.cx);
@@ -325,7 +328,7 @@ pub fn WindowContext(comptime State: type) type {
         }
 
         /// Resize callback - called when window size changes.
-        pub fn onResize(window: *Window, width: f64, height: f64) void {
+        pub fn onResize(window: *PlatformWindow, width: f64, height: f64) void {
             const self = window.getUserData(Self) orelse return;
             if (self.on_resize) |callback| {
                 callback(&self.cx, width, height);
@@ -338,7 +341,7 @@ pub fn WindowContext(comptime State: type) type {
 
         /// Configure all window callbacks and atlases.
         /// Call this after init() to connect the WindowContext to the window.
-        pub fn setupWindow(self: *Self, window: *Window) void {
+        pub fn setupWindow(self: *Self, window: *PlatformWindow) void {
             // Assertions: validate state
             std.debug.assert(@intFromPtr(self.gooey) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
@@ -455,11 +458,11 @@ test "WindowContext callback signature types" {
 
     const WinCtx = WindowContext(TestState);
 
-    // Verify callback function signatures match what Window expects
-    const render_cb: *const fn (*Window) void = WinCtx.onRender;
-    const input_cb: *const fn (*Window, InputEvent) bool = WinCtx.onInput;
-    const close_cb: *const fn (*Window) bool = WinCtx.onClose;
-    const resize_cb: *const fn (*Window, f64, f64) void = WinCtx.onResize;
+    // Verify callback function signatures match what PlatformWindow expects
+    const render_cb: *const fn (*PlatformWindow) void = WinCtx.onRender;
+    const input_cb: *const fn (*PlatformWindow, InputEvent) bool = WinCtx.onInput;
+    const close_cb: *const fn (*PlatformWindow) bool = WinCtx.onClose;
+    const resize_cb: *const fn (*PlatformWindow, f64, f64) void = WinCtx.onResize;
 
     // Assertions: callbacks are valid function pointers
     std.debug.assert(@intFromPtr(render_cb) != 0);

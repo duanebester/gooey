@@ -47,7 +47,10 @@ const AppState = struct {
         self.glass_style = self.glass_style.next();
 
         // g.window is already *Window, no cast needed!
-        const win_style: gooey.platform.Window.GlassStyle = switch (self.glass_style) {
+        // PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+        // to free up the `Window` name for the framework-level wrapper
+        // landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+        const win_style: gooey.platform.PlatformWindow.GlassStyle = switch (self.glass_style) {
             .none => .none,
             .blur => .blur,
             .glass_regular => .glass_regular,

@@ -401,7 +401,10 @@ pub const CodeEditorStyle = ui.CodeEditorStyle;
 
 // Platform (for direct access)
 pub const MacPlatform = platform.Platform;
-pub const Window = platform.Window;
+// PR 7b.1a — `Window` re-export renamed to `PlatformWindow` to free
+// up the `Window` name for the framework-level wrapper landing in
+// PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+pub const PlatformWindow = platform.PlatformWindow;
 // Platform interfaces (for runtime polymorphism)
 pub const PlatformVTable = platform.PlatformVTable;
 pub const WindowVTable = platform.WindowVTable;

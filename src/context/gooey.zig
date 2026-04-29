@@ -116,7 +116,12 @@ const WidgetStore = widget_store_mod.WidgetStore;
 
 // Platform
 const platform = @import("../platform/mod.zig");
-const Window = platform.Window;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. This alias names the OS-level handle
+// (NSWindow on macOS, wl_surface on Linux, canvas on web). The
+// `window: ?*PlatformWindow` field below holds that handle.
+const PlatformWindow = platform.PlatformWindow;
 
 // Input
 const input_mod = @import("../input/events.zig");
@@ -325,7 +330,7 @@ pub const Gooey = struct {
     entities: EntityMap,
 
     // Platform
-    window: ?*Window,
+    window: ?*PlatformWindow,
 
     // Frame state
     frame_count: u64 = 0,
@@ -555,7 +560,7 @@ pub const Gooey = struct {
     }
 
     /// Initialize Gooey creating and owning all resources
-    pub fn initOwned(allocator: std.mem.Allocator, window: *Window, font_config: FontConfig, io: std.Io) !Self {
+    pub fn initOwned(allocator: std.mem.Allocator, window: *PlatformWindow, font_config: FontConfig, io: std.Io) !Self {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -695,7 +700,7 @@ pub const Gooey = struct {
     /// ```
     /// Marked noinline to prevent stack accumulation in WASM builds.
     /// Without this, the compiler inlines all sub-functions creating a 2MB+ stack frame.
-    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *Window, font_config: FontConfig, io: std.Io) !void {
+    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *PlatformWindow, font_config: FontConfig, io: std.Io) !void {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -832,7 +837,7 @@ pub const Gooey = struct {
     /// The caller retains ownership of the shared resources.
     pub fn initWithSharedResources(
         allocator: std.mem.Allocator,
-        window: *Window,
+        window: *PlatformWindow,
         shared_text_system: *TextSystem,
         shared_svg_atlas: *svg_mod.SvgAtlas,
         shared_image_atlas: *image_mod.ImageAtlas,
@@ -939,7 +944,7 @@ pub const Gooey = struct {
     pub noinline fn initWithSharedResourcesPtr(
         self: *Self,
         allocator: std.mem.Allocator,
-        window: *Window,
+        window: *PlatformWindow,
         shared_text_system: *TextSystem,
         shared_svg_atlas: *svg_mod.SvgAtlas,
         shared_image_atlas: *image_mod.ImageAtlas,
@@ -1677,7 +1682,7 @@ pub const Gooey = struct {
         return self.layout;
     }
 
-    pub fn getWindow(self: *Self) ?*Window {
+    pub fn getWindow(self: *Self) ?*PlatformWindow {
         return self.window;
     }
 

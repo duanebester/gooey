@@ -50,9 +50,13 @@ pub const handleInputCx = runtime.handleInputCx;
 
 // Re-export types
 pub const Cx = cx_mod.Cx;
-pub const GlassStyle = platform.Window.GlassStyle;
+// PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the upcoming `Gooey → Window` rename
+// in PR 7b.1b. The local `PlatformWindow` alias is used everywhere
+// below where the OS-level handle (vs. the framework wrapper) is meant.
+pub const GlassStyle = platform.PlatformWindow.GlassStyle;
 const Platform = platform.Platform;
-const Window = platform.Window;
+const PlatformWindow = platform.PlatformWindow;
 const Gooey = gooey_mod.Gooey;
 const Builder = ui_mod.Builder;
 const InputEvent = input_mod.InputEvent;
@@ -150,7 +154,7 @@ pub fn WebApp(
         // Global state (WASM exports can't capture closures)
         var g_initialized: bool = false;
         var g_platform: ?Platform = null;
-        var g_window: ?*Window = null;
+        var g_window: ?*PlatformWindow = null;
         var g_gooey: ?*Gooey = null;
         var g_builder: ?*Builder = null;
         var g_cx: ?Cx = null;
@@ -180,7 +184,7 @@ pub fn WebApp(
             g_platform = try Platform.init();
 
             // Create window
-            g_window = try Window.init(allocator, &g_platform.?, .{
+            g_window = try PlatformWindow.init(allocator, &g_platform.?, .{
                 .title = if (@hasField(@TypeOf(config), "title")) config.title else "Gooey App",
                 .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                 .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,

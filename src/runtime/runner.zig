@@ -42,7 +42,10 @@ const FontConfig = gooey_mod.FontConfig;
 const window_context = @import("window_context.zig");
 
 const Platform = platform.Platform;
-const Window = platform.Window;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+const PlatformWindow = platform.PlatformWindow;
 const Cx = cx_mod.Cx;
 const InputEvent = input_mod.InputEvent;
 
@@ -76,7 +79,7 @@ pub fn runCx(
     const bg_color = config.background_color orelse geometry_mod.Color.rgba(0.95, 0.95, 0.95, 1.0);
 
     // Create window
-    var window = try Window.init(allocator, &plat, .{
+    var window = try PlatformWindow.init(allocator, &plat, .{
         .title = config.title,
         .width = config.width,
         .height = config.height,

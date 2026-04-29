@@ -39,7 +39,10 @@ const Allocator = std.mem.Allocator;
 // Platform
 const platform = @import("../platform/mod.zig");
 const Platform = platform.Platform;
-const Window = platform.Window;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+const PlatformWindow = platform.PlatformWindow;
 const WindowId = platform.WindowId;
 const WindowRegistry = platform.WindowRegistry;
 const WindowOptions = platform.WindowOptions;
@@ -255,7 +258,7 @@ pub const App = struct {
         // Create platform window
         const bg_color = options.background_color orelse Color.rgba(0.95, 0.95, 0.95, 1.0);
 
-        var window = try Window.init(self.allocator, &self.platform, .{
+        var window = try PlatformWindow.init(self.allocator, &self.platform, .{
             .title = options.title,
             .width = options.width,
             .height = options.height,
@@ -298,7 +301,7 @@ pub const App = struct {
 
         // Set up close callback to handle quit behavior
         window.setCloseCallback(struct {
-            fn onClose(w: *Window) bool {
+            fn onClose(w: *PlatformWindow) bool {
                 // Get App pointer from user data in context
                 if (w.getUserData(WindowContext(State))) |wctx| {
                     // Call user's close callback first
@@ -334,7 +337,7 @@ pub const App = struct {
         std.debug.assert(self.initialized);
 
         if (self.registry.unregister(id)) |window_ptr| {
-            const window: *Window = @ptrCast(@alignCast(window_ptr));
+            const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
 
             // Clean up window
             window.deinit();
@@ -370,7 +373,7 @@ pub const App = struct {
         // Close each window
         for (ids[0..count]) |id| {
             if (self.registry.unregister(id)) |window_ptr| {
-                const window: *Window = @ptrCast(@alignCast(window_ptr));
+                const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
                 window.deinit();
                 self.allocator.destroy(window);
             }
@@ -448,7 +451,7 @@ pub const App = struct {
     fn createWindowContext(
         self: *Self,
         comptime State: type,
-        window: *Window,
+        window: *PlatformWindow,
         state: *State,
         comptime render: fn (*Cx) void,
     ) !*WindowContext(State) {

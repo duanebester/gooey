@@ -19,7 +19,7 @@
 //! var plat = try platform.Platform.init();
 //! defer plat.deinit();
 //!
-//! var window = try platform.Window.init(allocator, &plat, .{});
+//! var window = try platform.PlatformWindow.init(allocator, &plat, .{});
 //! defer window.deinit();
 //!
 //! plat.run();
@@ -234,7 +234,7 @@ pub const WindowOptions = struct {
     background_opacity: f32 = 1.0,
 
     /// Glass/blur style for transparent windows (macOS only)
-    /// Use platform.Window.GlassStyle for the enum values
+    /// Use platform.PlatformWindow.GlassStyle for the enum values
     glass_style: GlassStyleCompat = .none,
 
     /// Corner radius for glass effect (macOS only)
