@@ -43,6 +43,24 @@ pub const app_resources = @import("app_resources.zig");
 pub const AppResources = app_resources.AppResources;
 
 // =============================================================================
+// PR 7c.3a — Per-window per-frame rendering bundle
+// =============================================================================
+//
+// `Frame` bundles the two "rebuilt every frame, owned by one Window"
+// rendering subsystems (`Scene`, `DispatchTree`) into one struct with
+// a single `owned: bool` discriminator. Same shape as `AppResources`
+// — the symmetry is deliberate, since `Window` will end up holding
+// one `AppResources` (app-lifetime shared) and one `Frame` (per-window
+// per-tick) as its two ownership-bundle fields. PR 7c.3c introduces
+// the `rendered_frame` / `next_frame` double buffer; the `borrowed`
+// constructor on `Frame` exists today for that landing's
+// transient-view shape. See `docs/cleanup-implementation-plan.md`
+// PR 7c.3a and `architectural-cleanup-plan.md` §11.
+
+pub const frame = @import("frame.zig");
+pub const Frame = frame.Frame;
+
+// =============================================================================
 // Focus Management
 // =============================================================================
 

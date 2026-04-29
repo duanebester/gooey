@@ -185,6 +185,17 @@ const A11ySystem = a11y_system_mod.A11ySystem;
 const app_resources_mod = @import("app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
+// PR 7c.3a — bundled per-window per-frame rendering state
+// (scene + dispatch tree) with a single ownership flag. Same
+// shape as `AppResources` but for the per-frame transients. The
+// ownership-uniform single-window shape lands first; PR 7c.3c
+// introduces the `rendered_frame` / `next_frame` double buffer
+// and the `borrowed` constructor on `Frame` becomes load-bearing.
+// See `frame.zig` and `docs/cleanup-implementation-plan.md` PR
+// 7c.3a.
+const frame_mod = @import("frame.zig");
+const Frame = frame_mod.Frame;
+
 // PR 6 — explicit per-frame phase tagging. `current_phase` advances
 // monotonically through `none → prepaint → paint → focus → none`;
 // `assertAdvance` enforces the legal transition table at each step.
@@ -274,7 +285,29 @@ pub const Window = struct {
     // retired alongside the `AppResources` extraction.
     layout: *LayoutEngine,
 
-    // Rendering (retained). Always owned — same rationale as `layout`.
+    /// PR 7c.3a — bundled per-window per-frame rendering state.
+    /// Owns `scene: *Scene` and `dispatch: *DispatchTree` as one
+    /// unit; `frame.owned` is always `true` in the single-`Frame`
+    /// shape that lands in 7c.3a (every `Window.init*` path
+    /// allocates a fresh owning `Frame`). The `borrowed` shape is
+    /// reserved for PR 7c.3c, where `mem.swap` between
+    /// `rendered_frame` and `next_frame` will produce transient
+    /// views over shared backing storage. Default `undefined` so
+    /// test fixtures that omit it (`testWindow` below) keep
+    /// compiling without explicit initialisation. See
+    /// `frame.zig` and `docs/cleanup-implementation-plan.md` PR
+    /// 7c.3a.
+    frame: Frame = undefined,
+
+    /// PR 7c.3a — back-compat alias mirroring `frame.scene`. Kept
+    /// so the ~99 internal `self.scene.*` / `window.scene.*` call
+    /// sites compile against the new bundle without a wholesale
+    /// sweep in this slice. PR 7c.3b retires the alias by
+    /// rewriting every call site to reach through
+    /// `window.frame.scene` (same pattern PR 7a → 7b.6 used for
+    /// the `text_system` / `svg_atlas` / `image_atlas` triplet).
+    /// Always populated from `frame.scene` by every `init*` path
+    /// — same heap address, just a duplicated pointer field.
     scene: *Scene,
 
     /// PR 7a — bundled shared rendering resources. Owns or borrows
@@ -325,7 +358,14 @@ pub const Window = struct {
     // last hard-coded singleton from the struct surface and makes
     // adding future globals (settings, telemetry) a one-liner.
 
-    /// Dispatch tree for event routing
+    /// PR 7c.3a — back-compat alias mirroring `frame.dispatch`.
+    /// Kept so the ~68 internal `self.dispatch.*` /
+    /// `window.dispatch.*` call sites compile against the new
+    /// bundle without a wholesale sweep in this slice. PR 7c.3b
+    /// retires the alias by rewriting every call site to reach
+    /// through `window.frame.dispatch`. Always populated from
+    /// `frame.dispatch` by every `init*` path — same heap
+    /// address, just a duplicated pointer field.
     dispatch: *DispatchTree,
 
     // PR 6 / 7b.4 — `keymap` lives in `app.globals` now (see
@@ -628,20 +668,21 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // Create scene
-        const scene = allocator.create(Scene) catch return error.OutOfMemory;
-        scene.* = Scene.init(allocator);
-        errdefer {
-            scene.deinit();
-            allocator.destroy(scene);
-        }
-
-        // Enable viewport culling with initial window size
-        scene.setViewport(
+        // PR 7c.3a — bundle scene + dispatch into one `Frame`.
+        // Replaces the previous two `allocator.create` + init +
+        // `setViewport`/`enableCulling` + errdefer blocks. The
+        // resulting struct is copied into `result.frame` below;
+        // the heap pointers it carries survive the by-value copy
+        // unchanged (same shape as the `resources` copy further
+        // down). `result.scene` / `result.dispatch` are populated
+        // as back-compat aliases mirroring the same heap
+        // addresses; PR 7c.3b retires them.
+        var frame = try Frame.initOwned(
+            allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        scene.enableCulling();
+        errdefer frame.deinit();
 
         // PR 7a — bundle text + SVG + image resources into one
         // `AppResources`. Replaces three separate `allocator.create`
@@ -665,16 +706,20 @@ pub const Window = struct {
         // the bundle).
         layout_engine.setMeasureTextFn(measureTextCallback, resources.text_system);
 
-        const dispatch = try allocator.create(DispatchTree);
-        errdefer allocator.destroy(dispatch);
-        dispatch.* = DispatchTree.init(allocator);
-
         var result: Self = .{
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            .scene = scene,
-            .dispatch = dispatch,
+            // PR 7c.3a — `frame` is copied by value below; the
+            // back-compat aliases (`scene` / `dispatch`) reach
+            // into the same heap addresses. The local `frame`'s
+            // `owned` flag is disarmed post-literal (mirroring
+            // the `resources.owned = false` pattern) so a later
+            // errdefer can't tear the pointees down out from
+            // under `result.frame`.
+            .frame = frame,
+            .scene = frame.scene,
+            .dispatch = frame.dispatch,
             // PR 7b.3 — `entities` lifted off `Window` onto `App`.
             // The `app: *App` field is left at its `undefined`
             // default here; the caller (`runtime/window_context.zig`)
@@ -729,6 +774,16 @@ pub const Window = struct {
         // hit a double-free when the caller drops `result` after a
         // success path that copies into the heap slot.
         resources.owned = false;
+
+        // PR 7c.3a — same disarm pattern for the `frame` bundle.
+        // `result.frame` is now the canonical owner of the
+        // scene + dispatch heap allocations; the local `frame`
+        // carried an `owned = true` flag through the by-value
+        // copy, and its errdefer would tear the pointees down
+        // if a later `try` (e.g. `globals.setOwned`) unwinds.
+        // Without this, that path would double-free against
+        // `result.frame.deinit()` in the caller.
+        frame.owned = false;
 
         // Initialize accessibility subsystem in place. On macOS, the
         // bridge captures the NSWindow / NSView handles passed here; on
@@ -786,20 +841,22 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // Create scene
-        const scene = allocator.create(Scene) catch return error.OutOfMemory;
-        scene.* = Scene.init(allocator);
-        errdefer {
-            scene.deinit();
-            allocator.destroy(scene);
-        }
-
-        // Enable viewport culling with initial window size
-        scene.setViewport(
+        // PR 7c.3a — bundle scene + dispatch via `Frame.initOwnedInPlace`,
+        // writing directly into `self.frame` (no stack temp).
+        // `initOwnedInPlace` is `noinline` per CLAUDE.md §14 so
+        // the WASM stack budget stays bounded across the two
+        // internal subsystems. Replaces the previous two
+        // `allocator.create` + init + setViewport/enableCulling +
+        // errdefer blocks. The back-compat aliases (`self.scene`
+        // / `self.dispatch`) are populated from the same heap
+        // addresses in the field-by-field block below; PR 7c.3b
+        // retires them.
+        try self.frame.initOwnedInPlace(
+            allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        scene.enableCulling();
+        errdefer self.frame.deinit();
 
         // PR 7a — initialise shared rendering resources directly
         // into `self.resources` (no stack temp). `initOwnedInPlace`
@@ -821,18 +878,15 @@ pub const Window = struct {
         // system.
         layout_engine.setMeasureTextFn(measureTextCallback, self.resources.text_system);
 
-        // Create dispatch tree
-        const dispatch = try allocator.create(DispatchTree);
-        errdefer allocator.destroy(dispatch);
-        dispatch.* = DispatchTree.init(allocator);
-
         // Field-by-field init avoids ~400KB stack temp from struct literal
         // Core resources
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        self.scene = scene;
-        self.dispatch = dispatch;
+        // PR 7c.3a — back-compat aliases mirror `self.frame.*`.
+        // Same heap address as the bundle's owned pointees.
+        self.scene = self.frame.scene;
+        self.dispatch = self.frame.dispatch;
         // PR 7b.6 — back-compat aliases removed. The three pointer
         // fields that mirrored `self.resources.*` retired alongside
         // the call-site sweep; reach through `self.resources.*` for
@@ -954,35 +1008,37 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // Create scene (owned)
-        const scene = allocator.create(Scene) catch return error.OutOfMemory;
-        scene.* = Scene.init(allocator);
-        errdefer {
-            scene.deinit();
-            allocator.destroy(scene);
-        }
-
-        // Enable viewport culling with initial window size
-        scene.setViewport(
+        // PR 7c.3a — bundle scene + dispatch into one `Frame`
+        // (owned per-window even in multi-window mode — the
+        // scene + dispatch tree are per-window state and
+        // cannot be shared without breaking hit-testing).
+        // Same shape as the matching block in `initOwned`. The
+        // `frame.owned = false` disarm post-literal mirrors
+        // the `resources.owned = false` pattern.
+        var frame = try Frame.initOwned(
+            allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        scene.enableCulling();
+        errdefer frame.deinit();
 
         // Set up text measurement callback using shared text system
         layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
-
-        // Create dispatch tree (owned)
-        const dispatch = try allocator.create(DispatchTree);
-        errdefer allocator.destroy(dispatch);
-        dispatch.* = DispatchTree.init(allocator);
 
         var result: Self = .{
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            .scene = scene,
-            .dispatch = dispatch,
+            // PR 7c.3a — `frame` is copied by value below; the
+            // back-compat aliases (`scene` / `dispatch`) reach
+            // into the same heap addresses as `frame.scene` /
+            // `frame.dispatch`. The local `frame.owned` is
+            // disarmed post-literal so a later errdefer can't
+            // tear the pointees down out from under
+            // `result.frame`.
+            .frame = frame,
+            .scene = frame.scene,
+            .dispatch = frame.dispatch,
             // PR 7b.3 — `entities` lifted off `Window` onto `App`.
             // `app: *App` is set by the caller post-init; see the
             // matching note in `initOwned` above.
@@ -1020,6 +1076,14 @@ pub const Window = struct {
             // does NOT re-bind. See the matching comment block
             // in `initOwned` and the file header.
         };
+
+        // PR 7c.3a — disarm the local `frame.owned` flag now
+        // that `result.frame` is the canonical owner. Mirrors
+        // the `resources.owned = false` line in `initOwned`;
+        // the rationale is identical (prevent a double-free
+        // against `result.frame.deinit()` if a later `try`
+        // unwinds via the local `frame`'s errdefer).
+        frame.owned = false;
 
         // Initialize platform-specific accessibility bridge
         const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
@@ -1078,35 +1142,30 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // Create scene (owned)
-        const scene = allocator.create(Scene) catch return error.OutOfMemory;
-        scene.* = Scene.init(allocator);
-        errdefer {
-            scene.deinit();
-            allocator.destroy(scene);
-        }
-
-        // Enable viewport culling with initial window size
-        scene.setViewport(
+        // PR 7c.3a — bundle scene + dispatch via
+        // `Frame.initOwnedInPlace`, writing directly into
+        // `self.frame` (no stack temp). Same shape as the matching
+        // block in `initOwnedPtr`. The scene + dispatch tree are
+        // per-window state and remain owned per-window even in
+        // multi-window mode (only `AppResources` is borrowed).
+        try self.frame.initOwnedInPlace(
+            allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        scene.enableCulling();
+        errdefer self.frame.deinit();
 
         // Set up text measurement callback using shared text system
         layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
-
-        // Create dispatch tree (owned)
-        const dispatch = try allocator.create(DispatchTree);
-        errdefer allocator.destroy(dispatch);
-        dispatch.* = DispatchTree.init(allocator);
 
         // Field-by-field init avoids stack temp from struct literal
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        self.scene = scene;
-        self.dispatch = dispatch;
+        // PR 7c.3a — back-compat aliases mirror `self.frame.*`.
+        // Same heap address as the bundle's owned pointees.
+        self.scene = self.frame.scene;
+        self.dispatch = self.frame.dispatch;
 
         // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
         // owns the pointees. By-value init is safe — the struct only
@@ -1223,10 +1282,6 @@ pub const Window = struct {
         // at this point in the function.
         self.resources.deinit();
 
-        // Clean up dispatch tree
-        self.dispatch.deinit();
-        self.allocator.destroy(self.dispatch);
-
         // PR 6 / 7b.4 — teardown covers `Debugger` only (the
         // single per-window owned global remaining after 7b.4).
         // `Keymap.deinit` runs from `App.deinit` instead. The
@@ -1236,12 +1291,26 @@ pub const Window = struct {
         // each global teardown matches its declared `deinit`.
         self.globals.deinit(self.allocator);
 
-        // PR 7a — `scene` and `layout` are always owned (no init
-        // path ever leaves them borrowed); the tautological
-        // `scene_owned` / `layout_owned` flags retired alongside
-        // the `AppResources` extraction. Free unconditionally.
-        self.scene.deinit();
-        self.allocator.destroy(self.scene);
+        // PR 7c.3a — single teardown call covers scene +
+        // dispatch tree. `Frame.deinit` frees both heap
+        // pointees in dispatch → scene order (matches the
+        // pre-7c.3a free order in this function), or no-ops if
+        // `frame.owned == false` (reserved for the PR 7c.3c
+        // double-buffer borrowed-view shape, not yet wired).
+        // Replaces the previous two pairs of `T.deinit` +
+        // `allocator.destroy` calls. The back-compat aliases
+        // (`self.scene` / `self.dispatch`) are NOT separately
+        // freed — they're mirror pointers into the same heap
+        // addresses `frame.deinit` just released; touching
+        // them after this point would be a use-after-free.
+        self.frame.deinit();
+
+        // PR 7a — `layout` is always owned (no init path ever
+        // leaves it borrowed); the tautological `layout_owned`
+        // flag retired alongside the `AppResources` extraction.
+        // Free unconditionally. (`scene` joined `dispatch`
+        // inside `Frame` in PR 7c.3a — see the `frame.deinit`
+        // call above.)
         self.layout.deinit();
         self.allocator.destroy(self.layout);
     }
