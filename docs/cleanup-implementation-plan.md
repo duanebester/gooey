@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/6 landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -883,10 +883,53 @@ so each lands green on its own.
     `App.keymap()` tests covering single-window access and the
     cross-window-share property the lift unlocks). See
     "Sub-PR 7b.4" below.
-  - ☐ 7b.5 — Lift `image_loader` to `App`. Pick between (a)
-    shared queue with per-window draining and (b) per-window
-    loaders pointing at the shared atlas; the choice has
-    cross-window cache-hit-rate UX implications.
+  - ☑ **7b.5 — Lift `image_loader` to `App`.** Landed on
+    `cleanup/pr-7b5-image-loader-on-app`. Picked option (a)
+    from the pre-flight choice list (shared loader on `App`
+    rather than per-window loaders pointing at the shared
+    atlas). Pre-7b.5 every per-window `Window` carried its
+    own `ImageLoader`, so two windows requesting the same
+    URL in the same frame would each launch a background
+    fetch, double the bandwidth, and cache twice into the
+    (already shared) atlas. Post-7b.5 the loader lives on
+    `App`: pending and failed sets are app-scoped, the
+    fetch group covers every window, and the
+    `MAX_PENDING_IMAGE_LOADS` (64) cap is now a real
+    app-wide ceiling rather than a per-window one. The
+    loader's `*ImageAtlas` dependency is bound late via a
+    new two-phase init — `App.init` / `App.initInPlace`
+    leave `image_loader` undefined and
+    `image_loader_bound = false`; both
+    `WindowContext.init` (single-window) and
+    `WindowContext.initWithSharedResources` (multi-window)
+    call `app.bindImageLoader(window.resources.image_atlas)`
+    after wiring `window.app = app`. `bindImageLoader` is
+    idempotent on same-atlas re-binds (the first window
+    performs the actual `initInPlace`; subsequent
+    multi-window windows hit the same-atlas short-circuit),
+    which sidesteps the field-init-ordering pinch in
+    `multi_window_app::App.init` (where `resources` and
+    `context_app` are siblings of one parent struct
+    literal) without making the loader's lifecycle
+    framework-call-site-dependent. `Window` lost the
+    `image_loader` field, the `fixupImageLoadQueue`
+    forwarder (no longer needed — `App.bindImageLoader`
+    runs `initInPlace` at the loader's final heap address,
+    so no by-value-copy queue dangle is possible), the
+    `image_loader.deinit()` call from `Window.deinit`, and
+    the four `.image_loader = undefined` slots in the
+    init-path struct literals plus the `testWindow`
+    fixture. `App.deinit` order rewrote to teardown the
+    loader first (so in-flight fetches unwind against a
+    still-live atlas — atlas is upstream-owned on
+    `AppResources` and torn down *after* `App.deinit`
+    returns), then `entities`, then `globals`. `Build
+    Summary: 9/9 steps succeeded; 1066/1066 tests passed`
+    (+3 vs. 1063 — three new `App` tests covering
+    `bindImageLoader` single-bind, the unbound-deinit
+    safety net for test fixtures, and the
+    cross-window-share property the lift unlocks). See
+    "Sub-PR 7b.5" below.
   - ☑ **7b.6 — Retire `Window.text_system` / `svg_atlas` /
     `image_atlas` back-compat aliases.** Landed on
     `cleanup/pr-7b6-retire-aliases`. ~28 internal call sites
@@ -1793,6 +1836,368 @@ across the full `App → WindowContext → Window` call chain.
 **Result:** `Build Summary: 9/9 steps succeeded; 1057/1057
 tests passed`. `zig build install` builds all examples without
 warnings.
+
+---
+
+**Sub-PR 7b.5 — Lift `image_loader` onto `App` (landed):**
+
+Fifth functional slice of PR 7b. Goal: lift the URL fetch +
+decode + atlas-cache subsystem (`ImageLoader`) off `Window` and
+onto `App`, finishing the GPUI mapping in
+[`architectural-cleanup-plan.md` §10](./architectural-cleanup-plan.md#10-the-app--window--contextt-split)
+for `entities` (7b.3), `keymap` / `*const Theme` (7b.4), and
+now `image_loader`. Pre-7b.5 every per-window `Window` carried
+its own `ImageLoader` whose pending and failed sets, fetch
+group, and result queue were per-window islands — so the same
+URL requested by two windows in the same frame would each
+launch a background fetch, each spend a `MAX_PENDING_IMAGE_LOADS`
+slot, and each write into the (already shared) `ImageAtlas`,
+producing duplicate bandwidth + a small atlas race window
+where two writers contend on the same key.
+
+Post-7b.5 the loader lives once per `App`. Pending and failed
+sets are app-scoped (the cross-window dedup property the lift
+unlocks). The fetch group's lifetime envelope covers every
+window (so cancelling the group in `App.deinit` unwinds every
+in-flight fetch in one pass, regardless of which window
+launched it). The `MAX_PENDING_IMAGE_LOADS` cap (64) is now a
+real app-wide ceiling rather than a per-window one — a
+behavioural change worth flagging: an app with 8 windows each
+loading 8 distinct URLs concurrently used to share 8×64=512
+slots and now shares 64. The cap was already per-app in
+spirit (the framework only opens a small number of windows
+in practice), but the lift makes it formal.
+
+**Why this lands as its own slice:** the choice between (a)
+shared queue with per-window draining and (b) per-window
+loaders pointing at the shared atlas has UX implications
+(cross-window cache hit-rate vs. drain semantics), and
+flagging that decision in the original PR 7 outline meant
+landing it discretely rather than folding it into 7b.4 or
+7b.6. Option (a) won — see "Implementation notes" below for
+the reasoning.
+
+**Pre-flight choice (option a vs. b):**
+
+- **Option (a) — shared loader on `App`** (chosen). Pending /
+  failed sets are app-scoped → best cross-window cache-hit
+  rate. The hard cap on in-flight loads becomes app-wide.
+  Aligns with the GPUI mapping where async I/O is
+  app-scoped. Drain semantics: any window calling `drain`
+  empties the queue for all windows; results land in the
+  next atlas pass on whichever window happens to draw
+  first. Acceptable because the atlas itself is already
+  shared post-7b.2 — a result drained by window A and
+  rendered by window B sees the same heap pixels either
+  way.
+- **Option (b) — per-window loaders pointing at shared
+  atlas** (rejected). Preserves drain locality (each window
+  drains its own queue) but duplicates pending / failed
+  bookkeeping across windows, which is the property the
+  lift was supposed to fix. The drain-locality benefit is
+  moot — background fetch tasks already cross window
+  boundaries freely; the queue is the only thread-crossing
+  primitive, and one queue serving N windows is
+  structurally simpler than N queues whose results are
+  demultiplexed by window identity (no current code path
+  even tracks "which window asked").
+
+**Two-phase init — the atlas-binding wrinkle:**
+
+The loader needs an `*ImageAtlas` at `initInPlace` time, but
+the atlas lives on `AppResources`, which is constructed
+*after* `App.init` on the single-window path
+(`Window.initOwned` creates the owning `AppResources`) and
+*before* `App.init` on the multi-window path
+(`multi_window_app::App.init` creates `self.resources`
+first, then `self.context_app = ContextApp.init(...)`
+embeds the `context.App` by value). Threading
+`*ImageAtlas` through `App.init`'s signature would force
+`multi_window_app` to reorder its field-init order (so
+`context_app` could pass `self.resources.image_atlas` to
+`init`, which is awkward because both are siblings in one
+struct literal) and force the single-window runner to
+construct a `Window` before the `App` it borrows.
+
+Instead `App` exposes a two-phase init:
+
+1. `App.init` / `App.initInPlace` allocate the entity map,
+   register the `Keymap` global, and leave `image_loader`
+   undefined. A new `image_loader_bound: bool` flag
+   (default `false`) tracks the second-phase state.
+2. `App.bindImageLoader(*ImageAtlas)` runs `initInPlace`
+   on the loader at the `App`'s final heap address. `App`
+   is always heap-allocated (single-window) or embedded
+   by-value inside a heap-allocated parent (multi-window)
+   by every framework caller, so `&self.image_loader` is
+   already at its final address — no by-value copy will
+   follow this call, and the embedded `Io.Queue`'s
+   pointer to `&self.image_loader.result_buffer` cannot
+   dangle. The pre-7b.5 `Window.fixupImageLoadQueue`
+   dance retired alongside the field.
+
+`bindImageLoader` is idempotent on same-atlas re-binds:
+the first window opened in this `App` performs the actual
+bind; every subsequent window (multi-window only) hits
+the same-atlas short-circuit because every borrowed
+`AppResources` in this `App`'s lifetime points at the
+same upstream-owned `ImageAtlas`. A different atlas
+pointer trips a hard assertion (a framework bug — the
+caller has confused itself about which `App` it is
+binding, or the parent rebuilt `AppResources`
+mid-lifetime). The idempotency means both
+`WindowContext.init` and
+`WindowContext.initWithSharedResources` can call
+`app.bindImageLoader(...)` unconditionally, without
+needing a "bind-if-unbound" decision tree at the call
+site.
+
+**Write scope (landed):**
+
+- `src/context/app.zig` —
+  - **Adds** `image_loader: ImageLoader = undefined` and
+    `image_loader_bound: bool = false` fields. The flag
+    serves both as the deinit guard (so test fixtures
+    that construct `App`s without binding can still tear
+    them down cleanly) and as the same-atlas
+    short-circuit sentinel for `bindImageLoader`.
+  - **Adds** `App.bindImageLoader(*ImageAtlas)`.
+    Idempotent on same-atlas re-binds (asserts pointer
+    equality); runs `ImageLoader.initInPlace` once.
+    Pair-asserts the loader's pending / failed counts
+    are zero post-bind.
+  - `App.init` / `App.initInPlace` no longer change
+    semantics for the loader — they leave it undefined,
+    and pair-assert `!image_loader_bound` post-init.
+  - `App.deinit` rewrote teardown order to:
+    1. `image_loader.deinit` (guarded by
+       `image_loader_bound`) — closes the result queue,
+       cancels the fetch group. In-flight fetches see
+       queue closure on next put and cancel-point checks
+       unwind cleanly.
+    2. `entities.deinit` (was first pre-7b.5; demoted
+       because the loader teardown must run while the
+       atlas is still live, and the atlas is
+       upstream-owned on `AppResources` which is torn
+       down *after* `App.deinit` returns).
+    3. `globals.deinit` (Keymap, etc.).
+  - Three new tests: bind path against a real
+    `ImageAtlas`, unbound-deinit safety (test fixtures
+    rely on this), and the cross-window-share property
+    exercised through two `*App` borrows of the same
+    backing struct.
+- `src/context/window.zig` —
+  - **Drops** `image_loader: ImageLoader` field.
+  - **Drops** `Window.fixupImageLoadQueue` forwarder
+    (`App.bindImageLoader` runs `initInPlace` at the
+    loader's final heap address; no by-value-copy queue
+    dangle is possible on the new path).
+  - **Reroutes** `Window.isImageLoadPending` and
+    `Window.isImageLoadFailed` forwarders through
+    `self.app.image_loader.*`. Forwarder-not-direct-access
+    keeps the call surface in `runtime/render.zig`
+    unchanged for this slice; a follow-up cleanup can
+    retire the forwarders once enough callers reach
+    through `window.app` directly.
+  - **Drops** `self.image_loader.deinit()` from
+    `Window.deinit` (handed off to `App.deinit`).
+  - **Drops** `.image_loader = undefined` slot from all
+    four `init*` paths' struct literals plus the
+    `testWindow` fixture. **Drops** the
+    `result.image_loader.initInPlace(...)` /
+    `self.image_loader.initInPlace(...)` calls in all
+    four init paths (handed off to
+    `App.bindImageLoader`).
+  - **Reroutes** `Window.beginFrame`'s drain to
+    `self.app.image_loader.drain()`. Multi-window
+    redundancy (N windows each driving drain per tick)
+    documented inline alongside the matching
+    `entities.beginFrame` redundancy from PR 7b.3 — both
+    retire in PR 7c when the per-tick begin/end pair
+    moves to app-scope.
+- `src/runtime/window_context.zig` —
+  - `WindowContext.init` (single-window) drops
+    `window.fixupImageLoadQueue()` after
+    `window.app = app`; **adds**
+    `app.bindImageLoader(window.resources.image_atlas)`
+    in its place. `Window.initOwned` creates the owning
+    `AppResources` (and the backing `ImageAtlas`) on
+    this path, so this is the first moment a stable
+    `*ImageAtlas` is available.
+  - `WindowContext.initWithSharedResources`
+    (multi-window) drops
+    `window.fixupImageLoadQueue()`; **adds**
+    `app.bindImageLoader(shared_resources.image_atlas)`.
+    The first window opened in an `App` performs the
+    actual `initInPlace` here; subsequent windows hit
+    the same-atlas short-circuit.
+- `src/app.zig` (WASM bootstrap) —
+  - `WebApp.initImpl` adds
+    `app_ptr.bindImageLoader(window_ptr.resources.image_atlas)`
+    after `window_ptr.app = app_ptr`. Mirrors the
+    single-window native path.
+- `src/runtime/render.zig` —
+  - `ensureNativeUrlLoading` rewrites
+    `window_ctx.image_loader.enqueueIfRoom(...)` to
+    `window_ctx.app.image_loader.enqueueIfRoom(...)`
+    with a pair-assertion on
+    `window_ctx.app.image_loader_bound` so a missing
+    `App.bindImageLoader` call surfaces at the first
+    place the loader's queue is touched.
+- `src/image/loader.zig` —
+  - `fixupQueue` itself stays — it remains a useful
+    primitive for any future caller that needs by-value
+    `ImageLoader` construction. Test comment updated to
+    reflect that `Window.initOwned` no longer drives
+    this pattern post-7b.5.
+
+**Tasks landed:**
+
+- [x] Add `image_loader: ImageLoader = undefined` and
+      `image_loader_bound: bool = false` fields to `App`.
+- [x] Add `App.bindImageLoader(*ImageAtlas)` with
+      idempotent same-atlas semantics + single-bind
+      assertion on different-atlas re-binds.
+- [x] Rewrite `App.deinit` order to tear the loader
+      down first (while the atlas is still live), then
+      entities, then globals.
+- [x] Drop `image_loader` field, `fixupImageLoadQueue`
+      forwarder, and the `init*` / `deinit` /
+      `beginFrame` / `testWindow` references on
+      `Window`. Reroute `isImageLoadPending` /
+      `isImageLoadFailed` through
+      `self.app.image_loader.*`.
+- [x] Reroute `Window.beginFrame`'s drain to
+      `self.app.image_loader.drain()`.
+- [x] Bind via `app.bindImageLoader(...)` from
+      `WindowContext.init`,
+      `WindowContext.initWithSharedResources`, and
+      `WebApp.initImpl`.
+- [x] Reroute
+      `runtime/render.zig::ensureNativeUrlLoading`
+      through `window_ctx.app.image_loader` with a
+      pair-assertion on `image_loader_bound`.
+- [x] Update the `fixupQueue` test comment in
+      `image/loader.zig` to reflect the post-7b.5
+      state.
+- [x] `Build Summary: 9/9 steps succeeded; 1066/1066
+      tests passed` (+3 vs. PR 7b.4's 1063 — three new
+      `App` tests covering single-bind,
+      unbound-deinit safety, and the
+      cross-window-share property).
+- [x] `zig build install` builds all examples
+      (single-window and multi-window) without
+      warnings.
+
+**Implementation notes:**
+
+- **Idempotency over single-bind.** An earlier draft of
+  `bindImageLoader` enforced strict single-bind via
+  `assert(!image_loader_bound)`. That worked for the
+  single-window path (one window, one bind) but forced
+  an asymmetric design on the multi-window path where
+  the parent `multi_window_app::App.init` would have
+  had to bind directly — which conflicts with the
+  by-value return shape of `multi_window_app::App.init`
+  (the loader's queue would dangle after the by-value
+  copy into the caller's storage, requiring a
+  `fixupQueue` call exactly like the pre-7b.5
+  `Window.fixupImageLoadQueue`). The idempotent
+  same-atlas variant lets every window's
+  `WindowContext.init*` drive the bind unconditionally;
+  the first window does the work, the rest
+  short-circuit. This keeps the bind site in the call
+  chain symmetric across single-window and
+  multi-window flows.
+- **`App.deinit` order swap is load-bearing.** Pre-7b.5
+  `App.deinit` ran `entities.deinit` then
+  `globals.deinit`. Post-7b.5 `image_loader.deinit`
+  jumps to the front of the line. Rationale:
+  cancelling the fetch group blocks until in-flight
+  fetch tasks complete their current cancel-point
+  check; those tasks may be mid-write into the shared
+  `ImageAtlas` (via `cacheRgba` inside
+  `ImageLoader.drain`, but also conceivably via
+  direct `image_atlas.cacheImage` calls from a future
+  eviction-re-fetch path). The atlas is upstream-owned
+  on `AppResources` and torn down *after* `App.deinit`
+  returns, so loader-first ordering means the atlas
+  is guaranteed live during cancellation. Pre-7b.5
+  the pre-existing `Window.deinit` did
+  `image_loader.deinit` first for the same reason;
+  the lift preserves the invariant, just at a
+  different scope.
+- **Atlas pointer equality is the bind-correctness
+  predicate.** `bindImageLoader`'s same-atlas
+  short-circuit asserts
+  `self.image_loader.image_atlas == image_atlas`. A
+  different pointer would mean either (a) the caller
+  mixed up `App` instances (e.g. handed
+  `multi_window_app::App.context_app` a window's
+  borrowed `AppResources` from a *different* parent),
+  or (b) the parent rebuilt `AppResources`
+  mid-lifetime (which the framework does not do today
+  and would invalidate every borrowing window's
+  `resources` field anyway). Both are
+  framework-internal bugs; the panic surfaces them at
+  the bind site rather than letting an in-flight
+  fetch land in the wrong atlas.
+- **Drain redundancy across windows.** With one
+  shared loader and N windows each calling
+  `app.image_loader.drain()` from
+  `Window.beginFrame`, the first window's drain
+  empties the queue and subsequent calls in the same
+  tick get 0 results. The decoded pixels land in the
+  atlas during whichever window's drain happened
+  first; rendering in any later-drawing window in
+  the same tick sees the cached result. No artefact
+  is visible to the user — the atlas is shared and
+  the pixel data is identical regardless of which
+  window's drain wrote it. The redundancy is wasted
+  CPU (an empty queue lookup per extra window per
+  tick); PR 7c (`Frame` double-buffer) retires it by
+  moving the per-tick begin/end pair to app-scope.
+- **WASM bootstrap mirrors the single-window native
+  path.** `app.zig::WebApp.initImpl` heap-allocates
+  one `App` (already in PR 7b.3) and one `Window`
+  (already via `initOwnedPtr`); 7b.5 adds one
+  `app_ptr.bindImageLoader(window_ptr.resources.image_atlas)`
+  call after `window_ptr.app = app_ptr`. The
+  WASM-vs-native split is structural rather than
+  behavioural — both bind exactly once per `App`
+  lifetime against the single window's atlas. The
+  `g_app` global retains its pre-7b.5 lifecycle
+  (leaks at process exit; browser tab teardown
+  reclaims the WASM heap).
+- **Forwarder retention on `Window`.**
+  `isImageLoadPending` and `isImageLoadFailed` stay
+  as forwarders on `Window` rather than retiring in
+  favour of `cx.app().image_loader.*` because the
+  call surface that reads them
+  (`runtime/render.zig`) is framework-internal and
+  already reaches through `Window`. Retiring the
+  forwarders would force a sweep across the call
+  sites for no clarity gain in this slice; a future
+  cleanup that introduces `Cx.app()` and reroutes
+  user-facing call sites can drop the forwarders in
+  step. Same precedent as `Window.keymap()` in
+  PR 7b.4.
+- **`fixupQueue` retention on `ImageLoader`.** The
+  primitive on `ImageLoader` itself stays — it
+  remains useful for any future caller that needs
+  by-value construction (e.g. a unit test that
+  builds a loader on the stack and copies to heap).
+  The retirement was of the
+  `Window.fixupImageLoadQueue` *forwarder*, not the
+  underlying primitive. The test
+  `ImageLoader: fixupQueue restores the queue
+  pointer after a copy` continues to pin the
+  primitive's contract.
+
+**Result:** `Build Summary: 9/9 steps succeeded;
+1066/1066 tests passed`. `zig build install` builds
+all examples (single-window and multi-window)
+without warnings.
 
 ---
 
