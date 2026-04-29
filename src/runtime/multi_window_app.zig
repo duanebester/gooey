@@ -73,6 +73,18 @@ const shader_mod = @import("../core/shader.zig");
 const app_resources_mod = @import("../context/app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
+// PR 7b.3 — `context.App` owns application-lifetime state shared
+// across windows. Currently holds `entities` (lifted off `Window`
+// in 7b.3); subsequent 7b slices add `keymap` / `globals` /
+// `image_loader` here per the GPUI mapping in
+// `architectural-cleanup-plan.md` §10. Embedded by-value below
+// (`context_app: ContextApp`) so every `Window` opened by this
+// app borrows `&self.context_app` and reaches the same
+// `EntityMap` — that's the property cross-window observation
+// needs. See `docs/cleanup-implementation-plan.md` PR 7b.3.
+const context_app_mod = @import("../context/app.zig");
+const ContextApp = context_app_mod.App;
+
 // Runtime
 const WindowContext = @import("window_context.zig").WindowContext;
 const WindowHandle = @import("window_handle.zig").WindowHandle;
@@ -131,6 +143,16 @@ pub const App = struct {
     /// `image_atlas: *T` triplet that duplicated the alloc/init/
     /// deinit logic three times.
     resources: AppResources,
+
+    /// PR 7b.3 — application-lifetime state shared across windows.
+    /// Currently owns `entities` (the `EntityMap` used to live on
+    /// each per-window `Window`; lifting it here makes models
+    /// observable across windows). Subsequent 7b slices add
+    /// `keymap` / `globals` / `image_loader`. Embedded by-value:
+    /// the outer `App` is heap-allocated by the caller and
+    /// `&self.context_app` outlives every `Window` opened from
+    /// this app.
+    context_app: ContextApp,
 
     /// IO interface for async work. Threaded through to all windows.
     io: std.Io,
@@ -195,6 +217,13 @@ pub const App = struct {
             .platform = plat,
             .registry = WindowRegistry.init(allocator),
             .resources = resources,
+            // PR 7b.3 — initialise the embedded `context.App`
+            // with the same `allocator` + `io` the rest of the
+            // multi-window app uses. `ContextApp.init` is
+            // infallible (no `try`) — `EntityMap.init` never
+            // returns errors. The `EntityMap` inside is empty
+            // until the first `cx.entities.create(...)` call.
+            .context_app = ContextApp.init(allocator, io),
             .initialized = true,
         };
 
@@ -226,10 +255,22 @@ pub const App = struct {
         std.debug.assert(self.registry.count() >= 0);
 
         // Close all windows first — every per-window `Window` holds a
-        // borrowed view of `self.resources`; closing the windows
-        // before tearing the bundle down ensures no in-flight render
-        // can still reach a freed atlas.
+        // borrowed view of `self.resources` and `&self.context_app`;
+        // closing the windows before tearing either down ensures no
+        // in-flight render can still reach a freed atlas, and no
+        // `Window.deinit` can still walk a freed `EntityMap`.
         self.closeAllWindows();
+
+        // PR 7b.3 — tear the shared `EntityMap` down before the
+        // shared atlases. Order rationale: `EntityMap.deinit`
+        // cancels any attached async groups, which may hold
+        // pointers into the image atlas's pixel buffers
+        // (entity-attached fetches today, but also any future
+        // pipeline that lands an `ImageLoader` on `App`). Doing
+        // entity teardown first means those tasks unwind against
+        // a still-live atlas; the reverse order would risk
+        // use-after-free in cancellation paths.
+        self.context_app.deinit();
 
         // PR 7b.2 — single teardown call covers text_system +
         // svg_atlas + image_atlas. `AppResources.deinit` frees the
@@ -493,12 +534,19 @@ pub const App = struct {
         // wraps it in `AppResources.borrowed(...)` so each window's
         // own `resources` field is `owned = false` and `Window.deinit`
         // is a no-op for the shared atlases.
+        // PR 7b.3 — pass `&self.context_app` so the new
+        // `Window` borrows the same `EntityMap` every other
+        // window in this app borrows. Pre-7b.3 the per-window
+        // map was constructed inside `Window.initWithSharedResources`
+        // and the cross-window observation property was
+        // structurally impossible.
         const ctx = try WinCtx.initWithSharedResources(
             self.allocator,
             window,
             state,
             render,
             &self.resources,
+            &self.context_app,
             self.io,
         );
 

@@ -177,6 +177,19 @@ pub const isView = entity.isView;
 pub const typeId = entity.typeId;
 
 // =============================================================================
+// PR 7b.3 — App (application-lifetime, shared across windows)
+// =============================================================================
+//
+// `App` lifts entity storage off `Window` so models can be shared
+// across windows (cross-window observation). Subsequent 7b slices add
+// `keymap` / `globals` / `image_loader` here per the GPUI mapping in
+// `architectural-cleanup-plan.md` §10. See `app.zig` and
+// `docs/cleanup-implementation-plan.md` PR 7b.3.
+
+pub const app = @import("app.zig");
+pub const App = app.App;
+
+// =============================================================================
 // Handler System
 // =============================================================================
 

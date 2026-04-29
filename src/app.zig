@@ -42,6 +42,17 @@ const shader_mod = @import("core/shader.zig");
 const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
 
+// PR 7b.3 — `App` owns application-lifetime state shared across
+// windows (currently `entities`; later 7b slices add `keymap` /
+// `globals` / `image_loader`). The WASM bootstrap heap-allocates
+// one `App` here and hands `*App` to the single `Window` it
+// creates. Single-window flow on WASM mirrors the native runner
+// (`runtime/runner.zig`) — both go through `App` even though
+// there is only one borrower today, so the future runner
+// consolidation is a no-op for entity ownership.
+const context_app_mod = @import("context/app.zig");
+const ContextApp = context_app_mod.App;
+
 // Re-export runtime functions
 pub const runCx = runtime.runCx;
 pub const CxConfig = runtime.CxConfig;
@@ -161,6 +172,12 @@ pub fn WebApp(
         // (`window → platform_window`) and the §10 GPUI sketch.
         var g_platform_window: ?*PlatformWindow = null;
         var g_window: ?*Window = null;
+        // PR 7b.3 — heap-allocated `App` owning the shared
+        // `EntityMap`. WASM has no `defer` analog at file
+        // scope, so this leaks at process exit — same lifecycle
+        // as every other `g_*` global in this struct (the
+        // browser tab teardown reclaims the entire WASM heap).
+        var g_app: ?*ContextApp = null;
         var g_builder: ?*Builder = null;
         var g_cx: ?Cx = null;
         var g_renderer: ?*WebRenderer = null;
@@ -205,7 +222,24 @@ pub fn WebApp(
             // WASM uses single-threaded IO — no fibers, sequential execution.
             const io = std.Io.Threaded.global_single_threaded.io();
 
+            // PR 7b.3 — allocate the shared `App` before the
+            // `Window` so it can be wired in immediately after
+            // `initOwnedPtr`. `initOwnedPtr` leaves
+            // `window_ptr.app` at its `undefined` default; the
+            // assignment a few lines below is the latest moment
+            // safe to install the borrowed pointer (any earlier
+            // and the `Window` does not exist yet).
+            const app_ptr = try allocator.create(ContextApp);
+            app_ptr.initInPlace(allocator, io);
+            g_app = app_ptr;
+
             try window_ptr.initOwnedPtr(allocator, g_platform_window.?, font_cfg, io);
+            // PR 7b.3 — wire the borrowed `*App` onto the freshly-
+            // initialised `Window`. Mirrors the same pattern in
+            // `runtime/window_context.zig::WindowContext.init`;
+            // every `cx.entities.*` access reaches through this
+            // pointer.
+            window_ptr.app = app_ptr;
             g_window = window_ptr;
 
             // Initialize Builder

@@ -29,6 +29,15 @@ const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .m
 const window_mod = @import("../context/window.zig");
 const Window = window_mod.Window;
 const FontConfig = window_mod.FontConfig;
+// PR 7b.3 — `App` owns application-lifetime state shared across
+// windows. The single-window flow heap-allocates one `App` here in
+// `WindowContext.init`; the multi-window flow embeds a `context.App`
+// inside `multi_window_app.zig::App` and hands `*App` to every
+// window. Either way `WindowContext` writes the borrowed pointer
+// onto `window.app` after the `Window` is constructed, so the field
+// is non-`undefined` before any frame runs.
+const app_mod = @import("../context/app.zig");
+const App = app_mod.App;
 const cx_mod = @import("../cx.zig");
 const Cx = cx_mod.Cx;
 const ui_mod = @import("../ui/mod.zig");
@@ -91,6 +100,17 @@ pub fn WindowContext(comptime State: type) type {
         /// Framework window wrapper (owned, manages layout/scene/widgets)
         window: *Window,
 
+        /// PR 7b.3 — borrowed `*App`. Single-window: owned by the
+        /// runner (`runtime/runner.zig`), heap-allocated once
+        /// per app. Multi-window: owned by-value inside
+        /// `multi_window_app.zig::App`. `WindowContext.deinit`
+        /// deliberately does not touch this pointer — the
+        /// upstream owner tears the `App` down after every
+        /// window's `WindowContext.deinit` has run, so cancel
+        /// groups attached to entities have a live `EntityMap`
+        /// to walk during entity removal.
+        app: *App,
+
         /// UI Builder instance
         builder: *Builder,
 
@@ -123,17 +143,26 @@ pub fn WindowContext(comptime State: type) type {
 
         /// Initialize a WindowContext for a window.
         /// Allocates Window and Builder on the heap.
+        ///
+        /// PR 7b.3 — `app` is borrowed from the caller (the
+        /// single-window runner heap-allocates one `App` per
+        /// process and hands `*App` here). `WindowContext` does
+        /// not own the `App` — `deinit` does not free it. The
+        /// caller must outlive every window borrowing the
+        /// pointer.
         pub fn init(
             allocator: std.mem.Allocator,
             platform_window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
             font_config: FontConfig,
+            app: *App,
             io: std.Io,
         ) !*Self {
             // Assertions: validate inputs (pointers must not be null-equivalent)
             std.debug.assert(@intFromPtr(state) != 0);
             std.debug.assert(@intFromPtr(render_fn) != 0);
+            std.debug.assert(@intFromPtr(app) != 0);
 
             // Allocate self on heap (WindowContext may be large)
             const self = try allocator.create(Self);
@@ -148,6 +177,14 @@ pub fn WindowContext(comptime State: type) type {
             const window = try allocator.create(Window);
             errdefer allocator.destroy(window);
             window.* = try Window.initOwned(allocator, platform_window, font_config, io);
+            // PR 7b.3 — wire the borrowed `*App` onto the freshly-
+            // initialised `Window`. `Window.initOwned` left
+            // `window.app` at its `undefined` default; this assignment
+            // is the latest moment that's safe (any earlier and the
+            // by-value copy from the `Window.initOwned` stack temp
+            // would not have happened yet). Every code path that
+            // reaches `window.app.*` runs after this point.
+            window.app = app;
             window.fixupImageLoadQueue();
             errdefer window.deinit();
 
@@ -166,6 +203,7 @@ pub fn WindowContext(comptime State: type) type {
             self.* = .{
                 .allocator = allocator,
                 .window = window,
+                .app = app,
                 .builder = builder,
                 .state = state,
                 .render_fn = render_fn,
@@ -184,6 +222,7 @@ pub fn WindowContext(comptime State: type) type {
             // Assertions: validate initialization
             std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
+            std.debug.assert(@intFromPtr(self.window.app) == @intFromPtr(app));
 
             return self;
         }
@@ -205,6 +244,7 @@ pub fn WindowContext(comptime State: type) type {
             state: *State,
             render_fn: *const fn (*Cx) void,
             shared_resources: *const AppResources,
+            app: *App,
             io: std.Io,
         ) !*Self {
             // Assertions: validate inputs.
@@ -214,6 +254,7 @@ pub fn WindowContext(comptime State: type) type {
             std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
             std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
             std.debug.assert(@intFromPtr(shared_resources.image_atlas) != 0);
+            std.debug.assert(@intFromPtr(app) != 0);
 
             // Allocate self on heap
             const self = try allocator.create(Self);
@@ -231,6 +272,13 @@ pub fn WindowContext(comptime State: type) type {
                 shared_resources,
                 io,
             );
+            // PR 7b.3 — wire the borrowed `*App` from the upstream
+            // `multi_window_app.zig::App`. Every window in a
+            // multi-window app receives a pointer to the SAME
+            // `context.App` (embedded by-value inside the parent),
+            // which is exactly what enables cross-window entity
+            // observation.
+            window.app = app;
             window.fixupImageLoadQueue();
             errdefer window.deinit();
 
@@ -249,6 +297,7 @@ pub fn WindowContext(comptime State: type) type {
             self.* = .{
                 .allocator = allocator,
                 .window = window,
+                .app = app,
                 .builder = builder,
                 .state = state,
                 .render_fn = render_fn,
@@ -267,6 +316,7 @@ pub fn WindowContext(comptime State: type) type {
             // Assertions: validate initialization
             std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
+            std.debug.assert(@intFromPtr(self.window.app) == @intFromPtr(app));
 
             return self;
         }

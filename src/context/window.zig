@@ -90,6 +90,15 @@ const entity_mod = @import("entity.zig");
 const EntityMap = entity_mod.EntityMap;
 pub const EntityId = entity_mod.EntityId;
 
+// PR 7b.3 — `App` owns application-lifetime state shared across
+// windows. The entity map lives there now (was a per-window
+// `EntityMap` field on this struct); future 7b slices add
+// `keymap` / `globals` / `image_loader`. Each `Window` borrows
+// the parent `App` via the `app: *App` field below. See
+// `app.zig` and `docs/cleanup-implementation-plan.md` PR 7b.3.
+const app_mod = @import("app.zig");
+const App = app_mod.App;
+
 const action_mod = @import("../input/actions.zig");
 const Keymap = action_mod.Keymap;
 
@@ -322,8 +331,23 @@ pub const Window = struct {
     /// "constructed but never entered a frame".
     current_phase: DrawPhase = .none,
 
-    /// Entity storage for GPUI-style state management
-    entities: EntityMap,
+    /// PR 7b.3 — borrowed `*App` view onto application-lifetime
+    /// state shared across windows. Owns `entities` (lifted off
+    /// `Window` in 7b.3); future 7b slices add `keymap` /
+    /// `globals` / `image_loader`. The single-window flow heap-
+    /// allocates an `App` in `runtime/window_context.zig` and
+    /// hands a pointer here; the multi-window flow embeds a
+    /// `context.App` inside `runtime/multi_window_app.zig::App`
+    /// and hands a pointer to that. Either way the pointee
+    /// outlives every borrowing `Window` — `Window.deinit` does
+    /// not touch this field; the upstream owner tears down the
+    /// `App` after the last `Window.deinit` returns.
+    ///
+    /// Default `undefined` so test fixtures (`testWindow`) and
+    /// init paths that haven't been threaded through the new
+    /// param yet keep compiling; every framework `init*` path
+    /// assigns this field before the first frame runs.
+    app: *App = undefined,
 
     // Platform — OS-level window handle (NSWindow on macOS, wl_surface
     // on Linux, canvas on web). PR 7b.1b renamed this field from
@@ -620,7 +644,12 @@ pub const Window = struct {
             .layout = layout_engine,
             .scene = scene,
             .dispatch = dispatch,
-            .entities = EntityMap.init(allocator, io),
+            // PR 7b.3 — `entities` lifted off `Window` onto `App`.
+            // The `app: *App` field is left at its `undefined`
+            // default here; the caller (`runtime/window_context.zig`)
+            // assigns it after this returns. The follow-up slice
+            // threads `app: *App` through this function's
+            // signature so the field is set before any frame runs.
             // PR 6 — `keymap` and `debugger` move to `globals` below
             // (post-literal so they can `try` and we can `errdefer`
             // the cleanup chain).
@@ -763,8 +792,12 @@ pub const Window = struct {
         // the shared atlases now.
         self.platform_window = platform_window;
 
-        // Small structs
-        self.entities = EntityMap.init(allocator, io);
+        // PR 7b.3 — `entities` lifted off `Window` onto `App`.
+        // `self.app` is left `undefined` here; the caller
+        // (`runtime/window_context.zig` on the WASM Ptr path)
+        // assigns it after `initOwnedPtr` returns. The follow-up
+        // slice threads `app: *App` through this function's
+        // signature so the field is set inline.
         self.focus = FocusManager.init(allocator);
         self.widgets = WidgetStore.init(allocator, io);
 
@@ -894,7 +927,9 @@ pub const Window = struct {
             .layout = layout_engine,
             .scene = scene,
             .dispatch = dispatch,
-            .entities = EntityMap.init(allocator, io),
+            // PR 7b.3 — `entities` lifted off `Window` onto `App`.
+            // `app: *App` is set by the caller post-init; see the
+            // matching note in `initOwned` above.
             // PR 6 — `keymap` / `debugger` move to `globals` below.
             .focus = FocusManager.init(allocator),
             // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
@@ -1017,8 +1052,9 @@ pub const Window = struct {
 
         self.platform_window = platform_window;
 
-        // Small structs
-        self.entities = EntityMap.init(allocator, io);
+        // PR 7b.3 — `entities` lifted off `Window` onto `App`.
+        // `self.app` is left `undefined` here; the caller assigns
+        // it post-init. See the matching note in `initOwnedPtr`.
         self.focus = FocusManager.init(allocator);
         self.widgets = WidgetStore.init(allocator, io);
 
@@ -1087,7 +1123,15 @@ pub const Window = struct {
 
         self.widgets.deinit();
         self.focus.deinit();
-        self.entities.deinit();
+        // PR 7b.3 — `entities` lifted onto `App`. The borrowed
+        // `*App` is owned upstream (single-window: by
+        // `runtime/window_context.zig`; multi-window: by
+        // `runtime/multi_window_app.zig::App`); both call
+        // `App.deinit` after every `Window.deinit` has run.
+        // `Window.deinit` deliberately does not touch
+        // `self.app` — it would be a use-after-free in the
+        // multi-window case where one `App` outlives many
+        // `Window` instances.
 
         // PR 7a — single teardown call covers text_system +
         // svg_atlas + image_atlas. `AppResources.deinit` is a no-op
@@ -1178,8 +1222,20 @@ pub const Window = struct {
         // freshly-decoded pixels into it.
         self.image_loader.drain();
 
-        // Clear stale entity observations from last frame
-        self.entities.beginFrame();
+        // Clear stale entity observations from last frame.
+        // PR 7b.3 — entities live on `App` now. With multiple
+        // windows borrowing the same `*App`, this call is
+        // redundantly invoked once per window per tick;
+        // `beginFrame` is idempotent (re-clearing an already-
+        // empty `frame_observations` is a no-op), but the
+        // window-A-render-then-window-B-begin sequence DOES
+        // discard window-A's frame observations made earlier
+        // this tick. That's a known limitation tracked for
+        // PR 7c (Frame double-buffer), where the per-tick
+        // begin/end pair moves to app-scope. No current code
+        // path shares entities across windows, so the issue is
+        // forward-looking.
+        self.app.entities.beginFrame();
 
         // Update cached window dimensions
         if (self.platform_window) |w| {
@@ -1224,8 +1280,15 @@ pub const Window = struct {
         self.widgets.endFrame();
         self.focus.endFrame();
 
-        // Finalize frame observations
-        self.entities.endFrame();
+        // Finalize frame observations.
+        // PR 7b.3 — entities live on `App` now. `endFrame` is
+        // currently a no-op hook on `EntityMap`, so the
+        // multi-window-redundant-call concern noted on the
+        // matching `beginFrame` site does not apply here yet —
+        // but the call stays for symmetry and so future
+        // optimisations the hook is reserved for don't silently
+        // skip windows.
+        self.app.entities.endFrame();
 
         // Request another frame if animations are running
         if (self.hasActiveAnimations()) {
@@ -1506,29 +1569,40 @@ pub const Window = struct {
     // Entity Operations
     // =========================================================================
 
-    /// Create a new entity
+    /// Create a new entity.
+    ///
+    /// PR 7b.3 — forwards to `self.app.entities`. Pre-7b.3 the
+    /// map lived as a direct field on `Window`; the lift to
+    /// `App` is transparent to this forwarder's call sites.
     pub fn createEntity(self: *Self, comptime T: type, value: T) !entity_mod.Entity(T) {
-        return self.entities.new(T, value);
+        return self.app.entities.new(T, value);
     }
 
-    /// Read an entity's data
+    /// Read an entity's data.
+    /// PR 7b.3 — forwards to `self.app.entities`.
     pub fn readEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*const T {
-        return self.entities.read(T, entity);
+        return self.app.entities.read(T, entity);
     }
 
-    /// Get mutable access to an entity
+    /// Get mutable access to an entity.
+    /// PR 7b.3 — forwards to `self.app.entities`.
     pub fn writeEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*T {
-        return self.entities.write(T, entity);
+        return self.app.entities.write(T, entity);
     }
 
-    /// Process entity notifications (called during frame)
+    /// Process entity notifications (called during frame).
+    /// PR 7b.3 — forwards to `self.app.entities`.
     pub fn processEntityNotifications(self: *Self) bool {
-        return self.entities.processNotifications();
+        return self.app.entities.processNotifications();
     }
 
-    /// Get the entity map
+    /// Get the entity map. PR 7b.3 — returns the shared
+    /// `App.entities` borrowed via `self.app`. Pre-7b.3 this
+    /// returned a per-window map; post-7b.3 every window
+    /// borrowing the same `*App` returns the same pointer,
+    /// which is the property cross-window observation needs.
     pub fn getEntities(self: *Self) *EntityMap {
-        return &self.entities;
+        return &self.app.entities;
     }
 
     // =========================================================================
@@ -1799,7 +1873,12 @@ fn testWindow() Window {
         .focus = undefined,
         .dispatch = undefined,
 
-        .entities = undefined,
+        // PR 7b.3 — `entities` lifted onto `App`. The deferred-
+        // command tests this fixture is built for never reach
+        // through `self.app`, so `undefined` is safe; any test
+        // that calls into entity APIs would need to wire a
+        // real `*App` (see `App.init` in `app.zig`).
+        .app = undefined,
         .platform_window = null,
         .hover = HoverState.init(),
         .blur_handlers = BlurHandlerRegistry.init(),

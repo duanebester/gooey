@@ -68,7 +68,10 @@ pub const Entities = struct {
         comptime T: type,
         value: T,
     ) !Entity(T) {
-        return self.cx()._window.entities.new(T, value);
+        // PR 7b.3 — entities lifted off `Window` onto `App`. Reach
+        // through `_window.app.entities` — the borrowed `*App`
+        // points at app-scope storage shared across windows.
+        return self.cx()._window.app.entities.new(T, value);
     }
 
     // =========================================================================
@@ -107,10 +110,13 @@ pub const Entities = struct {
         entity: Entity(T),
     ) ?EntityContext(T) {
         const c = self.cx();
-        if (!c._window.entities.exists(entity.id)) return null;
+        // PR 7b.3 — entities live on `App`. Both the existence
+        // check and the borrowed `*EntityMap` handed to the
+        // `EntityContext` reach through `_window.app.entities`.
+        if (!c._window.app.entities.exists(entity.id)) return null;
         return EntityContext(T){
             .window = c._window,
-            .entities = &c._window.entities,
+            .entities = &c._window.app.entities,
             .entity_id = entity.id,
         };
     }
@@ -133,13 +139,16 @@ pub const Entities = struct {
         id: EntityId,
         group: *std.Io.Group,
     ) void {
-        self.cx()._window.entities.attachCancelGroup(id, group);
+        // PR 7b.3 — cancel groups attach to entities on the
+        // shared `App.entities` map.
+        self.cx()._window.app.entities.attachCancelGroup(id, group);
     }
 
     /// Detach a cancellation group from an entity without cancelling
     /// it. Use when the async work has completed normally and the
     /// group should no longer be auto-cancelled on entity removal.
     pub fn detachCancel(self: *Entities, id: EntityId) void {
-        self.cx()._window.entities.detachCancelGroup(id);
+        // PR 7b.3 — see `attachCancel`.
+        self.cx()._window.app.entities.detachCancelGroup(id);
     }
 };

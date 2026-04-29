@@ -38,6 +38,16 @@ const cx_mod = @import("../cx.zig");
 const window_mod = @import("../context/window.zig");
 const FontConfig = window_mod.FontConfig;
 
+// PR 7b.3 — `App` owns application-lifetime state shared across
+// windows. The single-window flow heap-allocates one `App` here in
+// `runCx` and hands `*App` to the `WindowContext`. Pre-7b.3 the
+// entity map lived as a per-window field on `Window`; lifting it
+// onto `App` is the precondition for cross-window observation,
+// even though the single-window flow has only one borrower. See
+// `docs/cleanup-implementation-plan.md` PR 7b.3.
+const app_mod = @import("../context/app.zig");
+const App = app_mod.App;
+
 // Runtime imports
 const window_context = @import("window_context.zig");
 
@@ -106,12 +116,32 @@ pub fn runCx(
     // Resolve IO: use caller-provided instance or fall back to global single-threaded.
     const io = config.io orelse std.Io.Threaded.global_single_threaded.io();
 
+    // PR 7b.3 — heap-allocate an `App` and hand `*App` to the
+    // window. The single-window flow has exactly one borrower
+    // today, but going through `App` keeps the call chain
+    // identical to the multi-window path (`multi_window_app.zig`)
+    // and makes the future runner consolidation in a later 7b
+    // slice a no-op for entity ownership.
+    //
+    // Defer order matters: `win_ctx.deinit()` (and the
+    // `window.deinit()` inside it) must run BEFORE
+    // `app.deinit()` so any cancel-group teardown driven by
+    // `Window` close still has a live `EntityMap` to walk —
+    // but `Window.deinit` was rewritten in 7b.3 to NOT touch
+    // `self.app`, so the strict ordering matters less than the
+    // ownership story. We still order the defers so the `App`
+    // outlives the `Window` for safety.
+    const app_ptr = try allocator.create(App);
+    defer allocator.destroy(app_ptr);
+    app_ptr.initInPlace(allocator, io);
+    defer app_ptr.deinit();
+
     // Create per-window context (replaces static CallbackState)
     const WinCtx = window_context.WindowContext(State);
     const win_ctx = try WinCtx.init(allocator, window, state, render, .{
         .font_name = config.font,
         .font_size = config.font_size,
-    }, io);
+    }, app_ptr, io);
     defer win_ctx.deinit();
 
     // Set user callbacks
