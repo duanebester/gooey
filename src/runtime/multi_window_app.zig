@@ -62,6 +62,18 @@ const SvgAtlas = svg_mod.SvgAtlas;
 const image_mod = @import("../image/mod.zig");
 const ImageAtlas = image_mod.ImageAtlas;
 
+// PR 7b.2 — bundle the three "expensive to duplicate per window"
+// resources (text system + svg atlas + image atlas) into a single
+// `AppResources` field. Replaces the three separate `*T` fields plus
+// their parallel allocate/init/deinit blocks. Mirrors the same shape
+// the single-window `Window.init*` paths adopted in PR 7a, so both
+// ownership shapes (single-window owns by-value, multi-window owns
+// once on `App` and hands borrowed views to each `Window`) now route
+// through the same struct. See `src/context/app_resources.zig` and
+// `docs/cleanup-implementation-plan.md` PR 7b.
+const app_resources_mod = @import("../context/app_resources.zig");
+const AppResources = app_resources_mod.AppResources;
+
 // Runtime
 const WindowContext = @import("window_context.zig").WindowContext;
 const WindowHandle = @import("window_handle.zig").WindowHandle;
@@ -110,14 +122,16 @@ pub const App = struct {
     // Shared Resources (expensive to duplicate per window)
     // =========================================================================
 
-    /// Shared text rendering system
-    text_system: *TextSystem,
-
-    /// Shared SVG atlas for icons
-    svg_atlas: *SvgAtlas,
-
-    /// Shared image atlas for bitmaps
-    image_atlas: *ImageAtlas,
+    /// PR 7b.2 — bundled shared rendering resources owned at app
+    /// scope. `App.init` constructs an owning `AppResources` here;
+    /// every per-window `Window` embeds a borrowed view over the
+    /// same three pointees (`text_system` / `svg_atlas` /
+    /// `image_atlas`). `AppResources.deinit` tears them down once,
+    /// in `App.deinit`, after the last window has closed. Replaces
+    /// the previous `text_system: *T` / `svg_atlas: *T` /
+    /// `image_atlas: *T` triplet that duplicated the alloc/init/
+    /// deinit logic three times.
+    resources: AppResources,
 
     /// IO interface for async work. Threaded through to all windows.
     io: std.Io,
@@ -158,45 +172,48 @@ pub const App = struct {
             try plat.setupListeners();
         }
 
-        // Initialize shared text system
-        const text_system = try allocator.create(TextSystem);
-        errdefer allocator.destroy(text_system);
-        text_system.* = try TextSystem.initWithScale(allocator, 1.0, io);
-        errdefer text_system.deinit();
-
-        // Load font from config (named font or system default)
-        if (font_config.font_name) |name| {
-            try text_system.loadFont(name, font_config.font_size);
-        } else {
-            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
-        }
-
-        // Initialize shared SVG atlas
-        const svg_atlas = try allocator.create(SvgAtlas);
-        errdefer allocator.destroy(svg_atlas);
-        svg_atlas.* = try SvgAtlas.init(allocator, 1.0, io);
-        errdefer svg_atlas.deinit();
-
-        // Initialize shared image atlas
-        const image_atlas = try allocator.create(ImageAtlas);
-        errdefer allocator.destroy(image_atlas);
-        image_atlas.* = try ImageAtlas.init(allocator, 1.0, io);
-        errdefer image_atlas.deinit();
+        // PR 7b.2 — bundle text + SVG + image atlas creation into one
+        // `AppResources.initOwned` call. Replaces the three parallel
+        // `allocator.create` + init + errdefer blocks plus the inline
+        // font-load step. Scale is `1.0` here (matching the
+        // pre-extraction default); the first window's scale factor is
+        // installed on this `AppResources` later in `openWindow` once a
+        // platform window exists to read `scale_factor` from.
+        var resources = try AppResources.initOwned(
+            allocator,
+            io,
+            1.0,
+            .{
+                .font_name = font_config.font_name,
+                .font_size = font_config.font_size,
+            },
+        );
+        errdefer resources.deinit();
 
         const self = Self{
             .allocator = allocator,
             .io = io,
             .platform = plat,
             .registry = WindowRegistry.init(allocator),
-            .text_system = text_system,
-            .svg_atlas = svg_atlas,
-            .image_atlas = image_atlas,
+            .resources = resources,
             .initialized = true,
         };
 
-        // Assertions: validate initialization
-        std.debug.assert(@intFromPtr(self.text_system) != 0);
-        std.debug.assert(@intFromPtr(self.svg_atlas) != 0);
+        // PR 7b.2 — `resources.owned` is true on the local `resources`
+        // returned from `initOwned`. The by-value copy into `self`
+        // duplicates the flag; without disarming the local, an
+        // unwinding `errdefer` in this function would tear the heap
+        // pointees down out from under the successfully-copied
+        // `self.resources`. Same idiom as `Window.initOwned` after
+        // PR 7a — see `src/context/window.zig` for the pre-existing
+        // precedent. The copied `self.resources.owned` retains the
+        // `true` value, which is what the caller needs.
+        resources.owned = false;
+
+        // Pair-assert: post-init pointers must be non-null.
+        std.debug.assert(@intFromPtr(self.resources.text_system) != 0);
+        std.debug.assert(@intFromPtr(self.resources.svg_atlas) != 0);
+        std.debug.assert(@intFromPtr(self.resources.image_atlas) != 0);
 
         return self;
     }
@@ -209,18 +226,18 @@ pub const App = struct {
         std.debug.assert(self.initialized);
         std.debug.assert(self.registry.count() >= 0);
 
-        // Close all windows
+        // Close all windows first — every per-window `Window` holds a
+        // borrowed view of `self.resources`; closing the windows
+        // before tearing the bundle down ensures no in-flight render
+        // can still reach a freed atlas.
         self.closeAllWindows();
 
-        // Free shared resources
-        self.image_atlas.deinit();
-        self.allocator.destroy(self.image_atlas);
-
-        self.svg_atlas.deinit();
-        self.allocator.destroy(self.svg_atlas);
-
-        self.text_system.deinit();
-        self.allocator.destroy(self.text_system);
+        // PR 7b.2 — single teardown call covers text_system +
+        // svg_atlas + image_atlas. `AppResources.deinit` frees the
+        // three subsystems in image → svg → text order (matching
+        // the pre-extraction sequence). Replaces three flag-guarded
+        // free blocks at this point in the function.
+        self.resources.deinit();
 
         // Clean up registry
         self.registry.deinit();
@@ -277,12 +294,17 @@ pub const App = struct {
 
         // Update text system scale factor on first window
         // (Text system is initialized with 1.0 before any windows exist)
+        //
+        // PR 7b.2 — reach through `self.resources` for the three
+        // subsystems instead of the retired top-level pointer fields.
+        // The pointees are unchanged — same heap addresses, same
+        // setScaleFactor semantics — only the access path moves.
         if (self.registry.count() == 0) {
             const scale: f32 = @floatCast(window.scale_factor);
-            self.text_system.setScaleFactor(scale);
+            self.resources.text_system.setScaleFactor(scale);
             // Also update the atlas scale factors for proper rendering
-            self.svg_atlas.setScaleFactor(scale);
-            self.image_atlas.setScaleFactor(window.scale_factor); // ImageAtlas uses f64
+            self.resources.svg_atlas.setScaleFactor(scale);
+            self.resources.image_atlas.setScaleFactor(window.scale_factor); // ImageAtlas uses f64
         }
 
         // Register window in registry
@@ -463,22 +485,28 @@ pub const App = struct {
 
         // Use shared resources mode - all windows share the same text system and atlases
         // This fixes font glitching where layout used one atlas but rendering used another
+        // PR 7b.2 — pass through the three pointees from the bundled
+        // `AppResources`. The `WinCtx.initWithSharedResources`
+        // signature still takes three separate pointers; PR 7b.6
+        // collapses it to a single `*AppResources` parameter once
+        // the back-compat aliases on `Window` retire and the call
+        // surface is free to change shape.
         const ctx = try WinCtx.initWithSharedResources(
             self.allocator,
             window,
             state,
             render,
-            self.text_system,
-            self.svg_atlas,
-            self.image_atlas,
+            self.resources.text_system,
+            self.resources.svg_atlas,
+            self.resources.image_atlas,
             self.io,
         );
 
         // Wire up shared atlases to window for rendering
         // Now layout and rendering use the SAME atlas, eliminating glitching
-        window.setTextAtlas(self.text_system.getAtlas());
-        window.setSvgAtlas(self.svg_atlas.getAtlas());
-        window.setImageAtlas(self.image_atlas.getAtlas());
+        window.setTextAtlas(self.resources.text_system.getAtlas());
+        window.setSvgAtlas(self.resources.svg_atlas.getAtlas());
+        window.setImageAtlas(self.resources.image_atlas.getAtlas());
 
         // Set root state on this window's Window instance (not globally)
         // This enables multi-window support where each window has its own state
