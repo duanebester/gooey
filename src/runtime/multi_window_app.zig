@@ -223,7 +223,16 @@ pub const App = struct {
             // infallible (no `try`) — `EntityMap.init` never
             // returns errors. The `EntityMap` inside is empty
             // until the first `cx.entities.create(...)` call.
-            .context_app = ContextApp.init(allocator, io),
+            // PR 7b.4 — `ContextApp.init` now returns `!Self`
+            // (was `Self`) because it registers an owned `Keymap`
+            // in `app.globals` via `Globals.setOwned`, which can
+            // fail with `OutOfMemory`. The surrounding `errdefer
+            // resources.deinit()` above unwinds the by-value
+            // resources copy on failure; the `EntityMap` /
+            // `Keymap` allocations that `ContextApp.init` would
+            // have made are torn down inside its own `errdefer`
+            // chain before this expression unwinds.
+            .context_app = try ContextApp.init(allocator, io),
             .initialized = true,
         };
 

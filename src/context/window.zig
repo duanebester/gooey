@@ -92,13 +92,25 @@ pub const EntityId = entity_mod.EntityId;
 
 // PR 7b.3 — `App` owns application-lifetime state shared across
 // windows. The entity map lives there now (was a per-window
-// `EntityMap` field on this struct); future 7b slices add
-// `keymap` / `globals` / `image_loader`. Each `Window` borrows
-// the parent `App` via the `app: *App` field below. See
-// `app.zig` and `docs/cleanup-implementation-plan.md` PR 7b.3.
+// `EntityMap` field on this struct). PR 7b.4 — `Keymap` and the
+// `*const Theme` slot moved off `Window.globals` onto
+// `App.globals`; only `Debugger` remains as a per-window owned
+// global on this struct. Future slices add `image_loader`. Each
+// `Window` borrows the parent `App` via the `app: *App` field
+// below. See `app.zig` and `docs/cleanup-implementation-plan.md`
+// PR 7b.3 / 7b.4.
 const app_mod = @import("app.zig");
 const App = app_mod.App;
 
+// PR 7b.4 — `Keymap` is no longer registered on `Window.globals`;
+// the slot lives on `App.globals` and `Window.keymap()` is now
+// a forwarder to `self.app.keymap()`. The import alias survives
+// only because the forwarder's return type still names `*Keymap`
+// — every call site in this file that used to read or write the
+// slot directly has been retired. A future cleanup that retires
+// the forwarder altogether (once enough callers route through
+// `*App` directly) can drop both the alias and the import in
+// one sweep.
 const action_mod = @import("../input/actions.zig");
 const Keymap = action_mod.Keymap;
 
@@ -181,11 +193,16 @@ const AppResources = app_resources_mod.AppResources;
 const draw_phase_mod = @import("draw_phase.zig");
 pub const DrawPhase = draw_phase_mod.DrawPhase;
 
-// PR 6 — type-keyed singleton storage for cross-cutting state
-// (`Keymap`, `Debugger`, future: `*const Theme`, settings, telemetry).
-// Lifts these off `Window`'s direct field list so adding a new global
-// is a one-line `setOwned` at init rather than a sweep across four
-// init paths plus `deinit`. See `src/context/global.zig`.
+// PR 6 — type-keyed singleton storage for cross-cutting state.
+// Pre-7b.4 this slot owned `Keymap` + `Debugger` + the future
+// `*const Theme` slot; PR 7b.4 lifts `Keymap` and `*const Theme`
+// onto `App.globals` and leaves only `Debugger` here on `Window`
+// (its overlay quads, frame timing, and selected layout id are
+// per-window concerns — sharing one debugger across windows would
+// mix metrics from two unrelated frames). Adding a new
+// per-window global is still a one-line `setOwned` at init; the
+// app-scoped equivalents go on `App.globals` instead. See
+// `src/context/global.zig` and the file header on `app.zig`.
 const global_mod = @import("global.zig");
 const Globals = global_mod.Globals;
 
@@ -311,14 +328,17 @@ pub const Window = struct {
     /// Dispatch tree for event routing
     dispatch: *DispatchTree,
 
-    // PR 6 — `keymap` lives in `globals` now. Access via
-    // `window.keymap()`. Same rationale as the `debugger` migration
-    // above; both share the same `Globals.setOwned` registration in
-    // every `init*` path.
+    // PR 6 / 7b.4 — `keymap` lives in `app.globals` now (see
+    // `app.zig`). `window.keymap()` is a forwarder so callers
+    // don't have to reach through `window.app.keymap()` themselves;
+    // a future cleanup may collapse the forwarder once enough
+    // callers route through `*App` directly.
 
-    /// Type-keyed singleton store (PR 6 — see `global.zig`). Owns
-    /// `Keymap` and `Debugger`; future PRs add `*const Theme` and
-    /// any other cross-cutting state. Default-constructed
+    /// Type-keyed singleton store (PR 6 — see `global.zig`).
+    /// PR 7b.4 — owns `Debugger` only; `Keymap` lifted onto
+    /// `App.globals`, and the `*const Theme` slot is now also
+    /// app-scoped (populated lazily by `Builder.setTheme` against
+    /// `window.app.globals`). Default-constructed
     /// (`entries = @splat(Entry.empty)`); populated post-init by
     /// every `init*` path via `setOwned`.
     globals: Globals = .{},
@@ -331,11 +351,12 @@ pub const Window = struct {
     /// "constructed but never entered a frame".
     current_phase: DrawPhase = .none,
 
-    /// PR 7b.3 — borrowed `*App` view onto application-lifetime
-    /// state shared across windows. Owns `entities` (lifted off
-    /// `Window` in 7b.3); future 7b slices add `keymap` /
-    /// `globals` / `image_loader`. The single-window flow heap-
-    /// allocates an `App` in `runtime/window_context.zig` and
+    /// PR 7b.3 / 7b.4 — borrowed `*App` view onto application-
+    /// lifetime state shared across windows. Owns `entities`
+    /// (lifted off `Window` in 7b.3) and the `Keymap` /
+    /// `*const Theme` slots in `app.globals` (lifted in 7b.4);
+    /// future 7b slices add `image_loader`. The single-window
+    /// flow heap-allocates an `App` in `runtime/runner.zig` and
     /// hands a pointer here; the multi-window flow embeds a
     /// `context.App` inside `runtime/multi_window_app.zig::App`
     /// and hands a pointer to that. Either way the pointee
@@ -650,9 +671,11 @@ pub const Window = struct {
             // assigns it after this returns. The follow-up slice
             // threads `app: *App` through this function's
             // signature so the field is set before any frame runs.
-            // PR 6 — `keymap` and `debugger` move to `globals` below
-            // (post-literal so they can `try` and we can `errdefer`
-            // the cleanup chain).
+            // PR 6 / 7b.4 — `debugger` registers into `globals`
+            // below (post-literal so it can `try` and we can
+            // `errdefer` the cleanup chain). `keymap` lives on
+            // `app.globals` now and is registered there by
+            // `App.init` / `initInPlace`.
             .focus = FocusManager.init(allocator),
             // PR 7a — single owned `resources` field replaces the
             // `text_system` / `svg_atlas` / `image_atlas` triplet
@@ -706,14 +729,22 @@ pub const Window = struct {
         // `image_atlas`, so loader semantics are unchanged.
         result.image_loader.initInPlace(io, allocator, result.resources.image_atlas);
 
-        // PR 6 — populate type-keyed globals. Heap-allocated copies
-        // of `Keymap` / `Debugger` live in `result.globals.entries`;
-        // ownership transfers when `result` is moved into the
-        // caller's storage (the entries hold pointers to stable
-        // heap addresses, so the by-value copy is safe — no fixup
-        // needed unlike `image_loader`).
-        try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
-        errdefer result.globals.deinit(allocator);
+        // PR 6 / 7b.4 — populate per-window globals. Only
+        // `Debugger` remains here; `Keymap` lifted onto
+        // `App.globals` (registered by `App.init` /
+        // `initInPlace`). The owned `*Debugger` lives in
+        // `result.globals.entries`; ownership transfers when
+        // `result` is moved into the caller's storage (the entry
+        // holds a pointer to a stable heap address, so the
+        // by-value copy is safe — no fixup needed unlike
+        // `image_loader`).
+        //
+        // No `errdefer result.globals.deinit(allocator)` follows
+        // this last `try` — the next statement is `return result`,
+        // so an unwinding path past this point is structurally
+        // impossible. The pre-7b.4 errdefer here was paired with
+        // the now-retired `Keymap.setOwned` above; with that
+        // gone, the dangling errdefer would have been dead code.
         try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
 
         return result;
@@ -855,11 +886,16 @@ pub const Window = struct {
         // through `self.resources` (same heap address as before).
         self.image_loader.initInPlace(io, allocator, self.resources.image_atlas);
 
-        // PR 6 — populate type-keyed globals. `self` is at its final
-        // heap address; `setOwned` writes its bookkeeping directly
-        // there, no fixup required.
-        try self.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
-        errdefer self.globals.deinit(allocator);
+        // PR 6 / 7b.4 — populate per-window globals. Only
+        // `Debugger` remains here; `Keymap` lifted onto
+        // `App.globals`. `self` is at its final heap address;
+        // `setOwned` writes its bookkeeping directly there, no
+        // fixup required. No `errdefer` after this last `try`:
+        // see the matching note in `initOwned` — the pre-7b.4
+        // errdefer protected an intermediate state between two
+        // `setOwned` calls; with `Keymap` lifted onto `App` only
+        // the `Debugger` registration remains, and the function
+        // returns immediately after.
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
@@ -930,7 +966,8 @@ pub const Window = struct {
             // PR 7b.3 — `entities` lifted off `Window` onto `App`.
             // `app: *App` is set by the caller post-init; see the
             // matching note in `initOwned` above.
-            // PR 6 — `keymap` / `debugger` move to `globals` below.
+            // PR 6 / 7b.4 — `debugger` registers into `globals`
+            // below; `keymap` lives on `app.globals`.
             .focus = FocusManager.init(allocator),
             // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
             // (e.g. `MultiWindowApp`) owns the underlying pointees.
@@ -968,12 +1005,14 @@ pub const Window = struct {
         // Initialize the image loader against the SHARED atlas.
         result.image_loader.initInPlace(io, allocator, shared_resources.image_atlas);
 
-        // PR 6 — same globals registration as `initOwned`. The
-        // shared-resources path doesn't change the lifetime of
-        // `Keymap` / `Debugger` — both are still per-window, owned
-        // by this `Window`'s `globals`.
-        try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
-        errdefer result.globals.deinit(allocator);
+        // PR 6 / 7b.4 — same globals registration as `initOwned`.
+        // Only `Debugger` is per-window here; `Keymap` lives on
+        // `app.globals`. The shared-resources path doesn't change
+        // the per-window `Debugger`'s lifetime — every window
+        // still owns its own debugger so its overlay quads /
+        // frame timing / selected layout id stay scoped to its
+        // own scene. No `errdefer` after this last `try`: see the
+        // matching note in `initOwned`.
         try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
 
         return result;
@@ -1099,9 +1138,10 @@ pub const Window = struct {
         // heap address (the embedded queue pointer cannot dangle).
         self.image_loader.initInPlace(io, allocator, shared_resources.image_atlas);
 
-        // PR 6 — same globals registration as `initOwnedPtr`.
-        try self.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
-        errdefer self.globals.deinit(allocator);
+        // PR 6 / 7b.4 — same per-window globals registration as
+        // `initOwnedPtr`. Only `Debugger` here; `Keymap` lives on
+        // `app.globals`. No `errdefer` after this last `try`:
+        // see the matching note in `initOwned`.
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
@@ -1145,10 +1185,12 @@ pub const Window = struct {
         self.dispatch.deinit();
         self.allocator.destroy(self.dispatch);
 
-        // PR 6 — single teardown call covers `Keymap` (calls
-        // `Keymap.deinit`) and `Debugger`. The thunk built at
-        // `setOwned` time picks the right shape per type
-        // (`fn(*Self) void` vs. `fn(*Self, Allocator) void`), so
+        // PR 6 / 7b.4 — teardown covers `Debugger` only (the
+        // single per-window owned global remaining after 7b.4).
+        // `Keymap.deinit` runs from `App.deinit` instead. The
+        // thunk built at `setOwned` time picks the right shape
+        // per type (`fn(*Self) void` vs.
+        // `fn(*Self, Allocator) void`), so
         // each global teardown matches its declared `deinit`.
         self.globals.deinit(self.allocator);
 
@@ -1181,14 +1223,17 @@ pub const Window = struct {
         return self.current_phase;
     }
 
-    /// PR 6 — typed accessor for the keymap global. Panics if
-    /// `init*` did not register one (every supported init path
-    /// does); a missing slot is a framework bug, not a runtime
-    /// fallback.
+    /// PR 6 / 7b.4 — typed accessor for the keymap global.
+    /// Pre-7b.4 the slot lived on `Window.globals`; post-7b.4 it
+    /// lives on `App.globals` and this is a forwarder. The
+    /// forwarder is preserved so existing call sites
+    /// (`window.keymap().bind(...)` / `window.keymap().match(...)`)
+    /// keep working without churn — a follow-up cleanup may
+    /// retire it once enough callers route through `*App`
+    /// directly. Panics if the parent `App` was never `init*`'d
+    /// (a framework bug, not a runtime fallback).
     pub fn keymap(self: *Self) *Keymap {
-        return self.globals.get(Keymap) orelse {
-            std.debug.panic("Window.keymap(): no Keymap registered in globals (init* did not run?)", .{});
-        };
+        return self.app.keymap();
     }
 
     /// PR 6 — typed accessor for the debugger global. Same panic

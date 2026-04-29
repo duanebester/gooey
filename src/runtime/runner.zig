@@ -133,7 +133,13 @@ pub fn runCx(
     // outlives the `Window` for safety.
     const app_ptr = try allocator.create(App);
     defer allocator.destroy(app_ptr);
-    app_ptr.initInPlace(allocator, io);
+    // PR 7b.4 — `App.initInPlace` returns `!void` now (was `void`)
+    // because it registers an owned `Keymap` in `app.globals`,
+    // and `Globals.setOwned` may fail with `OutOfMemory`. The
+    // `defer allocator.destroy(app_ptr)` above runs even on the
+    // error path, so a failure here doesn't leak the
+    // `allocator.create(App)` allocation.
+    try app_ptr.initInPlace(allocator, io);
     defer app_ptr.deinit();
 
     // Create per-window context (replaces static CallbackState)

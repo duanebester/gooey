@@ -183,14 +183,19 @@ pub const Builder = struct {
     /// Cx pointer for new-style components (set by runCx)
     cx_ptr: ?*anyopaque = null,
 
-    // PR 6 — theme storage moved into `gooey.globals`. The Builder
-    // no longer caches a `*const Theme`; `setTheme` writes through to
-    // the type-keyed registry on the parent `Window` and `theme()`
-    // reads back from the same slot. Rationale: collapses two parallel
-    // stores (Builder.theme_ptr + the future Globals slot the cleanup
-    // plan calls for) into one. See `docs/cleanup-implementation-plan.md`
-    // PR 6 — `Move keymap, theme, debugger pointer out of Window/Builder
-    // into globals`.
+    // PR 6 / 7b.4 — theme storage lives on `App.globals` keyed by
+    // `*const Theme`. The Builder does not cache a `*const Theme`;
+    // `setTheme` writes through the type-keyed registry on the
+    // parent `Window`'s borrowed `*App` and `theme()` reads back
+    // from the same slot. Rationale: pre-7b.4 the theme slot was
+    // per-window — a tab swap in window A would not repaint window
+    // B. Lifting the slot to `App.globals` makes the active theme
+    // a true app-scoped value (one swap, every window sees the
+    // new colors) and matches the GPUI mapping in §10. Collapses
+    // two parallel stores (Builder.theme_ptr + the per-window
+    // Globals slot the original PR 6 sketch called for) into one
+    // app-scoped slot. See `docs/cleanup-implementation-plan.md`
+    // PR 6 / 7b.4.
 
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
@@ -310,16 +315,21 @@ pub const Builder = struct {
     /// Set the theme for this builder and all child components.
     /// Called at the start of render to establish theme context.
     ///
-    /// PR 6: writes through to `gooey.globals` keyed by `Theme`.
-    /// `replaceBorrowedConst` registers a fresh slot on the first
-    /// call and rebinds the pointer on subsequent calls without
-    /// growing the table — same behaviour the old `theme_ptr`
-    /// assignment had, just routed through the type-keyed store.
+    /// PR 6 / 7b.4: writes through to `app.globals` keyed by
+    /// `Theme`. `replaceBorrowedConst` registers a fresh slot on
+    /// the first call and rebinds the pointer on subsequent calls
+    /// without growing the table — same behaviour the old
+    /// `theme_ptr` assignment had, just routed through the
+    /// type-keyed store on the parent `App`. Pre-7b.4 the slot
+    /// lived on `Window.globals`, which made cross-window theme
+    /// sharing structurally impossible; lifting to `App.globals`
+    /// is what makes a single `cx.setTheme(&Theme.dark)` repaint
+    /// every window in a multi-window app.
     ///
-    /// Asserts `self.window` is wired. Every code path that builds a
-    /// frame (`Cx.setTheme`, the runtime drivers) goes through a
-    /// `Window`-attached builder; a null parent here is a framework
-    /// bug, not a runtime fallback.
+    /// Asserts `self.window` is wired. Every code path that builds
+    /// a frame (`Cx.setTheme`, the runtime drivers) goes through
+    /// a `Window`-attached builder; a null parent here is a
+    /// framework bug, not a runtime fallback.
     pub fn setTheme(self: *Self, t: *const Theme) void {
         const g = self.window orelse {
             std.debug.panic(
@@ -327,19 +337,24 @@ pub const Builder = struct {
                 .{},
             );
         };
-        g.globals.replaceBorrowedConst(Theme, t);
+        g.app.globals.replaceBorrowedConst(Theme, t);
     }
 
     /// Get the current theme, falling back to light theme if none set.
     /// Components use this to resolve null color fields.
     ///
-    /// PR 6: reads from `gooey.globals`. The `*const Theme` slot may
-    /// be empty (no `setTheme` yet this frame, or builder was
-    /// stood up bare for a unit test) — fall back to `&Theme.light`
-    /// in that case so the component path stays branch-free.
+    /// PR 6 / 7b.4: reads from `app.globals`. The `*const Theme`
+    /// slot may be empty (no `setTheme` yet this frame, or the
+    /// builder was stood up bare for a unit test that bypassed
+    /// the `App` wiring) — fall back to `&Theme.light` in that
+    /// case so the component path stays branch-free. Pre-7b.4
+    /// the slot was read from `window.globals`; the lift to
+    /// `app.globals` is transparent to call sites because every
+    /// `Window` that has a parent `App` wired (every framework
+    /// init path) reaches the same slot.
     pub fn theme(self: *Self) *const Theme {
         const g = self.window orelse return &Theme.light;
-        return g.globals.getConst(Theme) orelse &Theme.light;
+        return g.app.globals.getConst(Theme) orelse &Theme.light;
     }
 
     /// Get the typed context from within a component's render method.
