@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1 landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -953,7 +953,40 @@ so each lands green on its own.
     now identical, but reducing to two named entry points
     requires a real `App` struct in the single-window flow,
     which lands later in 7b. See "Sub-PR 7b.6" below.
-- ☐ 7c — `Frame` double buffer + `mem.swap` at frame boundary.
+- ◐ 7c — `Frame` double buffer + `mem.swap` at frame boundary.
+  Slicing across landable sub-PRs once the surface area was
+  mapped:
+  - ☑ **7c.1 — Lift per-tick app-scoped work onto `App`.**
+    Pre-7c.1 `Window.beginFrame` / `endFrame` ran
+    `self.app.image_loader.drain()` and
+    `self.app.entities.beginFrame()` / `endFrame()` inline,
+    once per window per tick. With N windows borrowing one
+    `App` that's N redundant calls; `image_loader.drain` is
+    idempotent (a second call gets 0 results), but
+    `entities.beginFrame` is NOT — a window-A-render-then-
+    window-B-begin sequence discards window-A's frame
+    observations made earlier in the same tick. 7c.1 adds
+    `App.beginFrame()` / `App.endFrame()` doing the
+    app-scoped work (drain image_loader if bound on begin,
+    clear stale entity observations on begin, symmetric
+    no-op on end); `Window.beginFrame` / `endFrame` route
+    through the new methods instead of unbundling
+    `self.app.*` calls inline. The actual "call once per
+    tick at the runtime layer" relocation lands in 7c.2 —
+    landing the API surface first means the follow-up only
+    has to relocate one method call, not split bundled
+    work along the way. `Build Summary: 9/9 steps
+    succeeded; 1069/1069 tests passed` (+3 vs. 7b.5's 1066
+    — three new `App.beginFrame` / `endFrame` tests). See
+    "Sub-PR 7c.1" below.
+  - ☐ 7c.2 — Hoist the `App.beginFrame` / `App.endFrame`
+    call out of `Window.beginFrame` / `Window.endFrame` to
+    a runtime tick driver so app-scoped work runs exactly
+    once per tick.
+  - ☐ 7c.3 — Introduce `Frame` struct holding `scene` +
+    `dispatch` + per-frame transient state; double-buffer
+    `rendered_frame` / `next_frame` with `mem.swap` at
+    frame boundary.
 - ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
 
@@ -2198,6 +2231,196 @@ site.
 1066/1066 tests passed`. `zig build install` builds
 all examples (single-window and multi-window)
 without warnings.
+
+---
+
+**Sub-PR 7c.1 — Lift per-tick app-scoped work onto `App` (landed):**
+
+First slice of PR 7c. Goal: get the API layering for
+per-tick app-scoped work right before the larger `Frame`
+double-buffer move that follows. Pre-7c.1
+`Window.beginFrame` / `endFrame` ran
+`self.app.image_loader.drain()` and
+`self.app.entities.beginFrame()` / `endFrame()` inline —
+two structural problems:
+
+1. **Redundancy across N windows borrowing one `App`.**
+   With N windows, the work runs N times per tick.
+   `image_loader.drain` is idempotent (a second call gets
+   0 results because the queue was emptied by the first),
+   but `entities.beginFrame` is NOT — a window-A-render-
+   then-window-B-begin sequence discards window-A's
+   frame observations made earlier in the same tick.
+   This was flagged as forward-looking debt in 7b.3
+   ("the per-tick begin/end pair moves to app-scope in
+   PR 7c") and 7b.5 ("PR 7c retires the drain
+   redundancy"), with no current code path triggering
+   the bug today (no example shares entities across
+   windows), but the structural correctness gap was
+   real.
+2. **API layering wrong.** App-scoped work reached
+   through a per-window forwarder rather than belonging
+   to the `App` that owns the underlying state. The
+   forwarder shape was a hold-over from pre-7b.3 when
+   `entities` and `image_loader` lived on `Window`; once
+   the lifts landed (7b.3 / 7b.5) the forwarder ceremony
+   was vestigial.
+
+**Why this lands as its own slice:** the actual "call once
+per tick at the runtime layer" fix requires a runtime tick
+driver — there is no centralised "all windows for this
+tick" hook today; each window's render callback is
+invoked independently by the platform. Building the tick
+driver is non-trivial (needs to coordinate with
+`Platform.run`'s event loop on each backend). Landing the
+API surface first (7c.1) means the follow-up 7c slice only
+has to relocate one method call from `Window.beginFrame`
+to the new tick driver — no unbundling of inline work
+along the way.
+
+**Pre-flight choice (one method or two):**
+
+- **Option (a) — `App.beginFrame()` + `App.endFrame()`
+  pair** (chosen). Mirrors the `Window.beginFrame` /
+  `endFrame` shape so the forwarder routes cleanly through
+  both halves; gives `EntityMap.endFrame` a symmetric hook
+  (currently a no-op, but reserved for future batching
+  optimisations). The pair makes the per-tick lifecycle
+  explicit at the `App` layer.
+- **Option (b) — `App.tick()` single method** (rejected).
+  Smaller surface, but conflates "begin tick" and "end
+  tick" into one call. The 7c.3 `Frame` double-buffer move
+  needs to do work between begin (clear `next_frame`) and
+  end (`mem.swap` rendered ↔ next), so a single `tick()`
+  would have to split anyway — landing the split now means
+  7c.3 doesn't reshape the API again.
+
+**Write scope (landed):**
+
+- `src/context/app.zig` —
+  - **Adds** `App.beginFrame()`. Drains
+    `self.image_loader` if `image_loader_bound` is true
+    (test fixtures construct `App` instances that never
+    bind a loader; the guard skips the drain there to
+    avoid walking undefined memory). Calls
+    `self.entities.beginFrame()` to clear stale frame
+    observations from the previous tick. Pair-asserts
+    `@intFromPtr(self) != 0` on entry.
+  - **Adds** `App.endFrame()`. Calls
+    `self.entities.endFrame()` (currently a no-op hook on
+    `EntityMap`). Symmetric placeholder for future
+    batching work; the call stays for layering
+    consistency so future hooks don't silently skip the
+    app.
+  - Three new tests pin the contract: stale-observation
+    clearing on begin, unbound-loader safety (test
+    fixtures), and bound-loader drain on a real
+    `ImageAtlas` (no fetches enqueued, so drain is a
+    0-result no-op — the test pins that the call reaches
+    through to the loader instead of silently skipping
+    when bound).
+- `src/context/window.zig` —
+  - `Window.beginFrame()` replaces the inline
+    `self.app.image_loader.drain()` +
+    `self.app.entities.beginFrame()` pair with a single
+    `self.app.beginFrame()` call. Order constraints
+    preserved (drain must run after
+    `self.resources.image_atlas.beginFrame()` so
+    freshly-decoded pixels write into the post-reset
+    atlas; entity-observation clear must run before any
+    element renders this frame).
+  - `Window.endFrame()` replaces inline
+    `self.app.entities.endFrame()` with
+    `self.app.endFrame()`.
+  - Both forwarder routes preserve the pre-7c.1
+    behaviour exactly — single-window flows have one
+    window per `App`, so the forwarder still drives the
+    work once per tick. Multi-window flows still drive
+    it per-window-per-tick (the redundancy is
+    structurally unchanged at this slice); 7c.2
+    relocates the call out of the per-window path.
+
+**Tasks landed:**
+
+- [x] Add `App.beginFrame()` doing the loader drain
+      (guarded by `image_loader_bound`) + entity-
+      observation clear.
+- [x] Add `App.endFrame()` as a symmetric no-op
+      placeholder calling `entities.endFrame()`.
+- [x] Reroute `Window.beginFrame()` / `Window.endFrame()`
+      through the new methods.
+- [x] Three new tests covering stale-observation
+      clearing, unbound-loader safety, and bound-loader
+      drain.
+- [x] `Build Summary: 9/9 steps succeeded; 1069/1069
+      tests passed` (+3 vs. PR 7b.5's 1066).
+- [x] `zig build install` builds all examples
+      (single-window and multi-window) without warnings.
+
+**Implementation notes:**
+
+- **`image_loader_bound` guard is essential, not
+  optional.** Test fixtures in `app.zig` (the four
+  pre-7c.1 tests plus the three new ones) construct `App`
+  instances against `testing.allocator` / `undefined` IO
+  without ever calling `bindImageLoader`. A bound check
+  inside `App.beginFrame` was the path of least
+  resistance — the alternative (forcing every test to
+  construct a real `ImageAtlas`) would balloon the test
+  setup and require pinning
+  `Io.Threaded.global_single_threaded` through every
+  `App: ...` test that today uses `undefined`. The guard
+  is a 3-line `if`; the alternative is a ~20-line setup
+  boilerplate per test. Production framework code paths
+  always bind before the first frame, so the guard is
+  moot in production.
+- **Order inside `App.beginFrame` is load-bearing.**
+  Loader drain runs *first* — `EntityMap.beginFrame`
+  walks `frame_observations` and calls `unobserve`, which
+  only touches entity slots. If a future pipeline lands
+  entity-attached image fetches (a view entity that owns
+  an in-flight URL fetch), the drain would write into
+  the atlas before the entity slot's cancel walk; if the
+  order were reversed, the cancel walk could free the
+  atlas pixels that the drain is about to write. Today
+  no such pipeline exists, but the forward-safe order is
+  free.
+- **`endFrame` symmetric placeholder rather than no-op
+  call site.** `EntityMap.endFrame` is itself a no-op
+  (frame observations are registered eagerly via
+  `observe()` in `read`); calling it through
+  `App.endFrame` is a redundant indirection today. The
+  call stays because (a) the symmetry with
+  `App.beginFrame` makes the per-tick lifecycle explicit
+  at the API layer, and (b) future batching
+  optimisations the `EntityMap.endFrame` hook is
+  reserved for would otherwise silently skip the `App`
+  if 7c.1 had elided the call. Cost is one function
+  call per tick; benefit is a one-line change in
+  `EntityMap.endFrame` lands without touching `App` or
+  `Window`.
+- **Multi-window redundancy still present at this
+  slice.** With N windows borrowing one `App`,
+  `Window.beginFrame` is called N times per tick and
+  routes through `App.beginFrame` N times. The
+  `image_loader.drain` is idempotent (acceptable); the
+  `entities.beginFrame` clear is NOT — the pre-7c.1
+  redundancy survives 7c.1 unchanged. Fixing it requires
+  lifting the call to a once-per-tick driver at the
+  runtime layer (7c.2), which needs platform-specific
+  tick coordination. 7c.1's contribution is the API
+  surface; 7c.2's is the relocation.
+- **Forward compatibility with `Frame` double-buffer.**
+  When 7c.3 introduces the `Frame` struct + `mem.swap`,
+  `App.beginFrame` is the natural place to clear
+  `next_frame` and `App.endFrame` is the natural place
+  to swap rendered ↔ next. Landing the pair now means
+  7c.3 can hang work off both methods without reshaping
+  the API surface again.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1069/1069
+tests passed`. `zig build install` builds all examples
+(single-window and multi-window) without warnings.
 
 ---
 
