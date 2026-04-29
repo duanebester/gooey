@@ -560,35 +560,44 @@ pub const App = struct {
     // Per-frame hooks
     // =========================================================================
     //
-    // PR 7c.1 — finishes the forward-looking debt called out in
-    // PR 7b.3 ("the per-tick begin/end pair moves to app-scope")
-    // and PR 7b.5 ("PR 7c retires the per-window-redundant
-    // drain"). Pre-7c.1 `Window.beginFrame` / `endFrame` ran
-    // `entities.beginFrame` / `endFrame` and `image_loader.drain`
-    // through `self.app.*` — once per window per tick. With N
-    // windows borrowing one `App` that's N redundant calls;
-    // worse for `entities.beginFrame`, the redundancy is *not*
-    // idempotent (a window-A-render-then-window-B-begin sequence
-    // discards window-A's frame observations made earlier in
-    // the same tick).
+    // PR 7c.1 introduced the API surface; PR 7c.2 relocated the
+    // call site. The full sequence:
     //
-    // The fix is structural: the app-scoped per-tick work lives
-    // on `App.beginFrame` / `endFrame`, called exactly once per
-    // tick at the runtime layer. This sub-PR introduces the API
-    // surface and routes `Window.beginFrame` / `endFrame` through
-    // it so the per-window forwarder still behaves correctly
-    // (idempotent in single-window flows; multi-window callers
-    // lift the call out of the per-window path in a follow-up
-    // 7c slice once a runtime tick driver exists).
+    //   - PR 7b.3 / 7b.5 lifted `entities` and `image_loader`
+    //     onto `App`, but the per-tick begin/end pair still ran
+    //     inline in `Window.beginFrame` / `endFrame`, reaching
+    //     through `self.app.*`. With N windows borrowing one
+    //     `App` that was N calls per tick — redundant for
+    //     `image_loader.drain` (idempotent) and *broken* for
+    //     `entities.beginFrame` (a window-A-render-then-
+    //     window-B-begin sequence discarded window-A's earlier-
+    //     this-tick frame observations).
+    //   - PR 7c.1 introduced `App.beginFrame` / `App.endFrame`
+    //     as the layer-correct home for the work and routed
+    //     `Window.beginFrame` / `endFrame` through them. Pure
+    //     API-surface lift; behaviour unchanged.
+    //   - PR 7c.2 hoisted the call site out of `Window` up to
+    //     `runtime/frame.zig::renderFrameImpl` so the runtime
+    //     layer (the per-window render callback) drives the
+    //     pair directly. Today `renderFrameImpl` still fires
+    //     once per window per tick — the platform layer
+    //     dispatches each window's render callback
+    //     independently, so the per-window-per-tick redundancy
+    //     survives 7c.2 unchanged for multi-window flows. The
+    //     remaining fix (a centralised "all windows, this tick"
+    //     driver) lands in 7c.3+.
     //
     // The methods are deliberately thin — `beginFrame` drains
     // image-load results then clears stale entity observations;
     // `endFrame` is a forward-looking hook for batching that
     // future PRs can hang work off without churning every
-    // `Window.endFrame` call site again.
+    // call site again.
 
-    /// Per-tick app-scoped work — call once per tick before any
-    /// `Window.beginFrame` runs.
+    /// Per-tick app-scoped work — called by
+    /// `runtime/frame.zig::renderFrameImpl` once per render
+    /// callback, after `window.beginFrame()` has reset the
+    /// per-window atlas counter and before the user's
+    /// `render_fn` runs.
     ///
     /// Drains async image-load results into the shared atlas
     /// (idempotent: a second call this tick gets 0 results
@@ -622,14 +631,19 @@ pub const App = struct {
 
         // PR 7b.3 — clear stale entity observations from the
         // previous tick. Idempotent across consecutive ticks (a
-        // second call same tick re-clears an already-empty list,
-        // but `Window.beginFrame` is the only caller and runs
-        // once per tick post-7c.1).
+        // second call same tick re-clears an already-empty
+        // list). Post-7c.2 the caller is `renderFrameImpl` in
+        // `runtime/frame.zig`, which fires per render callback;
+        // single-window flows hit this exactly once per tick,
+        // multi-window flows still hit it once per window until
+        // the centralised tick driver lands in 7c.3+.
         self.entities.beginFrame();
     }
 
-    /// Per-tick app-scoped finalisation — call once per tick
-    /// after every `Window.endFrame` has run.
+    /// Per-tick app-scoped finalisation — called by
+    /// `runtime/frame.zig::renderFrameImpl` once per render
+    /// callback, after `window.endFrame()` has returned the
+    /// frame's render commands.
     ///
     /// Currently a no-op hook. `EntityMap.endFrame` is itself a
     /// no-op (frame observations are registered eagerly via

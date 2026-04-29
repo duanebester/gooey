@@ -1287,6 +1287,19 @@ pub const Window = struct {
     }
 
     /// Call at the start of each frame before building UI
+    ///
+    /// Per-tick app-scoped work (image-loader drain, entity-
+    /// observation clear) is NOT done here — see PR 7c.2. The
+    /// runtime frame driver (`runtime/frame.zig::renderFrameImpl`)
+    /// calls `self.app.beginFrame()` exactly once per tick before
+    /// invoking this method, so by the time control reaches here
+    /// the loader has already drained into the atlas and stale
+    /// frame observations from the previous tick have been
+    /// cleared. Pre-7c.2 those calls lived inline in this
+    /// function, which made multi-window flows redundant
+    /// (N windows borrowing one `App` ran the begin pair N times
+    /// per tick) and worse, broke `entities.beginFrame`'s
+    /// non-idempotent contract on the second call onwards.
     pub fn beginFrame(self: *Self) void {
         // PR 6 — first thing the frame does: advance into prepaint.
         // `assertAdvance` checks the previous phase was `.none`, so
@@ -1303,24 +1316,26 @@ pub const Window = struct {
         self.focus.beginFrame();
         self.resources.image_atlas.beginFrame();
 
-        // PR 7c.1 — app-scoped per-tick hook. Pre-7c.1 this
-        // function ran `self.app.image_loader.drain()` and
-        // `self.app.entities.beginFrame()` inline; the work
-        // moved onto `App.beginFrame` so the API surface
-        // matches the layer the work belongs to. With one
-        // `Window` per `App` (single-window, WASM) this is a
-        // pure refactor; with N windows borrowing one `App`
-        // (multi-window) the call is still per-window-per-tick
-        // here, but a follow-up 7c slice that introduces a
-        // runtime tick driver lifts it out of the per-window
-        // path so it runs exactly once per tick.
-        //
-        // Order matters: must run after `image_atlas.beginFrame`
-        // (so freshly-decoded pixels write into the post-reset
-        // atlas) and before any element renders this frame (so
-        // observations made by widget renders this frame are
-        // not discarded by the entity-observation clear).
-        self.app.beginFrame();
+        // PR 7c.2 — `self.app.beginFrame()` was hoisted out of
+        // this function up to `runtime/frame.zig::renderFrameImpl`,
+        // which calls it exactly once per tick before driving any
+        // window's `Window.beginFrame`. This is the structural
+        // fix the 7c.1 comment block flagged: with N windows
+        // borrowing one `App`, running the app-scoped begin pair
+        // through every per-window forwarder discarded
+        // earlier-this-tick frame observations on the second
+        // call onwards. Lifting the call to the runtime layer
+        // removes the redundancy and the correctness gap in one
+        // step. The post-PR ordering invariant the runtime
+        // driver upholds is: `App.beginFrame` runs after every
+        // `Window`'s atlas has been reset for the tick (so
+        // freshly-decoded pixels land in the post-reset atlas)
+        // and before any window's render observes entities (so
+        // the clear of last-tick observations cannot race with
+        // this-tick observations). Currently only one window
+        // renders per tick, so the constraint is trivially
+        // satisfied; a future tick-driver landing in 7c.3+ will
+        // preserve it across N windows.
 
         // Update cached window dimensions
         if (self.platform_window) |w| {
@@ -1361,19 +1376,28 @@ pub const Window = struct {
 
     /// Call at the end of each frame after building UI
     /// Returns the render commands for the frame
+    ///
+    /// Per-tick app-scoped finalisation is NOT done here — see
+    /// PR 7c.2. The runtime frame driver
+    /// (`runtime/frame.zig::renderFrameImpl`) calls
+    /// `self.app.endFrame()` exactly once per tick after every
+    /// window's `Window.endFrame` has returned. Pre-7c.2 the
+    /// call lived inline here for symmetry with the (now
+    /// hoisted) `App.beginFrame`; lifting both halves keeps the
+    /// pair together at the layer the work belongs to.
     pub fn endFrame(self: *Self) ![]const RenderCommand {
         self.widgets.endFrame();
         self.focus.endFrame();
 
-        // PR 7c.1 — app-scoped per-tick finalisation. Pre-7c.1
-        // this function ran `self.app.entities.endFrame()`
-        // inline; the work moved onto `App.endFrame` for
-        // symmetry with `App.beginFrame` and so future
-        // batching optimisations have a single hook to hang
-        // off. Currently a no-op (`EntityMap.endFrame` itself
-        // is a no-op), but the call stays for layering and
-        // forward-compatibility.
-        self.app.endFrame();
+        // PR 7c.2 — `self.app.endFrame()` was hoisted out of
+        // this function up to `runtime/frame.zig::renderFrameImpl`,
+        // mirroring the `beginFrame` lift. `App.endFrame` is
+        // currently a no-op (`EntityMap.endFrame` itself is a
+        // no-op), so the visible behaviour is unchanged; the
+        // motivation is layering, not behaviour. Future
+        // batching optimisations the `App.endFrame` hook is
+        // reserved for now have a single per-tick driver to
+        // hang off rather than firing once per window per tick.
 
         // Request another frame if animations are running
         if (self.hasActiveAnimations()) {

@@ -38,8 +38,21 @@ pub fn renderFrameCxRuntime(cx: *Cx, render_fn: *const fn (*Cx) void) !void {
 
 /// Internal implementation shared by comptime and runtime variants
 fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
-    // Cache pointers at function start (avoids repeated method calls)
+    // Cache pointers at function start (avoids repeated method calls).
+    //
+    // PR 7c.2 — `app` is now driven directly from this layer. The
+    // app-scoped per-tick begin/end pair (see `App.beginFrame` /
+    // `App.endFrame`) used to be reached through `Window.beginFrame`
+    // / `Window.endFrame`; pre-7c.2 a multi-window flow with N
+    // windows borrowing one `App` ran the begin pair N times per
+    // tick, which was redundant for `image_loader.drain`
+    // (idempotent) and *broken* for `entities.beginFrame`
+    // (window-A-render-then-window-B-begin discarded window-A's
+    // earlier-this-tick frame observations). Caching the pointer
+    // here makes the once-per-tick invariant visible at the layer
+    // that owns it.
     const window = cx.window();
+    const app = window.app;
     const builder = cx.builder();
 
     // Report GPU timings from previous frame (GPU work happens after finalizeFrame).
@@ -55,6 +68,29 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     window.dispatch.reset();
 
     window.beginFrame();
+
+    // PR 7c.2 — app-scoped per-tick hook. Hoisted out of
+    // `Window.beginFrame` so it runs at the runtime layer, not
+    // through every per-window forwarder. Drains async image-load
+    // results into the shared atlas (idempotent — a second call
+    // gets 0 results) and clears stale entity observations from
+    // the previous tick (NOT idempotent within a tick).
+    //
+    // Order constraints the call site must preserve:
+    //   1. After `window.beginFrame()` so the per-window
+    //      `image_atlas.beginFrame()` has already incremented the
+    //      frame counter; freshly-decoded pixels then land in the
+    //      post-reset atlas.
+    //   2. Before `render_fn(cx)` so observations made by widget
+    //      renders this tick are not discarded by the entity-
+    //      observation clear.
+    //
+    // Today's call shape (single window per tick) trivially
+    // satisfies both. A future tick-driver in PR 7c.3+ that drives
+    // N windows per tick must still call `app.beginFrame()` once
+    // per tick *between* every window's `image_atlas.beginFrame`
+    // and any window's render — not once per window.
+    app.beginFrame();
 
     // Clear blur handlers from previous frame
     window.clearBlurHandlers();
@@ -83,6 +119,21 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // End frame and get render commands
     const commands = try window.endFrame();
+
+    // PR 7c.2 — symmetric app-scoped per-tick finalisation,
+    // hoisted out of `Window.endFrame`. Currently a no-op
+    // (`EntityMap.endFrame` is itself a no-op), so the visible
+    // behaviour is unchanged; the motivation is layering. Future
+    // batching optimisations the `App.endFrame` hook is reserved
+    // for now have a single per-tick driver to hang off rather
+    // than firing once per window per tick.
+    //
+    // Position: must follow `window.endFrame()` so any per-window
+    // finalisation (a11y bounds sync, layout commit) has already
+    // run. A future tick-driver running N windows per tick must
+    // call this exactly once *after* every window's `endFrame`
+    // returns.
+    app.endFrame();
 
     // Assert render command count is within limits
     std.debug.assert(commands.len <= MAX_RENDER_COMMANDS);
