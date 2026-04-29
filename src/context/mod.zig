@@ -106,6 +106,30 @@ pub const SubscriberSetOptions = subscriber_set.Options;
 pub const SubscriberInsertion = subscriber_set.Insertion;
 
 // =============================================================================
+// PR 6 — DrawPhase + Globals
+// =============================================================================
+//
+// `DrawPhase` tags the per-frame lifecycle so phase-restricted methods
+// can assert their invariants at entry. `Globals` is a type-keyed
+// singleton store for cross-cutting state (theme, keymap, debugger)
+// that previously lived as direct fields on `Gooey`.
+//
+// See `docs/cleanup-implementation-plan.md` PR 6.
+
+pub const draw_phase = @import("draw_phase.zig");
+pub const DrawPhase = draw_phase.DrawPhase;
+pub const assertPhase = draw_phase.assertPhase;
+pub const assertPhaseOneOf = draw_phase.assertPhaseOneOf;
+pub const assertInFrame = draw_phase.assertInFrame;
+pub const assertAdvance = draw_phase.assertAdvance;
+
+pub const global = @import("global.zig");
+pub const Globals = global.Globals;
+pub const MAX_GLOBALS = global.MAX_GLOBALS;
+pub const GlobalTypeId = global.TypeId;
+pub const globalTypeId = global.typeId;
+
+// =============================================================================
 // Drag & Drop
 // =============================================================================
 

@@ -29,10 +29,10 @@ fn setupKeymap(cx: *Cx) void {
     s.initialized = true;
 
     const g = cx.gooey();
-    g.keymap.bind(Undo, "cmd-z", null);
-    g.keymap.bind(Redo, "cmd-shift-z", null);
-    g.keymap.bind(Save, "cmd-s", "Editor");
-    g.keymap.bind(Cancel, "escape", null);
+    g.keymap().bind(Undo, "cmd-z", null);
+    g.keymap().bind(Redo, "cmd-shift-z", null);
+    g.keymap().bind(Save, "cmd-s", "Editor");
+    g.keymap().bind(Cancel, "escape", null);
 }
 
 fn render(cx: *Cx) void {

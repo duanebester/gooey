@@ -308,8 +308,8 @@ fn handleMouseDownEvent(
     }
 
     // 7. Debugger: handle click to select element for inspection
-    if (gooey.debugger.isActive()) {
-        gooey.debugger.handleClick(gooey.hover.hovered_layout_id);
+    if (gooey.debugger().isActive()) {
+        gooey.debugger().handleClick(gooey.hover.hovered_layout_id);
         cx.notify();
     }
 
@@ -533,7 +533,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
 
     // Debugger toggle: Cmd+Shift+I (macOS) or Ctrl+Shift+I
     if (debugger_mod.Debugger.isToggleShortcut(k.key, k.modifiers)) {
-        gooey.debugger.toggle();
+        gooey.debugger().toggle();
         cx.notify();
         return true;
     }
@@ -602,7 +602,7 @@ fn handleFocusedKeyAction(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
             var ctx_buf: [64][]const u8 = undefined;
             const contexts = gooey.dispatch.contextStack(path, &ctx_buf);
 
-            if (gooey.keymap.match(k.key, k.modifiers, contexts)) |binding| {
+            if (gooey.keymap().match(k.key, k.modifiers, contexts)) |binding| {
                 if (gooey.dispatch.dispatchAction(binding.action_type, path, gooey)) {
                     cx.notify();
                     return true;
@@ -618,7 +618,7 @@ fn handleFocusedKeyAction(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
         // No focus - try root path
         var path_buf: [64]DispatchNodeId = undefined;
         if (gooey.dispatch.rootPath(&path_buf)) |path| {
-            if (gooey.keymap.match(k.key, k.modifiers, &.{})) |binding| {
+            if (gooey.keymap().match(k.key, k.modifiers, &.{})) |binding| {
                 if (gooey.dispatch.dispatchAction(binding.action_type, path, gooey)) {
                     cx.notify();
                     return true;

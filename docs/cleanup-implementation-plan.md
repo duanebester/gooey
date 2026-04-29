@@ -90,7 +90,7 @@ them out here so they don't get re-litigated in review:
 | 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☑                     |
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                     |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                     |
-| 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☐                     |
+| 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                     |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ☐                     |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                     |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                     |
@@ -691,38 +691,126 @@ widget-coordination APIs. **Additive — no removal yet.**
 
 ## PR 6 — `DrawPhase` + `Global(G)`
 
+**Status: ☑ landed.** Branch `cleanup/pr-6-draw-phase-globals`. Build
+green, `Build Summary: 9/9 steps succeeded; 1053/1053 tests passed`
+(up 27 from PR 5's 1026: 9 `DrawPhase` tests, 15 `Globals` tests, 3
+ladder tests on `Gooey`).
+
 **Goal:** add the GPUI-style `DrawPhase` enum and per-method phase
-assertions, and introduce `Global(G)` for type-keyed singletons (theme,
+assertions, and introduce `Globals` for type-keyed singletons (theme,
 keymap, debugger).
 
-**Write scope:**
+**Write scope (landed):**
 
-- `src/context/draw_phase.zig` (new)
-- `src/context/gooey.zig` (assertions added at method entry)
-- `src/context/global.zig` (new)
-- whatever currently holds the keymap / theme / debugger
+- `src/context/draw_phase.zig` (new) — `DrawPhase` enum,
+  `assertPhase` / `assertPhaseOneOf` / `assertInFrame` /
+  `assertAdvance` helpers. Tagged `u8` per CLAUDE.md §15 so the
+  field on `Gooey` is one byte.
+- `src/context/global.zig` (new) — `Globals` struct with
+  `MAX_GLOBALS = 32`, three ownership shapes (`owned`, `borrowed`,
+  `borrowed_const`), `setOwned` / `setBorrowed` / `setBorrowedConst`,
+  matching `replace*` and `update`. Linear-scan lookup over a
+  fixed-capacity `[32]Entry` array.
+- `src/context/gooey.zig` — `globals: Globals = .{}` and
+  `current_phase: DrawPhase = .none` added; `keymap` / `debugger`
+  fields **deleted** and replaced with `gooey.keymap()` /
+  `gooey.debugger()` accessors that read from `globals`. The four
+  init paths (`initOwned`, `initOwnedPtr`, `initWithSharedResources`,
+  `initWithSharedResourcesPtr`) all `setOwned` `Keymap` and
+  `Debugger`. Frame lifecycle (`beginFrame` / `endFrame` /
+  `finalizeFrame`) advances through the phase ladder; `openElement`
+  / `closeElement` / `text` assert `.prepaint`.
+- `src/context/mod.zig` — re-exports `DrawPhase`, `Globals`,
+  `MAX_GLOBALS`, and the `assert*` helpers.
+- `src/ui/builder.zig` — `theme_ptr` field deleted; `setTheme` and
+  `theme()` route through `gooey.globals.replaceBorrowedConst(Theme,
+...)` / `getConst(Theme)` with a `&Theme.light` fallback for
+  bare-builder unit tests.
+- `src/runtime/frame.zig`, `src/runtime/input.zig`,
+  `src/examples/actions.zig` — call sites updated from
+  `gooey.debugger.foo()` / `gooey.keymap.foo()` to
+  `gooey.debugger().foo()` / `gooey.keymap().foo()` (mechanical sed
+  pass).
 
 **Tasks:**
 
-- [ ] Define `DrawPhase = enum { none, prepaint, paint, focus }`.
-      Add `current_phase: DrawPhase` to `Gooey` (or `FrameContext`).
-      Per-method asserts: `paint_quad` requires `.paint`,
-      `insert_hitbox` requires `.prepaint`, etc. Use **paired
-      assertions** per CLAUDE.md §3.
-- [ ] Define `Global(comptime G: type)` keyed on
-      `core.TypeId.of(G)` with a fixed capacity
-      (`MAX_GLOBALS = 32`). API: `set`, `get`, `update`.
-- [ ] Move keymap, theme, debugger pointer out of `Gooey` and into
-      globals. Keep `gooey.keymap()` etc. as thin convenience accessors.
-- [ ] 0.16: `Global`'s type-keyed storage uses `@TypeOf` /
-      `@typeName` rather than `@Type`. If PR 0 missed any
-      type-builder helpers around the keymap, fix them here.
+- [x] Define `DrawPhase = enum { none, prepaint, paint, focus }`.
+      Add `current_phase: DrawPhase` to `Gooey`. Layout pass-through
+      methods (`openElement`, `closeElement`, `text`) assert
+      `.prepaint` per CLAUDE.md §3.
+- [x] Define `Globals` keyed on `typeId(G)` (same shape as
+      `entity.typeId` — `@typeName(T).ptr` interpret-as-`usize`)
+      with a fixed capacity `MAX_GLOBALS = 32`. API: `setOwned`,
+      `setBorrowed`, `setBorrowedConst`, `get`, `getConst`,
+      `replaceBorrowed`, `replaceBorrowedConst`, `update`,
+      `deinit`. Owned slots register a comptime-built deinit thunk
+      that picks the right `G.deinit` shape (`fn(*Self) void` or
+      `fn(*Self, Allocator) void`); primitives without a `deinit`
+      decl are accepted via a `hasDeinit` guard.
+- [x] Move keymap and debugger out of `Gooey` and into globals.
+      `gooey.keymap()` / `gooey.debugger()` are thin one-liners
+      that panic on missing slot (a framework bug, not a runtime
+      fallback). Theme storage moves out of `Builder.theme_ptr` and
+      into the same registry under the `*const Theme` shape.
+- [x] 0.16: no `@Type` work was needed here — `Globals` uses
+      `@typeName` for keys and `@hasDecl` / `@typeInfo(...).@"fn"`
+      (already lower-case-tag form) for the deinit thunk reflection.
 
 **Definition of done:**
 
-- Calling a paint-only method outside a paint phase fails an assertion
-  in debug builds.
-- `Gooey` no longer owns `keymap`, `theme`, or `debugger` directly.
+- [x] Calling a layout method outside `.prepaint` fails an
+      assertion in debug builds (e.g. `openElement` after
+      `endFrame` panics with
+      `DrawPhase mismatch: expected .prepaint, got .paint`).
+- [x] `Gooey` no longer owns `keymap` or `debugger` directly —
+      both moved to `globals`. Theme moved out of `Builder` into
+      the same store.
+- [x] `Build Summary: 9/9 steps succeeded; 1053/1053 tests passed`.
+
+**Implementation notes:**
+
+- **Three ownership shapes, not two.** GPUI's globals are roughly
+  one shape ("we own it"). For Gooey, `*const Theme` callers pass
+  `&Theme.dark` from rodata; copying the entire `Theme` into a heap
+  slot per call would be wasteful and would break `cx.setTheme(...)`
+  semantics where the user expects pointer identity. So `Globals`
+  has `setOwned` (heap-alloc + deinit on teardown), `setBorrowed`
+  (caller-managed `*G`), and `setBorrowedConst` (caller-managed
+  `*const G`, with `get(G)` panicking and only `getConst(G)`
+  succeeding). The const variant matters: `get(G)` would otherwise
+  silently return a mutable view of an immutable global and break
+  the borrow contract.
+- **Linear scan beats a hash map at this size.** With
+  `MAX_GLOBALS = 32`, a tagged-array scan is two cache lines and
+  ~32 integer compares worst case. A hash map would allocate, grow,
+  and pull in collision-resolution logic the registry doesn't need.
+- **Phase ladder is centralised in `advancePhase`.** The frame
+  lifecycle methods on `Gooey` call `self.advancePhase(.prepaint)`
+  / `.paint` / `.focus` / `.none` rather than mutating the field
+  directly. `assertAdvance` enforces the four-edge legal table at
+  every transition, so a frame driver that forgets `finalizeFrame`
+  fails on the **next** `beginFrame` rather than corrupting the
+  next frame's state silently.
+- **`Builder.theme_ptr` deletion is load-bearing.** Without it,
+  `setTheme` would update `globals` but `theme()` would still read
+  the cached pointer, drifting on the second frame. Keeping a
+  single source of truth (`globals`) is the entire point of the
+  PR. Bare-builder unit tests (no `gooey` parent) get
+  `&Theme.light` from `theme()` — same fallback the old
+  `theme_ptr orelse &Theme.light` provided.
+- **Test stub `testGooey` survives unchanged.** It uses
+  `Globals = .{}` (default) and never registers a keymap /
+  debugger, so the deferred-command tests don't touch the new
+  accessors. Three new ladder tests (`DrawPhase: default phase is
+.none` / `walks the legal ladder` / `mirrors current_phase
+across multiple ladders`) pin the phase machine without standing
+  up a full UI stack.
+- **`MAX_GLOBALS = 32` is generous.** PR 6 lands with 3 entries
+  (theme, keymap, debugger). The cleanup plan calls out future
+  consumers (focus debugger, settings, telemetry) that would push
+  toward ~10. Doubling that headroom keeps `Gooey`'s embedded
+  table at exactly 1 KiB on a 64-bit target — small enough not to
+  worry about.
 
 ---
 

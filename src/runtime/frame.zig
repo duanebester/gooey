@@ -47,7 +47,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     if (gooey.getWindow()) |w| {
         const W = @TypeOf(w.*);
         if (comptime @hasField(W, "last_gpu_submit_ns")) {
-            gooey.debugger.reportGpuTimings(w.last_gpu_submit_ns, w.last_atlas_upload_ns);
+            gooey.debugger().reportGpuTimings(w.last_gpu_submit_ns, w.last_atlas_upload_ns);
         }
     }
 
@@ -70,9 +70,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.active_scroll_drag_id = null;
 
     // Call user's render function with Cx — time tree construction separately
-    gooey.debugger.beginTreeBuild(gooey.io);
+    gooey.debugger().beginTreeBuild(gooey.io);
     render_fn(cx);
-    gooey.debugger.endTreeBuild(gooey.io);
+    gooey.debugger().endTreeBuild(gooey.io);
 
     // Assert pending item counts are within limits
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
@@ -89,7 +89,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // Sync bounds and z_index from layout to dispatch tree
     // (previously untracked — now measured as "dispatch sync")
-    gooey.debugger.beginDispatchSync(gooey.io);
+    gooey.debugger().beginDispatchSync(gooey.io);
 
     for (gooey.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
@@ -105,7 +105,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Register hit regions
     builder.registerPendingScrollRegions();
 
-    gooey.debugger.endDispatchSync(gooey.io);
+    gooey.debugger().endDispatchSync(gooey.io);
 
     // Clear scene
     gooey.scene.clear();
@@ -116,7 +116,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     gooey.svg_atlas.resetFrameBudget();
 
     // Start render timing for profiler
-    gooey.debugger.beginRender(gooey.io);
+    gooey.debugger().beginRender(gooey.io);
 
     // Render all commands (includes SVGs and images inline for correct z-ordering)
     // Scrollbars are rendered inline when their scissor_end is encountered
@@ -142,7 +142,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     updateImeCursorPosition(gooey);
 
     // End render timing for profiler
-    gooey.debugger.endRender(gooey.io);
+    gooey.debugger().endRender(gooey.io);
 
     // Render debug overlays (if enabled via Cmd+Shift+I)
     try renderDebugOverlays(gooey);
@@ -359,18 +359,18 @@ fn updateImeCursorPosition(gooey: *Gooey) void {
 
 /// Render debug overlays if enabled
 fn renderDebugOverlays(gooey: *Gooey) !void {
-    if (!gooey.debugger.isActive()) return;
+    if (!gooey.debugger().isActive()) return;
 
-    gooey.debugger.generateOverlays(
+    gooey.debugger().generateOverlays(
         gooey.hover.hovered_layout_id,
         gooey.hover.ancestors(),
         gooey.layout,
     );
-    try gooey.debugger.renderOverlays(gooey.scene);
+    try gooey.debugger().renderOverlays(gooey.scene);
 
     // Render inspector panel (Phase 2)
-    if (gooey.debugger.showInspector()) {
-        try gooey.debugger.renderInspectorPanel(
+    if (gooey.debugger().showInspector()) {
+        try gooey.debugger().renderInspectorPanel(
             gooey.scene,
             gooey.text_system,
             gooey.width,
@@ -380,8 +380,8 @@ fn renderDebugOverlays(gooey: *Gooey) !void {
     }
 
     // Render profiler panel
-    if (gooey.debugger.showProfiler()) {
-        try gooey.debugger.renderProfilerPanel(
+    if (gooey.debugger().showProfiler()) {
+        try gooey.debugger().renderProfilerPanel(
             gooey.scene,
             gooey.text_system,
             gooey.width,

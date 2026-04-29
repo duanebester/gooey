@@ -152,6 +152,22 @@ const CancelRegistry = cancel_registry_mod.CancelRegistry;
 const a11y_system_mod = @import("a11y_system.zig");
 const A11ySystem = a11y_system_mod.A11ySystem;
 
+// PR 6 — explicit per-frame phase tagging. `current_phase` advances
+// monotonically through `none → prepaint → paint → focus → none`;
+// `assertAdvance` enforces the legal transition table at each step.
+// See `docs/cleanup-implementation-plan.md` PR 6 and CLAUDE.md §3
+// ("Assertion Density").
+const draw_phase_mod = @import("draw_phase.zig");
+pub const DrawPhase = draw_phase_mod.DrawPhase;
+
+// PR 6 — type-keyed singleton storage for cross-cutting state
+// (`Keymap`, `Debugger`, future: `*const Theme`, settings, telemetry).
+// Lifts these off `Gooey`'s direct field list so adding a new global
+// is a one-line `setOwned` at init rather than a sweep across four
+// init paths plus `deinit`. See `src/context/global.zig`.
+const global_mod = @import("global.zig");
+const Globals = global_mod.Globals;
+
 // =============================================================================
 // Local infrastructure (deferred command queue)
 // =============================================================================
@@ -252,14 +268,34 @@ pub const Gooey = struct {
     /// Layout ID of current drop target (for drag-over styling)
     drag_over_target: ?u32 = null,
 
-    /// UI Debugger/Inspector (toggle with Cmd+Shift+I)
-    debugger: debugger_mod.Debugger = .{},
+    // PR 6 — `debugger` lives in `globals` now. Access via
+    // `gooey.debugger()`. The accessor reads from the type-keyed
+    // store; one indirection vs. a direct field, but it removes the
+    // last hard-coded singleton from the struct surface and makes
+    // adding future globals (settings, telemetry) a one-liner.
 
     /// Dispatch tree for event routing
     dispatch: *DispatchTree,
 
-    /// Keymap for action bindings
-    keymap: Keymap,
+    // PR 6 — `keymap` lives in `globals` now. Access via
+    // `gooey.keymap()`. Same rationale as the `debugger` migration
+    // above; both share the same `Globals.setOwned` registration in
+    // every `init*` path.
+
+    /// Type-keyed singleton store (PR 6 — see `global.zig`). Owns
+    /// `Keymap` and `Debugger`; future PRs add `*const Theme` and
+    /// any other cross-cutting state. Default-constructed
+    /// (`entries = @splat(Entry.empty)`); populated post-init by
+    /// every `init*` path via `setOwned`.
+    globals: Globals = .{},
+
+    /// Current frame phase (PR 6 — see `draw_phase.zig`). Advances
+    /// monotonically through `none → prepaint → paint → focus →
+    /// none` across the frame lifecycle. Phase-restricted methods
+    /// assert against this value at entry; the helper `advancePhase`
+    /// pair-asserts every legal transition. Default `.none` covers
+    /// "constructed but never entered a frame".
+    current_phase: DrawPhase = .none,
 
     /// Entity storage for GPUI-style state management
     entities: EntityMap,
@@ -566,7 +602,9 @@ pub const Gooey = struct {
             .scene_owned = true,
             .dispatch = dispatch,
             .entities = EntityMap.init(allocator, io),
-            .keymap = Keymap.init(allocator),
+            // PR 6 — `keymap` and `debugger` move to `globals` below
+            // (post-literal so they can `try` and we can `errdefer`
+            // the cleanup chain).
             .focus = FocusManager.init(allocator),
             .text_system = text_system,
             .text_system_owned = true,
@@ -608,6 +646,16 @@ pub const Gooey = struct {
         // about to be copied to the caller's heap address; the queue
         // pointer will dangle until `fixupImageLoadQueue` re-binds it.
         result.image_loader.initInPlace(io, allocator, image_atlas);
+
+        // PR 6 — populate type-keyed globals. Heap-allocated copies
+        // of `Keymap` / `Debugger` live in `result.globals.entries`;
+        // ownership transfers when `result` is moved into the
+        // caller's storage (the entries hold pointers to stable
+        // heap addresses, so the by-value copy is safe — no fixup
+        // needed unlike `image_loader`).
+        try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
+        errdefer result.globals.deinit(allocator);
+        try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
 
         return result;
     }
@@ -685,9 +733,15 @@ pub const Gooey = struct {
 
         // Small structs
         self.entities = EntityMap.init(allocator, io);
-        self.keymap = Keymap.init(allocator);
         self.focus = FocusManager.init(allocator);
         self.widgets = WidgetStore.init(allocator, io);
+
+        // PR 6 — `globals` and `current_phase` start fresh. `self`
+        // is raw memory at this point (caller did `allocator.create`
+        // without zeroing), so explicit assignment is required —
+        // even default-valued fields would otherwise retain garbage.
+        self.globals = .{};
+        self.current_phase = .none;
 
         // Create SVG atlas (owned)
         const svg_atlas = allocator.create(svg_mod.SvgAtlas) catch return error.OutOfMemory;
@@ -707,7 +761,7 @@ pub const Gooey = struct {
         self.scale_factor = @floatCast(window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
-        self.debugger = .{};
+        // PR 6 — `debugger` registered into `globals` below.
 
         // Pending/active drag state (re-init explicitly — `self` was raw memory)
         self.pending_drag = null;
@@ -741,6 +795,13 @@ pub const Gooey = struct {
         // already at its final heap address (no struct-literal copy can
         // dangle the embedded queue pointer).
         self.image_loader.initInPlace(io, allocator, image_atlas);
+
+        // PR 6 — populate type-keyed globals. `self` is at its final
+        // heap address; `setOwned` writes its bookkeeping directly
+        // there, no fixup required.
+        try self.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
+        errdefer self.globals.deinit(allocator);
+        try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
     /// Initialize Gooey with shared resources (text system, SVG atlas, image atlas).
@@ -799,7 +860,7 @@ pub const Gooey = struct {
             .scene_owned = true,
             .dispatch = dispatch,
             .entities = EntityMap.init(allocator, io),
-            .keymap = Keymap.init(allocator),
+            // PR 6 — `keymap` / `debugger` move to `globals` below.
             .focus = FocusManager.init(allocator),
             // Shared resources (not owned)
             .text_system = shared_text_system,
@@ -830,6 +891,14 @@ pub const Gooey = struct {
 
         // Initialize the image loader against the SHARED atlas.
         result.image_loader.initInPlace(io, allocator, shared_image_atlas);
+
+        // PR 6 — same globals registration as `initOwned`. The
+        // shared-resources path doesn't change the lifetime of
+        // `Keymap` / `Debugger` — both are still per-window, owned
+        // by this `Gooey`'s `globals`.
+        try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
+        errdefer result.globals.deinit(allocator);
+        try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
 
         return result;
     }
@@ -903,9 +972,13 @@ pub const Gooey = struct {
 
         // Small structs
         self.entities = EntityMap.init(allocator, io);
-        self.keymap = Keymap.init(allocator);
         self.focus = FocusManager.init(allocator);
         self.widgets = WidgetStore.init(allocator, io);
+
+        // PR 6 — `globals` and `current_phase` start fresh (same as
+        // `initOwnedPtr` — `self` is raw memory).
+        self.globals = .{};
+        self.current_phase = .none;
 
         // Scalar fields
         self.width = @floatCast(window.size.width);
@@ -913,7 +986,7 @@ pub const Gooey = struct {
         self.scale_factor = @floatCast(window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
-        self.debugger = .{};
+        // PR 6 — `debugger` registered into `globals` below.
 
         // Pending/active drag state
         self.pending_drag = null;
@@ -942,6 +1015,11 @@ pub const Gooey = struct {
         // here without a fixup because `self` is already at its final
         // heap address (the embedded queue pointer cannot dangle).
         self.image_loader.initInPlace(io, allocator, shared_image_atlas);
+
+        // PR 6 — same globals registration as `initOwnedPtr`.
+        try self.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
+        errdefer self.globals.deinit(allocator);
+        try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
     pub fn deinit(self: *Self) void {
@@ -977,7 +1055,12 @@ pub const Gooey = struct {
         self.dispatch.deinit();
         self.allocator.destroy(self.dispatch);
 
-        self.keymap.deinit();
+        // PR 6 — single teardown call covers `Keymap` (calls
+        // `Keymap.deinit`) and `Debugger`. The thunk built at
+        // `setOwned` time picks the right shape per type
+        // (`fn(*Self) void` vs. `fn(*Self, Allocator) void`), so
+        // each global teardown matches its declared `deinit`.
+        self.globals.deinit(self.allocator);
 
         if (self.text_system_owned) {
             self.text_system.deinit();
@@ -997,10 +1080,50 @@ pub const Gooey = struct {
     // Frame Lifecycle
     // =========================================================================
 
+    /// Internal helper: advance `current_phase` to `next`, asserting
+    /// the transition is one of the four legal advances
+    /// (`none → prepaint → paint → focus → none`). Centralised so the
+    /// frame-lifecycle methods read as a phase ladder rather than
+    /// repeating the assert + assignment pair four times.
+    fn advancePhase(self: *Self, next: DrawPhase) void {
+        draw_phase_mod.assertAdvance(self.current_phase, next);
+        self.current_phase = next;
+    }
+
+    /// PR 6 — read-only accessor for diagnostics / tests.
+    pub fn drawPhase(self: *const Self) DrawPhase {
+        return self.current_phase;
+    }
+
+    /// PR 6 — typed accessor for the keymap global. Panics if
+    /// `init*` did not register one (every supported init path
+    /// does); a missing slot is a framework bug, not a runtime
+    /// fallback.
+    pub fn keymap(self: *Self) *Keymap {
+        return self.globals.get(Keymap) orelse {
+            std.debug.panic("Gooey.keymap(): no Keymap registered in globals (init* did not run?)", .{});
+        };
+    }
+
+    /// PR 6 — typed accessor for the debugger global. Same panic
+    /// contract as `keymap()`.
+    pub fn debugger(self: *Self) *debugger_mod.Debugger {
+        return self.globals.get(debugger_mod.Debugger) orelse {
+            std.debug.panic("Gooey.debugger(): no Debugger registered in globals (init* did not run?)", .{});
+        };
+    }
+
     /// Call at the start of each frame before building UI
     pub fn beginFrame(self: *Self) void {
+        // PR 6 — first thing the frame does: advance into prepaint.
+        // `assertAdvance` checks the previous phase was `.none`, so
+        // back-to-back `beginFrame` calls without an intervening
+        // `finalizeFrame` fail loudly here rather than corrupting
+        // the next frame's state.
+        self.advancePhase(.prepaint);
+
         // Start profiler frame timing
-        self.debugger.beginFrame(self.io);
+        self.debugger().beginFrame(self.io);
 
         self.frame_count += 1;
         self.widgets.beginFrame();
@@ -1068,20 +1191,35 @@ pub const Gooey = struct {
         }
 
         // End layout and get render commands — time only the actual layout compute
-        self.debugger.beginLayout(self.io);
+        self.debugger().beginLayout(self.io);
         const commands = try self.layout.endFrame();
-        self.debugger.endLayout(self.io);
+        self.debugger().endLayout(self.io);
 
         // Accessibility: finalize tree, sync bounds, push to platform
         // (zero cost when disabled — the subsystem early-outs).
         self.a11y.endFrame(self.layout);
+
+        // PR 6 — layout has run; we are now in the paint phase. The
+        // caller (`runtime/frame.zig`) will draw the returned
+        // commands into the scene under this phase. Advancing here
+        // (rather than in the caller) keeps the phase machine in
+        // one place.
+        self.advancePhase(.paint);
 
         return commands;
     }
 
     /// Finalize frame timing (call after all rendering is complete)
     pub fn finalizeFrame(self: *Self) void {
-        self.debugger.endFrame(self.io, &render_stats.frame_stats);
+        // PR 6 — paint is done; walk through `.focus` (post-paint
+        // focus / a11y finalisation surface — wired up in PR 7) and
+        // back to `.none`. We advance through `.focus` even though
+        // no work is currently scheduled there because
+        // `assertAdvance` requires monotone progression: `paint →
+        // none` is not a legal direct edge.
+        self.advancePhase(.focus);
+        self.debugger().endFrame(self.io, &render_stats.frame_stats);
+        self.advancePhase(.none);
     }
 
     /// Check if any animations are running (call after endFrame)
@@ -1131,18 +1269,34 @@ pub const Gooey = struct {
     // Layout Pass-through (convenience methods)
     // =========================================================================
 
-    /// Open a layout element (container)
+    /// Open a layout element (container).
+    ///
+    /// PR 6 — must be called in the `.prepaint` phase: layout is
+    /// being declared while the user's `render_fn` is running.
+    /// Calling this after `endFrame` (which advances to `.paint`)
+    /// would silently corrupt the next frame's tree.
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {
+        draw_phase_mod.assertPhase(self.current_phase, .prepaint);
         try self.layout.openElement(decl);
     }
 
-    /// Close the current layout element
+    /// Close the current layout element.
+    ///
+    /// PR 6 — same `.prepaint` invariant as `openElement`. Pairing
+    /// the assertion at both ends of the open/close bracket
+    /// (CLAUDE.md §3) catches a stray `closeElement` outside the
+    /// user render, which would unbalance the layout stack.
     pub fn closeElement(self: *Self) void {
+        draw_phase_mod.assertPhase(self.current_phase, .prepaint);
         self.layout.closeElement();
     }
 
-    /// Add a text element
+    /// Add a text element.
+    ///
+    /// PR 6 — `.prepaint` only: text declarations are part of the
+    /// element tree built during the user render.
     pub fn text(self: *Self, content: []const u8, config: TextConfig) !void {
+        draw_phase_mod.assertPhase(self.current_phase, .prepaint);
         try self.layout.text(content, config);
     }
 
@@ -1602,7 +1756,7 @@ fn testGooey() Gooey {
         .widgets = undefined,
         .focus = undefined,
         .dispatch = undefined,
-        .keymap = undefined,
+
         .entities = undefined,
         .window = null,
         .hover = HoverState.init(),
@@ -1716,4 +1870,64 @@ test "hasDeferredCommands returns correct state" {
 
     g.flushDeferredCommands();
     try testing.expect(!g.hasDeferredCommands());
+}
+
+// =============================================================================
+// PR 6 — DrawPhase ladder tests
+// =============================================================================
+//
+// These tests do not exercise the full frame lifecycle (which requires a
+// real window, layout engine, scene, etc.) — they pin the phase machine
+// invariants that the rest of the framework leans on:
+//
+//   1. A freshly-constructed `Gooey` reports `.none`.
+//   2. `advancePhase` accepts the four legal forward edges.
+//   3. The internal accessor matches the field.
+//
+// We use the `testGooey` stub from above plus direct field manipulation
+// on `current_phase` — the resource-owning frame methods (`beginFrame`
+// etc.) are out of reach without a full UI stack, but the ladder itself
+// is observable.
+
+test "DrawPhase: default phase is .none" {
+    var g = testGooey();
+    try testing.expectEqual(DrawPhase.none, g.drawPhase());
+    try testing.expectEqual(DrawPhase.none, g.current_phase);
+}
+
+test "DrawPhase: advancePhase walks the legal ladder" {
+    var g = testGooey();
+    try testing.expectEqual(DrawPhase.none, g.drawPhase());
+
+    g.advancePhase(.prepaint);
+    try testing.expectEqual(DrawPhase.prepaint, g.drawPhase());
+
+    g.advancePhase(.paint);
+    try testing.expectEqual(DrawPhase.paint, g.drawPhase());
+
+    g.advancePhase(.focus);
+    try testing.expectEqual(DrawPhase.focus, g.drawPhase());
+
+    g.advancePhase(.none);
+    try testing.expectEqual(DrawPhase.none, g.drawPhase());
+}
+
+test "DrawPhase: drawPhase mirrors current_phase across multiple ladders" {
+    // Two complete laps to confirm the wrap-around (`.focus → .none`)
+    // re-enables a fresh `.none → .prepaint` start. Catches a bug
+    // where `advancePhase` accidentally locks the field on first
+    // wrap.
+    var g = testGooey();
+
+    var lap: u32 = 0;
+    while (lap < 2) : (lap += 1) {
+        g.advancePhase(.prepaint);
+        try testing.expectEqual(DrawPhase.prepaint, g.drawPhase());
+        g.advancePhase(.paint);
+        try testing.expectEqual(DrawPhase.paint, g.drawPhase());
+        g.advancePhase(.focus);
+        try testing.expectEqual(DrawPhase.focus, g.drawPhase());
+        g.advancePhase(.none);
+        try testing.expectEqual(DrawPhase.none, g.drawPhase());
+    }
 }

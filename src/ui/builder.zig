@@ -183,8 +183,14 @@ pub const Builder = struct {
     /// Cx pointer for new-style components (set by runCx)
     cx_ptr: ?*anyopaque = null,
 
-    /// Theme pointer for context-aware theming
-    theme_ptr: ?*const Theme = null,
+    // PR 6 — theme storage moved into `gooey.globals`. The Builder
+    // no longer caches a `*const Theme`; `setTheme` writes through to
+    // the type-keyed registry on the parent `Gooey` and `theme()`
+    // reads back from the same slot. Rationale: collapses two parallel
+    // stores (Builder.theme_ptr + the future Globals slot the cleanup
+    // plan calls for) into one. See `docs/cleanup-implementation-plan.md`
+    // PR 6 — `Move keymap, theme, debugger pointer out of Gooey/Builder
+    // into globals`.
 
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
@@ -303,14 +309,37 @@ pub const Builder = struct {
 
     /// Set the theme for this builder and all child components.
     /// Called at the start of render to establish theme context.
+    ///
+    /// PR 6: writes through to `gooey.globals` keyed by `Theme`.
+    /// `replaceBorrowedConst` registers a fresh slot on the first
+    /// call and rebinds the pointer on subsequent calls without
+    /// growing the table — same behaviour the old `theme_ptr`
+    /// assignment had, just routed through the type-keyed store.
+    ///
+    /// Asserts `self.gooey` is wired. Every code path that builds a
+    /// frame (`Cx.setTheme`, the runtime drivers) goes through a
+    /// `Gooey`-attached builder; a null parent here is a framework
+    /// bug, not a runtime fallback.
     pub fn setTheme(self: *Self, t: *const Theme) void {
-        self.theme_ptr = t;
+        const g = self.gooey orelse {
+            std.debug.panic(
+                "Builder.setTheme: builder has no parent Gooey; cannot route theme through globals",
+                .{},
+            );
+        };
+        g.globals.replaceBorrowedConst(Theme, t);
     }
 
     /// Get the current theme, falling back to light theme if none set.
     /// Components use this to resolve null color fields.
+    ///
+    /// PR 6: reads from `gooey.globals`. The `*const Theme` slot may
+    /// be empty (no `setTheme` yet this frame, or builder was
+    /// stood up bare for a unit test) — fall back to `&Theme.light`
+    /// in that case so the component path stays branch-free.
     pub fn theme(self: *Self) *const Theme {
-        return self.theme_ptr orelse &Theme.light;
+        const g = self.gooey orelse return &Theme.light;
+        return g.globals.getConst(Theme) orelse &Theme.light;
     }
 
     /// Get the typed context from within a component's render method.
