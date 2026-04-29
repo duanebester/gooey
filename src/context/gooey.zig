@@ -152,6 +152,13 @@ const CancelRegistry = cancel_registry_mod.CancelRegistry;
 const a11y_system_mod = @import("a11y_system.zig");
 const A11ySystem = a11y_system_mod.A11ySystem;
 
+// PR 7a — bundled rendering resources (text + svg + image) with a
+// single ownership flag. See `app_resources.zig` and
+// `docs/cleanup-implementation-plan.md` PR 7a. Retires the
+// per-field `*_owned: bool` triplet on `Gooey`.
+const app_resources_mod = @import("app_resources.zig");
+const AppResources = app_resources_mod.AppResources;
+
 // PR 6 — explicit per-frame phase tagging. `current_phase` advances
 // monotonically through `none → prepaint → paint → focus → none`;
 // `assertAdvance` enforces the legal transition table at each step.
@@ -230,23 +237,40 @@ pub const Gooey = struct {
     // Threaded through the framework from main(); see cx.io() accessor.
     io: std.Io,
 
-    // Layout (immediate mode - rebuilt each frame)
+    // Layout (immediate mode - rebuilt each frame). Always owned —
+    // the PR 7a `_owned` audit confirmed no init path borrows the
+    // layout engine, so the tautological `layout_owned: bool` flag
+    // retired alongside the `AppResources` extraction.
     layout: *LayoutEngine,
-    layout_owned: bool = false,
 
-    // Rendering (retained)
+    // Rendering (retained). Always owned — same rationale as `layout`.
     scene: *Scene,
-    scene_owned: bool = false,
 
-    // Text rendering
+    /// PR 7a — bundled shared rendering resources. Owns or borrows
+    /// `text_system` / `svg_atlas` / `image_atlas` as one unit;
+    /// `resources.owned` discriminates the two shapes (single-window
+    /// owns; multi-window borrows from the parent `App`). Replaces
+    /// the previous `text_system_owned` / `svg_atlas_owned` /
+    /// `image_atlas_owned` flag triplet on this struct. Default
+    /// `undefined` so test fixtures that omit it
+    /// (`testGooey` below) keep compiling without explicit
+    /// initialisation. See `app_resources.zig` and
+    /// `docs/cleanup-implementation-plan.md` PR 7a.
+    resources: AppResources = undefined,
+
+    /// Back-compat alias — mirrors `resources.text_system` so the
+    /// 124 existing `gooey.text_system` call sites keep working
+    /// across the PR 7a landing. Set once at init from the same
+    /// heap address that `resources.text_system` points at; never
+    /// mutated post-init. PR 7b will rewrite call sites to
+    /// `gooey.resources.text_system` and retire this alias.
     text_system: *TextSystem,
-    text_system_owned: bool = false,
 
-    // SVG and Image atlases (pointers for resource sharing)
+    /// Back-compat alias — see `text_system` doc-comment.
     svg_atlas: *svg_mod.SvgAtlas,
-    svg_atlas_owned: bool = false,
+
+    /// Back-compat alias — see `text_system` doc-comment.
     image_atlas: *image_mod.ImageAtlas,
-    image_atlas_owned: bool = false,
 
     // Widgets (retained across frames)
     widgets: WidgetStore,
@@ -555,63 +579,52 @@ pub const Gooey = struct {
         );
         scene.enableCulling();
 
-        // Create text system
-        const text_system = allocator.create(TextSystem) catch return error.OutOfMemory;
-        text_system.* = try TextSystem.initWithScale(allocator, @floatCast(window.scale_factor), io);
-        errdefer {
-            text_system.deinit();
-            allocator.destroy(text_system);
-        }
+        // PR 7a — bundle text + SVG + image resources into one
+        // `AppResources`. Replaces three separate `allocator.create`
+        // + init + errdefer blocks plus the inline font-load step.
+        // The resulting struct is copied into `result.resources`
+        // below; the heap pointers it carries survive the by-value
+        // copy unchanged.
+        var resources = try AppResources.initOwned(
+            allocator,
+            io,
+            @floatCast(window.scale_factor),
+            .{
+                .font_name = font_config.font_name,
+                .font_size = font_config.font_size,
+            },
+        );
+        errdefer resources.deinit();
 
-        // Load font from config (named font or system default)
-        if (font_config.font_name) |name| {
-            try text_system.loadFont(name, font_config.font_size);
-        } else {
-            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
-        }
-
-        // Set up text measurement callback
-        layout_engine.setMeasureTextFn(measureTextCallback, text_system);
+        // Set up text measurement callback against the bundled text
+        // system (same heap address as before, just routed through
+        // the bundle).
+        layout_engine.setMeasureTextFn(measureTextCallback, resources.text_system);
 
         const dispatch = try allocator.create(DispatchTree);
         errdefer allocator.destroy(dispatch);
         dispatch.* = DispatchTree.init(allocator);
 
-        // Create SVG atlas (owned)
-        const svg_atlas = allocator.create(svg_mod.SvgAtlas) catch return error.OutOfMemory;
-        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor, io);
-        errdefer {
-            svg_atlas.deinit();
-            allocator.destroy(svg_atlas);
-        }
-
-        // Create image atlas (owned)
-        const image_atlas = allocator.create(image_mod.ImageAtlas) catch return error.OutOfMemory;
-        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor, io);
-        errdefer {
-            image_atlas.deinit();
-            allocator.destroy(image_atlas);
-        }
-
         var result: Self = .{
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            .layout_owned = true,
             .scene = scene,
-            .scene_owned = true,
             .dispatch = dispatch,
             .entities = EntityMap.init(allocator, io),
             // PR 6 — `keymap` and `debugger` move to `globals` below
             // (post-literal so they can `try` and we can `errdefer`
             // the cleanup chain).
             .focus = FocusManager.init(allocator),
-            .text_system = text_system,
-            .text_system_owned = true,
-            .svg_atlas = svg_atlas,
-            .svg_atlas_owned = true,
-            .image_atlas = image_atlas,
-            .image_atlas_owned = true,
+            // PR 7a — single owned `resources` field replaces the
+            // `text_system` / `svg_atlas` / `image_atlas` triplet
+            // plus their `*_owned` flags. The three pointer fields
+            // below are back-compat aliases populated from the same
+            // heap addresses (see field-decl doc-comments).
+            .resources = resources,
+            .text_system = resources.text_system,
+            .svg_atlas = resources.svg_atlas,
+            .image_atlas = resources.image_atlas,
             .widgets = WidgetStore.init(allocator, io),
             .window = window,
             .width = @floatCast(window.size.width),
@@ -634,6 +647,14 @@ pub const Gooey = struct {
             // into `result_buffer` that dangles after the by-value copy.
             .image_loader = undefined,
         };
+        // PR 7a — `result.resources` was set by-value above. Now
+        // that `result` is the canonical owner of the heap atlases,
+        // disarm the local `resources.owned` so a later errdefer
+        // (`globals.setOwned` failures) doesn't tear them down out
+        // from under `result`. Without this, a partial init would
+        // hit a double-free when the caller drops `result` after a
+        // success path that copies into the heap slot.
+        resources.owned = false;
 
         // Initialize accessibility subsystem in place. On macOS, the
         // bridge captures the NSWindow / NSView handles passed here; on
@@ -645,7 +666,10 @@ pub const Gooey = struct {
         // Initialize the image loader subsystem in place. The result is
         // about to be copied to the caller's heap address; the queue
         // pointer will dangle until `fixupImageLoadQueue` re-binds it.
-        result.image_loader.initInPlace(io, allocator, image_atlas);
+        // PR 7a — atlas pointer reaches through the bundled resources;
+        // the heap address is the same as the pre-extraction local
+        // `image_atlas`, so loader semantics are unchanged.
+        result.image_loader.initInPlace(io, allocator, result.resources.image_atlas);
 
         // PR 6 — populate type-keyed globals. Heap-allocated copies
         // of `Keymap` / `Debugger` live in `result.globals.entries`;
@@ -695,23 +719,25 @@ pub const Gooey = struct {
         );
         scene.enableCulling();
 
-        // Create text system (initInPlace avoids 1.7MB stack temp)
-        const text_system = allocator.create(TextSystem) catch return error.OutOfMemory;
-        try text_system.initInPlace(allocator, @floatCast(window.scale_factor), io);
-        errdefer {
-            text_system.deinit();
-            allocator.destroy(text_system);
-        }
+        // PR 7a — initialise shared rendering resources directly
+        // into `self.resources` (no stack temp). `initOwnedInPlace`
+        // is `noinline` per CLAUDE.md §14 so the WASM stack budget
+        // stays bounded across the three internal subsystems
+        // (TextSystem ~1.7MB, atlases hundreds of KB each).
+        try self.resources.initOwnedInPlace(
+            allocator,
+            io,
+            @floatCast(window.scale_factor),
+            .{
+                .font_name = font_config.font_name,
+                .font_size = font_config.font_size,
+            },
+        );
+        errdefer self.resources.deinit();
 
-        // Load font from config (named font or system default)
-        if (font_config.font_name) |name| {
-            try text_system.loadFont(name, font_config.font_size);
-        } else {
-            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
-        }
-
-        // Set up text measurement callback
-        layout_engine.setMeasureTextFn(measureTextCallback, text_system);
+        // Set up text measurement callback against the bundled text
+        // system.
+        layout_engine.setMeasureTextFn(measureTextCallback, self.resources.text_system);
 
         // Create dispatch tree
         const dispatch = try allocator.create(DispatchTree);
@@ -723,12 +749,15 @@ pub const Gooey = struct {
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        self.layout_owned = true;
         self.scene = scene;
-        self.scene_owned = true;
         self.dispatch = dispatch;
-        self.text_system = text_system;
-        self.text_system_owned = true;
+        // PR 7a — back-compat aliases mirror `self.resources.*`,
+        // already initialised above. Setting them here (rather than
+        // letting them be undefined) keeps the 124 `gooey.text_system`
+        // / etc. call sites working until PR 7b retires them.
+        self.text_system = self.resources.text_system;
+        self.svg_atlas = self.resources.svg_atlas;
+        self.image_atlas = self.resources.image_atlas;
         self.window = window;
 
         // Small structs
@@ -743,17 +772,10 @@ pub const Gooey = struct {
         self.globals = .{};
         self.current_phase = .none;
 
-        // Create SVG atlas (owned)
-        const svg_atlas = allocator.create(svg_mod.SvgAtlas) catch return error.OutOfMemory;
-        svg_atlas.* = try svg_mod.SvgAtlas.init(allocator, window.scale_factor, io);
-        self.svg_atlas = svg_atlas;
-        self.svg_atlas_owned = true;
-
-        // Create image atlas (owned)
-        const image_atlas = allocator.create(image_mod.ImageAtlas) catch return error.OutOfMemory;
-        image_atlas.* = try image_mod.ImageAtlas.init(allocator, window.scale_factor, io);
-        self.image_atlas = image_atlas;
-        self.image_atlas_owned = true;
+        // PR 7a — SVG and image atlas creation moved up into
+        // `self.resources.initOwnedInPlace` near the top of this
+        // function. The aliases were assigned alongside `text_system`
+        // in the field-by-field block above. No work remains here.
 
         // Scalar fields
         self.width = @floatCast(window.size.width);
@@ -793,8 +815,9 @@ pub const Gooey = struct {
 
         // Initialize image loader in place — safe here because `self` is
         // already at its final heap address (no struct-literal copy can
-        // dangle the embedded queue pointer).
-        self.image_loader.initInPlace(io, allocator, image_atlas);
+        // dangle the embedded queue pointer). PR 7a — atlas reached
+        // through `self.resources` (same heap address as before).
+        self.image_loader.initInPlace(io, allocator, self.resources.image_atlas);
 
         // PR 6 — populate type-keyed globals. `self` is at its final
         // heap address; `setOwned` writes its bookkeeping directly
@@ -855,20 +878,27 @@ pub const Gooey = struct {
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            .layout_owned = true,
             .scene = scene,
-            .scene_owned = true,
             .dispatch = dispatch,
             .entities = EntityMap.init(allocator, io),
             // PR 6 — `keymap` / `debugger` move to `globals` below.
             .focus = FocusManager.init(allocator),
-            // Shared resources (not owned)
+            // PR 7a — borrowed `AppResources` view; the parent (e.g.
+            // `MultiWindowApp`) owns the underlying pointees.
+            // `AppResources.deinit` is a no-op for `owned = false`,
+            // matching the pre-extraction `*_owned = false` semantics.
+            .resources = AppResources.borrowed(
+                allocator,
+                io,
+                shared_text_system,
+                shared_svg_atlas,
+                shared_image_atlas,
+            ),
+            // Back-compat aliases — same heap addresses as
+            // `result.resources.*`. PR 7b retires these.
             .text_system = shared_text_system,
-            .text_system_owned = false,
             .svg_atlas = shared_svg_atlas,
-            .svg_atlas_owned = false,
             .image_atlas = shared_image_atlas,
-            .image_atlas_owned = false,
             .widgets = WidgetStore.init(allocator, io),
             .window = window,
             .width = @floatCast(window.size.width),
@@ -955,18 +985,26 @@ pub const Gooey = struct {
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        self.layout_owned = true;
         self.scene = scene;
-        self.scene_owned = true;
         self.dispatch = dispatch;
 
-        // Shared resources (not owned)
+        // PR 7a — borrowed `AppResources` view; the parent owns the
+        // pointees. By-value init is safe — the struct only carries
+        // the three pointers plus the `owned = false` flag, no
+        // internal self-references.
+        self.resources = AppResources.borrowed(
+            allocator,
+            io,
+            shared_text_system,
+            shared_svg_atlas,
+            shared_image_atlas,
+        );
+
+        // Back-compat aliases — same heap addresses as
+        // `self.resources.*`. PR 7b retires these.
         self.text_system = shared_text_system;
-        self.text_system_owned = false;
         self.svg_atlas = shared_svg_atlas;
-        self.svg_atlas_owned = false;
         self.image_atlas = shared_image_atlas;
-        self.image_atlas_owned = false;
 
         self.window = window;
 
@@ -1042,14 +1080,13 @@ pub const Gooey = struct {
         self.focus.deinit();
         self.entities.deinit();
 
-        if (self.svg_atlas_owned) {
-            self.svg_atlas.deinit();
-            self.allocator.destroy(self.svg_atlas);
-        }
-        if (self.image_atlas_owned) {
-            self.image_atlas.deinit();
-            self.allocator.destroy(self.image_atlas);
-        }
+        // PR 7a — single teardown call covers text_system +
+        // svg_atlas + image_atlas. `AppResources.deinit` is a no-op
+        // when borrowed (multi-window mode), otherwise frees the
+        // three subsystems in image → svg → text order. Replaces
+        // three flag-guarded free blocks (`*_owned: bool` triplet)
+        // at this point in the function.
+        self.resources.deinit();
 
         // Clean up dispatch tree
         self.dispatch.deinit();
@@ -1062,18 +1099,14 @@ pub const Gooey = struct {
         // each global teardown matches its declared `deinit`.
         self.globals.deinit(self.allocator);
 
-        if (self.text_system_owned) {
-            self.text_system.deinit();
-            self.allocator.destroy(self.text_system);
-        }
-        if (self.scene_owned) {
-            self.scene.deinit();
-            self.allocator.destroy(self.scene);
-        }
-        if (self.layout_owned) {
-            self.layout.deinit();
-            self.allocator.destroy(self.layout);
-        }
+        // PR 7a — `scene` and `layout` are always owned (no init
+        // path ever leaves them borrowed); the tautological
+        // `scene_owned` / `layout_owned` flags retired alongside
+        // the `AppResources` extraction. Free unconditionally.
+        self.scene.deinit();
+        self.allocator.destroy(self.scene);
+        self.layout.deinit();
+        self.allocator.destroy(self.layout);
     }
 
     // =========================================================================

@@ -21,6 +21,19 @@ pub const Gooey = gooey.Gooey;
 pub const FontConfig = gooey.FontConfig;
 
 // =============================================================================
+// PR 7a — App-scope shared resources
+// =============================================================================
+//
+// `AppResources` bundles the three "expensive to duplicate per window"
+// subsystems (`TextSystem`, `SvgAtlas`, `ImageAtlas`) into one struct
+// with a single `owned: bool` discriminator, retiring the per-field
+// `_owned` flag triplet on `Gooey`. See
+// `docs/cleanup-implementation-plan.md` PR 7a.
+
+pub const app_resources = @import("app_resources.zig");
+pub const AppResources = app_resources.AppResources;
+
+// =============================================================================
 // Focus Management
 // =============================================================================
 

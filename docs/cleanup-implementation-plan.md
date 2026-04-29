@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                     |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                     |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                     |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ☐                     |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a landed)         |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                     |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                     |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                     |
@@ -817,7 +817,22 @@ across multiple ladders`) pin the phase machine without standing
 ## PR 7 — App/Window split + `Frame` double buffer
 
 **This is the architectural earthquake.** Largest PR; medium-high risk.
-Plan it as its own multi-day effort.
+Planned as a multi-day effort split across landable sub-PRs (7a, 7b, …)
+so each lands green on its own.
+
+**Status:**
+
+- ☑ **7a — `AppResources` + drop `_owned` flags.** Landed on
+  `cleanup/pr-7a-app-resources`. `Build Summary: 9/9 steps succeeded;
+  1057/1057 tests passed` (vs. 1053 on PR 6 — the +4 are
+  `AppResources`'s own ownership-shape tests). Five of six `_owned`
+  flags retired; remaining `image_loader` per-window placement
+  reserved for 7b. See "Sub-PR 7a" below.
+- ☐ 7b — Rename `Gooey → Window`, lift `keymap` / `globals` /
+  `entities` / `image_loader` into a real `App`.
+- ☐ 7c — `Frame` double buffer + `mem.swap` at frame boundary.
+- ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
+- ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
 
 **Goal:** split `Gooey` into `App` (process-lifetime, shared resources)
 + `Window` (per-window frame state) + `Frame` (per-frame double
@@ -877,6 +892,110 @@ buffer). Eliminate every `_owned: bool` flag.
 - No global access to argv or env vars.
 - WASM stack-budget assertions
   ([CLAUDE.md §14](../CLAUDE.md)) still hold for the new struct sizes.
+
+---
+
+**Sub-PR 7a — `AppResources` + drop `_owned` flags (landed):**
+
+First landable slice of the App/Window earthquake. Goal: bundle
+the three "expensive to duplicate per window" subsystems
+(`TextSystem`, `SvgAtlas`, `ImageAtlas`) into one struct with a
+single ownership flag, so the four parallel `init*` paths on
+`Gooey` collapse toward two and the `*_owned: bool` flag triplet
+retires. Reference: [`architectural-cleanup-plan.md` §2 cleanup
+direction](./architectural-cleanup-plan.md#cleanup-direction)
+and §17 (no ownership flags).
+
+**Write scope (landed):**
+
+- `src/context/app_resources.zig` (new) — `AppResources` struct
+  with `initOwned` / `initOwnedInPlace` (single-window owning
+  shape) and `borrowed` (multi-window borrowed view).
+  `noinline initOwnedInPlace` per CLAUDE.md §14 so the WASM
+  stack budget stays bounded across the embedded subsystem
+  init paths. Four tests pin the two ownership shapes against
+  `std.testing.allocator` (would catch any leak or double-free).
+- `src/context/mod.zig` — re-exports `AppResources`.
+- `src/context/gooey.zig` —
+  - Adds `resources: AppResources` field.
+  - **Drops** `text_system_owned`, `svg_atlas_owned`,
+    `image_atlas_owned`, `scene_owned`, `layout_owned` (five of
+    six `_owned` flags). The `scene` / `layout` flags were
+    tautologically true — audit confirmed no init path ever
+    left them borrowed.
+  - All four init paths (`initOwned` / `initOwnedPtr` /
+    `initWithSharedResources` / `initWithSharedResourcesPtr`)
+    rewritten to delegate atlas / text-system creation through
+    `AppResources`. The four-path shape is preserved for the 7a
+    landing (PR 7b collapses to two when `Gooey → Window`
+    rename happens).
+  - `deinit` collapses three flag-guarded free blocks into one
+    `self.resources.deinit()` call (no-op when borrowed).
+  - Three back-compat alias fields preserved (`text_system`,
+    `svg_atlas`, `image_atlas`) so the 124 existing
+    `gooey.text_system` / etc. call sites keep working through
+    7a; they retire in 7b.
+  - `image_loader` stays on `Gooey` for now — its placement
+    is a behavioural decision (one app-wide loop vs. per-window)
+    deferred to 7b.
+
+**Tasks landed:**
+
+- [x] Define `AppResources` with two ownership shapes (`owned` /
+      `borrowed`) and a single discriminator flag.
+- [x] Single-window `Gooey` embeds an owning `AppResources` by
+      value; multi-window `Gooey` embeds a borrowed view.
+- [x] Five of six `_owned: bool` flags removed (`text_system_owned`,
+      `svg_atlas_owned`, `image_atlas_owned`, `scene_owned`,
+      `layout_owned`).
+- [x] `Gooey.deinit` collapses three flag-guarded free blocks into
+      one `resources.deinit()` call.
+- [x] All four init paths preserved (renamed for clarity in 7b)
+      — `runtime/window_context.zig` and
+      `runtime/multi_window_app.zig` continue to call them as
+      before. No call-site churn this sub-PR.
+- [x] `Build Summary: 9/9 steps succeeded; 1057/1057 tests
+      passed` (+4 vs. PR 6's 1053 — the four `AppResources`
+      ownership-shape tests).
+- [x] `zig build install` builds all examples (single-window
+      and multi-window) without warnings.
+
+**Implementation notes:**
+
+- **`resources.owned` is disarmed after by-value copy in
+  `initOwned`.** The local `var resources = try
+  AppResources.initOwned(...)` is copied by value into
+  `result.resources`. Without flipping `resources.owned = false`
+  on the local immediately after the copy, a later `errdefer`
+  in the same function (e.g. a `globals.setOwned` failure)
+  would tear down the heap pointees out from under the
+  successfully-copied `result`. CLAUDE.md §22 ("buffer bleeds")
+  framing in spirit — ownership transfer must be explicit at
+  the moment of copy.
+- **`AppResources.deinit` undefs the three pointers after
+  free.** Idempotency on the borrowed shape (`owned = false`
+  short-circuits early), but a deliberate use-after-free trap
+  on the owned shape — a second `deinit` will read `undefined`
+  pointers and trip the field-access asserts on the next
+  framework call.
+- **Image loader stays per-window.** Today every `Gooey` owns
+  its own `ImageLoader` whose `Io.Queue` writes into
+  `result_buffer` inside that loader. Moving the loader to
+  `App` requires either (a) a shared queue with per-window
+  draining (changes the drain semantics in `beginFrame`), or
+  (b) per-window loaders pointing at a shared atlas (works but
+  duplicates pending/failed sets across windows). The choice
+  has UX implications (cache hit-rate across windows) and
+  belongs in 7b alongside the `App` rename.
+- **Five flags, not six.** `scene_owned` and `layout_owned`
+  retired in 7a even though they are not part of
+  `AppResources` — the audit
+  (`grep -n 'layout_owned = false\|scene_owned = false' src/`)
+  returned nothing, so the flags were already dead code. The
+  sixth flag is the `image_loader_owned` slot we'd need to
+  introduce if the loader moves to `App` in 7b. Net `_owned`
+  count after 7a: zero on `Gooey`, one on `AppResources` (the
+  bundle's own discriminator).
 
 ---
 
