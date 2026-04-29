@@ -226,7 +226,7 @@ const AppState = struct {
         self.tree_state.toggleExpand(entry_index);
     }
 
-    pub fn onItemClick(self: *AppState, g: *gooey.Gooey, entry_index: u32) void {
+    pub fn onItemClick(self: *AppState, g: *gooey.Window, entry_index: u32) void {
         self.tree_state.selectIndex(entry_index);
 
         // Get the selected entry
@@ -244,7 +244,7 @@ const AppState = struct {
         }
     }
 
-    fn openFile(self: *AppState, g: *gooey.Gooey, node_idx: u32) void {
+    fn openFile(self: *AppState, g: *gooey.Window, node_idx: u32) void {
         const path = self.getNodePath(node_idx);
         if (path.len == 0) return;
 
@@ -312,12 +312,12 @@ const AppState = struct {
     // Directory Operations
     // =========================================================================
 
-    pub fn openDirectory(self: *AppState, g: *gooey.Gooey) void {
+    pub fn openDirectory(self: *AppState, g: *gooey.Window) void {
         _ = self;
         g.deferCommand(AppState.openDialogDeferred);
     }
 
-    fn openDialogDeferred(self: *AppState, g: *gooey.Gooey) void {
+    fn openDialogDeferred(self: *AppState, g: *gooey.Window) void {
         if (file_dialog.promptForPaths(std.heap.page_allocator, .{
             .files = false,
             .directories = true,

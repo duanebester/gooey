@@ -1,4 +1,4 @@
-//! Gooey Showcase
+//! Window Showcase
 //!
 //! A comprehensive component showcase demonstrating gooey's capabilities.
 //! Organized as a storybook with sections for each component type.
@@ -18,7 +18,7 @@ const platform = gooey.platform;
 pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Gooey = gooey.Gooey;
+const Window = gooey.Window;
 const Theme = gooey.Theme;
 
 // Components
@@ -228,7 +228,7 @@ var state = AppState{};
 // =============================================================================
 
 const App = gooey.App(AppState, &state, render, .{
-    .title = "Gooey Showcase",
+    .title = "Window Showcase",
     .width = 1200,
     .height = 800,
     .on_event = onEvent,
@@ -356,7 +356,7 @@ const NavLogo = struct {
                 .fit = .cover,
                 .placeholder = t.surface, // Shown while loading on WASM
             },
-            ui.text("Gooey", .{ .size = 24, .color = t.text }),
+            ui.text("Window", .{ .size = 24, .color = t.text }),
         }));
     }
 };
@@ -536,7 +536,7 @@ const OverviewSection = struct {
                 .gap = 16,
                 .alignment = .{ .cross = .center },
             }, .{
-                ui.text("Welcome to Gooey", .{ .size = 36, .color = t.text }),
+                ui.text("Welcome to Window", .{ .size = 36, .color = t.text }),
                 ui.text("A GPU-accelerated UI framework for Zig with a powerful layout system", .{ .size = 18, .color = t.subtext }),
                 ui.hstack(.{ .gap = 12 }, .{
                     FeatureBadge{ .icon = Icons.star, .label = "Fast" },
@@ -1712,7 +1712,7 @@ const CustomPathsCard = struct {
 
 fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
     const s = cx.state(AppState);
-    const g = cx.gooey();
+    const g = cx.window();
 
     // Let text widgets handle their input first
     if (g.widgets.getFocusedTextInput() != null or g.widgets.getFocusedTextArea() != null) {

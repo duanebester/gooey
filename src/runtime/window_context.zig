@@ -26,9 +26,9 @@ const PlatformWindow = platform.PlatformWindow;
 const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .macos;
 
 // Core imports
-const gooey_mod = @import("../context/gooey.zig");
-const Gooey = gooey_mod.Gooey;
-const FontConfig = gooey_mod.FontConfig;
+const window_mod = @import("../context/window.zig");
+const Window = window_mod.Window;
+const FontConfig = window_mod.FontConfig;
 const cx_mod = @import("../cx.zig");
 const Cx = cx_mod.Cx;
 const ui_mod = @import("../ui/mod.zig");
@@ -79,8 +79,8 @@ pub fn WindowContext(comptime State: type) type {
         /// The unified UI context
         cx: Cx,
 
-        /// Gooey instance (owned, manages layout/scene/widgets)
-        gooey: *Gooey,
+        /// Framework window wrapper (owned, manages layout/scene/widgets)
+        window: *Window,
 
         /// UI Builder instance
         builder: *Builder,
@@ -113,10 +113,10 @@ pub fn WindowContext(comptime State: type) type {
         // =====================================================================
 
         /// Initialize a WindowContext for a window.
-        /// Allocates Gooey and Builder on the heap.
+        /// Allocates Window and Builder on the heap.
         pub fn init(
             allocator: std.mem.Allocator,
-            window: *PlatformWindow,
+            platform_window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
             font_config: FontConfig,
@@ -130,34 +130,39 @@ pub fn WindowContext(comptime State: type) type {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
-            // Initialize Gooey with owned resources (single-window mode)
-            const gooey = try allocator.create(Gooey);
-            errdefer allocator.destroy(gooey);
-            gooey.* = try Gooey.initOwned(allocator, window, font_config, io);
-            gooey.fixupImageLoadQueue();
-            errdefer gooey.deinit();
+            // Initialize Window with owned resources (single-window mode).
+            // PR 7b.1b — the framework wrapper local was renamed
+            // `gooey -> window` to match the struct rename. The OS-level
+            // handle that this function takes as input is now
+            // `platform_window` to keep the two unambiguous in the same
+            // scope.
+            const window = try allocator.create(Window);
+            errdefer allocator.destroy(window);
+            window.* = try Window.initOwned(allocator, platform_window, font_config, io);
+            window.fixupImageLoadQueue();
+            errdefer window.deinit();
 
             // Initialize UI Builder
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
                 allocator,
-                gooey.layout,
-                gooey.scene,
-                gooey.dispatch,
+                window.layout,
+                window.scene,
+                window.dispatch,
             );
-            builder.gooey = gooey;
+            builder.window = window;
 
             // Initialize fields
             self.* = .{
                 .allocator = allocator,
-                .gooey = gooey,
+                .window = window,
                 .builder = builder,
                 .state = state,
                 .render_fn = render_fn,
                 .cx = Cx{
                     ._allocator = allocator,
-                    ._gooey = gooey,
+                    ._window = window,
                     ._builder = builder,
                     .state_ptr = @ptrCast(state),
                     .state_type_id = handler_mod.typeId(State),
@@ -168,7 +173,7 @@ pub fn WindowContext(comptime State: type) type {
             self.builder.cx_ptr = @ptrCast(&self.cx);
 
             // Assertions: validate initialization
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
 
             return self;
@@ -178,7 +183,7 @@ pub fn WindowContext(comptime State: type) type {
         /// The shared resources are owned by the App, not this context.
         pub fn initWithSharedResources(
             allocator: std.mem.Allocator,
-            window: *PlatformWindow,
+            platform_window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
             shared_text_system: *TextSystem,
@@ -197,41 +202,44 @@ pub fn WindowContext(comptime State: type) type {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
-            // Initialize Gooey with shared resources (multi-window mode)
-            const gooey = try allocator.create(Gooey);
-            errdefer allocator.destroy(gooey);
-            gooey.* = try Gooey.initWithSharedResources(
+            // Initialize Window with shared resources (multi-window mode).
+            // PR 7b.1b — same naming convention as `init` above:
+            // `window` is the framework wrapper, `platform_window` is
+            // the OS-level handle.
+            const window = try allocator.create(Window);
+            errdefer allocator.destroy(window);
+            window.* = try Window.initWithSharedResources(
                 allocator,
-                window,
+                platform_window,
                 shared_text_system,
                 shared_svg_atlas,
                 shared_image_atlas,
                 io,
             );
-            gooey.fixupImageLoadQueue();
-            errdefer gooey.deinit();
+            window.fixupImageLoadQueue();
+            errdefer window.deinit();
 
             // Initialize UI Builder
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
                 allocator,
-                gooey.layout,
-                gooey.scene,
-                gooey.dispatch,
+                window.layout,
+                window.scene,
+                window.dispatch,
             );
-            builder.gooey = gooey;
+            builder.window = window;
 
             // Initialize fields
             self.* = .{
                 .allocator = allocator,
-                .gooey = gooey,
+                .window = window,
                 .builder = builder,
                 .state = state,
                 .render_fn = render_fn,
                 .cx = Cx{
                     ._allocator = allocator,
-                    ._gooey = gooey,
+                    ._window = window,
                     ._builder = builder,
                     .state_ptr = @ptrCast(state),
                     .state_type_id = handler_mod.typeId(State),
@@ -242,7 +250,7 @@ pub fn WindowContext(comptime State: type) type {
             self.builder.cx_ptr = @ptrCast(&self.cx);
 
             // Assertions: validate initialization
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
 
             return self;
@@ -251,14 +259,14 @@ pub fn WindowContext(comptime State: type) type {
         /// Clean up all resources owned by this WindowContext.
         pub fn deinit(self: *Self) void {
             // Assertions: validate self
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
 
             self.builder.deinit();
             self.allocator.destroy(self.builder);
 
-            self.gooey.deinit();
-            self.allocator.destroy(self.gooey);
+            self.window.deinit();
+            self.allocator.destroy(self.window);
 
             self.allocator.destroy(self);
         }
@@ -280,7 +288,7 @@ pub fn WindowContext(comptime State: type) type {
             // Frame timing for budget warnings (debug builds only, skip first few frames).
             // Sample `.awake` (monotonic) so the elapsed delta can never be negative
             // even if NTP or the sysadmin adjusts the wall clock mid-frame.
-            const io = self.gooey.io;
+            const io = self.window.io;
             const start_ts = if (builtin.mode == .Debug)
                 std.Io.Timestamp.now(io, .awake)
             else
@@ -315,7 +323,7 @@ pub fn WindowContext(comptime State: type) type {
         /// Flushes deferred commands which may run nested event loops (modal dialogs).
         pub fn onPostInput(window: *PlatformWindow) void {
             const self = window.getUserData(Self) orelse return;
-            self.gooey.flushDeferredCommands();
+            self.window.flushDeferredCommands();
         }
 
         /// Close callback - called when window is about to close.
@@ -343,7 +351,7 @@ pub fn WindowContext(comptime State: type) type {
         /// Call this after init() to connect the WindowContext to the window.
         pub fn setupWindow(self: *Self, window: *PlatformWindow) void {
             // Assertions: validate state
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
 
             // Store self in window's user_data
@@ -357,25 +365,25 @@ pub fn WindowContext(comptime State: type) type {
             window.setPostInputCallback(Self.onPostInput);
 
             // Set atlases and scene
-            window.setTextAtlas(self.gooey.text_system.getAtlas());
-            window.setSvgAtlas(self.gooey.svg_atlas.*.getAtlas());
-            window.setImageAtlas(self.gooey.image_atlas.*.getAtlas());
-            window.setScene(self.gooey.scene);
+            window.setTextAtlas(self.window.text_system.getAtlas());
+            window.setSvgAtlas(self.window.svg_atlas.*.getAtlas());
+            window.setImageAtlas(self.window.image_atlas.*.getAtlas());
+            window.setScene(self.window.scene);
 
             // Set thread-safe atlas upload callbacks for multi-window scenarios (macOS only).
             // These callbacks hold the appropriate mutex during GPU upload, preventing races
             // where another window's DisplayLink thread modifies the atlas concurrently.
             if (comptime is_mac) {
                 window.setTextAtlasUploadCallback(
-                    @ptrCast(self.gooey.text_system),
+                    @ptrCast(self.window.text_system),
                     Self.uploadTextAtlasLocked,
                 );
                 window.setSvgAtlasUploadCallback(
-                    @ptrCast(self.gooey.svg_atlas),
+                    @ptrCast(self.window.svg_atlas),
                     Self.uploadSvgAtlasLocked,
                 );
                 window.setImageAtlasUploadCallback(
-                    @ptrCast(self.gooey.image_atlas),
+                    @ptrCast(self.window.image_atlas),
                     Self.uploadImageAtlasLocked,
                 );
             }

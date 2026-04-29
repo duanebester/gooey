@@ -14,7 +14,7 @@ const std = @import("std");
 const geometry = @import("../core/geometry.zig");
 
 // Core imports
-const gooey_mod = @import("../context/gooey.zig");
+const window_mod = @import("../context/window.zig");
 const drag_mod = @import("../context/drag.zig");
 const input_mod = @import("../input/events.zig");
 const dispatch_mod = @import("../context/dispatch.zig");
@@ -22,7 +22,7 @@ const debugger_mod = @import("../debug/debugger.zig");
 const cx_mod = @import("../cx.zig");
 const ui_mod = @import("../ui/mod.zig");
 
-const Gooey = gooey_mod.Gooey;
+const Window = window_mod.Window;
 const Cx = cx_mod.Cx;
 const InputEvent = input_mod.InputEvent;
 const DispatchNodeId = dispatch_mod.DispatchNodeId;
@@ -40,39 +40,39 @@ pub fn handleInputCx(
     event: InputEvent,
 ) bool {
     // Cache pointers (avoids repeated method calls)
-    const gooey = cx.gooey();
+    const window = cx.window();
     const builder = cx.builder();
 
     // Route by event type
     switch (event) {
         .scroll => |scroll_ev| {
-            if (handleScrollEvent(cx, gooey, builder, scroll_ev)) return true;
+            if (handleScrollEvent(cx, window, builder, scroll_ev)) return true;
         },
         .mouse_moved => |move_ev| {
-            if (handleMouseMoveEvent(cx, gooey, move_ev.position, false)) return true;
+            if (handleMouseMoveEvent(cx, window, move_ev.position, false)) return true;
         },
         .mouse_dragged => |drag_ev| {
-            if (handleMouseDragEvent(cx, gooey, builder, drag_ev.position)) return true;
-            if (handleMouseMoveEvent(cx, gooey, drag_ev.position, true)) return true;
+            if (handleMouseDragEvent(cx, window, builder, drag_ev.position)) return true;
+            if (handleMouseMoveEvent(cx, window, drag_ev.position, true)) return true;
         },
         .mouse_exited => {
-            gooey.clearHover();
+            window.clearHover();
             cx.notify();
         },
         .mouse_down => |down_ev| {
-            if (handleMouseDownEvent(cx, gooey, builder, down_ev)) return true;
+            if (handleMouseDownEvent(cx, window, builder, down_ev)) return true;
         },
         .mouse_up => {
-            if (handleMouseUpEvent(cx, gooey, builder)) return true;
+            if (handleMouseUpEvent(cx, window, builder)) return true;
         },
         .key_down => |k| {
-            if (handleKeyDownEvent(cx, gooey, k)) return true;
+            if (handleKeyDownEvent(cx, window, k)) return true;
         },
         .text_input => |t| {
-            if (handleTextInputEvent(cx, gooey, t.text)) return true;
+            if (handleTextInputEvent(cx, window, t.text)) return true;
         },
         .composition => |c| {
-            if (handleCompositionEvent(cx, gooey, c.text)) return true;
+            if (handleCompositionEvent(cx, window, c.text)) return true;
         },
         else => {},
     }
@@ -95,7 +95,7 @@ pub fn handleInputCx(
 /// Returns true if event was consumed
 fn handleScrollEvent(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     builder: *Builder,
     scroll_ev: input_mod.ScrollEvent,
 ) bool {
@@ -104,10 +104,10 @@ fn handleScrollEvent(
 
     // Check TextAreas for scroll
     for (builder.pending_text_areas.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (!pointInBounds(x, y, bounds)) continue;
 
-        const ta = gooey.widgets.textArea(pending.id) orelse continue;
+        const ta = window.widgets.textArea(pending.id) orelse continue;
         if (ta.line_height > 0 and ta.viewport_height > 0) {
             const delta_y: f32 = @floatCast(scroll_ev.delta.y);
             const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
@@ -121,10 +121,10 @@ fn handleScrollEvent(
 
     // Check CodeEditors for scroll
     for (builder.pending_code_editors.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (!pointInBounds(x, y, bounds)) continue;
 
-        const ce = gooey.widgets.codeEditor(pending.id) orelse continue;
+        const ce = window.widgets.codeEditor(pending.id) orelse continue;
         const ta = &ce.text_area;
         if (ta.line_height > 0 and ta.viewport_height > 0) {
             const delta_y: f32 = @floatCast(scroll_ev.delta.y);
@@ -139,10 +139,10 @@ fn handleScrollEvent(
 
     // Check scroll containers
     for (builder.pending_scrolls.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (!pointInBounds(x, y, bounds)) continue;
 
-        const sc = gooey.widgets.getScrollContainer(pending.id) orelse continue;
+        const sc = window.widgets.getScrollContainer(pending.id) orelse continue;
         if (sc.handleScroll(scroll_ev.delta.x, scroll_ev.delta.y)) {
             cx.notify();
             return true;
@@ -160,7 +160,7 @@ fn handleScrollEvent(
 /// Uses O(1) lookup via active_scroll_drag_id
 fn handleMouseDragEvent(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     builder: *Builder,
     position: geometry.Point(f64),
 ) bool {
@@ -169,7 +169,7 @@ fn handleMouseDragEvent(
 
     // O(1) check: use tracked active drag ID instead of scanning all scrolls
     if (builder.getActiveScrollDrag()) |drag_id| {
-        if (gooey.widgets.getScrollContainer(drag_id)) |sc| {
+        if (window.widgets.getScrollContainer(drag_id)) |sc| {
             sc.updateDrag(x, y);
             cx.notify();
             return true;
@@ -178,7 +178,7 @@ fn handleMouseDragEvent(
 
     // Fallback: scan for any dragging scroll (handles edge case if tracking was missed)
     for (builder.pending_scrolls.items) |pending| {
-        if (gooey.widgets.getScrollContainer(pending.id)) |sc| {
+        if (window.widgets.getScrollContainer(pending.id)) |sc| {
             if (sc.state.dragging_vertical or sc.state.dragging_horizontal) {
                 // Track this for future O(1) lookups
                 builder.setActiveScrollDrag(pending.id);
@@ -195,7 +195,7 @@ fn handleMouseDragEvent(
 /// Handle mouse move events for hover state and drag activation
 fn handleMouseMoveEvent(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     position: geometry.Point(f64),
     is_drag: bool,
 ) bool {
@@ -205,14 +205,14 @@ fn handleMouseMoveEvent(
     const y: f32 = @floatCast(position.y);
 
     // Check if pending drag should become active
-    if (gooey.pending_drag) |pending| {
+    if (window.pending_drag) |pending| {
         const dx = x - pending.start_position.x;
         const dy = y - pending.start_position.y;
         const distance = @sqrt(dx * dx + dy * dy);
 
         if (distance > drag_mod.DRAG_THRESHOLD) {
             // Promote to active drag
-            gooey.active_drag = .{
+            window.active_drag = .{
                 .value_ptr = pending.value_ptr,
                 .type_id = pending.type_id,
                 .cursor_offset = .{ .x = dx, .y = dy },
@@ -220,25 +220,25 @@ fn handleMouseMoveEvent(
                 .start_position = pending.start_position,
                 .source_layout_id = pending.source_layout_id,
             };
-            gooey.pending_drag = null;
+            window.pending_drag = null;
             cx.notify();
             return true;
         }
     }
 
     // Update active drag position and find drop target
-    if (gooey.active_drag) |*drag| {
+    if (window.active_drag) |*drag| {
         drag.cursor_position = .{ .x = x, .y = y };
 
         // Find drop target under cursor
-        updateDragOverTarget(gooey, x, y, drag.type_id);
+        updateDragOverTarget(window, x, y, drag.type_id);
 
         cx.notify();
         return true;
     }
 
     // Normal hover update
-    if (gooey.updateHover(x, y)) {
+    if (window.updateHover(x, y)) {
         cx.notify();
         return true;
     }
@@ -247,17 +247,17 @@ fn handleMouseMoveEvent(
 }
 
 /// Find and track the drop target under cursor during drag
-fn updateDragOverTarget(gooey: *Gooey, x: f32, y: f32, drag_type_id: drag_mod.DragTypeId) void {
-    gooey.drag_over_target = null;
+fn updateDragOverTarget(window: *Window, x: f32, y: f32, drag_type_id: drag_mod.DragTypeId) void {
+    window.drag_over_target = null;
 
-    if (gooey.dispatch.hitTest(x, y)) |hit| {
+    if (window.dispatch.hitTest(x, y)) |hit| {
         var path_buf: [64]DispatchNodeId = undefined;
-        const path = gooey.dispatch.dispatchPath(hit, &path_buf);
+        const path = window.dispatch.dispatchPath(hit, &path_buf);
         if (path.len > 0) {
             // Walk up path to find compatible drop target
-            if (gooey.dispatch.findDropTarget(path, drag_type_id)) |target| {
-                if (gooey.dispatch.getNodeConst(target.node_id)) |node| {
-                    gooey.drag_over_target = node.layout_id;
+            if (window.dispatch.findDropTarget(path, drag_type_id)) |target| {
+                if (window.dispatch.getNodeConst(target.node_id)) |node| {
+                    window.drag_over_target = node.layout_id;
                 }
             }
         }
@@ -272,7 +272,7 @@ fn updateDragOverTarget(gooey: *Gooey, x: f32, y: f32, drag_type_id: drag_mod.Dr
 /// Priority order: scrollbar clicks > text areas > dispatch tree > debugger
 fn handleMouseDownEvent(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     builder: *Builder,
     down_ev: input_mod.MouseEvent,
 ) bool {
@@ -280,36 +280,36 @@ fn handleMouseDownEvent(
     const y: f32 = @floatCast(down_ev.position.y);
 
     // 1. Check scroll containers for scrollbar clicks (highest priority)
-    if (handleScrollbarClick(cx, gooey, builder, x, y)) return true;
+    if (handleScrollbarClick(cx, window, builder, x, y)) return true;
 
     // 2. Check if click is in a TextArea
-    if (handleTextAreaClick(cx, gooey, builder, x, y)) return true;
+    if (handleTextAreaClick(cx, window, builder, x, y)) return true;
 
     // 3. Check if click is in a CodeEditor
-    if (handleCodeEditorClick(cx, gooey, builder, down_ev)) return true;
+    if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
 
     // 4. Compute hit target once for both click-outside and click dispatch
-    const hit_target = gooey.dispatch.hitTest(x, y);
+    const hit_target = window.dispatch.hitTest(x, y);
 
     // 4. Check for drag source — start pending drag
     if (hit_target) |target| {
-        _ = handleDragSourceClick(gooey, target, x, y);
+        _ = handleDragSourceClick(window, target, x, y);
         // Don't return true yet — still dispatch click-outside etc.
     }
 
     // 5. Dispatch click-outside events (for closing dropdowns, modals, etc.)
-    if (gooey.dispatch.dispatchClickOutsideWithTarget(x, y, hit_target, gooey)) {
+    if (window.dispatch.dispatchClickOutsideWithTarget(x, y, hit_target, window)) {
         cx.notify();
     }
 
     // 6. Dispatch click to hit target
     if (hit_target) |target| {
-        if (handleDispatchClick(cx, gooey, target)) return true;
+        if (handleDispatchClick(cx, window, target)) return true;
     }
 
     // 7. Debugger: handle click to select element for inspection
-    if (gooey.debugger().isActive()) {
-        gooey.debugger().handleClick(gooey.hover.hovered_layout_id);
+    if (window.debugger().isActive()) {
+        window.debugger().handleClick(window.hover.hovered_layout_id);
         cx.notify();
     }
 
@@ -318,19 +318,19 @@ fn handleMouseDownEvent(
 
 /// Check if click hit a drag source, start pending drag if so
 /// Walks up the dispatch path to find drag source on parent elements
-fn handleDragSourceClick(gooey: *Gooey, target: DispatchNodeId, x: f32, y: f32) bool {
+fn handleDragSourceClick(window: *Window, target: DispatchNodeId, x: f32, y: f32) bool {
     // Don't start new drag if one is active
-    if (gooey.active_drag != null or gooey.pending_drag != null) return false;
+    if (window.active_drag != null or window.pending_drag != null) return false;
 
     // Build dispatch path from hit target to root
     var path_buf: [64]DispatchNodeId = undefined;
-    const path = gooey.dispatch.dispatchPath(target, &path_buf);
+    const path = window.dispatch.dispatchPath(target, &path_buf);
 
     // Walk up path to find drag source (closest to hit point first)
     for (path) |node_id| {
-        if (gooey.dispatch.getNodeConst(node_id)) |node| {
+        if (window.dispatch.getNodeConst(node_id)) |node| {
             if (node.drag_source) |source| {
-                gooey.pending_drag = .{
+                window.pending_drag = .{
                     .value_ptr = source.value_ptr,
                     .type_id = source.type_id,
                     .start_position = .{ .x = x, .y = y },
@@ -346,13 +346,13 @@ fn handleDragSourceClick(gooey: *Gooey, target: DispatchNodeId, x: f32, y: f32) 
 /// Handle scrollbar thumb/track clicks
 fn handleScrollbarClick(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     builder: *Builder,
     x: f32,
     y: f32,
 ) bool {
     for (builder.pending_scrolls.items) |pending| {
-        const sc = gooey.widgets.getScrollContainer(pending.id) orelse continue;
+        const sc = window.widgets.getScrollContainer(pending.id) orelse continue;
 
         // Check for thumb drag
         if (sc.hitTestThumb(x, y)) |hit| {
@@ -378,15 +378,15 @@ fn handleScrollbarClick(
 /// Handle clicks in text area bounds
 fn handleTextAreaClick(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     builder: *Builder,
     x: f32,
     y: f32,
 ) bool {
     for (builder.pending_text_areas.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (pointInBounds(x, y, bounds)) {
-            gooey.focusWidget(pending.id);
+            window.focusWidget(pending.id);
             cx.notify();
             return true;
         }
@@ -396,7 +396,7 @@ fn handleTextAreaClick(
 
 fn handleCodeEditorClick(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     builder: *Builder,
     down_ev: input_mod.MouseEvent,
 ) bool {
@@ -407,15 +407,15 @@ fn handleCodeEditorClick(
     std.debug.assert(std.math.isFinite(x) and std.math.isFinite(y));
 
     for (builder.pending_code_editors.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (pointInBounds(x, y, bounds)) {
             // Get the code editor widget and pass the event to it
-            if (gooey.widgets.codeEditor(pending.id)) |ce| {
+            if (window.widgets.codeEditor(pending.id)) |ce| {
                 // Pass mouse event to widget for gutter click handling
                 const input_event = InputEvent{ .mouse_down = down_ev };
                 _ = ce.handleEvent(input_event);
             }
-            gooey.focusWidget(pending.id);
+            window.focusWidget(pending.id);
             cx.notify();
             return true;
         }
@@ -424,18 +424,18 @@ fn handleCodeEditorClick(
 }
 
 /// Handle click dispatch through dispatch tree
-fn handleDispatchClick(cx: *Cx, gooey: *Gooey, target: DispatchNodeId) bool {
+fn handleDispatchClick(cx: *Cx, window: *Window, target: DispatchNodeId) bool {
     // Handle focus
-    if (gooey.dispatch.getNodeConst(target)) |node| {
+    if (window.dispatch.getNodeConst(target)) |node| {
         if (node.focus_id) |focus_id| {
-            if (gooey.focus.getHandleById(focus_id)) |handle| {
-                gooey.focusElement(handle.string_id);
+            if (window.focus.getHandleById(focus_id)) |handle| {
+                window.focusElement(handle.string_id);
             }
         }
     }
 
     // Dispatch click event
-    if (gooey.dispatch.dispatchClick(target, gooey)) {
+    if (window.dispatch.dispatchClick(target, window)) {
         cx.notify();
         return true;
     }
@@ -450,28 +450,28 @@ fn handleDispatchClick(cx: *Cx, gooey: *Gooey, target: DispatchNodeId) bool {
 /// Handle mouse up events (end drag operations)
 fn handleMouseUpEvent(
     cx: *Cx,
-    gooey: *Gooey,
+    window: *Window,
     builder: *Builder,
 ) bool {
     // Handle drop if drag is active
-    if (gooey.active_drag) |drag| {
+    if (window.active_drag) |drag| {
         defer {
-            gooey.active_drag = null;
-            gooey.pending_drag = null;
-            gooey.drag_over_target = null;
+            window.active_drag = null;
+            window.pending_drag = null;
+            window.drag_over_target = null;
         }
 
         const x = drag.cursor_position.x;
         const y = drag.cursor_position.y;
 
-        if (gooey.dispatch.hitTest(x, y)) |hit| {
+        if (window.dispatch.hitTest(x, y)) |hit| {
             var path_buf: [64]DispatchNodeId = undefined;
-            const path = gooey.dispatch.dispatchPath(hit, &path_buf);
+            const path = window.dispatch.dispatchPath(hit, &path_buf);
             if (path.len > 0) {
-                if (gooey.dispatch.findDropTarget(path, drag.type_id)) |target| {
+                if (window.dispatch.findDropTarget(path, drag.type_id)) |target| {
                     // Execute drop handler
                     if (target.handler) |handler| {
-                        handler.invoke(gooey);
+                        handler.invoke(window);
                     }
                     cx.notify();
                     return true;
@@ -485,13 +485,13 @@ fn handleMouseUpEvent(
     }
 
     // Cancel pending drag on mouse up (click without drag)
-    if (gooey.pending_drag != null) {
-        gooey.pending_drag = null;
+    if (window.pending_drag != null) {
+        window.pending_drag = null;
     }
 
     // O(1) check: use tracked active drag ID for scroll
     if (builder.getActiveScrollDrag()) |drag_id| {
-        if (gooey.widgets.getScrollContainer(drag_id)) |sc| {
+        if (window.widgets.getScrollContainer(drag_id)) |sc| {
             if (sc.state.dragging_vertical or sc.state.dragging_horizontal) {
                 sc.endDrag();
                 builder.setActiveScrollDrag(null);
@@ -511,21 +511,21 @@ fn handleMouseUpEvent(
 // =============================================================================
 
 /// Handle key down events
-fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
+fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     // Cancel drag on Escape
-    if (k.key == .escape and (gooey.active_drag != null or gooey.pending_drag != null)) {
-        gooey.cancelDrag();
+    if (k.key == .escape and (window.active_drag != null or window.pending_drag != null)) {
+        window.cancelDrag();
         cx.notify();
         return true;
     }
 
     // Escape to blur focused text widgets (TextInput, TextArea, CodeEditor)
     if (k.key == .escape) {
-        const has_focused_widget = gooey.widgets.getFocusedTextInput() != null or
-            gooey.widgets.getFocusedTextArea() != null or
-            gooey.widgets.getFocusedCodeEditor() != null;
+        const has_focused_widget = window.widgets.getFocusedTextInput() != null or
+            window.widgets.getFocusedTextArea() != null or
+            window.widgets.getFocusedCodeEditor() != null;
         if (has_focused_widget) {
-            gooey.blurAll();
+            window.blurAll();
             cx.notify();
             return true;
         }
@@ -533,7 +533,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
 
     // Debugger toggle: Cmd+Shift+I (macOS) or Ctrl+Shift+I
     if (debugger_mod.Debugger.isToggleShortcut(k.key, k.modifiers)) {
-        gooey.debugger().toggle();
+        window.debugger().toggle();
         cx.notify();
         return true;
     }
@@ -541,7 +541,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     // Tab navigation - but let CodeEditor handle Tab for indentation
     if (k.key == .tab) {
         // CodeEditor intercepts Tab for indentation (not focus navigation)
-        if (gooey.widgets.getFocusedCodeEditor()) |ce| {
+        if (window.widgets.getFocusedCodeEditor()) |ce| {
             if (!k.modifiers.shift and !k.modifiers.ctrl and !k.modifiers.alt) {
                 _ = ce.handleKey(k.key, k.modifiers);
                 syncCodeEditorBoundVariablesCx(cx);
@@ -551,18 +551,18 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
         }
         // Default: use Tab for focus navigation
         if (k.modifiers.shift) {
-            gooey.focusPrev();
+            window.focusPrev();
         } else {
-            gooey.focusNext();
+            window.focusNext();
         }
         return true;
     }
 
     // Try action dispatch through focus path
-    if (handleFocusedKeyAction(cx, gooey, k)) return true;
+    if (handleFocusedKeyAction(cx, window, k)) return true;
 
     // Handle focused TextInput
-    if (gooey.widgets.getFocusedTextInput()) |input| {
+    if (window.widgets.getFocusedTextInput()) |input| {
         if (isControlKey(k.key, k.modifiers)) {
             input.handleKey(k) catch {};
             syncBoundVariablesCx(cx);
@@ -572,7 +572,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     }
 
     // Handle focused TextArea
-    if (gooey.widgets.getFocusedTextArea()) |ta| {
+    if (window.widgets.getFocusedTextArea()) |ta| {
         if (isControlKey(k.key, k.modifiers)) {
             ta.handleKey(k) catch {};
             syncTextAreaBoundVariablesCx(cx);
@@ -582,7 +582,7 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     }
 
     // Handle focused CodeEditor
-    if (gooey.widgets.getFocusedCodeEditor()) |ce| {
+    if (window.widgets.getFocusedCodeEditor()) |ce| {
         if (isControlKey(k.key, k.modifiers)) {
             _ = ce.handleKey(k.key, k.modifiers);
             syncCodeEditorBoundVariablesCx(cx);
@@ -595,21 +595,21 @@ fn handleKeyDownEvent(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
 }
 
 /// Handle key actions through focus path
-fn handleFocusedKeyAction(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
-    if (gooey.focus.getFocused()) |focus_id| {
+fn handleFocusedKeyAction(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
+    if (window.focus.getFocused()) |focus_id| {
         var path_buf: [64]DispatchNodeId = undefined;
-        if (gooey.dispatch.focusPath(focus_id, &path_buf)) |path| {
+        if (window.dispatch.focusPath(focus_id, &path_buf)) |path| {
             var ctx_buf: [64][]const u8 = undefined;
-            const contexts = gooey.dispatch.contextStack(path, &ctx_buf);
+            const contexts = window.dispatch.contextStack(path, &ctx_buf);
 
-            if (gooey.keymap().match(k.key, k.modifiers, contexts)) |binding| {
-                if (gooey.dispatch.dispatchAction(binding.action_type, path, gooey)) {
+            if (window.keymap().match(k.key, k.modifiers, contexts)) |binding| {
+                if (window.dispatch.dispatchAction(binding.action_type, path, window)) {
                     cx.notify();
                     return true;
                 }
             }
 
-            if (gooey.dispatch.dispatchKeyDown(focus_id, k)) {
+            if (window.dispatch.dispatchKeyDown(focus_id, k)) {
                 cx.notify();
                 return true;
             }
@@ -617,9 +617,9 @@ fn handleFocusedKeyAction(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
     } else {
         // No focus - try root path
         var path_buf: [64]DispatchNodeId = undefined;
-        if (gooey.dispatch.rootPath(&path_buf)) |path| {
-            if (gooey.keymap().match(k.key, k.modifiers, &.{})) |binding| {
-                if (gooey.dispatch.dispatchAction(binding.action_type, path, gooey)) {
+        if (window.dispatch.rootPath(&path_buf)) |path| {
+            if (window.keymap().match(k.key, k.modifiers, &.{})) |binding| {
+                if (window.dispatch.dispatchAction(binding.action_type, path, window)) {
                     cx.notify();
                     return true;
                 }
@@ -630,20 +630,20 @@ fn handleFocusedKeyAction(cx: *Cx, gooey: *Gooey, k: input_mod.KeyEvent) bool {
 }
 
 /// Handle text input events (character insertion)
-fn handleTextInputEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
-    if (gooey.widgets.getFocusedTextInput()) |input| {
+fn handleTextInputEvent(cx: *Cx, window: *Window, text: []const u8) bool {
+    if (window.widgets.getFocusedTextInput()) |input| {
         input.insertText(text) catch {};
         syncBoundVariablesCx(cx);
         cx.notify();
         return true;
     }
-    if (gooey.widgets.getFocusedTextArea()) |ta| {
+    if (window.widgets.getFocusedTextArea()) |ta| {
         ta.insertText(text) catch {};
         syncTextAreaBoundVariablesCx(cx);
         cx.notify();
         return true;
     }
-    if (gooey.widgets.getFocusedCodeEditor()) |ce| {
+    if (window.widgets.getFocusedCodeEditor()) |ce| {
         ce.insertText(text);
         syncCodeEditorBoundVariablesCx(cx);
         cx.notify();
@@ -653,18 +653,18 @@ fn handleTextInputEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
 }
 
 /// Handle IME composition events
-fn handleCompositionEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
-    if (gooey.widgets.getFocusedTextInput()) |input| {
+fn handleCompositionEvent(cx: *Cx, window: *Window, text: []const u8) bool {
+    if (window.widgets.getFocusedTextInput()) |input| {
         input.setComposition(text) catch {};
         cx.notify();
         return true;
     }
-    if (gooey.widgets.getFocusedTextArea()) |ta| {
+    if (window.widgets.getFocusedTextArea()) |ta| {
         ta.setComposition(text) catch {};
         cx.notify();
         return true;
     }
-    if (gooey.widgets.getFocusedCodeEditor()) |ce| {
+    if (window.widgets.getFocusedCodeEditor()) |ce| {
         ce.setComposition(text);
         cx.notify();
         return true;
@@ -679,11 +679,11 @@ fn handleCompositionEvent(cx: *Cx, gooey: *Gooey, text: []const u8) bool {
 /// Sync TextInput content back to bound variables (Cx version)
 pub fn syncBoundVariablesCx(cx: *Cx) void {
     const builder = cx.builder();
-    const gooey = cx.gooey();
+    const window = cx.window();
 
     for (builder.pending_inputs.items) |pending| {
         if (pending.style.bind) |bind_ptr| {
-            if (gooey.widgets.textInput(pending.id)) |input| {
+            if (window.widgets.textInput(pending.id)) |input| {
                 bind_ptr.* = input.getText();
             }
         }
@@ -693,11 +693,11 @@ pub fn syncBoundVariablesCx(cx: *Cx) void {
 /// Sync TextArea content back to bound variables (Cx version)
 pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
     const builder = cx.builder();
-    const gooey = cx.gooey();
+    const window = cx.window();
 
     for (builder.pending_text_areas.items) |pending| {
         if (pending.style.bind) |bind_ptr| {
-            if (gooey.widgets.textArea(pending.id)) |ta| {
+            if (window.widgets.textArea(pending.id)) |ta| {
                 bind_ptr.* = ta.getText();
             }
         }
@@ -707,11 +707,11 @@ pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
 /// Sync CodeEditor content back to bound variables (Cx version)
 pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
     const builder = cx.builder();
-    const gooey = cx.gooey();
+    const window = cx.window();
 
     for (builder.pending_code_editors.items) |pending| {
         if (pending.style.bind) |bind_ptr| {
-            if (gooey.widgets.codeEditor(pending.id)) |ce| {
+            if (window.widgets.codeEditor(pending.id)) |ce| {
                 bind_ptr.* = ce.getText();
             }
         }

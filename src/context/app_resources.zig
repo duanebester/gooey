@@ -5,44 +5,49 @@
 //! Per `docs/cleanup-implementation-plan.md` PR 7a (the first slice of the
 //! App/Window split), the three "expensive to duplicate per window"
 //! subsystems — `TextSystem`, `SvgAtlas`, `ImageAtlas` — are gathered into
-//! one struct. Before this extraction, `Gooey` carried each as a `*T` plus
-//! a `_owned: bool` flag, with four parallel init paths
-//! (`initOwned` / `initOwnedPtr` / `initWithSharedResources` /
+//! one struct. Before this extraction, `Window` (then named `Gooey` —
+//! see PR 7b.1b for the rename) carried each as a `*T` plus a
+//! `_owned: bool` flag, with four parallel init paths (`initOwned` /
+//! `initOwnedPtr` / `initWithSharedResources` /
 //! `initWithSharedResourcesPtr`) duplicating the create-or-borrow logic
 //! three times each.
 //!
 //! After this extraction:
 //!
-//!   - **Single-window**: `Gooey` owns its `AppResources` by value, no
+//!   - **Single-window**: `Window` owns its `AppResources` by value, no
 //!     ownership flags required.
 //!   - **Multi-window**: the parent `App` owns one `AppResources` and
-//!     hands `*AppResources` to each `Gooey`. Ownership is encoded in
+//!     hands `*AppResources` to each `Window`. Ownership is encoded in
 //!     "do you hold a `T` or a `*T`?", per
 //!     [`architectural-cleanup-plan.md` §17](../../docs/architectural-cleanup-plan.md#17-no-ownership-flags--optiont-and-boxdyn-instead).
 //!
 //! See [`architectural-cleanup-plan.md` §2 cleanup direction](../../docs/architectural-cleanup-plan.md#cleanup-direction)
 //! for the broader `Resources / FrameContext` sketch this lands as a
-//! first concrete slice. PR 7b takes the next step (rename `Gooey →
-//! Window`, lift `keymap` / `globals` / `entities` into `App`).
+//! first concrete slice. PR 7b.1b lands the `Gooey → Window` rename
+//! and renames `platform.Window → platform.PlatformWindow` to free
+//! the `Window` name; later 7b slices lift `keymap` / `globals` /
+//! `entities` / `image_loader` off `Window` onto `App`.
 //!
 //! ## What's NOT here yet
 //!
-//! - `image_loader`. It currently lives on `Gooey` because it points at
-//!   *this window's* atlas (which may itself be shared); flipping it to
-//!   one app-wide loop is a behavioural change reserved for PR 7b.
+//! - `image_loader`. It currently lives on `Window` because it points
+//!   at *this window's* atlas (which may itself be shared); flipping
+//!   it to one app-wide loop is a behavioural change reserved for the
+//!   later 7b slices.
 //! - `keymap` / `globals` / `entities`. These are app-scoped per the
-//!   GPUI mapping in §10, but moving them belongs in PR 7b once the
-//!   `App` ↔ `Window` rename has landed.
+//!   GPUI mapping in §10, but moving them belongs in 7b.3 / 7b.4 once
+//!   the `App` ↔ `Window` rename has landed (7b.1b — done) and a real
+//!   `App` struct exists (7b.2).
 //!
 //! ## Lifetime
 //!
 //! Allocated and owned in two shapes only:
 //!
-//!   1. **By value, embedded in `Gooey`** — single-window. `Gooey.deinit`
-//!      tears it down via `AppResources.deinit`.
+//!   1. **By value, embedded in `Window`** — single-window.
+//!      `Window.deinit` tears it down via `AppResources.deinit`.
 //!   2. **By pointer, owned by `runtime/multi_window_app.zig::App`** —
 //!      multi-window. The `App` heap-allocates a single `AppResources`
-//!      at startup, hands `*AppResources` to every window's `Gooey`,
+//!      at startup, hands `*AppResources` to every window's `Window`,
 //!      and tears it down in `App.deinit` after the last window closes.
 //!
 //! The struct itself is roughly `@sizeOf(*TextSystem) + 2 * @sizeOf(*Atlas)`
@@ -62,15 +67,16 @@ const SvgAtlas = svg_mod.SvgAtlas;
 const image_mod = @import("../image/mod.zig");
 const ImageAtlas = image_mod.ImageAtlas;
 
-/// Font configuration captured from `FontConfig` in `gooey.zig`. Duplicated
-/// here as a small POD struct so `AppResources.initOwned` doesn't have to
-/// take a circular import on `gooey.zig`.
+/// Font configuration captured from `FontConfig` in `window.zig`.
+/// Duplicated here as a small POD struct so `AppResources.initOwned`
+/// doesn't have to take a circular import on `window.zig`.
 ///
-/// Field-for-field identical to `gooey.FontConfig` — the parent struct
-/// re-exports its own and forwards. If a divergence appears in the future
-/// (e.g. fallback-chain config), it must be added in both places by
-/// design: the multi-window `App` builds its `AppResources` without ever
-/// instantiating a `Gooey`, so it cannot reach `gooey.FontConfig`.
+/// Field-for-field identical to `window.FontConfig` — the parent
+/// struct re-exports its own and forwards. If a divergence appears in
+/// the future (e.g. fallback-chain config), it must be added in both
+/// places by design: the multi-window `App` builds its `AppResources`
+/// without ever instantiating a `Window`, so it cannot reach
+/// `window.FontConfig`.
 pub const FontConfig = struct {
     /// Font family name (e.g., "Inter", "JetBrains Mono"). When null,
     /// loads the platform's default sans-serif font.
@@ -96,7 +102,8 @@ pub const FontConfig = struct {
 ///
 /// This is the **only** ownership flag in the new world — the per-field
 /// `text_system_owned` / `svg_atlas_owned` / `image_atlas_owned` triplet
-/// on `Gooey` is retired in the same PR. One flag, one struct.
+/// on `Window` (formerly `Gooey`, renamed in PR 7b.1b) is retired in
+/// the same PR. One flag, one struct.
 pub const AppResources = struct {
     allocator: Allocator,
     io: std.Io,
@@ -125,7 +132,7 @@ pub const AppResources = struct {
     /// inline so callers don't need a separate "load default font"
     /// step.
     ///
-    /// Used by single-window `Gooey.init` (which embeds an
+    /// Used by single-window `Window.init` (which embeds an
     /// `AppResources` by value) and by multi-window `App.init` (which
     /// keeps an `*AppResources` on the heap and hands borrowed copies
     /// to each window).
@@ -183,7 +190,7 @@ pub const AppResources = struct {
     }
 
     /// In-place owning init for callers that need to avoid a stack
-    /// temp (single-window WASM `Gooey.initOwnedPtr` is the primary
+    /// temp (single-window WASM `Window.initOwnedPtr` is the primary
     /// caller). Marked `noinline` per CLAUDE.md §14 so ReleaseSmall
     /// doesn't combine the stack frame back into the caller.
     ///
@@ -249,7 +256,7 @@ pub const AppResources = struct {
     ///
     /// Used by `runtime/multi_window_app.zig::App.openWindow`: the
     /// `App` keeps one owning `AppResources` on the heap, and every
-    /// window's `Gooey` embeds a borrowed view of those same three
+    /// window's `Window` embeds a borrowed view of those same three
     /// pointers.
     pub fn borrowed(
         allocator: Allocator,
@@ -285,13 +292,13 @@ pub const AppResources = struct {
     pub fn deinit(self: *Self) void {
         if (!self.owned) return;
 
-        // Order mirrors `Gooey.deinit` pre-extraction: image atlas
-        // first (it holds decoded pixel buffers and a row of cache
-        // entries), then svg atlas, then text system. The reverse
-        // order would also be safe — there are no inter-pointer
-        // references between the three — but matching the historical
-        // order keeps the diff in `Gooey.deinit` minimal for the PR
-        // 7a landing.
+        // Order mirrors `Window.deinit` (formerly `Gooey.deinit`)
+        // pre-extraction: image atlas first (it holds decoded pixel
+        // buffers and a row of cache entries), then svg atlas, then
+        // text system. The reverse order would also be safe — there
+        // are no inter-pointer references between the three — but
+        // matching the historical order keeps the diff in
+        // `Window.deinit` minimal for the PR 7a landing.
         self.image_atlas.deinit();
         self.allocator.destroy(self.image_atlas);
 

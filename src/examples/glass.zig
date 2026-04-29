@@ -42,8 +42,8 @@ const AppState = struct {
         }
     };
 
-    /// Command method - needs Gooey access to change window glass
-    pub fn cycleStyleCmd(self: *AppState, g: *gooey.Gooey) void {
+    /// Command method - needs Window access to change window glass
+    pub fn cycleStyleCmd(self: *AppState, g: *gooey.Window) void {
         self.glass_style = self.glass_style.next();
 
         // g.window is already *Window, no cast needed!
@@ -56,7 +56,11 @@ const AppState = struct {
             .glass_regular => .glass_regular,
             .glass_clear => .glass_clear,
         };
-        if (g.window) |w| {
+        // PR 7b.1b — `g.window` (the OS-level handle field on the
+        // framework wrapper) was renamed to `g.platform_window` so the
+        // wrapper struct itself could claim the name `Window`. The
+        // captured `w` is still a `*PlatformWindow`.
+        if (g.platform_window) |w| {
             w.setGlassStyle(win_style, self.opacity, self.corner_radius);
         }
     }

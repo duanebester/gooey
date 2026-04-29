@@ -70,8 +70,8 @@ const WindowHandle = @import("window_handle.zig").WindowHandle;
 const cx_mod = @import("../cx.zig");
 const Cx = cx_mod.Cx;
 const handler_mod = @import("../context/handler.zig");
-const gooey_mod = @import("../context/gooey.zig");
-const FontConfig = gooey_mod.FontConfig;
+const window_mod = @import("../context/window.zig");
+const FontConfig = window_mod.FontConfig;
 
 // Input
 const input_mod = @import("../input/mod.zig");
@@ -480,9 +480,9 @@ pub const App = struct {
         window.setSvgAtlas(self.svg_atlas.getAtlas());
         window.setImageAtlas(self.image_atlas.getAtlas());
 
-        // Set root state on this window's Gooey instance (not globally)
+        // Set root state on this window's Window instance (not globally)
         // This enables multi-window support where each window has its own state
-        ctx.gooey.setRootState(State, state);
+        ctx.window.setRootState(State, state);
 
         return ctx;
     }
@@ -502,7 +502,7 @@ pub const App = struct {
 /// Options for opening a new window via App.openWindow().
 pub const AppWindowOptions = struct {
     /// Window title
-    title: []const u8 = "Gooey Window",
+    title: []const u8 = "Window Window",
 
     /// Initial window width (logical pixels)
     width: f64 = DEFAULT_WIDTH,

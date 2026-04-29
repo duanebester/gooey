@@ -2,7 +2,7 @@
 //!
 //! Application context, state management, and event dispatch.
 //!
-//! - `Gooey` - Unified UI context (layout, rendering, widgets, hit testing)
+//! - `Window` - Unified UI context (layout, rendering, widgets, hit testing)
 //! - `FocusManager` - Focus management and keyboard navigation
 //! - `DispatchTree` - Event routing through element hierarchy
 //! - `Entity` / `EntityMap` - Reactive entity system for component state
@@ -12,13 +12,22 @@
 const std = @import("std");
 
 // =============================================================================
-// Gooey Context
+// Window Context (framework-level wrapper, per-window)
 // =============================================================================
+//
+// PR 7b.1b — `Gooey` (the framework wrapper struct) was renamed to
+// `Window` and the file `gooey.zig` was renamed to `window.zig`. The
+// OS-level handle that this wrapper points at is `PlatformWindow`
+// (renamed in PR 7b.1a from `platform.Window`). The two used to share
+// the name `Window` only by accident of nobody having to talk about
+// both at once; PR 7b makes that contradiction explicit and resolves
+// it. See `docs/cleanup-implementation-plan.md` PR 7b and
+// `architectural-cleanup-plan.md` §10 for the GPUI mapping.
 
-pub const gooey = @import("gooey.zig");
+pub const window = @import("window.zig");
 
-pub const Gooey = gooey.Gooey;
-pub const FontConfig = gooey.FontConfig;
+pub const Window = window.Window;
+pub const FontConfig = window.FontConfig;
 
 // =============================================================================
 // PR 7a — App-scope shared resources
@@ -27,7 +36,7 @@ pub const FontConfig = gooey.FontConfig;
 // `AppResources` bundles the three "expensive to duplicate per window"
 // subsystems (`TextSystem`, `SvgAtlas`, `ImageAtlas`) into one struct
 // with a single `owned: bool` discriminator, retiring the per-field
-// `_owned` flag triplet on `Gooey`. See
+// `_owned` flag triplet on `Window` (formerly `Gooey`). See
 // `docs/cleanup-implementation-plan.md` PR 7a.
 
 pub const app_resources = @import("app_resources.zig");
@@ -91,9 +100,9 @@ pub const actionTypeId = dispatch.actionTypeId;
 // =============================================================================
 //
 // These four subsystems used to live as fields and methods directly on
-// `Gooey`. They are now peer modules. Re-exported here so consumers can
-// `@import("context/mod.zig")` and reach the types via the same path as
-// the rest of the context API.
+// `Window` (formerly `Gooey`). They are now peer modules. Re-exported
+// here so consumers can `@import("context/mod.zig")` and reach the
+// types via the same path as the rest of the context API.
 
 pub const hover = @import("hover.zig");
 pub const HoverState = hover.HoverState;
@@ -125,7 +134,7 @@ pub const SubscriberInsertion = subscriber_set.Insertion;
 // `DrawPhase` tags the per-frame lifecycle so phase-restricted methods
 // can assert their invariants at entry. `Globals` is a type-keyed
 // singleton store for cross-cutting state (theme, keymap, debugger)
-// that previously lived as direct fields on `Gooey`.
+// that previously lived as direct fields on `Window` (formerly `Gooey`).
 //
 // See `docs/cleanup-implementation-plan.md` PR 6.
 

@@ -50,7 +50,7 @@ const AppState = struct {
         self.count = value;
     }
 
-    pub fn resetAndBlur(self: *AppState, g: *gooey.Gooey) void {
+    pub fn resetAndBlur(self: *AppState, g: *gooey.Window) void {
         self.count = 0;
         self.message = "Reset and blurred!";
         g.blurAll();

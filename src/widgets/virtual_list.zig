@@ -492,7 +492,7 @@ pub const Layout = struct {
 
 /// Sync scroll state between VirtualListState and retained ScrollContainer.
 pub fn syncScroll(b: *Builder, id: []const u8, state: *VirtualListState) void {
-    const g = b.gooey orelse return;
+    const g = b.window orelse return;
     const sc = g.widgets.scrollContainer(id) orelse return;
 
     // Update viewport dimensions FIRST so calculations are accurate

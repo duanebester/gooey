@@ -6,7 +6,7 @@
 const std = @import("std");
 
 // Core imports
-const gooey_mod = @import("../context/gooey.zig");
+const window_mod = @import("../context/window.zig");
 const render_bridge = @import("../scene/render_bridge.zig");
 const layout_mod = @import("../layout/layout.zig");
 const text_mod = @import("../text/mod.zig");
@@ -16,7 +16,7 @@ const render_cmd = @import("render.zig");
 const canvas_mod = @import("../ui/canvas.zig");
 const scene_mod = @import("../scene/mod.zig");
 
-const Gooey = gooey_mod.Gooey;
+const Window = window_mod.Window;
 const Cx = cx_mod.Cx;
 const Builder = ui_mod.Builder;
 
@@ -39,25 +39,25 @@ pub fn renderFrameCxRuntime(cx: *Cx, render_fn: *const fn (*Cx) void) !void {
 /// Internal implementation shared by comptime and runtime variants
 fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Cache pointers at function start (avoids repeated method calls)
-    const gooey = cx.gooey();
+    const window = cx.window();
     const builder = cx.builder();
 
     // Report GPU timings from previous frame (GPU work happens after finalizeFrame).
     // Only available on platforms whose Window struct records GPU timing (Linux/Vulkan).
-    if (gooey.getWindow()) |w| {
+    if (window.getPlatformWindow()) |w| {
         const W = @TypeOf(w.*);
         if (comptime @hasField(W, "last_gpu_submit_ns")) {
-            gooey.debugger().reportGpuTimings(w.last_gpu_submit_ns, w.last_atlas_upload_ns);
+            window.debugger().reportGpuTimings(w.last_gpu_submit_ns, w.last_atlas_upload_ns);
         }
     }
 
     // Reset dispatch tree for new frame
-    gooey.dispatch.reset();
+    window.dispatch.reset();
 
-    gooey.beginFrame();
+    window.beginFrame();
 
     // Clear blur handlers from previous frame
-    gooey.clearBlurHandlers();
+    window.clearBlurHandlers();
 
     // Reset builder state
     builder.id_counter = 0;
@@ -70,9 +70,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.active_scroll_drag_id = null;
 
     // Call user's render function with Cx — time tree construction separately
-    gooey.debugger().beginTreeBuild(gooey.io);
+    window.debugger().beginTreeBuild(window.io);
     render_fn(cx);
-    gooey.debugger().endTreeBuild(gooey.io);
+    window.debugger().endTreeBuild(window.io);
 
     // Assert pending item counts are within limits
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
@@ -82,81 +82,81 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     std.debug.assert(builder.pending_canvas.items.len <= Builder.MAX_PENDING_CANVAS);
 
     // End frame and get render commands
-    const commands = try gooey.endFrame();
+    const commands = try window.endFrame();
 
     // Assert render command count is within limits
     std.debug.assert(commands.len <= MAX_RENDER_COMMANDS);
 
     // Sync bounds and z_index from layout to dispatch tree
     // (previously untracked — now measured as "dispatch sync")
-    gooey.debugger().beginDispatchSync(gooey.io);
+    window.debugger().beginDispatchSync(window.io);
 
-    for (gooey.dispatch.nodes.items) |*node| {
+    for (window.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
-            node.bounds = gooey.layout.getBoundingBox(layout_id);
-            node.z_index = gooey.layout.getZIndex(layout_id);
+            node.bounds = window.layout.getBoundingBox(layout_id);
+            node.z_index = window.layout.getZIndex(layout_id);
         }
     }
 
     // Re-run hit testing with updated bounds to fix frame delay
     // (hover was computed with previous frame's bounds during input handling)
-    gooey.refreshHover();
+    window.refreshHover();
 
     // Register hit regions
     builder.registerPendingScrollRegions();
 
-    gooey.debugger().endDispatchSync(gooey.io);
+    window.debugger().endDispatchSync(window.io);
 
     // Clear scene
-    gooey.scene.clear();
+    window.scene.clear();
 
     // Reset SVG atlas per-frame rasterization budget so that expensive
     // software rasterizations are spread across multiple frames instead
     // of stalling a single frame when many uncached icons scroll into view.
-    gooey.svg_atlas.resetFrameBudget();
+    window.svg_atlas.resetFrameBudget();
 
     // Start render timing for profiler
-    gooey.debugger().beginRender(gooey.io);
+    window.debugger().beginRender(window.io);
 
     // Render all commands (includes SVGs and images inline for correct z-ordering)
     // Scrollbars are rendered inline when their scissor_end is encountered
     // Canvas draw orders are reserved during this pass for correct z-ordering
-    try renderCommands(gooey, @constCast(builder), commands);
+    try renderCommands(window, @constCast(builder), commands);
 
     // Register blur handlers from pending items
-    registerBlurHandlers(gooey, builder);
+    registerBlurHandlers(window, builder);
 
     // Render text inputs
-    try renderTextInputs(gooey, builder);
+    try renderTextInputs(window, builder);
 
     // Render text areas
-    try renderTextAreas(gooey, builder);
+    try renderTextAreas(window, builder);
 
     // Render code editors
-    try renderCodeEditors(gooey, builder);
+    try renderCodeEditors(window, builder);
 
     // Render canvas elements (custom vector graphics)
-    renderCanvasElements(gooey, builder);
+    renderCanvasElements(window, builder);
 
     // Update IME cursor position for focused text input
-    updateImeCursorPosition(gooey);
+    updateImeCursorPosition(window);
 
     // End render timing for profiler
-    gooey.debugger().endRender(gooey.io);
+    window.debugger().endRender(window.io);
 
     // Render debug overlays (if enabled via Cmd+Shift+I)
-    try renderDebugOverlays(gooey);
+    try renderDebugOverlays(window);
 
-    gooey.scene.finish();
+    window.scene.finish();
 
     // If SVG rasterizations were deferred due to per-frame budget, request
     // another render so the remaining icons progressively appear.
-    if (gooey.svg_atlas.hasDeferredWork()) {
-        gooey.requestRender();
+    if (window.svg_atlas.hasDeferredWork()) {
+        window.requestRender();
     }
 
     // Finalize frame timing for profiler
-    gooey.finalizeFrame();
+    window.finalizeFrame();
 }
 
 // =============================================================================
@@ -164,29 +164,29 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 // =============================================================================
 
 /// Register blur handlers from pending items
-fn registerBlurHandlers(gooey: *Gooey, builder: *const Builder) void {
+fn registerBlurHandlers(window: *Window, builder: *const Builder) void {
     // Register handlers from pending text inputs
     for (builder.pending_inputs.items) |pending| {
         if (pending.on_blur_handler) |handler| {
-            gooey.registerBlurHandler(pending.id, handler);
+            window.registerBlurHandler(pending.id, handler);
         }
     }
     // Register handlers from pending text areas
     for (builder.pending_text_areas.items) |pending| {
         if (pending.on_blur_handler) |handler| {
-            gooey.registerBlurHandler(pending.id, handler);
+            window.registerBlurHandler(pending.id, handler);
         }
     }
     // Register handlers from pending code editors
     for (builder.pending_code_editors.items) |pending| {
         if (pending.on_blur_handler) |handler| {
-            gooey.registerBlurHandler(pending.id, handler);
+            window.registerBlurHandler(pending.id, handler);
         }
     }
 }
 
 /// Render all layout commands
-fn renderCommands(gooey: *Gooey, builder: *Builder, commands: []const layout_mod.RenderCommand) !void {
+fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_mod.RenderCommand) !void {
     for (commands) |cmd| {
         // Check if this command's element corresponds to a pending canvas
         // If so, reserve a draw order now (in correct z-order) for later canvas painting
@@ -194,20 +194,20 @@ fn renderCommands(gooey: *Gooey, builder: *Builder, commands: []const layout_mod
             if (pending.layout_id == cmd.id and pending.base_order == 0) {
                 // Reserve a base draw order for this canvas
                 // Canvas primitives will use orders starting from this base
-                pending.base_order = gooey.scene.reserveCanvasOrders(256); // Reserve block of 256 orders
-                pending.clip_bounds = gooey.scene.currentClip();
+                pending.base_order = window.scene.reserveCanvasOrders(256); // Reserve block of 256 orders
+                pending.clip_bounds = window.scene.currentClip();
                 break;
             }
         }
 
-        try render_cmd.renderCommand(gooey, cmd);
+        try render_cmd.renderCommand(window, cmd);
 
         // When a scissor region ends, check if it's a scroll container and render its scrollbars
         // This ensures scrollbars appear after scroll content but before sibling elements
         if (cmd.command_type == .scissor_end) {
             if (builder.findPendingScrollByLayoutId(cmd.id)) |pending| {
-                if (gooey.widgets.scrollContainer(pending.id)) |scroll_widget| {
-                    try scroll_widget.renderScrollbars(gooey.scene);
+                if (window.widgets.scrollContainer(pending.id)) |scroll_widget| {
+                    try scroll_widget.renderScrollbars(window.scene);
                 }
             }
         }
@@ -215,23 +215,23 @@ fn renderCommands(gooey: *Gooey, builder: *Builder, commands: []const layout_mod
 }
 
 /// Render all pending canvas elements
-fn renderCanvasElements(gooey: *Gooey, builder: *const Builder) void {
+fn renderCanvasElements(window: *Window, builder: *const Builder) void {
     for (builder.pending_canvas.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id) orelse continue;
-        canvas_mod.executePendingCanvas(pending, gooey.scene, scene_mod.Bounds.init(
+        const bounds = window.layout.getBoundingBox(pending.layout_id) orelse continue;
+        canvas_mod.executePendingCanvas(pending, window.scene, scene_mod.Bounds.init(
             bounds.x,
             bounds.y,
             bounds.width,
             bounds.height,
-        ), gooey.text_system);
+        ), window.text_system);
     }
 }
 
 /// Render all pending text inputs
-fn renderTextInputs(gooey: *Gooey, builder: *const Builder) !void {
+fn renderTextInputs(window: *Window, builder: *const Builder) !void {
     for (builder.pending_inputs.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const input_widget = gooey.widgets.textInput(pending.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const input_widget = window.widgets.textInput(pending.id) orelse continue;
 
         // If disabled and currently focused, blur it
         if (pending.style.disabled and input_widget.isFocused()) {
@@ -260,15 +260,15 @@ fn renderTextInputs(gooey: *Gooey, builder: *const Builder) !void {
         input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         input_widget.secure = pending.style.secure;
-        try input_widget.render(gooey.scene, gooey.text_system, gooey.scale_factor);
+        try input_widget.render(window.scene, window.text_system, window.scale_factor);
     }
 }
 
 /// Render all pending text areas
-fn renderTextAreas(gooey: *Gooey, builder: *const Builder) !void {
+fn renderTextAreas(window: *Window, builder: *const Builder) !void {
     for (builder.pending_text_areas.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ta_widget = gooey.widgets.textArea(pending.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const ta_widget = window.widgets.textArea(pending.id) orelse continue;
 
         const inset = pending.style.padding + pending.style.border_width;
         // Compute inner_width from layout bounds when fill_width is true
@@ -288,15 +288,15 @@ fn renderTextAreas(gooey: *Gooey, builder: *const Builder) !void {
         ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         ta_widget.setPlaceholder(pending.style.placeholder);
-        try ta_widget.render(gooey.scene, gooey.text_system, gooey.scale_factor);
+        try ta_widget.render(window.scene, window.text_system, window.scale_factor);
     }
 }
 
 /// Render all pending code editors
-fn renderCodeEditors(gooey: *Gooey, builder: *const Builder) !void {
+fn renderCodeEditors(window: *Window, builder: *const Builder) !void {
     for (builder.pending_code_editors.items) |pending| {
-        const bounds = gooey.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ce_widget = gooey.widgets.codeEditor(pending.id) orelse continue;
+        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
+        const ce_widget = window.widgets.codeEditor(pending.id) orelse continue;
 
         const inset = pending.style.padding + pending.style.border_width;
         ce_widget.setBounds(.{
@@ -333,59 +333,67 @@ fn renderCodeEditors(gooey: *Gooey, builder: *const Builder) !void {
         ce_widget.encoding = pending.style.encoding;
 
         ce_widget.setPlaceholder(pending.style.placeholder);
-        try ce_widget.render(gooey.scene, gooey.text_system, gooey.scale_factor);
+        try ce_widget.render(window.scene, window.text_system, window.scale_factor);
     }
 }
 
-/// Update IME cursor position for focused text widget
-fn updateImeCursorPosition(gooey: *Gooey) void {
-    const window = gooey.getWindow() orelse return;
+/// Update IME cursor position for focused text widget.
+///
+/// PR 7b.1b — needs a clean separation between the framework `Window`
+/// (where `widgets.*` lives) and the OS-level `PlatformWindow` (where
+/// `setImeCursorRect` lives). Pre-rename, the original `gooey` param
+/// and the local platform handle were named `gooey` and `window`
+/// respectively; after the framework wrapper rename to `Window`, the
+/// platform handle local moves to `platform_window` to avoid shadowing
+/// the param.
+fn updateImeCursorPosition(window: *Window) void {
+    const platform_window = window.getPlatformWindow() orelse return;
     // PR 4: per-type forwarders (`getFocusedTextInput` etc.) moved off
-    // `Gooey`; reach through `gooey.widgets.*` directly. Order matches
+    // `Window`; reach through `window.widgets.*` directly. Order matches
     // pre-PR-4 priority — text input first, then text area, then code
     // editor — because at most one of them is focused at a time and
     // the IME only needs one rect.
-    if (gooey.widgets.getFocusedTextInput()) |input| {
+    if (window.widgets.getFocusedTextInput()) |input| {
         const rect = input.cursor_rect;
-        window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
-    } else if (gooey.widgets.getFocusedTextArea()) |ta| {
+        platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+    } else if (window.widgets.getFocusedTextArea()) |ta| {
         const rect = ta.cursor_rect;
-        window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
-    } else if (gooey.widgets.getFocusedCodeEditor()) |ce| {
+        platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+    } else if (window.widgets.getFocusedCodeEditor()) |ce| {
         const rect = ce.getCursorRect();
-        window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
+        platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
 }
 
 /// Render debug overlays if enabled
-fn renderDebugOverlays(gooey: *Gooey) !void {
-    if (!gooey.debugger().isActive()) return;
+fn renderDebugOverlays(window: *Window) !void {
+    if (!window.debugger().isActive()) return;
 
-    gooey.debugger().generateOverlays(
-        gooey.hover.hovered_layout_id,
-        gooey.hover.ancestors(),
-        gooey.layout,
+    window.debugger().generateOverlays(
+        window.hover.hovered_layout_id,
+        window.hover.ancestors(),
+        window.layout,
     );
-    try gooey.debugger().renderOverlays(gooey.scene);
+    try window.debugger().renderOverlays(window.scene);
 
     // Render inspector panel (Phase 2)
-    if (gooey.debugger().showInspector()) {
-        try gooey.debugger().renderInspectorPanel(
-            gooey.scene,
-            gooey.text_system,
-            gooey.width,
-            gooey.height,
-            gooey.scale_factor,
+    if (window.debugger().showInspector()) {
+        try window.debugger().renderInspectorPanel(
+            window.scene,
+            window.text_system,
+            window.width,
+            window.height,
+            window.scale_factor,
         );
     }
 
     // Render profiler panel
-    if (gooey.debugger().showProfiler()) {
-        try gooey.debugger().renderProfilerPanel(
-            gooey.scene,
-            gooey.text_system,
-            gooey.width,
-            gooey.scale_factor,
+    if (window.debugger().showProfiler()) {
+        try window.debugger().renderProfilerPanel(
+            window.scene,
+            window.text_system,
+            window.width,
+            window.scale_factor,
         );
     }
 }

@@ -28,7 +28,7 @@ fn setupKeymap(cx: *Cx) void {
     if (s.initialized) return;
     s.initialized = true;
 
-    const g = cx.gooey();
+    const g = cx.window();
     g.keymap().bind(Undo, "cmd-z", null);
     g.keymap().bind(Redo, "cmd-shift-z", null);
     g.keymap().bind(Save, "cmd-s", "Editor");

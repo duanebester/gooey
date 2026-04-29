@@ -9,7 +9,7 @@
 //! - `core` - Foundational types (geometry, color)
 //! - `input` - Input events, keycodes, action bindings
 //! - `scene` - GPU primitives (Quad, Shadow, GlyphInstance)
-//! - `context` - Application context (Gooey, focus, dispatch, entity)
+//! - `context` - Application context (Window, focus, dispatch, entity)
 //! - `animation` - Animation system (easing, interpolation)
 //! - `layout` - Clay-inspired layout engine
 //! - `text` - Text rendering with backend abstraction
@@ -263,8 +263,14 @@ pub const EventResult = input.EventResult;
 // Element types
 pub const ElementId = core.ElementId;
 
-// Gooey context (from context module)
-pub const Gooey = context.Gooey;
+// Framework window context (from context module).
+//
+// PR 7b.1b — `Gooey` (the framework wrapper struct) was renamed to
+// `Window`. The OS-level handle is now `PlatformWindow` (renamed in
+// PR 7b.1a from `platform.Window`). See
+// `docs/cleanup-implementation-plan.md` PR 7b and
+// `architectural-cleanup-plan.md` §10.
+pub const Window = context.Window;
 pub const WidgetStore = context.WidgetStore;
 
 // Layout (commonly used types)

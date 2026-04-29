@@ -16,8 +16,8 @@ const cx_mod = @import("cx.zig");
 const Cx = cx_mod.Cx;
 const typeId = cx_mod.typeId;
 
-const gooey_mod = @import("context/gooey.zig");
-const Gooey = gooey_mod.Gooey;
+const window_mod = @import("context/window.zig");
+const Window = window_mod.Window;
 
 const handler_mod = @import("context/handler.zig");
 const EntityId = handler_mod.EntityId;
@@ -86,36 +86,36 @@ test "command method signatures are valid" {
         value: i32 = 0,
         focused: bool = false,
 
-        // Command: fn(*State, *Gooey) void
-        pub fn doSomethingWithFramework(self: *@This(), g: *Gooey) void {
+        // Command: fn(*State, *Window) void
+        pub fn doSomethingWithFramework(self: *@This(), g: *Window) void {
             _ = g; // Would call g.blurAll(), g.focusTextInput(), etc.
             self.value += 1;
         }
 
-        // CommandWith: fn(*State, *Gooey, Arg) void
-        pub fn setValueWithFramework(self: *@This(), g: *Gooey, value: i32) void {
+        // CommandWith: fn(*State, *Window, Arg) void
+        pub fn setValueWithFramework(self: *@This(), g: *Window, value: i32) void {
             _ = g;
             self.value = value;
         }
 
-        pub fn focusAndSet(self: *@This(), g: *Gooey, field_id: usize) void {
+        pub fn focusAndSet(self: *@This(), g: *Window, field_id: usize) void {
             _ = g; // Would call g.focusTextInput(...)
             _ = field_id;
             self.focused = true;
         }
     };
 
-    // Just verify the types compile - actual invocation needs Gooey instance
+    // Just verify the types compile - actual invocation needs Window instance
     const s = AppState{};
     try std.testing.expectEqual(@as(i32, 0), s.value);
 
-    // We can still test the logic by calling directly (without Gooey)
+    // We can still test the logic by calling directly (without Window)
     // This shows the pattern encourages testable code
-    const MockGooey = Gooey;
-    _ = MockGooey;
+    const MockWindow = Window;
+    _ = MockWindow;
 }
 
-test "root state registration via Gooey instance" {
+test "root state registration via Window instance" {
     const StateA = struct {
         a: i32 = 10,
         pub fn inc(self: *@This()) void {
@@ -127,21 +127,21 @@ test "root state registration via Gooey instance" {
         b: []const u8 = "hello",
     };
 
-    // Heap-allocate Gooey (>400KB — too large for stack per CLAUDE.md).
-    const gooey = try std.testing.allocator.create(Gooey);
-    defer std.testing.allocator.destroy(gooey);
+    // Heap-allocate Window (>400KB — too large for stack per CLAUDE.md).
+    const window = try std.testing.allocator.create(Window);
+    defer std.testing.allocator.destroy(window);
 
-    gooey.root_state_ptr = null;
-    gooey.root_state_type_id = 0;
+    window.root_state_ptr = null;
+    window.root_state_type_id = 0;
 
     var state_a = StateA{};
 
-    // Set root state on the Gooey instance.
-    gooey.setRootState(StateA, &state_a);
-    defer gooey.clearRootState();
+    // Set root state on the Window instance.
+    window.setRootState(StateA, &state_a);
+    defer window.clearRootState();
 
     // Retrieve with correct type.
-    const retrieved = gooey.getRootState(StateA);
+    const retrieved = window.getRootState(StateA);
     try std.testing.expect(retrieved != null);
     try std.testing.expectEqual(@as(i32, 10), retrieved.?.a);
 
@@ -150,7 +150,7 @@ test "root state registration via Gooey instance" {
     try std.testing.expectEqual(@as(i32, 11), state_a.a);
 
     // Wrong type returns null.
-    const wrong = gooey.getRootState(StateB);
+    const wrong = window.getRootState(StateB);
     try std.testing.expect(wrong == null);
 }
 
@@ -169,7 +169,7 @@ test "Cx.update creates valid HandlerRef" {
     // No root state registration needed — the handler is not invoked here.
     var cx = Cx{
         ._allocator = undefined, // Not used by update()
-        ._gooey = undefined, // Not used by update()
+        ._window = undefined, // Not used by update()
         ._builder = undefined, // Not used by update()
         .state_ptr = @ptrCast(&state),
         .state_type_id = typeId(TestState),
@@ -196,7 +196,7 @@ test "Cx.updateWith creates handler with packed argument" {
     // No root state registration needed — the handler is not invoked here.
     var cx = Cx{
         ._allocator = undefined,
-        ._gooey = undefined,
+        ._window = undefined,
         ._builder = undefined,
         .state_ptr = @ptrCast(&state),
         .state_type_id = typeId(TestState),
@@ -452,7 +452,7 @@ test "DataTableCallbacks type structure" {
 //    produce identical output."
 //
 // We can't run the full render pipeline from a unit test (it needs a
-// live `Gooey` + `Builder`), but we can pin the equivalence at the
+// live `Window` + `Builder`), but we can pin the equivalence at the
 // type / decl level: the deprecated forwarders on `Cx` and the new
 // sub-namespace methods must share argument types and return types,
 // and `DataTableCallbacks` must be the *same* type from both

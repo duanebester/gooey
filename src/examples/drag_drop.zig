@@ -16,7 +16,7 @@ pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Gooey = gooey.Gooey;
+const Window = gooey.Window;
 
 // =============================================================================
 // Item Type - What we're dragging
@@ -122,7 +122,7 @@ const AppState = struct {
     }
 
     /// Handle drop on left list
-    pub fn onDropLeft(self: *Self, g: *Gooey) void {
+    pub fn onDropLeft(self: *Self, g: *Window) void {
         if (g.getActiveDrag()) |drag| {
             if (drag.getValue(Item)) |item| {
                 if (self.removeItem(item.id)) |removed| {
@@ -133,7 +133,7 @@ const AppState = struct {
     }
 
     /// Handle drop on right list
-    pub fn onDropRight(self: *Self, g: *Gooey) void {
+    pub fn onDropRight(self: *Self, g: *Window) void {
         if (g.getActiveDrag()) |drag| {
             if (drag.getValue(Item)) |item| {
                 if (self.removeItem(item.id)) |removed| {
@@ -314,7 +314,7 @@ const DraggableCard = struct {
         const item = self.item;
 
         // Check if this item is being dragged (for opacity)
-        const is_being_dragged = if (b.gooey) |g| blk: {
+        const is_being_dragged = if (b.window) |g| blk: {
             if (g.getActiveDrag()) |drag| {
                 if (drag.getValue(Item)) |dragged| {
                     break :blk dragged.id == item.id;
@@ -390,7 +390,7 @@ const EmptyState = struct {
 /// Drag preview - floating element that follows cursor during drag
 const DragPreview = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        const g = cx.gooey();
+        const g = cx.window();
 
         // Only render if there's an active drag
         const drag = g.getActiveDrag() orelse return;

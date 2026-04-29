@@ -16,8 +16,8 @@
 //!   | ---------------------------- | --------------------------- |
 //!   | `cx.update(M)`               | `fn(*State) void`           |
 //!   | `cx.updateWith(arg, M)`      | `fn(*State, Arg) void`      |
-//!   | `cx.command(M)`              | `fn(*State, *Gooey) void`   |
-//!   | `cx.commandWith(arg, M)`     | `fn(*State, *Gooey, A) void`|
+//!   | `cx.command(M)`              | `fn(*State, *Window) void`   |
+//!   | `cx.commandWith(arg, M)`     | `fn(*State, *Window, A) void`|
 //!
 //! Examples live in `examples/` and the integration tests under
 //! `cx_tests.zig`.
@@ -34,8 +34,8 @@ comptime {
 }
 
 // Core imports
-const gooey_mod = @import("context/gooey.zig");
-const Gooey = gooey_mod.Gooey;
+const window_mod = @import("context/window.zig");
+const Window = window_mod.Window;
 const ui_mod = @import("ui/mod.zig");
 const Builder = ui_mod.Builder;
 const AccessibleConfig = ui_mod.AccessibleConfig;
@@ -117,7 +117,7 @@ pub const Cx = struct {
     _allocator: std.mem.Allocator,
 
     /// Internal runtime coordinator (manages scene, layout, widgets, etc.)
-    _gooey: *Gooey,
+    _window: *Window,
 
     /// Layout builder
     _builder: *Builder,
@@ -166,25 +166,25 @@ pub const Cx = struct {
     /// Get the current window size in logical pixels.
     pub fn windowSize(self: *Self) struct { width: f32, height: f32 } {
         return .{
-            .width = self._gooey.width,
-            .height = self._gooey.height,
+            .width = self._window.width,
+            .height = self._window.height,
         };
     }
 
     /// Get the display scale factor (e.g., 2.0 for Retina).
     pub fn scaleFactor(self: *Self) f32 {
-        return self._gooey.scale_factor;
+        return self._window.scale_factor;
     }
 
     /// Set the window title.
     pub fn setTitle(self: *Self, title: [:0]const u8) void {
-        self._gooey.window.setTitle(title);
+        self._window.window.setTitle(title);
     }
 
     /// Change the font at runtime. Clears glyph / shape caches and
     /// triggers a re-render.
     pub fn setFont(self: *Self, name: []const u8, size: f32) !void {
-        try self._gooey.setFont(name, size);
+        try self._window.setFont(name, size);
     }
 
     /// Set the glass / blur effect style for the window. No-op on
@@ -200,9 +200,15 @@ pub const Cx = struct {
         if (comptime platform.is_wasm) {
             // No-op on web - glass effects not supported
         } else {
-            const mac_window = platform.mac.window;
-            const window: *mac_window.Window = @ptrCast(@alignCast(self._gooey.window.ptr));
-            window.setGlassStyle(@enumFromInt(@intFromEnum(style)), opacity, corner_radius);
+            // PR 7b.1b — `_gooey.window` was the optional `*PlatformWindow`
+            // field; renamed to `_window.platform_window`. Capture name
+            // disambiguated from the new `pub fn window(self: *Self)`
+            // accessor on `Cx` (which `cx.window()` callers use).
+            const mac_window_mod = platform.mac.window;
+            if (self._window.platform_window) |pw| {
+                const mac_win: *mac_window_mod.Window = @ptrCast(@alignCast(pw));
+                mac_win.setGlassStyle(@enumFromInt(@intFromEnum(style)), opacity, corner_radius);
+            }
         }
     }
 
@@ -214,15 +220,19 @@ pub const Cx = struct {
         if (comptime platform.is_wasm) {
             // No-op on web - can't close browser tabs
         } else {
-            if (self._gooey.window) |window| {
-                window.close();
+            // PR 7b.1b — capture renamed from `window` to `pw` to
+            // avoid shadowing the new `pub fn window(self: *Self)`
+            // accessor declared on `Cx`. Field also renamed
+            // (`window → platform_window`) on the framework wrapper.
+            if (self._window.platform_window) |pw| {
+                pw.close();
             }
         }
     }
 
     /// Quit the application immediately. No-op on web.
     pub fn quit(self: *Self) void {
-        self._gooey.quit();
+        self._window.quit();
     }
 
     // =========================================================================
@@ -240,7 +250,7 @@ pub const Cx = struct {
         const State = comptime ExtractState("update", @TypeOf(method));
 
         const Wrapper = struct {
-            fn invoke(g: *Gooey, _: EntityId) void {
+            fn invoke(g: *Window, _: EntityId) void {
                 const state_ptr = g.getRootState(State) orelse return;
                 method(state_ptr);
                 g.requestRender();
@@ -274,7 +284,7 @@ pub const Cx = struct {
         const packed_entity_id = packArg(Arg, arg);
 
         const Wrapper = struct {
-            fn invoke(g: *Gooey, packed_arg: EntityId) void {
+            fn invoke(g: *Window, packed_arg: EntityId) void {
                 const state_ptr = g.getRootState(State) orelse return;
                 const unpacked = unpackArg(Arg, packed_arg);
                 method(state_ptr, unpacked);
@@ -310,7 +320,7 @@ pub const Cx = struct {
             //     id hash (forIndexAndClose path — also closes internal state)
             //   * upper 32 == 0: full u64 = usize index (forIndex
             //     path — caller manages open/close)
-            fn invoke(g: *Gooey, packed_arg: EntityId) void {
+            fn invoke(g: *Window, packed_arg: EntityId) void {
                 const id_hash = OnSelectHandler.unpackIdHash(packed_arg);
 
                 if (id_hash != 0) {
@@ -339,7 +349,7 @@ pub const Cx = struct {
     // Command handlers — `command` / `commandWith`
     // =========================================================================
 
-    /// Handler from `fn(*State, *Gooey) void`. Use when the method
+    /// Handler from `fn(*State, *Window) void`. Use when the method
     /// needs framework access — focus, window ops, entity churn.
     pub fn command(
         self: *Self,
@@ -349,7 +359,7 @@ pub const Cx = struct {
         const State = comptime ExtractState("command", @TypeOf(method));
 
         const Wrapper = struct {
-            fn invoke(g: *Gooey, _: EntityId) void {
+            fn invoke(g: *Window, _: EntityId) void {
                 const state_ptr = g.getRootState(State) orelse return;
                 method(state_ptr, g);
                 g.requestRender();
@@ -362,7 +372,7 @@ pub const Cx = struct {
         };
     }
 
-    /// Handler from `fn(*State, *Gooey, Arg) void`. `arg` follows the
+    /// Handler from `fn(*State, *Window, Arg) void`. `arg` follows the
     /// same 8-byte capture rule as `updateWith`.
     pub fn commandWith(
         self: *Self,
@@ -382,7 +392,7 @@ pub const Cx = struct {
         const packed_entity_id = packArg(Arg, arg);
 
         const Wrapper = struct {
-            fn invoke(g: *Gooey, packed_arg: EntityId) void {
+            fn invoke(g: *Window, packed_arg: EntityId) void {
                 const state_ptr = g.getRootState(State) orelse return;
                 const unpacked = unpackArg(Arg, packed_arg);
                 method(state_ptr, g, unpacked);
@@ -400,24 +410,24 @@ pub const Cx = struct {
     // Deferred commands — `defer` / `deferWith`
     // =========================================================================
 
-    /// Schedule `fn(*State, *Gooey) void` to run after current event
+    /// Schedule `fn(*State, *Window) void` to run after current event
     /// handling completes. Use for modal dialogs and other operations
     /// that can't safely run mid-event (re-entrancy, heavy work).
     pub fn @"defer"(
         self: *Self,
         comptime method: anytype,
     ) void {
-        self._gooey.deferCommand(method);
+        self._window.deferCommand(method);
     }
 
-    /// Schedule `fn(*State, *Gooey, Arg) void` for after-event
+    /// Schedule `fn(*State, *Window, Arg) void` for after-event
     /// execution. `arg` follows the 8-byte capture rule.
     pub fn deferWith(
         self: *Self,
         arg: anytype,
         comptime method: anytype,
     ) void {
-        self._gooey.deferCommandWith(arg, method);
+        self._window.deferCommandWith(arg, method);
     }
 
     // =========================================================================
@@ -451,12 +461,12 @@ pub const Cx = struct {
     /// close. Pair with `unregisterCancelGroup` if the async work
     /// completes normally.
     pub fn registerCancelGroup(self: *Self, group: *std.Io.Group) void {
-        self._gooey.registerCancelGroup(group);
+        self._window.registerCancelGroup(group);
     }
 
     /// Unregister a cancel group (e.g. work completed normally).
     pub fn unregisterCancelGroup(self: *Self, group: *std.Io.Group) void {
-        self._gooey.unregisterCancelGroup(group);
+        self._window.unregisterCancelGroup(group);
     }
 
     // Deprecated: see `cx.entities.attachCancel` / `detachCancel`.
@@ -485,7 +495,7 @@ pub const Cx = struct {
         std.debug.assert(opts.font_size == null or opts.font_size.? > 0);
         std.debug.assert(opts.max_width == null or opts.max_width.? > 0);
 
-        const ts = self._gooey.getTextSystem();
+        const ts = self._window.getTextSystem();
 
         if (opts.font_size) |requested_size| {
             const metrics = ts.getMetrics() orelse return error.NoFontLoaded;
@@ -523,7 +533,7 @@ pub const Cx = struct {
 
     /// Request a UI re-render.
     pub fn notify(self: *Self) void {
-        self._gooey.requestRender();
+        self._window.requestRender();
     }
 
     // =========================================================================
@@ -532,7 +542,7 @@ pub const Cx = struct {
 
     // Deprecated: use `cx.focus.*` instead. The text-field /
     // text-area distinction collapsed in PR 4 — both routed through
-    // `Gooey.focusWidget` already.
+    // `Window.focusWidget` already.
     pub fn focusNext(self: *Self) void {
         self.focus.next();
     }
@@ -555,16 +565,16 @@ pub const Cx = struct {
     // Widget access (for advanced use cases). Each returns `null` if
     // no widget with that id has been registered.
     pub fn textField(self: *Self, id: []const u8) ?*text_field_mod.TextInput {
-        return self._gooey.widgets.textInput(id);
+        return self._window.widgets.textInput(id);
     }
     pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextArea {
-        return self._gooey.widgets.textArea(id);
+        return self._window.widgets.textArea(id);
     }
     pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {
-        return self._gooey.widgets.codeEditor(id);
+        return self._window.widgets.codeEditor(id);
     }
     pub fn scrollView(self: *Self, id: []const u8) ?*scroll_view_mod.ScrollContainer {
-        return self._gooey.widgets.scrollContainer(id);
+        return self._window.widgets.scrollContainer(id);
     }
 
     /// Render an element tree. Works with any renderable — `ui.*`
@@ -604,8 +614,8 @@ pub const Cx = struct {
 
     // Internal access (advanced use cases / migration). Lifetime is
     // tied to `*Cx` — don't store these across frames.
-    pub fn gooey(self: *Self) *Gooey {
-        return self._gooey;
+    pub fn window(self: *Self) *Window {
+        return self._window;
     }
     pub fn builder(self: *Self) *Builder {
         return self._builder;
@@ -616,7 +626,7 @@ pub const Cx = struct {
     /// IO interface for filesystem access and async work. Mirrors
     /// `cx.allocator()` — same lifetime as `*Cx`.
     pub fn io(self: *Self) std.Io {
-        return self._gooey.io;
+        return self._window.io;
     }
 
     /// Set the theme for this context and all child components. Call
@@ -689,7 +699,7 @@ pub const Cx = struct {
     pub fn changed(self: *Self, comptime key: []const u8, value: anytype) bool {
         const key_hash = comptime animation_mod.hashString(key);
         const value_hash = change_tracker_mod.hashValue(@TypeOf(value), value);
-        return self._gooey.widgets.change_tracker.changed(key_hash, value_hash);
+        return self._window.widgets.change_tracker.changed(key_hash, value_hash);
     }
 
     // =========================================================================

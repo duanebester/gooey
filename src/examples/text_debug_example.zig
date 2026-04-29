@@ -235,7 +235,7 @@ const Instructions = struct {
 // =============================================================================
 
 fn logDebugInfo(cx: *Cx) void {
-    const text_system = cx.gooey().getTextSystem();
+    const text_system = cx.window().getTextSystem();
 
     debugLog("", .{});
     debugLog("========================================", .{});

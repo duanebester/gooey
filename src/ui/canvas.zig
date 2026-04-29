@@ -1,7 +1,7 @@
 //! Canvas - Low-level custom drawing element
 //!
 //! Provides a callback-based API for custom vector graphics within
-//! the Gooey UI tree. Use Canvas when you need to draw arbitrary shapes,
+//! the Window UI tree. Use Canvas when you need to draw arbitrary shapes,
 //! charts, or custom visualizations.
 //!
 //! ## Usage
@@ -1506,7 +1506,7 @@ pub const Canvas = struct {
             b.generateId();
 
         // Get scale factor
-        const scale: f32 = if (b.gooey) |g| g.scale_factor else 1.0;
+        const scale: f32 = if (b.window) |g| g.scale_factor else 1.0;
 
         // Register pending canvas for deferred rendering
         b.registerPendingCanvas(.{

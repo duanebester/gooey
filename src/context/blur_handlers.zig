@@ -3,7 +3,7 @@
 //!
 //! Rationale (cleanup item #1, plan §7d in
 //! `docs/architectural-cleanup-plan.md`): the original implementation
-//! lived as three fields and four methods directly on `Gooey`
+//! lived as three fields and four methods directly on `Window`
 //! (`blur_handlers`, `blur_handler_count`,
 //! `blur_handlers_invoked_this_transition`, plus
 //! `registerBlurHandler` / `clearBlurHandlers` / `getBlurHandler` /
@@ -28,21 +28,21 @@
 //!
 //! ## Re-entrancy guard
 //!
-//! `blur_handlers_invoked_this_transition` was tangled into `Gooey`
+//! `blur_handlers_invoked_this_transition` was tangled into `Window`
 //! purely so the multiple call paths (`blurAll`, `syncWidgetFocus`,
 //! `invokeBlurHandlersForFocusedWidgets`) could agree on whether the
 //! handler set had already fired during the current focus transition.
 //! It travels with the registry now — there is no semantic reason for
-//! `Gooey` to own that bit.
+//! `Window` to own that bit.
 //!
-//! ## What stays in `Gooey`
+//! ## What stays in `Window`
 //!
 //! `invokeBlurHandlersForFocusedWidgets` reaches across into the
 //! `WidgetStore` to walk text-input/text-area/code-editor maps. The
 //! registry can't own that walk without dragging widget types back
 //! into `context/`, which we explicitly want to avoid (see PR 4 — the
 //! `context → widgets` backward edge is supposed to die in the next
-//! PR). So `Gooey.invokeBlurHandlersForFocusedWidgets` keeps the walk
+//! PR). So `Window.invokeBlurHandlersForFocusedWidgets` keeps the walk
 //! and asks the registry for `getHandler(id)` on each focused widget;
 //! the registry no longer reaches outward.
 
@@ -104,7 +104,7 @@ pub const BlurHandlerRegistry = struct {
     /// Re-entrancy guard for a focus transition.
     ///
     /// A single user-visible focus change can pass through several
-    /// internal call sites (`Gooey.blurAll`, `syncWidgetFocus`,
+    /// internal call sites (`Window.blurAll`, `syncWidgetFocus`,
     /// `invokeBlurHandlersForFocusedWidgets`); without this latch the
     /// same `on_blur` callback would fire 2–3 times per transition.
     /// The latch is set on first invocation and cleared by the runtime
@@ -127,7 +127,7 @@ pub const BlurHandlerRegistry = struct {
 
     /// In-place initialization for sets embedded in a large parent
     /// struct (per `CLAUDE.md` §13). The pre-extraction code did
-    /// field-by-field init in `Gooey.initOwnedPtr` to avoid stack
+    /// field-by-field init in `Window.initOwnedPtr` to avoid stack
     /// temps; that contract is preserved by delegating to the
     /// generic's own `initInPlace`.
     pub fn initInPlace(self: *Self) void {
@@ -159,7 +159,7 @@ pub const BlurHandlerRegistry = struct {
             .inserted, .replaced => {},
             .dropped => {
                 // Logged at warn — preserves the old behaviour where
-                // `Gooey.registerBlurHandler` warned and continued
+                // `Window.registerBlurHandler` warned and continued
                 // rather than crashing.
                 std.log.warn(
                     "Blur handler limit ({d}) exceeded - dropping handler for '{s}'",
@@ -241,7 +241,7 @@ pub const BlurHandlerRegistry = struct {
 // =============================================================================
 //
 // Methodology: exercise the registry through the public surface that
-// `Gooey` exposes (`register` / `clearAll` / `getHandler` / the
+// `Window` exposes (`register` / `clearAll` / `getHandler` / the
 // transition guard). The underlying `SubscriberSet` has its own
 // invariant tests; here we focus on the blur-specific semantics that
 // matter to callers — content-equality of slice keys, the cap-and-warn
@@ -250,7 +250,7 @@ pub const BlurHandlerRegistry = struct {
 const testing = std.testing;
 
 // A trivial no-op handler — we only care about identity, not effects.
-fn noopCallback(_: *@import("gooey.zig").Gooey, _: handler_mod.EntityId) void {}
+fn noopCallback(_: *@import("window.zig").Window, _: handler_mod.EntityId) void {}
 
 fn makeHandler() HandlerRef {
     return .{

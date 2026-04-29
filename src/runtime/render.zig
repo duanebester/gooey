@@ -16,7 +16,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 // Core imports
-const gooey_mod = @import("../context/gooey.zig");
+const window_mod = @import("../context/window.zig");
 const scene_mod = @import("../scene/mod.zig");
 const render_bridge = @import("../scene/render_bridge.zig");
 const layout_mod = @import("../layout/layout.zig");
@@ -25,7 +25,7 @@ const svg_instance_mod = @import("../scene/svg_instance.zig");
 const image_instance_mod = @import("../scene/image_instance.zig");
 const image_mod = @import("../image/mod.zig");
 
-const Gooey = gooey_mod.Gooey;
+const Window = window_mod.Window;
 const Hsla = scene_mod.Hsla;
 const Quad = scene_mod.Quad;
 const Shadow = scene_mod.Shadow;
@@ -79,7 +79,7 @@ const MAX_PENDING_LOADS: usize = 64;
 /// Uses ImageKey as map key to avoid hash collisions when same source is requested
 /// with different dimensions/scale factors
 var g_pending_loads: std.AutoHashMap(image_mod.ImageKey, PendingLoad) = undefined;
-var g_gooey_ctx: ?*Gooey = null;
+var g_window_ctx: ?*Window = null;
 var g_allocator: ?std.mem.Allocator = null;
 var g_wasm_loader_initialized: bool = false;
 
@@ -107,13 +107,13 @@ pub fn deinitWasmImageLoader() void {
 
     // Clear all pending loads
     g_pending_loads.deinit();
-    g_gooey_ctx = null;
+    g_window_ctx = null;
     g_allocator = null;
     g_wasm_loader_initialized = false;
 
     // Assert cleanup completed
     std.debug.assert(!g_wasm_loader_initialized);
-    std.debug.assert(g_gooey_ctx == null);
+    std.debug.assert(g_window_ctx == null);
 }
 
 // =============================================================================
@@ -121,20 +121,20 @@ pub fn deinitWasmImageLoader() void {
 // =============================================================================
 
 /// Execute a single render command, adding primitives to the scene
-pub fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+pub fn renderCommand(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     // Assert bounding box validity
     std.debug.assert(cmd.bounding_box.width >= 0);
     std.debug.assert(cmd.bounding_box.height >= 0);
 
     switch (cmd.command_type) {
-        .shadow => try renderShadow(gooey_ctx, cmd),
-        .rectangle => try renderRectangle(gooey_ctx, cmd),
-        .border => try renderBorder(gooey_ctx, cmd),
-        .text => try renderText(gooey_ctx, cmd),
-        .svg => try renderSvg(gooey_ctx, cmd),
-        .image => try renderImage(gooey_ctx, cmd),
-        .scissor_start => try renderScissorStart(gooey_ctx, cmd),
-        .scissor_end => renderScissorEnd(gooey_ctx),
+        .shadow => try renderShadow(window_ctx, cmd),
+        .rectangle => try renderRectangle(window_ctx, cmd),
+        .border => try renderBorder(window_ctx, cmd),
+        .text => try renderText(window_ctx, cmd),
+        .svg => try renderSvg(window_ctx, cmd),
+        .image => try renderImage(window_ctx, cmd),
+        .scissor_start => try renderScissorStart(window_ctx, cmd),
+        .scissor_end => renderScissorEnd(window_ctx),
         else => {},
     }
 }
@@ -144,9 +144,9 @@ pub fn renderCommand(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 // =============================================================================
 
 /// Render a shadow primitive
-fn renderShadow(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderShadow(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const shadow_data = cmd.data.shadow;
-    try gooey_ctx.scene.insertShadow(Shadow{
+    try window_ctx.scene.insertShadow(Shadow{
         .content_origin_x = cmd.bounding_box.x,
         .content_origin_y = cmd.bounding_box.y,
         .content_size_width = cmd.bounding_box.width,
@@ -165,7 +165,7 @@ fn renderShadow(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 }
 
 /// Render a filled rectangle
-fn renderRectangle(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderRectangle(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const rect = cmd.data.rectangle;
     const quad = Quad{
         .bounds_origin_x = cmd.bounding_box.x,
@@ -181,15 +181,15 @@ fn renderRectangle(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         },
     };
 
-    if (gooey_ctx.scene.hasActiveClip()) {
-        try gooey_ctx.scene.insertQuadClipped(quad);
+    if (window_ctx.scene.hasActiveClip()) {
+        try window_ctx.scene.insertQuadClipped(quad);
     } else {
-        try gooey_ctx.scene.insertQuad(quad);
+        try window_ctx.scene.insertQuad(quad);
     }
 }
 
 /// Render a border (SDF-based, supports rounded corners)
-fn renderBorder(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderBorder(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const border_data = cmd.data.border;
     const quad = Quad{
         .bounds_origin_x = cmd.bounding_box.x,
@@ -212,41 +212,41 @@ fn renderBorder(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         },
     };
 
-    if (gooey_ctx.scene.hasActiveClip()) {
-        try gooey_ctx.scene.insertQuadClipped(quad);
+    if (window_ctx.scene.hasActiveClip()) {
+        try window_ctx.scene.insertQuadClipped(quad);
     } else {
-        try gooey_ctx.scene.insertQuad(quad);
+        try window_ctx.scene.insertQuad(quad);
     }
 }
 
 /// Render text with baseline calculation
-fn renderText(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderText(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const text_data = cmd.data.text;
     const font_size_f: f32 = @floatFromInt(text_data.font_size);
 
     // Calculate baseline using requested font size
-    const baseline_y = if (gooey_ctx.text_system.getMetrics()) |metrics| blk: {
+    const baseline_y = if (window_ctx.text_system.getMetrics()) |metrics| blk: {
         const scale = font_size_f / metrics.point_size;
         const scaled_ascender = metrics.ascender * scale;
         break :blk cmd.bounding_box.y + scaled_ascender;
     } else cmd.bounding_box.y + cmd.bounding_box.height * 0.75;
 
-    const use_clip = gooey_ctx.scene.hasActiveClip();
+    const use_clip = window_ctx.scene.hasActiveClip();
     var opts = text_mod.RenderTextOptions{
         .clipped = use_clip,
         .decoration = .{
             .underline = text_data.underline,
             .strikethrough = text_data.strikethrough,
         },
-        .stats = gooey_ctx.scene.stats,
+        .stats = window_ctx.scene.stats,
     };
     _ = try text_mod.renderText(
-        gooey_ctx.scene,
-        gooey_ctx.text_system,
+        window_ctx.scene,
+        window_ctx.text_system,
         text_data.text,
         cmd.bounding_box.x,
         baseline_y,
-        gooey_ctx.scale_factor,
+        window_ctx.scale_factor,
         render_bridge.colorToHsla(text_data.color),
         font_size_f,
         &opts,
@@ -254,10 +254,10 @@ fn renderText(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 }
 
 /// Render SVG with atlas caching
-fn renderSvg(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderSvg(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const svg_data = cmd.data.svg;
     const b = cmd.bounding_box;
-    const scale_factor = gooey_ctx.scale_factor;
+    const scale_factor = window_ctx.scale_factor;
 
     // Determine stroke width for caching
     const stroke_w: ?f32 = if (svg_data.stroke_color != null)
@@ -266,7 +266,7 @@ fn renderSvg(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         null;
 
     // Get from atlas (rasterizes if not cached)
-    const cached = gooey_ctx.svg_atlas.*.getOrRasterize(
+    const cached = window_ctx.svg_atlas.*.getOrRasterize(
         svg_data.path,
         svg_data.viewbox,
         @max(b.width, b.height),
@@ -306,15 +306,15 @@ fn renderSvg(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         stroke_col,
     );
 
-    try gooey_ctx.scene.insertSvgClipped(instance);
+    try window_ctx.scene.insertSvgClipped(instance);
 }
 
 /// Render image with atlas caching and fit modes
 /// On WASM, handles async loading transparently - shows placeholder while loading
-fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const img_data = cmd.data.image;
     const b = cmd.bounding_box;
-    const scale_factor = gooey_ctx.scale_factor;
+    const scale_factor = window_ctx.scale_factor;
 
     // Detect source type
     const is_url = isUrlSource(img_data.source);
@@ -347,23 +347,23 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         // assert inside ensureWasmImageLoading. Matches the silent-drop
         // behaviour of ensureNativeUrlLoading for parity across platforms.
         if (is_url and img_data.source.len > image_mod.loader.MAX_URL_LENGTH) {
-            try renderImagePlaceholder(gooey_ctx, cmd);
+            try renderImagePlaceholder(window_ctx, cmd);
             return;
         }
         // Check if already cached
-        if (gooey_ctx.image_atlas.*.get(key) == null) {
+        if (window_ctx.image_atlas.*.get(key) == null) {
             // Not cached - check/start async load
-            const status = ensureWasmImageLoading(img_data.source, key, gooey_ctx);
+            const status = ensureWasmImageLoading(img_data.source, key, window_ctx);
 
             switch (status) {
                 .loading, .not_started => {
                     // Show placeholder while loading
-                    try renderImagePlaceholder(gooey_ctx, cmd);
+                    try renderImagePlaceholder(window_ctx, cmd);
                     return;
                 },
                 .failed => {
                     // Show error placeholder
-                    try renderImageError(gooey_ctx, cmd);
+                    try renderImageError(window_ctx, cmd);
                     return;
                 },
                 .cached => {}, // Continue to normal rendering
@@ -379,15 +379,15 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
     // failures go there), so `ensureNativeUrlLoading` will kick off a fresh
     // fetch — the correct behavior. The only visible effect to the user is a
     // brief placeholder flash while the refetch completes.
-    const cached = gooey_ctx.image_atlas.*.get(key) orelse blk: {
+    const cached = window_ctx.image_atlas.*.get(key) orelse blk: {
         if (is_url) {
             // Known-failed URLs show an error placeholder rather than a loading
             // placeholder — otherwise the user sees a perpetual "loading" state
             // for a URL that will never succeed. A URL reaches the failed set
             // only after `MAX_FETCH_ATTEMPTS` transient failures or a single
             // permanent error — see `loadFromUrl` for the retry policy.
-            if (!is_wasm and gooey_ctx.isImageLoadFailed(key.source_hash)) {
-                try renderImageError(gooey_ctx, cmd);
+            if (!is_wasm and window_ctx.isImageLoadFailed(key.source_hash)) {
+                try renderImageError(window_ctx, cmd);
                 return;
             }
             // Kick off background fetch if not already in flight (native only).
@@ -396,20 +396,20 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
             // here is only a safety net for a second-lookup race where the
             // first-block cache check reported `.cached` but the atlas entry
             // is gone by the time we re-check below.
-            if (!is_wasm) ensureNativeUrlLoading(gooey_ctx, img_data.source, key);
-            try renderImagePlaceholder(gooey_ctx, cmd);
+            if (!is_wasm) ensureNativeUrlLoading(window_ctx, img_data.source, key);
+            try renderImagePlaceholder(window_ctx, cmd);
             return;
         }
         if (is_wasm) return; // WASM uses async loading in the `is_wasm` block above
 
         var decoded = image_mod.loader.loadFromPath(
-            gooey_ctx.allocator,
+            window_ctx.allocator,
             img_data.source,
-            gooey_ctx.io,
+            window_ctx.io,
         ) catch return;
         defer decoded.deinit();
 
-        break :blk gooey_ctx.image_atlas.*.cacheImage(key, decoded.toImageData()) catch return;
+        break :blk window_ctx.image_atlas.*.cacheImage(key, decoded.toImageData()) catch return;
     };
 
     if (cached.region.width == 0) return;
@@ -465,13 +465,13 @@ fn renderImage(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         );
     }
 
-    try gooey_ctx.scene.insertImageClipped(instance);
+    try window_ctx.scene.insertImageClipped(instance);
 }
 
 /// Start a scissor (clip) region
-fn renderScissorStart(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderScissorStart(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const scissor = cmd.data.scissor_start;
-    try gooey_ctx.scene.pushClip(.{
+    try window_ctx.scene.pushClip(.{
         .x = scissor.clip_bounds.x,
         .y = scissor.clip_bounds.y,
         .width = scissor.clip_bounds.width,
@@ -480,8 +480,8 @@ fn renderScissorStart(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 }
 
 /// End the current scissor (clip) region
-fn renderScissorEnd(gooey_ctx: *Gooey) void {
-    gooey_ctx.scene.popClip();
+fn renderScissorEnd(window_ctx: *Window) void {
+    window_ctx.scene.popClip();
 }
 
 // =============================================================================
@@ -512,10 +512,10 @@ inline fn isUrlSource(source: []const u8) bool {
 /// Kick off an async URL image fetch if not already in flight (native only).
 ///
 /// The background task fetches the URL via std.http.Client, decodes the image,
-/// and pushes an ImageLoadResult into the Gooey image load queue. The queue is
+/// and pushes an ImageLoadResult into the Window image load queue. The queue is
 /// drained each frame in beginFrame, which caches decoded pixels into the atlas.
 /// Subsequent frames find the image in the atlas cache and render it normally.
-fn ensureNativeUrlLoading(gooey_ctx: *Gooey, source: []const u8, key: image_mod.ImageKey) void {
+fn ensureNativeUrlLoading(window_ctx: *Window, source: []const u8, key: image_mod.ImageKey) void {
     std.debug.assert(source.len > 0);
     std.debug.assert(isUrlSource(source));
 
@@ -531,7 +531,7 @@ fn ensureNativeUrlLoading(gooey_ctx: *Gooey, source: []const u8, key: image_mod.
     // Return value (`true` if a fetch was actually launched) is ignored:
     // the next frame's drain will surface the result either way, and the
     // render path has no use for the launch signal.
-    _ = gooey_ctx.image_loader.enqueueIfRoom(source, key);
+    _ = window_ctx.image_loader.enqueueIfRoom(source, key);
 }
 
 /// Snap coordinates to device pixel grid for crisp rendering
@@ -546,7 +546,7 @@ inline fn snapToPixelGrid(x: f32, y: f32, scale_factor: f32) SnappedPosition {
 }
 
 /// Render a placeholder box while image is loading
-fn renderImagePlaceholder(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderImagePlaceholder(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const img_data = cmd.data.image;
     const b = cmd.bounding_box;
 
@@ -567,15 +567,15 @@ fn renderImagePlaceholder(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !voi
         } else .{},
     };
 
-    if (gooey_ctx.scene.hasActiveClip()) {
-        try gooey_ctx.scene.insertQuadClipped(quad);
+    if (window_ctx.scene.hasActiveClip()) {
+        try window_ctx.scene.insertQuadClipped(quad);
     } else {
-        try gooey_ctx.scene.insertQuad(quad);
+        try window_ctx.scene.insertQuad(quad);
     }
 }
 
 /// Render an error indicator when image fails to load
-fn renderImageError(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
+fn renderImageError(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const img_data = cmd.data.image;
     const b = cmd.bounding_box;
 
@@ -597,10 +597,10 @@ fn renderImageError(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
         } else .{},
     };
 
-    if (gooey_ctx.scene.hasActiveClip()) {
-        try gooey_ctx.scene.insertQuadClipped(quad);
+    if (window_ctx.scene.hasActiveClip()) {
+        try window_ctx.scene.insertQuadClipped(quad);
     } else {
-        try gooey_ctx.scene.insertQuad(quad);
+        try window_ctx.scene.insertQuad(quad);
     }
 }
 
@@ -615,7 +615,7 @@ fn renderImageError(gooey_ctx: *Gooey, cmd: layout_mod.RenderCommand) !void {
 const MAX_SOURCE_PATH_LEN: usize = @as(usize, image_mod.loader.MAX_URL_LENGTH);
 
 /// Ensure an image is loading on WASM (starts load if not already in progress)
-fn ensureWasmImageLoading(source: []const u8, key: image_mod.ImageKey, gooey_ctx: *Gooey) LoadStatus {
+fn ensureWasmImageLoading(source: []const u8, key: image_mod.ImageKey, window_ctx: *Window) LoadStatus {
     // Assert source validity (per CLAUDE.md: minimum 2 assertions per function)
     std.debug.assert(source.len > 0); // Source must not be empty
     std.debug.assert(source.len <= MAX_SOURCE_PATH_LEN); // Source path/URL must be reasonable length
@@ -624,11 +624,11 @@ fn ensureWasmImageLoading(source: []const u8, key: image_mod.ImageKey, gooey_ctx
 
     // Initialize if needed
     if (!g_wasm_loader_initialized) {
-        initWasmImageLoader(gooey_ctx.allocator);
+        initWasmImageLoader(window_ctx.allocator);
     }
 
     // Check if already cached in atlas
-    if (gooey_ctx.image_atlas.*.contains(key)) {
+    if (window_ctx.image_atlas.*.contains(key)) {
         // Clean up any stale pending entry
         _ = g_pending_loads.remove(key);
         return .cached;
@@ -646,7 +646,7 @@ fn ensureWasmImageLoading(source: []const u8, key: image_mod.ImageKey, gooey_ctx
     }
 
     // Store context for callback
-    g_gooey_ctx = gooey_ctx;
+    g_window_ctx = window_ctx;
 
     // Start async fetch
     const request_id = wasm_loader.loadFromUrlAsync(source, onWasmImageLoaded) orelse {
@@ -703,8 +703,8 @@ fn onWasmImageLoaded(request_id: u32, result: ?wasm_loader.DecodedImage) void {
 
         // Cache the decoded image
         var cache_success = false;
-        if (g_gooey_ctx) |gooey_ctx| {
-            cache_success = if (gooey_ctx.image_atlas.*.cacheRgba(
+        if (g_window_ctx) |window_ctx| {
+            cache_success = if (window_ctx.image_atlas.*.cacheRgba(
                 key,
                 decoded.width,
                 decoded.height,
@@ -713,7 +713,7 @@ fn onWasmImageLoaded(request_id: u32, result: ?wasm_loader.DecodedImage) void {
 
             // Request redraw to show the loaded image
             if (cache_success) {
-                gooey_ctx.requestRender();
+                window_ctx.requestRender();
             }
         }
 

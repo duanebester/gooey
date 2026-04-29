@@ -62,13 +62,13 @@ pub const Entities = struct {
     /// Create a new entity with the given initial value. Returns a
     /// typed `Entity(T)` handle that can be passed to `read`, `write`,
     /// or `context`. The entity stays alive until explicitly removed
-    /// (or until `Gooey.deinit` runs).
+    /// (or until `Window.deinit` runs).
     pub fn create(
         self: *Entities,
         comptime T: type,
         value: T,
     ) !Entity(T) {
-        return self.cx()._gooey.entities.new(T, value);
+        return self.cx()._window.entities.new(T, value);
     }
 
     // =========================================================================
@@ -84,7 +84,7 @@ pub const Entities = struct {
         comptime T: type,
         entity: Entity(T),
     ) ?*const T {
-        return self.cx()._gooey.readEntity(T, entity);
+        return self.cx()._window.readEntity(T, entity);
     }
 
     /// Write to an entity's data (mutable). Returns `null` if the
@@ -94,7 +94,7 @@ pub const Entities = struct {
         comptime T: type,
         entity: Entity(T),
     ) ?*T {
-        return self.cx()._gooey.writeEntity(T, entity);
+        return self.cx()._window.writeEntity(T, entity);
     }
 
     /// Get an entity-scoped context for handlers. Returns `null` if
@@ -107,10 +107,10 @@ pub const Entities = struct {
         entity: Entity(T),
     ) ?EntityContext(T) {
         const c = self.cx();
-        if (!c._gooey.entities.exists(entity.id)) return null;
+        if (!c._window.entities.exists(entity.id)) return null;
         return EntityContext(T){
-            .gooey = c._gooey,
-            .entities = &c._gooey.entities,
+            .window = c._window,
+            .entities = &c._window.entities,
             .entity_id = entity.id,
         };
     }
@@ -122,7 +122,7 @@ pub const Entities = struct {
     /// Attach a cancellation group to an entity.
     ///
     /// When the entity is removed (via `EntityContext.remove`,
-    /// `EntityMap.remove`, or during `Gooey.deinit`), the group is
+    /// `EntityMap.remove`, or during `Window.deinit`), the group is
     /// cancelled automatically. This prevents use-after-free from
     /// background tasks that reference entity data.
     ///
@@ -133,13 +133,13 @@ pub const Entities = struct {
         id: EntityId,
         group: *std.Io.Group,
     ) void {
-        self.cx()._gooey.entities.attachCancelGroup(id, group);
+        self.cx()._window.entities.attachCancelGroup(id, group);
     }
 
     /// Detach a cancellation group from an entity without cancelling
     /// it. Use when the async work has completed normally and the
     /// group should no longer be auto-cancelled on entity removal.
     pub fn detachCancel(self: *Entities, id: EntityId) void {
-        self.cx()._gooey.entities.detachCancelGroup(id);
+        self.cx()._window.entities.detachCancelGroup(id);
     }
 };

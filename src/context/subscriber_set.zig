@@ -3,13 +3,13 @@
 //!
 //! Rationale (cleanup item #8 in `docs/architectural-cleanup-plan.md`):
 //!
-//! Five distinct ad-hoc registries on `Gooey` all share the same shape:
+//! Five distinct ad-hoc registries on `Window` (formerly `Gooey`) all share the same shape:
 //!
 //!   - `blur_handlers: [64]?BlurHandlerEntry`     (FocusId → BlurCallback)
 //!   - `cancel_groups: [64]*Io.Group`              (() → *Io.Group)
 //!   - `pending_image_hashes: [64]u64`             (folded into AssetCache PR1)
 //!   - `failed_image_hashes:  [128]u64`            (folded into AssetCache PR1)
-//!   - `deferred_commands:   [32]DeferredCommand`  (kept on Gooey for now)
+//!   - `deferred_commands:   [32]DeferredCommand`  (kept on Window for now)
 //!
 //! Rather than copy-paste the same swap-remove / iterate / capacity-cap
 //! logic into each, this generic owns the slot-map invariants once and

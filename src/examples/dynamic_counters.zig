@@ -52,10 +52,10 @@ const AppState = struct {
     next_label: u8 = 'A',
 
     // =========================================================================
-    // Command methods - use with cx.command() (need Gooey access)
+    // Command methods - use with cx.command() (need Window access)
     // =========================================================================
 
-    pub fn addCounter(self: *AppState, g: *gooey.Gooey) void {
+    pub fn addCounter(self: *AppState, g: *gooey.Window) void {
         if (self.counter_count >= 10) return;
 
         const label: []const u8 = switch (self.next_label) {
@@ -78,7 +78,7 @@ const AppState = struct {
         self.next_label += 1;
     }
 
-    pub fn removeCounter(self: *AppState, g: *gooey.Gooey) void {
+    pub fn removeCounter(self: *AppState, g: *gooey.Window) void {
         if (self.counter_count == 0) return;
 
         self.counter_count -= 1;
@@ -105,7 +105,7 @@ const CounterCard = struct {
     counter: gooey.Entity(Counter),
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const g = cx.gooey();
+        const g = cx.window();
         const data = g.readEntity(Counter, self.counter) orelse return;
 
         cx.render(ui.box(.{
@@ -146,7 +146,7 @@ const CounterButtons = struct {
 const TotalDisplay = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
-        const g = cx.gooey();
+        const g = cx.window();
 
         var total: i32 = 0;
         for (s.countersSlice()) |counter_entity| {

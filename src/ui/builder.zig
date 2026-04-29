@@ -18,11 +18,11 @@ const action_mod = @import("../input/actions.zig");
 const actionTypeId = action_mod.actionTypeId;
 const handler_mod = @import("../context/handler.zig");
 const entity_mod = @import("../context/entity.zig");
-const gooey_mod = @import("../context/gooey.zig");
+const window_mod = @import("../context/window.zig");
 const drag_mod = @import("../context/drag.zig");
 pub const HandlerRef = handler_mod.HandlerRef;
 pub const EntityId = entity_mod.EntityId;
-pub const Gooey = gooey_mod.Gooey;
+pub const Window = window_mod.Window;
 
 // Accessibility
 const a11y = @import("../accessibility/accessibility.zig");
@@ -169,7 +169,7 @@ pub const Builder = struct {
     allocator: std.mem.Allocator,
     layout: *LayoutEngine,
     scene: *Scene,
-    gooey: ?*Gooey = null,
+    window: ?*Window = null,
     id_counter: u32 = 0,
 
     /// Dispatch tree for event routing (built alongside layout)
@@ -185,11 +185,11 @@ pub const Builder = struct {
 
     // PR 6 — theme storage moved into `gooey.globals`. The Builder
     // no longer caches a `*const Theme`; `setTheme` writes through to
-    // the type-keyed registry on the parent `Gooey` and `theme()`
+    // the type-keyed registry on the parent `Window` and `theme()`
     // reads back from the same slot. Rationale: collapses two parallel
     // stores (Builder.theme_ptr + the future Globals slot the cleanup
     // plan calls for) into one. See `docs/cleanup-implementation-plan.md`
-    // PR 6 — `Move keymap, theme, debugger pointer out of Gooey/Builder
+    // PR 6 — `Move keymap, theme, debugger pointer out of Window/Builder
     // into globals`.
 
     /// Pending input IDs to be rendered (collected during layout, rendered after)
@@ -316,14 +316,14 @@ pub const Builder = struct {
     /// growing the table — same behaviour the old `theme_ptr`
     /// assignment had, just routed through the type-keyed store.
     ///
-    /// Asserts `self.gooey` is wired. Every code path that builds a
+    /// Asserts `self.window` is wired. Every code path that builds a
     /// frame (`Cx.setTheme`, the runtime drivers) goes through a
-    /// `Gooey`-attached builder; a null parent here is a framework
+    /// `Window`-attached builder; a null parent here is a framework
     /// bug, not a runtime fallback.
     pub fn setTheme(self: *Self, t: *const Theme) void {
-        const g = self.gooey orelse {
+        const g = self.window orelse {
             std.debug.panic(
-                "Builder.setTheme: builder has no parent Gooey; cannot route theme through globals",
+                "Builder.setTheme: builder has no parent Window; cannot route theme through globals",
                 .{},
             );
         };
@@ -338,7 +338,7 @@ pub const Builder = struct {
     /// stood up bare for a unit test) — fall back to `&Theme.light`
     /// in that case so the component path stays branch-free.
     pub fn theme(self: *Self) *const Theme {
-        const g = self.gooey orelse return &Theme.light;
+        const g = self.window orelse return &Theme.light;
         return g.globals.getConst(Theme) orelse &Theme.light;
     }
 
@@ -373,8 +373,8 @@ pub const Builder = struct {
 
     /// Get an EntityContext for an entity from within a component's render method.
     ///
-    /// This is a convenience that combines `b.gooey` access with entity context creation,
-    /// eliminating the need for global Gooey references in entity-based components.
+    /// This is a convenience that combines `b.window` access with entity context creation,
+    /// eliminating the need for global Window references in entity-based components.
     ///
     /// ## Example
     ///
@@ -397,29 +397,29 @@ pub const Builder = struct {
         comptime T: type,
         entity: entity_mod.Entity(T),
     ) ?entity_mod.EntityContext(T) {
-        const g = self.gooey orelse return null;
+        const g = self.window orelse return null;
         return entity.context(g);
     }
 
-    /// Get the Gooey instance from within a component.
+    /// Get the Window instance from within a component.
     ///
-    /// Useful for reading entity data or other Gooey operations.
-    /// Returns null if Builder wasn't initialized with a Gooey reference.
-    pub fn getGooey(self: *Self) ?*Gooey {
-        return self.gooey;
+    /// Useful for reading entity data or other Window operations.
+    /// Returns null if Builder wasn't initialized with a Window reference.
+    pub fn getGooey(self: *Self) ?*Window {
+        return self.window;
     }
 
     /// Read an entity's data directly from Builder.
     /// Convenience wrapper around gooey.readEntity().
     pub fn readEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*const T {
-        const g = self.gooey orelse return null;
+        const g = self.window orelse return null;
         return g.readEntity(T, entity);
     }
 
     /// Write to an entity's data directly from Builder.
     /// Convenience wrapper around gooey.writeEntity().
     pub fn writeEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*T {
-        const g = self.gooey orelse return null;
+        const g = self.window orelse return null;
         return g.writeEntity(T, entity);
     }
 
@@ -442,7 +442,7 @@ pub const Builder = struct {
     /// // ... render visual element ...
     /// ```
     pub fn accessible(self: *Self, config: AccessibleConfig) bool {
-        const g = self.gooey orelse return false;
+        const g = self.window orelse return false;
         if (!g.a11y.isEnabled()) return false;
 
         // Phase 3: Auto-inject focus state from FocusManager
@@ -500,7 +500,7 @@ pub const Builder = struct {
     /// End current accessible element.
     /// Must be called after accessible() returns true.
     pub fn accessibleEnd(self: *Self) void {
-        const g = self.gooey orelse return;
+        const g = self.window orelse return;
         if (g.a11y.isEnabled()) {
             g.a11y.getTree().popElement();
         }
@@ -515,13 +515,13 @@ pub const Builder = struct {
     /// b.announce("Error: connection lost", .assertive);
     /// ```
     pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
-        const g = self.gooey orelse return;
+        const g = self.window orelse return;
         g.a11y.announce(message, priority);
     }
 
     /// Check if accessibility is currently enabled
     pub fn isA11yEnabled(self: *Self) bool {
-        const g = self.gooey orelse return false;
+        const g = self.window orelse return false;
         return g.a11y.isEnabled();
     }
 
@@ -576,13 +576,13 @@ pub const Builder = struct {
         self.dispatch.setLayoutId(layout_id.id);
 
         // Resolve hover styles - check if this element is currently hovered
-        const is_hovered = if (self.gooey) |g|
+        const is_hovered = if (self.window) |g|
             g.isHovered(layout_id.id)
         else
             false;
 
         // Check if this is a valid drag-over target
-        const is_drag_over = if (self.gooey) |g| blk: {
+        const is_drag_over = if (self.window) |g| blk: {
             if (g.active_drag) |drag| {
                 if (props.drop_target) |drop| {
                     // Type must match AND cursor must be over this element
@@ -916,7 +916,7 @@ pub const Builder = struct {
         // Get scroll offset from retained widget
         var scroll_offset_x: f32 = 0;
         var scroll_offset_y: f32 = 0;
-        if (self.gooey) |g| {
+        if (self.window) |g| {
             if (g.widgets.scrollContainer(id)) |sc| {
                 scroll_offset_x = sc.state.offset_x;
                 scroll_offset_y = sc.state.offset_y;
@@ -1082,7 +1082,7 @@ pub const Builder = struct {
                 const vp_content = viewport_content.?;
                 const ct = content_bounds.?;
 
-                if (self.gooey) |g| {
+                if (self.window) |g| {
                     if (g.widgets.scrollContainer(pending.id)) |sc| {
                         // Update bounds (full bounding box for hit testing)
                         sc.bounds = .{
@@ -1255,7 +1255,7 @@ pub const Builder = struct {
         // Check if this input is focused (for border color) - disabled inputs are never focused
         const is_focused = if (inp.style.disabled)
             false
-        else if (self.gooey) |g|
+        else if (self.window) |g|
             if (g.widgets.textInput(inp.id)) |ti| ti.isFocused() else false
         else
             false;
@@ -1264,7 +1264,7 @@ pub const Builder = struct {
         const chrome = (inp.style.padding + inp.style.border_width) * 2;
         const input_height = inp.style.height orelse blk: {
             // Auto-size: get line height from font metrics
-            const line_height = if (self.gooey) |g|
+            const line_height = if (self.window) |g|
                 if (g.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0; // Fallback
@@ -1316,7 +1316,7 @@ pub const Builder = struct {
         // the widget type. The widget pointer is stable across frames
         // (heap-allocated once per id by `WidgetStore`).
         if (!inp.style.disabled) {
-            if (self.gooey) |g| {
+            if (self.window) |g| {
                 var handle = FocusHandle.init(inp.id)
                     .tabIndex(inp.style.tab_index)
                     .tabStop(inp.style.tab_stop);
@@ -1342,7 +1342,7 @@ pub const Builder = struct {
         self.dispatch.setFocusable(focus_id);
 
         // Check if this textarea is focused (for border color)
-        const is_focused = if (self.gooey) |g|
+        const is_focused = if (self.window) |g|
             if (g.widgets.textArea(ta.id)) |text_area| text_area.isFocused() else false
         else
             false;
@@ -1350,7 +1350,7 @@ pub const Builder = struct {
         // Calculate height: use explicit height or auto-size from rows * line_height
         const chrome = (ta.style.padding + ta.style.border_width) * 2;
         const textarea_height = ta.style.height orelse blk: {
-            const line_height = if (self.gooey) |g|
+            const line_height = if (self.window) |g|
                 if (g.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0;
@@ -1400,7 +1400,7 @@ pub const Builder = struct {
         // `Focusable` vtable so the focus manager can drive the
         // `TextArea`'s `focus()` / `blur()` through the trait without
         // importing the widget type into `context/`.
-        if (self.gooey) |g| {
+        if (self.window) |g| {
             var handle = FocusHandle.init(ta.id)
                 .tabIndex(ta.style.tab_index)
                 .tabStop(ta.style.tab_stop);
@@ -1428,7 +1428,7 @@ pub const Builder = struct {
         self.dispatch.setFocusable(focus_id);
 
         // Check if this code editor is focused (for border color)
-        const is_focused = if (self.gooey) |g|
+        const is_focused = if (self.window) |g|
             if (g.widgets.codeEditor(ce.id)) |editor| editor.isFocused() else false
         else
             false;
@@ -1436,7 +1436,7 @@ pub const Builder = struct {
         // Calculate height: use explicit height or auto-size from rows * line_height
         const chrome = (ce.style.padding + ce.style.border_width) * 2;
         const editor_height = ce.style.height orelse blk: {
-            const line_height = if (self.gooey) |g|
+            const line_height = if (self.window) |g|
                 if (g.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0;
@@ -1485,7 +1485,7 @@ pub const Builder = struct {
         // `Focusable` vtable — same pattern as `renderInput` /
         // `renderTextArea` above. The vtable lives in static storage,
         // shared by all `CodeEditorState` instances.
-        if (self.gooey) |g| {
+        if (self.window) |g| {
             var handle = FocusHandle.init(ce.id)
                 .tabIndex(ce.style.tab_index)
                 .tabStop(ce.style.tab_stop);
@@ -1522,7 +1522,7 @@ pub const Builder = struct {
 
         // Check hover state
         const is_hovered = btn.style.enabled and
-            if (self.gooey) |g| g.isHovered(layout_id.id) else false;
+            if (self.window) |g| g.isHovered(layout_id.id) else false;
 
         const bg = switch (btn.style.style) {
             .primary => if (!btn.style.enabled)
@@ -1586,7 +1586,7 @@ pub const Builder = struct {
 
         // Check hover state
         const is_hovered = btn.style.enabled and
-            if (self.gooey) |g| g.isHovered(layout_id.id) else false;
+            if (self.window) |g| g.isHovered(layout_id.id) else false;
 
         const bg = switch (btn.style.style) {
             .primary => if (!btn.style.enabled)

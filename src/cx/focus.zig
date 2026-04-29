@@ -11,7 +11,7 @@
 //! The redundant `focus` / `Focused` prefix is dropped now that the
 //! namespace carries the grouping. `focusTextField` and
 //! `focusTextArea` collapse onto a single `widget(id)` call because
-//! both routed through `Gooey.focusWidget` already (the per-type
+//! both routed through `Window.focusWidget` already (the per-type
 //! distinction was vestigial after PR 4 broke the backward edges).
 //!
 //! | Old                          | New                              |
@@ -54,17 +54,17 @@ pub const Focus = struct {
 
     /// Move focus to the next focusable element in tab order. The
     /// previously-focused widget receives a `blur` notification first
-    /// — that ordering is owned by `Gooey.focusNext`, which fires the
+    /// — that ordering is owned by `Window.focusNext`, which fires the
     /// blur handler before flipping the `Focusable` vtable's
     /// `focused` flag.
     pub fn next(self: *Focus) void {
-        self.cx()._gooey.focusNext();
+        self.cx()._window.focusNext();
     }
 
     /// Move focus to the previous focusable element in tab order.
     /// Mirrors `next` exactly except for the traversal direction.
     pub fn prev(self: *Focus) void {
-        self.cx()._gooey.focusPrev();
+        self.cx()._window.focusPrev();
     }
 
     // =========================================================================
@@ -75,21 +75,21 @@ pub const Focus = struct {
     /// receives a `blur` notification through its `Focusable` vtable
     /// — no walk over per-type widget maps required (PR 4).
     pub fn blurAll(self: *Focus) void {
-        self.cx()._gooey.blurAll();
+        self.cx()._window.blurAll();
     }
 
     /// Focus a specific widget by string id.
     ///
     /// Replaces the historical `focusTextField` / `focusTextArea`
-    /// pair: both routed through `Gooey.focusWidget` already, and the
+    /// pair: both routed through `Window.focusWidget` already, and the
     /// per-type distinction was vestigial after PR 4 broke the
-    /// backward edges from `Gooey` into the widget store. Callers
+    /// backward edges from `Window` into the widget store. Callers
     /// pass the id they registered the widget with (text input, text
     /// area, code editor, or any other `Focusable`) and the focus
     /// manager dispatches through the trait.
     pub fn widget(self: *Focus, id: []const u8) void {
         std.debug.assert(id.len > 0);
-        self.cx()._gooey.focusWidget(id);
+        self.cx()._window.focusWidget(id);
     }
 
     // =========================================================================
@@ -102,6 +102,6 @@ pub const Focus = struct {
     /// of element count.
     pub fn isElementFocused(self: *Focus, id: []const u8) bool {
         std.debug.assert(id.len > 0);
-        return self.cx()._gooey.isElementFocused(id);
+        return self.cx()._window.isElementFocused(id);
     }
 };

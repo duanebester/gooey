@@ -1028,7 +1028,7 @@ fn computePadding(style: DataTableStyle) Padding {
 
 /// Sync scroll state between DataTableState and retained ScrollContainer
 pub fn syncScroll(b: *Builder, id: []const u8, state: *DataTableState) void {
-    const g = b.gooey orelse return;
+    const g = b.window orelse return;
     const sc = g.widgets.scrollContainer(id) orelse return;
 
     // Update viewport dimensions FIRST so calculations are accurate

@@ -1,4 +1,4 @@
-//! Gooey - Unified UI Context
+//! Window - Unified UI Context
 //!
 //! Central context for the UI framework, managing layout, rendering, widgets,
 //! focus, and event dispatch.
@@ -12,7 +12,7 @@
 //!
 //! Example:
 //! ```zig
-//! var ui = try Gooey.init(allocator, window, &layout_engine, &scene, &text_system);
+//! var ui = try Window.init(allocator, window, &layout_engine, &scene, &text_system);
 //! defer ui.deinit();
 //!
 //! // In render callback:
@@ -25,7 +25,7 @@
 //! ## PR 3 — context/ subsystem extractions
 //!
 //! Per `docs/cleanup-implementation-plan.md` PR 3, four subsystems that were
-//! previously bolted directly onto `Gooey` now live as peer modules:
+//! previously bolted directly onto `Window` now live as peer modules:
 //!
 //!   - `hover: HoverState`        — see `hover.zig`         (was 6 fields here)
 //!   - `blur_handlers: BlurHandlerRegistry` — see `blur_handlers.zig`
@@ -36,11 +36,11 @@
 //! generic `SubscriberSet` (cleanup item #8) — two distinct call shapes
 //! validating the trait before PR 8 leans on it for `element_states`.
 //!
-//! No public API change: every method that previously sat on `Gooey`
+//! No public API change: every method that previously sat on `Window`
 //! (`updateHover`, `registerBlurHandler`, `registerCancelGroup`,
 //! `isA11yEnabled`, …) is preserved as a one-line forwarder. Internal
 //! framework callers (`runtime/*.zig`, `ui/builder.zig`) reach into the
-//! sub-fields directly via `gooey.hover.*` / `gooey.a11y.*` / etc.
+//! sub-fields directly via `window.hover.*` / `window.a11y.*` / etc.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -108,9 +108,9 @@ const WidgetStore = widget_store_mod.WidgetStore;
 // PR 4 — break the `context → widgets` backward edge.
 //
 // Concrete widget state types (`TextInput`, `TextArea`, `CodeEditorState`)
-// no longer leak into `Gooey`. Focus is driven through the `Focusable`
+// no longer leak into `Window`. Focus is driven through the `Focusable`
 // vtable in `context/focus.zig`, and direct widget access goes through
-// `gooey.widgets.*` from callers higher up the stack (`runtime/`, `cx.zig`,
+// `window.widgets.*` from callers higher up the stack (`runtime/`, `cx.zig`,
 // user examples). See `docs/cleanup-implementation-plan.md` PR 4 and the
 // cleanup direction in `docs/architectural-cleanup-plan.md` §4.
 
@@ -146,7 +146,7 @@ pub const DragState = drag_mod.DragState;
 const geometry = @import("../core/geometry.zig");
 const Point = geometry.Point;
 
-// Extracted subsystems (PR 3). Body lives in the named files; `Gooey`
+// Extracted subsystems (PR 3). Body lives in the named files; `Window`
 // composes them as ordinary fields.
 const hover_mod = @import("hover.zig");
 const HoverState = hover_mod.HoverState;
@@ -160,7 +160,7 @@ const A11ySystem = a11y_system_mod.A11ySystem;
 // PR 7a — bundled rendering resources (text + svg + image) with a
 // single ownership flag. See `app_resources.zig` and
 // `docs/cleanup-implementation-plan.md` PR 7a. Retires the
-// per-field `*_owned: bool` triplet on `Gooey`.
+// per-field `*_owned: bool` triplet on `Window`.
 const app_resources_mod = @import("app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
@@ -174,7 +174,7 @@ pub const DrawPhase = draw_phase_mod.DrawPhase;
 
 // PR 6 — type-keyed singleton storage for cross-cutting state
 // (`Keymap`, `Debugger`, future: `*const Theme`, settings, telemetry).
-// Lifts these off `Gooey`'s direct field list so adding a new global
+// Lifts these off `Window`'s direct field list so adding a new global
 // is a one-line `setOwned` at init rather than a sweep across four
 // init paths plus `deinit`. See `src/context/global.zig`.
 const global_mod = @import("global.zig");
@@ -184,7 +184,7 @@ const Globals = global_mod.Globals;
 // Local infrastructure (deferred command queue)
 // =============================================================================
 //
-// The deferred-command queue stays on `Gooey` — unlike the four registries
+// The deferred-command queue stays on `Window` — unlike the four registries
 // extracted in PR 3, it is not a self-contained subsystem; it reaches into
 // the root-state pointer and the render-request flag every flush. Pulling
 // it out would require dragging both back through a parameter list.
@@ -192,7 +192,7 @@ const Globals = global_mod.Globals;
 const MAX_DEFERRED_COMMANDS = 32;
 
 const DeferredCommand = struct {
-    callback: *const fn (*Gooey, u64) void,
+    callback: *const fn (*Window, u64) void,
     packed_arg: u64,
 };
 
@@ -235,8 +235,8 @@ pub const FontConfig = struct {
     pub const default = FontConfig{};
 };
 
-/// Gooey - unified UI context
-pub const Gooey = struct {
+/// Window - unified UI context
+pub const Window = struct {
     allocator: std.mem.Allocator,
     // IO interface (Zig 0.16 std.Io — replaces ad-hoc global_single_threaded calls).
     // Threaded through the framework from main(); see cx.io() accessor.
@@ -258,17 +258,17 @@ pub const Gooey = struct {
     /// the previous `text_system_owned` / `svg_atlas_owned` /
     /// `image_atlas_owned` flag triplet on this struct. Default
     /// `undefined` so test fixtures that omit it
-    /// (`testGooey` below) keep compiling without explicit
+    /// (`testWindow` below) keep compiling without explicit
     /// initialisation. See `app_resources.zig` and
     /// `docs/cleanup-implementation-plan.md` PR 7a.
     resources: AppResources = undefined,
 
     /// Back-compat alias — mirrors `resources.text_system` so the
-    /// 124 existing `gooey.text_system` call sites keep working
+    /// 124 existing `window.text_system` call sites keep working
     /// across the PR 7a landing. Set once at init from the same
     /// heap address that `resources.text_system` points at; never
     /// mutated post-init. PR 7b will rewrite call sites to
-    /// `gooey.resources.text_system` and retire this alias.
+    /// `window.resources.text_system` and retire this alias.
     text_system: *TextSystem,
 
     /// Back-compat alias — see `text_system` doc-comment.
@@ -286,7 +286,7 @@ pub const Gooey = struct {
     /// Hover state (PR 3 extraction — see `hover.zig`).
     /// Owns: hovered layout id, last cursor pos, ancestor chain cache,
     /// hover-changed latch. Public field — internal callers reach in
-    /// via `gooey.hover.*` to avoid yet another forwarder layer.
+    /// via `window.hover.*` to avoid yet another forwarder layer.
     hover: HoverState = .{},
 
     // Drag & Drop state
@@ -298,7 +298,7 @@ pub const Gooey = struct {
     drag_over_target: ?u32 = null,
 
     // PR 6 — `debugger` lives in `globals` now. Access via
-    // `gooey.debugger()`. The accessor reads from the type-keyed
+    // `window.debugger()`. The accessor reads from the type-keyed
     // store; one indirection vs. a direct field, but it removes the
     // last hard-coded singleton from the struct surface and makes
     // adding future globals (settings, telemetry) a one-liner.
@@ -307,7 +307,7 @@ pub const Gooey = struct {
     dispatch: *DispatchTree,
 
     // PR 6 — `keymap` lives in `globals` now. Access via
-    // `gooey.keymap()`. Same rationale as the `debugger` migration
+    // `window.keymap()`. Same rationale as the `debugger` migration
     // above; both share the same `Globals.setOwned` registration in
     // every `init*` path.
 
@@ -329,8 +329,16 @@ pub const Gooey = struct {
     /// Entity storage for GPUI-style state management
     entities: EntityMap,
 
-    // Platform
-    window: ?*PlatformWindow,
+    // Platform — OS-level window handle (NSWindow on macOS, wl_surface
+    // on Linux, canvas on web). PR 7b.1b renamed this field from
+    // `window` to `platform_window` because the surrounding struct
+    // itself was renamed `Gooey → Window`; without this rename, every
+    // `self.window` inside `Window`'s methods would shadow the
+    // framework wrapper's name with the platform handle's name. The
+    // GPUI `App ↔ Window ↔ Context<T>` sketch in
+    // `architectural-cleanup-plan.md` §10 uses the same naming
+    // (`platform_window: PlatformWindow`).
+    platform_window: ?*PlatformWindow,
 
     // Frame state
     frame_count: u64 = 0,
@@ -373,10 +381,10 @@ pub const Gooey = struct {
     //
     // Owned subsystem (PR 1 extraction): see `src/image/loader.zig`.
     // Initialized in place so the embedded `Io.Queue`'s pointer to the
-    // backing result buffer is stable. Forwarder methods on `Gooey`
+    // backing result buffer is stable. Forwarder methods on `Window`
     // (`isImageLoadPending`, `isImageLoadFailed`, ...) preserve the call
     // surface used by `runtime/render.zig` until PR 7 reroutes call
-    // sites to `gooey.image_loader.*` directly.
+    // sites to `window.image_loader.*` directly.
     image_loader: image_mod.ImageLoader = undefined,
 
     const Self = @This();
@@ -430,9 +438,9 @@ pub const Gooey = struct {
     //
     // Body lives in `src/image/loader.zig` (`ImageLoader`). The wrappers
     // here preserve the existing call surface used by `runtime/render.zig`
-    // (`gooey_ctx.isImageLoadPending`, `gooey_ctx.isImageLoadFailed`, ...)
+    // (`window_ctx.isImageLoadPending`, `window_ctx.isImageLoadFailed`, ...)
     // so PR 1 stays a focused move. PR 7 reroutes call sites directly
-    // to `gooey.image_loader.*`.
+    // to `window.image_loader.*`.
 
     /// Re-bind the loader's queue pointer after a by-value copy.
     ///
@@ -472,7 +480,7 @@ pub const Gooey = struct {
     /// Used internally by Cx.defer().
     ///
     /// The State type is inferred from the method's first parameter.
-    /// The method should be `fn(*State, *Gooey) void`.
+    /// The method should be `fn(*State, *Window) void`.
     pub fn deferCommand(
         self: *Self,
         comptime method: anytype,
@@ -559,8 +567,8 @@ pub const Gooey = struct {
         return self.deferred_count > 0;
     }
 
-    /// Initialize Gooey creating and owning all resources
-    pub fn initOwned(allocator: std.mem.Allocator, window: *PlatformWindow, font_config: FontConfig, io: std.Io) !Self {
+    /// Initialize Window creating and owning all resources
+    pub fn initOwned(allocator: std.mem.Allocator, platform_window: *PlatformWindow, font_config: FontConfig, io: std.Io) !Self {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -579,8 +587,8 @@ pub const Gooey = struct {
 
         // Enable viewport culling with initial window size
         scene.setViewport(
-            @floatCast(window.size.width),
-            @floatCast(window.size.height),
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
         );
         scene.enableCulling();
 
@@ -593,7 +601,7 @@ pub const Gooey = struct {
         var resources = try AppResources.initOwned(
             allocator,
             io,
-            @floatCast(window.scale_factor),
+            @floatCast(platform_window.scale_factor),
             .{
                 .font_name = font_config.font_name,
                 .font_size = font_config.font_size,
@@ -631,10 +639,10 @@ pub const Gooey = struct {
             .svg_atlas = resources.svg_atlas,
             .image_atlas = resources.image_atlas,
             .widgets = WidgetStore.init(allocator, io),
-            .window = window,
-            .width = @floatCast(window.size.width),
-            .height = @floatCast(window.size.height),
-            .scale_factor = @floatCast(window.scale_factor),
+            .platform_window = platform_window,
+            .width = @floatCast(platform_window.size.width),
+            .height = @floatCast(platform_window.size.height),
+            .scale_factor = @floatCast(platform_window.scale_factor),
             // Hover state — small, by-value default is fine.
             .hover = HoverState.init(),
             // Blur handler registry — by-value init is safe (no internal pointers).
@@ -664,8 +672,8 @@ pub const Gooey = struct {
         // Initialize accessibility subsystem in place. On macOS, the
         // bridge captures the NSWindow / NSView handles passed here; on
         // other platforms they are ignored.
-        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
-        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         result.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize the image loader subsystem in place. The result is
@@ -689,18 +697,18 @@ pub const Gooey = struct {
         return result;
     }
 
-    /// Initialize Gooey in-place using out-pointer pattern.
-    /// This avoids stack overflow on WASM where the Gooey struct (~400KB with a11y)
+    /// Initialize Window in-place using out-pointer pattern.
+    /// This avoids stack overflow on WASM where the Window struct (~400KB with a11y)
     /// would exceed the default stack size if returned by value.
     ///
     /// Usage:
     /// ```
-    /// const gooey_ptr = try allocator.create(Gooey);
-    /// try gooey_ptr.initOwnedPtr(allocator, window);
+    /// const window_ptr = try allocator.create(Window);
+    /// try window_ptr.initOwnedPtr(allocator, window);
     /// ```
     /// Marked noinline to prevent stack accumulation in WASM builds.
     /// Without this, the compiler inlines all sub-functions creating a 2MB+ stack frame.
-    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, window: *PlatformWindow, font_config: FontConfig, io: std.Io) !void {
+    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, platform_window: *PlatformWindow, font_config: FontConfig, io: std.Io) !void {
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -719,8 +727,8 @@ pub const Gooey = struct {
 
         // Enable viewport culling with initial window size
         scene.setViewport(
-            @floatCast(window.size.width),
-            @floatCast(window.size.height),
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
         );
         scene.enableCulling();
 
@@ -732,7 +740,7 @@ pub const Gooey = struct {
         try self.resources.initOwnedInPlace(
             allocator,
             io,
-            @floatCast(window.scale_factor),
+            @floatCast(platform_window.scale_factor),
             .{
                 .font_name = font_config.font_name,
                 .font_size = font_config.font_size,
@@ -758,12 +766,12 @@ pub const Gooey = struct {
         self.dispatch = dispatch;
         // PR 7a — back-compat aliases mirror `self.resources.*`,
         // already initialised above. Setting them here (rather than
-        // letting them be undefined) keeps the 124 `gooey.text_system`
+        // letting them be undefined) keeps the 124 `window.text_system`
         // / etc. call sites working until PR 7b retires them.
         self.text_system = self.resources.text_system;
         self.svg_atlas = self.resources.svg_atlas;
         self.image_atlas = self.resources.image_atlas;
-        self.window = window;
+        self.platform_window = platform_window;
 
         // Small structs
         self.entities = EntityMap.init(allocator, io);
@@ -783,9 +791,9 @@ pub const Gooey = struct {
         // in the field-by-field block above. No work remains here.
 
         // Scalar fields
-        self.width = @floatCast(window.size.width);
-        self.height = @floatCast(window.size.height);
-        self.scale_factor = @floatCast(window.scale_factor);
+        self.width = @floatCast(platform_window.size.width);
+        self.height = @floatCast(platform_window.size.height);
+        self.scale_factor = @floatCast(platform_window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
         // PR 6 — `debugger` registered into `globals` below.
@@ -814,8 +822,8 @@ pub const Gooey = struct {
         // bridge dispatcher captures `&self.a11y.platform_bridge`,
         // which is correct here because `self` is at its final heap
         // address.
-        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
-        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize image loader in place — safe here because `self` is
@@ -832,12 +840,12 @@ pub const Gooey = struct {
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
-    /// Initialize Gooey with shared resources (text system, SVG atlas, image atlas).
+    /// Initialize Window with shared resources (text system, SVG atlas, image atlas).
     /// Used by MultiWindowApp to share expensive resources across windows.
     /// The caller retains ownership of the shared resources.
     pub fn initWithSharedResources(
         allocator: std.mem.Allocator,
-        window: *PlatformWindow,
+        platform_window: *PlatformWindow,
         shared_text_system: *TextSystem,
         shared_svg_atlas: *svg_mod.SvgAtlas,
         shared_image_atlas: *image_mod.ImageAtlas,
@@ -866,8 +874,8 @@ pub const Gooey = struct {
 
         // Enable viewport culling with initial window size
         scene.setViewport(
-            @floatCast(window.size.width),
-            @floatCast(window.size.height),
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
         );
         scene.enableCulling();
 
@@ -905,10 +913,10 @@ pub const Gooey = struct {
             .svg_atlas = shared_svg_atlas,
             .image_atlas = shared_image_atlas,
             .widgets = WidgetStore.init(allocator, io),
-            .window = window,
-            .width = @floatCast(window.size.width),
-            .height = @floatCast(window.size.height),
-            .scale_factor = @floatCast(window.scale_factor),
+            .platform_window = platform_window,
+            .width = @floatCast(platform_window.size.width),
+            .height = @floatCast(platform_window.size.height),
+            .scale_factor = @floatCast(platform_window.scale_factor),
             .hover = HoverState.init(),
             .blur_handlers = BlurHandlerRegistry.init(),
             .cancel_registry = CancelRegistry.init(),
@@ -920,8 +928,8 @@ pub const Gooey = struct {
         };
 
         // Initialize platform-specific accessibility bridge
-        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
-        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         result.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize the image loader against the SHARED atlas.
@@ -930,7 +938,7 @@ pub const Gooey = struct {
         // PR 6 — same globals registration as `initOwned`. The
         // shared-resources path doesn't change the lifetime of
         // `Keymap` / `Debugger` — both are still per-window, owned
-        // by this `Gooey`'s `globals`.
+        // by this `Window`'s `globals`.
         try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
         errdefer result.globals.deinit(allocator);
         try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
@@ -938,13 +946,13 @@ pub const Gooey = struct {
         return result;
     }
 
-    /// Initialize Gooey in-place with shared resources.
+    /// Initialize Window in-place with shared resources.
     /// Used by MultiWindowApp on WASM to avoid stack overflow.
     /// Marked noinline to prevent stack accumulation.
     pub noinline fn initWithSharedResourcesPtr(
         self: *Self,
         allocator: std.mem.Allocator,
-        window: *PlatformWindow,
+        platform_window: *PlatformWindow,
         shared_text_system: *TextSystem,
         shared_svg_atlas: *svg_mod.SvgAtlas,
         shared_image_atlas: *image_mod.ImageAtlas,
@@ -973,8 +981,8 @@ pub const Gooey = struct {
 
         // Enable viewport culling with initial window size
         scene.setViewport(
-            @floatCast(window.size.width),
-            @floatCast(window.size.height),
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
         );
         scene.enableCulling();
 
@@ -1011,7 +1019,7 @@ pub const Gooey = struct {
         self.svg_atlas = shared_svg_atlas;
         self.image_atlas = shared_image_atlas;
 
-        self.window = window;
+        self.platform_window = platform_window;
 
         // Small structs
         self.entities = EntityMap.init(allocator, io);
@@ -1024,9 +1032,9 @@ pub const Gooey = struct {
         self.current_phase = .none;
 
         // Scalar fields
-        self.width = @floatCast(window.size.width);
-        self.height = @floatCast(window.size.height);
-        self.scale_factor = @floatCast(window.scale_factor);
+        self.width = @floatCast(platform_window.size.width);
+        self.height = @floatCast(platform_window.size.height);
+        self.scale_factor = @floatCast(platform_window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
         // PR 6 — `debugger` registered into `globals` below.
@@ -1050,8 +1058,8 @@ pub const Gooey = struct {
         self.cancel_registry.initInPlace();
 
         // Accessibility (initInPlace avoids ~350KB stack temp)
-        const window_obj = if (builtin.os.tag == .macos) window.ns_window else null;
-        const view_obj = if (builtin.os.tag == .macos) window.ns_view else null;
+        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
+        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 
         // Initialize image loader against the SHARED atlas. Safe to do
@@ -1139,7 +1147,7 @@ pub const Gooey = struct {
     /// fallback.
     pub fn keymap(self: *Self) *Keymap {
         return self.globals.get(Keymap) orelse {
-            std.debug.panic("Gooey.keymap(): no Keymap registered in globals (init* did not run?)", .{});
+            std.debug.panic("Window.keymap(): no Keymap registered in globals (init* did not run?)", .{});
         };
     }
 
@@ -1147,7 +1155,7 @@ pub const Gooey = struct {
     /// contract as `keymap()`.
     pub fn debugger(self: *Self) *debugger_mod.Debugger {
         return self.globals.get(debugger_mod.Debugger) orelse {
-            std.debug.panic("Gooey.debugger(): no Debugger registered in globals (init* did not run?)", .{});
+            std.debug.panic("Window.debugger(): no Debugger registered in globals (init* did not run?)", .{});
         };
     }
 
@@ -1178,7 +1186,7 @@ pub const Gooey = struct {
         self.entities.beginFrame();
 
         // Update cached window dimensions
-        if (self.window) |w| {
+        if (self.platform_window) |w| {
             self.width = @floatCast(w.size.width);
             self.height = @floatCast(w.size.height);
             self.scale_factor = @floatCast(w.scale_factor);
@@ -1339,7 +1347,7 @@ pub const Gooey = struct {
     }
 
     // =========================================================================
-    // Widget Access — moved to `gooey.widgets.*`
+    // Widget Access — moved to `window.widgets.*`
     // =========================================================================
     //
     // PR 4 (`docs/cleanup-implementation-plan.md`): the per-widget-type
@@ -1347,16 +1355,16 @@ pub const Gooey = struct {
     // `*OrPanic` siblings, `getFocused*`, and `focusText*` /
     // `focusCodeEditor`) used to live here, each one importing the
     // concrete widget state type and so dragging the
-    // `context → widgets` backward edge into `Gooey`. They are deleted
+    // `context → widgets` backward edge into `Window`. They are deleted
     // outright — callers in `runtime/`, `cx.zig`, and user code reach
-    // through `gooey.widgets.textInput(id)` / `gooey.widgets.textArea(id)`
-    // / `gooey.widgets.codeEditor(id)` directly, and trigger focus via
-    // the generic `gooey.focusWidget(id)` below (which routes through
+    // through `window.widgets.textInput(id)` / `window.widgets.textArea(id)`
+    // / `window.widgets.codeEditor(id)` directly, and trigger focus via
+    // the generic `window.focusWidget(id)` below (which routes through
     // the `Focusable` vtable on `FocusManager` — no widget-type switch).
     //
     // Adding a new focusable widget type now touches only `widgets/`:
     // the widget exposes `pub fn focusable(self) Focusable` and the
-    // builder registers that vtable on its `FocusHandle`. `Gooey`
+    // builder registers that vtable on its `FocusHandle`. `Window`
     // doesn't need to learn about the new type.
 
     /// Focus a widget by string ID. Generic over widget type — the
@@ -1413,7 +1421,7 @@ pub const Gooey = struct {
 
     /// Move focus to next element in tab order. The `FocusManager`
     /// drives the underlying widget's `blur()` / `focus()` through the
-    /// `Focusable` vtable; `Gooey` only owns the blur-handler dispatch.
+    /// `Focusable` vtable; `Window` only owns the blur-handler dispatch.
     pub fn focusNext(self: *Self) void {
         self.invokeBlurHandlerForFocusedWidget();
         self.focus.focusNext();
@@ -1450,8 +1458,8 @@ pub const Gooey = struct {
     //
     // Body lives in `blur_handlers.zig`. The handler registry is a generic
     // `SubscriberSet` instance; the wrappers here preserve the call surface
-    // used by `runtime/frame.zig` (`gooey.registerBlurHandler` /
-    // `gooey.clearBlurHandlers`).
+    // used by `runtime/frame.zig` (`window.registerBlurHandler` /
+    // `window.clearBlurHandlers`).
 
     /// Register a blur handler for a text field ID.
     /// Called during frame rendering to register handlers from pending items.
@@ -1599,7 +1607,7 @@ pub const Gooey = struct {
     ///
     /// Use from a `command` handler:
     /// ```zig
-    /// fn quitApp(_: *AppState, g: *Gooey) void {
+    /// fn quitApp(_: *AppState, g: *Window) void {
     ///     g.quit();
     /// }
     /// // In render:
@@ -1609,7 +1617,7 @@ pub const Gooey = struct {
         if (comptime platform.is_wasm) {
             // No-op on web - can't quit browser
         } else if (comptime platform.is_linux) {
-            if (self.window) |w| {
+            if (self.platform_window) |w| {
                 w.closed = true;
                 w.platform.quit();
             } else {
@@ -1641,7 +1649,7 @@ pub const Gooey = struct {
     /// Mark that a re-render is needed
     pub fn requestRender(self: *Self) void {
         self.needs_render = true;
-        if (self.window) |w| {
+        if (self.platform_window) |w| {
             w.requestRender();
         }
     }
@@ -1649,7 +1657,7 @@ pub const Gooey = struct {
     /// Set the window appearance (light or dark mode)
     /// This affects the titlebar text color and other system UI elements (macOS)
     pub fn setAppearance(self: *Self, dark: bool) void {
-        if (self.window) |w| {
+        if (self.platform_window) |w| {
             w.setAppearance(dark);
         }
     }
@@ -1682,14 +1690,17 @@ pub const Gooey = struct {
         return self.layout;
     }
 
-    pub fn getWindow(self: *Self) ?*PlatformWindow {
-        return self.window;
+    /// Get the OS-level window handle. Renamed from `getWindow` in
+    /// PR 7b.1b to disambiguate from the framework-level `Window`
+    /// struct that this method now lives on.
+    pub fn getPlatformWindow(self: *Self) ?*PlatformWindow {
+        return self.platform_window;
     }
 
     /// Set the accent color uniform for custom shaders
     /// The alpha channel can be used as a mode selector
-    pub fn setAccentColor(self: *Gooey, r: f32, g: f32, b: f32, a: f32) void {
-        if (self.window) |w| {
+    pub fn setAccentColor(self: *Window, r: f32, g: f32, b: f32, a: f32) void {
+        if (self.platform_window) |w| {
             if (w.renderer.getPostProcess()) |pp| {
                 pp.uniforms.accent_color = .{ r, g, b, a };
             }
@@ -1767,8 +1778,8 @@ fn measureTextCallback(
 // Tests
 // =============================================================================
 //
-// These tests cover the deferred-command queue, which stays on `Gooey`.
-// They construct a minimal `Gooey` value via field-by-field init, leaving
+// These tests cover the deferred-command queue, which stays on `Window`.
+// They construct a minimal `Window` value via field-by-field init, leaving
 // every resource pointer at `undefined` — the deferred-command path
 // reads only `deferred_commands`, `deferred_count`, `root_state_*`,
 // `needs_render`, and `window`, so the test exercise the path without
@@ -1779,10 +1790,10 @@ fn measureTextCallback(
 
 const testing = std.testing;
 
-/// Build a stub `Gooey` for deferred-command tests. Resources stay
+/// Build a stub `Window` for deferred-command tests. Resources stay
 /// `undefined` because the tested path does not touch them; `window`
 /// is `null` so `requestRender` is a no-op.
-fn testGooey() Gooey {
+fn testWindow() Window {
     return .{
         .allocator = testing.allocator,
         .io = undefined,
@@ -1796,7 +1807,7 @@ fn testGooey() Gooey {
         .dispatch = undefined,
 
         .entities = undefined,
-        .window = null,
+        .platform_window = null,
         .hover = HoverState.init(),
         .blur_handlers = BlurHandlerRegistry.init(),
         .cancel_registry = CancelRegistry.init(),
@@ -1811,13 +1822,13 @@ fn testGooey() Gooey {
 test "deferCommand queues command" {
     const TestState = struct {
         value: i32 = 0,
-        pub fn increment(self: *@This(), _: *Gooey) void {
+        pub fn increment(self: *@This(), _: *Window) void {
             self.value += 1;
         }
     };
 
     var state = TestState{};
-    var g = testGooey();
+    var g = testWindow();
     g.setRootState(TestState, &state);
 
     g.deferCommand(TestState.increment);
@@ -1832,13 +1843,13 @@ test "deferCommand queues command" {
 test "deferCommandWith passes argument" {
     const TestState = struct {
         value: i32 = 0,
-        pub fn setValue(self: *@This(), _: *Gooey, new_value: i32) void {
+        pub fn setValue(self: *@This(), _: *Window, new_value: i32) void {
             self.value = new_value;
         }
     };
 
     var state = TestState{};
-    var g = testGooey();
+    var g = testWindow();
     g.setRootState(TestState, &state);
 
     g.deferCommandWith(@as(i32, 42), TestState.setValue);
@@ -1849,13 +1860,13 @@ test "deferCommandWith passes argument" {
 test "multiple deferWith calls preserve their arguments" {
     const TestState = struct {
         sum: i32 = 0,
-        pub fn addValue(self: *@This(), _: *Gooey, value: i32) void {
+        pub fn addValue(self: *@This(), _: *Window, value: i32) void {
             self.sum += value;
         }
     };
 
     var state = TestState{};
-    var g = testGooey();
+    var g = testWindow();
     g.setRootState(TestState, &state);
 
     g.deferCommandWith(@as(i32, 1), TestState.addValue);
@@ -1869,11 +1880,11 @@ test "multiple deferWith calls preserve their arguments" {
 
 test "deferred queue overflow is handled gracefully" {
     const TestState = struct {
-        pub fn noop(_: *@This(), _: *Gooey) void {}
+        pub fn noop(_: *@This(), _: *Window) void {}
     };
 
     var state = TestState{};
-    var g = testGooey();
+    var g = testWindow();
     g.setRootState(TestState, &state);
 
     // Fill queue to capacity.
@@ -1894,11 +1905,11 @@ test "deferred queue overflow is handled gracefully" {
 
 test "hasDeferredCommands returns correct state" {
     const TestState = struct {
-        pub fn noop(_: *@This(), _: *Gooey) void {}
+        pub fn noop(_: *@This(), _: *Window) void {}
     };
 
     var state = TestState{};
-    var g = testGooey();
+    var g = testWindow();
     g.setRootState(TestState, &state);
 
     try testing.expect(!g.hasDeferredCommands());
@@ -1918,23 +1929,23 @@ test "hasDeferredCommands returns correct state" {
 // real window, layout engine, scene, etc.) — they pin the phase machine
 // invariants that the rest of the framework leans on:
 //
-//   1. A freshly-constructed `Gooey` reports `.none`.
+//   1. A freshly-constructed `Window` reports `.none`.
 //   2. `advancePhase` accepts the four legal forward edges.
 //   3. The internal accessor matches the field.
 //
-// We use the `testGooey` stub from above plus direct field manipulation
+// We use the `testWindow` stub from above plus direct field manipulation
 // on `current_phase` — the resource-owning frame methods (`beginFrame`
 // etc.) are out of reach without a full UI stack, but the ladder itself
 // is observable.
 
 test "DrawPhase: default phase is .none" {
-    var g = testGooey();
+    var g = testWindow();
     try testing.expectEqual(DrawPhase.none, g.drawPhase());
     try testing.expectEqual(DrawPhase.none, g.current_phase);
 }
 
 test "DrawPhase: advancePhase walks the legal ladder" {
-    var g = testGooey();
+    var g = testWindow();
     try testing.expectEqual(DrawPhase.none, g.drawPhase());
 
     g.advancePhase(.prepaint);
@@ -1955,7 +1966,7 @@ test "DrawPhase: drawPhase mirrors current_phase across multiple ladders" {
     // re-enables a fresh `.none → .prepaint` start. Catches a bug
     // where `advancePhase` accidentally locks the field on first
     // wrap.
-    var g = testGooey();
+    var g = testWindow();
 
     var lap: u32 = 0;
     while (lap < 2) : (lap += 1) {

@@ -36,7 +36,7 @@ const runtime = @import("runtime/mod.zig");
 const runtime_render = @import("runtime/render.zig");
 
 // Core imports
-const gooey_mod = @import("context/gooey.zig");
+const window_mod = @import("context/window.zig");
 const input_mod = @import("input/mod.zig");
 const shader_mod = @import("core/shader.zig");
 const cx_mod = @import("cx.zig");
@@ -51,13 +51,13 @@ pub const handleInputCx = runtime.handleInputCx;
 // Re-export types
 pub const Cx = cx_mod.Cx;
 // PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the upcoming `Gooey → Window` rename
+// to free up the `Window` name for the upcoming `Window → Window` rename
 // in PR 7b.1b. The local `PlatformWindow` alias is used everywhere
 // below where the OS-level handle (vs. the framework wrapper) is meant.
 pub const GlassStyle = platform.PlatformWindow.GlassStyle;
 const Platform = platform.Platform;
 const PlatformWindow = platform.PlatformWindow;
-const Gooey = gooey_mod.Gooey;
+const Window = window_mod.Window;
 const Builder = ui_mod.Builder;
 const InputEvent = input_mod.InputEvent;
 
@@ -89,7 +89,7 @@ pub fn App(
         return struct {
             pub fn main() !void {
                 try runCx(State, state, render, .{
-                    .title = if (@hasField(@TypeOf(config), "title")) config.title else "Gooey App",
+                    .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
                     .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                     .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
                     .background_color = if (@hasField(@TypeOf(config), "background_color")) config.background_color else null,
@@ -154,8 +154,13 @@ pub fn WebApp(
         // Global state (WASM exports can't capture closures)
         var g_initialized: bool = false;
         var g_platform: ?Platform = null;
-        var g_window: ?*PlatformWindow = null;
-        var g_gooey: ?*Gooey = null;
+        // PR 7b.1b — `g_window` (OS-level handle) renamed to
+        // `g_platform_window` so the framework wrapper rename
+        // (`Window → Window`) can claim `g_window` for itself in the
+        // sweep below. Mirrors the field rename on `Window` itself
+        // (`window → platform_window`) and the §10 GPUI sketch.
+        var g_platform_window: ?*PlatformWindow = null;
+        var g_window: ?*Window = null;
         var g_builder: ?*Builder = null;
         var g_cx: ?Cx = null;
         var g_renderer: ?*WebRenderer = null;
@@ -184,39 +189,39 @@ pub fn WebApp(
             g_platform = try Platform.init();
 
             // Create window
-            g_window = try PlatformWindow.init(allocator, &g_platform.?, .{
-                .title = if (@hasField(@TypeOf(config), "title")) config.title else "Gooey App",
+            g_platform_window = try PlatformWindow.init(allocator, &g_platform.?, .{
+                .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
                 .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                 .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
             });
 
-            // Initialize Gooey (owns layout, scene, text_system)
+            // Initialize Window (owns layout, scene, text_system)
             // Heap-allocated with initOwnedPtr to avoid ~400KB stack frame on WASM
-            const gooey_ptr = try allocator.create(Gooey);
-            const font_cfg = gooey_mod.FontConfig{
+            const window_ptr = try allocator.create(Window);
+            const font_cfg = window_mod.FontConfig{
                 .font_name = if (@hasField(@TypeOf(config), "font")) config.font else null,
                 .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
             };
             // WASM uses single-threaded IO — no fibers, sequential execution.
             const io = std.Io.Threaded.global_single_threaded.io();
 
-            try gooey_ptr.initOwnedPtr(allocator, g_window.?, font_cfg, io);
-            g_gooey = gooey_ptr;
+            try window_ptr.initOwnedPtr(allocator, g_platform_window.?, font_cfg, io);
+            g_window = window_ptr;
 
             // Initialize Builder
             g_builder = try allocator.create(Builder);
             g_builder.?.* = Builder.init(
                 allocator,
-                g_gooey.?.layout,
-                g_gooey.?.scene,
-                g_gooey.?.dispatch,
+                g_window.?.layout,
+                g_window.?.scene,
+                g_window.?.dispatch,
             );
-            g_builder.?.gooey = g_gooey.?;
+            g_builder.?.window = g_window.?;
 
             // Create Cx context
             g_cx = Cx{
                 ._allocator = allocator,
-                ._gooey = g_gooey.?,
+                ._window = g_window.?,
                 ._builder = g_builder.?,
                 .state_ptr = @ptrCast(state),
                 .state_type_id = cx_mod.typeId(State),
@@ -225,9 +230,9 @@ pub fn WebApp(
             // Wire up builder to cx
             g_builder.?.cx_ptr = @ptrCast(&g_cx.?);
 
-            // Set root state on this window's Gooey instance (not globally)
+            // Set root state on this window's Window instance (not globally)
             // This enables multi-window support where each window has its own state
-            g_gooey.?.setRootState(State, state);
+            g_window.?.setRootState(State, state);
 
             // Initialize GPU renderer
             // Heap-allocated with initInPlace to avoid ~1.15MB stack frame on WASM
@@ -252,8 +257,8 @@ pub fn WebApp(
             }
 
             // Upload initial atlases
-            g_renderer.?.uploadAtlas(g_gooey.?.text_system);
-            g_renderer.?.uploadSvgAtlas(g_gooey.?.svg_atlas);
+            g_renderer.?.uploadAtlas(g_window.?.text_system);
+            g_renderer.?.uploadSvgAtlas(g_window.?.svg_atlas);
 
             g_initialized = true;
 
@@ -273,14 +278,14 @@ pub fn WebApp(
             _ = timestamp;
             if (!g_initialized) return;
 
-            const w = g_window orelse return;
+            const w = g_platform_window orelse return;
             const cx = &g_cx.?;
 
             // Update window size
             w.updateSize();
-            g_gooey.?.width = @floatCast(w.size.width);
-            g_gooey.?.height = @floatCast(w.size.height);
-            g_gooey.?.scale_factor = @floatCast(w.scale_factor);
+            g_window.?.width = @floatCast(w.size.width);
+            g_window.?.height = @floatCast(w.size.height);
+            g_window.?.scale_factor = @floatCast(w.scale_factor);
 
             // =========================================================
             // INPUT PROCESSING (zero JS calls)
@@ -343,13 +348,13 @@ pub fn WebApp(
             const vh: f32 = @floatCast(w.size.height);
 
             // Sync atlas textures if glyphs/icons/images were added
-            g_renderer.?.syncAtlas(g_gooey.?.text_system);
-            g_renderer.?.syncSvgAtlas(g_gooey.?.svg_atlas);
-            g_renderer.?.syncImageAtlas(g_gooey.?.image_atlas);
+            g_renderer.?.syncAtlas(g_window.?.text_system);
+            g_renderer.?.syncSvgAtlas(g_window.?.svg_atlas);
+            g_renderer.?.syncImageAtlas(g_window.?.image_atlas);
 
             // Render to GPU
             const bg = w.background_color;
-            g_renderer.?.render(g_gooey.?.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
+            g_renderer.?.render(g_window.?.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
 
             // Request next frame
             if (g_platform) |p| {
@@ -361,7 +366,7 @@ pub fn WebApp(
         pub fn resize(width: u32, height: u32) callconv(.c) void {
             _ = width;
             _ = height;
-            if (g_window) |w| w.updateSize();
+            if (g_platform_window) |w| w.updateSize();
         }
 
         /// No-op main for API compatibility with native App.

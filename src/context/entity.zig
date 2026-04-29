@@ -1,6 +1,6 @@
 //! Entity System - GPUI-style reference-counted shared state
 //!
-//! Entities are the core abstraction for shared mutable state in Gooey.
+//! Entities are the core abstraction for shared mutable state in Window.
 //! An Entity(T) is a lightweight handle (just an ID) that references data
 //! stored in the EntityMap. This enables:
 //!
@@ -37,8 +37,8 @@
 
 const std = @import("std");
 
-// Forward declaration for Gooey (used in Entity.context)
-const Gooey = @import("gooey.zig").Gooey;
+// Forward declaration for Window (used in Entity.context)
+const Window = @import("window.zig").Window;
 
 // =============================================================================
 // Entity ID
@@ -71,7 +71,7 @@ pub const EntityId = struct {
 ///
 /// Entity(T) is just an ID - it doesn't contain the actual data.
 /// Use EntityContext.read() to access the data, or use the convenience
-/// method `entity.context(gooey)` to get an EntityContext.
+/// method `entity.context(window)` to get an EntityContext.
 pub fn Entity(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -109,7 +109,7 @@ pub fn Entity(comptime T: type) type {
         ///     counter: gooey.Entity(Counter),
         ///
         ///     pub fn render(self: @This(), b: *ui.Builder) void {
-        ///         var cx = self.counter.context(g_gooey);
+        ///         var cx = self.counter.context(g_window);
         ///         b.hstack(.{ .gap = 8 }, .{
         ///             ui.buttonHandler("-", cx.handler(Counter.decrement)),
         ///             ui.buttonHandler("+", cx.handler(Counter.increment)),
@@ -117,10 +117,10 @@ pub fn Entity(comptime T: type) type {
         ///     }
         /// };
         /// ```
-        pub fn context(self: Self, gooey: *Gooey) EntityContext(T) {
+        pub fn context(self: Self, window: *Window) EntityContext(T) {
             return .{
-                .gooey = gooey,
-                .entities = gooey.getEntities(),
+                .window = window,
+                .entities = window.getEntities(),
                 .entity_id = self.id,
             };
         }
@@ -193,7 +193,7 @@ pub const EntityMap = struct {
     allocator: std.mem.Allocator,
 
     /// IO interface for cancelling async groups on entity removal.
-    /// Set by Gooey at init; null in tests where cancellation is not used.
+    /// Set by Window at init; null in tests where cancellation is not used.
     io: ?std.Io = null,
 
     /// All entity slots, keyed by ID
@@ -514,8 +514,8 @@ pub fn EntityContext(comptime T: type) type {
         /// The type of entity this context is for
         pub const EntityType = T;
 
-        /// Reference to Gooey (for rendering, window ops, etc.)
-        gooey: *Gooey,
+        /// Reference to Window (for rendering, window ops, etc.)
+        window: *Window,
 
         /// The entity map
         entities: *EntityMap,
@@ -582,8 +582,8 @@ pub fn EntityContext(comptime T: type) type {
             const entity_id = self.entity_id;
 
             const Wrapper = struct {
-                fn invoke(gooey: *Gooey, eid: EntityId) void {
-                    const ents = gooey.getEntities();
+                fn invoke(window: *Window, eid: EntityId) void {
+                    const ents = window.getEntities();
                     const data = ents.write(T, .{ .id = eid }) orelse {
                         return;
                     };
@@ -593,7 +593,7 @@ pub fn EntityContext(comptime T: type) type {
 
                     // Mark dirty and request render
                     ents.markDirty(eid);
-                    gooey.requestRender();
+                    window.requestRender();
                 }
             };
 
@@ -638,7 +638,7 @@ pub fn EntityContext(comptime T: type) type {
             const combined: u64 = @as(u64, arg_bits) << 32 | @as(u64, @as(u32, @truncate(self.entity_id.id)));
 
             const Wrapper = struct {
-                fn invoke(gooey: *Gooey, packed_id: EntityId) void {
+                fn invoke(window: *Window, packed_id: EntityId) void {
                     // Unpack entity_id from lower 32 bits.
                     const eid_raw: u32 = @truncate(packed_id.id);
                     const eid = EntityId{ .id = @as(u64, eid_raw) };
@@ -648,7 +648,7 @@ pub fn EntityContext(comptime T: type) type {
                     var unpacked_arg: Arg = undefined;
                     @memcpy(std.mem.asBytes(&unpacked_arg), std.mem.asBytes(&raw)[0..@sizeOf(Arg)]);
 
-                    const ents = gooey.getEntities();
+                    const ents = window.getEntities();
                     const data = ents.write(T, .{ .id = eid }) orelse {
                         return;
                     };
@@ -658,7 +658,7 @@ pub fn EntityContext(comptime T: type) type {
 
                     // Mark dirty and request render.
                     ents.markDirty(eid);
-                    gooey.requestRender();
+                    window.requestRender();
                 }
             };
 
@@ -701,15 +701,15 @@ pub fn EntityContext(comptime T: type) type {
         ) HandlerRef {
             // Create a wrapper that uses the entity_id from HandlerRef
             const Wrapper = struct {
-                fn invoke(gooey: *Gooey, eid: EntityId) void {
-                    // Get entities from gooey
-                    const ents = gooey.getEntities();
+                fn invoke(window: *Window, eid: EntityId) void {
+                    // Get entities from the framework window
+                    const ents = window.getEntities();
                     const data = ents.write(T, .{ .id = eid }) orelse {
                         return;
                     };
 
                     var cx = Self{
-                        .gooey = gooey,
+                        .window = window,
                         .entities = ents,
                         .entity_id = eid,
                     };
@@ -806,7 +806,7 @@ test "Entity type safety" {
 
 test "Entity.context convenience method" {
     // This test verifies the API compiles correctly.
-    // Full integration test would require a Gooey instance.
+    // Full integration test would require a Window instance.
     const TestModel = struct {
         value: i32,
     };

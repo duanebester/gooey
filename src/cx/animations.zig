@@ -97,7 +97,7 @@ pub const Animations = struct {
         config: Animation,
     ) AnimationHandle {
         const anim_id = comptime animation_mod.hashString(id);
-        return self.cx()._gooey.widgets.animateById(anim_id, config);
+        return self.cx()._window.widgets.animateById(anim_id, config);
     }
 
     /// Tween animation with a runtime string id. Use this when the id
@@ -108,7 +108,7 @@ pub const Animations = struct {
         config: Animation,
     ) AnimationHandle {
         std.debug.assert(id.len > 0);
-        return self.cx()._gooey.widgets.animate(id, config);
+        return self.cx()._window.widgets.animate(id, config);
     }
 
     /// Restart a tween animation with comptime id hashing. The
@@ -120,7 +120,7 @@ pub const Animations = struct {
         config: Animation,
     ) AnimationHandle {
         const anim_id = comptime animation_mod.hashString(id);
-        return self.cx()._gooey.widgets.restartAnimationById(anim_id, config);
+        return self.cx()._window.widgets.restartAnimationById(anim_id, config);
     }
 
     /// Restart a tween animation with a runtime string id.
@@ -130,7 +130,7 @@ pub const Animations = struct {
         config: Animation,
     ) AnimationHandle {
         std.debug.assert(id.len > 0);
-        return self.cx()._gooey.widgets.restartAnimation(id, config);
+        return self.cx()._window.widgets.restartAnimation(id, config);
     }
 
     /// Restart-on-trigger tween with comptime id hashing. The
@@ -144,7 +144,7 @@ pub const Animations = struct {
     ) AnimationHandle {
         const anim_id = comptime animation_mod.hashString(id);
         const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
-        return self.cx()._gooey.widgets.animateOnById(anim_id, trigger_hash, config);
+        return self.cx()._window.widgets.animateOnById(anim_id, trigger_hash, config);
     }
 
     /// Restart-on-trigger tween with a runtime string id.
@@ -156,7 +156,7 @@ pub const Animations = struct {
     ) AnimationHandle {
         std.debug.assert(id.len > 0);
         const trigger_hash = computeTriggerHash(@TypeOf(trigger), trigger);
-        return self.cx()._gooey.widgets.animateOn(id, trigger_hash, config);
+        return self.cx()._window.widgets.animateOn(id, trigger_hash, config);
     }
 
     // =========================================================================
@@ -182,7 +182,7 @@ pub const Animations = struct {
         config: SpringConfig,
     ) SpringHandle {
         const spring_id = comptime animation_mod.hashString(id);
-        return self.cx()._gooey.widgets.springById(spring_id, config);
+        return self.cx()._window.widgets.springById(spring_id, config);
     }
 
     /// Declarative spring with a runtime string id.
@@ -192,7 +192,7 @@ pub const Animations = struct {
         config: SpringConfig,
     ) SpringHandle {
         std.debug.assert(id.len > 0);
-        return self.cx()._gooey.widgets.spring(id, config);
+        return self.cx()._window.widgets.spring(id, config);
     }
 
     // =========================================================================
@@ -225,7 +225,7 @@ pub const Animations = struct {
     ) AnimationHandle {
         std.debug.assert(index <= total_count);
         const base_id = comptime animation_mod.hashString(id);
-        return self.cx()._gooey.widgets.staggerById(base_id, index, total_count, config);
+        return self.cx()._window.widgets.staggerById(base_id, index, total_count, config);
     }
 
     /// Staggered animation for list items with a runtime string id.
@@ -238,7 +238,7 @@ pub const Animations = struct {
     ) AnimationHandle {
         std.debug.assert(id.len > 0);
         std.debug.assert(index <= total_count);
-        return self.cx()._gooey.widgets.stagger(id, index, total_count, config);
+        return self.cx()._window.widgets.stagger(id, index, total_count, config);
     }
 
     // =========================================================================
@@ -264,7 +264,7 @@ pub const Animations = struct {
         config: MotionConfig,
     ) MotionHandle {
         const mid = comptime animation_mod.hashString(id);
-        return self.cx()._gooey.widgets.motionById(mid, show, config);
+        return self.cx()._window.widgets.motionById(mid, show, config);
     }
 
     /// Tween-based motion container with a runtime string id.
@@ -275,7 +275,7 @@ pub const Animations = struct {
         config: MotionConfig,
     ) MotionHandle {
         std.debug.assert(id.len > 0);
-        return self.cx()._gooey.widgets.motion(id, show, config);
+        return self.cx()._window.widgets.motion(id, show, config);
     }
 
     // =========================================================================
@@ -302,7 +302,7 @@ pub const Animations = struct {
         config: SpringMotionConfig,
     ) MotionHandle {
         const mid = comptime animation_mod.hashString(id);
-        return self.cx()._gooey.widgets.springMotionById(mid, show, config);
+        return self.cx()._window.widgets.springMotionById(mid, show, config);
     }
 
     /// Spring-based motion container with a runtime string id.
@@ -313,7 +313,7 @@ pub const Animations = struct {
         config: SpringMotionConfig,
     ) MotionHandle {
         std.debug.assert(id.len > 0);
-        return self.cx()._gooey.widgets.springMotion(id, show, config);
+        return self.cx()._window.widgets.springMotion(id, show, config);
     }
 };
 

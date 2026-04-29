@@ -436,7 +436,7 @@ fn computePadding(style: UniformListStyle) Padding {
 /// Sync scroll state between UniformListState and retained ScrollContainer.
 /// Resolves PendingScrollRequest with accurate viewport dimensions to avoid jitter.
 pub fn syncScroll(b: *Builder, id: []const u8, state: *UniformListState) void {
-    const g = b.gooey orelse return;
+    const g = b.window orelse return;
     const sc = g.widgets.scrollContainer(id) orelse return;
 
     // Update viewport dimensions FIRST so calculations are accurate

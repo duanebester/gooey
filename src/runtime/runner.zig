@@ -13,7 +13,7 @@
 //! **Multi-Window Ready**: This implementation uses per-window WindowContext
 //! stored in the window's user_data pointer. Each window has its own:
 //! - Cx context
-//! - Gooey instance (layout, scene, widgets)
+//! - Window instance (layout, scene, widgets)
 //! - Builder instance
 //! - User callbacks
 //!
@@ -35,8 +35,8 @@ const geometry_mod = @import("../core/geometry.zig");
 const input_mod = @import("../input/mod.zig");
 const handler_mod = @import("../context/handler.zig");
 const cx_mod = @import("../cx.zig");
-const gooey_mod = @import("../context/gooey.zig");
-const FontConfig = gooey_mod.FontConfig;
+const window_mod = @import("../context/window.zig");
+const FontConfig = window_mod.FontConfig;
 
 // Runtime imports
 const window_context = @import("window_context.zig");
@@ -117,10 +117,10 @@ pub fn runCx(
     // Set user callbacks
     win_ctx.setCallbacks(config.on_event, config.on_close, config.on_resize);
 
-    // Set root state on this window's Gooey instance (not globally)
+    // Set root state on this window's Window instance (not globally)
     // This enables multi-window support where each window has its own state
-    win_ctx.gooey.setRootState(State, state);
-    defer win_ctx.gooey.clearRootState();
+    win_ctx.window.setRootState(State, state);
+    defer win_ctx.window.clearRootState();
 
     // Connect WindowContext to window (sets user_data and callbacks)
     win_ctx.setupWindow(window);
@@ -140,7 +140,7 @@ pub fn CxConfig(comptime State: type) type {
     const shader_mod = @import("../core/shader.zig");
 
     return struct {
-        title: []const u8 = "Gooey App",
+        title: []const u8 = "Window App",
         width: f64 = 800,
         height: f64 = 600,
         background_color: ?geometry_mod.Color = null,
@@ -158,7 +158,7 @@ pub fn CxConfig(comptime State: type) type {
 
         // Event callbacks
 
-        /// Called once after platform, window, and Gooey context are initialized,
+        /// Called once after platform, window, and Window context are initialized,
         /// before the first render. Use for one-time setup (HTTP clients, API keys, etc.)
         on_init: ?*const fn (*Cx) void = null,
 

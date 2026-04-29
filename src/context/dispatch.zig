@@ -22,12 +22,12 @@
 const std = @import("std");
 const layout_types = @import("../layout/types.zig");
 const focus_mod = @import("focus.zig");
-const gooey_mod = @import("gooey.zig");
+const window_mod = @import("window.zig");
 const drag_mod = @import("drag.zig");
 
 const BoundingBox = layout_types.BoundingBox;
 const FocusId = focus_mod.FocusId;
-const Gooey = gooey_mod.Gooey;
+const Window = window_mod.Window;
 pub const DragTypeId = drag_mod.DragTypeId;
 pub const dragTypeId = drag_mod.dragTypeId;
 
@@ -818,7 +818,7 @@ pub const DispatchTree = struct {
 
     /// Dispatch a click event to the target node and its ancestors (bubble only)
     /// Returns true if any handler consumed the event
-    pub fn dispatchClick(self: *Self, target: DispatchNodeId, gooey: *Gooey) bool {
+    pub fn dispatchClick(self: *Self, target: DispatchNodeId, window: *Window) bool {
         var path_buf: [MAX_PATH_DEPTH]DispatchNodeId = undefined;
         const path = self.dispatchPath(target, &path_buf);
 
@@ -850,7 +850,7 @@ pub const DispatchTree = struct {
             }
 
             for (lb.click_listeners_handler.items) |listener| {
-                listener.handler.invoke(gooey);
+                listener.handler.invoke(window);
                 handled = true;
             }
 
@@ -901,8 +901,8 @@ pub const DispatchTree = struct {
     /// Performance: O(k) where k = nodes with click-outside listeners (typically 0-2)
     /// Note: This computes hitTest internally. If you already have the hit target,
     /// use dispatchClickOutsideWithTarget to avoid redundant hit testing.
-    pub fn dispatchClickOutside(self: *Self, x: f32, y: f32, gooey: *Gooey) bool {
-        return self.dispatchClickOutsideWithTarget(x, y, self.hitTest(x, y), gooey);
+    pub fn dispatchClickOutside(self: *Self, x: f32, y: f32, window: *Window) bool {
+        return self.dispatchClickOutsideWithTarget(x, y, self.hitTest(x, y), window);
     }
 
     /// Check nodes with click-outside listeners and fire them if the click
@@ -911,7 +911,7 @@ pub const DispatchTree = struct {
     /// Returns true if any handler was invoked.
     ///
     /// Performance: O(k) where k = nodes with click-outside listeners (typically 0-2)
-    pub fn dispatchClickOutsideWithTarget(self: *Self, x: f32, y: f32, hit_target: ?DispatchNodeId, gooey: *Gooey) bool {
+    pub fn dispatchClickOutsideWithTarget(self: *Self, x: f32, y: f32, hit_target: ?DispatchNodeId, window: *Window) bool {
         // Fast path: no click-outside listeners registered
         if (self.click_outside_nodes.items.len == 0) return false;
 
@@ -944,7 +944,7 @@ pub const DispatchTree = struct {
                         any_fired = true;
                     }
                     if (listener.handler) |handler| {
-                        handler.invoke(gooey);
+                        handler.invoke(window);
                         any_fired = true;
                     }
                 }
@@ -1117,7 +1117,7 @@ pub const DispatchTree = struct {
 
     /// Dispatch an action through the focus path
     /// Returns true if a handler was found and called
-    pub fn dispatchAction(self: *Self, action_type: ActionTypeId, path: []const DispatchNodeId, gooey: *Gooey) bool {
+    pub fn dispatchAction(self: *Self, action_type: ActionTypeId, path: []const DispatchNodeId, window: *Window) bool {
         // Walk from target to root looking for a handler
         var i = path.len;
         while (i > 0) {
@@ -1136,7 +1136,7 @@ pub const DispatchTree = struct {
             // Check handler-based action listeners (new pattern)
             for (lb.action_listeners_handler.items) |listener| {
                 if (listener.action_type == action_type) {
-                    listener.handler.invoke(gooey);
+                    listener.handler.invoke(window);
                     return true;
                 }
             }

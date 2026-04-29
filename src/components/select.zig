@@ -61,8 +61,8 @@ const Icons = @import("svg.zig").Icons;
 const handler_mod = @import("../context/handler.zig");
 const OnSelectHandler = handler_mod.OnSelectHandler;
 const EntityId = handler_mod.EntityId;
-const gooey_mod = @import("../context/gooey.zig");
-const Gooey = gooey_mod.Gooey;
+const window_mod = @import("../context/window.zig");
+const Window = window_mod.Window;
 
 /// Hard cap on option count to prevent runaway loops.
 const MAX_SELECT_OPTIONS: usize = 4096;
@@ -73,7 +73,7 @@ const MAX_SELECT_OPTIONS: usize = 4096;
 
 /// Toggle a Select's internal open/close state.
 /// EntityId packs the LayoutId hash (u32) in the lower bits.
-fn internalToggle(g: *Gooey, packed_id: EntityId) void {
+fn internalToggle(g: *Window, packed_id: EntityId) void {
     const id_hash: u32 = @truncate(packed_id.id);
     std.debug.assert(id_hash != 0);
     g.widgets.toggleSelectState(id_hash);
@@ -82,7 +82,7 @@ fn internalToggle(g: *Gooey, packed_id: EntityId) void {
 
 /// Close a Select's internal open/close state.
 /// EntityId packs the LayoutId hash (u32) in the lower bits.
-fn internalClose(g: *Gooey, packed_id: EntityId) void {
+fn internalClose(g: *Window, packed_id: EntityId) void {
     const id_hash: u32 = @truncate(packed_id.id);
     std.debug.assert(id_hash != 0);
     g.widgets.closeSelectState(id_hash);
@@ -184,7 +184,7 @@ pub const Select = struct {
         toggle_handler: ?HandlerRef,
         close_handler: ?HandlerRef,
 
-        /// Fallback when Gooey context is unavailable (e.g. headless/test).
+        /// Fallback when Window context is unavailable (e.g. headless/test).
         fn disabled() ResolvedState {
             return .{
                 .is_open = false,
@@ -283,7 +283,7 @@ pub const Select = struct {
         }
 
         // Internal state path: read from WidgetStore
-        const g = b.gooey orelse return ResolvedState.disabled();
+        const g = b.window orelse return ResolvedState.disabled();
         const id_hash = layout_id.id;
         std.debug.assert(id_hash != 0);
         const ss = g.widgets.getOrCreateSelectState(id_hash) orelse return ResolvedState.disabled();
