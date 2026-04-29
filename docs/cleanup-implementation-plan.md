@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/6 landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/6 landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -857,11 +857,32 @@ so each lands green on its own.
     1061/1061 tests passed` (+4 vs. 1057 — the four `App`
     init/deinit/cross-window-share tests). See "Sub-PR 7b.3"
     below.
-  - ☐ 7b.4 — Lift `keymap` and `globals` off `Window` onto `App`,
-    keeping `Debugger` on `Window.globals` (audited per-window:
-    overlay quads, frame timing, selected layout id all bound to
-    one scene). `Keymap` and `*const Theme` move to
-    `App.globals`.
+  - ☑ **7b.4 — Lift `keymap` and `*const Theme` off `Window`
+    onto `App.globals`.** Landed on
+    `cleanup/pr-7b4-keymap-theme-on-app`. `Keymap` registration
+    moved off all four `Window.init*` paths onto `App.init` /
+    `App.initInPlace`; `Window.keymap()` becomes a forwarder to
+    `self.app.keymap()` so existing call sites
+    (`runtime/input.zig`, `examples/actions.zig`) keep working
+    without churn. The `*const Theme` slot follows the same
+    lift via `Builder.setTheme` / `Builder.theme` writing
+    through `window.app.globals` instead of `window.globals` —
+    a single `cx.setTheme(&Theme.dark)` now repaints every
+    window in a multi-window app, which was structurally
+    impossible pre-7b.4. `Debugger` deliberately stays on
+    `Window.globals` (overlay quads, frame timing, selected
+    layout id all bound to one scene; sharing one debugger
+    across windows would mix metrics from two unrelated
+    frames). `App.init` / `initInPlace` signatures changed
+    `Self → !Self` and `void → !void` because
+    `Globals.setOwned` may fail with `OutOfMemory` — the
+    three callers (`runtime/runner.zig`,
+    `runtime/multi_window_app.zig`, `app.zig::WebApp`) added
+    `try` in step. `Build Summary: 9/9 steps succeeded;
+    1063/1063 tests passed` (+2 vs. 1061 — the two new
+    `App.keymap()` tests covering single-window access and the
+    cross-window-share property the lift unlocks). See
+    "Sub-PR 7b.4" below.
   - ☐ 7b.5 — Lift `image_loader` to `App`. Pick between (a)
     shared queue with per-window draining and (b) per-window
     loaders pointing at the shared atlas; the choice has
@@ -1423,6 +1444,205 @@ without also having to introduce the ownership story.
   7b.3.
 
 **Result:** `Build Summary: 9/9 steps succeeded; 1061/1061
+tests passed`. `zig build install` builds all examples without
+warnings.
+
+---
+
+**Sub-PR 7b.4 — Lift `keymap` and `*const Theme` onto `App.globals` (landed):**
+
+Fourth functional slice of PR 7b. Goal: extend the 7b.3
+`entities` lift to `Keymap` and the `*const Theme` slot, both
+of which the GPUI mapping in
+[`architectural-cleanup-plan.md` §10](./architectural-cleanup-plan.md#10-the-app--window--contextt-split)
+puts on `App` rather than `Window`. Pre-7b.4 every
+`Window.globals` owned its own `Keymap` (registered identically
+in all four `Window.init*` paths) and the `*const Theme` slot
+was per-window (a tab swap in window A would not repaint window
+B). Post-7b.4 both slots live on `App.globals` and every
+`Window` reaches them through its borrowed `*App`.
+
+`Debugger` deliberately stays on `Window.globals`. Audit
+confirmed every `Debugger` field — overlay quads, frame timing,
+selected layout id, profiler panel state — is bound to a single
+scene; sharing one debugger across windows would mix metrics
+from two unrelated frames. The split (Keymap + Theme on `App`,
+Debugger on `Window`) matches the GPUI sketch verbatim.
+
+**Why this lands as its own slice:** mechanically the lift is
+small (one new field on `App`, two `setOwned` calls relocated,
+one accessor forwarder, two `Builder` getter/setter rewrites),
+but the signature change cascade is non-trivial — `App.init` /
+`initInPlace` go from infallible to `!`-returning because
+`Globals.setOwned` may fail with `OutOfMemory`, and three
+callers (`runtime/runner.zig`, `runtime/multi_window_app.zig`,
+`app.zig::WebApp`) had to learn `try`. Landing those changes
+in isolation keeps the diff legible and makes the next slice
+(7b.5 `image_loader` placement) start from a clean signature
+baseline.
+
+**Write scope (landed):**
+
+- `src/context/app.zig` —
+  - **Adds** `globals: Globals = .{}` field. `Globals` is the
+    PR 6 type-keyed singleton store; here it owns the
+    app-scoped `Keymap` and (lazily, via `Builder.setTheme`)
+    the `*const Theme` slot.
+  - `App.init` / `App.initInPlace` register an owned `Keymap`
+    in `globals` via `setOwned` after the `EntityMap` is
+    constructed. `Keymap.init` is infallible; `setOwned` may
+    fail with `OutOfMemory` (the heap allocation for the
+    owned `*Keymap`), which is why both signatures now
+    return `!`-types. The error path unwinds through
+    `errdefer self.entities.deinit()` so the partial
+    `EntityMap` does not leak.
+  - `App.deinit` adds a `self.globals.deinit(self.allocator)`
+    call after `entities.deinit`. Order rationale:
+    `entities.deinit` first means any cancel-group walks
+    triggered by entity removal see a still-live `Globals`,
+    not a zeroed one. (No entity-attached cancel group today
+    reaches into a global, but the reverse direction is not
+    yet audited — keeping `entities` first stays safe.)
+  - **Adds** `App.keymap()` accessor (panic on missing slot;
+    same contract as the pre-7b.4 `Window.keymap()`).
+  - Two new tests cover the single-window access and the
+    cross-window-share property (one `App` borrowed twice
+    sees the same `Keymap` bindings).
+- `src/context/window.zig` —
+  - **Drops** `Keymap` registration from all four `init*`
+    paths (`initOwned` / `initOwnedPtr` /
+    `initWithSharedResources` / `initWithSharedResourcesPtr`).
+    The `Debugger` registration stays in place. Each path
+    used to be:
+
+    ```zig
+    try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
+    errdefer result.globals.deinit(allocator);
+    try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
+    ```
+
+    and collapses to:
+
+    ```zig
+    try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
+    ```
+
+    The intermediate `errdefer` retired alongside the first
+    `try`; the second `try` is the last fallible call before
+    `return`, so no `errdefer` is needed (the function
+    unwinds through the surrounding allocator-create
+    errdefers and the `result.globals.deinit` call inside
+    `Window.deinit` if a later caller fails). Documented
+    inline in each path.
+  - `Window.keymap()` becomes a one-line forwarder:
+    `return self.app.keymap();`. Existing call sites
+    (`window.keymap().bind(...)` / `.match(...)` in
+    `runtime/input.zig` and `examples/actions.zig`) reach
+    through unchanged.
+  - The `Keymap` import alias on the file survives only
+    because the forwarder's return type still names
+    `*Keymap`; a follow-up that retires the forwarder once
+    enough callers route through `*App` directly can drop
+    the alias and the import together.
+- `src/ui/builder.zig` — `setTheme` writes to
+  `g.app.globals.replaceBorrowedConst(Theme, t)` and `theme()`
+  reads from `g.app.globals.getConst(Theme) orelse &Theme.light`.
+  The `g.window orelse return &Theme.light` short-circuit
+  survives for unit tests that bypass the full framework
+  init wiring.
+- `src/runtime/runner.zig` — `app_ptr.initInPlace(...)` gains a
+  `try`. The pre-existing `defer allocator.destroy(app_ptr)`
+  runs even on the error path, so a `setOwned` failure here
+  does not leak the `allocator.create(App)` allocation.
+- `src/runtime/multi_window_app.zig` —
+  `.context_app = ContextApp.init(allocator, io)` becomes
+  `.context_app = try ContextApp.init(allocator, io)`. The
+  surrounding `errdefer resources.deinit()` unwinds the
+  by-value resources copy on failure; the `EntityMap` /
+  `Keymap` allocations that `ContextApp.init` would have
+  made are torn down inside its own `errdefer` chain before
+  this expression unwinds.
+- `src/app.zig` — WASM bootstrap
+  `app_ptr.initInPlace(...)` gains a `try`. WASM has no
+  `defer` analog in the bootstrap, so a failure here leaves
+  the `allocator.create(ContextApp)` allocation orphaned
+  until the browser tab teardown reclaims the entire WASM
+  heap — same lifecycle as every other `g_*` global.
+
+**Tasks landed:**
+
+- [x] Add `globals: Globals = .{}` to `App`.
+- [x] Register an owned `Keymap` in `App.init` / `initInPlace`.
+- [x] Tear down `globals` in `App.deinit` (after `entities`).
+- [x] Add `App.keymap()` accessor with panic-on-missing
+      contract.
+- [x] Drop `Keymap` registration from all four `Window.init*`
+      paths; keep `Debugger`.
+- [x] Drop the now-vestigial `errdefer result.globals.deinit`
+      after the final `setOwned` in each `Window.init*` path.
+- [x] Rewrite `Window.keymap()` as a forwarder to
+      `self.app.keymap()`.
+- [x] Route `Builder.setTheme` / `Builder.theme` through
+      `window.app.globals` instead of `window.globals`.
+- [x] `runtime/runner.zig`, `runtime/multi_window_app.zig`,
+      `app.zig::WebApp` learn `try` for the new `App.init*`
+      signatures.
+- [x] `Build Summary: 9/9 steps succeeded; 1063/1063 tests
+      passed` (+2 vs. PR 7b.3's 1061 — the two new
+      `App.keymap()` tests covering single-window access and
+      the cross-window-share property).
+- [x] `zig build install` builds all examples (single-window
+      and multi-window) without warnings.
+
+**Implementation notes:**
+
+- **Theme slot ownership shape.** `Theme` is registered via
+  `replaceBorrowedConst`, not `setOwned` — callers pass
+  `&Theme.dark` from static storage, and the registry never
+  frees it. The slot lives at `App.globals` lifetime; since
+  `App.deinit` calls `globals.deinit` which is a no-op for
+  `borrowed_const` entries, the static storage outlives the
+  `App` and there is nothing to tear down. Pre-7b.4 the same
+  shape lived on `Window.globals`; the lift is mechanical.
+- **Forwarder vs. direct `*App` access.** `Window.keymap()`
+  stays as a forwarder rather than retired in favour of
+  `cx.app().keymap()` because the call surface that reads
+  the keymap (`runtime/input.zig`, `examples/actions.zig`)
+  is framework-internal and already reaches through
+  `Window`. Retiring the forwarder would force a sweep
+  across these call sites for no clarity gain in this
+  slice; a future cleanup that introduces `Cx.app()` and
+  reroutes user-facing call sites can drop the forwarder
+  in step.
+- **`init` errdefer ordering.** `App.init` orders the
+  `errdefer` chain as: `entities` (allocated first) →
+  `globals` (allocated second). On a `setOwned` failure,
+  `entities.deinit` runs and the partial `globals` (still
+  empty) needs no teardown. On any later failure,
+  `globals.deinit` runs first, then `entities.deinit` — the
+  registered `Keymap` is torn down via the registry's thunk
+  before the entity map. The order matches the
+  forward-ordered teardown in `App.deinit`, which is
+  unusual (usually `errdefer` reverses construction order)
+  but documented inline — `EntityMap` must outlive
+  `Globals` for the same cancel-walk reason called out in
+  the file header.
+- **Signature change cascade was contained.** Three call
+  sites added `try` for the new `App.init*` shapes
+  (`runner.zig`, `multi_window_app.zig`, `app.zig`). No
+  user examples reach the signatures directly — every
+  example goes through `runCx` or `App.openWindow`, which
+  absorb the `!`-return. The change is API-neutral from a
+  user perspective.
+- **`Window.testWindow` fixture stays valid.** The
+  deferred-command and `DrawPhase` tests use a stub
+  `Window` with `app: undefined`. None of those tests
+  reaches `keymap()` or `theme()`, so the fact that the
+  forwarder would panic on `undefined` `app` is moot.
+  Tests that exercise the real `App.keymap()` accessor
+  live on `App` itself (in `app.zig`).
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1063/1063
 tests passed`. `zig build install` builds all examples without
 warnings.
 
