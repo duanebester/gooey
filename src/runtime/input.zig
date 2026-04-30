@@ -65,6 +65,26 @@ pub fn handleInputCx(
         .mouse_up => {
             if (handleMouseUpEvent(cx, gooey, builder)) return true;
         },
+        .touch_down => |touch_ev| {
+            std.debug.print("runtime: touch_down at ({d:.1},{d:.1})\n", .{ touch_ev.position.x, touch_ev.position.y });
+            const synthetic = input_mod.MouseEvent{
+                .position = touch_ev.position,
+                .button = .left,
+                .click_count = 1,
+                .modifiers = .{},
+            };
+            if (handleMouseDownEvent(cx, gooey, builder, synthetic)) return true;
+        },
+        .touch_up => {
+            if (handleMouseUpEvent(cx, gooey, builder)) return true;
+        },
+        .touch_moved => |touch_ev| {
+            if (handleMouseDragEvent(cx, gooey, builder, touch_ev.position)) return true;
+            if (handleMouseMoveEvent(cx, gooey, touch_ev.position, true)) return true;
+        },
+        .touch_cancelled => {
+            _ = handleMouseUpEvent(cx, gooey, builder);
+        },
         .key_down => |k| {
             if (handleKeyDownEvent(cx, gooey, k)) return true;
         },
