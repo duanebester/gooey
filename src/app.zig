@@ -271,8 +271,8 @@ pub fn WebApp(
             g_builder.?.* = Builder.init(
                 allocator,
                 g_window.?.layout,
-                g_window.?.scene,
-                g_window.?.dispatch,
+                g_window.?.frame.scene,
+                g_window.?.frame.dispatch,
             );
             g_builder.?.window = g_window.?;
 
@@ -412,7 +412,7 @@ pub fn WebApp(
 
             // Render to GPU
             const bg = w.background_color;
-            g_renderer.?.render(g_window.?.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
+            g_renderer.?.render(g_window.?.frame.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
 
             // Request next frame
             if (g_platform) |p| {

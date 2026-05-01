@@ -299,16 +299,15 @@ pub const Window = struct {
     /// 7c.3a.
     frame: Frame = undefined,
 
-    /// PR 7c.3a — back-compat alias mirroring `frame.scene`. Kept
-    /// so the ~99 internal `self.scene.*` / `window.scene.*` call
-    /// sites compile against the new bundle without a wholesale
-    /// sweep in this slice. PR 7c.3b retires the alias by
-    /// rewriting every call site to reach through
-    /// `window.frame.scene` (same pattern PR 7a → 7b.6 used for
-    /// the `text_system` / `svg_atlas` / `image_atlas` triplet).
-    /// Always populated from `frame.scene` by every `init*` path
-    /// — same heap address, just a duplicated pointer field.
-    scene: *Scene,
+    // PR 7c.3b — `scene: *Scene` back-compat alias retired. The
+    // pre-7c.3b field mirrored `frame.scene` to keep ~99 internal
+    // `window.scene.*` / `self.scene.*` call sites working across
+    // the 7c.3a landing. 7c.3b rewrote every call site to reach
+    // through `window.frame.scene` and dropped the duplicate
+    // pointer field, collapsing the per-frame rendering state to
+    // the single `frame: Frame` field. Same retirement shape PR
+    // 7b.6 used for the `text_system` / `svg_atlas` /
+    // `image_atlas` triplet.
 
     /// PR 7a — bundled shared rendering resources. Owns or borrows
     /// `text_system` / `svg_atlas` / `image_atlas` as one unit;
@@ -358,15 +357,11 @@ pub const Window = struct {
     // last hard-coded singleton from the struct surface and makes
     // adding future globals (settings, telemetry) a one-liner.
 
-    /// PR 7c.3a — back-compat alias mirroring `frame.dispatch`.
-    /// Kept so the ~68 internal `self.dispatch.*` /
-    /// `window.dispatch.*` call sites compile against the new
-    /// bundle without a wholesale sweep in this slice. PR 7c.3b
-    /// retires the alias by rewriting every call site to reach
-    /// through `window.frame.dispatch`. Always populated from
-    /// `frame.dispatch` by every `init*` path — same heap
-    /// address, just a duplicated pointer field.
-    dispatch: *DispatchTree,
+    // PR 7c.3b — `dispatch: *DispatchTree` back-compat alias
+    // retired alongside the `scene` alias. The pre-7c.3b field
+    // mirrored `frame.dispatch` to keep ~68 internal call sites
+    // working across the 7c.3a landing. Reach through
+    // `window.frame.dispatch` instead.
 
     // PR 6 / 7b.4 — `keymap` lives in `app.globals` now (see
     // `app.zig`). `window.keymap()` is a forwarder so callers
@@ -674,9 +669,9 @@ pub const Window = struct {
         // resulting struct is copied into `result.frame` below;
         // the heap pointers it carries survive the by-value copy
         // unchanged (same shape as the `resources` copy further
-        // down). `result.scene` / `result.dispatch` are populated
-        // as back-compat aliases mirroring the same heap
-        // addresses; PR 7c.3b retires them.
+        // down). PR 7c.3b retired the `scene` / `dispatch`
+        // back-compat alias fields — `result.frame` is now the
+        // sole owner of the per-frame rendering state.
         var frame = try Frame.initOwned(
             allocator,
             @floatCast(platform_window.size.width),
@@ -711,15 +706,14 @@ pub const Window = struct {
             .io = io,
             .layout = layout_engine,
             // PR 7c.3a — `frame` is copied by value below; the
-            // back-compat aliases (`scene` / `dispatch`) reach
-            // into the same heap addresses. The local `frame`'s
-            // `owned` flag is disarmed post-literal (mirroring
-            // the `resources.owned = false` pattern) so a later
-            // errdefer can't tear the pointees down out from
-            // under `result.frame`.
+            // local `frame`'s `owned` flag is disarmed post-literal
+            // (mirroring the `resources.owned = false` pattern) so a
+            // later errdefer can't tear the pointees down out from
+            // under `result.frame`. PR 7c.3b — the `scene` /
+            // `dispatch` alias fields retired alongside the
+            // call-site sweep; reach through `result.frame.scene` /
+            // `result.frame.dispatch` instead.
             .frame = frame,
-            .scene = frame.scene,
-            .dispatch = frame.dispatch,
             // PR 7b.3 — `entities` lifted off `Window` onto `App`.
             // The `app: *App` field is left at its `undefined`
             // default here; the caller (`runtime/window_context.zig`)
@@ -847,10 +841,10 @@ pub const Window = struct {
         // the WASM stack budget stays bounded across the two
         // internal subsystems. Replaces the previous two
         // `allocator.create` + init + setViewport/enableCulling +
-        // errdefer blocks. The back-compat aliases (`self.scene`
-        // / `self.dispatch`) are populated from the same heap
-        // addresses in the field-by-field block below; PR 7c.3b
-        // retires them.
+        // errdefer blocks. PR 7c.3b retired the `scene` /
+        // `dispatch` back-compat alias fields, so `self.frame`
+        // is now the only ownership handle for the per-frame
+        // rendering state — no mirror pointers populated below.
         try self.frame.initOwnedInPlace(
             allocator,
             @floatCast(platform_window.size.width),
@@ -883,10 +877,9 @@ pub const Window = struct {
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        // PR 7c.3a — back-compat aliases mirror `self.frame.*`.
-        // Same heap address as the bundle's owned pointees.
-        self.scene = self.frame.scene;
-        self.dispatch = self.frame.dispatch;
+        // PR 7c.3b — `scene` / `dispatch` alias fields retired.
+        // Reach through `self.frame.scene` / `self.frame.dispatch`
+        // for the per-frame rendering state.
         // PR 7b.6 — back-compat aliases removed. The three pointer
         // fields that mirrored `self.resources.*` retired alongside
         // the call-site sweep; reach through `self.resources.*` for
@@ -1030,15 +1023,13 @@ pub const Window = struct {
             .io = io,
             .layout = layout_engine,
             // PR 7c.3a — `frame` is copied by value below; the
-            // back-compat aliases (`scene` / `dispatch`) reach
-            // into the same heap addresses as `frame.scene` /
-            // `frame.dispatch`. The local `frame.owned` is
-            // disarmed post-literal so a later errdefer can't
-            // tear the pointees down out from under
-            // `result.frame`.
+            // local `frame.owned` is disarmed post-literal so a
+            // later errdefer can't tear the pointees down out from
+            // under `result.frame`. PR 7c.3b — the `scene` /
+            // `dispatch` alias fields retired; reach through
+            // `result.frame.scene` / `result.frame.dispatch`
+            // instead.
             .frame = frame,
-            .scene = frame.scene,
-            .dispatch = frame.dispatch,
             // PR 7b.3 — `entities` lifted off `Window` onto `App`.
             // `app: *App` is set by the caller post-init; see the
             // matching note in `initOwned` above.
@@ -1162,10 +1153,9 @@ pub const Window = struct {
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        // PR 7c.3a — back-compat aliases mirror `self.frame.*`.
-        // Same heap address as the bundle's owned pointees.
-        self.scene = self.frame.scene;
-        self.dispatch = self.frame.dispatch;
+        // PR 7c.3b — `scene` / `dispatch` alias fields retired.
+        // Reach through `self.frame.scene` / `self.frame.dispatch`
+        // for the per-frame rendering state.
 
         // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
         // owns the pointees. By-value init is safe — the struct only
@@ -1298,11 +1288,11 @@ pub const Window = struct {
         // `frame.owned == false` (reserved for the PR 7c.3c
         // double-buffer borrowed-view shape, not yet wired).
         // Replaces the previous two pairs of `T.deinit` +
-        // `allocator.destroy` calls. The back-compat aliases
-        // (`self.scene` / `self.dispatch`) are NOT separately
-        // freed — they're mirror pointers into the same heap
-        // addresses `frame.deinit` just released; touching
-        // them after this point would be a use-after-free.
+        // `allocator.destroy` calls. PR 7c.3b retired the
+        // `scene` / `dispatch` back-compat alias fields, so
+        // there are no mirror pointers to worry about —
+        // `frame.deinit` is the single ownership boundary
+        // for the per-window per-frame rendering state.
         self.frame.deinit();
 
         // PR 7a — `layout` is always owned (no init path ever
@@ -1417,15 +1407,15 @@ pub const Window = struct {
         // self.resources.text_system.setScaleFactor(self.scale_factor);
 
         // Clear scene for new frame
-        self.scene.clear();
+        self.frame.scene.clear();
 
         // Connect render stats to scene for profiler tracking
         render_stats.beginFrame();
-        self.scene.setStats(&render_stats.frame_stats);
+        self.frame.scene.setStats(&render_stats.frame_stats);
 
         // Update viewport only on resize
-        if (self.scene.viewport_width != self.width or self.scene.viewport_height != self.height) {
-            self.scene.setViewport(self.width, self.height);
+        if (self.frame.scene.viewport_width != self.width or self.frame.scene.viewport_height != self.height) {
+            self.frame.scene.setViewport(self.width, self.height);
         }
 
         // Begin layout pass (timer moved to endFrame to cover only actual layout compute)
@@ -1518,13 +1508,13 @@ pub const Window = struct {
     /// Call this on mouse_moved events AFTER bounds have been synced.
     /// Returns true if hover state changed (requires re-render).
     pub fn updateHover(self: *Self, x: f32, y: f32) bool {
-        return self.hover.update(self.dispatch, x, y);
+        return self.hover.update(self.frame.dispatch, x, y);
     }
 
     /// Refresh hover state using last known mouse position.
     /// Call this after bounds have been synced to fix frame delay issues.
     pub fn refreshHover(self: *Self) void {
-        self.hover.refresh(self.dispatch);
+        self.hover.refresh(self.frame.dispatch);
     }
 
     /// Check if a specific layout element is currently hovered.
@@ -1919,7 +1909,7 @@ pub const Window = struct {
 
     /// Finish the scene after rendering
     pub fn finishScene(self: *Self) void {
-        self.scene.finish();
+        self.frame.scene.finish();
     }
 
     // =========================================================================
@@ -1927,7 +1917,7 @@ pub const Window = struct {
     // =========================================================================
 
     pub fn getScene(self: *Self) *Scene {
-        return self.scene;
+        return self.frame.scene;
     }
 
     pub fn getTextSystem(self: *Self) *TextSystem {
@@ -2046,10 +2036,14 @@ fn testWindow() Window {
         .allocator = testing.allocator,
         .io = undefined,
         .layout = undefined,
-        .scene = undefined,
+        // PR 7c.3a — `frame: Frame = undefined` default keeps
+        // this fixture compiling without explicit init; the
+        // deferred-command tests this is built for never reach
+        // through `frame.scene` / `frame.dispatch`. PR 7c.3b
+        // retired the `scene` / `dispatch` alias fields the
+        // pre-7c.3b fixture had to set explicitly.
         .widgets = undefined,
         .focus = undefined,
-        .dispatch = undefined,
 
         // PR 7b.3 — `entities` lifted onto `App`. The deferred-
         // command tests this fixture is built for never reach

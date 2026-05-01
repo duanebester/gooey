@@ -208,8 +208,8 @@ pub fn WindowContext(comptime State: type) type {
             builder.* = Builder.init(
                 allocator,
                 window.layout,
-                window.scene,
-                window.dispatch,
+                window.frame.scene,
+                window.frame.dispatch,
             );
             builder.window = window;
 
@@ -320,8 +320,8 @@ pub fn WindowContext(comptime State: type) type {
             builder.* = Builder.init(
                 allocator,
                 window.layout,
-                window.scene,
-                window.dispatch,
+                window.frame.scene,
+                window.frame.dispatch,
             );
             builder.window = window;
 
@@ -465,7 +465,7 @@ pub fn WindowContext(comptime State: type) type {
             window.setTextAtlas(self.window.resources.text_system.getAtlas());
             window.setSvgAtlas(self.window.resources.svg_atlas.*.getAtlas());
             window.setImageAtlas(self.window.resources.image_atlas.*.getAtlas());
-            window.setScene(self.window.scene);
+            window.setScene(self.window.frame.scene);
 
             // Set thread-safe atlas upload callbacks for multi-window scenarios (macOS only).
             // These callbacks hold the appropriate mutex during GPU upload, preventing races

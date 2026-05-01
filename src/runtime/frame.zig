@@ -65,7 +65,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     }
 
     // Reset dispatch tree for new frame
-    window.dispatch.reset();
+    window.frame.dispatch.reset();
 
     window.beginFrame();
 
@@ -142,7 +142,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // (previously untracked — now measured as "dispatch sync")
     window.debugger().beginDispatchSync(window.io);
 
-    for (window.dispatch.nodes.items) |*node| {
+    for (window.frame.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
             node.bounds = window.layout.getBoundingBox(layout_id);
             node.z_index = window.layout.getZIndex(layout_id);
@@ -159,7 +159,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     window.debugger().endDispatchSync(window.io);
 
     // Clear scene
-    window.scene.clear();
+    window.frame.scene.clear();
 
     // Reset SVG atlas per-frame rasterization budget so that expensive
     // software rasterizations are spread across multiple frames instead
@@ -198,7 +198,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Render debug overlays (if enabled via Cmd+Shift+I)
     try renderDebugOverlays(window);
 
-    window.scene.finish();
+    window.frame.scene.finish();
 
     // If SVG rasterizations were deferred due to per-frame budget, request
     // another render so the remaining icons progressively appear.
@@ -245,8 +245,8 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
             if (pending.layout_id == cmd.id and pending.base_order == 0) {
                 // Reserve a base draw order for this canvas
                 // Canvas primitives will use orders starting from this base
-                pending.base_order = window.scene.reserveCanvasOrders(256); // Reserve block of 256 orders
-                pending.clip_bounds = window.scene.currentClip();
+                pending.base_order = window.frame.scene.reserveCanvasOrders(256); // Reserve block of 256 orders
+                pending.clip_bounds = window.frame.scene.currentClip();
                 break;
             }
         }
@@ -258,7 +258,7 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
         if (cmd.command_type == .scissor_end) {
             if (builder.findPendingScrollByLayoutId(cmd.id)) |pending| {
                 if (window.widgets.scrollContainer(pending.id)) |scroll_widget| {
-                    try scroll_widget.renderScrollbars(window.scene);
+                    try scroll_widget.renderScrollbars(window.frame.scene);
                 }
             }
         }
@@ -269,7 +269,7 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
 fn renderCanvasElements(window: *Window, builder: *const Builder) void {
     for (builder.pending_canvas.items) |pending| {
         const bounds = window.layout.getBoundingBox(pending.layout_id) orelse continue;
-        canvas_mod.executePendingCanvas(pending, window.scene, scene_mod.Bounds.init(
+        canvas_mod.executePendingCanvas(pending, window.frame.scene, scene_mod.Bounds.init(
             bounds.x,
             bounds.y,
             bounds.width,
@@ -311,7 +311,7 @@ fn renderTextInputs(window: *Window, builder: *const Builder) !void {
         input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         input_widget.secure = pending.style.secure;
-        try input_widget.render(window.scene, window.resources.text_system, window.scale_factor);
+        try input_widget.render(window.frame.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -339,7 +339,7 @@ fn renderTextAreas(window: *Window, builder: *const Builder) !void {
         ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         ta_widget.setPlaceholder(pending.style.placeholder);
-        try ta_widget.render(window.scene, window.resources.text_system, window.scale_factor);
+        try ta_widget.render(window.frame.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -384,7 +384,7 @@ fn renderCodeEditors(window: *Window, builder: *const Builder) !void {
         ce_widget.encoding = pending.style.encoding;
 
         ce_widget.setPlaceholder(pending.style.placeholder);
-        try ce_widget.render(window.scene, window.resources.text_system, window.scale_factor);
+        try ce_widget.render(window.frame.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -425,12 +425,12 @@ fn renderDebugOverlays(window: *Window) !void {
         window.hover.ancestors(),
         window.layout,
     );
-    try window.debugger().renderOverlays(window.scene);
+    try window.debugger().renderOverlays(window.frame.scene);
 
     // Render inspector panel (Phase 2)
     if (window.debugger().showInspector()) {
         try window.debugger().renderInspectorPanel(
-            window.scene,
+            window.frame.scene,
             window.resources.text_system,
             window.width,
             window.height,
@@ -441,7 +441,7 @@ fn renderDebugOverlays(window: *Window) !void {
     // Render profiler panel
     if (window.debugger().showProfiler()) {
         try window.debugger().renderProfilerPanel(
-            window.scene,
+            window.frame.scene,
             window.resources.text_system,
             window.width,
             window.scale_factor,
