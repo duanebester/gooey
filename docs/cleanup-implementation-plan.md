@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -1054,13 +1054,29 @@ so each lands green on its own.
       `initOwnedInPlace`, `borrowed` deinit no-op, and
       zero-viewport tolerance). See "Sub-PR 7c.3a"
       below.
-    - ☐ 7c.3b — Retire `window.scene` /
-      `window.dispatch` back-compat aliases. Rewrite
-      the ~167 internal call sites to reach through
-      `window.frame.*`; drop the two pointer fields
-      off `Window`'s field list. Same sweep shape as
-      PR 7b.6 did for the `text_system` / `svg_atlas`
-      / `image_atlas` triplet.
+    - ☑ **7c.3b — Retire `window.scene` /
+      `window.dispatch` back-compat aliases.** Landed
+      on `cleanup/pr-7c3b-retire-scene-dispatch-aliases`.
+      The pre-flight ~167-call-site estimate was
+      generous — the actual sweep touched 6 files
+      (`runtime/{frame,render,input,window_context}.zig`,
+      `app.zig`, `context/window.zig`) and ~80
+      inline references. Every `window.scene.*` /
+      `self.scene.*` / `window.dispatch.*` /
+      `self.dispatch.*` reference rewrites to reach
+      through `window.frame.scene` /
+      `window.frame.dispatch`; the two `*Scene` /
+      `*DispatchTree` alias fields drop from
+      `Window`'s field list, and the four
+      `Window.init*` paths drop their alias-population
+      lines. Same retirement shape PR 7b.6 used for
+      the `text_system` / `svg_atlas` / `image_atlas`
+      triplet. `Build Summary: 9/9 steps succeeded;
+      1073/1073 tests passed` (no delta vs. 7c.3a's
+      1073 — pure call-site sweep, no new tests; the
+      four `Frame` tests landed in 7c.3a continue to
+      pin the ownership-shape contract). See "Sub-PR
+      7c.3b" below.
     - ☐ 7c.3c — Add `next_frame: Frame` for the
       `rendered_frame` / `next_frame` double buffer.
       `mem.swap(&window.rendered_frame,
@@ -3139,6 +3155,317 @@ PR 7c.2's 1069 — the four new `Frame`
 tests). `zig build install` builds all
 examples (single-window and multi-window)
 without warnings.
+
+---
+
+**Sub-PR 7c.3b — Retire `window.scene` /
+`window.dispatch` back-compat aliases (landed):**
+
+Second slice of PR 7c.3. Goal: finish the bundle
+introduction PR 7c.3a started by rewriting every
+`Window` consumer to reach through
+`window.frame.scene` / `window.frame.dispatch`
+instead of the duplicate alias pointers, then
+drop the two alias fields from `Window`'s
+field list. Reference:
+[`architectural-cleanup-plan.md` §11 frame
+double-buffering with `mem::swap`](./architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap).
+
+**Why this lands as its own slice:** PR 7c.3a
+deliberately stopped one step short of a
+call-site sweep so reviewers could focus on the
+`Frame` struct's ownership shape (three
+constructors, single `owned: bool` flag,
+mirror of `AppResources`) without ~80
+mechanical line edits dwarfing the structural
+diff. 7c.3b is the matching pair — pure
+mechanical sweep, zero new logic, every test
+that passed pre-7c.3b still passes post-7c.3b.
+Same staging strategy PR 7a → 7b.6 used for the
+`text_system` / `svg_atlas` / `image_atlas`
+triplet (bundle the type, sweep the call sites,
+drop the duplicate fields), now applied to the
+per-frame rendering state.
+
+**Pre-flight choice (sweep granularity):**
+
+- **Option (a) — file-by-file sed** (chosen).
+  The aliases are simple field accesses (no
+  method-name collisions: there's no
+  `window.dispatch(args)` method, only
+  `window.dispatch.method(args)` field
+  access; `Window.dispatchClick` etc. live on
+  `DispatchTree`, not `Window`). A
+  per-file `sed 's/window\.scene/window.frame.scene/g'`
+  pass produces the right rewrite in one shot,
+  then a verification grep confirms zero
+  remaining `window\.scene` /
+  `window\.dispatch` references outside
+  the platform-window struct (which has its
+  own unrelated `scene` field).
+- **Option (b) — manual rewrite per call
+  site** (rejected). The 6 files (~80 sites)
+  would have been a long and error-prone
+  manual edit. The sed pass + verification
+  grep is provably equivalent for this
+  rewrite shape (no overloaded names, no
+  context-sensitive replacements).
+
+**Write scope (landed):**
+
+- `src/runtime/frame.zig` — 13 sites across
+  `renderFrameImpl` (dispatch reset, scene
+  clear, scene finish, dispatch tree walk for
+  bounds sync), `renderCommands` (canvas
+  base-order reservation, scrollbar render),
+  `renderCanvasElements` (canvas execution),
+  `renderTextInputs` /
+  `renderTextAreas` /
+  `renderCodeEditors` (per-pending-widget
+  render), and `renderDebugOverlays`
+  (overlay quads, inspector panel, profiler
+  panel).
+- `src/runtime/render.zig` — 11 sites
+  across the per-render-command leaf
+  functions (`renderShadow`,
+  `renderRectangle`, `renderBorder`,
+  `renderText`, `renderSvg`,
+  `renderImage`, `renderScissorStart` /
+  `renderScissorEnd`,
+  `renderImagePlaceholder` /
+  `renderImageError`). All reach through
+  the `window_ctx: *Window` parameter.
+- `src/runtime/input.zig` — 16 sites in
+  pointer / key / drag handlers
+  (`hitTest`, `dispatchPath`,
+  `findDropTarget`, `getNodeConst`,
+  `dispatchClickOutsideWithTarget`,
+  `dispatchClick`, `focusPath`,
+  `contextStack`, `dispatchAction`,
+  `dispatchKeyDown`, `rootPath`).
+- `src/runtime/window_context.zig` — 5
+  sites: two `Builder.init` argument
+  pairs (in `init` and
+  `initWithSharedResources`) and the
+  `window.setScene(self.window.scene)`
+  call in `setupWindow` (the platform
+  window receives a borrowed pointer to
+  the framework window's scene; that pointer
+  now reaches through `self.window.frame.scene`).
+- `src/app.zig` — 3 sites: two
+  `Builder.init` arguments in
+  `WebApp.initImpl` and the
+  `g_renderer.?.render(...)` scene-pointer
+  argument in `WebApp.frame`.
+- `src/context/window.zig` —
+  - Drop the `scene: *Scene` and
+    `dispatch: *DispatchTree` alias fields
+    from the struct definition. Replaced
+    with retirement-note comment blocks that
+    point at `window.frame.scene` /
+    `window.frame.dispatch` for future
+    readers.
+  - Drop `.scene = frame.scene` and
+    `.dispatch = frame.dispatch` from the
+    struct literals in `initOwned` and
+    `initWithSharedResources`. The
+    surrounding doc-comments rewrite to call
+    out the alias retirement instead of
+    pointing forward to it.
+  - Drop `self.scene = self.frame.scene` /
+    `self.dispatch = self.frame.dispatch`
+    from the field-by-field init in
+    `initOwnedPtr` and
+    `initWithSharedResourcesPtr`. Same
+    doc-comment shape.
+  - Rewrite the four `Window`-method
+    call sites that reached through the
+    aliases (`Window.beginFrame` —
+    `scene.clear`, `scene.setStats`,
+    viewport sync; `updateHover` /
+    `refreshHover` — `hover.update` /
+    `hover.refresh` argument;
+    `finishScene` — `scene.finish`;
+    `getScene` accessor return). All now
+    reach through `self.frame.scene` /
+    `self.frame.dispatch`.
+  - Drop `.scene = undefined` and
+    `.dispatch = undefined` from the
+    `testWindow` fixture; the
+    `frame: Frame = undefined` default
+    covers the deferred-command tests'
+    needs without explicit init.
+  - `Window.deinit` comment block updates
+    to note that `frame.deinit` is now
+    the single ownership boundary for
+    per-frame rendering state — no mirror
+    pointers to worry about.
+
+**Out of scope:**
+
+- `src/ui/builder.zig` keeps its own
+  `scene: *Scene` and `dispatch: *DispatchTree`
+  fields. They mirror the `Window`'s
+  pointers (initialised from
+  `window.frame.scene` / `window.frame.dispatch`
+  by `Builder.init`), but they're independent
+  fields on a different struct — the alias
+  retirement only applies to the duplicate
+  fields on `Window`. Folding `Builder`'s
+  field copies into a `*Window` reach-through
+  is a separate cleanup (would touch every
+  `self.scene` / `self.dispatch` site
+  inside `Builder`'s ~1700 lines, no
+  ownership-shape benefit since the fields
+  are simple borrowed pointers).
+- `src/ui/canvas.zig` keeps its own
+  `scene: *Scene` field for the same
+  reason. The `Canvas` struct is a
+  self-contained drawing primitive that
+  takes a `*Scene` at construction time;
+  no `*Window` reference, so the alias
+  retirement doesn't apply.
+- `src/platform/macos/window.zig` and
+  `src/platform/linux/window.zig` keep
+  their own `scene: ?*const Scene` fields.
+  These are `platform.PlatformWindow`
+  (the OS-level handle), not the framework
+  `Window`; the field's purpose is to
+  hand a borrowed scene pointer to the
+  GPU renderer at render time, set via
+  `PlatformWindow.setScene(scene)` from
+  the framework layer. Renaming would
+  require touching the per-OS rendering
+  loops, which is out of scope.
+
+**Tasks landed:**
+
+- [x] Sweep `window.scene` / `window.dispatch` /
+      `self.scene` / `self.dispatch` in the 6
+      affected files (`runtime/frame.zig`,
+      `runtime/render.zig`, `runtime/input.zig`,
+      `runtime/window_context.zig`, `app.zig`,
+      `context/window.zig`).
+- [x] Drop the two alias fields from `Window`'s
+      struct definition; replace with retirement-note
+      comment blocks.
+- [x] Drop the four alias-population sites in
+      `Window.init*` paths (two struct-literal
+      lines, two field-by-field lines).
+- [x] Rewrite the four `Window`-method internal
+      call sites (`beginFrame`, `updateHover`,
+      `refreshHover`, `finishScene` /
+      `getScene`) to reach through `self.frame.*`.
+- [x] Update doc-comments in `Window` (struct
+      header, both `initOwned` Frame setup
+      blocks, both deinit blocks, `testWindow`
+      fixture) to call out 7c.3b's alias
+      retirement instead of pointing forward to it.
+- [x] `Build Summary: 9/9 steps succeeded;
+      1073/1073 tests passed` (no delta vs. PR
+      7c.3a's 1073 — pure mechanical sweep, no
+      new tests).
+- [x] `zig build install` builds all examples
+      (single-window and multi-window) without
+      warnings.
+
+**Implementation notes:**
+
+- **No new tests.** The four `Frame` tests
+  landed in 7c.3a (`initOwned` allocates and
+  frees cleanly, `initOwnedInPlace` produces
+  an owned instance, `borrowed` deinit is a
+  no-op, zero viewport is accepted) continue to
+  pin the ownership-shape contract. 7c.3b is a
+  pure call-site sweep — every site now reaches
+  through `window.frame.scene` /
+  `window.frame.dispatch`, which are the same
+  heap addresses the pre-7c.3b alias fields
+  pointed at. If 7c.3a's tests passed, 7c.3b's
+  rewrite preserves the same heap addresses, so
+  every existing test that exercises
+  scene/dispatch behaviour through any code path
+  continues to pass without modification.
+  Verified via the test count being unchanged at
+  1073.
+- **`testWindow` fixture stays minimal.**
+  Pre-7c.3b the fixture had to set
+  `.scene = undefined` and
+  `.dispatch = undefined` explicitly for the
+  struct literal to compile. Post-7c.3b the
+  alias fields are gone, and the
+  `frame: Frame = undefined` default (introduced
+  in 7c.3a) already covers the deferred-command
+  tests this fixture is built for. Net delta on
+  the fixture: -2 lines (the two
+  `undefined` entries) and a comment block
+  pointing at 7c.3a / 7c.3b for context.
+- **Why no `frame.zig` edits in this slice.**
+  The `Frame` struct landed in 7c.3a with
+  three constructors and a `deinit` — every
+  shape 7c.3b needs is already there. The
+  `borrowed` constructor stays unused at this
+  slice (reserved for 7c.3c's
+  `mem.swap`-driven double-buffer transient
+  views); the type's surface area is stable
+  across 7c.3a → 7c.3b → 7c.3c.
+- **Sweep verification.** Post-sweep grep
+  confirms zero remaining `window\.scene` /
+  `window\.dispatch` /
+  `self\.scene` /
+  `self\.dispatch` references outside (a)
+  doc-comments inside `context/window.zig`
+  describing the retirement, (b) the
+  platform-window struct's unrelated
+  `scene: ?*const Scene` field on
+  `platform/macos/window.zig` /
+  `platform/linux/window.zig` (which is the
+  OS handle's borrowed-pointer slot, not a
+  framework `Window` alias), and (c)
+  `Builder`'s and `Canvas`'s own `scene` /
+  `dispatch` fields (out-of-scope per the
+  notes above). Pre-7c.3c, the only field
+  named `scene` on `Window` is now
+  `frame.scene`, and the only field named
+  `dispatch` is now `frame.dispatch`. Same
+  invariant PR 7b.6 left for the
+  `text_system` / `svg_atlas` /
+  `image_atlas` triplet on `AppResources`.
+- **Forward compatibility with 7c.3c's
+  double-buffer.** 7c.3c will rename
+  `Window.frame` to `Window.rendered_frame`,
+  add `Window.next_frame`, and call
+  `mem.swap(&self.rendered_frame,
+  &self.next_frame)` at frame boundary. Every
+  call site 7c.3b just rewrote already reaches
+  through `window.frame.*`; 7c.3c's relocation
+  becomes a single rename
+  (`frame` → `rendered_frame`) plus the
+  `mem.swap` call. Pre-7c.3b the
+  `window.scene` / `window.dispatch` aliases
+  would have needed their own
+  `window.rendered_frame.scene` /
+  `window.rendered_frame.dispatch` pass
+  through, doubling the 7c.3c diff.
+- **Multi-window flow unchanged.**
+  `Window.initWithSharedResources` /
+  `initWithSharedResourcesPtr` keep their
+  own `Frame.initOwned` /
+  `initOwnedInPlace` calls — scene and
+  dispatch tree are per-window state even in
+  multi-window mode (sharing them across
+  windows would break hit-testing — every
+  window has its own draw-order space). The
+  alias retirement is invisible to the
+  shared-vs-owned distinction; it's purely
+  about how each window reaches its own
+  per-frame state.
+
+**Result:** `Build Summary: 9/9 steps
+succeeded; 1073/1073 tests passed` (no delta
+vs. PR 7c.3a's 1073). `zig build install`
+builds all examples (single-window and
+multi-window) without warnings.
 
 ---
 
