@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -1077,15 +1077,151 @@ so each lands green on its own.
       four `Frame` tests landed in 7c.3a continue to
       pin the ownership-shape contract). See "Sub-PR
       7c.3b" below.
-    - ☐ 7c.3c — Add `next_frame: Frame` for the
-      `rendered_frame` / `next_frame` double buffer.
-      `mem.swap(&window.rendered_frame,
-      &window.next_frame)` at frame boundary;
-      `next_frame.scene.clear()` post-swap replaces
-      the current `scene.clear()` in `beginFrame`.
-      The `borrowed` constructor on `Frame` (landed
-      in 7c.3a) becomes load-bearing here for transient
-      swap views.
+    - ☑ **7c.3c — `rendered_frame` / `next_frame`
+      double buffer with `mem.swap` at frame
+      boundary.** Landed on
+      `cleanup/pr-7c3c-double-buffer-frame`. **Direction:**
+      renamed the existing `Window.frame` field to
+      `Window.next_frame` (the build target — every
+      pre-7c.3c call site that wrote through
+      `window.frame.scene` / `window.frame.dispatch`
+      was writing the frame currently under
+      construction), and added `Window.rendered_frame:
+      Frame` for the previously-built tree.
+      `mem.swap(&window.rendered_frame, &window.next_frame)`
+      at the end of every tick in
+      `runtime/frame.zig::renderFrameImpl`, then
+      `window.next_frame.scene.clear()` and
+      `window.next_frame.dispatch.reset()` recycle the
+      now-stale buffer for the next build. Build call
+      sites continue to write through
+      `window.next_frame.*`; hit-testing for input
+      events between frames reads
+      `window.rendered_frame.dispatch` (the last
+      fully-built tree, with bounds already synced
+      pre-swap). Both `Window`-level slots carry
+      `owned = true` — `mem.swap` is a physical struct
+      exchange between two owning slots, not a hand-off
+      through `Frame.borrowed`, so `Window.deinit`
+      continues to free both pointee pairs across
+      every swap. The four `Window.init*` paths
+      allocate both `Frame`s up front (single-window
+      pair owns its scene+dispatch; multi-window pair
+      same per-window even with a borrowed
+      `AppResources`); `Window.deinit` tears both
+      down. On macOS / Linux a
+      `platform_window.setScene(window.rendered_frame.scene)`
+      update follows every swap so the
+      `displayLinkCallback` / Linux render path tracks
+      the heap-allocation rotation; web reads through
+      `g_window.?.rendered_frame.scene` directly each
+      tick and needs no setScene plumbing (the
+      `getPlatformWindow` short-circuit in
+      `renderFrameImpl` covers both). Hit-test sites
+      in `runtime/input.zig` (`updateDragOverTarget`,
+      `handleMouseDownEvent`, `handleDragSourceClick`,
+      `handleDispatchClick`, `handleMouseUpEvent`,
+      `handleFocusedKeyAction`) were rewritten to
+      reach through `window.rendered_frame.dispatch`;
+      build-pipeline call sites in
+      `runtime/{frame,render}.zig`, `app.zig::WebApp`,
+      and `runtime/window_context.zig` reach through
+      `window.next_frame.*`. `Window.updateHover` /
+      `Window.refreshHover` split: the former (called
+      from input handlers between frames) reads
+      `rendered_frame.dispatch`; the latter (called
+      pre-swap inside `renderFrameImpl` after bounds
+      sync) reads `next_frame.dispatch` and goes away
+      in the follow-up slice that retires
+      `refreshHover` per the (1) rationale below.
+      `Builder` caches the `*Scene` / `*DispatchTree`
+      pointers it was handed at `init` time, so the
+      per-tick reset block in `renderFrameImpl` adds
+      `builder.scene = window.next_frame.scene;
+      builder.dispatch = window.next_frame.dispatch;`
+      alongside the `id_counter = 0` and pending-queue
+      clears — keeps the cached pointers tracking
+      `next_frame.*` across every swap. `Build
+      Summary: 9/9 steps succeeded; 1076/1076 tests
+      passed` (+3 vs. 7c.3b's 1073 — three new `Frame`
+      `mem.swap` tests covering scene+dispatch
+      exchange between two owning Frames, `owned =
+      true` preservation across arbitrary swap counts,
+      and post-swap recycle landing on the right
+      pointees without disturbing the
+      just-rotated-into-rendered_frame pair). See
+      "Sub-PR 7c.3c" below.
+
+      Note on direction vs. 7c.3b's forward-compat
+      sketch: PR 7c.3b read "7c.3c will rename
+      `Window.frame` to `Window.rendered_frame`, add
+      `Window.next_frame`" — that's backwards. The
+      pre-7c.3c `Window.frame` was the active build
+      target (every `window.frame.scene.*` write in
+      `runtime/frame.zig::renderFrameImpl`,
+      `Window.beginFrame`, `Builder.init`, and the
+      widget render helpers was producing the frame
+      under construction). GPUI's mapping in §11 is
+      explicit: `mem::swap(rendered, next)` then
+      `next.clear()`, with build writes landing in
+      `next_frame`. Renaming `frame` → `rendered_frame`
+      would have forced every build call site to flip
+      to `next_frame` *and* reshape the swap semantics
+      in a follow-up slice, doubling the diff. The
+      GPUI-faithful direction (`frame` → `next_frame`,
+      add `rendered_frame`) made 7c.3c the single
+      slice that landed the double buffer with its
+      semantics intact.
+
+      Performance rationale: the swap itself is a
+      24-byte struct copy (allocator, two pointers,
+      one-byte flag) — negligible at the slice
+      boundary. The performance wins land in follow-up
+      slices that the GPUI-faithful direction
+      unlocks. (1) Hit-test correctness without
+      `refreshHover`: pre-7c.3c
+      `runtime/frame.zig::renderFrameImpl` called
+      `window.refreshHover()` after the build pass to
+      re-run hit testing against fresh bounds (input
+      handling earlier in the tick used last frame's
+      tree); with `rendered_frame` alive across the
+      swap, input hit-tests against
+      `rendered_frame.dispatch` (the last fully-built
+      tree, with bounds already synced) and is
+      correct the first time — one full hit-test
+      pass per frame goes away. (2)
+      `hovered_ancestors` cache simplification: the
+      32-entry parent-chain cache in
+      `context/hover.zig` exists *because* the
+      dispatch tree resets before the next mouse
+      move arrives
+      (`architectural-cleanup-plan.md` §11 calls
+      this hack out by name); with
+      `rendered_frame.dispatch` alive between frames,
+      we re-walk the live tree on each hover update
+      instead of populating the cache during build,
+      reducing work in `HoverState.applyHit`. (3)
+      Foundation for PR 8 `element_states`: the
+      `with_element_state(global_id, …)` pattern in
+      §19 looks up `(GlobalElementId, TypeId)` in
+      `next_frame.element_states`, falling back to
+      `rendered_frame.element_states`; the
+      GPUI-faithful direction sets this up
+      structurally with no further reshaping, while
+      the literal-plan direction would have forced
+      PR 8 to also flip the swap semantics. (4)
+      Cleaner `dispatch.reset()` ownership: the
+      explicit `window.next_frame.dispatch.reset()`
+      at the start of `renderFrameImpl` is now
+      redundant with the post-swap recycle on every
+      tick after the first; a follow-up slice
+      retires the start-of-frame reset entirely
+      (tick 0 sees the same effective state via
+      `Frame.initOwned`'s fresh dispatch). None of
+      these wins land *in* 7c.3c — the slice's job
+      was the swap and the field rename; each
+      follow-up slice cashes in one of the wins
+      above against the new shape.
 - ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
 
@@ -3464,6 +3600,423 @@ per-frame rendering state.
 **Result:** `Build Summary: 9/9 steps
 succeeded; 1073/1073 tests passed` (no delta
 vs. PR 7c.3a's 1073). `zig build install`
+builds all examples (single-window and
+multi-window) without warnings.
+
+**Sub-PR 7c.3c — `rendered_frame` /
+`next_frame` double buffer with `mem.swap`
+at frame boundary (landed):**
+
+**Why this lands as its own slice:** PR
+7c.3a bundled `scene` + `dispatch` into a
+single `Frame` struct; PR 7c.3b retired the
+back-compat `window.scene` /
+`window.dispatch` aliases and rewrote every
+internal call site to reach through
+`window.frame.*`. PR 7c.3c is the third
+and final piece of the original 7c.3
+sketch: the actual `mem.swap`-driven double
+buffer per
+[`architectural-cleanup-plan.md` §11](./architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap).
+Splitting the three concerns across three
+slices keeps each one's review surface small
+enough to land green on its own — 7c.3c by
+itself touches 7 files (one new field on
+`Window`, four `Window.init*` paths, four
+build-call-site files, three input-call-site
+files, the `Builder` per-tick reset, and
+the platform `setScene` update) plus the
+three new `Frame` swap tests; doing it
+alongside the type extraction or the alias
+sweep would have dwarfed every previous
+7-slice's diff.
+
+**Direction (load-bearing for the slice's
+shape):** the existing `Window.frame` field
+was the active build target — every
+`window.frame.scene.*` write in
+`runtime/frame.zig::renderFrameImpl`,
+`Window.beginFrame`, `Builder.init`, and the
+widget render helpers was producing the
+frame currently under construction. So 7c.3c
+renamed `frame` → `next_frame` and added
+`rendered_frame: Frame` for the
+previously-built tree, putting the
+GPUI-faithful naming right at the field
+declaration. The literal-plan direction
+(renaming `frame` → `rendered_frame` and
+adding `next_frame` for the build target)
+would have forced every build call site to
+flip from `frame.*` → `next_frame.*` *and*
+reshape the swap semantics in a follow-up
+slice, doubling the diff. PR 7c.3b's
+forward-compat sketch read "7c.3c will
+rename `Window.frame` to
+`Window.rendered_frame`" — that turned out
+to be backwards once 7c.3c started, hence
+the explicit note in the slice description
+above.
+
+**Pre-flight pivot — `Builder` caches its
+`*Scene` / `*DispatchTree` pointers:** the
+first build of 7c.3c hit a subtle aliasing
+bug: `Builder.init` is called once per
+`WindowContext` and stashes the
+`*Scene` / `*DispatchTree` it was handed
+into its own fields. Pre-7c.3c, those
+pointers were stable for the `Builder`'s
+lifetime because `Window.frame` never moved.
+With `mem.swap` rotating the two heap-
+allocated pairs every tick, the cached
+pointers identify the GPU-side display
+buffer instead of the live build target on
+every tick after the first. Three options
+were considered:
+
+  - **Option (a) — sync `builder.scene` /
+    `builder.dispatch` from
+    `window.next_frame.*` once per tick
+    inside `renderFrameImpl`** (chosen). Two
+    extra assignments alongside the
+    existing per-tick `id_counter = 0` and
+    pending-queue clears; total cost is two
+    pointer writes per tick. Keeps the
+    `Builder.init` shape unchanged for the
+    ~50 build-call-site widgets that read
+    `self.dispatch` directly.
+  - **Option (b) — make `Builder` hold a
+    `*Window` and dereference
+    `window.next_frame.{scene,dispatch}`
+    on every read** (rejected). Cleaner at
+    the type level but every
+    `self.dispatch.pushNode()` /
+    `self.dispatch.setLayoutId()` /
+    `self.dispatch.popNode()` would learn
+    an extra indirection in the hot path.
+    The hot loops in
+    `Builder.boxWithLayoutIdImpl` push and
+    pop dispatch nodes per primitive;
+    adding a pointer chase per access
+    would be measurable on dense scenes.
+  - **Option (c) — refactor `Builder` to
+    not cache the pointers at all
+    (recompute from `*Window` lazily)**
+    (rejected). Same cost as (b) at every
+    use site, plus a wider blast radius
+    (every `Builder` call site learns a
+    new method signature).
+
+The chosen option lives in
+`renderFrameImpl`'s per-tick reset block:
+the same place the `id_counter` /
+pending-queue clears already lived. Two
+new lines (`builder.scene =
+window.next_frame.scene;
+builder.dispatch =
+window.next_frame.dispatch;`) plus a
+matching comment block on
+`runtime/window_context.zig`'s
+`Builder.init` calls explain the
+init-time-vs-per-tick split.
+
+**Pre-flight pivot — platform `setScene`
+update post-swap:** on macOS / Linux the
+platform window holds a
+`scene: ?*const Scene` slot populated by
+`platform_window.setScene(...)` at
+`WindowContext.setupWindow`. Pre-7c.3c that
+was a one-shot setup because there was
+only one Scene allocation per window. With
+the double buffer, the heap allocation
+that's "currently displayed" rotates into
+`rendered_frame.scene` after every swap, so
+the platform pointer must follow the
+rotation. The choice was either:
+
+  - **Option (a) — `setScene` follows the
+    swap** (chosen). `renderFrameImpl`
+    calls
+    `pw.setScene(window.rendered_frame.scene)`
+    immediately after the `mem.swap` so
+    the platform's scene pointer always
+    identifies the just-built scene. The
+    macOS `setScene` is mutex-aware
+    (`render_in_progress` short-circuit
+    skips the mutex when called from
+    inside `displayLinkCallback`, which is
+    where `renderFrameImpl` runs), so the
+    extra call is a single pointer
+    assignment plus `requestRender`. Web
+    skips this branch entirely because
+    `getPlatformWindow()` returns null on
+    the web target — `WebApp.frame` reads
+    through `g_window.?.rendered_frame.scene`
+    directly each tick.
+  - **Option (b) — content-swap instead of
+    pointer-swap** (rejected). Keeping the
+    platform's scene pointer stable across
+    swaps would require swapping `Scene`
+    contents (vertex buffers, draw lists)
+    instead of pointers — defeats the
+    point of `mem.swap` (which is meant
+    to be O(1) struct copy). Discarded
+    immediately.
+  - **Option (c) — let the platform
+    re-fetch `window.rendered_frame.scene`
+    each render** (rejected for native).
+    Web does this naturally because
+    `WebApp.frame` is the render driver.
+    Native displayLinkCallback / Linux
+    render path doesn't have a `*Window`
+    handle on the path that calls
+    `renderer.renderScene` — threading one
+    through would touch every platform's
+    render entry point. Doing the
+    `setScene` update at the framework
+    layer (post-swap inside
+    `renderFrameImpl`) keeps the platform
+    code unchanged.
+
+**Hover read-side split (`updateHover` vs.
+`refreshHover`):** the two hover entry
+points need different dispatch trees.
+
+  - `Window.updateHover(x, y)` is called
+    from `runtime/input.zig` mouse move
+    events, which arrive *between frames*
+    (after frame N's swap, before frame
+    N+1's build). The dispatch tree the
+    user is currently *seeing* lives on
+    `rendered_frame.dispatch`, so this
+    reads through there.
+  - `Window.refreshHover()` is called from
+    `runtime/frame.zig::renderFrameImpl`
+    after the bounds-sync pass, *before*
+    the end-of-frame swap. At that moment
+    the just-built tree (with current
+    bounds) lives on `next_frame.dispatch`;
+    `rendered_frame.dispatch` still holds
+    the previous frame. Reading
+    `next_frame.dispatch` here updates the
+    hover state to match the bounds the
+    user is *about to see*. The follow-up
+    slice that retires `refreshHover` per
+    win (1) above removes this method
+    entirely — once input always
+    hit-tests against `rendered_frame`,
+    the post-build rerun becomes
+    redundant.
+
+A single `dispatch: *DispatchTree`
+parameter would have been simpler at the
+`HoverState` level, but the call-site
+split is forced by the swap semantics:
+the two callers fire on different sides
+of the `mem.swap` boundary.
+
+**Write scope:**
+
+- `src/context/window.zig` — rename
+  `frame: Frame = undefined` →
+  `next_frame: Frame = undefined`, add
+  `rendered_frame: Frame = undefined` slot
+  alongside. Four `Window.init*` paths
+  allocate both frames up front (was: one
+  frame per init). `Window.deinit` tears
+  both down (was: one). `beginFrame`,
+  `finishScene`, `getScene`, `updateHover`,
+  `refreshHover` rewritten to reach through
+  the right slot per the read-side split
+  above. `testWindow` fixture's comment
+  block updated.
+- `src/context/frame.zig` — three new tests
+  for `mem.swap` semantics (scene+dispatch
+  exchange, `owned = true` preservation
+  across swap counts, post-swap recycle
+  isolation). File-header doc-block
+  rewritten to describe the
+  rendered/next pair as the canonical
+  shape (was: single `Frame` per `Window`
+  with a forward-pointer to 7c.3c).
+- `src/runtime/frame.zig` — build call
+  sites switch from `window.frame.*` to
+  `window.next_frame.*`. New end-of-frame
+  block does
+  `std.mem.swap(Frame, &window.rendered_frame,
+  &window.next_frame); window.next_frame.scene.clear();
+  window.next_frame.dispatch.reset();`
+  followed by the platform `setScene`
+  update. Per-tick reset block adds the
+  two `builder.scene = ...; builder.dispatch
+  = ...;` lines per the pre-flight pivot
+  above. New `Frame` import in the imports
+  block (used by the `mem.swap` call).
+- `src/runtime/render.zig` — every
+  `window_ctx.frame.scene` →
+  `window_ctx.next_frame.scene`. ~10 sites.
+- `src/runtime/input.zig` — every
+  `window.frame.dispatch` →
+  `window.rendered_frame.dispatch`. ~12
+  sites across the six hit-test entry
+  points.
+- `src/runtime/window_context.zig` — both
+  `Builder.init` calls switch source from
+  `window.frame.{scene,dispatch}` to
+  `window.next_frame.{scene,dispatch}`;
+  `setupWindow`'s `setScene` switches from
+  `window.frame.scene` to
+  `window.rendered_frame.scene` (the
+  initial frame-0 setup; `renderFrameImpl`
+  takes over for tick 1 onwards).
+- `src/app.zig` — `WebApp.initImpl`'s
+  `Builder.init` switches source to
+  `g_window.?.next_frame.*`;
+  `WebApp.frame`'s `g_renderer.?.render`
+  switches from `g_window.?.frame.scene` to
+  `g_window.?.rendered_frame.scene`.
+
+**Tasks:**
+
+- [x] Rename `Window.frame` → `next_frame`,
+      add `rendered_frame` slot.
+- [x] Update all four `Window.init*` paths
+      to allocate both frames; update
+      `Window.deinit` to tear both down.
+- [x] Update `Window.beginFrame`,
+      `finishScene`, `getScene` to reach
+      through `next_frame.*`.
+- [x] Split `updateHover` (reads
+      `rendered_frame.dispatch`) and
+      `refreshHover` (reads
+      `next_frame.dispatch`).
+- [x] Rewrite build-pipeline call sites in
+      `runtime/frame.zig`,
+      `runtime/render.zig`,
+      `runtime/window_context.zig`,
+      `app.zig::WebApp` to reach through
+      `next_frame.*`.
+- [x] Rewrite hit-test call sites in
+      `runtime/input.zig` to reach through
+      `rendered_frame.dispatch`.
+- [x] Add the end-of-frame `mem.swap`
+      block in `renderFrameImpl` (swap +
+      clear next_frame.scene + reset
+      next_frame.dispatch + platform
+      setScene update).
+- [x] Add the per-tick `builder.scene` /
+      `builder.dispatch` reset in
+      `renderFrameImpl`.
+- [x] Three new `Frame` tests for
+      `mem.swap` semantics.
+- [x] Update file-header doc-block on
+      `frame.zig` to describe the
+      rendered/next pair as the canonical
+      shape.
+- [x] `Build Summary: 9/9 steps succeeded;
+      1076/1076 tests passed` (+3 vs. PR
+      7c.3b's 1073 — the three new
+      `mem.swap` tests).
+- [x] `zig build install` builds all
+      examples (single-window and
+      multi-window) without warnings.
+
+**Implementation notes:**
+
+- **Three new tests, all on `Frame`.** The
+  swap semantics are anchored at the
+  `Frame` level rather than the `Window`
+  level because (a) `Window` swap requires
+  a real platform window for the
+  `setupWindow` path, which the test
+  allocator can't provide, and (b) the
+  invariant being tested is "does
+  `std.mem.swap(Frame, &a, &b)` preserve
+  ownership and exchange the pointee
+  pointers as expected" — which is a
+  `Frame`-level concern. The Window-level
+  integration is exercised by every
+  example through `zig build install` and
+  by the existing 1073 tests that build
+  scenes through `runtime/frame.zig`.
+- **Two clears per frame on `next_frame.scene`.**
+  `Window.beginFrame` clears
+  `next_frame.scene` early (the historical
+  pre-7c.3a clear), and `renderFrameImpl`'s
+  end-of-frame post-swap recycle clears
+  again. The first clear is redundant on
+  every tick after the first (the post-
+  swap recycle already left an empty
+  buffer); on tick 0 the explicit clear
+  covers the case where no prior swap
+  has run. A future slice can prune the
+  redundant clear; 7c.3c keeps both for
+  safety.
+- **Two resets per frame on `next_frame.dispatch`.**
+  Same shape as the scene clears:
+  `renderFrameImpl` resets
+  `next_frame.dispatch` at the start
+  (historical pre-7c.3a reset) AND in the
+  end-of-frame recycle. Defensive
+  double-reset for the same reason. Win
+  (4) in the slice description above
+  retires the start-of-frame reset.
+- **No changes to `Frame.borrowed`.** The
+  `borrowed` constructor on `Frame` (landed
+  in 7c.3a) was originally sketched as
+  "load-bearing for the swap point" — but
+  the actual `mem.swap` between two
+  `owned = true` slots doesn't go through
+  `borrowed` at all. It's a physical
+  struct exchange between two owning
+  slots, both of which retain `owned =
+  true` post-swap. `Frame.borrowed`
+  remains useful for diagnostic /
+  transient inspection of either buffer
+  (e.g. a debug overlay reading
+  `rendered_frame.dispatch` without taking
+  responsibility for tearing down its
+  scene+dispatch pair) — the
+  doc-comments on the constructor and the
+  struct were rewritten to reflect that.
+  The four 7c.3a tests (including the
+  borrowed-deinit-no-op test) continue to
+  pin the constructor's contract.
+- **First-frame display behaviour.** On
+  tick 0 (first frame ever), the
+  end-of-frame swap rotates the just-
+  built `next_frame` into `rendered_frame`
+  and updates the platform `setScene` to
+  point at the just-built scene. The GPU
+  rendering inside the same
+  `displayLinkCallback` then renders the
+  freshly-swapped scene — *no* one-frame
+  display delay is introduced. (A
+  start-of-frame swap variant would have
+  introduced a one-frame delay because
+  the GPU would render `rendered_frame`
+  *before* `next_frame` was built; the
+  end-of-frame variant chosen here keeps
+  the pre-7c.3c first-frame behaviour
+  intact.)
+- **Multi-window flow unchanged at the
+  ownership layer.** Every `Window` in a
+  multi-window app still owns its own
+  `next_frame` + `rendered_frame` pair —
+  scene + dispatch tree are per-window
+  state and cannot be shared without
+  breaking hit-testing. The double buffer
+  is per-window; `multi_window_app::App`
+  doesn't see it. The only multi-window
+  call site this slice touched is the
+  `setupWindow` path in
+  `runtime/window_context.zig`, which now
+  initialises the platform `setScene` to
+  `rendered_frame.scene` rather than
+  `frame.scene`.
+
+**Result:** `Build Summary: 9/9 steps
+succeeded; 1076/1076 tests passed` (+3 vs.
+PR 7c.3b's 1073). `zig build install`
 builds all examples (single-window and
 multi-window) without warnings.
 
