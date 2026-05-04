@@ -250,13 +250,13 @@ fn handleMouseMoveEvent(
 fn updateDragOverTarget(window: *Window, x: f32, y: f32, drag_type_id: drag_mod.DragTypeId) void {
     window.drag_over_target = null;
 
-    if (window.frame.dispatch.hitTest(x, y)) |hit| {
+    if (window.rendered_frame.dispatch.hitTest(x, y)) |hit| {
         var path_buf: [64]DispatchNodeId = undefined;
-        const path = window.frame.dispatch.dispatchPath(hit, &path_buf);
+        const path = window.rendered_frame.dispatch.dispatchPath(hit, &path_buf);
         if (path.len > 0) {
             // Walk up path to find compatible drop target
-            if (window.frame.dispatch.findDropTarget(path, drag_type_id)) |target| {
-                if (window.frame.dispatch.getNodeConst(target.node_id)) |node| {
+            if (window.rendered_frame.dispatch.findDropTarget(path, drag_type_id)) |target| {
+                if (window.rendered_frame.dispatch.getNodeConst(target.node_id)) |node| {
                     window.drag_over_target = node.layout_id;
                 }
             }
@@ -289,7 +289,7 @@ fn handleMouseDownEvent(
     if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
 
     // 4. Compute hit target once for both click-outside and click dispatch
-    const hit_target = window.frame.dispatch.hitTest(x, y);
+    const hit_target = window.rendered_frame.dispatch.hitTest(x, y);
 
     // 4. Check for drag source — start pending drag
     if (hit_target) |target| {
@@ -298,7 +298,7 @@ fn handleMouseDownEvent(
     }
 
     // 5. Dispatch click-outside events (for closing dropdowns, modals, etc.)
-    if (window.frame.dispatch.dispatchClickOutsideWithTarget(x, y, hit_target, window)) {
+    if (window.rendered_frame.dispatch.dispatchClickOutsideWithTarget(x, y, hit_target, window)) {
         cx.notify();
     }
 
@@ -324,11 +324,11 @@ fn handleDragSourceClick(window: *Window, target: DispatchNodeId, x: f32, y: f32
 
     // Build dispatch path from hit target to root
     var path_buf: [64]DispatchNodeId = undefined;
-    const path = window.frame.dispatch.dispatchPath(target, &path_buf);
+    const path = window.rendered_frame.dispatch.dispatchPath(target, &path_buf);
 
     // Walk up path to find drag source (closest to hit point first)
     for (path) |node_id| {
-        if (window.frame.dispatch.getNodeConst(node_id)) |node| {
+        if (window.rendered_frame.dispatch.getNodeConst(node_id)) |node| {
             if (node.drag_source) |source| {
                 window.pending_drag = .{
                     .value_ptr = source.value_ptr,
@@ -426,7 +426,7 @@ fn handleCodeEditorClick(
 /// Handle click dispatch through dispatch tree
 fn handleDispatchClick(cx: *Cx, window: *Window, target: DispatchNodeId) bool {
     // Handle focus
-    if (window.frame.dispatch.getNodeConst(target)) |node| {
+    if (window.rendered_frame.dispatch.getNodeConst(target)) |node| {
         if (node.focus_id) |focus_id| {
             if (window.focus.getHandleById(focus_id)) |handle| {
                 window.focusElement(handle.string_id);
@@ -435,7 +435,7 @@ fn handleDispatchClick(cx: *Cx, window: *Window, target: DispatchNodeId) bool {
     }
 
     // Dispatch click event
-    if (window.frame.dispatch.dispatchClick(target, window)) {
+    if (window.rendered_frame.dispatch.dispatchClick(target, window)) {
         cx.notify();
         return true;
     }
@@ -464,11 +464,11 @@ fn handleMouseUpEvent(
         const x = drag.cursor_position.x;
         const y = drag.cursor_position.y;
 
-        if (window.frame.dispatch.hitTest(x, y)) |hit| {
+        if (window.rendered_frame.dispatch.hitTest(x, y)) |hit| {
             var path_buf: [64]DispatchNodeId = undefined;
-            const path = window.frame.dispatch.dispatchPath(hit, &path_buf);
+            const path = window.rendered_frame.dispatch.dispatchPath(hit, &path_buf);
             if (path.len > 0) {
-                if (window.frame.dispatch.findDropTarget(path, drag.type_id)) |target| {
+                if (window.rendered_frame.dispatch.findDropTarget(path, drag.type_id)) |target| {
                     // Execute drop handler
                     if (target.handler) |handler| {
                         handler.invoke(window);
@@ -598,18 +598,18 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
 fn handleFocusedKeyAction(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     if (window.focus.getFocused()) |focus_id| {
         var path_buf: [64]DispatchNodeId = undefined;
-        if (window.frame.dispatch.focusPath(focus_id, &path_buf)) |path| {
+        if (window.rendered_frame.dispatch.focusPath(focus_id, &path_buf)) |path| {
             var ctx_buf: [64][]const u8 = undefined;
-            const contexts = window.frame.dispatch.contextStack(path, &ctx_buf);
+            const contexts = window.rendered_frame.dispatch.contextStack(path, &ctx_buf);
 
             if (window.keymap().match(k.key, k.modifiers, contexts)) |binding| {
-                if (window.frame.dispatch.dispatchAction(binding.action_type, path, window)) {
+                if (window.rendered_frame.dispatch.dispatchAction(binding.action_type, path, window)) {
                     cx.notify();
                     return true;
                 }
             }
 
-            if (window.frame.dispatch.dispatchKeyDown(focus_id, k)) {
+            if (window.rendered_frame.dispatch.dispatchKeyDown(focus_id, k)) {
                 cx.notify();
                 return true;
             }
@@ -617,9 +617,9 @@ fn handleFocusedKeyAction(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool 
     } else {
         // No focus - try root path
         var path_buf: [64]DispatchNodeId = undefined;
-        if (window.frame.dispatch.rootPath(&path_buf)) |path| {
+        if (window.rendered_frame.dispatch.rootPath(&path_buf)) |path| {
             if (window.keymap().match(k.key, k.modifiers, &.{})) |binding| {
-                if (window.frame.dispatch.dispatchAction(binding.action_type, path, window)) {
+                if (window.rendered_frame.dispatch.dispatchAction(binding.action_type, path, window)) {
                     cx.notify();
                     return true;
                 }

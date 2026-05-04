@@ -15,6 +15,11 @@ const ui_mod = @import("../ui/mod.zig");
 const render_cmd = @import("render.zig");
 const canvas_mod = @import("../ui/canvas.zig");
 const scene_mod = @import("../scene/mod.zig");
+// PR 7c.3c — the end-of-frame `mem.swap` below references the
+// `Frame` type by name; hoisted to the imports block to keep
+// the swap call site readable.
+const frame_mod = @import("../context/frame.zig");
+const Frame = frame_mod.Frame;
 
 const Window = window_mod.Window;
 const Cx = cx_mod.Cx;
@@ -64,8 +69,36 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
         }
     }
 
-    // Reset dispatch tree for new frame
-    window.frame.dispatch.reset();
+    // PR 7c.3c — reset the build target's dispatch tree.
+    //
+    // The end-of-frame `mem.swap` below already cleared and reset
+    // `next_frame` in the post-swap recycle step on every tick after
+    // the first; this reset is therefore redundant from tick 1
+    // onwards. The doc-block on this slice (cleanup-implementation-
+    // plan.md PR 7c.3c, win (4)) calls out moving this single
+    // explicit reset into the post-swap step exclusively, but the
+    // 7c.3c slice itself keeps both reset points for safety: tick 0
+    // (no prior swap to recycle the buffer) still needs an explicit
+    // reset here, and a defensive double-reset on later ticks is a
+    // cheap no-op (resetting an already-cleared dispatch tree is
+    // O(retained capacity), not O(node count)). The follow-up slice
+    // that retires `refreshHover` retires this duplicate reset at
+    // the same time.
+    window.next_frame.dispatch.reset();
+
+    // PR 7c.3c — sync builder's cached `scene` / `dispatch`
+    // pointers to the post-swap `next_frame.*` pair.
+    //
+    // Builder caches the two pointers it was handed at
+    // `Builder.init` time; the previous tick's `mem.swap` rotated
+    // those allocations into `rendered_frame`, leaving builder's
+    // cached pointers identifying the GPU-side display buffer
+    // instead of the live build target. Refreshing both fields
+    // here — alongside the per-tick `id_counter` / pending-queue
+    // resets below — keeps the cached pointers tracking
+    // `next_frame.*` across every swap.
+    builder.scene = window.next_frame.scene;
+    builder.dispatch = window.next_frame.dispatch;
 
     window.beginFrame();
 
@@ -142,7 +175,13 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // (previously untracked — now measured as "dispatch sync")
     window.debugger().beginDispatchSync(window.io);
 
-    for (window.frame.dispatch.nodes.items) |*node| {
+    // PR 7c.3c — the bounds sync runs against the just-built
+    // `next_frame.dispatch` (pre-swap). The end-of-frame swap below
+    // rotates the synced tree into `rendered_frame.dispatch`, where
+    // input handlers between frames will hit-test against it via
+    // `window.updateHover` / the dispatch-tree call sites in
+    // `runtime/input.zig`.
+    for (window.next_frame.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
             node.bounds = window.layout.getBoundingBox(layout_id);
             node.z_index = window.layout.getZIndex(layout_id);
@@ -158,8 +197,13 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     window.debugger().endDispatchSync(window.io);
 
-    // Clear scene
-    window.frame.scene.clear();
+    // PR 7c.3c — clear the build-target scene before the
+    // command-replay pass below populates it. `Window.beginFrame`
+    // already cleared `next_frame.scene` early in this function;
+    // this second clear is the historical pre-7c.3a redundant
+    // clear that 7c.3c preserves verbatim (the slice's job is
+    // the swap and rename, not pruning the redundant clears).
+    window.next_frame.scene.clear();
 
     // Reset SVG atlas per-frame rasterization budget so that expensive
     // software rasterizations are spread across multiple frames instead
@@ -198,7 +242,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Render debug overlays (if enabled via Cmd+Shift+I)
     try renderDebugOverlays(window);
 
-    window.frame.scene.finish();
+    window.next_frame.scene.finish();
 
     // If SVG rasterizations were deferred due to per-frame budget, request
     // another render so the remaining icons progressively appear.
@@ -208,6 +252,57 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // Finalize frame timing for profiler
     window.finalizeFrame();
+
+    // =========================================================================
+    // PR 7c.3c — frame-boundary `mem.swap` for the double buffer.
+    // =========================================================================
+    //
+    // At this point the build pass has finished writing into
+    // `window.next_frame.{scene,dispatch}` (just-built tree, with
+    // bounds synced and scene primitives committed). Swap it into
+    // `window.rendered_frame` so:
+    //
+    //   1. The GPU side picks up the just-built scene on the next
+    //      `renderScene` (we update the platform window's scene
+    //      pointer below to point at `rendered_frame.scene`,
+    //      which post-swap is the same heap allocation we just
+    //      finished writing into).
+    //   2. Input events arriving between this tick and the next
+    //      hit-test against `rendered_frame.dispatch` — the
+    //      tree the user is currently *seeing*. See
+    //      `Window.updateHover` and the dispatch-tree call sites
+    //      in `runtime/input.zig` for the read side.
+    //
+    // The pre-swap `next_frame` (the previous tick's already-
+    // displayed tree) becomes the recycled buffer post-swap; we
+    // clear its scene + reset its dispatch so the next tick's
+    // build into `next_frame.*` starts from an empty state. This
+    // is the "recycle the older buffer" half of the swap pattern
+    // sketched in `architectural-cleanup-plan.md` §11.
+    //
+    // Both halves of the swap retain `owned = true` — `mem.swap`
+    // is a physical struct exchange between two owning slots, not
+    // a hand-off through `Frame.borrowed`. `Window.deinit`
+    // continues to free both pointee pairs regardless of how many
+    // swaps have happened.
+    std.mem.swap(Frame, &window.rendered_frame, &window.next_frame);
+    window.next_frame.scene.clear();
+    window.next_frame.dispatch.reset();
+
+    // PR 7c.3c — update the platform window's scene pointer to
+    // track the post-swap `rendered_frame.scene` (the just-built
+    // tree, now the GPU-side display buffer). Pre-7c.3c the
+    // platform pointer was set once at `WindowContext.setupWindow`
+    // because there was only one Scene slot per window; with the
+    // double buffer, the physical Scene allocation rotated into
+    // the display side every tick, so the platform pointer must
+    // follow the rotation. Web's renderer reads
+    // `window.rendered_frame.scene` directly each tick and doesn't
+    // need this update; the `getPlatformWindow` accessor returns
+    // null on the web target, so the `if let` below short-circuits.
+    if (window.getPlatformWindow()) |pw| {
+        pw.setScene(window.rendered_frame.scene);
+    }
 }
 
 // =============================================================================
@@ -245,8 +340,8 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
             if (pending.layout_id == cmd.id and pending.base_order == 0) {
                 // Reserve a base draw order for this canvas
                 // Canvas primitives will use orders starting from this base
-                pending.base_order = window.frame.scene.reserveCanvasOrders(256); // Reserve block of 256 orders
-                pending.clip_bounds = window.frame.scene.currentClip();
+                pending.base_order = window.next_frame.scene.reserveCanvasOrders(256); // Reserve block of 256 orders
+                pending.clip_bounds = window.next_frame.scene.currentClip();
                 break;
             }
         }
@@ -258,7 +353,7 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
         if (cmd.command_type == .scissor_end) {
             if (builder.findPendingScrollByLayoutId(cmd.id)) |pending| {
                 if (window.widgets.scrollContainer(pending.id)) |scroll_widget| {
-                    try scroll_widget.renderScrollbars(window.frame.scene);
+                    try scroll_widget.renderScrollbars(window.next_frame.scene);
                 }
             }
         }
@@ -269,7 +364,7 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
 fn renderCanvasElements(window: *Window, builder: *const Builder) void {
     for (builder.pending_canvas.items) |pending| {
         const bounds = window.layout.getBoundingBox(pending.layout_id) orelse continue;
-        canvas_mod.executePendingCanvas(pending, window.frame.scene, scene_mod.Bounds.init(
+        canvas_mod.executePendingCanvas(pending, window.next_frame.scene, scene_mod.Bounds.init(
             bounds.x,
             bounds.y,
             bounds.width,
@@ -311,7 +406,7 @@ fn renderTextInputs(window: *Window, builder: *const Builder) !void {
         input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         input_widget.secure = pending.style.secure;
-        try input_widget.render(window.frame.scene, window.resources.text_system, window.scale_factor);
+        try input_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -339,7 +434,7 @@ fn renderTextAreas(window: *Window, builder: *const Builder) !void {
         ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
         ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
         ta_widget.setPlaceholder(pending.style.placeholder);
-        try ta_widget.render(window.frame.scene, window.resources.text_system, window.scale_factor);
+        try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -384,7 +479,7 @@ fn renderCodeEditors(window: *Window, builder: *const Builder) !void {
         ce_widget.encoding = pending.style.encoding;
 
         ce_widget.setPlaceholder(pending.style.placeholder);
-        try ce_widget.render(window.frame.scene, window.resources.text_system, window.scale_factor);
+        try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
@@ -425,12 +520,12 @@ fn renderDebugOverlays(window: *Window) !void {
         window.hover.ancestors(),
         window.layout,
     );
-    try window.debugger().renderOverlays(window.frame.scene);
+    try window.debugger().renderOverlays(window.next_frame.scene);
 
     // Render inspector panel (Phase 2)
     if (window.debugger().showInspector()) {
         try window.debugger().renderInspectorPanel(
-            window.frame.scene,
+            window.next_frame.scene,
             window.resources.text_system,
             window.width,
             window.height,
@@ -441,7 +536,7 @@ fn renderDebugOverlays(window: *Window) !void {
     // Render profiler panel
     if (window.debugger().showProfiler()) {
         try window.debugger().renderProfilerPanel(
-            window.frame.scene,
+            window.next_frame.scene,
             window.resources.text_system,
             window.width,
             window.scale_factor,

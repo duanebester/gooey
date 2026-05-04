@@ -185,14 +185,16 @@ const A11ySystem = a11y_system_mod.A11ySystem;
 const app_resources_mod = @import("app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
-// PR 7c.3a — bundled per-window per-frame rendering state
+// PR 7c.3a / 7c.3c — bundled per-window per-frame rendering state
 // (scene + dispatch tree) with a single ownership flag. Same
-// shape as `AppResources` but for the per-frame transients. The
-// ownership-uniform single-window shape lands first; PR 7c.3c
-// introduces the `rendered_frame` / `next_frame` double buffer
-// and the `borrowed` constructor on `Frame` becomes load-bearing.
-// See `frame.zig` and `docs/cleanup-implementation-plan.md` PR
-// 7c.3a.
+// shape as `AppResources` but for the per-frame transients. PR
+// 7c.3a landed the type and the single-`Frame`-per-`Window`
+// shape; PR 7c.3c upgrades that shape to a `rendered_frame` /
+// `next_frame` pair with `mem.swap` at the frame boundary, so
+// input handlers running between frames hit-test against the
+// last fully-built tree (`rendered_frame.dispatch`) while build
+// writes land in `next_frame.*`. See `frame.zig` and
+// `docs/cleanup-implementation-plan.md` PR 7c.3a / 7c.3c.
 const frame_mod = @import("frame.zig");
 const Frame = frame_mod.Frame;
 
@@ -285,19 +287,40 @@ pub const Window = struct {
     // retired alongside the `AppResources` extraction.
     layout: *LayoutEngine,
 
-    /// PR 7c.3a — bundled per-window per-frame rendering state.
-    /// Owns `scene: *Scene` and `dispatch: *DispatchTree` as one
-    /// unit; `frame.owned` is always `true` in the single-`Frame`
-    /// shape that lands in 7c.3a (every `Window.init*` path
-    /// allocates a fresh owning `Frame`). The `borrowed` shape is
-    /// reserved for PR 7c.3c, where `mem.swap` between
-    /// `rendered_frame` and `next_frame` will produce transient
-    /// views over shared backing storage. Default `undefined` so
-    /// test fixtures that omit it (`testWindow` below) keep
-    /// compiling without explicit initialisation. See
+    /// PR 7c.3a / 7c.3c — build-target Frame for the current tick.
+    /// Every render-pipeline call site that produces scene primitives
+    /// or dispatch nodes writes through `next_frame.scene` /
+    /// `next_frame.dispatch`. At the frame boundary,
+    /// `runtime/frame.zig::renderFrameImpl` calls
+    /// `mem.swap(&rendered_frame, &next_frame)` followed by
+    /// `next_frame.scene.clear()` + `next_frame.dispatch.reset()`
+    /// so the slot recycles the previous-frame buffer for the
+    /// next build pass. Both halves of the swap keep
+    /// `owned = true` — `mem.swap` is a physical struct exchange
+    /// between two owning slots, not a hand-off through
+    /// `Frame.borrowed`. Default `undefined` so test fixtures
+    /// that omit it (`testWindow` below) keep compiling without
+    /// explicit initialisation. See `frame.zig` and
+    /// `docs/cleanup-implementation-plan.md` PR 7c.3a / 7c.3c.
+    next_frame: Frame = undefined,
+
+    /// PR 7c.3c — previously-built Frame, stable across the input
+    /// gap between frame N's build and frame N+1's swap.
+    /// Hit-testing for input events between frames reads through
+    /// `rendered_frame.dispatch` (the last fully-built tree, with
+    /// bounds already synced post-build), which is what the
+    /// double-buffer is *for* per
+    /// [`architectural-cleanup-plan.md` §11](../../docs/architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap).
+    /// On the very first tick the slot is initialised empty (no
+    /// prior build has written to it yet) and any input arriving
+    /// before frame 0's build completes hit-tests against an empty
+    /// dispatch tree — a graceful no-op, not a crash. Both halves
+    /// of the swap keep `owned = true` (see `next_frame`'s
+    /// doc-comment). Default `undefined` so test fixtures keep
+    /// compiling without explicit initialisation; see
     /// `frame.zig` and `docs/cleanup-implementation-plan.md` PR
-    /// 7c.3a.
-    frame: Frame = undefined,
+    /// 7c.3c.
+    rendered_frame: Frame = undefined,
 
     // PR 7c.3b — `scene: *Scene` back-compat alias retired. The
     // pre-7c.3b field mirrored `frame.scene` to keep ~99 internal
@@ -305,9 +328,13 @@ pub const Window = struct {
     // the 7c.3a landing. 7c.3b rewrote every call site to reach
     // through `window.frame.scene` and dropped the duplicate
     // pointer field, collapsing the per-frame rendering state to
-    // the single `frame: Frame` field. Same retirement shape PR
+    // a single `frame: Frame` field. Same retirement shape PR
     // 7b.6 used for the `text_system` / `svg_atlas` /
-    // `image_atlas` triplet.
+    // `image_atlas` triplet. PR 7c.3c renamed that single
+    // `frame` slot to `next_frame` and added the
+    // `rendered_frame` slot above for the double buffer — build
+    // call sites reach through `next_frame.scene`, input
+    // hit-test sites reach through `rendered_frame.dispatch`.
 
     /// PR 7a — bundled shared rendering resources. Owns or borrows
     /// `text_system` / `svg_atlas` / `image_atlas` as one unit;
@@ -360,8 +387,10 @@ pub const Window = struct {
     // PR 7c.3b — `dispatch: *DispatchTree` back-compat alias
     // retired alongside the `scene` alias. The pre-7c.3b field
     // mirrored `frame.dispatch` to keep ~68 internal call sites
-    // working across the 7c.3a landing. Reach through
-    // `window.frame.dispatch` instead.
+    // working across the 7c.3a landing. PR 7c.3c renamed
+    // `frame` → `next_frame`: build call sites reach through
+    // `next_frame.dispatch`, input hit-test sites reach through
+    // `rendered_frame.dispatch`.
 
     // PR 6 / 7b.4 — `keymap` lives in `app.globals` now (see
     // `app.zig`). `window.keymap()` is a forwarder so callers
@@ -663,21 +692,36 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a — bundle scene + dispatch into one `Frame`.
-        // Replaces the previous two `allocator.create` + init +
-        // `setViewport`/`enableCulling` + errdefer blocks. The
-        // resulting struct is copied into `result.frame` below;
-        // the heap pointers it carries survive the by-value copy
-        // unchanged (same shape as the `resources` copy further
-        // down). PR 7c.3b retired the `scene` / `dispatch`
-        // back-compat alias fields — `result.frame` is now the
-        // sole owner of the per-frame rendering state.
-        var frame = try Frame.initOwned(
+        // PR 7c.3a / 7c.3c — allocate the two-`Frame` double buffer.
+        // Each `Frame.initOwned` allocates its own heap-backed
+        // `Scene` + `DispatchTree` pair; `mem.swap` between the
+        // two slots in `Window` exchanges which slot points at
+        // which pair. Both pairs are owned by the parent `Window`
+        // for its entire lifetime — `Window.deinit` tears both
+        // down. The `next_frame` pair is the build target every
+        // render-pipeline call site writes into during the current
+        // tick; `rendered_frame` carries the previously-built
+        // tree and stays alive across the input gap between
+        // frames so input handlers can hit-test against it.
+        // Replaces the pre-7c.3a four `allocator.create` + init +
+        // `setViewport`/`enableCulling` + errdefer blocks (two per
+        // pointee, doubled across both buffers). The two locals
+        // are copied into `result.{next,rendered}_frame` below;
+        // the heap pointers carried inside survive the by-value
+        // copy unchanged (same shape as `resources`).
+        var next_frame = try Frame.initOwned(
             allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        errdefer frame.deinit();
+        errdefer next_frame.deinit();
+
+        var rendered_frame = try Frame.initOwned(
+            allocator,
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
+        );
+        errdefer rendered_frame.deinit();
 
         // PR 7a — bundle text + SVG + image resources into one
         // `AppResources`. Replaces three separate `allocator.create`
@@ -705,15 +749,19 @@ pub const Window = struct {
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            // PR 7c.3a — `frame` is copied by value below; the
-            // local `frame`'s `owned` flag is disarmed post-literal
-            // (mirroring the `resources.owned = false` pattern) so a
-            // later errdefer can't tear the pointees down out from
-            // under `result.frame`. PR 7c.3b — the `scene` /
-            // `dispatch` alias fields retired alongside the
-            // call-site sweep; reach through `result.frame.scene` /
-            // `result.frame.dispatch` instead.
-            .frame = frame,
+            // PR 7c.3a / 7c.3c — the two `Frame` slots are copied
+            // by value below; each local's `owned` flag is
+            // disarmed post-literal (mirroring the
+            // `resources.owned = false` pattern) so a later
+            // errdefer can't tear the pointees down out from
+            // under `result.{next,rendered}_frame`. Build call
+            // sites reach through `result.next_frame.*`; input
+            // hit-test sites reach through
+            // `result.rendered_frame.*`. PR 7c.3b retired the
+            // `scene` / `dispatch` alias fields alongside the
+            // 7c.3a call-site sweep.
+            .next_frame = next_frame,
+            .rendered_frame = rendered_frame,
             // PR 7b.3 — `entities` lifted off `Window` onto `App`.
             // The `app: *App` field is left at its `undefined`
             // default here; the caller (`runtime/window_context.zig`)
@@ -769,15 +817,19 @@ pub const Window = struct {
         // success path that copies into the heap slot.
         resources.owned = false;
 
-        // PR 7c.3a — same disarm pattern for the `frame` bundle.
-        // `result.frame` is now the canonical owner of the
-        // scene + dispatch heap allocations; the local `frame`
-        // carried an `owned = true` flag through the by-value
-        // copy, and its errdefer would tear the pointees down
+        // PR 7c.3a / 7c.3c — same disarm pattern for both halves
+        // of the double buffer. `result.next_frame` /
+        // `result.rendered_frame` are now the canonical owners of
+        // the four heap allocations (each Frame owns one Scene +
+        // one DispatchTree); the local copies carried
+        // `owned = true` flags through the by-value literal
+        // above, and their errdefers would tear the pointees down
         // if a later `try` (e.g. `globals.setOwned`) unwinds.
-        // Without this, that path would double-free against
-        // `result.frame.deinit()` in the caller.
-        frame.owned = false;
+        // Without these disarms, that path would double-free
+        // against `result.{next,rendered}_frame.deinit()` in the
+        // caller.
+        next_frame.owned = false;
+        rendered_frame.owned = false;
 
         // Initialize accessibility subsystem in place. On macOS, the
         // bridge captures the NSWindow / NSView handles passed here; on
@@ -835,22 +887,31 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a — bundle scene + dispatch via `Frame.initOwnedInPlace`,
-        // writing directly into `self.frame` (no stack temp).
-        // `initOwnedInPlace` is `noinline` per CLAUDE.md §14 so
-        // the WASM stack budget stays bounded across the two
-        // internal subsystems. Replaces the previous two
-        // `allocator.create` + init + setViewport/enableCulling +
-        // errdefer blocks. PR 7c.3b retired the `scene` /
-        // `dispatch` back-compat alias fields, so `self.frame`
-        // is now the only ownership handle for the per-frame
-        // rendering state — no mirror pointers populated below.
-        try self.frame.initOwnedInPlace(
+        // PR 7c.3a / 7c.3c — initialise the two-`Frame` double
+        // buffer in place. Each `Frame.initOwnedInPlace` allocates
+        // a Scene + DispatchTree pair into the named slot; the
+        // call is `noinline` per CLAUDE.md §14 so the WASM stack
+        // budget stays bounded across the four internal
+        // subsystems. Build call sites reach through
+        // `self.next_frame.*`; input hit-test sites reach through
+        // `self.rendered_frame.*`. `mem.swap` at the frame
+        // boundary in `runtime/frame.zig::renderFrameImpl`
+        // exchanges the two slots; both stay `owned = true`
+        // across every swap, so `Window.deinit` continues to
+        // tear down both pairs.
+        try self.next_frame.initOwnedInPlace(
             allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        errdefer self.frame.deinit();
+        errdefer self.next_frame.deinit();
+
+        try self.rendered_frame.initOwnedInPlace(
+            allocator,
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
+        );
+        errdefer self.rendered_frame.deinit();
 
         // PR 7a — initialise shared rendering resources directly
         // into `self.resources` (no stack temp). `initOwnedInPlace`
@@ -878,8 +939,11 @@ pub const Window = struct {
         self.io = io;
         self.layout = layout_engine;
         // PR 7c.3b — `scene` / `dispatch` alias fields retired.
-        // Reach through `self.frame.scene` / `self.frame.dispatch`
-        // for the per-frame rendering state.
+        // PR 7c.3c — the per-frame rendering state lives on the
+        // double buffer: build call sites reach through
+        // `self.next_frame.scene` / `self.next_frame.dispatch`,
+        // input hit-test sites reach through
+        // `self.rendered_frame.dispatch`.
         // PR 7b.6 — back-compat aliases removed. The three pointer
         // fields that mirrored `self.resources.*` retired alongside
         // the call-site sweep; reach through `self.resources.*` for
@@ -1001,19 +1065,28 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a — bundle scene + dispatch into one `Frame`
-        // (owned per-window even in multi-window mode — the
-        // scene + dispatch tree are per-window state and
+        // PR 7c.3a / 7c.3c — allocate the two-`Frame` double
+        // buffer (owned per-window even in multi-window mode —
+        // the scene + dispatch tree are per-window state and
         // cannot be shared without breaking hit-testing).
-        // Same shape as the matching block in `initOwned`. The
-        // `frame.owned = false` disarm post-literal mirrors
-        // the `resources.owned = false` pattern.
-        var frame = try Frame.initOwned(
+        // Same shape as the matching block in `initOwned`; both
+        // slots stay `owned = true` across the `mem.swap` at the
+        // frame boundary. The `{next,rendered}_frame.owned =
+        // false` disarms post-literal mirror the
+        // `resources.owned = false` pattern.
+        var next_frame = try Frame.initOwned(
             allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        errdefer frame.deinit();
+        errdefer next_frame.deinit();
+
+        var rendered_frame = try Frame.initOwned(
+            allocator,
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
+        );
+        errdefer rendered_frame.deinit();
 
         // Set up text measurement callback using shared text system
         layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
@@ -1022,14 +1095,18 @@ pub const Window = struct {
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            // PR 7c.3a — `frame` is copied by value below; the
-            // local `frame.owned` is disarmed post-literal so a
-            // later errdefer can't tear the pointees down out from
-            // under `result.frame`. PR 7c.3b — the `scene` /
-            // `dispatch` alias fields retired; reach through
-            // `result.frame.scene` / `result.frame.dispatch`
-            // instead.
-            .frame = frame,
+            // PR 7c.3a / 7c.3c — the two `Frame` slots are copied
+            // by value below; each local's `owned` flag is
+            // disarmed post-literal so a later errdefer can't
+            // tear the pointees down out from under
+            // `result.{next,rendered}_frame`. Build call sites
+            // reach through `result.next_frame.*`; input
+            // hit-test sites reach through
+            // `result.rendered_frame.*`. PR 7c.3b retired the
+            // `scene` / `dispatch` alias fields alongside the
+            // 7c.3a call-site sweep.
+            .next_frame = next_frame,
+            .rendered_frame = rendered_frame,
             // PR 7b.3 — `entities` lifted off `Window` onto `App`.
             // `app: *App` is set by the caller post-init; see the
             // matching note in `initOwned` above.
@@ -1068,13 +1145,15 @@ pub const Window = struct {
             // in `initOwned` and the file header.
         };
 
-        // PR 7c.3a — disarm the local `frame.owned` flag now
-        // that `result.frame` is the canonical owner. Mirrors
-        // the `resources.owned = false` line in `initOwned`;
-        // the rationale is identical (prevent a double-free
-        // against `result.frame.deinit()` if a later `try`
-        // unwinds via the local `frame`'s errdefer).
-        frame.owned = false;
+        // PR 7c.3a / 7c.3c — disarm both local `owned` flags now
+        // that `result.{next,rendered}_frame` are the canonical
+        // owners. Mirrors the `resources.owned = false` line in
+        // `initOwned`; the rationale is identical (prevent a
+        // double-free against
+        // `result.{next,rendered}_frame.deinit()` if a later
+        // `try` unwinds via either local's errdefer).
+        next_frame.owned = false;
+        rendered_frame.owned = false;
 
         // Initialize platform-specific accessibility bridge
         const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
@@ -1133,18 +1212,28 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a — bundle scene + dispatch via
-        // `Frame.initOwnedInPlace`, writing directly into
-        // `self.frame` (no stack temp). Same shape as the matching
-        // block in `initOwnedPtr`. The scene + dispatch tree are
+        // PR 7c.3a / 7c.3c — initialise the two-`Frame` double
+        // buffer in place. Same shape as the matching block in
+        // `initOwnedPtr`. The scene + dispatch tree are
         // per-window state and remain owned per-window even in
-        // multi-window mode (only `AppResources` is borrowed).
-        try self.frame.initOwnedInPlace(
+        // multi-window mode (only `AppResources` is borrowed) —
+        // both `next_frame` and `rendered_frame` carry their
+        // own owning Scene + DispatchTree pair. Build call sites
+        // reach through `self.next_frame.*`; input hit-test
+        // sites reach through `self.rendered_frame.*`.
+        try self.next_frame.initOwnedInPlace(
             allocator,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
-        errdefer self.frame.deinit();
+        errdefer self.next_frame.deinit();
+
+        try self.rendered_frame.initOwnedInPlace(
+            allocator,
+            @floatCast(platform_window.size.width),
+            @floatCast(platform_window.size.height),
+        );
+        errdefer self.rendered_frame.deinit();
 
         // Set up text measurement callback using shared text system
         layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
@@ -1154,8 +1243,10 @@ pub const Window = struct {
         self.io = io;
         self.layout = layout_engine;
         // PR 7c.3b — `scene` / `dispatch` alias fields retired.
-        // Reach through `self.frame.scene` / `self.frame.dispatch`
-        // for the per-frame rendering state.
+        // PR 7c.3c — build call sites reach through
+        // `self.next_frame.scene` / `self.next_frame.dispatch`,
+        // input hit-test sites reach through
+        // `self.rendered_frame.dispatch`.
 
         // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
         // owns the pointees. By-value init is safe — the struct only
@@ -1281,19 +1372,19 @@ pub const Window = struct {
         // each global teardown matches its declared `deinit`.
         self.globals.deinit(self.allocator);
 
-        // PR 7c.3a — single teardown call covers scene +
-        // dispatch tree. `Frame.deinit` frees both heap
-        // pointees in dispatch → scene order (matches the
-        // pre-7c.3a free order in this function), or no-ops if
-        // `frame.owned == false` (reserved for the PR 7c.3c
-        // double-buffer borrowed-view shape, not yet wired).
-        // Replaces the previous two pairs of `T.deinit` +
-        // `allocator.destroy` calls. PR 7c.3b retired the
-        // `scene` / `dispatch` back-compat alias fields, so
-        // there are no mirror pointers to worry about —
-        // `frame.deinit` is the single ownership boundary
-        // for the per-window per-frame rendering state.
-        self.frame.deinit();
+        // PR 7c.3a / 7c.3c — tear down the two-`Frame` double
+        // buffer. Each `Frame.deinit` frees its Scene +
+        // DispatchTree pair in dispatch → scene order; both
+        // slots carry `owned = true` regardless of how many
+        // `mem.swap` calls have run (the swap is a physical
+        // struct exchange between two owning slots, not a
+        // hand-off through `Frame.borrowed`). Order between the
+        // two slots is irrelevant — they share no inter-pointer
+        // references — but `next_frame` first matches the build
+        // direction (the freshly-cleared buffer goes first) and
+        // mirrors the field declaration order on the struct.
+        self.next_frame.deinit();
+        self.rendered_frame.deinit();
 
         // PR 7a — `layout` is always owned (no init path ever
         // leaves it borrowed); the tautological `layout_owned`
@@ -1406,16 +1497,24 @@ pub const Window = struct {
         // Sync scale factor to text system for correct glyph rasterization
         // self.resources.text_system.setScaleFactor(self.scale_factor);
 
-        // Clear scene for new frame
-        self.frame.scene.clear();
+        // PR 7c.3c — the build target is `next_frame.scene`. The
+        // `mem.swap` at the end of `runtime/frame.zig::renderFrameImpl`
+        // already cleared the slot post-swap (the now-stale
+        // buffer that just rotated out of `rendered_frame`), so
+        // this clear is redundant on every frame after the first;
+        // keeping it covers frame 0 (no prior swap to recycle
+        // the buffer) and stays as a defensive double-clear so a
+        // future caller of `beginFrame` outside `renderFrameImpl`
+        // doesn't pick up stale primitives.
+        self.next_frame.scene.clear();
 
         // Connect render stats to scene for profiler tracking
         render_stats.beginFrame();
-        self.frame.scene.setStats(&render_stats.frame_stats);
+        self.next_frame.scene.setStats(&render_stats.frame_stats);
 
         // Update viewport only on resize
-        if (self.frame.scene.viewport_width != self.width or self.frame.scene.viewport_height != self.height) {
-            self.frame.scene.setViewport(self.width, self.height);
+        if (self.next_frame.scene.viewport_width != self.width or self.next_frame.scene.viewport_height != self.height) {
+            self.next_frame.scene.setViewport(self.width, self.height);
         }
 
         // Begin layout pass (timer moved to endFrame to cover only actual layout compute)
@@ -1507,14 +1606,43 @@ pub const Window = struct {
     /// Update hover state based on mouse position.
     /// Call this on mouse_moved events AFTER bounds have been synced.
     /// Returns true if hover state changed (requires re-render).
+    ///
+    /// PR 7c.3c — reads through `rendered_frame.dispatch`
+    /// (the previously-built tree, alive across the input gap
+    /// between frames). Input events handled in
+    /// `runtime/input.zig` arrive after frame N's swap and
+    /// before frame N+1's build, so the dispatch tree the user
+    /// is currently *seeing* lives in `rendered_frame`. Pre-7c.3c
+    /// (single buffer) this read through `frame.dispatch` and
+    /// relied on the end-of-build `refreshHover` hack below to
+    /// re-run hit testing once bounds had been synced; the
+    /// double-buffer keeps the just-built tree stable on the
+    /// `rendered_frame` slot until the next swap, which is what
+    /// makes that hack retirable in a follow-up slice.
     pub fn updateHover(self: *Self, x: f32, y: f32) bool {
-        return self.hover.update(self.frame.dispatch, x, y);
+        return self.hover.update(self.rendered_frame.dispatch, x, y);
     }
 
     /// Refresh hover state using last known mouse position.
     /// Call this after bounds have been synced to fix frame delay issues.
+    ///
+    /// PR 7c.3c — reads through `next_frame.dispatch` because
+    /// the only call site (`runtime/frame.zig::renderFrameImpl`
+    /// post-build, post-bounds-sync) runs *before* the
+    /// end-of-frame `mem.swap`. At that moment the just-built
+    /// tree (with bounds synced from the layout pass) lives on
+    /// `next_frame`; `rendered_frame.dispatch` is still the
+    /// previous-frame tree until the swap fires. Once the swap
+    /// runs the same nodes will be reachable via
+    /// `rendered_frame.dispatch`, which is what subsequent
+    /// between-frame `updateHover` calls read. The follow-up
+    /// slice that retires `refreshHover` (per the (1)
+    /// rationale in cleanup-implementation-plan PR 7c.3c)
+    /// removes this method entirely — with input always
+    /// hit-testing against `rendered_frame`, the post-build
+    /// rerun becomes redundant.
     pub fn refreshHover(self: *Self) void {
-        self.hover.refresh(self.frame.dispatch);
+        self.hover.refresh(self.next_frame.dispatch);
     }
 
     /// Check if a specific layout element is currently hovered.
@@ -1907,17 +2035,33 @@ pub const Window = struct {
         return result;
     }
 
-    /// Finish the scene after rendering
+    /// Finish the scene after rendering.
+    ///
+    /// PR 7c.3c — finalises the build target, which is
+    /// `next_frame.scene`. Called from
+    /// `runtime/frame.zig::renderFrameImpl` *before* the
+    /// end-of-frame `mem.swap` rotates the just-built scene
+    /// into the `rendered_frame` slot for GPU presentation.
     pub fn finishScene(self: *Self) void {
-        self.frame.scene.finish();
+        self.next_frame.scene.finish();
     }
 
     // =========================================================================
     // Resource Access
     // =========================================================================
 
+    /// PR 7c.3c — returns the build-target `Scene` (the slot
+    /// every render-pipeline call site writes into during the
+    /// current tick). Pre-swap, this is `next_frame.scene`;
+    /// post-swap (the next tick's perspective), the same heap
+    /// allocation has rotated into `rendered_frame.scene` and
+    /// the slot returned here points at the recycled buffer
+    /// that's about to receive the next build. Callers that
+    /// need the *currently-displayed* scene (e.g. read-back for
+    /// a screenshot, debug inspection) should reach through
+    /// `window.rendered_frame.scene` directly.
     pub fn getScene(self: *Self) *Scene {
-        return self.frame.scene;
+        return self.next_frame.scene;
     }
 
     pub fn getTextSystem(self: *Self) *TextSystem {
@@ -2036,12 +2180,16 @@ fn testWindow() Window {
         .allocator = testing.allocator,
         .io = undefined,
         .layout = undefined,
-        // PR 7c.3a — `frame: Frame = undefined` default keeps
+        // PR 7c.3a / 7c.3c — the `next_frame: Frame = undefined`
+        // and `rendered_frame: Frame = undefined` defaults keep
         // this fixture compiling without explicit init; the
         // deferred-command tests this is built for never reach
-        // through `frame.scene` / `frame.dispatch`. PR 7c.3b
-        // retired the `scene` / `dispatch` alias fields the
-        // pre-7c.3b fixture had to set explicitly.
+        // through either Frame's `scene` / `dispatch`. Pre-7c.3a
+        // the fixture set `scene` / `dispatch` alias fields
+        // explicitly; 7c.3b retired those, and 7c.3c added the
+        // second `Frame` slot for the double buffer — neither
+        // change touches this stub because the deferred-command
+        // path doesn't render.
         .widgets = undefined,
         .focus = undefined,
 

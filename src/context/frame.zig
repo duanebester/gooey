@@ -14,16 +14,24 @@
 //!
 //! After this extraction:
 //!
-//!   - **Single-window**: `Window` owns its `Frame` by value, no
-//!     ownership flags required.
-//!   - **Multi-window**: each `Window` still owns its own `Frame` (the
+//!   - **Single-window**: `Window` owns *two* `Frame`s by value
+//!     (`rendered_frame` + `next_frame`); both are
+//!     `owned = true`. `mem.swap` between them at the frame
+//!     boundary doesn't change ownership — it swaps which slot
+//!     refers to which heap-allocated `Scene` / `DispatchTree`
+//!     pair, and both pairs remain owned by the parent `Window`
+//!     across every swap.
+//!   - **Multi-window**: each `Window` still owns its own pair (the
 //!     scene + dispatch tree are per-window state — they cannot be
-//!     shared across windows without breaking hit-testing). The bundle
-//!     is ownership-uniform: there is no "borrowed `Frame`" shape today.
-//!     The `owned: bool` flag is reserved for PR 7c.3c, where
-//!     `mem.swap`-style double buffering will hand a transient
-//!     `Frame` view across the swap point and the borrowed shape becomes
-//!     load-bearing.
+//!     shared across windows without breaking hit-testing).
+//!   - **Borrowed view** (`Frame.borrowed`): an `owned = false`
+//!     view over already-initialised pointees. PR 7c.3a introduced
+//!     the constructor as a complete API surface; PR 7c.3c uses
+//!     it for diagnostic / transient inspection of either buffer
+//!     across the swap (e.g. a debug overlay reading
+//!     `rendered_frame.dispatch` without taking ownership of its
+//!     teardown). The owning pair on `Window` always carries
+//!     `owned = true`.
 //!
 //! See [`architectural-cleanup-plan.md` §11 frame double-buffering with
 //! `mem::swap`](../../docs/architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap)
@@ -47,26 +55,39 @@
 //!   in a later 7c.3 slice once the call-site sweep against `scene`
 //!   and `dispatch` is complete and the double-buffer is wired —
 //!   trying to move five subsystems in one PR would dwarf the
-//!   review surface 7c.3a / 7c.3b can already absorb.
+//!   review surface 7c.3a / 7c.3b / 7c.3c can already absorb.
 //! - `element_states`. Reserved for PR 8 — it's the keyed pool that
 //!   replaces `WidgetStore`'s per-type maps, not a simple migration.
-//! - `next_frame: Frame`. The double-buffer pair lands in PR 7c.3c.
-//!   7c.3a introduces the type and the single-`Frame`-per-`Window`
-//!   shape; the swap point is reserved.
+//!   PR 7c.3c lays the structural groundwork (double-buffer with
+//!   `mem.swap` and a live `rendered_frame` between frames) so the
+//!   PR 8 fall-through lookup `next_frame.element_states ↦
+//!   rendered_frame.element_states` is a single-field addition
+//!   here, not a swap-semantics flip.
 //!
 //! ## Lifetime
 //!
-//! Allocated and owned in two shapes; today only the first is
-//! instantiated, but the second is reserved for PR 7c.3c:
+//! Allocated and owned in two shapes:
 //!
-//!   1. **By value, embedded in `Window`** — every window today.
-//!      `Window.deinit` tears it down via `Frame.deinit`.
-//!   2. **Borrowed view** (PR 7c.3c) — the `mem.swap` between
-//!      `rendered_frame` and `next_frame` produces a transient
-//!      borrowed view; the underlying `Scene` / `DispatchTree`
-//!      pointers are still owned by the parent `Window`, just
-//!      wired through a different `Frame` slot. The `owned = false`
-//!      branch of `deinit` is what makes that swap safe.
+//!   1. **By value, embedded in `Window`** — every window owns a
+//!      pair: `rendered_frame: Frame` (the previously-built tree
+//!      hit-tested against between frames) and `next_frame: Frame`
+//!      (the build target written by every render-pipeline call
+//!      site). Both carry `owned = true`. `Window.deinit` tears
+//!      both down via `Frame.deinit`.
+//!   2. **Borrowed view** (`Frame.borrowed`) — an `owned = false`
+//!      view over already-initialised pointees. The underlying
+//!      `Scene` / `DispatchTree` pointers stay owned by their
+//!      parent `Window` slot; the borrowed view's `deinit` is a
+//!      no-op. Used for diagnostic / transient inspection of
+//!      either buffer (e.g. a debug overlay reading
+//!      `rendered_frame.dispatch` without taking responsibility
+//!      for tearing down its scene + dispatch pair). Note that
+//!      `mem.swap` between the two owning slots in `Window`
+//!      doesn't go through `borrowed` — it physically swaps the
+//!      two `Frame` structs (including their `scene` / `dispatch`
+//!      pointers and `owned` flags), so both slots remain
+//!      `owned = true` post-swap and `Window.deinit` continues
+//!      to free both pointee pairs.
 //!
 //! The struct itself is roughly `@sizeOf(Allocator) + 2 * @sizeOf(*T)`
 //! plus a 1-byte `owned` flag — the heavy storage stays inside the two
@@ -90,13 +111,20 @@ const DispatchTree = dispatch_mod.DispatchTree;
 /// `owned: bool` field discriminates two ownership shapes:
 ///
 ///   - `owned = true` — this `Frame` allocated the two pointees and
-///     `deinit` must free them. Set by `initOwned` / `initOwnedInPlace`.
-///   - `owned = false` — the pointees came from elsewhere (PR 7c.3c
-///     `mem.swap` transient views — not yet instantiated); `deinit`
-///     is a no-op so the same backing storage isn't double-freed.
-///     Set by `borrowed` (also reserved for 7c.3c — exposed today
-///     as a complete API surface so the swap landing only has to
-///     wire callers, not introduce the type's third constructor).
+///     `deinit` must free them. Set by `initOwned` /
+///     `initOwnedInPlace`. Both slots in `Window`
+///     (`rendered_frame` and `next_frame`) are always
+///     `owned = true` — `mem.swap` between them physically
+///     exchanges the entire struct, so both halves of the swap
+///     keep their owning shape and `Window.deinit` continues
+///     to free both pointee pairs.
+///   - `owned = false` — a borrowed view over already-initialised
+///     pointees. Used for diagnostic / transient inspection of
+///     either buffer (e.g. a debug overlay reading
+///     `rendered_frame.dispatch` without taking responsibility
+///     for tearing it down). `deinit` is a no-op so the upstream
+///     owner's later `deinit` is the single tear-down path.
+///     Set by `borrowed`.
 ///
 /// This is the **only** ownership flag in the bundle — the per-field
 /// `scene_owned` / `dispatch_owned` flags that PR 7a's audit could
@@ -115,8 +143,12 @@ pub const Frame = struct {
 
     /// True when this struct owns the two pointees (allocated in an
     /// `initOwned*` path). False when borrowed from another `Frame`
-    /// (PR 7c.3c double-buffer transient — not yet wired). See
-    /// struct doc-comment for the two ownership shapes.
+    /// (a transient diagnostic view that doesn't tear the pointees
+    /// down). The owning slots on `Window` (both `rendered_frame`
+    /// and `next_frame`) always carry `true` — `mem.swap` between
+    /// them is a physical struct exchange, so both slots remain
+    /// owning across every swap. See struct doc-comment for the
+    /// two ownership shapes.
     owned: bool,
 
     const Self = @This();
@@ -238,12 +270,14 @@ pub const Frame = struct {
     /// pointees. `deinit` becomes a no-op for this instance — the
     /// upstream owner is responsible for tearing the pointees down.
     ///
-    /// Reserved for PR 7c.3c, where `mem.swap(&rendered_frame,
-    /// &next_frame)` will produce transient borrowed views that
-    /// share backing storage with the parent `Window`'s owning
-    /// `Frame`. Exposing the constructor today (even unused) means
-    /// the double-buffer landing only has to wire callers, not
-    /// introduce a third constructor on a stable type.
+    /// Used for diagnostic / transient inspection of either buffer
+    /// without taking ownership of its teardown (e.g. a debug
+    /// overlay reading `rendered_frame.dispatch` while the parent
+    /// `Window` keeps the owning slot intact). Note that
+    /// `mem.swap` between the two owning slots on `Window` does
+    /// NOT go through this constructor — it physically swaps the
+    /// two `Frame` structs in place, so both slots stay
+    /// `owned = true` post-swap.
     ///
     /// Mirrors `AppResources.borrowed` from PR 7a — the API
     /// symmetry is deliberate.
@@ -382,4 +416,143 @@ test "Frame: zero viewport is accepted" {
     try testing.expectEqual(@as(f32, 0), frame.scene.viewport_width);
     try testing.expectEqual(@as(f32, 0), frame.scene.viewport_height);
     try testing.expect(frame.scene.culling_enabled);
+}
+
+// =============================================================================
+// PR 7c.3c — double-buffer `mem.swap` tests
+// =============================================================================
+//
+// Pin the swap semantics that `runtime/frame.zig::renderFrameImpl`
+// relies on: `std.mem.swap(Frame, &a, &b)` exchanges the entire
+// struct (both pointee pointers AND the `owned` flag), so two
+// owning `Frame`s remain owning across every swap and a single
+// `deinit` per slot covers both heap-allocated pairs across the
+// lifetime of the parent `Window`. These tests pin that
+// invariant directly against `testing.allocator` — a leak or a
+// double-free would surface immediately.
+
+test "Frame: mem.swap exchanges scene + dispatch between two owning Frames" {
+    // Two owning `Frame`s with distinct viewport sizes so we can
+    // tell which `Scene` is which post-swap (the pointee
+    // identity, not just the pointer value, anchors the test).
+    var a = try Frame.initOwned(testing.allocator, 800, 600);
+    defer a.deinit();
+
+    var b = try Frame.initOwned(testing.allocator, 1024, 768);
+    defer b.deinit();
+
+    const a_scene_before = a.scene;
+    const a_dispatch_before = a.dispatch;
+    const b_scene_before = b.scene;
+    const b_dispatch_before = b.dispatch;
+
+    std.mem.swap(Frame, &a, &b);
+
+    // Pointer identity swaps: `a` now refers to what was `b`'s
+    // backing storage, and vice versa.
+    try testing.expectEqual(b_scene_before, a.scene);
+    try testing.expectEqual(b_dispatch_before, a.dispatch);
+    try testing.expectEqual(a_scene_before, b.scene);
+    try testing.expectEqual(a_dispatch_before, b.dispatch);
+
+    // Viewport sizes follow the pointers — confirms the swap
+    // exchanged the actual `Scene` allocations (not just
+    // overwrote two distinct `*Scene` pointers with the same
+    // value).
+    try testing.expectEqual(@as(f32, 1024), a.scene.viewport_width);
+    try testing.expectEqual(@as(f32, 768), a.scene.viewport_height);
+    try testing.expectEqual(@as(f32, 800), b.scene.viewport_width);
+    try testing.expectEqual(@as(f32, 600), b.scene.viewport_height);
+}
+
+test "Frame: mem.swap preserves owned=true on both halves" {
+    // The double-buffer's correctness rests on this: both
+    // `Window.next_frame` and `Window.rendered_frame` are
+    // `owned = true` at init, and `mem.swap` exchanges the
+    // entire struct (including the `owned` flag), so both
+    // remain `owned = true` post-swap. `Window.deinit` then
+    // tears down both pairs unconditionally regardless of how
+    // many swaps have run.
+    var a = try Frame.initOwned(testing.allocator, 640, 480);
+    defer a.deinit();
+
+    var b = try Frame.initOwned(testing.allocator, 320, 240);
+    defer b.deinit();
+
+    try testing.expect(a.owned);
+    try testing.expect(b.owned);
+
+    std.mem.swap(Frame, &a, &b);
+    try testing.expect(a.owned);
+    try testing.expect(b.owned);
+
+    // Two more swaps to confirm the invariant holds across
+    // arbitrary swap counts (the `Window` lifetime sees one
+    // swap per tick).
+    std.mem.swap(Frame, &a, &b);
+    std.mem.swap(Frame, &a, &b);
+    try testing.expect(a.owned);
+    try testing.expect(b.owned);
+}
+
+test "Frame: mem.swap survives recycle (clear/reset on the post-swap older buffer)" {
+    // After `runtime/frame.zig::renderFrameImpl`'s end-of-frame
+    // swap, the now-stale buffer (pre-swap `next_frame`,
+    // post-swap `next_frame` again — the slot, not the
+    // pointee) is recycled via `scene.clear()` +
+    // `dispatch.reset()`. Pin that the recycle calls land on
+    // the post-swap pointees and don't disturb the
+    // just-rotated-into-rendered_frame pair.
+    var rendered_frame = try Frame.initOwned(testing.allocator, 800, 600);
+    defer rendered_frame.deinit();
+
+    var next_frame = try Frame.initOwned(testing.allocator, 800, 600);
+    defer next_frame.deinit();
+
+    // Capture the pre-swap identities so we can verify the
+    // recycle calls land on the right pointees post-swap.
+    const just_built_scene = next_frame.scene;
+    const just_built_dispatch = next_frame.dispatch;
+    const stale_scene = rendered_frame.scene;
+    const stale_dispatch = rendered_frame.dispatch;
+
+    // Plant a small bit of mutable state we can read back to
+    // confirm the recycle hit the right buffer. The viewport
+    // is a convenient handle (each `Frame` was init'd at
+    // 800×600; mutating one half lets us tell them apart).
+    stale_scene.setViewport(123, 456);
+
+    std.mem.swap(Frame, &rendered_frame, &next_frame);
+
+    // Post-swap: `rendered_frame.scene` is the just-built
+    // pointee; `next_frame.scene` is the stale one we marked
+    // above.
+    try testing.expectEqual(just_built_scene, rendered_frame.scene);
+    try testing.expectEqual(just_built_dispatch, rendered_frame.dispatch);
+    try testing.expectEqual(stale_scene, next_frame.scene);
+    try testing.expectEqual(stale_dispatch, next_frame.dispatch);
+    try testing.expectEqual(@as(f32, 123), next_frame.scene.viewport_width);
+    try testing.expectEqual(@as(f32, 456), next_frame.scene.viewport_height);
+
+    // Recycle the stale half (mirrors the post-swap
+    // `next_frame.scene.clear() + next_frame.dispatch.reset()`
+    // in `renderFrameImpl`). The clear is a no-op for an
+    // already-empty scene at this point; the test is that the
+    // calls land on the stale pointees and don't touch
+    // `rendered_frame.*`.
+    next_frame.scene.clear();
+    next_frame.dispatch.reset();
+
+    // The viewport survives `Scene.clear()` (clearing only
+    // drops draw primitives, not viewport configuration), so
+    // we can still tell which buffer we're looking at.
+    try testing.expectEqual(@as(f32, 123), next_frame.scene.viewport_width);
+    try testing.expectEqual(@as(f32, 800), rendered_frame.scene.viewport_width);
+
+    // Both halves retain ownership across the swap + recycle
+    // — `defer rendered_frame.deinit()` and `defer
+    // next_frame.deinit()` at the top of this function will
+    // free both heap pairs cleanly under `testing.allocator`.
+    try testing.expect(rendered_frame.owned);
+    try testing.expect(next_frame.owned);
 }

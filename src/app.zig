@@ -268,11 +268,19 @@ pub fn WebApp(
 
             // Initialize Builder
             g_builder = try allocator.create(Builder);
+            // PR 7c.3c — build target is `next_frame.*`. The
+            // per-tick reset block in
+            // `runtime/frame.zig::renderFrameImpl` re-fetches
+            // both pointers from the post-swap `next_frame.*`
+            // each tick, so this init pair only has to be
+            // correct on tick 0; see the comment block on the
+            // matching `Builder.init` calls in
+            // `runtime/window_context.zig` for the rationale.
             g_builder.?.* = Builder.init(
                 allocator,
                 g_window.?.layout,
-                g_window.?.frame.scene,
-                g_window.?.frame.dispatch,
+                g_window.?.next_frame.scene,
+                g_window.?.next_frame.dispatch,
             );
             g_builder.?.window = g_window.?;
 
@@ -410,9 +418,23 @@ pub fn WebApp(
             g_renderer.?.syncSvgAtlas(g_window.?.resources.svg_atlas);
             g_renderer.?.syncImageAtlas(g_window.?.resources.image_atlas);
 
-            // Render to GPU
+            // Render to GPU.
+            //
+            // PR 7c.3c — the GPU presents `rendered_frame.scene`
+            // (the post-swap display buffer set up by the
+            // end-of-frame `mem.swap` in
+            // `runtime/frame.zig::renderFrameImpl`). Pre-7c.3c
+            // this read through the single-buffer
+            // `g_window.?.frame.scene`; with the double buffer,
+            // the just-built scene rotates through
+            // `rendered_frame.scene` after every tick. Web's
+            // platform layer doesn't cache a scene pointer, so
+            // the read happens fresh each `frame()` call — no
+            // setScene plumbing is needed on web (the
+            // `getPlatformWindow` short-circuit in
+            // `renderFrameImpl` covers the macOS / Linux side).
             const bg = w.background_color;
-            g_renderer.?.render(g_window.?.frame.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
+            g_renderer.?.render(g_window.?.rendered_frame.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
 
             // Request next frame
             if (g_platform) |p| {

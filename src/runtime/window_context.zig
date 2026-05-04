@@ -202,14 +202,32 @@ pub fn WindowContext(comptime State: type) type {
             // header for the two-phase init rationale.
             app.bindImageLoader(window.resources.image_atlas);
 
-            // Initialize UI Builder
+            // Initialize UI Builder.
+            //
+            // PR 7c.3c — the Builder writes scene primitives and
+            // dispatch nodes into the *build target*, which is
+            // `window.next_frame.*`. Builder caches the
+            // `*Scene` / `*DispatchTree` pointers in its own
+            // fields, so the `mem.swap` at the end of
+            // `runtime/frame.zig::renderFrameImpl` would leave
+            // those cached pointers identifying the now-rendered
+            // buffer instead of the live build target. The fix
+            // lives in `renderFrameImpl`'s per-tick builder reset
+            // block: alongside `id_counter = 0` and the pending
+            // queue clears, the reset writes
+            // `builder.scene = window.next_frame.scene` and
+            // `builder.dispatch = window.next_frame.dispatch` so
+            // Builder always tracks the current `next_frame.*`
+            // pair across the swap. The init-time pointers below
+            // are the frame-0 values; every subsequent tick
+            // overwrites them from the post-swap `next_frame.*`.
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
                 allocator,
                 window.layout,
-                window.frame.scene,
-                window.frame.dispatch,
+                window.next_frame.scene,
+                window.next_frame.dispatch,
             );
             builder.window = window;
 
@@ -314,14 +332,24 @@ pub fn WindowContext(comptime State: type) type {
             // and the `context/app.zig` file header.
             app.bindImageLoader(shared_resources.image_atlas);
 
-            // Initialize UI Builder
+            // Initialize UI Builder.
+            //
+            // PR 7c.3c — same `next_frame.*` build-target wiring as
+            // the single-window `init` above. The per-tick
+            // builder reset in `renderFrameImpl` re-fetches both
+            // `scene` and `dispatch` from `window.next_frame.*`
+            // so the cached pointers track every `mem.swap`; see
+            // the matching comment block on the single-window
+            // `init` and the reset block in
+            // `runtime/frame.zig::renderFrameImpl` for the
+            // rationale.
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
                 allocator,
                 window.layout,
-                window.frame.scene,
-                window.frame.dispatch,
+                window.next_frame.scene,
+                window.next_frame.dispatch,
             );
             builder.window = window;
 
@@ -461,11 +489,32 @@ pub fn WindowContext(comptime State: type) type {
             window.setResizeCallback(Self.onResize);
             window.setPostInputCallback(Self.onPostInput);
 
-            // Set atlases and scene
+            // Set atlases and scene.
+            //
+            // PR 7c.3c — the platform window's scene pointer must
+            // track `window.rendered_frame.scene` (the GPU-side
+            // "currently displayed" buffer), not
+            // `window.next_frame.scene` (the build target). The
+            // `mem.swap` at the end of
+            // `runtime/frame.zig::renderFrameImpl` rotates the
+            // just-built scene into `rendered_frame.scene`, so
+            // the platform layer needs to follow that rotation:
+            // alongside the swap, `renderFrameImpl` calls
+            // `platform_window.setScene(window.rendered_frame.scene)`
+            // to point the GPU side at the new physical Scene
+            // allocation. The initial `setScene` below is the
+            // frame-0 setup — before any tick has run,
+            // `rendered_frame.scene` is the still-empty backing
+            // allocation that swap will rotate into the build
+            // target on tick 0; the renderFrameImpl-side update
+            // takes over from tick 1 onwards. (Pre-7c.3c, with a
+            // single buffer, the platform pointer never needed
+            // updating because there was only one Scene slot to
+            // track.)
             window.setTextAtlas(self.window.resources.text_system.getAtlas());
             window.setSvgAtlas(self.window.resources.svg_atlas.*.getAtlas());
             window.setImageAtlas(self.window.resources.image_atlas.*.getAtlas());
-            window.setScene(self.window.frame.scene);
+            window.setScene(self.window.rendered_frame.scene);
 
             // Set thread-safe atlas upload callbacks for multi-window scenarios (macOS only).
             // These callbacks hold the appropriate mutex during GPU upload, preventing races

@@ -146,7 +146,7 @@ pub fn renderCommand(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
 /// Render a shadow primitive
 fn renderShadow(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const shadow_data = cmd.data.shadow;
-    try window_ctx.frame.scene.insertShadow(Shadow{
+    try window_ctx.next_frame.scene.insertShadow(Shadow{
         .content_origin_x = cmd.bounding_box.x,
         .content_origin_y = cmd.bounding_box.y,
         .content_size_width = cmd.bounding_box.width,
@@ -181,10 +181,10 @@ fn renderRectangle(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         },
     };
 
-    if (window_ctx.frame.scene.hasActiveClip()) {
-        try window_ctx.frame.scene.insertQuadClipped(quad);
+    if (window_ctx.next_frame.scene.hasActiveClip()) {
+        try window_ctx.next_frame.scene.insertQuadClipped(quad);
     } else {
-        try window_ctx.frame.scene.insertQuad(quad);
+        try window_ctx.next_frame.scene.insertQuad(quad);
     }
 }
 
@@ -212,10 +212,10 @@ fn renderBorder(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         },
     };
 
-    if (window_ctx.frame.scene.hasActiveClip()) {
-        try window_ctx.frame.scene.insertQuadClipped(quad);
+    if (window_ctx.next_frame.scene.hasActiveClip()) {
+        try window_ctx.next_frame.scene.insertQuadClipped(quad);
     } else {
-        try window_ctx.frame.scene.insertQuad(quad);
+        try window_ctx.next_frame.scene.insertQuad(quad);
     }
 }
 
@@ -231,17 +231,17 @@ fn renderText(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         break :blk cmd.bounding_box.y + scaled_ascender;
     } else cmd.bounding_box.y + cmd.bounding_box.height * 0.75;
 
-    const use_clip = window_ctx.frame.scene.hasActiveClip();
+    const use_clip = window_ctx.next_frame.scene.hasActiveClip();
     var opts = text_mod.RenderTextOptions{
         .clipped = use_clip,
         .decoration = .{
             .underline = text_data.underline,
             .strikethrough = text_data.strikethrough,
         },
-        .stats = window_ctx.frame.scene.stats,
+        .stats = window_ctx.next_frame.scene.stats,
     };
     _ = try text_mod.renderText(
-        window_ctx.frame.scene,
+        window_ctx.next_frame.scene,
         window_ctx.resources.text_system,
         text_data.text,
         cmd.bounding_box.x,
@@ -306,7 +306,7 @@ fn renderSvg(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         stroke_col,
     );
 
-    try window_ctx.frame.scene.insertSvgClipped(instance);
+    try window_ctx.next_frame.scene.insertSvgClipped(instance);
 }
 
 /// Render image with atlas caching and fit modes
@@ -465,13 +465,13 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         );
     }
 
-    try window_ctx.frame.scene.insertImageClipped(instance);
+    try window_ctx.next_frame.scene.insertImageClipped(instance);
 }
 
 /// Start a scissor (clip) region
 fn renderScissorStart(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const scissor = cmd.data.scissor_start;
-    try window_ctx.frame.scene.pushClip(.{
+    try window_ctx.next_frame.scene.pushClip(.{
         .x = scissor.clip_bounds.x,
         .y = scissor.clip_bounds.y,
         .width = scissor.clip_bounds.width,
@@ -481,7 +481,7 @@ fn renderScissorStart(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void 
 
 /// End the current scissor (clip) region
 fn renderScissorEnd(window_ctx: *Window) void {
-    window_ctx.frame.scene.popClip();
+    window_ctx.next_frame.scene.popClip();
 }
 
 // =============================================================================
@@ -579,10 +579,10 @@ fn renderImagePlaceholder(window_ctx: *Window, cmd: layout_mod.RenderCommand) !v
         } else .{},
     };
 
-    if (window_ctx.frame.scene.hasActiveClip()) {
-        try window_ctx.frame.scene.insertQuadClipped(quad);
+    if (window_ctx.next_frame.scene.hasActiveClip()) {
+        try window_ctx.next_frame.scene.insertQuadClipped(quad);
     } else {
-        try window_ctx.frame.scene.insertQuad(quad);
+        try window_ctx.next_frame.scene.insertQuad(quad);
     }
 }
 
@@ -609,10 +609,10 @@ fn renderImageError(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         } else .{},
     };
 
-    if (window_ctx.frame.scene.hasActiveClip()) {
-        try window_ctx.frame.scene.insertQuadClipped(quad);
+    if (window_ctx.next_frame.scene.hasActiveClip()) {
+        try window_ctx.next_frame.scene.insertQuadClipped(quad);
     } else {
-        try window_ctx.frame.scene.insertQuad(quad);
+        try window_ctx.next_frame.scene.insertQuad(quad);
     }
 }
 
