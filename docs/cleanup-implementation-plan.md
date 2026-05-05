@@ -92,7 +92,7 @@ them out here so they don't get re-litigated in review:
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 landed) |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 + 8.4-prep landed) |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
@@ -4347,10 +4347,41 @@ write scope of each landing is small enough to review and revert:
       [§19 pattern](./architectural-cleanup-plan.md#19-with_element_stateglobal_id-fnstate---r-state).
       Lands once one consumer is on the pool so the ergonomic
       shape is informed by real call sites.
-- [ ] **PR 8.4+** — Migrate existing widget state stores one
-      widget at a time. `text_input_state` first (smallest of
-      the text family), then `text_area_state`, then
-      `code_editor_state`, `scroll_container`, then list state.
+- [x] **PR 8.4-prep** — Disambiguate the engine type names from the
+      user-facing component types so PR 8.4 can lift them onto the
+      pool without a name clash. `widgets/text_input_state.zig`'s
+      `pub const TextInput = struct {...}` (the engine: text buffer,
+      cursor, IME, edit history) collided with
+      `components/text_input.zig`'s `pub const TextInput = struct
+      {...}` (the user-facing chrome component). PR 8.2 established
+      the convention that each stateful widget owns one state
+      declaration next to its component (`SelectState` in
+      `components/select.zig`); applying that to the text-widget
+      family required renaming the engine types from
+      `widgets.TextInput` / `widgets.TextArea` to `TextInputState` /
+      `TextAreaState`. Engine types in the file names (`*_state.zig`)
+      already implied the rename — the previous flat `TextInput` was
+      an artifact of pre-component-split history.
+
+      Also collapses the three duplicate `pub const Bounds = struct
+      { x, y, width, height: f32 }` definitions in
+      `text_input_state.zig`, `text_area_state.zig`,
+      `code_editor_state.zig` into a single `text_common.Bounds`.
+      The unified `Bounds.contains` uses the half-open `[x, x+w) x
+      [y, y+h)` form, matching `core/geometry.Rect.contains` and the
+      framework-wide hit-test convention. `text_input` / `text_area`
+      previously used the closed `[x, x+w]` form (right/bottom edge
+      inside) — an accidental divergence from the rest of the
+      framework. Pinned by 5 new `Bounds.contains` tests covering
+      interior hit, left/top inclusive, right/bottom exclusive,
+      every-direction outside, and the zero-size degenerate case.
+- [ ] **PR 8.4+** — Migrate existing widget state stores onto
+      `Window.element_states`. `text_input` + `text_area` together
+      first (they share the focused-widget dispatch fan-out in
+      `runtime/input.zig`, so rewriting that pattern once is the
+      most-performant slice — see PR 8.4-prep landing notes for the
+      slicing rationale). Then `code_editor_state`, then
+      `scroll_container`, then list state.
 - [ ] **0.16: this PR is the heaviest `@Type` user.** The `TypeId`
       construction and `*anyopaque` payload typing should be entirely
       `@TypeOf` / `@typeName` / `@Struct` style. No legacy `@Type`.
@@ -4662,7 +4693,137 @@ with that shape: `cx.element_states.with` returns `*S` regardless
 of which underlying frame map serviced the lookup.
 
 
+### PR 8.4-prep landing notes (engine-type rename + shared Bounds)
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1101/1101 tests
+passed` (net +5 vs. PR 8.3's 1096 — the five new
+`text_common.Bounds.contains` tests pinning the half-open hit-test
+semantics; the engine-type rename adds zero new tests since it's a
+pure mechanical rename with no behaviour change). `zig build
+install` clean.
+
+**Two commits:**
+
+1. **`widgets: promote shared Bounds to text_common.zig with
+   half-open semantics`.** Adds `pub const Bounds = struct { x, y,
+   width, height: f32, pub fn contains(...) bool }` to
+   `widgets/text_common.zig` (the existing shared-utilities home
+   for the text-widget family — UTF-8 navigation, selection,
+   position helpers). Replaces the three duplicate `pub const
+   Bounds = struct {...}` definitions in `text_input_state.zig`,
+   `text_area_state.zig`, `code_editor_state.zig` with one-line
+   re-exports (`pub const Bounds = common.Bounds`) so existing
+   `*_state.Bounds` import paths in `WidgetStore`,
+   `widgets/mod.zig`, and `code_editor_state.zig`'s
+   `text_area_mod.Bounds` import all keep compiling unchanged. Five
+   new tests pin the half-open `[x, x+w) x [y, y+h)` semantics on
+   every axis (interior hit, left/top inclusive, right/bottom
+   exclusive, every-direction outside, zero-size degenerate).
+
+2. **`widgets: rename engine types TextInput → TextInputState,
+   TextArea → TextAreaState`.** Pure mechanical type rename across 6
+   files: `widgets/text_input_state.zig`,
+   `widgets/text_area_state.zig`, `widgets/code_editor_state.zig`,
+   `widgets/mod.zig`, `context/widget_store.zig`, `cx.zig`. The
+   user-facing chrome components in `components/text_input.zig` /
+   `components/text_area.zig` keep their `TextInput` / `TextArea`
+   names (declarative literals like `TextInput{ .id = "...",
+   .placeholder = "..." }` are unchanged for application code). The
+   accessor *verbs* on `WidgetStore` (`textInput`,
+   `textInputOrPanic`, `getFocusedTextInput`, ...) are also
+   intentionally preserved — they're the framework's public API for
+   "give me the engine state for this widget id" and only the
+   *return types* are renamed.
+
+**Why a separate prep PR.** PR 8.4 is the storage migration:
+lifting `TextInputState` + `TextAreaState` off the per-type
+`StringHashMap`s in `WidgetStore` and onto the keyed
+`Window.element_states` pool, mirroring PR 8.2's `Select`
+landing. Bundling the disambiguation rename into PR 8.4 would have
+mixed two distinct concerns in one diff (rename + storage shape
+change), each with its own failure surface. Splitting them lets
+PR 8.4 land as a pure storage-shape diff with already-disambiguated
+type names, and leaves this prep PR as a small reviewable rename +
+type-deduplication that's easy to revert independently if either
+half causes trouble.
+
+**Why option (a) on the rename.** The naming-cleanup discussion
+considered three forks: (a) rename engine to `TextInputState` /
+`TextAreaState`, keep components as `TextInput` / `TextArea`; (b)
+keep engine name, move to a sibling file `*_engine.zig`; (c)
+rename component instead. Option (a) won because the file names
+already implied the engine-side rename (`text_input_state.zig` →
+`TextInputState` is the natural convention) and the component
+names are the user-facing public API surface — a component rename
+would have rippled through every example and every doc reference.
+Public API impact: `gooey.widgets.TextInput` → renamed to
+`gooey.widgets.TextInputState` (and `widgets.TextArea` →
+`widgets.TextAreaState`); the user-facing `gooey.TextInput` /
+`gooey.TextArea` (re-exported from `components/`) is unchanged.
+PR 9 already plans to demote `gooey.widgets.*` flat re-exports
+into namespace re-exports, so the rename is best landed before
+that shrinking happens.
+
+**Why option α on the half-open Bounds semantics.** The three
+widgets had three definitions of `Bounds.contains`: `text_input` /
+`text_area` used the closed `[x, x+w]` form (right/bottom edge
+inside the rectangle), `code_editor` used the half-open `[x, x+w)`
+form. The half-open form matches `core/geometry.Rect.contains`
+and the framework-wide hit-test convention (the layout engine,
+clip rects, every other hit-test path). The closed form was an
+accidental divergence — the kind of inconsistency that "feels right
+for text fields" until a user clicks on the exact pixel boundary
+between two widgets and gets a different result than every other
+boundary in the framework. Aligning to half-open absorbs the only
+behavioural change in the prep PR (three call sites:
+`text_input_state.zig:289`, `text_area_state.zig:406`, `:433`). The
+practical impact is sub-pixel given HiDPI fractional scaling; the
+five new `Bounds.contains` tests pin the convention so a future
+refactor that flips the inequalities back to `<=` fails at build
+time.
+
+**Why not collapse onto `core/geometry.BoundsF`.** `core/geometry`'s
+`Rect(T)` / `Bounds(T)` is a generic value type with a nested
+`origin: Point(T) + size: Size(T)` shape. Text widgets touch
+`bounds.x` / `bounds.y` / `bounds.width` / `bounds.height` ~150
+times across hot rendering and hit-testing loops; rewriting every
+access to `bounds.origin.x` / `bounds.size.width` would add an
+indirection that nobody asked for. The flat shape lives in
+`text_common.zig` alongside the other widely-shared text-family
+helpers (UTF-8 navigation, selection, position) — the same
+"shared between TextInput / TextArea / CodeEditorState" home that's
+been there since the helpers landed.
+
+**Why bundle text_input + text_area in PR 8.4 (informed by this
+prep work).** During the prep audit, the genuine engine-type
+rename surface turned out to be much smaller than the initial
+grep suggested — only 5 files have real type-references vs. ~25
+files where the name appears in comments or in user-facing
+component contexts. That disambiguation also revealed that
+`runtime/input.zig` has a focused-widget dispatch fan-out
+(`handleKeyDownEvent`, `handleTextInputEvent`,
+`handleCompositionEvent`, `updateImeCursorPosition`) that walks
+through `text_input` and `text_area` arms with identical shape.
+Migrating them in separate PRs would force two passes through the
+same dispatch boundary, with a half-migrated intermediate state
+where one arm routes through the pool and the other arm still
+walks a hashmap. Bundling them in PR 8.4 means the rewrite
+happens once, cleanly, and the `cx.element_states.with(...)`
+sugar from PR 8.3 gets exercised against its first real
+consumers in the same slice.
+
+**Frame-driven eviction still deferred.** Same as PR 8.1 / 8.2 /
+8.3: the new shared `Bounds` type and the renamed engine types
+don't change retention semantics. State persists across frames
+until the widget calls `.remove` explicitly. The frame-keyed
+eviction shape (mirroring GPUI's `mem::swap`-on-`element_states`
+pair) lands later alongside the rest of the `Frame` double-buffer
+adoption in flight on PR 7c.3+.
+
 ---
+
 
 ## PR 9 — `prelude.zig` trim + ownership flag drop
 
