@@ -62,6 +62,16 @@ const TreeListState = tree_list_mod.TreeListState;
 const TreeEntry = tree_list_mod.TreeEntry;
 const TreeListStyle = ui_mod.TreeListStyle;
 
+// PR 8.2 — `SelectState` lives next to the widget in
+// `components/select.zig` now (was a `WidgetStore` field pre-PR-8.2).
+// `cx.onSelect`'s `forIndexAndClose` path needs the type so it can
+// route the close-on-pick through `Window.element_states.get`. The
+// import is local to `cx.zig` only — future cleanup of `cx.zig`'s
+// per-widget knowledge is tracked separately and not in scope for
+// PR 8.2.
+const select_mod = @import("components/select.zig");
+const SelectState = select_mod.SelectState;
+
 // Text measurement types
 const text_mod = @import("text/mod.zig");
 pub const TextMeasurement = text_mod.TextMeasurement;
@@ -329,8 +339,16 @@ pub const Cx = struct {
                     const state_ptr = g.getRootState(State) orelse return;
                     method(state_ptr, index);
 
-                    // Close internal select state
-                    g.widgets.closeSelectState(id_hash);
+                    // Close internal select state. PR 8.2 — routed
+                    // through `Window.element_states.get` (was
+                    // `g.widgets.closeSelectState(id_hash)`
+                    // pre-PR-8.2). Reaching `forIndexAndClose`
+                    // implies the option button just rendered, so
+                    // the slot must already exist; the `null` arm
+                    // is defensive only.
+                    if (g.element_states.get(SelectState, @as(u64, id_hash))) |ss| {
+                        ss.is_open = false;
+                    }
                 } else {
                     // forIndex path: full usize index
                     const index = unpackArg(usize, packed_arg);

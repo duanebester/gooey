@@ -68,24 +68,80 @@ const Window = window_mod.Window;
 const MAX_SELECT_OPTIONS: usize = 4096;
 
 // =============================================================================
+// Internal state (PR 8.2 — lives next to the widget that owns it)
+// =============================================================================
+
+/// Internal open/close state for `Select`, attached to the widget's
+/// `LayoutId` hash and stored on `Window.element_states`.
+///
+/// Pre-PR-8.2 this lived in `context/widget_store.zig` alongside a
+/// dedicated `select_states: AutoHashMap(u32, SelectState)` field plus
+/// four accessor methods on `WidgetStore`. PR 8 collapses every
+/// per-type widget map onto the unified `ElementStates` keyed pool;
+/// `Select` is the first consumer (smallest, u32-keyed). The state
+/// type itself moved here so the widget owns its declaration —
+/// adding a new stateful widget is now a no-op in framework code.
+///
+/// `defaultInit` is the comptime function pointer
+/// `withElementState` runs on the miss path. It must take no
+/// parameters and return `Self` by value (the pool then
+/// `allocator.create(Self)` and assigns this value into the slot).
+pub const SelectState = struct {
+    is_open: bool = false,
+
+    /// Default-state factory for `withElementState`. Closed dropdown
+    /// is the only sensible initial state (a freshly-mounted Select
+    /// renders its trigger only — the dropdown materialises on the
+    /// first toggle).
+    pub fn defaultInit() SelectState {
+        return .{ .is_open = false };
+    }
+};
+
+// =============================================================================
 // Internal Handlers (module-level, used for internal open/close state)
 // =============================================================================
 
 /// Toggle a Select's internal open/close state.
 /// EntityId packs the LayoutId hash (u32) in the lower bits.
+///
+/// PR 8.2 — routed through `Window.element_states` instead of the
+/// retired `WidgetStore.toggleSelectState`. The miss-path allocation
+/// returns `error.OutOfMemory` or `error.ElementStatesAtCapacity`;
+/// either failure mode is handled by leaving the dropdown closed for
+/// this tick (caller can retry next frame) rather than panicking.
+/// Same defensive shape the pre-PR-8.2 path had with the
+/// `getOrPut catch return null` in the old `toggleSelectState`.
 fn internalToggle(g: *Window, packed_id: EntityId) void {
     const id_hash: u32 = @truncate(packed_id.id);
     std.debug.assert(id_hash != 0);
-    g.widgets.toggleSelectState(id_hash);
+
+    const ss = g.element_states.withElementState(
+        SelectState,
+        @as(u64, id_hash),
+        SelectState.defaultInit,
+    ) catch return;
+    ss.is_open = !ss.is_open;
+
     g.requestRender();
 }
 
 /// Close a Select's internal open/close state.
 /// EntityId packs the LayoutId hash (u32) in the lower bits.
+///
+/// PR 8.2 — routed through `Window.element_states.get`. Unlike
+/// `internalToggle` we deliberately do NOT create the slot on miss:
+/// closing a never-opened Select is a no-op (the dropdown wasn't
+/// rendered, so there's no state to close), and creating one would
+/// add an empty entry to the pool every time a click-outside handler
+/// fires on an untouched Select.
 fn internalClose(g: *Window, packed_id: EntityId) void {
     const id_hash: u32 = @truncate(packed_id.id);
     std.debug.assert(id_hash != 0);
-    g.widgets.closeSelectState(id_hash);
+
+    if (g.element_states.get(SelectState, @as(u64, id_hash))) |ss| {
+        ss.is_open = false;
+    }
     g.requestRender();
 }
 
@@ -282,11 +338,22 @@ pub const Select = struct {
             };
         }
 
-        // Internal state path: read from WidgetStore
+        // Internal state path: read from `Window.element_states`
+        // (PR 8.2 — was `g.widgets.getOrCreateSelectState(id_hash)`
+        // pre-PR-8.2). The pool's miss-path allocation can fail under
+        // OOM or capacity exhaustion; in either case fall back to the
+        // disabled state so the trigger still renders, just without
+        // toggle/close handlers wired up. Same recover-by-disable
+        // shape the pre-PR-8.2 path had against the `?*SelectState`
+        // null return.
         const g = b.window orelse return ResolvedState.disabled();
         const id_hash = layout_id.id;
         std.debug.assert(id_hash != 0);
-        const ss = g.widgets.getOrCreateSelectState(id_hash) orelse return ResolvedState.disabled();
+        const ss = g.element_states.withElementState(
+            SelectState,
+            @as(u64, id_hash),
+            SelectState.defaultInit,
+        ) catch return ResolvedState.disabled();
 
         return .{
             .is_open = ss.is_open,

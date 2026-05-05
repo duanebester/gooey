@@ -219,6 +219,19 @@ pub const DrawPhase = draw_phase_mod.DrawPhase;
 const global_mod = @import("global.zig");
 const Globals = global_mod.Globals;
 
+// PR 8.1 / 8.2 — unified element-state keyed pool. PR 8.1
+// landed the container in isolation; PR 8.2 wires it onto
+// `Window` and ports `Select` (the smallest, u32-keyed widget
+// state) onto it as the first consumer. Subsequent 8.x slices
+// peel `text_input` / `text_area` / `code_editor` /
+// `scroll_container` off `WidgetStore` onto this same pool.
+// `Window.element_states` is heap-allocated (`*ElementStates`)
+// because the entry table is 128 KiB — too large for the WASM
+// stack budget per CLAUDE.md §14. See `element_states.zig` and
+// `docs/cleanup-implementation-plan.md` PR 8.2.
+const element_states_mod = @import("element_states.zig");
+const ElementStates = element_states_mod.ElementStates;
+
 // =============================================================================
 // Local infrastructure (deferred command queue)
 // =============================================================================
@@ -360,6 +373,20 @@ pub const Window = struct {
 
     // Widgets (retained across frames)
     widgets: WidgetStore,
+
+    /// PR 8.1 / 8.2 — unified `(id_hash, type_id) -> *S` keyed pool
+    /// for element-attached state. Heap-allocated because the
+    /// entry table is 128 KiB (4096 slots × 32 B/slot), too large
+    /// for the WASM stack per CLAUDE.md §14. PR 8.2 ports
+    /// `Select` open/close state onto this pool as the first
+    /// consumer; subsequent 8.x slices peel `text_input` /
+    /// `text_area` / `code_editor` / `scroll_container` off
+    /// `widgets` (above) the same way. Default `undefined` so
+    /// test fixtures that omit it (`testWindow` below) keep
+    /// compiling without explicit initialisation. See
+    /// `element_states.zig` and
+    /// `docs/cleanup-implementation-plan.md` PR 8.2.
+    element_states: *ElementStates = undefined,
 
     // Focus management
     focus: FocusManager,
@@ -745,6 +772,24 @@ pub const Window = struct {
         // the bundle).
         layout_engine.setMeasureTextFn(measureTextCallback, resources.text_system);
 
+        // PR 8.1 / 8.2 — heap-allocate the unified element-state
+        // pool. The 4096-slot entry table is 128 KiB (CLAUDE.md
+        // §14) so it cannot live by-value on `Window`; we hold a
+        // `*ElementStates` pointer instead. `initInPlace` zeroes
+        // every slot at the final heap address so no by-value
+        // copy of a 128 KiB struct ever crosses a stack frame.
+        // Same shape PR 7c.3a uses for the scene/dispatch heap
+        // pointees inside `Frame`. Errdefer pairs the
+        // `allocator.create` so any later `try` in this function
+        // (e.g. `globals.setOwned`) unwinds without leaking the
+        // pool.
+        const element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
+        element_states.initInPlace(allocator);
+        errdefer {
+            element_states.deinit();
+            allocator.destroy(element_states);
+        }
+
         var result: Self = .{
             .allocator = allocator,
             .io = io,
@@ -781,6 +826,13 @@ pub const Window = struct {
             // heap addresses (see field-decl doc-comments).
             .resources = resources,
             .widgets = WidgetStore.init(allocator, io),
+            // PR 8.1 / 8.2 — borrowed `*ElementStates` view onto
+            // the heap allocation above. Ownership is transferred
+            // here: `result` is the canonical owner from this
+            // point forward, and `Window.deinit` frees the
+            // allocation. The errdefer above is paired by the
+            // disarm post-literal (see below).
+            .element_states = element_states,
             .platform_window = platform_window,
             .width = @floatCast(platform_window.size.width),
             .height = @floatCast(platform_window.size.height),
@@ -959,6 +1011,21 @@ pub const Window = struct {
         self.focus = FocusManager.init(allocator);
         self.widgets = WidgetStore.init(allocator, io);
 
+        // PR 8.1 / 8.2 — heap-allocate the element-state pool
+        // and initialise it in place at its final address. Same
+        // shape as the matching block in `initOwned`; the WASM
+        // `*Ptr` paths exist precisely so 128 KiB structs like
+        // this one never live on the stack (CLAUDE.md §14).
+        // `errdefer` pairs the `allocator.create` so a later
+        // `try self.globals.setOwned(...)` failure unwinds
+        // without leaking the pool.
+        self.element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
+        self.element_states.initInPlace(allocator);
+        errdefer {
+            self.element_states.deinit();
+            allocator.destroy(self.element_states);
+        }
+
         // PR 6 — `globals` and `current_phase` start fresh. `self`
         // is raw memory at this point (caller did `allocator.create`
         // without zeroing), so explicit assignment is required —
@@ -1091,6 +1158,21 @@ pub const Window = struct {
         // Set up text measurement callback using shared text system
         layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
 
+        // PR 8.1 / 8.2 — element-state pool is per-window even
+        // in multi-window mode (the keys are per-window
+        // `LayoutId` hashes — sharing one pool across windows
+        // would conflate state for unrelated elements). Same
+        // heap-allocation shape as `initOwned`. The
+        // `AppResources` triplet is borrowed from the parent
+        // here, but `element_states` always carries `owned`
+        // semantics on this `Window`.
+        const element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
+        element_states.initInPlace(allocator);
+        errdefer {
+            element_states.deinit();
+            allocator.destroy(element_states);
+        }
+
         var result: Self = .{
             .allocator = allocator,
             .io = io,
@@ -1127,6 +1209,10 @@ pub const Window = struct {
                 shared_resources.image_atlas,
             ),
             .widgets = WidgetStore.init(allocator, io),
+            // PR 8.1 / 8.2 — owned `*ElementStates`. See the
+            // matching block in `initOwned` for the
+            // heap-allocation rationale (128 KiB > WASM stack).
+            .element_states = element_states,
             .platform_window = platform_window,
             .width = @floatCast(platform_window.size.width),
             .height = @floatCast(platform_window.size.height),
@@ -1269,6 +1355,19 @@ pub const Window = struct {
         self.focus = FocusManager.init(allocator);
         self.widgets = WidgetStore.init(allocator, io);
 
+        // PR 8.1 / 8.2 — element-state pool. Per-window even in
+        // multi-window mode (see the matching block in
+        // `initWithSharedResources`). The WASM `*Ptr` paths
+        // exist precisely so 128 KiB structs don't live on the
+        // stack (CLAUDE.md §14); `initInPlace` writes at the
+        // final heap address.
+        self.element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
+        self.element_states.initInPlace(allocator);
+        errdefer {
+            self.element_states.deinit();
+            allocator.destroy(self.element_states);
+        }
+
         // PR 6 — `globals` and `current_phase` start fresh (same as
         // `initOwnedPtr` — `self` is raw memory).
         self.globals = .{};
@@ -1344,6 +1443,18 @@ pub const Window = struct {
         // Blur handlers use fixed-capacity storage, no cleanup needed
 
         self.widgets.deinit();
+
+        // PR 8.1 / 8.2 — tear down the unified element-state
+        // pool. `ElementStates.deinit` walks every populated
+        // slot and runs its type-erased deinit thunk before
+        // freeing each payload, so the pool's invariants survive
+        // teardown order against the rest of the `Window`
+        // subsystems above. Free the pool's own heap allocation
+        // last (`destroy`) — `deinit` only tears down its
+        // entries, not the table backing itself.
+        self.element_states.deinit();
+        self.allocator.destroy(self.element_states);
+
         self.focus.deinit();
         // PR 7b.3 — `entities` lifted onto `App`. The borrowed
         // `*App` is owned upstream (single-window: by

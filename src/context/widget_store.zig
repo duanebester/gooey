@@ -32,11 +32,19 @@ const hashString = @import("../animation/animation.zig").hashString;
 const change_tracker_mod = @import("change_tracker.zig");
 const ChangeTracker = change_tracker_mod.ChangeTracker;
 
-/// Internal state for Select widgets, keyed by LayoutId hash (u32).
-/// Managed automatically when using `on_select` with the Select component.
-pub const SelectState = struct {
-    is_open: bool = false,
-};
+// PR 8.2 — `SelectState` and the `select_states: AutoHashMap(u32, SelectState)`
+// field that used to live here have moved off `WidgetStore`. The state
+// type is now declared in `components/select.zig` (the widget owns its
+// own state struct), and the storage is the unified
+// `Window.element_states` keyed pool. The four `*SelectState` accessors
+// (`getOrCreateSelectState`, `getSelectState`, `closeSelectState`,
+// `toggleSelectState`) were retired alongside the field — every former
+// caller now goes through `window.element_states.withElementState`,
+// `get`, or `remove` directly. This is the first slice of PR 8
+// validating the pool's call-site shape on a real consumer; subsequent
+// 8.x slices peel `text_input` / `text_area` / `code_editor` /
+// `scroll_container` off `WidgetStore` the same way. See
+// `docs/cleanup-implementation-plan.md` PR 8.2.
 
 pub const WidgetStore = struct {
     allocator: std.mem.Allocator,
@@ -56,8 +64,9 @@ pub const WidgetStore = struct {
     /// each widget map entry owns a unique heap allocation).
     accessed_this_frame: std.AutoHashMap([*]const u8, void),
 
-    // u32-keyed select state (open/close, keyed by LayoutId hash)
-    select_states: std.AutoHashMap(u32, SelectState),
+    // PR 8.2 — `select_states` field retired. Select open/close state
+    // lives on `Window.element_states` keyed by `(SelectState, id_hash)`
+    // alongside every other element-attached state type.
 
     // u32-keyed animation storage
     animations: std.AutoArrayHashMapUnmanaged(u32, AnimationState),
@@ -180,7 +189,9 @@ pub const WidgetStore = struct {
             .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
             .accessed_this_frame = std.AutoHashMap([*]const u8, void).init(allocator),
-            .select_states = std.AutoHashMap(u32, SelectState).init(allocator),
+            // PR 8.2 — `select_states` field retired (lifted onto
+            // `Window.element_states`). No init line here, no
+            // matching `deinit` line below.
             .animations = .empty,
             .springs = .empty,
             .motions = .empty,
@@ -194,7 +205,11 @@ pub const WidgetStore = struct {
         self.deinitWidgetMap(CodeEditorState, &self.code_editors);
         self.deinitWidgetMap(ScrollContainer, &self.scroll_containers);
 
-        self.select_states.deinit();
+        // PR 8.2 — `select_states.deinit()` retired alongside the
+        // field; teardown now happens via
+        // `Window.element_states.deinit()` which walks every keyed
+        // payload (including `SelectState` slots) through its
+        // type-erased deinit thunk.
         self.animations.deinit(self.allocator);
         self.springs.deinit(self.allocator);
         self.motions.deinit(self.allocator);
@@ -673,41 +688,19 @@ pub const WidgetStore = struct {
     // =========================================================================
     // Select State (internal open/close for Select widgets)
     // =========================================================================
-
-    /// Get or create internal state for a Select widget, keyed by LayoutId hash.
-    /// Returns a mutable pointer to the SelectState.
-    pub fn getOrCreateSelectState(self: *Self, id_hash: u32) ?*SelectState {
-        std.debug.assert(id_hash != 0); // 0 is reserved (LayoutId.none)
-
-        const gop = self.select_states.getOrPut(id_hash) catch return null;
-        if (!gop.found_existing) {
-            gop.value_ptr.* = SelectState{};
-        }
-        return gop.value_ptr;
-    }
-
-    /// Get existing select state (returns null if not yet created).
-    pub fn getSelectState(self: *Self, id_hash: u32) ?*SelectState {
-        return self.select_states.getPtr(id_hash);
-    }
-
-    /// Close a select's internal state by id hash. No-op if state doesn't exist.
-    pub fn closeSelectState(self: *Self, id_hash: u32) void {
-        if (self.select_states.getPtr(id_hash)) |ss| {
-            ss.is_open = false;
-        }
-    }
-
-    /// Toggle a select's internal open/close state by id hash.
-    /// Creates the state if it doesn't exist yet.
-    pub fn toggleSelectState(self: *Self, id_hash: u32) void {
-        std.debug.assert(id_hash != 0);
-
-        const gop = self.select_states.getOrPut(id_hash) catch return;
-        if (!gop.found_existing) {
-            gop.value_ptr.* = SelectState{ .is_open = true };
-        } else {
-            gop.value_ptr.is_open = !gop.value_ptr.is_open;
-        }
-    }
+    //
+    // PR 8.2 — the four `*SelectState` accessors that used to live
+    // here (`getOrCreateSelectState` / `getSelectState` /
+    // `closeSelectState` / `toggleSelectState`) have been retired.
+    // `Select` is the first consumer of `Window.element_states`, the
+    // unified keyed pool introduced in PR 8.1. Former callers now
+    // route through `window.element_states.withElementState(SelectState,
+    // id_hash, SelectState.defaultInit)` (open-or-create read),
+    // `.get` (read-only peek), or `.remove` (explicit teardown). The
+    // toggle/close helpers moved into `components/select.zig` next
+    // to the widget itself — they are widget-specific control-flow
+    // (mutate one bool through the borrowed `*SelectState`), not
+    // framework-level storage policy. See
+    // `docs/cleanup-implementation-plan.md` PR 8.2 for the full
+    // call-site sweep.
 };
