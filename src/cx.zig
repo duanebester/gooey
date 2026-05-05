@@ -593,11 +593,16 @@ pub const Cx = struct {
     }
 
     // Widget access (for advanced use cases). Each returns `null` if
-    // no widget with that id has been registered.
-    pub fn textField(self: *Self, id: []const u8) ?*text_field_mod.TextInput {
+    // no widget with that id has been registered. The returned types
+    // are the *engine* state objects (`TextInputState`, `TextAreaState`,
+    // `CodeEditorState`) — not the user-facing `TextInput` / `TextArea`
+    // declarative components in `components/`. PR 8.4-prep renamed the
+    // engine types to disambiguate; the accessor verbs (`textField`,
+    // `textAreaWidget`) are unchanged.
+    pub fn textField(self: *Self, id: []const u8) ?*text_field_mod.TextInputState {
         return self._window.widgets.textInput(id);
     }
-    pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextArea {
+    pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextAreaState {
         return self._window.widgets.textArea(id);
     }
     pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {

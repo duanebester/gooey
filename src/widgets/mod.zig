@@ -8,12 +8,16 @@
 //! ```zig
 //! const gooey = @import("gooey");
 //!
-//! // Components (preferred - declarative, themed)
+//! // Components (preferred — declarative, themed). The user-facing
+//! // types `TextInput` / `TextArea` live in `components/`.
 //! gooey.TextInput{ .id = "name", .placeholder = "Enter name" }
 //! gooey.TextArea{ .id = "bio", .placeholder = "Enter bio" }
 //!
-//! // Widgets (low-level - direct state access)
-//! const input = cx.textField("name");
+//! // Engines (low-level state objects — direct buffer / cursor / IME
+//! // access). These are the heap-allocated structs that the framework
+//! // retains across frames; their type names carry the `*State` suffix
+//! // to disambiguate from the user-facing components.
+//! const input: *gooey.widgets.TextInputState = cx.textField("name").?;
 //! input.setText("Hello");
 //! ```
 //!
@@ -28,22 +32,33 @@ const std = @import("std");
 const interface_verify = @import("../core/interface_verify.zig");
 
 // =============================================================================
-// Text Input (single-line)
+// Text Input (single-line) — engine type
 // =============================================================================
+//
+// `TextInputState` is the engine: heap-allocated state, owned by
+// `WidgetStore` (and, after PR 8.4, by `Window.element_states`). The
+// user-facing declarative component is `gooey.TextInput` in
+// `components/text_input.zig`. The two were merged under a single
+// `TextInput` name historically; PR 8.4-prep disambiguates them so
+// PR 8.4 can lift the engine onto the keyed pool without a name clash.
 
 pub const text_input_state = @import("text_input_state.zig");
 
-pub const TextInput = text_input_state.TextInput;
+pub const TextInputState = text_input_state.TextInputState;
 pub const TextInputBounds = text_input_state.Bounds;
 pub const TextInputStyle = text_input_state.Style;
 
 // =============================================================================
-// Text Area (multi-line)
+// Text Area (multi-line) — engine type
 // =============================================================================
+//
+// Same engine-vs-component split as `TextInputState` above:
+// `TextAreaState` is the heap-allocated engine; `gooey.TextArea` in
+// `components/text_area.zig` is the user-facing declarative component.
 
 pub const text_area_state = @import("text_area_state.zig");
 
-pub const TextArea = text_area_state.TextArea;
+pub const TextAreaState = text_area_state.TextAreaState;
 pub const TextAreaBounds = text_area_state.Bounds;
 pub const TextAreaStyle = text_area_state.Style;
 
@@ -157,8 +172,8 @@ pub const DEFAULT_INDENT_PX = tree_list.DEFAULT_INDENT_PX;
 // learn about the new type.
 
 comptime {
-    interface_verify.verifyFocusableInterface(TextInput);
-    interface_verify.verifyFocusableInterface(TextArea);
+    interface_verify.verifyFocusableInterface(TextInputState);
+    interface_verify.verifyFocusableInterface(TextAreaState);
     interface_verify.verifyFocusableInterface(CodeEditorState);
 }
 

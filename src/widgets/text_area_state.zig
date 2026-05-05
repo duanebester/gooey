@@ -1,11 +1,22 @@
-//! TextArea Widget - Multi-line text input with vertical scrolling
+//! TextAreaState - Multi-line text input engine with vertical scrolling
 //!
-//! Key differences from TextInput:
+//! Key differences from TextInputState:
 //! - Handles newlines (\n) in text
 //! - Vertical scrolling (renders only visible lines)
 //! - Line index cache for O(log n) line lookup
 //! - Up/down cursor navigation with preferred column
 //! - Multi-line selection rendering
+//!
+//! Naming: this is the *engine* type — the heap-allocated state object
+//! that owns the multi-line text buffer, line index, cursor, IME
+//! composition, edit history, and focus state. The user-facing
+//! declarative component is `gooey.TextArea` in
+//! `components/text_area.zig`, which is what application code
+//! constructs as a literal
+//! (`TextArea{ .id = "...", .placeholder = "..." }`). The two types
+//! used to share the name `TextArea`, which only worked as long as no
+//! file imported both — the disambiguation is the prep work for PR 8.4
+//! lifting `TextAreaState` onto the keyed `Window.element_states` pool.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -96,7 +107,10 @@ pub const ScrollbarStyle = struct {
     thumb_radius: f32 = 4,
 };
 
-pub const TextArea = struct {
+/// TextAreaState — multi-line text input engine.
+///
+/// See file header for the engine-vs-component naming rationale.
+pub const TextAreaState = struct {
     allocator: std.mem.Allocator,
 
     id: ElementId,
@@ -149,7 +163,7 @@ pub const TextArea = struct {
     placeholder: []const u8 = "",
 
     // Callbacks
-    on_change: ?*const fn (*TextArea) void = null,
+    on_change: ?*const fn (*TextAreaState) void = null,
 
     /// Cursor rect for IME candidate window positioning (set during render)
     cursor_rect: struct { x: f32 = 0, y: f32 = 0, width: f32 = 1.5, height: f32 = 20 } = .{},
@@ -164,7 +178,7 @@ pub const TextArea = struct {
 
     const BLINK_INTERVAL_MS: i64 = 530;
 
-    /// Initialize TextArea
+    /// Initialize TextAreaState.
     /// Marked noinline to prevent stack accumulation
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         const unique_id = struct {
@@ -191,7 +205,7 @@ pub const TextArea = struct {
         };
     }
 
-    /// Initialize TextArea with a string ID
+    /// Initialize TextAreaState with a string ID.
     /// Marked noinline to prevent stack accumulation
     pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
         var line_starts: std.ArrayList(usize) = .empty;
@@ -390,7 +404,7 @@ pub const TextArea = struct {
     /// the UI builder during render so the framework can drive focus
     /// without importing the widget type — see PR 4 in
     /// `docs/cleanup-implementation-plan.md`. The vtable is shared
-    /// across all `TextArea` instances and lives in static storage.
+    /// across all `TextAreaState` instances and lives in static storage.
     pub fn focusable(self: *Self) focus_mod.Focusable {
         return focus_mod.Focusable.fromInstance(Self, self);
     }
@@ -1555,9 +1569,9 @@ fn getTimestamp() i64 {
 // Tests
 // =============================================================================
 
-test "TextArea basic operations" {
+test "TextAreaState basic operations" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("Hello\nWorld");
@@ -1565,9 +1579,9 @@ test "TextArea basic operations" {
     try std.testing.expectEqual(@as(usize, 2), ta.lineCount());
 }
 
-test "TextArea line index" {
+test "TextAreaState line index" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("Line 1\nLine 2\nLine 3");
@@ -1583,9 +1597,9 @@ test "TextArea line index" {
     try std.testing.expectEqual(@as(usize, 2), ta.lineForOffset(14));
 }
 
-test "TextArea line content" {
+test "TextAreaState line content" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("First\nSecond\nThird");
@@ -1595,9 +1609,9 @@ test "TextArea line content" {
     try std.testing.expectEqualStrings("Third", ta.lineContent(2));
 }
 
-test "TextArea cursor navigation" {
+test "TextAreaState cursor navigation" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("AB\nCD\nEF");

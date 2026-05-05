@@ -1,4 +1,4 @@
-//! TextInput - editable single-line text field
+//! TextInputState - editable single-line text input engine
 //!
 //! Handles:
 //! - Text rendering with cursor
@@ -7,9 +7,19 @@
 //! - Selection (shift+arrow, shift+click)
 //! - Focus management
 //!
+//! Naming: this is the *engine* type — the heap-allocated state object
+//! that owns the text buffer, cursor, IME composition, edit history, and
+//! focus state for a single-line text input. The user-facing declarative
+//! component is `gooey.TextInput` in `components/text_input.zig`, which
+//! is what application code constructs as a literal
+//! (`TextInput{ .id = "...", .placeholder = "..." }`). The two types
+//! used to share the name `TextInput`, which only worked as long as no
+//! file imported both — the disambiguation is the prep work for PR 8.4
+//! lifting `TextInputState` onto the keyed `Window.element_states` pool.
+//!
 //! Example usage:
 //! ```
-//! var input = TextInput.init(allocator, .{ .x = 100, .y = 100, .width = 200, .height = 32 });
+//! var input = TextInputState.init(allocator, .{ .x = 100, .y = 100, .width = 200, .height = 32 });
 //! defer input.deinit();
 //!
 //! // In input handler:
@@ -93,8 +103,10 @@ pub const Style = struct {
     preedit_underline_color: Hsla = Hsla.init(0, 0, 0.3, 1),
 };
 
-/// TextInput - editable single-line text field
-pub const TextInput = struct {
+/// TextInputState — editable single-line text input engine.
+///
+/// See file header for the engine-vs-component naming rationale.
+pub const TextInputState = struct {
     allocator: std.mem.Allocator,
 
     id: ElementId,
@@ -137,8 +149,8 @@ pub const TextInput = struct {
     secure: bool = false,
 
     // Callbacks
-    on_change: ?*const fn (*TextInput) void = null,
-    on_submit: ?*const fn (*TextInput) void = null,
+    on_change: ?*const fn (*TextInputState) void = null,
+    on_submit: ?*const fn (*TextInputState) void = null,
 
     /// Cursor rect for IME candidate window positioning (set during render)
     cursor_rect: struct { x: f32 = 0, y: f32 = 0, width: f32 = 1.5, height: f32 = 20 } = .{},
@@ -151,7 +163,7 @@ pub const TextInput = struct {
     /// Cursor blink interval in milliseconds
     const BLINK_INTERVAL_MS: i64 = 530;
 
-    /// Initialize TextInput
+    /// Initialize TextInputState.
     /// Marked noinline to prevent stack accumulation
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         // Generate a unique integer ID for this instance
@@ -266,7 +278,7 @@ pub const TextInput = struct {
     /// without importing the widget type — see PR 4 in
     /// `docs/cleanup-implementation-plan.md`. The `Focusable.ptr` field
     /// captures the heap-stable widget pointer; the vtable is shared
-    /// across all `TextInput` instances and lives in static storage.
+    /// across all `TextInputState` instances and lives in static storage.
     pub fn focusable(self: *Self) focus_mod.Focusable {
         return focus_mod.Focusable.fromInstance(Self, self);
     }
@@ -1114,10 +1126,10 @@ fn getTimestamp() i64 {
     return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }
 
-test "TextInput basic operations" {
+test "TextInputState basic operations" {
     const allocator = std.testing.allocator;
 
-    var input = TextInput.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
     defer input.deinit();
 
     // Test setText
@@ -1131,10 +1143,10 @@ test "TextInput basic operations" {
     try std.testing.expectEqual(@as(usize, 0), input.cursor_byte);
 }
 
-test "TextInput UTF-8 navigation" {
+test "TextInputState UTF-8 navigation" {
     const allocator = std.testing.allocator;
 
-    var input = TextInput.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
     defer input.deinit();
 
     // Test with emoji (4 bytes in UTF-8)
@@ -1149,10 +1161,10 @@ test "TextInput UTF-8 navigation" {
     try std.testing.expectEqual(@as(usize, 1), prev2); // position after 'a', before emoji
 }
 
-test "TextInput selection" {
+test "TextInputState selection" {
     const allocator = std.testing.allocator;
 
-    var input = TextInput.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
     defer input.deinit();
 
     try input.setText("Hello World");

@@ -1,6 +1,6 @@
 //! CodeEditorState - Stateful code editor widget
 //!
-//! Extends TextArea with:
+//! Extends TextAreaState with:
 //! - Line number gutter rendering
 //! - Syntax highlight spans (pre-allocated fixed array)
 //! - Code-specific settings (tab size, indentation)
@@ -12,7 +12,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const text_area_mod = @import("text_area_state.zig");
-const TextArea = text_area_mod.TextArea;
+const TextAreaState = text_area_mod.TextAreaState;
 const TextAreaBounds = text_area_mod.Bounds;
 const TextAreaStyle = text_area_mod.Style;
 const common = @import("text_common.zig");
@@ -78,7 +78,7 @@ pub const HighlightSpan = struct {
     }
 };
 
-/// Code editor styling (extends TextArea style)
+/// Code editor styling (extends TextAreaState style)
 pub const Style = struct {
     /// Base text area style
     text: TextAreaStyle = .{},
@@ -130,8 +130,11 @@ pub const CodeEditorState = struct {
     /// Unique identifier
     id: ElementId,
 
-    /// Embedded TextArea for text management
-    text_area: TextArea,
+    /// Embedded TextAreaState for text management.
+    /// Field name (`text_area`) preserved — the public-facing widget
+    /// concept is still "a text area embedded in a code editor." Only
+    /// the type is renamed (engine vs. component disambiguation).
+    text_area: TextAreaState,
 
     /// Full bounds (including gutter)
     bounds: Bounds,
@@ -194,7 +197,7 @@ pub const CodeEditorState = struct {
         return .{
             .allocator = allocator,
             .id = ElementId.int(generateUniqueId()),
-            .text_area = TextArea.init(allocator, text_bounds),
+            .text_area = TextAreaState.init(allocator, text_bounds),
             .bounds = bounds,
         };
     }
@@ -210,7 +213,7 @@ pub const CodeEditorState = struct {
         return .{
             .allocator = allocator,
             .id = ElementId.named(id),
-            .text_area = TextArea.initWithId(allocator, text_bounds, id),
+            .text_area = TextAreaState.initWithId(allocator, text_bounds, id),
             .bounds = bounds,
         };
     }
@@ -269,7 +272,7 @@ pub const CodeEditorState = struct {
     }
 
     // =========================================================================
-    // Text access (delegated to TextArea)
+    // Text access (delegated to TextAreaState)
     // =========================================================================
 
     pub fn getText(self: *Self) []const u8 {
@@ -300,7 +303,7 @@ pub const CodeEditorState = struct {
     }
 
     // =========================================================================
-    // Cursor and selection (delegated to TextArea)
+    // Cursor and selection (delegated to TextAreaState)
     // =========================================================================
 
     pub fn getCursorRow(self: *Self) usize {
@@ -320,7 +323,7 @@ pub const CodeEditorState = struct {
     }
 
     // =========================================================================
-    // Focus management (delegated to TextArea)
+    // Focus management (delegated to TextAreaState)
     // =========================================================================
 
     pub fn focus(self: *Self) void {
@@ -340,7 +343,7 @@ pub const CodeEditorState = struct {
     /// without importing the widget type — see PR 4 in
     /// `docs/cleanup-implementation-plan.md`. The vtable is shared
     /// across all `CodeEditorState` instances and lives in static
-    /// storage. `isFocused` delegates through the embedded `TextArea`.
+    /// storage. `isFocused` delegates through the embedded `TextAreaState`.
     pub fn focusable(self: *Self) focus_mod.Focusable {
         return focus_mod.Focusable.fromInstance(Self, self);
     }
@@ -454,7 +457,7 @@ pub const CodeEditorState = struct {
             return true;
         }
 
-        // Create KeyEvent for TextArea's handleKey
+        // Create KeyEvent for TextAreaState's handleKey
         const key_event = input_mod.KeyEvent{
             .key = key,
             .modifiers = mods,
@@ -467,7 +470,7 @@ pub const CodeEditorState = struct {
     }
 
     // =========================================================================
-    // Undo/Redo (delegated to TextArea)
+    // Undo/Redo (delegated to TextAreaState)
     // =========================================================================
 
     /// Check if undo is available

@@ -3,10 +3,16 @@
 //! Now includes animation state management.
 
 const std = @import("std");
-const TextInput = @import("../widgets/text_input_state.zig").TextInput;
+// Engine types (the heap-allocated state objects retained across
+// frames). The user-facing components `TextInput` / `TextArea` live in
+// `components/`; the engine types carry the `*State` suffix to
+// disambiguate. PR 8.4-prep introduced the rename so PR 8.4 can lift
+// these onto the keyed `Window.element_states` pool without colliding
+// with the chrome component names.
+const TextInputState = @import("../widgets/text_input_state.zig").TextInputState;
 const Bounds = @import("../widgets/text_input_state.zig").Bounds;
 const ScrollContainer = @import("../widgets/scroll_container.zig").ScrollContainer;
-const TextArea = @import("../widgets/text_area_state.zig").TextArea;
+const TextAreaState = @import("../widgets/text_area_state.zig").TextAreaState;
 const TextAreaBounds = @import("../widgets/text_area_state.zig").Bounds;
 const CodeEditorState = @import("../widgets/code_editor_state.zig").CodeEditorState;
 const CodeEditorBounds = @import("../widgets/code_editor_state.zig").Bounds;
@@ -54,8 +60,8 @@ pub const WidgetStore = struct {
     /// `std.Io` is a pair of pointers into a process-lifetime vtable —
     /// safe and cheap to copy.
     io: std.Io,
-    text_inputs: std.StringHashMap(*TextInput),
-    text_areas: std.StringHashMap(*TextArea),
+    text_inputs: std.StringHashMap(*TextInputState),
+    text_areas: std.StringHashMap(*TextAreaState),
     code_editors: std.StringHashMap(*CodeEditorState),
     scroll_containers: std.StringHashMap(*ScrollContainer),
     /// Tracks which widgets were accessed this frame. Keyed by pointer
@@ -122,10 +128,10 @@ pub const WidgetStore = struct {
         // Initialize via the type-specific init function.
         if (T == ScrollContainer) {
             instance.* = ScrollContainer.init(self.allocator, owned_key);
-        } else if (T == TextInput) {
-            instance.* = TextInput.initWithId(self.allocator, self.default_text_input_bounds, owned_key);
-        } else if (T == TextArea) {
-            instance.* = TextArea.initWithId(self.allocator, self.default_text_area_bounds, owned_key);
+        } else if (T == TextInputState) {
+            instance.* = TextInputState.initWithId(self.allocator, self.default_text_input_bounds, owned_key);
+        } else if (T == TextAreaState) {
+            instance.* = TextAreaState.initWithId(self.allocator, self.default_text_area_bounds, owned_key);
         } else if (T == CodeEditorState) {
             instance.* = CodeEditorState.initWithId(self.allocator, self.default_code_editor_bounds, owned_key);
         } else {
@@ -156,8 +162,8 @@ pub const WidgetStore = struct {
     }
 
     /// Iterate a widget map and return the first focused instance, or null.
-    /// Only valid for types that expose `isFocused()` (TextInput, TextArea,
-    /// CodeEditorState).
+    /// Only valid for types that expose `isFocused()` (TextInputState,
+    /// TextAreaState, CodeEditorState).
     fn getFocusedWidget(comptime T: type, map: *std.StringHashMap(*T)) ?*T {
         var it = map.valueIterator();
         while (it.next()) |val| {
@@ -184,8 +190,8 @@ pub const WidgetStore = struct {
         return .{
             .allocator = allocator,
             .io = io,
-            .text_inputs = std.StringHashMap(*TextInput).init(allocator),
-            .text_areas = std.StringHashMap(*TextArea).init(allocator),
+            .text_inputs = std.StringHashMap(*TextInputState).init(allocator),
+            .text_areas = std.StringHashMap(*TextAreaState).init(allocator),
             .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
             .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
             .accessed_this_frame = std.AutoHashMap([*]const u8, void).init(allocator),
@@ -200,8 +206,8 @@ pub const WidgetStore = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.deinitWidgetMap(TextInput, &self.text_inputs);
-        self.deinitWidgetMap(TextArea, &self.text_areas);
+        self.deinitWidgetMap(TextInputState, &self.text_inputs);
+        self.deinitWidgetMap(TextAreaState, &self.text_areas);
         self.deinitWidgetMap(CodeEditorState, &self.code_editors);
         self.deinitWidgetMap(ScrollContainer, &self.scroll_containers);
 
@@ -575,39 +581,44 @@ pub const WidgetStore = struct {
     pub fn endFrame(_: *Self) void {}
 
     // =========================================================================
-    // TextInput (existing code)
+    // TextInputState (existing code)
+    // =========================================================================
+    //
+    // Accessor verbs (`textInput`, `textInputOrPanic`, ...) are the
+    // framework's public API for "give me the engine state for this
+    // widget id" and are intentionally unchanged. Only the *return
+    // types* are renamed (engine vs. component disambiguation).
+
+    pub fn textInput(self: *Self, id: []const u8) ?*TextInputState {
+        return self.getOrCreateWidget(TextInputState, &self.text_inputs, id);
+    }
+
+    pub fn textInputOrPanic(self: *Self, id: []const u8) *TextInputState {
+        return self.textInput(id) orelse @panic("Failed to allocate TextInputState");
+    }
+
+    // =========================================================================
+    // TextAreaState
     // =========================================================================
 
-    pub fn textInput(self: *Self, id: []const u8) ?*TextInput {
-        return self.getOrCreateWidget(TextInput, &self.text_inputs, id);
+    pub fn textArea(self: *Self, id: []const u8) ?*TextAreaState {
+        return self.getOrCreateWidget(TextAreaState, &self.text_areas, id);
     }
 
-    pub fn textInputOrPanic(self: *Self, id: []const u8) *TextInput {
-        return self.textInput(id) orelse @panic("Failed to allocate TextInput");
+    pub fn textAreaOrPanic(self: *Self, id: []const u8) *TextAreaState {
+        return self.textArea(id) orelse @panic("Failed to allocate TextAreaState");
     }
 
-    // =========================================================================
-    // TextArea
-    // =========================================================================
-
-    pub fn textArea(self: *Self, id: []const u8) ?*TextArea {
-        return self.getOrCreateWidget(TextArea, &self.text_areas, id);
-    }
-
-    pub fn textAreaOrPanic(self: *Self, id: []const u8) *TextArea {
-        return self.textArea(id) orelse @panic("Failed to allocate TextArea");
-    }
-
-    pub fn getTextArea(self: *Self, id: []const u8) ?*TextArea {
+    pub fn getTextArea(self: *Self, id: []const u8) ?*TextAreaState {
         return self.text_areas.get(id);
     }
 
     pub fn removeTextArea(self: *Self, id: []const u8) void {
-        self.removeWidget(TextArea, &self.text_areas, id);
+        self.removeWidget(TextAreaState, &self.text_areas, id);
     }
 
-    pub fn getFocusedTextArea(self: *Self) ?*TextArea {
-        return getFocusedWidget(TextArea, &self.text_areas);
+    pub fn getFocusedTextArea(self: *Self) ?*TextAreaState {
+        return getFocusedWidget(TextAreaState, &self.text_areas);
     }
 
     // =========================================================================
@@ -647,14 +658,14 @@ pub const WidgetStore = struct {
     }
 
     // =========================================================================
-    // TextInput helpers (existing)
+    // TextInputState helpers (existing)
     // =========================================================================
 
     pub fn removeTextInput(self: *Self, id: []const u8) void {
-        self.removeWidget(TextInput, &self.text_inputs, id);
+        self.removeWidget(TextInputState, &self.text_inputs, id);
     }
 
-    pub fn getTextInput(self: *Self, id: []const u8) ?*TextInput {
+    pub fn getTextInput(self: *Self, id: []const u8) ?*TextInputState {
         return self.text_inputs.get(id);
     }
 
@@ -666,8 +677,8 @@ pub const WidgetStore = struct {
         return self.text_inputs.count();
     }
 
-    pub fn getFocusedTextInput(self: *Self) ?*TextInput {
-        return getFocusedWidget(TextInput, &self.text_inputs);
+    pub fn getFocusedTextInput(self: *Self) ?*TextInputState {
+        return getFocusedWidget(TextInputState, &self.text_inputs);
     }
 
     pub fn blurAll(self: *Self) void {
