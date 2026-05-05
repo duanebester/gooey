@@ -242,7 +242,12 @@ const AppState = struct {
         self.tasks[self.task_count] = task;
         self.task_count += 1;
 
-        if (g.widgets.textInput("task-input")) |input| {
+        // PR 8.4b — `g.widgets.textInput` retired alongside the
+        // StringHashMap-keyed `text_inputs` map; reach the engine
+        // state through `Window.element_states` keyed by
+        // `LayoutId.id`.
+        const input_hash: u64 = @as(u64, gooey.LayoutId.fromString("task-input").id);
+        if (g.element_states.get(gooey.widgets.TextInputState, input_hash)) |input| {
             input.clear();
         }
         self.input_text = "";

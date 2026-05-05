@@ -1800,11 +1800,14 @@ pub const Window = struct {
     // `focusCodeEditor`) used to live here, each one importing the
     // concrete widget state type and so dragging the
     // `context → widgets` backward edge into `Window`. They are deleted
-    // outright — callers in `runtime/`, `cx.zig`, and user code reach
-    // through `window.widgets.textInput(id)` / `window.widgets.textArea(id)`
-    // / `window.widgets.codeEditor(id)` directly, and trigger focus via
-    // the generic `window.focusWidget(id)` below (which routes through
-    // the `Focusable` vtable on `FocusManager` — no widget-type switch).
+    // outright — PR 8.4b further retires the `widgets.textInput` /
+    // `widgets.textArea` / `widgets.codeEditor` proxy accessors that
+    // PR 4 callers were pointed at. Callers in `runtime/`, `cx.zig`,
+    // and user code now reach the engine state through
+    // `window.element_states.get(EngineType, layout_id.id)`, and
+    // trigger focus via the generic `window.focusWidget(id)` below
+    // (which routes through the `Focusable` vtable on `FocusManager`
+    // — no widget-type switch).
     //
     // Adding a new focusable widget type now touches only `widgets/`:
     // the widget exposes `pub fn focusable(self) Focusable` and the

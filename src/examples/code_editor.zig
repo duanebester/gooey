@@ -261,9 +261,12 @@ const AppState = struct {
             } else {
                 self.file_status = .binary_file;
             }
-            // Clear the editor content
+            // Clear the editor content. PR 8.4b — `g.widgets.codeEditor`
+            // retired alongside the StringHashMap-keyed `code_editors`
+            // map; reach the engine state through
+            // `Window.element_states` keyed by `LayoutId.id`.
             self.source_code = "";
-            if (g.widgets.codeEditor("source")) |editor| {
+            if (sourceCodeEditor(g)) |editor| {
                 editor.setText("") catch {};
             }
             return;
@@ -281,7 +284,7 @@ const AppState = struct {
             error.StreamTooLong => {
                 self.file_status = .file_too_large;
                 self.source_code = "";
-                if (g.widgets.codeEditor("source")) |editor| {
+                if (sourceCodeEditor(g)) |editor| {
                     editor.setText("") catch {};
                 }
                 return;
@@ -293,7 +296,7 @@ const AppState = struct {
         if (!std.unicode.utf8ValidateSlice(content)) {
             self.file_status = .binary_file;
             self.source_code = "";
-            if (g.widgets.codeEditor("source")) |editor| {
+            if (sourceCodeEditor(g)) |editor| {
                 editor.setText("") catch {};
             }
             return;
@@ -303,9 +306,18 @@ const AppState = struct {
         self.source_code = content;
 
         // Update the code editor widget directly
-        if (g.widgets.codeEditor("source")) |editor| {
+        if (sourceCodeEditor(g)) |editor| {
             editor.setText(content) catch {};
         }
+    }
+
+    /// Reach the `"source"` `CodeEditorState` through
+    /// `Window.element_states`. PR 8.4b — retired the
+    /// `g.widgets.codeEditor(id)` accessor (see
+    /// `docs/cleanup-implementation-plan.md` PR 8.4b).
+    fn sourceCodeEditor(g: *gooey.Window) ?*gooey.widgets.CodeEditorState {
+        const hash: u64 = @as(u64, gooey.LayoutId.fromString("source").id);
+        return g.element_states.get(gooey.widgets.CodeEditorState, hash);
     }
 
     // =========================================================================

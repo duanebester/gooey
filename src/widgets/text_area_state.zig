@@ -41,7 +41,12 @@ else
 const scene_mod = @import("../scene/mod.zig");
 const input_mod = @import("../input/events.zig");
 const text_mod = @import("../text/mod.zig");
-const element_id_mod = @import("../core/element_id.zig");
+// PR 8.4b — `core/element_id.zig` import retired alongside the
+// `id: ElementId` field and `getId()` method. Same reduction
+// `text_input_state.zig` does post-PR-8.4b: the engine type is
+// keyed by `LayoutId.id` (a u32 hash) on `Window.element_states`,
+// and the only reader of the field (`getId()`) was unused outside
+// its own definition.
 const event = @import("../input/event.zig");
 const common = @import("text_common.zig");
 const history_mod = @import("edit_history.zig");
@@ -49,7 +54,6 @@ const focus_mod = @import("../context/focus.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const ElementId = element_id_mod.ElementId;
 const Event = event.Event;
 const EventResult = event.EventResult;
 const Scene = scene_mod.Scene;
@@ -72,9 +76,12 @@ pub const Position = common.Position;
 /// which is the single source of truth for the text-widget family
 /// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
 /// alias preserves existing `text_area_state.Bounds` import paths in
-/// `WidgetStore`, `widgets/mod.zig`, and `code_editor_state.zig`. See
-/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)` hit-test
-/// rationale.
+/// `widgets/mod.zig`, `code_editor_state.zig`, and the
+/// `Builder.DEFAULT_TEXT_AREA_BOUNDS` seed value (post-PR-8.4b:
+/// pre-PR-8.4b the alias was also used by the retired
+/// `WidgetStore.default_text_area_bounds` field). See
+/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
+/// hit-test rationale.
 pub const Bounds = common.Bounds;
 
 pub const Style = struct {
@@ -113,7 +120,8 @@ pub const ScrollbarStyle = struct {
 pub const TextAreaState = struct {
     allocator: std.mem.Allocator,
 
-    id: ElementId,
+    // PR 8.4b — `id: ElementId` field dropped (see file header for
+    // rationale).
 
     // Geometry
     bounds: Bounds,
@@ -179,17 +187,15 @@ pub const TextAreaState = struct {
     const BLINK_INTERVAL_MS: i64 = 530;
 
     /// Initialize TextAreaState.
-    /// Marked noinline to prevent stack accumulation
+    /// Marked noinline to prevent stack accumulation.
+    ///
+    /// PR 8.4b — `init` and `initWithId` collapsed into a single
+    /// constructor now that `id: ElementId` is gone. The pre-PR-8.4b
+    /// `init` ran a counter-derived id only because the field
+    /// existed; with the field retired the counter was dead weight
+    /// and the call sites split (`init` for tests, `initWithId` for
+    /// `WidgetStore`) collapse onto a single shape.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
-        const unique_id = struct {
-            var next: u64 = 1;
-            fn get() u64 {
-                const id = next;
-                next += 1;
-                return id;
-            }
-        }.get();
-
         var line_starts: std.ArrayList(usize) = .empty;
         line_starts.append(allocator, 0) catch {};
 
@@ -200,25 +206,6 @@ pub const TextAreaState = struct {
             .buffer = .empty,
             .line_starts = line_starts,
             .preedit_buffer = .empty,
-            .id = ElementId.int(unique_id),
-            .edit_history = EditHistory.create(allocator),
-        };
-    }
-
-    /// Initialize TextAreaState with a string ID.
-    /// Marked noinline to prevent stack accumulation
-    pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
-        var line_starts: std.ArrayList(usize) = .empty;
-        line_starts.append(allocator, 0) catch {};
-
-        return .{
-            .allocator = allocator,
-            .bounds = bounds,
-            .style = .{},
-            .buffer = .empty,
-            .line_starts = line_starts,
-            .preedit_buffer = .empty,
-            .id = ElementId.named(id),
             .edit_history = EditHistory.create(allocator),
         };
     }
@@ -474,10 +461,6 @@ pub const TextAreaState = struct {
             .width = self.bounds.width,
             .height = self.bounds.height,
         };
-    }
-
-    pub fn getId(self: *const Self) ElementId {
-        return self.id;
     }
 
     pub fn canFocus(self: *const Self) bool {

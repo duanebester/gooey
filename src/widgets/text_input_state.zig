@@ -61,12 +61,16 @@ const history_mod = @import("edit_history.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const element_id_mod = @import("../core/element_id.zig");
+// PR 8.4b — `core/element_id.zig` import retired alongside the
+// `id: ElementId` field and `getId()` method. The engine type is
+// keyed in the pool by the framework's `LayoutId.id` u32 hash; the
+// pre-PR-8.4b `ElementId` was strictly internal book-keeping that
+// survived from the days when the engine type owned its own id
+// space.
 const event = @import("../input/event.zig");
 const geometry = @import("../core/geometry.zig");
 const focus_mod = @import("../context/focus.zig");
 
-const ElementId = element_id_mod.ElementId;
 const Event = event.Event;
 const EventResult = event.EventResult;
 
@@ -85,8 +89,11 @@ const Modifiers = input_mod.Modifiers;
 /// which is the single source of truth for the text-widget family
 /// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
 /// alias preserves existing `text_input_state.Bounds` import paths in
-/// `WidgetStore` and `widgets/mod.zig`. See `text_common.Bounds` for the
-/// half-open `[x, x+w) x [y, y+h)` hit-test rationale.
+/// `widgets/mod.zig` and the `Builder.DEFAULT_TEXT_INPUT_BOUNDS`
+/// seed value (post-PR-8.4b: pre-PR-8.4b the alias was also used by
+/// the retired `WidgetStore.default_text_input_bounds` field). See
+/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
+/// hit-test rationale.
 pub const Bounds = common.Bounds;
 
 /// Visual style for text rendering (no chrome - that's handled by the component)
@@ -109,7 +116,14 @@ pub const Style = struct {
 pub const TextInputState = struct {
     allocator: std.mem.Allocator,
 
-    id: ElementId,
+    // PR 8.4b — `id: ElementId` field dropped. Pre-PR-8.4b it held
+    // either a counter-derived `ElementId.int(...)` (for `init`) or a
+    // `ElementId.named(id)` view of the duped key from
+    // `WidgetStore.text_inputs` (for `initWithId`). Post-PR-8.4b the
+    // pool keys on `LayoutId.id` (a u32 hash), there is no duped
+    // string for the field to point at, and the only reader
+    // (`getId()`) was unused outside its own definition. Same
+    // reduction PR 8.4a did to `ScrollContainer.id`.
 
     // Geometry
     bounds: Bounds,
@@ -164,38 +178,21 @@ pub const TextInputState = struct {
     const BLINK_INTERVAL_MS: i64 = 530;
 
     /// Initialize TextInputState.
-    /// Marked noinline to prevent stack accumulation
+    /// Marked noinline to prevent stack accumulation.
+    ///
+    /// PR 8.4b — collapsed `init` and `initWithId` into a single
+    /// constructor now that `id: ElementId` is gone. The pre-PR-8.4b
+    /// `init` generated a counter-derived id only because the field
+    /// existed; with the field retired the counter was dead weight
+    /// and the call sites split (`init` for tests, `initWithId` for
+    /// `WidgetStore`) collapse onto a single shape.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
-        // Generate a unique integer ID for this instance
-        const unique_id = struct {
-            var next: u64 = 1;
-            fn get() u64 {
-                const id = next;
-                next += 1;
-                return id;
-            }
-        }.get();
         return .{
             .allocator = allocator,
             .bounds = bounds,
             .style = .{},
             .buffer = .empty,
             .preedit_buffer = .empty,
-            .id = ElementId.int(unique_id),
-            .edit_history = EditHistory.create(allocator),
-        };
-    }
-
-    /// Initialize with a string-based ID (for WidgetStore usage)
-    /// Marked noinline to prevent stack accumulation
-    pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
-        return .{
-            .allocator = allocator,
-            .bounds = bounds,
-            .style = .{},
-            .buffer = .empty,
-            .preedit_buffer = .empty,
-            .id = ElementId.named(id),
             .edit_history = EditHistory.create(allocator),
         };
     }
@@ -335,11 +332,6 @@ pub const TextInputState = struct {
             self.bounds.width,
             self.bounds.height,
         );
-    }
-
-    /// Element interface: get ID
-    pub fn getId(self: *const Self) ElementId {
-        return self.id;
     }
 
     /// Element interface: can this element receive focus?

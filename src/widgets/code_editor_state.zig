@@ -26,8 +26,13 @@ const Hsla = scene_mod.Hsla;
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
 
-const element_id_mod = @import("../core/element_id.zig");
-const ElementId = element_id_mod.ElementId;
+// PR 8.4b — `core/element_id.zig` import retired alongside the
+// `id: ElementId` field, `getId()` method, and atomic-counter
+// `generateUniqueId`. The engine type is keyed by `LayoutId.id`
+// (a u32 hash) on `Window.element_states` post-PR-8.4b, and the
+// only reader of the field (`getId()`) was unused outside its own
+// definition. Same reduction `text_input_state.zig` and
+// `text_area_state.zig` do post-PR-8.4b.
 
 const event = @import("../input/event.zig");
 const Event = event.Event;
@@ -114,9 +119,12 @@ pub const Style = struct {
 /// which is the single source of truth for the text-widget family
 /// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
 /// alias preserves existing `code_editor_state.Bounds` import paths in
-/// `WidgetStore` and `widgets/mod.zig`. See `text_common.Bounds` for the
-/// half-open `[x, x+w) x [y, y+h)` hit-test rationale — `CodeEditorState`
-/// already used the half-open form, so this consolidation is a pure
+/// `widgets/mod.zig` and the `Builder.DEFAULT_CODE_EDITOR_BOUNDS`
+/// seed value (post-PR-8.4b: pre-PR-8.4b the alias was also used by
+/// the retired `WidgetStore.default_code_editor_bounds` field). See
+/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
+/// hit-test rationale — `CodeEditorState` already used the
+/// half-open form, so this consolidation is a pure
 /// type-deduplication for this widget (no behaviour change).
 pub const Bounds = common.Bounds;
 
@@ -127,8 +135,8 @@ pub const Bounds = common.Bounds;
 pub const CodeEditorState = struct {
     allocator: std.mem.Allocator,
 
-    /// Unique identifier
-    id: ElementId,
+    // PR 8.4b — `id: ElementId` field dropped (see file header for
+    // rationale).
 
     /// Embedded TextAreaState for text management.
     /// Field name (`text_area`) preserved — the public-facing widget
@@ -186,8 +194,14 @@ pub const CodeEditorState = struct {
     // Initialization
     // =========================================================================
 
-    /// Initialize CodeEditorState
-    /// Marked noinline to prevent stack accumulation (struct is >50KB due to highlight_spans)
+    /// Initialize CodeEditorState.
+    /// Marked noinline to prevent stack accumulation (struct is >50KB
+    /// due to highlight_spans).
+    ///
+    /// PR 8.4b — `init` and `initWithId` collapsed onto a single
+    /// constructor (and the atomic-counter `generateUniqueId` is
+    /// gone) now that `id: ElementId` is dropped. Same reduction the
+    /// sibling `TextInputState` / `TextAreaState` did post-PR-8.4b.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         std.debug.assert(bounds.width > 0);
         std.debug.assert(bounds.height > 0);
@@ -196,24 +210,7 @@ pub const CodeEditorState = struct {
 
         return .{
             .allocator = allocator,
-            .id = ElementId.int(generateUniqueId()),
             .text_area = TextAreaState.init(allocator, text_bounds),
-            .bounds = bounds,
-        };
-    }
-
-    /// Initialize CodeEditorState with a string ID
-    /// Marked noinline to prevent stack accumulation (struct is >50KB due to highlight_spans)
-    pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
-        std.debug.assert(bounds.width > 0);
-        std.debug.assert(id.len > 0);
-
-        const text_bounds = calcTextAreaBounds(bounds, DEFAULT_GUTTER_WIDTH, true);
-
-        return .{
-            .allocator = allocator,
-            .id = ElementId.named(id),
-            .text_area = TextAreaState.initWithId(allocator, text_bounds, id),
             .bounds = bounds,
         };
     }
@@ -224,20 +221,6 @@ pub const CodeEditorState = struct {
 
         self.text_area.deinit();
         self.highlight_count = 0;
-    }
-
-    // =========================================================================
-    // ID generation (thread-safe counter)
-    // =========================================================================
-
-    fn generateUniqueId() u64 {
-        // Atomic counter — no mutex needed for a monotonic ID generator.
-        // `fetchAdd` returns the pre-increment value; starting at 1 keeps the
-        // sequence identical to the previous mutex-guarded implementation.
-        const Counter = struct {
-            var next: std.atomic.Value(u64) = .init(1);
-        };
-        return Counter.next.fetchAdd(1, .monotonic);
     }
 
     // =========================================================================
@@ -265,10 +248,6 @@ pub const CodeEditorState = struct {
 
     pub fn getBounds(self: *Self) Bounds {
         return self.bounds;
-    }
-
-    pub fn getId(self: *Self) ElementId {
-        return self.id;
     }
 
     // =========================================================================
@@ -965,7 +944,7 @@ pub const CodeEditorState = struct {
 
 test "CodeEditorState basic operations" {
     const allocator = std.testing.allocator;
-    var editor = CodeEditorState.initWithId(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 }, "test");
+    var editor = CodeEditorState.init(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 });
     defer editor.deinit();
 
     try std.testing.expect(editor.show_line_numbers);
@@ -975,7 +954,7 @@ test "CodeEditorState basic operations" {
 
 test "CodeEditorState highlight spans" {
     const allocator = std.testing.allocator;
-    var editor = CodeEditorState.initWithId(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 }, "test");
+    var editor = CodeEditorState.init(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 });
     defer editor.deinit();
 
     const color = Hsla.init(0, 1, 0.5, 1);
@@ -992,7 +971,7 @@ test "CodeEditorState highlight spans" {
 
 test "CodeEditorState bounds calculation" {
     const allocator = std.testing.allocator;
-    var editor = CodeEditorState.initWithId(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 }, "test");
+    var editor = CodeEditorState.init(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 });
     defer editor.deinit();
 
     // Text area should be offset by gutter width
@@ -1007,7 +986,7 @@ test "CodeEditorState bounds calculation" {
 
 test "CodeEditorState tab insertion" {
     const allocator = std.testing.allocator;
-    var editor = CodeEditorState.initWithId(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 }, "test");
+    var editor = CodeEditorState.init(allocator, .{ .x = 0, .y = 0, .width = 400, .height = 300 });
     defer editor.deinit();
 
     editor.focus();

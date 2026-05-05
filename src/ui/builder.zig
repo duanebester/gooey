@@ -66,6 +66,42 @@ pub const Theme = theme_mod.Theme;
 const scroll_container_mod = @import("../widgets/scroll_container.zig");
 const ScrollContainer = scroll_container_mod.ScrollContainer;
 
+// PR 8.4b — `TextInputState` / `TextAreaState` / `CodeEditorState`
+// storage moved off the per-type `WidgetStore` StringHashMaps onto
+// `Window.element_states`. `Builder.renderInput` / `renderTextArea`
+// / `renderCodeEditor` are the create-on-touch sites: each seeds
+// the pool entry on first render via `getOrInsert(EngineType,
+// layout_id.id, EngineType.init(allocator, default_bounds))` and
+// the rest of the framework (frame renderer, input handlers, focus
+// register) reads through `get` keyed by `layout_id.id`. Same
+// migration shape as `ScrollContainer` (PR 8.4a). The two `Bounds`
+// aliases land here so the seeded `init(...)` calls don't reach
+// into the engine modules for the type — the builder owns the
+// default-bounds policy.
+const text_input_state_mod = @import("../widgets/text_input_state.zig");
+const TextInputState = text_input_state_mod.TextInputState;
+const TextInputBounds = text_input_state_mod.Bounds;
+const text_area_state_mod = @import("../widgets/text_area_state.zig");
+const TextAreaState = text_area_state_mod.TextAreaState;
+const TextAreaBounds = text_area_state_mod.Bounds;
+const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
+const CodeEditorState = code_editor_state_mod.CodeEditorState;
+const CodeEditorBounds = code_editor_state_mod.Bounds;
+
+/// Default bounds used to seed a freshly-allocated text widget pool
+/// slot. `Builder.renderInput` / `renderTextArea` / `renderCodeEditor`
+/// pass these to `EngineType.init(...)` on the miss path; the actual
+/// per-frame bounds are recomputed and written by
+/// `runtime/frame.zig::renderTextInputs` / `renderTextAreas` /
+/// `renderCodeEditors` once layout has run, so the seed values are
+/// only observed by code that touches the widget before its first
+/// post-layout render (none today, but the assertions in the
+/// engines' `init` paths require sane geometry, e.g.
+/// `CodeEditorState.init` asserts `bounds.width > 0`).
+const DEFAULT_TEXT_INPUT_BOUNDS: TextInputBounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 };
+const DEFAULT_TEXT_AREA_BOUNDS: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 };
+const DEFAULT_CODE_EDITOR_BOUNDS: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 };
+
 pub const Color = styles.Color;
 pub const ShadowConfig = styles.ShadowConfig;
 pub const AttachPoint = styles.AttachPoint;
@@ -1302,11 +1338,27 @@ pub const Builder = struct {
             self.dispatch.setFocusable(focus_id);
         }
 
+        // PR 8.4b — seed the pool slot on first render and grab
+        // the borrow once for the focus check + focus-register step
+        // below. Same create-on-touch shape `Builder.scroll` uses
+        // for `ScrollContainer` (PR 8.4a). On capacity exhaustion or
+        // OOM the pool returns null; we collapse that to a disabled
+        // focus check (matches the pre-PR-8.4b `g.widgets.textInput`
+        // null-return semantics) and skip the vtable wire-up below.
+        const ti_or_null: ?*TextInputState = if (self.window) |g|
+            g.element_states.getOrInsert(
+                TextInputState,
+                @as(u64, layout_id.id),
+                TextInputState.init(g.allocator, DEFAULT_TEXT_INPUT_BOUNDS),
+            ) catch null
+        else
+            null;
+
         // Check if this input is focused (for border color) - disabled inputs are never focused
         const is_focused = if (inp.style.disabled)
             false
-        else if (self.window) |g|
-            if (g.widgets.textInput(inp.id)) |ti| ti.isFocused() else false
+        else if (ti_or_null) |ti|
+            ti.isFocused()
         else
             false;
 
@@ -1363,14 +1415,19 @@ pub const Builder = struct {
         // PR 4: also attach the widget's `Focusable` vtable so the
         // focus manager can drive `focus()` / `blur()` on the
         // underlying `TextInput` without `context/` having to import
-        // the widget type. The widget pointer is stable across frames
-        // (heap-allocated once per id by `WidgetStore`).
+        // the widget type. PR 8.4b — the widget pointer is stable
+        // across frames because `Window.element_states` heap-
+        // allocates each pool entry once per `(EngineType, id_hash)`
+        // and never moves it (slots are swap-removed on `.remove`,
+        // not relocated on insert). We reuse the borrow grabbed
+        // earlier so the focus check and focus-register step share a
+        // single pool lookup.
         if (!inp.style.disabled) {
             if (self.window) |g| {
                 var handle = FocusHandle.init(inp.id)
                     .tabIndex(inp.style.tab_index)
                     .tabStop(inp.style.tab_stop);
-                if (g.widgets.textInput(inp.id)) |ti| {
+                if (ti_or_null) |ti| {
                     handle = handle.withWidget(ti.focusable());
                 }
                 g.focus.register(handle);
@@ -1391,9 +1448,20 @@ pub const Builder = struct {
         const focus_id = FocusId.init(ta.id);
         self.dispatch.setFocusable(focus_id);
 
+        // PR 8.4b — seed the pool slot on first render. See
+        // `renderInput` above for the full rationale.
+        const ta_state_or_null: ?*TextAreaState = if (self.window) |g|
+            g.element_states.getOrInsert(
+                TextAreaState,
+                @as(u64, layout_id.id),
+                TextAreaState.init(g.allocator, DEFAULT_TEXT_AREA_BOUNDS),
+            ) catch null
+        else
+            null;
+
         // Check if this textarea is focused (for border color)
-        const is_focused = if (self.window) |g|
-            if (g.widgets.textArea(ta.id)) |text_area| text_area.isFocused() else false
+        const is_focused = if (ta_state_or_null) |text_area|
+            text_area.isFocused()
         else
             false;
 
@@ -1449,12 +1517,14 @@ pub const Builder = struct {
         // Register focus with FocusManager. PR 4: attach the widget's
         // `Focusable` vtable so the focus manager can drive the
         // `TextArea`'s `focus()` / `blur()` through the trait without
-        // importing the widget type into `context/`.
+        // importing the widget type into `context/`. PR 8.4b — reuse
+        // the borrow grabbed above so the focus check and the
+        // focus-register step share a single pool lookup.
         if (self.window) |g| {
             var handle = FocusHandle.init(ta.id)
                 .tabIndex(ta.style.tab_index)
                 .tabStop(ta.style.tab_stop);
-            if (g.widgets.textArea(ta.id)) |text_area| {
+            if (ta_state_or_null) |text_area| {
                 handle = handle.withWidget(text_area.focusable());
             }
             g.focus.register(handle);
@@ -1477,9 +1547,20 @@ pub const Builder = struct {
         const focus_id = FocusId.init(ce.id);
         self.dispatch.setFocusable(focus_id);
 
+        // PR 8.4b — seed the pool slot on first render. See
+        // `renderInput` above for the full rationale.
+        const ce_state_or_null: ?*CodeEditorState = if (self.window) |g|
+            g.element_states.getOrInsert(
+                CodeEditorState,
+                @as(u64, layout_id.id),
+                CodeEditorState.init(g.allocator, DEFAULT_CODE_EDITOR_BOUNDS),
+            ) catch null
+        else
+            null;
+
         // Check if this code editor is focused (for border color)
-        const is_focused = if (self.window) |g|
-            if (g.widgets.codeEditor(ce.id)) |editor| editor.isFocused() else false
+        const is_focused = if (ce_state_or_null) |editor|
+            editor.isFocused()
         else
             false;
 
@@ -1534,12 +1615,14 @@ pub const Builder = struct {
         // Register focus with FocusManager. PR 4: attach the widget's
         // `Focusable` vtable — same pattern as `renderInput` /
         // `renderTextArea` above. The vtable lives in static storage,
-        // shared by all `CodeEditorState` instances.
+        // shared by all `CodeEditorState` instances. PR 8.4b — reuse
+        // the borrow grabbed above so the focus check and the
+        // focus-register step share a single pool lookup.
         if (self.window) |g| {
             var handle = FocusHandle.init(ce.id)
                 .tabIndex(ce.style.tab_index)
                 .tabStop(ce.style.tab_stop);
-            if (g.widgets.codeEditor(ce.id)) |editor| {
+            if (ce_state_or_null) |editor| {
                 handle = handle.withWidget(editor.focusable());
             }
             g.focus.register(handle);

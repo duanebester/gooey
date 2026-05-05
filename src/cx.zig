@@ -79,7 +79,8 @@ const SelectState = select_mod.SelectState;
 // instead of the retired `WidgetStore.scrollContainer` accessor.
 // `LayoutId.fromString(id).id` is the u32 hash key, matching every
 // other element-state path that comes from a string id
-// (`SelectState`, `TextInputState` after PR 8.4+).
+// (`SelectState` since PR 8.2, `TextInputState` / `TextAreaState`
+// / `CodeEditorState` since PR 8.4b).
 const layout_id_mod = @import("layout/layout_id.zig");
 const LayoutId = layout_id_mod.LayoutId;
 
@@ -607,15 +608,27 @@ pub const Cx = struct {
     // `CodeEditorState`) — not the user-facing `TextInput` / `TextArea`
     // declarative components in `components/`. PR 8.4-prep renamed the
     // engine types to disambiguate; the accessor verbs (`textField`,
-    // `textAreaWidget`) are unchanged.
+    // `textAreaWidget`, `codeEditorWidget`) are unchanged.
+    //
+    // PR 8.4b — storage moved off the per-type `WidgetStore`
+    // StringHashMaps onto `Window.element_states`. Each accessor
+    // here is a read-only `get` keyed by `LayoutId.id`: the matching
+    // `Builder.render*` site is the create-on-touch boundary, so by
+    // the time application code reaches for the engine state on a
+    // widget that just rendered the slot is already populated. The
+    // accessors stay `?*T` for the case where the widget hasn't
+    // mounted yet (e.g. a callback firing before the first render).
     pub fn textField(self: *Self, id: []const u8) ?*text_field_mod.TextInputState {
-        return self._window.widgets.textInput(id);
+        const hash: u64 = @as(u64, LayoutId.fromString(id).id);
+        return self._window.element_states.get(text_field_mod.TextInputState, hash);
     }
     pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextAreaState {
-        return self._window.widgets.textArea(id);
+        const hash: u64 = @as(u64, LayoutId.fromString(id).id);
+        return self._window.element_states.get(text_area_mod.TextAreaState, hash);
     }
     pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {
-        return self._window.widgets.codeEditor(id);
+        const hash: u64 = @as(u64, LayoutId.fromString(id).id);
+        return self._window.element_states.get(code_editor_mod.CodeEditorState, hash);
     }
     pub fn scrollView(self: *Self, id: []const u8) ?*scroll_view_mod.ScrollContainer {
         // PR 8.4 — storage moved off `WidgetStore.scroll_containers`

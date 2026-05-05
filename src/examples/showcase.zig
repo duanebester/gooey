@@ -1714,8 +1714,16 @@ fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
     const s = cx.state(AppState);
     const g = cx.window();
 
-    // Let text widgets handle their input first
-    if (g.widgets.getFocusedTextInput() != null or g.widgets.getFocusedTextArea() != null) {
+    // Let text widgets handle their input first.
+    // PR 8.4b — the per-type `getFocusedText*` accessors retired
+    // alongside the StringHashMap-keyed widget maps; the
+    // `runtime/input.focusedText*` helpers walk the matching
+    // `pending_*` lists and hit the pool by layout-id hash.
+    const builder = cx.builder();
+    const input_mod = gooey.runtime.input;
+    if (input_mod.focusedTextInput(g, builder) != null or
+        input_mod.focusedTextArea(g, builder) != null)
+    {
         return false;
     }
 

@@ -35,12 +35,15 @@ const interface_verify = @import("../core/interface_verify.zig");
 // Text Input (single-line) — engine type
 // =============================================================================
 //
-// `TextInputState` is the engine: heap-allocated state, owned by
-// `WidgetStore` (and, after PR 8.4, by `Window.element_states`). The
-// user-facing declarative component is `gooey.TextInput` in
-// `components/text_input.zig`. The two were merged under a single
-// `TextInput` name historically; PR 8.4-prep disambiguates them so
-// PR 8.4 can lift the engine onto the keyed pool without a name clash.
+// `TextInputState` is the engine: heap-allocated state owned by
+// `Window.element_states` (the keyed pool introduced in PR 8.1).
+// Pre-PR-8.4b the engine lived in a `WidgetStore.text_inputs`
+// StringHashMap; PR 8.4b lifted it onto the pool keyed by
+// `(TextInputState, layout_id.id)`. The user-facing declarative
+// component is `gooey.TextInput` in `components/text_input.zig`.
+// The two were merged under a single `TextInput` name historically;
+// PR 8.4-prep disambiguates them so PR 8.4b could lift the engine
+// onto the keyed pool without a name clash.
 
 pub const text_input_state = @import("text_input_state.zig");
 

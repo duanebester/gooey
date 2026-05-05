@@ -3,19 +3,17 @@
 //! Now includes animation state management.
 
 const std = @import("std");
-// Engine types (the heap-allocated state objects retained across
-// frames). The user-facing components `TextInput` / `TextArea` live in
-// `components/`; the engine types carry the `*State` suffix to
-// disambiguate. PR 8.4-prep introduced the rename so PR 8.4 can lift
-// these onto the keyed `Window.element_states` pool without colliding
-// with the chrome component names.
-const TextInputState = @import("../widgets/text_input_state.zig").TextInputState;
-const Bounds = @import("../widgets/text_input_state.zig").Bounds;
-
-const TextAreaState = @import("../widgets/text_area_state.zig").TextAreaState;
-const TextAreaBounds = @import("../widgets/text_area_state.zig").Bounds;
-const CodeEditorState = @import("../widgets/code_editor_state.zig").CodeEditorState;
-const CodeEditorBounds = @import("../widgets/code_editor_state.zig").Bounds;
+// PR 8.4b — the `TextInputState` / `TextAreaState` / `CodeEditorState`
+// engine-type imports retired alongside the per-type StringHashMap
+// fields and accessors. Storage lives on `Window.element_states`
+// now (the keyed pool introduced in PR 8.1), keyed by
+// `(EngineType, LayoutId.id)`. The two `Bounds` aliases were only
+// used by the `default_*_bounds` fields that seeded the
+// pre-PR-8.4b create-on-touch path; the pool's create-on-touch
+// site (`Builder.renderInput` / `renderTextArea` / `renderCodeEditor`)
+// computes bounds from layout output instead, so the defaults are
+// gone too. Same retirement shape PR 8.4a used for
+// `ScrollContainer` / `scroll_containers`.
 const animation = @import("../animation/animation.zig");
 const AnimationState = animation.AnimationState;
 const AnimationConfig = animation.AnimationConfig;
@@ -60,17 +58,14 @@ pub const WidgetStore = struct {
     /// `std.Io` is a pair of pointers into a process-lifetime vtable —
     /// safe and cheap to copy.
     io: std.Io,
-    text_inputs: std.StringHashMap(*TextInputState),
-    text_areas: std.StringHashMap(*TextAreaState),
-    code_editors: std.StringHashMap(*CodeEditorState),
-    // PR 8.4 — `scroll_containers` field retired (lifted onto
-    // `Window.element_states` keyed by `(ScrollContainer, layout_id.id)`).
-    // Same migration shape as PR 8.2's `select_states`.
-    /// Tracks which widgets were accessed this frame. Keyed by pointer
-    /// address of the heap-duped key in the widget map — avoids re-hashing
-    /// string contents every frame (pointer identity is sufficient because
-    /// each widget map entry owns a unique heap allocation).
-    accessed_this_frame: std.AutoHashMap([*]const u8, void),
+    // PR 8.4b — `text_inputs` / `text_areas` / `code_editors`
+    // StringHashMaps retired (lifted onto `Window.element_states`
+    // keyed by `(EngineType, LayoutId.id)`). The matching
+    // `accessed_this_frame` ptr-keyed set is also gone: it only
+    // existed to bridge the StringHashMap key memory across frames,
+    // and the pool keys directly on the layout-id hash with no duped
+    // string. Same retirement shape PR 8.4a used for
+    // `scroll_containers`.
 
     // PR 8.2 — `select_states` field retired. Select open/close state
     // lives on `Window.element_states` keyed by `(SelectState, id_hash)`
@@ -93,109 +88,33 @@ pub const WidgetStore = struct {
     // Change detection (fixed-capacity, zero allocation after init)
     change_tracker: ChangeTracker = .{},
 
-    default_text_input_bounds: Bounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 },
-    default_text_area_bounds: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 },
-    default_code_editor_bounds: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 },
-
     const Self = @This();
 
     // =========================================================================
-    // Generic widget helpers (eliminate duplication across widget types)
+    // PR 8.4b — retired generic widget helpers
     // =========================================================================
-
-    /// Look up a widget by `id` in `map`. If found, mark it as accessed this
-    /// frame and return the existing instance. If not found, heap-allocate a
-    /// new `T`, dupe the key, initialize via the type-specific init function,
-    /// store in the map, mark accessed, and return. Returns null only on OOM.
-    fn getOrCreateWidget(self: *Self, comptime T: type, map: *std.StringHashMap(*T), id: []const u8) ?*T {
-        std.debug.assert(id.len > 0);
-
-        // Return existing instance if found.
-        if (map.getEntry(id)) |entry| {
-            const stable_key = entry.key_ptr.*;
-            if (!self.accessed_this_frame.contains(stable_key.ptr)) {
-                self.accessed_this_frame.put(stable_key.ptr, {}) catch {};
-            }
-            return entry.value_ptr.*;
-        }
-
-        // Allocate new instance.
-        const instance = self.allocator.create(T) catch return null;
-
-        const owned_key = self.allocator.dupe(u8, id) catch {
-            self.allocator.destroy(instance);
-            return null;
-        };
-
-        // Initialize via the type-specific init function.
-        if (T == TextInputState) {
-            instance.* = TextInputState.initWithId(self.allocator, self.default_text_input_bounds, owned_key);
-        } else if (T == TextAreaState) {
-            instance.* = TextAreaState.initWithId(self.allocator, self.default_text_area_bounds, owned_key);
-        } else if (T == CodeEditorState) {
-            instance.* = CodeEditorState.initWithId(self.allocator, self.default_code_editor_bounds, owned_key);
-        } else {
-            @compileError("getOrCreateWidget: unsupported widget type");
-        }
-
-        // Store in map and mark accessed.
-        map.put(owned_key, instance) catch {
-            instance.deinit();
-            self.allocator.destroy(instance);
-            self.allocator.free(owned_key);
-            return null;
-        };
-
-        self.accessed_this_frame.put(owned_key.ptr, {}) catch {};
-        return instance;
-    }
-
-    /// Remove a widget by `id`: deinit the instance, free the heap allocation
-    /// and the duped key, and remove from the accessed-this-frame set.
-    fn removeWidget(self: *Self, comptime T: type, map: *std.StringHashMap(*T), id: []const u8) void {
-        if (map.fetchRemove(id)) |kv| {
-            _ = self.accessed_this_frame.remove(kv.key.ptr);
-            kv.value.deinit();
-            self.allocator.destroy(kv.value);
-            self.allocator.free(kv.key);
-        }
-    }
-
-    /// Iterate a widget map and return the first focused instance, or null.
-    /// Only valid for types that expose `isFocused()` (TextInputState,
-    /// TextAreaState, CodeEditorState).
-    fn getFocusedWidget(comptime T: type, map: *std.StringHashMap(*T)) ?*T {
-        var it = map.valueIterator();
-        while (it.next()) |val| {
-            if (val.*.isFocused()) {
-                return val.*;
-            }
-        }
-        return null;
-    }
-
-    /// Deinit every entry in a widget map: call `deinit` on each instance,
-    /// free the heap allocation, free the duped key, then deinit the map itself.
-    fn deinitWidgetMap(self: *Self, comptime T: type, map: *std.StringHashMap(*T)) void {
-        var it = map.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
-            self.allocator.free(entry.key_ptr.*);
-        }
-        map.deinit();
-    }
+    //
+    // Pre-PR-8.4b this struct carried four `getOrCreateWidget` /
+    // `removeWidget` / `getFocusedWidget` / `deinitWidgetMap` helpers
+    // parameterised over `T ∈ { TextInputState, TextAreaState,
+    // CodeEditorState }`. They mediated between the public
+    // `textInput` / `textArea` / `codeEditor` accessors and the
+    // per-type `StringHashMap(*T)` fields above. PR 8.4b retires the
+    // maps onto `Window.element_states` (keyed by
+    // `(T, LayoutId.id)`) and the helpers go with them — the pool's
+    // own `getOrInsert` / `get` / `remove` cover all four shapes.
+    // The focused-widget walk that `getFocusedWidget` previously did
+    // is replaced in `runtime/input.zig` by per-pending-list lookups
+    // (the focused widget rendered this frame, so its layout id is
+    // in one of the `pending_*` lists).
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .allocator = allocator,
             .io = io,
-            .text_inputs = std.StringHashMap(*TextInputState).init(allocator),
-            .text_areas = std.StringHashMap(*TextAreaState).init(allocator),
-            .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
-            // PR 8.4 — no `scroll_containers` field to init. Storage
-            // lives on `Window.element_states` now.
-            .accessed_this_frame = std.AutoHashMap([*]const u8, void).init(allocator),
+            // PR 8.4b — no per-type widget maps to init. Storage
+            // lives on `Window.element_states` now (see field-block
+            // comment above).
             // PR 8.2 — `select_states` field retired (lifted onto
             // `Window.element_states`). No init line here, no
             // matching `deinit` line below.
@@ -207,23 +126,16 @@ pub const WidgetStore = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.deinitWidgetMap(TextInputState, &self.text_inputs);
-        self.deinitWidgetMap(TextAreaState, &self.text_areas);
-        self.deinitWidgetMap(CodeEditorState, &self.code_editors);
-        // PR 8.4 — ScrollContainer teardown now happens via
+        // PR 8.4b — the `deinitWidgetMap` calls for the three text
+        // engine maps are gone; teardown now happens via
         // `Window.element_states.deinit()` walking the keyed-pool
-        // entries through their type-erased deinit thunks.
-
-        // PR 8.2 — `select_states.deinit()` retired alongside the
-        // field; teardown now happens via
-        // `Window.element_states.deinit()` which walks every keyed
-        // payload (including `SelectState` slots) through its
-        // type-erased deinit thunk.
+        // entries through their type-erased deinit thunks. Same
+        // path that handles `ScrollContainer` (PR 8.4a) and
+        // `SelectState` (PR 8.2).
         self.animations.deinit(self.allocator);
         self.springs.deinit(self.allocator);
         self.motions.deinit(self.allocator);
         self.spring_motions.deinit(self.allocator);
-        self.accessed_this_frame.deinit();
     }
 
     // =========================================================================
@@ -574,7 +486,11 @@ pub const WidgetStore = struct {
     }
 
     pub fn beginFrame(self: *Self) void {
-        self.accessed_this_frame.clearRetainingCapacity();
+        // PR 8.4b — `accessed_this_frame.clearRetainingCapacity()`
+        // retired alongside the StringHashMap-keyed text widget maps;
+        // there is no per-frame access set to reset on the pool
+        // (slots persist until the widget calls `.remove` explicitly,
+        // same retention semantics as `ScrollContainer` / `Select`).
         self.active_animation_count = 0; // Reset - will be incremented as animations are queried
         self.active_spring_count = 0; // Reset - will be incremented as springs are queried
         self.active_motion_count = 0; // Reset - will be incremented as motions are queried
@@ -584,125 +500,48 @@ pub const WidgetStore = struct {
     pub fn endFrame(_: *Self) void {}
 
     // =========================================================================
-    // TextInputState (existing code)
+    // Text engine accessors retired in PR 8.4b
     // =========================================================================
     //
-    // Accessor verbs (`textInput`, `textInputOrPanic`, ...) are the
-    // framework's public API for "give me the engine state for this
-    // widget id" and are intentionally unchanged. Only the *return
-    // types* are renamed (engine vs. component disambiguation).
-
-    pub fn textInput(self: *Self, id: []const u8) ?*TextInputState {
-        return self.getOrCreateWidget(TextInputState, &self.text_inputs, id);
-    }
-
-    pub fn textInputOrPanic(self: *Self, id: []const u8) *TextInputState {
-        return self.textInput(id) orelse @panic("Failed to allocate TextInputState");
-    }
-
-    // =========================================================================
-    // TextAreaState
-    // =========================================================================
-
-    pub fn textArea(self: *Self, id: []const u8) ?*TextAreaState {
-        return self.getOrCreateWidget(TextAreaState, &self.text_areas, id);
-    }
-
-    pub fn textAreaOrPanic(self: *Self, id: []const u8) *TextAreaState {
-        return self.textArea(id) orelse @panic("Failed to allocate TextAreaState");
-    }
-
-    pub fn getTextArea(self: *Self, id: []const u8) ?*TextAreaState {
-        return self.text_areas.get(id);
-    }
-
-    pub fn removeTextArea(self: *Self, id: []const u8) void {
-        self.removeWidget(TextAreaState, &self.text_areas, id);
-    }
-
-    pub fn getFocusedTextArea(self: *Self) ?*TextAreaState {
-        return getFocusedWidget(TextAreaState, &self.text_areas);
-    }
-
-    // =========================================================================
-    // CodeEditor
-    // =========================================================================
-
-    pub fn codeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
-        return self.getOrCreateWidget(CodeEditorState, &self.code_editors, id);
-    }
-
-    pub fn codeEditorOrPanic(self: *Self, id: []const u8) *CodeEditorState {
-        return self.codeEditor(id) orelse @panic("Failed to allocate CodeEditorState");
-    }
-
-    pub fn getCodeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
-        return self.code_editors.get(id);
-    }
-
-    pub fn removeCodeEditor(self: *Self, id: []const u8) void {
-        self.removeWidget(CodeEditorState, &self.code_editors, id);
-    }
-
-    pub fn getFocusedCodeEditor(self: *Self) ?*CodeEditorState {
-        return getFocusedWidget(CodeEditorState, &self.code_editors);
-    }
-
-    // =========================================================================
-    // ScrollContainer accessors retired in PR 8.4
-    // =========================================================================
+    // Pre-PR-8.4b this struct exposed a fan of accessors against the
+    // three retired StringHashMaps:
     //
-    // The pre-PR-8.4 `scrollContainer(id)` / `getScrollContainer(id)`
-    // pair lived here when `WidgetStore` owned a
-    // `StringHashMap(*ScrollContainer)` field. Both have moved to the
-    // unified `Window.element_states` keyed pool: callers now reach
-    // through `g.element_states.getOrInsert(ScrollContainer,
-    // layout_id.id, ScrollContainer.init(allocator))` for the
-    // create-on-touch path and `g.element_states.get(ScrollContainer,
-    // layout_id.id)` for the read-only path. The hash key is the u32
-    // `LayoutId.id`, widened to `u64` at the pool boundary, so most
-    // call sites can avoid re-hashing the string — the layout id is
-    // already in hand from `LayoutId.fromString` or from a
-    // `PendingScroll` record.
-
-    // =========================================================================
-    // TextInputState helpers (existing)
-    // =========================================================================
-
-    pub fn removeTextInput(self: *Self, id: []const u8) void {
-        self.removeWidget(TextInputState, &self.text_inputs, id);
-    }
-
-    pub fn getTextInput(self: *Self, id: []const u8) ?*TextInputState {
-        return self.text_inputs.get(id);
-    }
-
-    pub fn hasTextInput(self: *Self, id: []const u8) bool {
-        return self.text_inputs.contains(id);
-    }
-
-    pub fn textInputCount(self: *Self) usize {
-        return self.text_inputs.count();
-    }
-
-    pub fn getFocusedTextInput(self: *Self) ?*TextInputState {
-        return getFocusedWidget(TextInputState, &self.text_inputs);
-    }
-
-    pub fn blurAll(self: *Self) void {
-        var it = self.text_inputs.valueIterator();
-        while (it.next()) |input| {
-            input.*.blur();
-        }
-        var ta_it = self.text_areas.valueIterator();
-        while (ta_it.next()) |ta| {
-            ta.*.blur();
-        }
-        var ce_it = self.code_editors.valueIterator();
-        while (ce_it.next()) |ce| {
-            ce.*.blur();
-        }
-    }
+    //   * `textInput` / `textInputOrPanic` / `getTextInput` /
+    //     `removeTextInput` / `hasTextInput` / `textInputCount` /
+    //     `getFocusedTextInput`
+    //   * `textArea` / `textAreaOrPanic` / `getTextArea` /
+    //     `removeTextArea` / `getFocusedTextArea`
+    //   * `codeEditor` / `codeEditorOrPanic` / `getCodeEditor` /
+    //     `removeCodeEditor` / `getFocusedCodeEditor`
+    //   * `blurAll` (walked all three maps and called `blur()` on every
+    //     entry)
+    //
+    // All retired alongside the maps. The `*OrCreate*` shape moved
+    // to `Window.element_states.getOrInsert(EngineType, layout_id.id,
+    // EngineType.init(allocator, bounds))` (called from the
+    // matching `Builder.render*` site, see `ui/builder.zig`); the
+    // `get*` shape moved to `Window.element_states.get(EngineType,
+    // layout_id.id)`; the `remove*` shape moved to
+    // `Window.element_states.remove(EngineType, layout_id.id)`. The
+    // `getFocused*` walk was replaced by
+    // `runtime/input.zig::focusedTextInput` / `focusedTextArea` /
+    // `focusedCodeEditor` (each iterates the matching `pending_*`
+    // list, hits the pool by layout-id hash, and returns the first
+    // `isFocused()` match). `blurAll` is no longer needed at this
+    // layer — `Window.blurAll` now goes through the focus manager,
+    // which already drives the focused widget's `.blur()` through
+    // its `Focusable` vtable.
+    //
+    // The `ScrollContainer` accessors retired in PR 8.4a were
+    // documented in the same shape; PR 8.4b removes the standalone
+    // section and folds the rationale here. See
+    // `docs/cleanup-implementation-plan.md` PR 8.4b for the full
+    // call-site sweep.
+    //
+    // `hasTextInput` / `textInputCount` were unused outside their
+    // own definitions and are retired without replacement — the pool
+    // exposes `contains(S, id_hash)` and `len()` for callers who
+    // need either signal.
 
     // =========================================================================
     // Select State (internal open/close for Select widgets)

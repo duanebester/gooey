@@ -31,6 +31,21 @@ const Builder = ui_mod.Builder;
 const scroll_container_mod = @import("../widgets/scroll_container.zig");
 const ScrollContainer = scroll_container_mod.ScrollContainer;
 
+// PR 8.4b — `TextInputState` / `TextAreaState` / `CodeEditorState`
+// lookups for the post-layout render passes go through
+// `window.element_states` post-PR-8.4b. Read-only `get` is the right
+// shape because `Builder.renderInput` / `renderTextArea` /
+// `renderCodeEditor` already seeded the slot earlier this frame; a
+// `null` return here means the seed itself failed (capacity
+// exhaustion or OOM at builder time), in which case skipping the
+// post-layout render for this frame is the right fail-safe.
+const text_input_state_mod = @import("../widgets/text_input_state.zig");
+const TextInputState = text_input_state_mod.TextInputState;
+const text_area_state_mod = @import("../widgets/text_area_state.zig");
+const TextAreaState = text_area_state_mod.TextAreaState;
+const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
+const CodeEditorState = code_editor_state_mod.CodeEditorState;
+
 // =============================================================================
 // Limits (per CLAUDE.md: "put a limit on everything")
 // =============================================================================
@@ -239,7 +254,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     renderCanvasElements(window, builder);
 
     // Update IME cursor position for focused text input
-    updateImeCursorPosition(window);
+    updateImeCursorPosition(window, builder);
 
     // End render timing for profiler
     window.debugger().endRender(window.io);
@@ -387,7 +402,7 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
 fn renderTextInputs(window: *Window, builder: *const Builder) !void {
     for (builder.pending_inputs.items) |pending| {
         const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const input_widget = window.widgets.textInput(pending.id) orelse continue;
+        const input_widget = window.element_states.get(TextInputState, @as(u64, pending.layout_id.id)) orelse continue;
 
         // If disabled and currently focused, blur it
         if (pending.style.disabled and input_widget.isFocused()) {
@@ -424,7 +439,7 @@ fn renderTextInputs(window: *Window, builder: *const Builder) !void {
 fn renderTextAreas(window: *Window, builder: *const Builder) !void {
     for (builder.pending_text_areas.items) |pending| {
         const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ta_widget = window.widgets.textArea(pending.id) orelse continue;
+        const ta_widget = window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse continue;
 
         const inset = pending.style.padding + pending.style.border_width;
         // Compute inner_width from layout bounds when fill_width is true
@@ -452,7 +467,7 @@ fn renderTextAreas(window: *Window, builder: *const Builder) !void {
 fn renderCodeEditors(window: *Window, builder: *const Builder) !void {
     for (builder.pending_code_editors.items) |pending| {
         const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ce_widget = window.widgets.codeEditor(pending.id) orelse continue;
+        const ce_widget = window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id)) orelse continue;
 
         const inset = pending.style.padding + pending.style.border_width;
         ce_widget.setBounds(.{
@@ -502,20 +517,23 @@ fn renderCodeEditors(window: *Window, builder: *const Builder) !void {
 /// respectively; after the framework wrapper rename to `Window`, the
 /// platform handle local moves to `platform_window` to avoid shadowing
 /// the param.
-fn updateImeCursorPosition(window: *Window) void {
+fn updateImeCursorPosition(window: *Window, builder: *const Builder) void {
     const platform_window = window.getPlatformWindow() orelse return;
-    // PR 4: per-type forwarders (`getFocusedTextInput` etc.) moved off
-    // `Window`; reach through `window.widgets.*` directly. Order matches
-    // pre-PR-4 priority — text input first, then text area, then code
-    // editor — because at most one of them is focused at a time and
-    // the IME only needs one rect.
-    if (window.widgets.getFocusedTextInput()) |input| {
+    // PR 8.4b — the per-type focused-widget walk (`getFocusedText*`)
+    // retired alongside the StringHashMap maps. The replacement
+    // walks the matching `pending_*` lists, hits the pool by
+    // layout-id hash, and returns the first `isFocused()` match —
+    // same priority order as pre-PR-8.4b (input > area > editor)
+    // because at most one of them is focused at a time and the IME
+    // only needs one rect.
+    const input_mod = @import("input.zig");
+    if (input_mod.focusedTextInput(window, builder)) |input| {
         const rect = input.cursor_rect;
         platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
-    } else if (window.widgets.getFocusedTextArea()) |ta| {
+    } else if (input_mod.focusedTextArea(window, builder)) |ta| {
         const rect = ta.cursor_rect;
         platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
-    } else if (window.widgets.getFocusedCodeEditor()) |ce| {
+    } else if (input_mod.focusedCodeEditor(window, builder)) |ce| {
         const rect = ce.getCursorRect();
         platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
