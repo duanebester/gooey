@@ -92,7 +92,7 @@ them out here so they don't get re-litigated in review:
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 landed)             |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 landed) |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
@@ -4342,7 +4342,7 @@ write scope of each landing is small enough to review and revert:
       `getSelectState` / `closeSelectState` /
       `toggleSelectState` through the pool. Validates the
       call-site shape on a real consumer.
-- [ ] **PR 8.3** — `with_element_state(global_id, fn(state) -> (R, state))`
+- [x] **PR 8.3** — `with_element_state(global_id, fn(state) -> (R, state))`
       sugar surfaced through `Cx`, mirroring GPUI's
       [§19 pattern](./architectural-cleanup-plan.md#19-with_element_stateglobal_id-fnstate---r-state).
       Lands once one consumer is on the pool so the ergonomic
@@ -4553,6 +4553,113 @@ than removing the entry), so PR 8.2 is a pure storage-shape
 refactor with identical retention semantics. The frame-keyed
 eviction shape lands later alongside the rest of the GPUI
 `Frame` double-buffer adoption (PR 7c.3+ in flight).
+
+### PR 8.3 landing notes (`Cx` sugar)
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1096/1096 tests
+passed` (net +2 vs. PR 8.2's 1094 — the two new
+`cx.element_states` namespace tests pinning the field type and
+the method signatures). `zig build install` succeeds without
+warnings.
+
+**Files added:**
+
+- `src/cx/element_states.zig` (~256 lines: ~120 lines of code +
+  ~135 lines of doc comments). Defines the `ElementStates`
+  zero-sized namespace marker and ten public methods — `with` /
+  `withById` / `get` / `getById` / `contains` / `containsById` /
+  `insert` / `insertById` / `remove` / `removeById`. Same
+  `_align: [0]usize` + `@fieldParentPtr` shape as the sibling
+  `cx/lists.zig` / `cx/animations.zig` / `cx/entities.zig` /
+  `cx/focus.zig` files introduced in PR 5.
+
+**Files edited:**
+
+- `src/cx.zig` — added the `element_states_mod` import and the
+  `element_states: element_states_mod.ElementStates = .{}` field
+  on `Cx`, alongside the existing PR 5 `lists` / `animations` /
+  `entities` / `focus` namespace fields. File-level doc comment
+  bumped to mention the new sub-namespace alongside the four PR 5
+  ones. No other call-site churn — PR 8.2's `Select` consumer
+  reaches through `cx._window.element_states.*` and continues to
+  do so; the new public surface is for follow-on widgets in
+  PR 8.4+.
+
+- `src/cx_tests.zig` — extended the existing PR 5 sub-namespace
+  zero-size test to cover the new `ElementStates` ZST, and the
+  "sub-namespace methods are reachable as decls" test to pin all
+  ten methods. Two new tests: "`cx.element_states`: namespace
+  field is reachable on `Cx`" pins the field name + type via
+  `@FieldType`, and "`cx.element_states`: signatures route the
+  right comptime types" pins the parameter count of the five
+  primary methods (`with`, `withById`, `get`, `insert`, `remove`)
+  via `@typeInfo`, so a future refactor that drops or reorders a
+  parameter fails compilation here.
+
+**Why string-id sugar.** The pool itself takes a `u64` id_hash;
+forcing every consumer to call `LayoutId.fromString(id).id` first
+would re-litigate the hash boundary at every call site. The
+`with` / `get` / `contains` / `insert` / `remove` group accepts
+a `[]const u8` and hashes inline — same shape `cx.focus.widget`
+already uses for its `id` parameter, and same shape
+`cx.animations.tween` uses for its non-comptime `id` parameter.
+The `*ById` variants surface the raw `u64` hash for callers that
+already have a `LayoutId` in hand (PR 8.2's `Select.resolveState`
+is the exemplar — it calls `internalToggle` / `internalClose`
+with a pre-computed `LayoutId.id` packed into `EntityId.id`).
+
+**Why no `Select` migration.** PR 8.3's task is the API surface,
+not the consumer rewrite. PR 8.2's `Select` reaches the pool
+through handler callbacks with shape `fn(g: *Window, packed_id:
+EntityId) void` — not `fn(cx: *Cx, ...)`. Migrating those handler
+shapes to `*Cx` would touch the dispatch boundary
+(`OnSelectHandler` packing, `internalToggle` / `internalClose`
+signatures, the `Window`-vs-`Cx` distinction in
+`runtime/input.zig`) and is outside this slice's scope. The
+`Cx`-side surface is what PR 8.4+ widgets will use from inside
+`Component.render(cx: *Cx)` and similar `*Cx`-shaped contexts;
+`Select`'s in-handler call sites stay on
+`g.element_states.*` until that refactor lands separately.
+
+**Shape delta from GPUI.** GPUI's
+`with_element_state<S, R>(global_id, |Option<S>, &mut Window| -> (R, S)) -> R`
+threads the optional state through a closure that returns the
+updated state for the framework to write back. The returned `R`
+is the closure's by-value result, so the borrow of `S` doesn't
+escape the call. Zig's single-threaded frame loop makes the
+simpler `*S` borrow safe without that ceremony — the closure
+form was largely a Rust-borrow-checker accommodation. PR 8.1's
+container note already established the
+`withElementState(S, id, default) !*S` shape; PR 8.3's
+`cx.element_states.with(S, id, default) !*S` is the same shape
+with the string-id hashing folded in. Documented in the new
+`cx/element_states.zig` module header so a future reader doesn't
+attempt a literal port of the GPUI closure form.
+
+**Why ten methods, not five.** Each of the five primary methods
+(`with`, `get`, `contains`, `insert`, `remove`) has a `*ById`
+variant. The pair-shape mirrors `cx.animations.tween` /
+`tweenComptime` and reads naturally at call sites: the bare name
+is the path most callers want (string id in, value out), and the
+`*ById` variant exists for the rare case where the caller
+already has a `u32` / `u64` hash on hand and wants to skip the
+re-hash. No sentinel-value tricks at the API boundary
+(passing `0` to mean "use a hash already on the call site"
+would be a footgun — `LayoutId.fromString` reserves `0` as the
+"none" sentinel, and the `*ById` variants assert `id_hash != 0`
+on entry).
+
+**Frame-driven eviction still deferred.** Same as PR 8.1 / 8.2:
+the new `cx.element_states.remove*` methods exist as the
+explicit-unmount path, but no widget calls them today. The
+frame-keyed eviction shape (mirroring GPUI's
+`mem::swap`-on-`element_states` pair) lands later alongside the
+rest of the `Frame` double-buffer adoption already in flight on
+PR 7c.3+. The `Cx` surface introduced here is forward-compatible
+with that shape: `cx.element_states.with` returns `*S` regardless
+of which underlying frame map serviced the lookup.
 
 
 ---
