@@ -92,7 +92,7 @@ them out here so they don't get re-litigated in review:
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a landed) |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b landed) |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
@@ -4405,14 +4405,23 @@ write scope of each landing is small enough to review and revert:
       pool slot — sidesteps the lifetime hazard of holding a
       borrowed slice across the frame-render boundary that used
       to free the duped key.
-- [ ] **PR 8.4b** — Migrate `text_input` + `text_area` together
+- [x] **PR 8.4b** — Migrate `text_input` + `text_area` together
       onto `Window.element_states`. They share the focused-widget
       dispatch fan-out in `runtime/input.zig`
       (`handleKeyDownEvent`, `handleTextInputEvent`,
       `handleCompositionEvent`, `updateImeCursorPosition`), so
       rewriting that pattern once is the most-performant slice
       — see PR 8.4-prep landing notes for the original slicing
-      rationale. Then `code_editor_state` as PR 8.4c.
+      rationale. PR 8.4b also sweeps in `code_editor_state` (the
+      planned PR 8.4c arm) because the focused-widget dispatch
+      already touches all three engines together — keeping
+      `code_editor` on `WidgetStore` would have meant a third
+      pass over the same dispatch sites for no slicing benefit.
+      `WidgetStore`'s entire text-engine surface (the three
+      `StringHashMap(*State)` maps, the four generic widget
+      helpers, and the ~16 accessor verbs) retires alongside,
+      collapsing what was planned as PRs 8.4b + 8.4c into a
+      single landing.
 - [ ] **0.16: this PR is the heaviest `@Type` user.** The `TypeId`
       construction and `*anyopaque` payload typing should be entirely
       `@TypeOf` / `@typeName` / `@Struct` style. No legacy `@Type`.
@@ -5019,6 +5028,246 @@ today). The pre-PR-8.4 `WidgetStore.scroll_containers` had no
 GC either — the pool's retention semantics are identical to
 the StringHashMap's. The frame-keyed eviction shape lands later
 alongside the rest of the GPUI `Frame` double-buffer adoption.
+
+### PR 8.4b landing notes (text widgets on the pool + focused-widget dispatch rewrite)
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1103/1103 tests
+passed` (no delta vs. PR 8.4a's 1103 — the migration is a pure
+call-site refactor over the existing `getOrInsert` shape PR 8.4a
+already pinned with two unit tests; no semantic change so no new
+tests). `zig build install` clean.
+
+**Files added:** none. The migration reuses the same
+`getOrInsert` / `get` / `remove` API that PR 8.4a landed on the
+pool.
+
+**Files edited:**
+
+- `src/widgets/text_input_state.zig` — drops the unused `id:
+  ElementId` field, the `getId()` method, and the
+  `core/element_id.zig` import. Collapses `init` and
+  `initWithId` into a single `init(allocator, bounds)`
+  constructor (the unique-id counter inside the pre-PR-8.4b
+  `init` only existed to populate the now-retired field). Same
+  reduction PR 8.4a did to `ScrollContainer.id`.
+
+- `src/widgets/text_area_state.zig` — same shape as
+  `text_input_state.zig`: drops the `id` field, `getId()`, and
+  the `ElementId` import; collapses `init` + `initWithId`.
+
+- `src/widgets/code_editor_state.zig` — same shape, plus
+  retiring the `generateUniqueId` atomic counter (the only
+  reader was `init`'s `ElementId.int(generateUniqueId())`,
+  which is gone).
+
+- `src/widgets/mod.zig` — module-header doc-comment for the
+  text-input section refreshed to describe the post-PR-8.4b
+  ownership shape (engine state lives on
+  `Window.element_states`, keyed by `(EngineType,
+  layout_id.id)`) instead of the pre-PR-8.4b `WidgetStore`
+  ownership shape.
+
+- `src/context/widget_store.zig` — drops the three
+  `StringHashMap(*State)` fields (`text_inputs`, `text_areas`,
+  `code_editors`), the matching three `default_*_bounds` fields
+  that seeded the pre-PR-8.4b create-on-touch path, the
+  `accessed_this_frame: AutoHashMap([*]const u8, void)`
+  ptr-keyed set (it only existed to bridge the StringHashMap key
+  memory across frames), the four generic widget helpers
+  (`getOrCreateWidget` / `removeWidget` / `getFocusedWidget` /
+  `deinitWidgetMap`), and every accessor verb on the three
+  retired widget types (`textInput` / `textInputOrPanic` /
+  `getTextInput` / `removeTextInput` / `hasTextInput` /
+  `textInputCount` / `getFocusedTextInput`, plus the same shape
+  for `textArea` / `codeEditor`, plus the cross-type `blurAll`
+  walk). The `beginFrame` / `endFrame` methods stay in place —
+  they're load-bearing for the animation + spring + motion
+  pools — but the `accessed_this_frame.clearRetainingCapacity()`
+  line goes with the field. Retired-section doc-comment block
+  records the migration shape and points readers at the pool
+  call pattern. Same retirement shape PR 8.4a used for
+  `scroll_containers`, scaled up to the three text widget maps.
+
+- `src/ui/builder.zig` — `Builder.renderInput` /
+  `renderTextArea` / `renderCodeEditor` are the create-on-touch
+  sites: each seeds the pool entry on first render via
+  `g.element_states.getOrInsert(EngineType, layout_id.id,
+  EngineType.init(g.allocator, default_bounds))` and reuses the
+  resulting borrow for both the focus-state read (border colour)
+  and the focus-vtable wire-up (`FocusHandle.withWidget(ti.focusable())`).
+  Reusing the borrow lets each render pay for at most one pool
+  lookup per widget per frame. The default seed bounds live on
+  `Builder` itself (`DEFAULT_TEXT_INPUT_BOUNDS` /
+  `DEFAULT_TEXT_AREA_BOUNDS` / `DEFAULT_CODE_EDITOR_BOUNDS`)
+  alongside the existing `MAX_PENDING_*` caps; pre-PR-8.4b they
+  lived on three `WidgetStore.default_*_bounds` fields, which
+  retired with the maps. The seed values are only observed by
+  code that touches the widget before its first post-layout
+  render (none today, but the engines' `init` paths assert sane
+  geometry, so the seed has to satisfy `bounds.width > 0` etc.).
+
+- `src/runtime/input.zig` — introduces three new helpers
+  (`focusedTextInput` / `focusedTextArea` / `focusedCodeEditor`)
+  that walk `builder.pending_*` and return the first
+  `isFocused()` match against the pool. Each helper is
+  `pub` so `runtime/frame.zig::updateImeCursorPosition` can
+  reach them without re-implementing the walk. Every
+  pre-PR-8.4b dispatch site (`handleKeyDownEvent`'s escape +
+  tab + control-key arms, `handleTextInputEvent`,
+  `handleCompositionEvent`, `handleScrollEvent`'s text-area /
+  code-editor branches, `handleCodeEditorClick`,
+  `syncBoundVariablesCx` / `syncTextAreaBoundVariablesCx` /
+  `syncCodeEditorBoundVariablesCx`) flips from the retired
+  `widgets.getFocusedText*` / `widgets.text*` accessors to
+  these helpers (or to `window.element_states.get(EngineType,
+  pending.layout_id.id)` for the pending-list-keyed paths).
+  Each per-event handler shares one `builder` borrow across
+  all three text-widget arms so the pending-list walk is paid
+  for at most once per event.
+
+- `src/runtime/frame.zig` — `renderTextInputs` /
+  `renderTextAreas` / `renderCodeEditors` switch from
+  `window.widgets.text*(pending.id)` to
+  `window.element_states.get(EngineType, @as(u64,
+  pending.layout_id.id))`. Read-only `get` because
+  `Builder.render*` already seeded the slot earlier this frame;
+  a `null` return means the seed itself failed (capacity
+  exhaustion or OOM at builder time), in which case skipping
+  the post-layout render for this frame is the right
+  fail-safe. `updateImeCursorPosition` learns a `*const Builder`
+  parameter and routes through the new `focusedText*` helpers
+  (was three `window.widgets.getFocusedText*` accessors
+  pre-PR-8.4b).
+
+- `src/cx.zig` — `cx.textField` / `cx.textAreaWidget` /
+  `cx.codeEditorWidget` are now read-only `get` against the
+  pool, hashing the string id at the boundary via
+  `LayoutId.fromString(id).id`. Same shape PR 8.4a used for
+  `cx.scrollView`, except read-only — `Builder.render*` is the
+  create-on-touch boundary for these three, so the user-facing
+  `cx.*` accessor doesn't need the `getOrInsert` upsert. The
+  accessors stay `?*T` for the case where the widget hasn't
+  mounted yet (callback firing before the first render).
+
+- `src/context/window.zig` — the PR 4 doc-comment block on
+  the per-widget-type forwarder retirement is updated to call
+  out PR 8.4b's further retirement of the
+  `widgets.text*` / `widgets.codeEditor` proxy accessors that
+  PR 4 callers were pointed at. Post-PR-8.4b the canonical
+  call shape is `window.element_states.get(EngineType,
+  layout_id.id)`.
+
+- `src/examples/code_editor.zig`, `src/examples/pomodoro.zig`,
+  `src/examples/showcase.zig` — example-side rewires.
+  `code_editor.zig` adds a `sourceCodeEditor(g)` private
+  helper that hashes `"source"` once and reads from the pool;
+  replaces the four `g.widgets.codeEditor("source")` call
+  sites. `pomodoro.zig` hashes `"task-input"` at the call
+  site. `showcase.zig`'s `onEvent` focused-text-widget guard
+  now goes through `gooey.runtime.input.focusedText{Input,Area}`.
+
+**Why fold PR 8.4c into PR 8.4b.** The original slicing plan
+had `text_input` + `text_area` landing in PR 8.4b and
+`code_editor_state` in a separate PR 8.4c. The focused-widget
+dispatch fan-out in `runtime/input.zig` (`handleKeyDownEvent`,
+`handleTextInputEvent`, `handleCompositionEvent`,
+`updateImeCursorPosition`) already touches all three engines
+together — keeping `code_editor_state` on `WidgetStore` would
+have meant a third pass over the same dispatch sites in PR 8.4c
+for no slicing benefit. The three engines also share the
+`(initWithId, getId, ElementId field, atomic-counter)` shape
+that PR 8.4b retires; splitting them would have meant two
+rounds of the same engine-type cleanup. Folding `code_editor`
+in keeps the call-site sweep to a single landing while leaving
+the per-engine reduction work as three independent commits in
+the file (one per engine).
+
+**Why the focused-widget dispatch is `pending_*`-list-driven.**
+Pre-PR-8.4b the framework reached for the focused text widget
+through three per-type accessors on `WidgetStore`
+(`getFocusedTextInput` / `getFocusedTextArea` /
+`getFocusedCodeEditor`), each walking its own StringHashMap
+and calling `isFocused()` on every entry. Two replacement
+shapes were considered:
+
+  - **Walk the matching `pending_*` list and look up each
+    entry in the pool by `layout_id.id`** (chosen). The
+    pending lists are bounded
+    (`MAX_PENDING_INPUTS = 256`,
+    `MAX_PENDING_TEXT_AREAS = 64`,
+    `MAX_PENDING_CODE_EDITORS = 32`) per CLAUDE.md §4's
+    hard-cap rule, and the focused widget rendered this frame
+    so its layout id is in one of the lists. Same upper-bound
+    shape the pre-PR-8.4b StringHashMap walk had, without the
+    dynamically-grown map.
+  - **Extend `Focusable` with a `typeId()` accessor and
+    discriminate the focus manager's cached
+    `focused_widget: ?Focusable` by type** (rejected). Pulls
+    `TypeId` (a pool concept) into `context/focus.zig`, where
+    it doesn't belong. The `Focusable` vtable's job is to
+    drive `focus()` / `blur()` / `isFocused()` polymorphically
+    — the framework deliberately doesn't know about the
+    concrete widget type at the focus layer. Discriminating by
+    type id at the dispatch site would have re-introduced the
+    `context → widgets` backward edge PR 4 worked to retire.
+
+The chosen shape lives in `runtime/input.zig` as three pure
+helpers (`focusedTextInput` / `focusedTextArea` /
+`focusedCodeEditor`) that take `(*Window, *const Builder)` and
+return the first `isFocused()` match. Each per-event handler
+in the same file shares one `builder` borrow across all three
+helpers so the pending-list walk is paid for at most once per
+event.
+
+**Why drop the engine-type `id` fields and `initWithId`.** Same
+rationale PR 8.4a used for `ScrollContainer.id`: pre-PR-8.4b
+the field held either a counter-derived `ElementId.int(...)`
+(for `init`) or a `ElementId.named(id)` view of the duped key
+from `WidgetStore.text_inputs` (for `initWithId`). Post-PR-8.4b
+the pool keys on `LayoutId.id` (a u32 hash), there's no duped
+string for the field to point at, and `getId()` was unused
+outside its own definition. Same dead-weight reduction as
+`ScrollContainer.id`, scaled up to three engines. The atomic
+counter `generateUniqueId` in `code_editor_state.zig` was the
+only thing populating its `ElementId.int(...)` path — it goes
+with the field.
+
+**Why the `accessed_this_frame` set retires.** Pre-PR-8.4b the
+set was keyed by `[*]const u8` (the heap-stable pointer of the
+StringHashMap key), and `getOrCreateWidget` / `removeWidget` /
+`beginFrame` were the only writers/clearers. The pool keys
+directly on the layout-id hash with no duped string, so there
+is no key memory to bridge. `Window.element_states` slots
+persist across frames the same way pre-PR-8.4b widget map
+entries did (no GC either way — the retention semantics are
+identical), so the per-frame access tracking the set provided
+was already moot for the text widgets. The frame-keyed
+eviction shape lands later alongside the rest of the GPUI
+`Frame` double-buffer adoption, same as every prior PR 8.x
+slice.
+
+**Why fold the docs migration into PR 8.4b too.** Same one-pass
+discipline PR 8.4a used. The retired-section doc-comment in
+`widget_store.zig` and the `Bounds` alias doc-comments in
+`text_input_state.zig` / `text_area_state.zig` /
+`code_editor_state.zig` all reference the pre-PR-8.4b shape
+(`WidgetStore.default_*_bounds` field, `WidgetStore` import
+path); leaving them stale across a slice boundary would have
+meant a second pass over every doc-comment site to refresh the
+references. Bundled here so the docs-vs-code drift never
+appears.
+
+**Frame-driven eviction still deferred.** Same as PR 8.1 / 8.2
+/ 8.3 / 8.4-prep / 8.4a: text-engine state persists across
+frames until the widget calls `.remove` explicitly (no caller
+does so today). The pre-PR-8.4b
+`WidgetStore.text_inputs` / `text_areas` / `code_editors`
+StringHashMaps had no GC either — the pool's retention
+semantics are identical to the StringHashMap's. The frame-keyed
+eviction shape lands later alongside the rest of the GPUI
+`Frame` double-buffer adoption.
 
 ---
 
