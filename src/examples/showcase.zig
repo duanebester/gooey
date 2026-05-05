@@ -228,7 +228,7 @@ var state = AppState{};
 // =============================================================================
 
 const App = gooey.App(AppState, &state, render, .{
-    .title = "Window Showcase",
+    .title = "Gooey Showcase",
     .width = 1200,
     .height = 800,
     .on_event = onEvent,
@@ -356,7 +356,7 @@ const NavLogo = struct {
                 .fit = .cover,
                 .placeholder = t.surface, // Shown while loading on WASM
             },
-            ui.text("Window", .{ .size = 24, .color = t.text }),
+            ui.text("Gooey", .{ .size = 24, .color = t.text }),
         }));
     }
 };
@@ -536,7 +536,7 @@ const OverviewSection = struct {
                 .gap = 16,
                 .alignment = .{ .cross = .center },
             }, .{
-                ui.text("Welcome to Window", .{ .size = 36, .color = t.text }),
+                ui.text("Welcome to Gooey", .{ .size = 36, .color = t.text }),
                 ui.text("A GPU-accelerated UI framework for Zig with a powerful layout system", .{ .size = 18, .color = t.subtext }),
                 ui.hstack(.{ .gap = 12 }, .{
                     FeatureBadge{ .icon = Icons.star, .label = "Fast" },
