@@ -4336,7 +4336,7 @@ write scope of each landing is small enough to review and revert:
       `src/context/mod.zig`. **No widget migration in this PR**
       — same shape as PR 3's `SubscriberSet` skeleton, validated
       in isolation before consumers are wired up.
-- [ ] **PR 8.2** — Migrate `select_states` (u32-keyed,
+- [x] **PR 8.2** — Migrate `select_states` (u32-keyed,
       smallest) onto `ElementStates`. Drop `select_states` field
       from `WidgetStore`; route `getOrCreateSelectState` /
       `getSelectState` / `closeSelectState` /
@@ -4360,7 +4360,11 @@ write scope of each landing is small enough to review and revert:
 - [ ] Pair-assert at the `set` / `get` boundary on every state slot
       (CLAUDE.md §3). ✅ PR 8.1 — `withElementState` and `insert`
       both pair-assert on entry (`count <= cap`) and on exit
-      (slot readback matches the inserted key).
+      (slot readback matches the inserted key). ✅ PR 8.2 —
+      every consumer call site routes through those pair-asserted
+      paths; no per-call-site assertions added (the pool's
+      invariants are the load-bearing ones, not the consumer's
+      id-hash arithmetic).
 
 **Definition of done:**
 
@@ -4452,6 +4456,104 @@ lifecycle. The frame-keyed eviction shape lands later — the
 GPUI Frame double buffer is partly in place from PR 7c.3c, and
 once `element_states` moves onto `Frame`, the swap semantics
 fall out for free.
+
+### PR 8.2 landing notes (first consumer: `Select`)
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1094/1094 tests
+passed` (same count as PR 8.1's baseline — no new tests are
+introduced for PR 8.2 since the PR 8.1 unit suite already covers
+the pool's slot-map invariants from the consumer side, and the
+call-site sweep is exercised through the existing component
+reachability graph). `zig build install` succeeds without
+warnings.
+
+**Files edited:**
+
+- `src/context/window.zig` — added
+  `element_states: *ElementStates` field on `Window`. Heap-allocated
+  through `allocator.create(ElementStates)` + `initInPlace` in all
+  four `Window` init paths (`initOwned`, `initOwnedPtr`,
+  `initWithSharedResources`, `initWithSharedResourcesPtr`); the 128
+  KiB entry table is too large for the WASM stack budget (CLAUDE.md
+  §14). `Window.deinit` walks the pool's type-erased deinit thunks
+  before freeing the backing allocation. The pool is per-window
+  even in multi-window mode — `LayoutId` hashes are per-window, so
+  sharing one pool across windows would conflate state for unrelated
+  elements.
+
+- `src/context/widget_store.zig` — dropped the `SelectState` type,
+  the `select_states: AutoHashMap(u32, SelectState)` field, and the
+  four `getOrCreateSelectState` / `getSelectState` /
+  `closeSelectState` / `toggleSelectState` accessors. The
+  init/deinit/lifecycle hooks for select state vanish entirely from
+  the framework body.
+
+- `src/components/select.zig` — owns the `SelectState` declaration
+  next to the widget now (was on `WidgetStore`). `internalToggle` /
+  `internalClose` route through `g.element_states.withElementState`
+  / `.get`; `Select.resolveState` does the same.
+  `SelectState.defaultInit` is the comptime miss-path factory the
+  pool runs on first touch.
+
+- `src/cx.zig` — `onSelect`'s `forIndexAndClose` path now closes
+  the select via `g.element_states.get(SelectState, ...)`, with a
+  local import of `components/select.zig` for the type. Future
+  cleanup of `cx.zig`'s per-widget knowledge is tracked separately
+  and not in scope for PR 8.2.
+
+**Why `Select` first.** Same rationale as the slicing-strategy
+bullet at the top of PR 8: smallest of the per-type widget maps
+(one `bool` per slot vs. text-buffer-sized state for the text
+family), simplest call-site shape (u32-keyed, four short helpers,
+two internal handlers + one `resolveState` reader), and zero
+lifecycle entanglement with focus or accessibility. Validating the
+call-site shape against this consumer surfaces any pool-side
+ergonomic gaps before the larger `text_input` / `text_area` /
+`code_editor` / `scroll_container` migrations land.
+
+**Why move `SelectState` into `components/select.zig`.** The
+"adding a new stateful widget requires zero edits to the framework"
+promise of PR 8 is the load-bearing test of the keyed-pool
+adoption. Leaving `SelectState` on `WidgetStore` would have meant
+the widget still relied on a framework-side type declaration; the
+move establishes the new convention (widget owns its state
+declaration, framework owns only the pool storage) for every
+follow-on slice. The same shape lands when 8.4+ moves
+`TextInput` / `TextArea` / `CodeEditorState` definitions out of
+`widgets/*_state.zig` re-imports into `WidgetStore` and onto the
+pool.
+
+**Why `internalClose` does NOT create on miss.** Asymmetry with
+`internalToggle` is deliberate: closing a never-opened Select is a
+no-op (the dropdown wasn't rendered, so there's no state to close),
+and calling `withElementState` from a click-outside handler that
+fires on an untouched Select would add an empty entry to the pool
+every click. The `if (g.element_states.get(...)) |ss|` shape
+preserves the pre-PR-8.2 behaviour (`closeSelectState` was a
+`getPtr` lookup, not a `getOrPut`).
+
+**Why `cx.onSelect`'s close path uses `.get` (not
+`withElementState`).** Reaching `forIndexAndClose` implies the
+option button just rendered — which means `Select.resolveState`
+already called `withElementState` for this `id_hash` earlier in the
+frame, so the slot must exist. The defensive `null` arm is there
+only for the case where the close handler somehow fires after the
+Select's owning subtree was unmounted; logging or panicking would
+be wrong (legitimate path), and creating a new slot just to flip a
+bool would leak. Read-only `.get` is the right shape.
+
+**Frame-driven eviction still deferred.** Same as PR 8.1: select
+state persists across frames until the widget calls `.remove`
+explicitly. The pre-PR-8.2 `WidgetStore.select_states` map had no
+GC either (the only path that ever cleared a slot was the
+`closeSelectState` mutation, which set `is_open = false` rather
+than removing the entry), so PR 8.2 is a pure storage-shape
+refactor with identical retention semantics. The frame-keyed
+eviction shape lands later alongside the rest of the GPUI
+`Frame` double-buffer adoption (PR 7c.3+ in flight).
+
 
 ---
 
