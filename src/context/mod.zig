@@ -146,6 +146,30 @@ pub const SubscriberSetOptions = subscriber_set.Options;
 pub const SubscriberInsertion = subscriber_set.Insertion;
 
 // =============================================================================
+// PR 8.1 — Unified element state pool
+// =============================================================================
+//
+// `ElementStates` is the keyed pool that PR 8 uses to collapse the
+// per-type widget maps on `WidgetStore` (`text_inputs`, `text_areas`,
+// `code_editors`, `scroll_containers`, `select_states`) into a single
+// `(id_hash, type_id) -> *S` table. Adding a new stateful widget
+// becomes a no-op in framework code: the widget calls
+// `cx.with_element_state(id, …)` and the pool routes the lookup to
+// the right slot without any `WidgetStore` field, getter, or
+// lifecycle hook needing to be edited.
+//
+// PR 8.1 ships the container in isolation. Subsequent PR 8.x slices
+// peel widgets off `WidgetStore` onto this generic. See
+// `docs/cleanup-implementation-plan.md` PR 8.
+
+pub const element_states = @import("element_states.zig");
+pub const ElementStates = element_states.ElementStates;
+pub const MAX_ELEMENT_STATES = element_states.MAX_ELEMENT_STATES;
+pub const ElementStateKey = element_states.Key;
+pub const ElementStateTypeId = element_states.TypeId;
+pub const elementStateTypeId = element_states.typeId;
+
+// =============================================================================
 // PR 6 — DrawPhase + Globals
 // =============================================================================
 //
