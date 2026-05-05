@@ -92,7 +92,7 @@ them out here so they don't get re-litigated in review:
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 landed)             |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
@@ -4299,29 +4299,159 @@ Adding a new widget no longer requires framework edits.
 - every `widgets/*_state.zig` (call site changes)
 - `src/context/gooey.zig` / `window.zig` (drop per-widget maps)
 
+**Slicing strategy.** PR 8 mirrors PR 7's slice approach so the
+write scope of each landing is small enough to review and revert:
+
+- **PR 8.1** — `ElementStates` container in isolation. New file,
+  no widget migration, no `WidgetStore` edits. Validates the
+  generic shape against tests before any consumer is wired up.
+  Same pattern as PR 3's `SubscriberSet` introduction.
+- **PR 8.2** — first consumer (`select_states`, the smallest /
+  u32-keyed map). Validates the call-site shape on a real caller
+  and the `cx.with_element_state` ergonomics before larger
+  widgets follow.
+- **PR 8.3+** — `text_input_state`, `text_area_state`,
+  `code_editor_state`, `scroll_container` peeled off one at a
+  time. Each slice is one widget map gone from `WidgetStore`.
+- **PR 8.x (final)** — retire `WidgetStore`'s per-type fields and
+  the `getOrCreateWidget` / `removeWidget` / `deinitWidgetMap`
+  helpers. The store either disappears entirely (every widget on
+  the new pool) or shrinks to the residual cross-cutting state
+  (animations, change-tracker) that doesn't fit the keyed-pool
+  shape.
+
 **Tasks:**
 
-- [ ] Define `ElementStates` with fixed capacity
+- [x] **PR 8.1** — Define `ElementStates` with fixed capacity
       (`MAX_ELEMENT_STATES = 4096` — sketch the math:
-      4096 × 32 B per slot = 128 KB; revisit if widgets exceed cap in
-      practice).
-- [ ] `with_element_state(global_id, fn(state) -> (R, state))` —
-      mirror GPUI's
+      4096 × 32 B per slot = 128 KB; heap-allocated by callers per
+      CLAUDE.md §14). Generic `(id_hash, type_id) -> *S` slot map
+      with dense-prefix invariant, swap-remove, and a comptime-built
+      type-erased deinit thunk. Public surface: `init` /
+      `initInPlace` / `withElementState` / `insert` / `get` /
+      `contains` / `remove` / `deinit`. 18 unit tests cover the
+      every-axis-of-the-keyed-pool shape (composite key
+      separation, stable pointer on hit, swap-remove dense prefix,
+      three `deinit` shapes, capacity boundary). Re-exported from
+      `src/context/mod.zig`. **No widget migration in this PR**
+      — same shape as PR 3's `SubscriberSet` skeleton, validated
+      in isolation before consumers are wired up.
+- [ ] **PR 8.2** — Migrate `select_states` (u32-keyed,
+      smallest) onto `ElementStates`. Drop `select_states` field
+      from `WidgetStore`; route `getOrCreateSelectState` /
+      `getSelectState` / `closeSelectState` /
+      `toggleSelectState` through the pool. Validates the
+      call-site shape on a real consumer.
+- [ ] **PR 8.3** — `with_element_state(global_id, fn(state) -> (R, state))`
+      sugar surfaced through `Cx`, mirroring GPUI's
       [§19 pattern](./architectural-cleanup-plan.md#19-with_element_stateglobal_id-fnstate---r-state).
-- [ ] Migrate existing widget state stores one widget at a time.
-      `text_input_state` first (smallest), then `text_area_state`,
-      then `code_editor_state`, then list state, etc.
+      Lands once one consumer is on the pool so the ergonomic
+      shape is informed by real call sites.
+- [ ] **PR 8.4+** — Migrate existing widget state stores one
+      widget at a time. `text_input_state` first (smallest of
+      the text family), then `text_area_state`, then
+      `code_editor_state`, `scroll_container`, then list state.
 - [ ] **0.16: this PR is the heaviest `@Type` user.** The `TypeId`
       construction and `*anyopaque` payload typing should be entirely
       `@TypeOf` / `@typeName` / `@Struct` style. No legacy `@Type`.
+      ✅ PR 8.1 — `typeId` uses `@typeName(T).ptr` cast through
+      `@intFromPtr`, same shape as `Globals` / `EntityMap`. No
+      `@Type` builtin invocations.
 - [ ] Pair-assert at the `set` / `get` boundary on every state slot
-      (CLAUDE.md §3).
+      (CLAUDE.md §3). ✅ PR 8.1 — `withElementState` and `insert`
+      both pair-assert on entry (`count <= cap`) and on exit
+      (slot readback matches the inserted key).
 
 **Definition of done:**
 
 - Adding `widgets/foo_state.zig` requires zero edits to the
   framework — only `cx.with_element_state(id, …)` calls.
 - All existing widget-state hash maps deleted.
+
+### PR 8.1 landing notes (container-only)
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1094/1094 tests
+passed` (net +18 vs. PR 7c.3d's 1076 — the new
+`element_states.zig` brings 18 self-contained unit tests for the
+slot-map invariants). `zig build install` succeeds without
+warnings.
+
+**Files added:**
+
+- `src/context/element_states.zig` (~880 lines: ~430 lines of code
+  + ~450 lines of doc comments and tests). Public surface:
+  `MAX_ELEMENT_STATES = 4096`, `TypeId`, `typeId(T)`, `Key`,
+  `ElementStates` with `init` / `initInPlace` / `deinit` /
+  `withElementState` / `insert` / `get` / `contains` /
+  `hasRoom` / `len` / `remove`.
+
+**Files edited:**
+
+- `src/context/mod.zig` — re-exports `element_states`,
+  `ElementStates`, `MAX_ELEMENT_STATES`, `ElementStateKey`,
+  `ElementStateTypeId`, `elementStateTypeId`. Symmetric with the
+  existing `subscriber_set` / `SubscriberSet` re-export block
+  introduced in PR 3.
+
+**Why container-only.** Same rationale as PR 3's `SubscriberSet`
+introduction (validated against blur/cancel registries one PR
+later) and PR 1's `AssetCache` skeleton (body lands in PR 2 once
+SVG proves the trait shape). Shipping the container in isolation
+lets the slot-map invariants be exercised against the test suite
+— dense-prefix, type-keyed disambiguation, capacity boundary,
+three `deinit` shapes (`fn(*S) void`, `fn(*S, Allocator) void`,
+none) — before the first consumer is wired up. PR 8.2
+(`select_states`) then has zero risk of pool-side regressions:
+the failure surface shrinks to the call-site routing.
+
+**Why a fixed-capacity slot map (not `AutoHashMap`).** CLAUDE.md
+§1 / §4 — every subsystem in the framework has a hard cap
+declared at the top of the file as a `MAX_*` constant, with
+insert past capacity surfacing an explicit error. The
+architectural-cleanup plan calls this out specifically for
+`element_states` in §"What we're already doing better than GPUI":
+"GPUI uses `Vec` and `FxHashMap` everywhere — they accept
+allocator pressure as a tradeoff for flexibility. CLAUDE.md's
+hard caps + fixed-capacity arrays are stricter. Don't lose this
+when adopting #8 and #11." The 4096-slot cap with linear-scan
+`findIndex` is branch-predictor-friendly at this size; if a
+profile shows hash lookup is needed for some workload, the
+public surface is stable enough to swap the body to an
+`AutoHashMap` keyed by `Key.hash()` without call-site changes.
+
+**Why heap-allocated by callers.** Sketch the math (CLAUDE.md
+§7): `Entry` is 32 bytes (composite key 16 B + ptr 8 B +
+deinit_fn 8 B); `4096 * 32 B = 128 KiB`. That's well over the
+WASM stack budget (CLAUDE.md §14) so `Window` will heap-allocate
+`ElementStates` through `allocator.create(ElementStates)` +
+`initInPlace` rather than embedding by value. The
+static-allocation policy is preserved — the heap allocation is
+once at `Window` init, and the 128 KiB array is fixed-size with
+no growing.
+
+**`with_element_state` semantic delta from GPUI.** GPUI's API
+takes a closure that consumes `Option<S>` and returns `(R, S)`,
+with the framework writing the new state back. Our shape returns
+`*S` directly and lets the caller mutate through the borrow. The
+semantics are equivalent (Gooey's single-threaded frame loop
+makes the borrow safe), and the Zig shape avoids the
+closure-capture awkwardness that a literal port would force on
+every call site. Documented in the module header so future
+reviewers don't try to port the closure shape verbatim.
+
+**Frame-driven eviction deferred.** GPUI's `with_element_state`
+falls back to `rendered_frame.element_states` when the current
+frame hasn't touched an element yet, and `mem::swap` at the
+frame boundary discards entries not accessed for two consecutive
+frames. Today's `WidgetStore` keeps state forever (no GC), so
+adopting the same "explicit `remove` on widget unmount"
+semantics is a pure refactor against the existing widget
+lifecycle. The frame-keyed eviction shape lands later — the
+GPUI Frame double buffer is partly in place from PR 7c.3c, and
+once `element_states` moves onto `Frame`, the swap semantics
+fall out for free.
 
 ---
 
