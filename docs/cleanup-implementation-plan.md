@@ -92,7 +92,7 @@ them out here so they don't get re-litigated in review:
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 + 8.4-prep landed) |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a landed) |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
@@ -4313,6 +4313,11 @@ write scope of each landing is small enough to review and revert:
 - **PR 8.3+** — `text_input_state`, `text_area_state`,
   `code_editor_state`, `scroll_container` peeled off one at a
   time. Each slice is one widget map gone from `WidgetStore`.
+  PR 8.4a took the `scroll_container` arm first because it has
+  no focus-coupled dispatch (only bounds + offsets are read by
+  framework code) — a clean validation of the runtime-init
+  upsert (`getOrInsert`) before tackling the focus fan-out that
+  text widgets share.
 - **PR 8.x (final)** — retire `WidgetStore`'s per-type fields and
   the `getOrCreateWidget` / `removeWidget` / `deinitWidgetMap`
   helpers. The store either disappears entirely (every widget on
@@ -4375,13 +4380,39 @@ write scope of each landing is small enough to review and revert:
       framework. Pinned by 5 new `Bounds.contains` tests covering
       interior hit, left/top inclusive, right/bottom exclusive,
       every-direction outside, and the zero-size degenerate case.
-- [ ] **PR 8.4+** — Migrate existing widget state stores onto
-      `Window.element_states`. `text_input` + `text_area` together
-      first (they share the focused-widget dispatch fan-out in
-      `runtime/input.zig`, so rewriting that pattern once is the
-      most-performant slice — see PR 8.4-prep landing notes for the
-      slicing rationale). Then `code_editor_state`, then
-      `scroll_container`, then list state.
+- [x] **PR 8.4a** — `scroll_container` migrated onto
+      `Window.element_states`. Smallest of the four remaining
+      retained-storage widgets and the only one with no
+      focus-coupled dispatch (only bounds + offsets are read by
+      framework code), so it lands as a clean validation of the
+      runtime-init `getOrInsert` upsert before the larger
+      text-family migration. Drops the
+      `scroll_containers: StringHashMap(*ScrollContainer)` field
+      and the two `scrollContainer` / `getScrollContainer`
+      accessors from `WidgetStore`; rewires `cx.scrollView` /
+      `Builder.scroll` / `Builder.registerPendingScrollRegions` /
+      `runtime/input.handleScrollEvent`,
+      `handleMouseDragEvent`, `handleScrollbarClick`,
+      `handleMouseUpEvent` / `runtime/frame.renderCommands` /
+      `widgets/data_table.syncScroll` /
+      `widgets/uniform_list.syncScroll` /
+      `widgets/virtual_list.syncScroll` to reach through
+      `g.element_states.getOrInsert(ScrollContainer, layout_id.id, ScrollContainer.init(allocator))`
+      for the seed path and `g.element_states.get(ScrollContainer, layout_id.id)`
+      for the read-only paths. Also flips
+      `Builder.active_scroll_drag_id` from `?[]const u8` to `?u32`
+      so the cached drag id is the layout-id hash that keys the
+      pool slot — sidesteps the lifetime hazard of holding a
+      borrowed slice across the frame-render boundary that used
+      to free the duped key.
+- [ ] **PR 8.4b** — Migrate `text_input` + `text_area` together
+      onto `Window.element_states`. They share the focused-widget
+      dispatch fan-out in `runtime/input.zig`
+      (`handleKeyDownEvent`, `handleTextInputEvent`,
+      `handleCompositionEvent`, `updateImeCursorPosition`), so
+      rewriting that pattern once is the most-performant slice
+      — see PR 8.4-prep landing notes for the original slicing
+      rationale. Then `code_editor_state` as PR 8.4c.
 - [ ] **0.16: this PR is the heaviest `@Type` user.** The `TypeId`
       construction and `*anyopaque` payload typing should be entirely
       `@TypeOf` / `@typeName` / `@Struct` style. No legacy `@Type`.
@@ -4821,6 +4852,173 @@ until the widget calls `.remove` explicitly. The frame-keyed
 eviction shape (mirroring GPUI's `mem::swap`-on-`element_states`
 pair) lands later alongside the rest of the `Frame` double-buffer
 adoption in flight on PR 7c.3+.
+
+### PR 8.4a landing notes (`scroll_container` on the pool)
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1103/1103 tests
+passed` (net +2 vs. PR 8.4-prep's 1101 — the two new
+`getOrInsert` tests on the pool, covering the create-on-miss
+runtime-init path and the on-hit `initial`-is-ignored stable
+pointer property). `zig build install` clean.
+
+**Files added:** none. `getOrInsert` lands as a new method on the
+existing `ElementStates` container introduced in PR 8.1.
+
+**Files edited:**
+
+- `src/context/element_states.zig` — adds `getOrInsert(comptime
+  S, id_hash, initial: S) !*S`. The runtime-init twin of
+  `withElementState`: same get-or-create shape, but accepts a
+  caller-built initial value rather than a comptime `default`
+  factory. Stateful widgets like `ScrollContainer`,
+  `TextInputState`, `TextAreaState`, `CodeEditorState` capture
+  allocator + bounds + debug id at the call site, so they can't
+  use `withElementState`'s comptime factory; the runtime variant
+  is the right shape. Two tests pin the shape: create-on-miss
+  with runtime init values, and on-hit pointer stability with
+  `initial` ignored (prevents every-frame clobber).
+
+- `src/widgets/scroll_container.zig` — drops the unused
+  `id: []const u8` field. Pre-PR-8.4 it held the duped key from
+  `WidgetStore.scroll_containers`; post-PR-8.4 the pool keys
+  on `LayoutId.id` so there's no duped string for the field to
+  point at, and the field was only ever written, never read.
+  `init(allocator, id)` becomes `init(allocator)` — same shape
+  as `ScrollState`, `Style`.
+
+- `src/context/widget_store.zig` — drops the
+  `scroll_containers: StringHashMap(*ScrollContainer)` field, the
+  matching init/deinit lines, the `T == ScrollContainer` arm in
+  the generic `getOrCreateWidget` helper, and the two
+  `scrollContainer(id)` / `getScrollContainer(id)` accessors. The
+  retired-accessor section gets a doc comment recording the
+  migration shape and pointing follow-on readers at the pool
+  call pattern. Same retirement shape PR 8.2 used for the
+  `select_states` field and accessors.
+
+- `src/cx.zig` — `cx.scrollView(id)` routes through
+  `g.element_states.getOrInsert(ScrollContainer, hash,
+  ScrollContainer.init(g.allocator))` (was
+  `g.widgets.scrollContainer(id)`). Hashes the string id once at
+  the boundary via `LayoutId.fromString(id).id`. Failure modes
+  (OOM / `error.ElementStatesAtCapacity`) collapse to `null` so
+  the public surface stays optional — same shape callers had
+  pre-PR-8.4 against the `?*ScrollContainer` return.
+
+- `src/ui/builder.zig` — `Builder.scroll` (the
+  create-on-touch site) seeds the pool entry through
+  `getOrInsert` with the layout id already in hand;
+  `registerPendingScrollRegions` and the rest of the framework
+  are read-only against the pool, so they use `get` keyed by
+  `pending.layout_id.id`. Also flips
+  `active_scroll_drag_id: ?[]const u8` to `?u32` (the cached
+  drag id is now the layout-id hash that keys the pool slot,
+  not a borrowed string slice). The flip avoids re-hashing the
+  string at every drag event and — more importantly — sidesteps
+  the lifetime hazard of holding a borrowed slice across the
+  frame-render boundary that used to free the duped key when
+  `WidgetStore.scroll_containers` rebuilt.
+
+- `src/runtime/input.zig` — `handleScrollEvent`,
+  `handleMouseDragEvent`, `handleScrollbarClick`,
+  `handleMouseUpEvent` all switch from
+  `window.widgets.getScrollContainer(string_id)` to
+  `window.element_states.get(ScrollContainer, layout_id_hash)`.
+  The `setActiveScrollDrag` call sites pass `pending.layout_id.id`
+  instead of `pending.id`. Pure mechanical rewire alongside the
+  field-type flip in `Builder`.
+
+- `src/runtime/frame.zig` — `renderCommands`'s scrollbar
+  rendering branch reads through `window.element_states.get(
+  ScrollContainer, pending.layout_id.id)`. Read-only `get`
+  rather than `getOrInsert` because the slot was already seeded
+  by `Builder.scroll` earlier in the frame.
+
+- `src/widgets/data_table.zig`, `src/widgets/uniform_list.zig`,
+  `src/widgets/virtual_list.zig` — each `syncScroll(b, id,
+  state)` helper hashes the string id at the boundary and
+  reaches into the pool with read-only `get`. The helper still
+  accepts `id: []const u8` because callers compose ids
+  dynamically (e.g. `tree_list` derives ids from node paths);
+  the hash happens at the helper boundary rather than forcing
+  the caller to hash first.
+
+**Why `scroll_container` first.** Per the slicing-strategy bullet
+at the top of PR 8: smallest of the four remaining
+retained-storage widgets and the only one with no focus-coupled
+dispatch (only bounds + offsets are read by framework code). The
+focused-widget fan-out in `runtime/input.zig`
+(`handleKeyDownEvent`, `handleTextInputEvent`,
+`handleCompositionEvent`, `updateImeCursorPosition`) that
+`text_input` / `text_area` / `code_editor_state` share is not
+involved here — `scroll_container` participates in mouse
+drag/scroll events through the per-frame `pending_scrolls` queue,
+keyed by layout id, with no per-instance focused-flag. That keeps
+PR 8.4a as a clean validation of the runtime-init upsert
+(`getOrInsert`) shape against a real consumer before the larger
+text-family migration in PR 8.4b lands.
+
+**Why `getOrInsert` (not `withElementState`).** The comptime
+`withElementState(S, id_hash, default: fn() S)` API requires a
+no-argument factory. `ScrollContainer.init(allocator)` doesn't
+fit that shape — and `TextInputState.initWithId(allocator,
+bounds, id)` won't fit either when PR 8.4b lands. The
+runtime-init `getOrInsert(S, id_hash, initial: S)` API takes a
+caller-built initial value: the call site captures the
+allocator (and any other runtime-only init data) and hands the
+pool a fully-constructed `S` to copy into the slot. On hit the
+`initial` is ignored — that's what the second new test pins.
+Bundling the upsert as a single pool method keeps the
+get-or-create discipline in one place rather than re-litigating
+the lookup boundary at every consumer.
+
+**Why drop `ScrollContainer.id`.** Pre-PR-8.4 the field held the
+duped key from `WidgetStore.scroll_containers` (the StringHashMap
+owned the string memory; the field was a borrowed view of it).
+Post-PR-8.4 the pool keys on `LayoutId.id` (a u32 hash), so
+there's no duped string for the field to point at. A grep
+confirmed the field was set on `init` but never read — the
+StringHashMap key was the lookup mechanism, and the field was
+just dead weight. Dropping it is part of the pure-data-shape
+reduction PR 8 promises: each widget's storage shrinks to what's
+load-bearing for its behaviour, with the framework owning only
+the `(id_hash, type_id) -> *S` mapping.
+
+**Why `Builder.scroll` is the seed site.** The create-on-touch
+contract pre-PR-8.4 was `widgets.scrollContainer(id)` returning
+a freshly-constructed instance on miss. That semantics is
+preserved here: `Builder.scroll` calls `getOrInsert` (the
+upsert), and the rest of the framework (input handlers, frame
+renderer, list-widget sync helpers) uses read-only `get`. If a
+scroll region renders this frame, its slot is guaranteed to
+exist by the time input/render/sync read; if it doesn't render
+(e.g. unmounted because of a state change), the slot persists
+but is unreferenced, and a future `cx.element_states.remove`
+call would tear it down. Frame-driven eviction stays deferred,
+same as every prior PR 8.x slice.
+
+**Why flip `active_scroll_drag_id` to u32.** The pre-PR-8.4
+field type was `?[]const u8` — a borrowed slice into the
+StringHashMap key memory that `WidgetStore.scroll_containers`
+duped on insert and freed on `removeWidget`. Post-PR-8.4 the
+pool doesn't dupe keys (it hashes once at the boundary), so
+there's no duped key memory to point at. Storing the hash
+directly is also faster: the previous shape rehashed the
+`[]const u8` on every `getScrollContainer(drag_id)` call inside
+`handleMouseDragEvent` (which fires per mouse-move during a
+drag); the u32 flip skips the rehash. The drag-id flip is a
+strict win on both memory safety (no dangling-slice risk
+across frame boundaries) and per-event work.
+
+**Frame-driven eviction still deferred.** Same as PR 8.1 / 8.2 /
+8.3 / 8.4-prep: scroll-container state persists across frames
+until the widget calls `.remove` explicitly (no caller does so
+today). The pre-PR-8.4 `WidgetStore.scroll_containers` had no
+GC either — the pool's retention semantics are identical to
+the StringHashMap's. The frame-keyed eviction shape lands later
+alongside the rest of the GPUI `Frame` double-buffer adoption.
 
 ---
 
