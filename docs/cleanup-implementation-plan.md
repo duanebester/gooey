@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☐                          |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -1214,14 +1214,63 @@ so each lands green on its own.
       explicit `window.next_frame.dispatch.reset()`
       at the start of `renderFrameImpl` is now
       redundant with the post-swap recycle on every
-      tick after the first; a follow-up slice
-      retires the start-of-frame reset entirely
-      (tick 0 sees the same effective state via
-      `Frame.initOwned`'s fresh dispatch). None of
-      these wins land *in* 7c.3c — the slice's job
+      tick after the first; PR 7c.3d cashed this
+      in by retiring the start-of-frame reset
+      entirely (tick 0 sees the same effective
+      state via `Frame.initOwned`'s fresh dispatch).
+      None of these wins land *in* 7c.3c — the slice's job
       was the swap and the field rename; each
       follow-up slice cashes in one of the wins
       above against the new shape.
+    - ☑ **7c.3d — Retire `refreshHover` and the
+      start-of-frame `next_frame.dispatch.reset()`.**
+      Landed on `cleanup/pr-7c3d-retire-refresh-hover`.
+      Cashes in 7c.3c's win (1) and win (4) in a single
+      slice (the 7c.3c plan grouped them — "the follow-up
+      slice that retires `refreshHover` retires this
+      duplicate reset at the same time"). Pre-7c.3d the
+      per-tick frame driver in
+      `runtime/frame.zig::renderFrameImpl` ran two redundant
+      operations that existed only to paper over a hazard
+      the 7c.3c double buffer made structurally impossible:
+      (a) `window.refreshHover()` after the bounds-sync pass,
+      to re-run hit testing against the just-built tree
+      because input handlers earlier in the same tick had
+      hit-tested against the in-progress single-buffer
+      dispatch tree before bounds were synced; (b)
+      `window.next_frame.dispatch.reset()` at the start of
+      the function, redundant with the post-swap recycle on
+      every tick after the first (and superfluous on tick 0
+      because `Frame.initOwned`'s `DispatchTree.init`
+      already produces an empty tree). Post-7c.3c, input
+      always hit-tests against `rendered_frame.dispatch`
+      (the previously-built tree, with bounds already
+      synced and rotated in by the end-of-frame `mem.swap`),
+      so (a) is unnecessary; the post-swap recycle plus
+      first-tick `Frame.initOwned` cover both halves of
+      (b)'s contract. With `refresh` retired, the
+      `HoverState.last_mouse_x` / `HoverState.last_mouse_y`
+      cache fields lose their only reader and follow it
+      out — they existed solely so `refresh` could replay
+      the last cursor coordinates without the runtime
+      re-threading them, dead state per CLAUDE.md §10
+      once `refresh` is gone. `Window.refreshHover`
+      removed from the framework API surface; the
+      `Window.updateHover` doc-block rewrites to drop the
+      forward reference to `refreshHover` retirement (the
+      retirement happened) and explain the post-7c.3d
+      invariant. `hover.zig`'s module-level doc-block
+      gains a `## History — refresh retirement (PR 7c.3d)`
+      section recording why the cache fields and method
+      are gone, so a future reader doesn't reintroduce
+      them. `Build Summary: 9/9 steps succeeded; 1076/1076
+      tests passed` (no delta vs. 7c.3c's 1076 — pure
+      removal of dead code + two existing-test assertion
+      drops on the retired fields; the post-shape
+      behaviour is already pinned by every existing
+      `updateHover`-exercising test through input event
+      paths and by every example through `zig build
+      install`). See "Sub-PR 7c.3d" below.
 - ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
 
@@ -4017,6 +4066,222 @@ of the `mem.swap` boundary.
 **Result:** `Build Summary: 9/9 steps
 succeeded; 1076/1076 tests passed` (+3 vs.
 PR 7c.3b's 1073). `zig build install`
+builds all examples (single-window and
+multi-window) without warnings.
+
+**Sub-PR 7c.3d — Retire `refreshHover` and the
+start-of-frame `next_frame.dispatch.reset()` (landed):**
+
+First slice that cashes in the wins the 7c.3c double
+buffer was set up to unlock. Wins (1) and (4) from
+7c.3c's slice description landed together because the
+plan explicitly grouped them: with `refreshHover`
+retired, the start-of-frame `next_frame.dispatch.reset()`
+loses the only contract it was protecting (a defensive
+double-reset on every tick after the first, redundant
+with the post-swap recycle), and retiring both in the
+same slice keeps the doc-comment churn coherent — the
+comment block on the start-of-frame reset directly
+names the `refreshHover` slice as its retirement
+trigger.
+
+**Why this is now safe (post-7c.3c invariants):**
+
+- Input always hit-tests against
+  `rendered_frame.dispatch`, the *previously-built tree
+  with bounds already synced and rotated into
+  `rendered_frame` by the end-of-frame `mem.swap`*. The
+  bounds sync runs against `next_frame.dispatch` inside
+  `renderFrameImpl` (after `endFrame()` returns commands),
+  then the swap rotates the synced tree into
+  `rendered_frame`. By the time the next mouse move
+  arrives, the user is already seeing that tree and
+  hit-testing reaches it. Pre-7c.3c (single buffer)
+  input handlers had hit-tested against the in-progress
+  build target before bounds were synced; the post-build
+  `refreshHover()` corrected the resulting one-frame
+  lag. Post-7c.3c there is no in-progress build target
+  to mis-hit-test against — input always reads the
+  rendered side.
+
+- The end-of-frame `mem.swap` recycle
+  (`window.next_frame.scene.clear(); window.next_frame.dispatch.reset();`)
+  leaves `next_frame.dispatch` reset every tick after
+  the first. Tick 0 starts with a fresh tree from
+  `Frame.initOwned`'s `DispatchTree.init`. Either way,
+  the dispatch tree is empty at the top of
+  `renderFrameImpl`, making the explicit start-of-frame
+  reset redundant on every tick. (7c.3c kept the reset
+  in place that slice as a defensive double-reset,
+  flagged as retirable in the slice's doc-block under
+  win (4); 7c.3d cashes that in.)
+
+**Write scope:**
+
+- `src/context/hover.zig` — remove `HoverState.refresh`,
+  `HoverState.last_mouse_x`, `HoverState.last_mouse_y`.
+  `update` no longer captures the cursor coordinates
+  into the cache (they were only read by `refresh`).
+  `initInPlace` drops the two field clears. The
+  module-level doc-block rewrites the `## What lives
+  here` enumeration to drop the cache fields, retitles
+  the decoupling section from `## Decoupling from
+  Gooey` to `## Decoupling from Window` (the rename
+  landed in 7b.1b but this file's docs hadn't been
+  swept), and adds a new `## History — refresh
+  retirement (PR 7c.3d)` section recording why the
+  cache fields and method are gone. The `update`
+  function gains a 7c.3d note in its doc-comment
+  spelling out the post-shape contract: `tree` is
+  expected to be `rendered_frame.dispatch` at every
+  call site (input handlers between frames; the only
+  caller is `Window.updateHover`), and the
+  double-buffer guarantees that tree has bounds
+  already synced. Two existing tests (`HoverState:
+  init produces an empty, no-change state` and
+  `HoverState: initInPlace matches init`) drop their
+  two `last_mouse_*` field assertions each.
+- `src/context/window.zig` — remove `Window.refreshHover`.
+  Rewrite `Window.updateHover` doc-block to drop the
+  forward reference to `refreshHover` retirement (the
+  retirement happened) and explain the post-7c.3d
+  invariant: input hit-tests against
+  `rendered_frame.dispatch`, the layout pass that
+  built that tree synced its bounds, no post-build
+  re-run needed.
+- `src/runtime/frame.zig` — remove the
+  `window.refreshHover()` call after the bounds-sync
+  loop in `renderFrameImpl`. Remove the start-of-frame
+  `window.next_frame.dispatch.reset()` call. Both
+  removals leave behind a 7c.3d comment block
+  recording the retirement and the post-shape
+  invariant (no live code change loses its
+  documentation, per CLAUDE.md §16 "always say why").
+
+**Tasks:**
+
+- [x] Remove `HoverState.refresh`,
+      `HoverState.last_mouse_x`, `HoverState.last_mouse_y`,
+      and the `update`-side captures + `initInPlace`
+      clears that fed them.
+- [x] Rewrite `hover.zig`'s module-level doc-block
+      with the `## History` section + post-shape
+      invariants.
+- [x] Drop the two `last_mouse_*` field assertions
+      from the existing `HoverState: init` and
+      `HoverState: initInPlace matches init` tests.
+- [x] Remove `Window.refreshHover` from
+      `src/context/window.zig`.
+- [x] Rewrite `Window.updateHover` doc-block to
+      record the post-7c.3d contract.
+- [x] Remove the `window.refreshHover()` call after
+      the bounds-sync loop in `renderFrameImpl`.
+- [x] Remove the start-of-frame
+      `window.next_frame.dispatch.reset()` call in
+      `renderFrameImpl`.
+- [x] Leave a 7c.3d comment block at each removal
+      site recording the retirement and the
+      post-shape invariant.
+- [x] `Build Summary: 9/9 steps succeeded;
+      1076/1076 tests passed` (no delta vs. 7c.3c).
+- [x] `zig build install` builds all examples
+      (single-window and multi-window) without
+      warnings.
+
+**Implementation notes:**
+
+- **Why no new tests.** This slice is pure removal
+  of dead code (`refresh` had a single caller, which
+  also went away; `last_mouse_*` had a single
+  reader, which also went away). The post-shape
+  behaviour — input hit-tests against
+  `rendered_frame.dispatch` and produces correct
+  hover state on the first try — is exercised by
+  every existing test that fires a mouse event
+  through `Window.updateHover` (the input integration
+  tests in `runtime/input.zig` and the example
+  scenes through `zig build install`). Two existing
+  tests dropped two field assertions each (the
+  retired `last_mouse_*` fields), but the
+  init-shape contract they pin remains intact.
+  Adding a new test purely for the removal would be
+  duplicating coverage that already exists.
+
+- **`HoverState.last_mouse_*` retirement vs.
+  keeping the fields "in case".** The fields
+  existed solely so `refresh` could replay the last
+  cursor coordinates without the runtime
+  re-threading them through another event. With
+  `refresh` gone, the only conceivable future
+  reader would be a debugger overlay or a test
+  harness that wants to know "where was the cursor
+  on the last update" — neither is a real caller
+  today, and CLAUDE.md §10 ("don't leave variables
+  around after they're needed") wins over
+  speculative keep-around. If a future caller does
+  need that information, threading it through an
+  explicit parameter is cheaper than maintaining
+  invisible state on every input event.
+
+- **Why `Window.beginFrame`'s
+  `next_frame.scene.clear()` stayed.** Symmetry with
+  the start-of-frame `dispatch.reset()` would
+  suggest retiring the matching scene clear too,
+  but the symmetry is superficial: `Window.beginFrame`
+  is a `pub fn` on the `Window` struct (not strictly
+  scoped to `renderFrameImpl`), and a future caller
+  invoking `beginFrame` outside the runtime driver
+  (e.g. a custom render loop) would expect the
+  scene to be cleared. The dispatch reset lived
+  only in `renderFrameImpl`, so its retirement
+  doesn't change any public-API caller's
+  expectations. Pruning the second
+  `next_frame.scene.clear()` mid-`renderFrameImpl`
+  (the call right before the command-replay pass)
+  is a separate slice; this one keeps the scope
+  tight to what 7c.3c's plan grouped together.
+
+- **`hovered_ancestors` cache stays load-bearing.**
+  Win (2) of the 7c.3c plan — replacing the
+  32-entry parent-chain cache with a live re-walk
+  of `rendered_frame.dispatch` — is *not* part of
+  this slice. The cache is still load-bearing for
+  `isHoveredOrDescendant` reads between frames
+  against the just-built rendered_frame tree, and
+  the simplification needs its own design pass
+  (the cache walk runs once per `update`; a live
+  re-walk runs on every `isHoveredOrDescendant`
+  read, which can be many per frame for complex
+  tooltip trees). Lands in a follow-up slice.
+
+- **First-frame behaviour unchanged.** Tick 0 had
+  no prior `mem.swap` to recycle the buffer, so
+  pre-7c.3d the start-of-frame `dispatch.reset()`
+  was the path that gave the build a clean tree
+  on the first frame. Post-7c.3d, tick 0 gets the
+  clean tree from `Frame.initOwned`'s
+  `DispatchTree.init` instead — same effective
+  state (empty tree at the top of `renderFrameImpl`
+  on tick 0), reached through a different path.
+  Tick 1+ goes through the post-swap recycle
+  (already there pre-7c.3d, doing the same
+  reset). The retirement is purely the duplicate.
+
+- **Multi-window flow unaffected at the
+  ownership layer.** Hover state is per-window
+  (every `Window` owns its own `HoverState`),
+  and the dispatch tree is per-window
+  (`rendered_frame.dispatch` lives on each
+  `Window.frame`). The retirement removes a
+  per-window method (`refreshHover`) and a
+  per-window field-set (`last_mouse_*`); no
+  cross-window plumbing changes.
+
+**Result:** `Build Summary: 9/9 steps succeeded;
+1076/1076 tests passed` (no delta vs. PR 7c.3c's
+1076 — pure removal of dead code; two existing
+tests drop two field assertions each on the
+retired `last_mouse_*` fields). `zig build install`
 builds all examples (single-window and
 multi-window) without warnings.
 
