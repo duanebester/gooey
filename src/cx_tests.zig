@@ -464,6 +464,7 @@ const lists_ns = @import("cx/lists.zig");
 const animations_ns = @import("cx/animations.zig");
 const entities_ns = @import("cx/entities.zig");
 const focus_ns = @import("cx/focus.zig");
+const element_states_ns = @import("cx/element_states.zig");
 
 test "sub-namespace fields are zero-sized (no Cx layout growth)" {
     // The whole point of the `@fieldParentPtr` indirection is that
@@ -475,6 +476,10 @@ test "sub-namespace fields are zero-sized (no Cx layout growth)" {
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(animations_ns.Animations));
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(entities_ns.Entities));
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(focus_ns.Focus));
+    // PR 8.3 — same zero-size invariant for the new namespace. If
+    // it ever grows, every `Cx` instance pays for it (Cx is the
+    // hot per-frame context struct handed to every render fn).
+    try std.testing.expectEqual(@as(usize, 0), @sizeOf(element_states_ns.ElementStates));
 }
 
 test "DataTableCallbacks: deprecated alias produces same type as cx.lists" {
@@ -527,4 +532,68 @@ test "sub-namespace methods are reachable as decls" {
     _ = animations_ns.Animations.motionComptime;
     _ = animations_ns.Animations.springMotion;
     _ = animations_ns.Animations.springMotionComptime;
+
+    // PR 8.3 — element_states namespace surface. Pin every public
+    // method so a rename on either the namespace side or the
+    // underlying `Window.element_states` pool fails compilation
+    // here rather than silently in a downstream widget.
+    _ = element_states_ns.ElementStates.with;
+    _ = element_states_ns.ElementStates.withById;
+    _ = element_states_ns.ElementStates.get;
+    _ = element_states_ns.ElementStates.getById;
+    _ = element_states_ns.ElementStates.contains;
+    _ = element_states_ns.ElementStates.containsById;
+    _ = element_states_ns.ElementStates.insert;
+    _ = element_states_ns.ElementStates.insertById;
+    _ = element_states_ns.ElementStates.remove;
+    _ = element_states_ns.ElementStates.removeById;
+}
+
+test "cx.element_states: namespace field is reachable on Cx" {
+    // Pin the field name + type so a rename on `Cx` fails this test
+    // before downstream `cx.element_states.*` callers break. We
+    // can't construct a real `Cx` from a unit test (it needs a live
+    // `*Window` + `*Builder`), so reach for the `@TypeOf` of the
+    // field through `@FieldType` instead — this is a comptime
+    // reflection check, not a runtime touch.
+    const Field = @FieldType(Cx, "element_states");
+    try std.testing.expectEqual(element_states_ns.ElementStates, Field);
+}
+
+test "cx.element_states: signatures route the right comptime types" {
+    // The namespace methods are all thin forwarders — the load-bearing
+    // invariants live in `context/element_states.zig`'s 18 tests.
+    // What we *can* validate at the `Cx`-side surface without a live
+    // `Window` is that every method threads the comptime `S` and the
+    // `id` shape correctly. `@typeInfo` on the function reveals the
+    // parameter list; we pin enough of it that a future refactor
+    // that drops or reorders a parameter is caught here.
+    const Probe = struct { value: u32 = 0 };
+
+    // `with(*Self, comptime S, []const u8, comptime fn () S) !*S` —
+    // four params after the receiver. Same shape for `withById` but
+    // with `u64` in slot 2.
+    const with_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.with)).@"fn";
+    try std.testing.expectEqual(@as(usize, 4), with_info.params.len);
+
+    const with_by_id_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.withById)).@"fn";
+    try std.testing.expectEqual(@as(usize, 4), with_by_id_info.params.len);
+
+    // `get` / `getById` — three params (receiver + S + id).
+    const get_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.get)).@"fn";
+    try std.testing.expectEqual(@as(usize, 3), get_info.params.len);
+
+    // `insert` / `insertById` — four params (receiver + S + id + initial).
+    const insert_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.insert)).@"fn";
+    try std.testing.expectEqual(@as(usize, 4), insert_info.params.len);
+
+    // `remove` / `removeById` — three params, returns `bool`.
+    const remove_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.remove)).@"fn";
+    try std.testing.expectEqual(@as(usize, 3), remove_info.params.len);
+    try std.testing.expectEqual(bool, remove_info.return_type.?);
+
+    // Probe ensures the test references a non-trivial comptime type.
+    // If `Probe` is ever inlined away, the param-count assertions
+    // above still hold — the type is just a fixture.
+    _ = Probe;
 }

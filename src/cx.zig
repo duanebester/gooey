@@ -8,7 +8,9 @@
 //!   * Handlers     — `cx.update`, `cx.updateWith`, `cx.command`,
 //!                    `cx.commandWith`, `cx.onSelect`, `cx.defer`.
 //!   * Sub-namespaces (PR 5): `cx.lists`, `cx.animations`,
-//!                    `cx.entities`, `cx.focus`.
+//!                    `cx.entities`, `cx.focus`. PR 8.3 adds
+//!                    `cx.element_states` (keyed pool of
+//!                    per-element retained state).
 //!
 //! Handler signatures, in order of "purity":
 //!
@@ -121,6 +123,7 @@ const lists_mod = @import("cx/lists.zig");
 const animations_mod = @import("cx/animations.zig");
 const entities_mod = @import("cx/entities.zig");
 const focus_mod = @import("cx/focus.zig");
+const element_states_mod = @import("cx/element_states.zig");
 
 /// `Cx` — see the file-level doc.
 pub const Cx = struct {
@@ -150,6 +153,15 @@ pub const Cx = struct {
     animations: animations_mod.Animations = .{},
     entities: entities_mod.Entities = .{},
     focus: focus_mod.Focus = .{},
+
+    // PR 8.3 — surface `Window.element_states` (PR 8.1's keyed pool
+    // of per-element retained state) on `Cx`. Same zero-sized
+    // namespace shape as the sibling fields above. Widgets that
+    // previously reached through `cx._window.element_states` (only
+    // PR 8.2's `Select` so far) can now use the public
+    // `cx.element_states.*` surface; the underlying pool is
+    // unchanged.
+    element_states: element_states_mod.ElementStates = .{},
 
     const Self = @This();
 
