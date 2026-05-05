@@ -118,6 +118,48 @@ pub const Selection = struct {
 };
 
 // =============================================================================
+// Bounds — flat hot-loop rectangle for text-widget hit-testing
+// =============================================================================
+
+/// Flat unparameterized rectangle used by `TextInput`, `TextArea`, and
+/// `CodeEditorState` for bounds tracking and hit-testing.
+///
+/// **Why this lives here, not on `core/geometry.Rect/Bounds(T)`.**
+/// `core/geometry`'s `Rect(T)` / `Bounds(T)` is a generic value type with a
+/// nested `origin: Point(T)` + `size: Size(T)` shape. Text widgets touch
+/// `bounds.x` / `bounds.y` / `bounds.width` / `bounds.height` ~150 times
+/// across hot rendering and hit-testing loops; rewriting every access to
+/// `bounds.origin.x` / `bounds.size.width` would add an indirection that
+/// nobody asked for. This flat shape is the one the widgets always wanted —
+/// promoting it here (alongside the existing UTF-8 / selection / position
+/// helpers shared between the text-widget family) collapses the previous
+/// three-way duplicate `Bounds` definition in `text_input_state.zig`,
+/// `text_area_state.zig`, and `code_editor_state.zig` into a single tested
+/// type without changing memory layout or hot-loop ergonomics.
+///
+/// **Half-open `[x, x+w)` hit-test convention.** `contains` matches the
+/// framework-wide convention used by `core/geometry.Rect.contains` and the
+/// layout-engine hit-testing path: a point on the exact right or bottom
+/// edge is *outside* the rectangle. This aligns the text-widget family
+/// with every other hit-test in the framework. Previously, `text_input`
+/// and `text_area` used a closed `[x, x+w]` form (right/bottom edge counted
+/// as inside) while `code_editor` already used the half-open form — the
+/// closed form was an accidental divergence. The unified half-open
+/// semantics are pinned by the test block below; a future refactor that
+/// flips the inequality back to `<=` will fail at build time.
+pub const Bounds = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+
+    pub fn contains(self: Bounds, px: f32, py: f32) bool {
+        return px >= self.x and px < self.x + self.width and
+            py >= self.y and py < self.y + self.height;
+    }
+};
+
+// =============================================================================
 // Position (for multi-line)
 // =============================================================================
 
@@ -174,4 +216,66 @@ test "Word boundaries" {
     try std.testing.expectEqual(@as(usize, 6), nextWordBoundary(text, 0));
     try std.testing.expectEqual(@as(usize, 12), nextWordBoundary(text, 6));
     try std.testing.expectEqual(@as(usize, 6), prevWordBoundary(text, 11));
+}
+
+test "Bounds.contains: interior point hits" {
+    // Goal: a point strictly inside the rectangle hits, on every axis.
+    // Methodology: point at the geometric center of a 10x20 box at (5, 7).
+    const b = Bounds{ .x = 5, .y = 7, .width = 10, .height = 20 };
+    try std.testing.expect(b.contains(10, 17));
+}
+
+test "Bounds.contains: left and top edges are inclusive (hit)" {
+    // Goal: pin the half-open `[x, x+w) x [y, y+h)` convention on its closed
+    // edges. The left and top edges are *inside* the rectangle.
+    // Methodology: point at the exact (x, y) origin and at a left-edge,
+    // mid-height point.
+    const b = Bounds{ .x = 5, .y = 7, .width = 10, .height = 20 };
+    try std.testing.expect(b.contains(5, 7)); // exact origin
+    try std.testing.expect(b.contains(5, 17)); // left edge, mid-height
+    try std.testing.expect(b.contains(10, 7)); // top edge, mid-width
+}
+
+test "Bounds.contains: right and bottom edges are exclusive (miss)" {
+    // Goal: pin the half-open `[x, x+w) x [y, y+h)` convention on its open
+    // edges. The right and bottom edges are *outside* the rectangle. This
+    // matches `core/geometry.Rect.contains` and the framework-wide hit-test
+    // convention. A future refactor that flips the inequalities back to
+    // `<=` (the pre-PR-8.4-prep behaviour for `text_input` / `text_area`)
+    // fails this test.
+    // Methodology: points on the exact right and bottom edges of a 10x20
+    // box at (5, 7) — i.e. x = 15 and y = 27 — must miss.
+    const b = Bounds{ .x = 5, .y = 7, .width = 10, .height = 20 };
+    try std.testing.expect(!b.contains(15, 17)); // exact right edge
+    try std.testing.expect(!b.contains(10, 27)); // exact bottom edge
+    try std.testing.expect(!b.contains(15, 27)); // exact bottom-right corner
+}
+
+test "Bounds.contains: points outside in every direction miss" {
+    // Goal: complete the cross-product of the hit-test invariant — a point
+    // strictly outside the rectangle on any axis misses.
+    // Methodology: one point past each of the four edges of a 10x20 box at
+    // (5, 7).
+    const b = Bounds{ .x = 5, .y = 7, .width = 10, .height = 20 };
+    try std.testing.expect(!b.contains(4, 17)); // left of left edge
+    try std.testing.expect(!b.contains(16, 17)); // right of right edge
+    try std.testing.expect(!b.contains(10, 6)); // above top edge
+    try std.testing.expect(!b.contains(10, 28)); // below bottom edge
+}
+
+test "Bounds.contains: zero-size rectangle never hits" {
+    // Goal: a degenerate zero-width or zero-height rectangle contains no
+    // points — a direct consequence of the half-open convention
+    // (`x >= 5 and x < 5` is unsatisfiable). Pin this so callers that
+    // construct a `Bounds` from layout output before the layout engine
+    // has assigned non-zero extents don't accidentally treat their origin
+    // as hit-testable.
+    // Methodology: zero-width box, zero-height box, fully zero box; the
+    // origin point of each must miss.
+    const zero_width = Bounds{ .x = 5, .y = 7, .width = 0, .height = 20 };
+    const zero_height = Bounds{ .x = 5, .y = 7, .width = 10, .height = 0 };
+    const zero = Bounds{ .x = 5, .y = 7, .width = 0, .height = 0 };
+    try std.testing.expect(!zero_width.contains(5, 7));
+    try std.testing.expect(!zero_height.contains(5, 7));
+    try std.testing.expect(!zero.contains(5, 7));
 }

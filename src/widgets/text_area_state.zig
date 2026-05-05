@@ -55,17 +55,16 @@ pub const isCharBoundary = common.isCharBoundary;
 pub const Selection = common.Selection;
 pub const Position = common.Position;
 
-pub const Bounds = struct {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-
-    pub fn contains(self: Bounds, px: f32, py: f32) bool {
-        return px >= self.x and px <= self.x + self.width and
-            py >= self.y and py <= self.y + self.height;
-    }
-};
+/// Rectangle bounds for positioning.
+///
+/// Re-exports the shared flat hot-loop rectangle from `text_common.zig`,
+/// which is the single source of truth for the text-widget family
+/// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
+/// alias preserves existing `text_area_state.Bounds` import paths in
+/// `WidgetStore`, `widgets/mod.zig`, and `code_editor_state.zig`. See
+/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)` hit-test
+/// rationale.
+pub const Bounds = common.Bounds;
 
 pub const Style = struct {
     /// Text color (dark gray, near black)

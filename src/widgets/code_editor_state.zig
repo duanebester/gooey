@@ -15,6 +15,7 @@ const text_area_mod = @import("text_area_state.zig");
 const TextArea = text_area_mod.TextArea;
 const TextAreaBounds = text_area_mod.Bounds;
 const TextAreaStyle = text_area_mod.Style;
+const common = @import("text_common.zig");
 const focus_mod = @import("../context/focus.zig");
 
 const scene_mod = @import("../scene/mod.zig");
@@ -107,18 +108,17 @@ pub const Style = struct {
     status_bar_separator_color: Hsla = Hsla.init(0, 0, 0.25, 1.0),
 };
 
-/// Bounds for code editor (includes gutter)
-pub const Bounds = struct {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-
-    pub fn contains(self: Bounds, px: f32, py: f32) bool {
-        return px >= self.x and px < self.x + self.width and
-            py >= self.y and py < self.y + self.height;
-    }
-};
+/// Bounds for code editor (includes gutter).
+///
+/// Re-exports the shared flat hot-loop rectangle from `text_common.zig`,
+/// which is the single source of truth for the text-widget family
+/// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
+/// alias preserves existing `code_editor_state.Bounds` import paths in
+/// `WidgetStore` and `widgets/mod.zig`. See `text_common.Bounds` for the
+/// half-open `[x, x+w) x [y, y+h)` hit-test rationale — `CodeEditorState`
+/// already used the half-open form, so this consolidation is a pure
+/// type-deduplication for this widget (no behaviour change).
+pub const Bounds = common.Bounds;
 
 // =============================================================================
 // CodeEditorState

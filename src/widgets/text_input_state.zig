@@ -69,18 +69,15 @@ const KeyCode = input_mod.KeyCode;
 const InputEvent = input_mod.InputEvent;
 const Modifiers = input_mod.Modifiers;
 
-/// Rectangle bounds for positioning
-pub const Bounds = struct {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-
-    pub fn contains(self: Bounds, px: f32, py: f32) bool {
-        return px >= self.x and px <= self.x + self.width and
-            py >= self.y and py <= self.y + self.height;
-    }
-};
+/// Rectangle bounds for positioning.
+///
+/// Re-exports the shared flat hot-loop rectangle from `text_common.zig`,
+/// which is the single source of truth for the text-widget family
+/// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
+/// alias preserves existing `text_input_state.Bounds` import paths in
+/// `WidgetStore` and `widgets/mod.zig`. See `text_common.Bounds` for the
+/// half-open `[x, x+w) x [y, y+h)` hit-test rationale.
+pub const Bounds = common.Bounds;
 
 /// Visual style for text rendering (no chrome - that's handled by the component)
 pub const Style = struct {
