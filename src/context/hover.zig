@@ -14,29 +14,46 @@
 //! - `hovered_layout_id`: the topmost element under the cursor at the
 //!   end of the last `update`. `null` when the cursor is outside any
 //!   hit-testable element.
-//! - `last_mouse_x` / `last_mouse_y`: the most recent cursor position.
-//!   Captured so `refresh` can re-run hit testing after bounds sync
-//!   without the runtime needing to re-thread the coordinates through
-//!   another event.
 //! - `hovered_ancestors` (cap `MAX_HOVERED_ANCESTORS`): cached parent
 //!   chain of the hovered element, populated during `update` and read
-//!   by `isHoveredOrDescendant`. The cache must be filled before the
-//!   dispatch tree is reset for the next frame, hence why we don't
-//!   compute it lazily.
+//!   by `isHoveredOrDescendant`. The cache is filled while the
+//!   dispatch tree handed to `update` is still valid for the
+//!   just-processed hit, so the chain remains queryable between
+//!   frames without re-walking the tree.
 //! - `hover_changed`: latch that's true for one frame whenever the
 //!   hovered element changes. Cleared at the start of every frame by
 //!   `beginFrame`. Kept so the runtime can decide whether a re-render
 //!   is warranted without a separate side channel.
 //!
-//! ## Decoupling from `Gooey`
+//! ## Decoupling from `Window`
 //!
-//! `update` takes a `*const DispatchTree` rather than a `*Gooey`
-//! back-pointer. The dispatch tree is the only `Gooey` field this
+//! `update` takes a `*const DispatchTree` rather than a `*Window`
+//! back-pointer. The dispatch tree is the only `Window` field this
 //! subsystem reads, and threading it as a parameter makes the data
 //! dependency obvious at every call site. Per `CLAUDE.md` §6 (explicit
 //! control flow): leaf functions stay pure, control flow stays in the
-//! parent (`Gooey.updateHover` is now a one-liner that hands the
-//! tree to the leaf).
+//! parent (`Window.updateHover` is a one-liner that hands the tree to
+//! the leaf).
+//!
+//! ## History — `refresh` retirement (PR 7c.3d)
+//!
+//! Pre-7c.3d this module also exposed a `refresh(tree)` method paired
+//! with `last_mouse_x` / `last_mouse_y` cache fields, called from the
+//! end-of-build pass in `runtime/frame.zig::renderFrameImpl` to re-run
+//! hit testing after bounds sync. It existed to paper over a
+//! single-buffer hazard: input handlers earlier in the same tick had
+//! hit-tested against the in-progress dispatch tree before bounds
+//! were synced, so the post-build re-run corrected the resulting
+//! one-frame lag.
+//!
+//! The 7c.3c `Frame` double buffer made that correction structurally
+//! unnecessary — input always hit-tests against
+//! `rendered_frame.dispatch` (the previously-built tree, with bounds
+//! already synced and rotated in by the end-of-frame `mem.swap`),
+//! never against an in-progress build. PR 7c.3d retired `refresh`,
+//! `last_mouse_x`, and `last_mouse_y` accordingly. The fields and
+//! method are not coming back; the doc-block here records the why so
+//! a future reader doesn't reintroduce the cache.
 //!
 //! ## Invariants
 //!
@@ -44,9 +61,6 @@
 //! - When `hovered_layout_id == null`, `hovered_ancestor_count == 0`.
 //!   The reverse does not hold — a hovered element may have zero
 //!   ancestors (it's the root).
-//! - `last_mouse_x` / `last_mouse_y` are always finite. The platform
-//!   layer never feeds NaN coordinates; if it ever did, the assertion
-//!   in `update` would catch it before we wrote to the cache.
 
 const std = @import("std");
 
@@ -82,17 +96,11 @@ pub const HoverState = struct {
     /// Persists across frames until the next `update` / `clear`.
     hovered_layout_id: ?u32 = null,
 
-    /// Last cursor position fed into `update`. Captured so `refresh`
-    /// can re-run hit testing without the runtime needing to thread
-    /// coordinates through another event.
-    last_mouse_x: f32 = 0,
-    last_mouse_y: f32 = 0,
-
     /// Cached ancestor chain of `hovered_layout_id`, populated during
-    /// `update` and read by `isHoveredOrDescendant`. Must be filled
-    /// while the dispatch tree is still valid for the just-processed
-    /// frame — the next frame resets the tree before we'd otherwise
-    /// have a chance to walk it.
+    /// `update` and read by `isHoveredOrDescendant`. Filled while the
+    /// dispatch tree handed to `update` is still valid for the
+    /// just-processed hit; subsequent reads via `isHoveredOrDescendant`
+    /// / `ancestors` query the cache, not the tree.
     hovered_ancestors: [MAX_HOVERED_ANCESTORS]u32 = [_]u32{0} ** MAX_HOVERED_ANCESTORS,
 
     /// Number of valid entries in `hovered_ancestors`. Always
@@ -125,8 +133,6 @@ pub const HoverState = struct {
         // Field-by-field — no struct literal, no stack temp. Mirrors
         // the convention used by `Tree.initInPlace` in the a11y module.
         self.hovered_layout_id = null;
-        self.last_mouse_x = 0;
-        self.last_mouse_y = 0;
         @memset(&self.hovered_ancestors, 0);
         self.hovered_ancestor_count = 0;
         self.hover_changed = false;
@@ -152,18 +158,20 @@ pub const HoverState = struct {
     /// (caller may want to request a render).
     ///
     /// Side effects:
-    ///   - `last_mouse_{x,y}` capture the new coordinates.
     ///   - `hovered_layout_id` is set to the hit element's layout id,
-    ///     or cleared to `null` if the hit miss.
+    ///     or cleared to `null` if the hit missed.
     ///   - `hovered_ancestors` is rebuilt by walking parent links from
     ///     the hit node, capped at `MAX_HOVERED_ANCESTORS`.
     ///   - `hover_changed` is latched to `true` if the id changed.
     ///
-    /// The caller is expected to ensure that `tree` reflects the
-    /// previous frame's bounds — `update` is typically called on
-    /// `mouse_moved` events, which arrive between frames. `refresh`
-    /// re-runs the same logic with the cached coordinates after a
-    /// fresh layout pass.
+    /// PR 7c.3d — `tree` is expected to be `rendered_frame.dispatch`
+    /// at every call site (input handlers between frames; the only
+    /// caller is `Window.updateHover`). The double-buffer
+    /// (`Frame` rendered/next pair, PR 7c.3c) guarantees that tree
+    /// has bounds already synced from the layout pass that built it,
+    /// so no post-build re-run is needed — the previous `refresh`
+    /// hack and its `last_mouse_*` cache fields were retired with
+    /// this slice. See the module-level history block for context.
     pub fn update(self: *Self, tree: *const DispatchTree, x: f32, y: f32) bool {
         // Coordinates must be finite. The platform layer is the
         // source of truth here; an assertion catches a regression at
@@ -172,9 +180,6 @@ pub const HoverState = struct {
         // hover.
         std.debug.assert(!std.math.isNan(x));
         std.debug.assert(!std.math.isNan(y));
-
-        self.last_mouse_x = x;
-        self.last_mouse_y = y;
 
         const old_hovered = self.hovered_layout_id;
 
@@ -196,14 +201,6 @@ pub const HoverState = struct {
             self.hover_changed = true;
         }
         return changed;
-    }
-
-    /// Re-run hit testing with the last cursor position. Call this
-    /// after a fresh layout pass to fix the one-frame lag between
-    /// "input handled with stale bounds" and "bounds synced for the
-    /// upcoming frame."
-    pub fn refresh(self: *Self, tree: *const DispatchTree) void {
-        _ = self.update(tree, self.last_mouse_x, self.last_mouse_y);
     }
 
     /// Apply a hit-test result: set `hovered_layout_id` from the node
@@ -317,8 +314,6 @@ const testing = std.testing;
 test "HoverState: init produces an empty, no-change state" {
     const h = HoverState.init();
     try testing.expectEqual(@as(?u32, null), h.hovered_layout_id);
-    try testing.expectEqual(@as(f32, 0), h.last_mouse_x);
-    try testing.expectEqual(@as(f32, 0), h.last_mouse_y);
     try testing.expectEqual(@as(u8, 0), h.hovered_ancestor_count);
     try testing.expectEqual(false, h.hover_changed);
 }
@@ -329,8 +324,6 @@ test "HoverState: initInPlace matches init" {
     via_ptr.initInPlace();
 
     try testing.expectEqual(via_value.hovered_layout_id, via_ptr.hovered_layout_id);
-    try testing.expectEqual(via_value.last_mouse_x, via_ptr.last_mouse_x);
-    try testing.expectEqual(via_value.last_mouse_y, via_ptr.last_mouse_y);
     try testing.expectEqual(via_value.hovered_ancestor_count, via_ptr.hovered_ancestor_count);
     try testing.expectEqual(via_value.hover_changed, via_ptr.hover_changed);
     // The ancestor array is bulky — compare via slice.

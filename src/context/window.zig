@@ -1604,45 +1604,23 @@ pub const Window = struct {
     // =========================================================================
 
     /// Update hover state based on mouse position.
-    /// Call this on mouse_moved events AFTER bounds have been synced.
-    /// Returns true if hover state changed (requires re-render).
+    /// Call this on mouse_moved events. Returns true if hover state
+    /// changed (requires re-render).
     ///
-    /// PR 7c.3c — reads through `rendered_frame.dispatch`
+    /// PR 7c.3c+7c.3d — reads through `rendered_frame.dispatch`
     /// (the previously-built tree, alive across the input gap
-    /// between frames). Input events handled in
-    /// `runtime/input.zig` arrive after frame N's swap and
-    /// before frame N+1's build, so the dispatch tree the user
-    /// is currently *seeing* lives in `rendered_frame`. Pre-7c.3c
-    /// (single buffer) this read through `frame.dispatch` and
-    /// relied on the end-of-build `refreshHover` hack below to
-    /// re-run hit testing once bounds had been synced; the
-    /// double-buffer keeps the just-built tree stable on the
-    /// `rendered_frame` slot until the next swap, which is what
-    /// makes that hack retirable in a follow-up slice.
+    /// between frames). Input events handled in `runtime/input.zig`
+    /// arrive after frame N's swap and before frame N+1's build,
+    /// so the dispatch tree the user is currently *seeing* lives
+    /// in `rendered_frame`, with bounds already synced from the
+    /// layout pass that built it. Pre-7c.3c (single buffer) this
+    /// read through `frame.dispatch` and relied on an end-of-build
+    /// `refreshHover()` re-run to correct the resulting one-frame
+    /// lag; PR 7c.3d retired that re-run together with the
+    /// `Window.refreshHover` / `HoverState.refresh` /
+    /// `HoverState.last_mouse_*` cache fields it depended on.
     pub fn updateHover(self: *Self, x: f32, y: f32) bool {
         return self.hover.update(self.rendered_frame.dispatch, x, y);
-    }
-
-    /// Refresh hover state using last known mouse position.
-    /// Call this after bounds have been synced to fix frame delay issues.
-    ///
-    /// PR 7c.3c — reads through `next_frame.dispatch` because
-    /// the only call site (`runtime/frame.zig::renderFrameImpl`
-    /// post-build, post-bounds-sync) runs *before* the
-    /// end-of-frame `mem.swap`. At that moment the just-built
-    /// tree (with bounds synced from the layout pass) lives on
-    /// `next_frame`; `rendered_frame.dispatch` is still the
-    /// previous-frame tree until the swap fires. Once the swap
-    /// runs the same nodes will be reachable via
-    /// `rendered_frame.dispatch`, which is what subsequent
-    /// between-frame `updateHover` calls read. The follow-up
-    /// slice that retires `refreshHover` (per the (1)
-    /// rationale in cleanup-implementation-plan PR 7c.3c)
-    /// removes this method entirely — with input always
-    /// hit-testing against `rendered_frame`, the post-build
-    /// rerun becomes redundant.
-    pub fn refreshHover(self: *Self) void {
-        self.hover.refresh(self.next_frame.dispatch);
     }
 
     /// Check if a specific layout element is currently hovered.

@@ -69,22 +69,15 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
         }
     }
 
-    // PR 7c.3c — reset the build target's dispatch tree.
-    //
-    // The end-of-frame `mem.swap` below already cleared and reset
-    // `next_frame` in the post-swap recycle step on every tick after
-    // the first; this reset is therefore redundant from tick 1
-    // onwards. The doc-block on this slice (cleanup-implementation-
-    // plan.md PR 7c.3c, win (4)) calls out moving this single
-    // explicit reset into the post-swap step exclusively, but the
-    // 7c.3c slice itself keeps both reset points for safety: tick 0
-    // (no prior swap to recycle the buffer) still needs an explicit
-    // reset here, and a defensive double-reset on later ticks is a
-    // cheap no-op (resetting an already-cleared dispatch tree is
-    // O(retained capacity), not O(node count)). The follow-up slice
-    // that retires `refreshHover` retires this duplicate reset at
-    // the same time.
-    window.next_frame.dispatch.reset();
+    // PR 7c.3d — the start-of-frame `next_frame.dispatch.reset()`
+    // call that lived here pre-7c.3d was retired alongside
+    // `refreshHover` (win (4) of the 7c.3c plan, cashed in this
+    // slice). The end-of-frame `mem.swap` below leaves
+    // `next_frame.dispatch` reset every tick after the first via
+    // the post-swap recycle step; tick 0 starts with a fresh tree
+    // from `Frame.initOwned`'s `DispatchTree.init`. Both paths give
+    // us an empty dispatch tree at this point in the function, so
+    // the explicit reset was redundant on every tick.
 
     // PR 7c.3c — sync builder's cached `scene` / `dispatch`
     // pointers to the post-swap `next_frame.*` pair.
@@ -181,16 +174,22 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // input handlers between frames will hit-test against it via
     // `window.updateHover` / the dispatch-tree call sites in
     // `runtime/input.zig`.
+    //
+    // PR 7c.3d — by the time the next mouse move arrives, the
+    // end-of-frame `mem.swap` will have rotated this just-synced
+    // tree into `rendered_frame.dispatch`, which is exactly what
+    // `Window.updateHover` reads. Pre-7c.3d we ran `refreshHover`
+    // immediately after this loop to re-run hit testing against
+    // the (single-buffer) tree because input handlers earlier in
+    // the same tick had hit-tested against stale bounds; the
+    // double buffer makes that re-run unnecessary because input
+    // never hit-tests against the in-progress build target.
     for (window.next_frame.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
             node.bounds = window.layout.getBoundingBox(layout_id);
             node.z_index = window.layout.getZIndex(layout_id);
         }
     }
-
-    // Re-run hit testing with updated bounds to fix frame delay
-    // (hover was computed with previous frame's bounds during input handling)
-    window.refreshHover();
 
     // Register hit regions
     builder.registerPendingScrollRegions();
