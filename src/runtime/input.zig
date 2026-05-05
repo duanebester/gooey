@@ -28,6 +28,14 @@ const InputEvent = input_mod.InputEvent;
 const DispatchNodeId = dispatch_mod.DispatchNodeId;
 const Builder = ui_mod.Builder;
 
+// PR 8.4 — `ScrollContainer` lookups now go through
+// `window.element_states` (keyed by `LayoutId.id` u32 hash) rather
+// than the retired `WidgetStore.scrollContainer` accessor. Same
+// import shape as PR 8.2's `Select` migration: input handlers reach
+// the engine type directly through the pool.
+const scroll_container_mod = @import("../widgets/scroll_container.zig");
+const ScrollContainer = scroll_container_mod.ScrollContainer;
+
 // =============================================================================
 // Main Entry Point
 // =============================================================================
@@ -142,7 +150,7 @@ fn handleScrollEvent(
         const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
         if (!pointInBounds(x, y, bounds)) continue;
 
-        const sc = window.widgets.getScrollContainer(pending.id) orelse continue;
+        const sc = window.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id)) orelse continue;
         if (sc.handleScroll(scroll_ev.delta.x, scroll_ev.delta.y)) {
             cx.notify();
             return true;
@@ -169,19 +177,20 @@ fn handleMouseDragEvent(
 
     // O(1) check: use tracked active drag ID instead of scanning all scrolls
     if (builder.getActiveScrollDrag()) |drag_id| {
-        if (window.widgets.getScrollContainer(drag_id)) |sc| {
+        if (window.element_states.get(ScrollContainer, @as(u64, drag_id))) |sc| {
             sc.updateDrag(x, y);
             cx.notify();
             return true;
         }
     }
 
-    // Fallback: scan for any dragging scroll (handles edge case if tracking was missed)
+    // No active drag tracked — fall back to scanning all scroll containers
+    // (this shouldn't happen often, but handles edge cases like initial drag start)
     for (builder.pending_scrolls.items) |pending| {
-        if (window.widgets.getScrollContainer(pending.id)) |sc| {
+        if (window.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id))) |sc| {
             if (sc.state.dragging_vertical or sc.state.dragging_horizontal) {
                 // Track this for future O(1) lookups
-                builder.setActiveScrollDrag(pending.id);
+                builder.setActiveScrollDrag(pending.layout_id.id);
                 sc.updateDrag(x, y);
                 cx.notify();
                 return true;
@@ -352,7 +361,7 @@ fn handleScrollbarClick(
     y: f32,
 ) bool {
     for (builder.pending_scrolls.items) |pending| {
-        const sc = window.widgets.getScrollContainer(pending.id) orelse continue;
+        const sc = window.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id)) orelse continue;
 
         // Check for thumb drag
         if (sc.hitTestThumb(x, y)) |hit| {
@@ -361,7 +370,7 @@ fn handleScrollbarClick(
                 .horizontal => sc.startDrag(.horizontal, x, y),
             }
             // Track active drag for O(1) lookup
-            builder.setActiveScrollDrag(pending.id);
+            builder.setActiveScrollDrag(pending.layout_id.id);
             cx.notify();
             return true;
         }
@@ -491,7 +500,7 @@ fn handleMouseUpEvent(
 
     // O(1) check: use tracked active drag ID for scroll
     if (builder.getActiveScrollDrag()) |drag_id| {
-        if (window.widgets.getScrollContainer(drag_id)) |sc| {
+        if (window.element_states.get(ScrollContainer, @as(u64, drag_id))) |sc| {
             if (sc.state.dragging_vertical or sc.state.dragging_horizontal) {
                 sc.endDrag();
                 builder.setActiveScrollDrag(null);

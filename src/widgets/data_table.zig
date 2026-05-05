@@ -55,6 +55,14 @@ const Padding = layout_mod.Padding;
 const CornerRadius = layout_mod.CornerRadius;
 const DataTableStyle = styles_mod.DataTableStyle;
 
+// PR 8.4 — `ScrollContainer` storage moved off
+// `WidgetStore.scroll_containers` onto `Window.element_states`. The
+// data-table sync helper still takes a string `id` from the
+// caller (callers compose ids dynamically), so the hash happens at
+// the boundary here.
+const scroll_container_mod = @import("scroll_container.zig");
+const ScrollContainer = scroll_container_mod.ScrollContainer;
+
 // =============================================================================
 // Constants (per CLAUDE.md: put a limit on everything)
 // =============================================================================
@@ -1029,7 +1037,14 @@ fn computePadding(style: DataTableStyle) Padding {
 /// Sync scroll state between DataTableState and retained ScrollContainer
 pub fn syncScroll(b: *Builder, id: []const u8, state: *DataTableState) void {
     const g = b.window orelse return;
-    const sc = g.widgets.scrollContainer(id) orelse return;
+    // PR 8.4 — read-only `get` against the keyed pool. The slot is
+    // seeded by `Builder.scroll` earlier in the frame for any visible
+    // table; if the table hasn't been scrolled yet (e.g. very first
+    // frame), there's no state to sync — the early return matches
+    // the pre-PR-8.4 shape against `widgets.scrollContainer`'s
+    // `?*ScrollContainer`.
+    const hash: u64 = @as(u64, LayoutId.fromString(id).id);
+    const sc = g.element_states.get(ScrollContainer, hash) orelse return;
 
     // Update viewport dimensions FIRST so calculations are accurate
     state.viewport_width_px = sc.state.viewport_width;

@@ -58,6 +58,14 @@ const primitives = @import("primitives.zig");
 const theme_mod = @import("theme.zig");
 pub const Theme = theme_mod.Theme;
 
+// PR 8.4 — `ScrollContainer` storage moved off
+// `WidgetStore.scroll_containers` onto `Window.element_states`. The
+// builder is the create-on-touch site for scroll regions, so it
+// reaches into the pool directly here. Same import shape as `cx.zig`
+// uses for `SelectState` post-PR 8.2.
+const scroll_container_mod = @import("../widgets/scroll_container.zig");
+const ScrollContainer = scroll_container_mod.ScrollContainer;
+
 pub const Color = styles.Color;
 pub const ShadowConfig = styles.ShadowConfig;
 pub const AttachPoint = styles.AttachPoint;
@@ -207,8 +215,15 @@ pub const Builder = struct {
     /// Hashmap for O(1) scroll lookup by layout_id (avoids O(n) scan per scissor_end)
     pending_scrolls_by_layout_id: std.AutoHashMapUnmanaged(u32, usize),
 
-    /// Currently dragged scroll container ID (avoids O(n) scan per mouse drag event)
-    active_scroll_drag_id: ?[]const u8 = null,
+    /// Currently dragged scroll container ID (avoids O(n) scan per
+    /// mouse drag event). PR 8.4 — storage moved off
+    /// `WidgetStore.scroll_containers` (string-keyed) onto
+    /// `Window.element_states` (layout-id-hash-keyed), so the cached
+    /// drag id is now the u32 hash. Avoids re-hashing the string at
+    /// every drag event and — critically — sidesteps the lifetime
+    /// hazard of holding a borrowed `[]const u8` across the
+    /// frame-render boundary that used to free the duped key.
+    active_scroll_drag_id: ?u32 = null,
 
     const PendingInput = struct {
         id: []const u8,
@@ -928,11 +943,22 @@ pub const Builder = struct {
         _ = self.dispatch.pushNode();
         self.dispatch.setLayoutId(layout_id.id);
 
-        // Get scroll offset from retained widget
+        // Get scroll offset from retained widget. PR 8.4 — storage
+        // lifted off `WidgetStore.scroll_containers` onto
+        // `Window.element_states`; the layout-id hash is the pool
+        // key. The miss path here also seeds the pool entry so that
+        // the subsequent `registerPendingScrollRegions` walk can
+        // assume the slot exists, mirroring the pre-PR-8.4
+        // create-on-touch shape `widgets.scrollContainer(id)` had.
         var scroll_offset_x: f32 = 0;
         var scroll_offset_y: f32 = 0;
         if (self.window) |g| {
-            if (g.widgets.scrollContainer(id)) |sc| {
+            const sc_or_null = g.element_states.getOrInsert(
+                ScrollContainer,
+                @as(u64, layout_id.id),
+                ScrollContainer.init(g.allocator),
+            ) catch null;
+            if (sc_or_null) |sc| {
                 scroll_offset_x = sc.state.offset_x;
                 scroll_offset_y = sc.state.offset_y;
             }
@@ -1060,13 +1086,16 @@ pub const Builder = struct {
         return null;
     }
 
-    /// Track which scroll container is being dragged (for O(1) drag event handling)
-    pub fn setActiveScrollDrag(self: *Self, id: ?[]const u8) void {
+    /// Track which scroll container is being dragged (for O(1) drag
+    /// event handling). The `id` is the `LayoutId.id` u32 hash that
+    /// keys the `Window.element_states` slot post-PR 8.4.
+    pub fn setActiveScrollDrag(self: *Self, id: ?u32) void {
         self.active_scroll_drag_id = id;
     }
 
-    /// Get the currently dragged scroll container ID
-    pub fn getActiveScrollDrag(self: *const Self) ?[]const u8 {
+    /// Get the currently dragged scroll container ID (u32 layout-id
+    /// hash that keys `Window.element_states`).
+    pub fn getActiveScrollDrag(self: *const Self) ?u32 {
         return self.active_scroll_drag_id;
     }
 
@@ -1098,7 +1127,13 @@ pub const Builder = struct {
                 const ct = content_bounds.?;
 
                 if (self.window) |g| {
-                    if (g.widgets.scrollContainer(pending.id)) |sc| {
+                    // PR 8.4 — the slot was seeded by `Builder.scroll`
+                    // earlier in the frame, so a read-only `get` is
+                    // sufficient here. If the slot is missing (only
+                    // possible under capacity exhaustion at scroll-time),
+                    // skip the bounds update for this frame; the
+                    // `pending_scrolls` queue will retry next render.
+                    if (g.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id))) |sc| {
                         // Update bounds (full bounding box for hit testing)
                         sc.bounds = .{
                             .x = vp.x,

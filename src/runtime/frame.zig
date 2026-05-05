@@ -25,6 +25,12 @@ const Window = window_mod.Window;
 const Cx = cx_mod.Cx;
 const Builder = ui_mod.Builder;
 
+// PR 8.4 — `ScrollContainer` lookup for in-line scrollbar rendering
+// goes through `window.element_states` post-PR-8.4. Same import
+// shape as `runtime/input.zig`.
+const scroll_container_mod = @import("../widgets/scroll_container.zig");
+const ScrollContainer = scroll_container_mod.ScrollContainer;
+
 // =============================================================================
 // Limits (per CLAUDE.md: "put a limit on everything")
 // =============================================================================
@@ -351,7 +357,12 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
         // This ensures scrollbars appear after scroll content but before sibling elements
         if (cmd.command_type == .scissor_end) {
             if (builder.findPendingScrollByLayoutId(cmd.id)) |pending| {
-                if (window.widgets.scrollContainer(pending.id)) |scroll_widget| {
+                // PR 8.4 — read-only `get` against the keyed pool. The
+                // slot was seeded earlier this frame by `Builder.scroll`,
+                // so a missing entry here means capacity exhaustion at
+                // scroll-time — in which case skipping the scrollbar
+                // for this frame is the right fail-safe.
+                if (window.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id))) |scroll_widget| {
                     try scroll_widget.renderScrollbars(window.next_frame.scene);
                 }
             }

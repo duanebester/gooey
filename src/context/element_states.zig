@@ -395,6 +395,72 @@ pub const ElementStates = struct {
         return slot;
     }
 
+    /// Look up the state of type `S` for `id_hash`, inserting a
+    /// caller-provided initial value on miss. The runtime-init twin
+    /// of `withElementState` (which requires a comptime `default`
+    /// factory and so cannot capture the allocator / geometry that
+    /// stateful widgets need at construction).
+    ///
+    /// On hit: returns the cached pointer, `initial` is **not**
+    /// consumed — the caller is responsible for tearing down any
+    /// resources `initial` holds if it picked up an allocator before
+    /// the call. On miss: heap-allocates a `*S`, copies `initial` in,
+    /// and caches under `(id_hash, typeId(S))`.
+    ///
+    /// Why this shape: stateful widgets like `ScrollContainer`,
+    /// `TextInputState`, `TextAreaState`, `CodeEditorState` all carry
+    /// runtime-only init data (allocator, bounds, debug id slice).
+    /// The comptime `withElementState` API can't capture those, so
+    /// callers fall through to this runtime variant. Forcing every
+    /// caller into a manual `if (get) ... else insert(...)` dance
+    /// would re-litigate the lookup boundary at every site (and risk
+    /// a missed branch silently double-allocating). Bundling the
+    /// upsert here keeps the get-or-create discipline in one place
+    /// alongside the rest of the slot-map invariants.
+    ///
+    /// On capacity exhaustion: returns `error.ElementStatesAtCapacity`.
+    /// On allocator failure: returns `error.OutOfMemory`.
+    pub fn getOrInsert(
+        self: *Self,
+        comptime S: type,
+        id_hash: u64,
+        initial: S,
+    ) !*S {
+        const key: Key = .{ .element_id_hash = id_hash, .type_id = typeId(S) };
+
+        // Pair-assert (CLAUDE.md §3) on the read boundary.
+        std.debug.assert(self.count <= MAX_ELEMENT_STATES);
+
+        if (self.findIndex(key)) |idx| {
+            const entry = self.entries[idx].?;
+            return @ptrCast(@alignCast(entry.ptr));
+        }
+
+        if (self.count >= MAX_ELEMENT_STATES) {
+            return error.ElementStatesAtCapacity;
+        }
+
+        const slot = try self.allocator.create(S);
+        errdefer self.allocator.destroy(slot);
+        slot.* = initial;
+
+        const idx = self.count;
+        self.entries[idx] = .{
+            .key = key,
+            .ptr = @ptrCast(slot),
+            .deinit_fn = makeDeinit(S),
+        };
+        self.count = idx + 1;
+
+        // Pair-assert on the write boundary: the slot we just wrote
+        // must read back. Catches a future refactor that bumps
+        // `count` before the write, or writes to the wrong index.
+        std.debug.assert(self.entries[idx] != null);
+        std.debug.assert(self.entries[idx].?.key.eql(key));
+
+        return slot;
+    }
+
     /// Remove the state of type `S` for `id_hash`. Calls the entry's
     /// `deinit_fn` and frees the payload. Returns `true` iff an entry
     /// was actually removed.
@@ -676,6 +742,44 @@ test "ElementStates: insert places an explicit initial value" {
     try testing.expectEqual(@as(u32, 800), ptr.width);
     try testing.expectEqual(@as(u32, 600), ptr.height);
     try testing.expect(states.contains(Settings, 0xDEAD));
+}
+
+test "ElementStates: getOrInsert creates on miss with runtime initial" {
+    // Twin of `withElementState creates on miss` against the
+    // runtime-init API. Stateful widgets like `ScrollContainer` /
+    // `TextInputState` build their initial value from
+    // allocator + bounds + debug id at the call site — the comptime
+    // `default` factory of `withElementState` cannot capture those.
+    var states = ElementStates.init(testing.allocator);
+    defer states.deinit();
+
+    const Settings = struct { width: u32, height: u32 };
+
+    const ptr = try states.getOrInsert(Settings, 0xBEEF, .{ .width = 1024, .height = 768 });
+    try testing.expectEqual(@as(u32, 1024), ptr.width);
+    try testing.expectEqual(@as(u32, 768), ptr.height);
+    try testing.expectEqual(@as(u32, 1), states.len());
+    try testing.expect(states.contains(Settings, 0xBEEF));
+}
+
+test "ElementStates: getOrInsert returns same pointer on hit and ignores `initial`" {
+    // Stable pointer identity — same load-bearing invariant as
+    // `withElementState`. Mutations through the returned pointer
+    // must survive the second call, and the second call's `initial`
+    // value must NOT overwrite the cached payload (otherwise every
+    // frame re-render would clobber widget state).
+    var states = ElementStates.init(testing.allocator);
+    defer states.deinit();
+
+    const Counter = struct { value: u32 };
+
+    const first = try states.getOrInsert(Counter, 0xAAAA, .{ .value = 10 });
+    first.value = 99;
+
+    const second = try states.getOrInsert(Counter, 0xAAAA, .{ .value = 7 });
+    try testing.expectEqual(@intFromPtr(first), @intFromPtr(second));
+    try testing.expectEqual(@as(u32, 99), second.value);
+    try testing.expectEqual(@as(u32, 1), states.len());
 }
 
 test "ElementStates: remove tears down and frees the payload" {

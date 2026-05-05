@@ -11,7 +11,7 @@ const std = @import("std");
 // with the chrome component names.
 const TextInputState = @import("../widgets/text_input_state.zig").TextInputState;
 const Bounds = @import("../widgets/text_input_state.zig").Bounds;
-const ScrollContainer = @import("../widgets/scroll_container.zig").ScrollContainer;
+
 const TextAreaState = @import("../widgets/text_area_state.zig").TextAreaState;
 const TextAreaBounds = @import("../widgets/text_area_state.zig").Bounds;
 const CodeEditorState = @import("../widgets/code_editor_state.zig").CodeEditorState;
@@ -63,7 +63,9 @@ pub const WidgetStore = struct {
     text_inputs: std.StringHashMap(*TextInputState),
     text_areas: std.StringHashMap(*TextAreaState),
     code_editors: std.StringHashMap(*CodeEditorState),
-    scroll_containers: std.StringHashMap(*ScrollContainer),
+    // PR 8.4 — `scroll_containers` field retired (lifted onto
+    // `Window.element_states` keyed by `(ScrollContainer, layout_id.id)`).
+    // Same migration shape as PR 8.2's `select_states`.
     /// Tracks which widgets were accessed this frame. Keyed by pointer
     /// address of the heap-duped key in the widget map — avoids re-hashing
     /// string contents every frame (pointer identity is sufficient because
@@ -126,9 +128,7 @@ pub const WidgetStore = struct {
         };
 
         // Initialize via the type-specific init function.
-        if (T == ScrollContainer) {
-            instance.* = ScrollContainer.init(self.allocator, owned_key);
-        } else if (T == TextInputState) {
+        if (T == TextInputState) {
             instance.* = TextInputState.initWithId(self.allocator, self.default_text_input_bounds, owned_key);
         } else if (T == TextAreaState) {
             instance.* = TextAreaState.initWithId(self.allocator, self.default_text_area_bounds, owned_key);
@@ -193,7 +193,8 @@ pub const WidgetStore = struct {
             .text_inputs = std.StringHashMap(*TextInputState).init(allocator),
             .text_areas = std.StringHashMap(*TextAreaState).init(allocator),
             .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
-            .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
+            // PR 8.4 — no `scroll_containers` field to init. Storage
+            // lives on `Window.element_states` now.
             .accessed_this_frame = std.AutoHashMap([*]const u8, void).init(allocator),
             // PR 8.2 — `select_states` field retired (lifted onto
             // `Window.element_states`). No init line here, no
@@ -209,7 +210,9 @@ pub const WidgetStore = struct {
         self.deinitWidgetMap(TextInputState, &self.text_inputs);
         self.deinitWidgetMap(TextAreaState, &self.text_areas);
         self.deinitWidgetMap(CodeEditorState, &self.code_editors);
-        self.deinitWidgetMap(ScrollContainer, &self.scroll_containers);
+        // PR 8.4 — ScrollContainer teardown now happens via
+        // `Window.element_states.deinit()` walking the keyed-pool
+        // entries through their type-erased deinit thunks.
 
         // PR 8.2 — `select_states.deinit()` retired alongside the
         // field; teardown now happens via
@@ -646,16 +649,21 @@ pub const WidgetStore = struct {
     }
 
     // =========================================================================
-    // ScrollContainer (existing)
+    // ScrollContainer accessors retired in PR 8.4
     // =========================================================================
-
-    pub fn scrollContainer(self: *Self, id: []const u8) ?*ScrollContainer {
-        return self.getOrCreateWidget(ScrollContainer, &self.scroll_containers, id);
-    }
-
-    pub fn getScrollContainer(self: *Self, id: []const u8) ?*ScrollContainer {
-        return self.scroll_containers.get(id);
-    }
+    //
+    // The pre-PR-8.4 `scrollContainer(id)` / `getScrollContainer(id)`
+    // pair lived here when `WidgetStore` owned a
+    // `StringHashMap(*ScrollContainer)` field. Both have moved to the
+    // unified `Window.element_states` keyed pool: callers now reach
+    // through `g.element_states.getOrInsert(ScrollContainer,
+    // layout_id.id, ScrollContainer.init(allocator))` for the
+    // create-on-touch path and `g.element_states.get(ScrollContainer,
+    // layout_id.id)` for the read-only path. The hash key is the u32
+    // `LayoutId.id`, widened to `u64` at the pool boundary, so most
+    // call sites can avoid re-hashing the string — the layout id is
+    // already in hand from `LayoutId.fromString` or from a
+    // `PendingScroll` record.
 
     // =========================================================================
     // TextInputState helpers (existing)

@@ -48,6 +48,11 @@ const LayoutId = layout_mod.LayoutId;
 const Sizing = layout_mod.Sizing;
 const SizingAxis = layout_mod.SizingAxis;
 const Padding = layout_mod.Padding;
+
+// PR 8.4 — `ScrollContainer` storage moved off
+// `WidgetStore.scroll_containers` onto `Window.element_states`.
+const scroll_container_mod = @import("scroll_container.zig");
+const ScrollContainer = scroll_container_mod.ScrollContainer;
 const CornerRadius = layout_mod.CornerRadius;
 const UniformListStyle = styles_mod.UniformListStyle;
 
@@ -437,7 +442,12 @@ fn computePadding(style: UniformListStyle) Padding {
 /// Resolves PendingScrollRequest with accurate viewport dimensions to avoid jitter.
 pub fn syncScroll(b: *Builder, id: []const u8, state: *UniformListState) void {
     const g = b.window orelse return;
-    const sc = g.widgets.scrollContainer(id) orelse return;
+    // PR 8.4 — keyed pool replaces the StringHashMap. The slot is
+    // seeded by `Builder.scroll` earlier in the frame whenever the
+    // list is visible; first-frame absence is fine — the early
+    // return matches the pre-PR-8.4 shape.
+    const hash: u64 = @as(u64, LayoutId.fromString(id).id);
+    const sc = g.element_states.get(ScrollContainer, hash) orelse return;
 
     // Update viewport dimensions FIRST so calculations are accurate
     state.viewport_height_px = sc.state.viewport_height;

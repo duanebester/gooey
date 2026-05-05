@@ -74,6 +74,15 @@ const TreeListStyle = ui_mod.TreeListStyle;
 const select_mod = @import("components/select.zig");
 const SelectState = select_mod.SelectState;
 
+// PR 8.4 — `cx.scrollView(id)` now goes through
+// `Window.element_states.getOrInsert(ScrollContainer, hash, init)`
+// instead of the retired `WidgetStore.scrollContainer` accessor.
+// `LayoutId.fromString(id).id` is the u32 hash key, matching every
+// other element-state path that comes from a string id
+// (`SelectState`, `TextInputState` after PR 8.4+).
+const layout_id_mod = @import("layout/layout_id.zig");
+const LayoutId = layout_id_mod.LayoutId;
+
 // Text measurement types
 const text_mod = @import("text/mod.zig");
 pub const TextMeasurement = text_mod.TextMeasurement;
@@ -609,7 +618,20 @@ pub const Cx = struct {
         return self._window.widgets.codeEditor(id);
     }
     pub fn scrollView(self: *Self, id: []const u8) ?*scroll_view_mod.ScrollContainer {
-        return self._window.widgets.scrollContainer(id);
+        // PR 8.4 — storage moved off `WidgetStore.scroll_containers`
+        // onto `Window.element_states`. Hash the string id once at
+        // the boundary; subsequent frames hit the cached pointer
+        // through `getOrInsert`. Failure modes (OOM /
+        // `error.ElementStatesAtCapacity`) collapse to `null` so the
+        // public surface stays optional — same shape callers had
+        // pre-PR-8.4 against the `?*ScrollContainer` return.
+        const hash: u64 = @as(u64, LayoutId.fromString(id).id);
+        const g = self._window;
+        return g.element_states.getOrInsert(
+            scroll_view_mod.ScrollContainer,
+            hash,
+            scroll_view_mod.ScrollContainer.init(g.allocator),
+        ) catch null;
     }
 
     /// Render an element tree. Works with any renderable — `ui.*`
