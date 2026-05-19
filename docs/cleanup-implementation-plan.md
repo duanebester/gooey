@@ -92,7 +92,7 @@ them out here so they don't get re-litigated in review:
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ◐ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b landed) |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed) |
 | 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
@@ -5268,6 +5268,217 @@ StringHashMaps had no GC either — the pool's retention
 semantics are identical to the StringHashMap's. The frame-keyed
 eviction shape lands later alongside the rest of the GPUI
 `Frame` double-buffer adoption.
+
+---
+
+
+### PR 8.4c landing notes (residual `WidgetStore` shrink-down)
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1103/1103 tests
+passed` (no delta vs. PR 8.4b's 1103 — the storage move is a
+pure refactor with identical retention semantics, so no new tests
+are introduced). `zig build install` clean.
+
+**Note on the 8.4c slot.** PR 8.4b's task-list entry says
+*"collapsing what was planned as PRs 8.4b + 8.4c into a single
+landing"* — that was correct at the time for the original
+`code_editor_state` arm of 8.4c (which folded into 8.4b because
+the focused-widget dispatch already touched all three text
+engines together). What PR 8.4b did *not* land was the residual
+cross-cutting state left on `WidgetStore` after every
+per-widget map had been peeled off: the four animation pools
+(`animations`, `springs`, `motions`, `spring_motions`, all
+u32-keyed `AutoArrayHashMapUnmanaged`) and the
+`change_tracker: ChangeTracker` field. PR 8.4c is that final
+shrink-down. The two paths the cleanup plan kept open for this
+slot — *lift onto `Frame` with frame-keyed eviction* or
+*collapse to a one-field holder* — resolved to the collapse
+path; the rationale is in the trailing "Why collapse, not
+frame-keyed eviction" section below.
+
+**Files added:**
+
+- `src/animation/store.zig` (~470 lines: ~340 lines of code +
+  ~130 lines of doc comments). Public surface: `AnimationStore`
+  with `init` / `deinit` / `beginFrame` / `endFrame` /
+  `hasActiveAnimations`, plus the four pools and every existing
+  per-pool API verb (`animateById` / `animate` /
+  `restartAnimationById` / `restartAnimation` /
+  `animateOnById` / `animateOn` / `isAnimatingById` /
+  `isAnimating` / `getAnimationById` / `getAnimation` /
+  `removeAnimationById` / `removeAnimation` / `springById` /
+  `spring` / `staggerById` / `stagger` / `motionById` /
+  `motion` / `springMotionById` / `springMotion`). The file
+  header records the move rationale, what's *not* here
+  (`ChangeTracker`, promoted to a peer `Window` field), and the
+  still-deferred frame-keyed eviction shape — a future migration
+  alongside `focus` / `mouse_listeners` / `tab_stops` onto
+  `Frame`.
+
+**Files edited:**
+
+- `src/animation/mod.zig` — re-exports `store` and
+  `AnimationStore` alongside the existing engine modules.
+  Symmetric with how `context/mod.zig` used to re-export
+  `widget_store` / `WidgetStore` (now retired below).
+
+- `src/context/window.zig` — replaces the `widgets: WidgetStore`
+  field with two peer fields:
+
+  - `animations: AnimationStore` (the four pools, lifted off
+    `WidgetStore` verbatim).
+  - `change_tracker: ChangeTracker = .{}` (the per-frame
+    value-diffing storage, with a fixed-capacity default so no
+    init/deinit hook is needed).
+
+  All four `Window` init paths (`initOwned` / `initOwnedPtr` /
+  `initWithSharedResources` / `initWithSharedResourcesPtr`)
+  swap `.widgets = WidgetStore.init(allocator, io)` for
+  `.animations = AnimationStore.init(allocator, io)` (and the
+  field-by-field `*Ptr` paths add an explicit
+  `self.change_tracker = .{}` since defaults don't apply when
+  raw memory is initialised member-by-member). `Window.deinit`
+  flips `self.widgets.deinit()` to `self.animations.deinit()`.
+  `Window.beginFrame` / `endFrame` flip to
+  `self.animations.beginFrame()` / `.endFrame()`.
+  `Window.hasActiveAnimations` forwards to
+  `self.animations.hasActiveAnimations()`. The `testWindow()`
+  fixture's `.widgets = undefined` slot becomes
+  `.animations = undefined` (the deferred-command tests this is
+  built for never reach into either field). The PR 4 "Widget
+  Access — moved to `window.widgets.*`" section header is
+  refreshed to "Widget Access — moved to
+  `window.element_states.get(T, id)`" with the inline comment
+  block noting PR 8.4c retires the `widgets:` field they hung
+  off entirely.
+
+- `src/cx/animations.zig` — all 12 forwarder bodies flip from
+  `self.cx()._window.widgets.X` to
+  `self.cx()._window.animations.X`. Sweep done via `sed`; no
+  semantic change.
+
+- `src/cx.zig` — `cx.changed` routes through
+  `self._window.change_tracker.changed(key_hash, value_hash)`
+  (was `self._window.widgets.change_tracker.changed(...)`).
+
+- `src/components/modal.zig` — one call site:
+  `g.animations.animateOn(...)` (was `g.widgets.animateOn(...)`).
+
+- `src/context/mod.zig` — drops the `widget_store` /
+  `WidgetStore` re-export block. The file header replaces the
+  `WidgetStore - Retained storage for stateful widgets` bullet
+  with `ElementStates` + `ChangeTracker` bullets and a PR 8.4c
+  note explaining where the four surviving subsystems live now
+  (per-element state → `window.element_states.*`; animation
+  pools → `window.animations.*`; value-change diffing →
+  `window.change_tracker.*`). The retired-export section keeps
+  a stub block recording the rationale so future readers
+  searching for `WidgetStore` find the migration trail.
+
+- `src/root.zig` — drops `pub const WidgetStore = context.WidgetStore;`.
+  Replaces it with `pub const AnimationStore = animation.AnimationStore;`
+  as the public type the framework now exposes (the only
+  prior external user of `WidgetStore` from `root.zig` was
+  this one re-export — no examples or downstream code referenced
+  it).
+
+- `src/context/widget_store.zig` — **deleted.** Git reports the
+  change as a 66% rename to `src/animation/store.zig` (most of
+  the body — the four pools and their methods — is preserved
+  verbatim; the dropped pieces are the `change_tracker` field
+  and the retired-section doc-comment blocks documenting earlier
+  8.x slices' field retirements).
+
+- `src/animation/animation.zig`, `src/animation/motion.zig` —
+  three stale `WidgetStore` doc-comment references refreshed to
+  point at `AnimationStore` / `animation/store.zig`. Two were
+  section headers (`// Animation State (stored in WidgetStore)`
+  → `// Animation State (stored in AnimationStore — see
+  animation/store.zig)`); one was a tick-function header
+  comment in `motion.zig`. The file header on `animation.zig`
+  records the rename for readers who arrive here looking for
+  the historical name.
+
+**Why collapse, not frame-keyed eviction.** The cleanup plan
+left two paths open for this slot. The chosen path is the
+collapse:
+
+  - The animation pools' retention semantics are *already*
+    decoupled from `WidgetStore`'s frame lifecycle —
+    `last_queried_frame` + `frame_counter` heuristics in
+    `animateById` / `animateOnById` detect "completed AND not
+    queried last frame" (component was hidden) and restart on
+    re-mount. Replacing that with the GPUI swap-discipline
+    shape (fall-through from `next_frame.animations` to
+    `rendered_frame.animations` with carry-forward on hit)
+    would have been a behavioral change (2-frame eviction
+    semantics) layered on top of the structural change
+    (`WidgetStore` retirement). The two concerns are
+    independent; bundling them would have meant the structural
+    cleanup couldn't land without also vetting the behavioral
+    upgrade for every animation call site in every demo.
+  - Frame-keyed eviction is naturally a peer to PR 7c.3's
+    deferred "migrate `focus` / `mouse_listeners` /
+    `tab_stops` onto `Frame`" work — the
+    double-buffer-with-carry-forward shape is a `Frame`
+    concern, not a `WidgetStore` concern. Doing it inside
+    PR 8 would have conflated two cleanups along an
+    arbitrary boundary.
+  - Definition-of-done for PR 8 (*"All existing widget-state
+    hash maps deleted"*, *"Adding `widgets/foo_state.zig`
+    requires zero edits to the framework"*) was already met
+    after 8.4b. PR 8.4c's remaining structural job was the
+    namespace deletion — collapsing `WidgetStore` into its
+    two natural homes (`AnimationStore` in `animation/`,
+    `ChangeTracker` directly on `Window`) closes that job
+    without taking on the orthogonal behavioral upgrade.
+
+The doc-comment at the top of `animation/store.zig` records
+the deferral chain so a future reader doesn't re-litigate
+the trade-off.
+
+**Why `AnimationStore` lives in `animation/`, not `context/`.**
+The four pools have always been animation infrastructure that
+happened to live in `context/widget_store.zig` for historical
+reasons (when `WidgetStore` was the catch-all retained-storage
+namespace). Lifting them next to the engines they drive
+(`animation/animation.zig` for `AnimationState`,
+`animation/spring.zig` for `SpringState`,
+`animation/motion.zig` for `MotionState` / `SpringMotionState`)
+puts the storage next to the types it stores. The dependency
+edge from `context/window.zig` into `animation/store.zig` is
+the same shape every other `context → engine` import has
+(e.g. `context/window.zig → text/text_system.zig`,
+`context/window.zig → svg/atlas.zig`); it is *not* the
+`context → widgets` backward edge PR 4 broke (that one was
+about concrete widget *state* types leaking into `Window`'s
+field list).
+
+**Why `ChangeTracker` is a peer field on `Window`, not on
+`AnimationStore`.** `cx.changed(key, value)` is per-frame
+value-diffing across arbitrary keys (theme toggles, window
+dimensions, debounce inputs, etc.); the call-site mix is
+unrelated to animation lifecycle. The two subsystems were
+only colocated on `WidgetStore` because that struct was the
+historical miscellaneous-retained-state bucket. Promoting
+`ChangeTracker` to a peer `Window` field puts it alongside
+the other fixed-capacity per-`Window` subsystems
+(`hover: HoverState`, `blur_handlers: BlurHandlerRegistry`,
+`cancel_registry: CancelRegistry`) — all of which carry
+default values and require no init/deinit hook.
+
+**Frame-driven eviction still deferred.** Same as every prior
+PR 8.x slice: animation pool entries persist until the
+caller invokes `removeAnimation` / `swapRemove` explicitly.
+The pre-PR-8.4c `WidgetStore` pools had the same shape — PR
+8.4c is a pure storage-move refactor with identical retention
+semantics. The frame-keyed eviction shape lands later
+alongside the rest of the GPUI `Frame` double-buffer adoption,
+joining the `focus` / `mouse_listeners` / `tab_stops`
+migration that PR 7c.3 deferred. See the doc-comment block
+at the top of `animation/store.zig` for the deferral chain.
 
 ---
 
