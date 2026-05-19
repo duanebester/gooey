@@ -271,7 +271,15 @@ pub const ElementId = core.ElementId;
 // `docs/cleanup-implementation-plan.md` PR 7b and
 // `architectural-cleanup-plan.md` §10.
 pub const Window = context.Window;
-pub const WidgetStore = context.WidgetStore;
+
+// PR 8.4c — `WidgetStore` retired. Per-element retained state lives on
+// `Window.element_states` (PR 8.1–8.4b); the four animation pools live
+// on `animation.AnimationStore`, composed onto `Window.animations`
+// (PR 8.4c); `ChangeTracker` is a peer field on `Window` directly. No
+// public umbrella type replaces `WidgetStore` — callers reach each
+// subsystem on `Window` directly, mirroring `Window.focus`,
+// `Window.hover`, etc.
+pub const AnimationStore = animation.AnimationStore;
 
 // Layout (commonly used types)
 pub const LayoutEngine = layout.LayoutEngine;

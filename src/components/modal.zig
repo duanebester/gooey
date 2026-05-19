@@ -118,7 +118,8 @@ pub fn Modal(comptime ChildType: type) type {
                 // Hash the trigger value (is_open bool)
                 const trigger_hash: u64 = if (self.is_open) 1 else 0;
 
-                break :blk g.widgets.animateOn(self.id, trigger_hash, .{
+                // PR 8.4c — was `g.widgets.animateOn(...)` pre-retirement.
+                break :blk g.animations.animateOn(self.id, trigger_hash, .{
                     .duration_ms = self.animation_duration_ms,
                     .easing = Easing.easeOutCubic,
                 });

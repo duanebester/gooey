@@ -769,7 +769,10 @@ pub const Cx = struct {
     pub fn changed(self: *Self, comptime key: []const u8, value: anytype) bool {
         const key_hash = comptime animation_mod.hashString(key);
         const value_hash = change_tracker_mod.hashValue(@TypeOf(value), value);
-        return self._window.widgets.change_tracker.changed(key_hash, value_hash);
+        // PR 8.4c — `change_tracker` is a peer field on `Window` now
+        // (was `Window.widgets.change_tracker` pre-retirement, when
+        // `WidgetStore` was the catch-all retained-storage namespace).
+        return self._window.change_tracker.changed(key_hash, value_hash);
     }
 
     // =========================================================================

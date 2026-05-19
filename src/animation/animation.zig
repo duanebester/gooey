@@ -1,7 +1,10 @@
 //! Animation System for Gooey
 //!
 //! Provides time-based interpolation for smooth UI transitions.
-//! Integrates with WidgetStore for retained state management.
+//! Integrates with `AnimationStore` (`animation/store.zig`) for
+//! retained per-window state management. (Pre-PR-8.4c this storage
+//! was named `WidgetStore` and lived in `context/`; see PR 8.4c in
+//! `docs/cleanup-implementation-plan.md` for the move rationale.)
 //!
 //! ## Quick Start
 //!
@@ -220,7 +223,7 @@ pub const AnimationConfig = struct {
 };
 
 // =============================================================================
-// Animation State (stored in WidgetStore)
+// Animation State (stored in AnimationStore — see `animation/store.zig`)
 // =============================================================================
 
 pub const AnimationState = struct {
@@ -366,7 +369,7 @@ pub const AnimationHandle = struct {
 };
 
 // =============================================================================
-// Progress Calculation (called by WidgetStore)
+// Progress Calculation (called by AnimationStore — see `animation/store.zig`)
 // =============================================================================
 
 /// Calculate current progress for an animation state.

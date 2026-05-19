@@ -1,75 +1,82 @@
-//! WidgetStore - Simple retained storage for stateful widgets
+//! AnimationStore — retained per-window storage for animation pools.
 //!
-//! Now includes animation state management.
+//! Hosts the four u32-keyed `AutoArrayHashMapUnmanaged` pools that
+//! drive every tween, spring, stagger, and motion in the framework:
+//!
+//!   - `animations` — `AnimationState` (tween)
+//!   - `springs` — `SpringState`
+//!   - `motions` — `MotionState` (tween-based motion containers)
+//!   - `spring_motions` — `SpringMotionState`
+//!
+//! ## Why this exists (and why it lives here, not in `context/`)
+//!
+//! Pre-PR-8.4c the four pools lived on `context/widget_store.zig`'s
+//! `WidgetStore`, sharing space with the per-widget retained-state maps
+//! (`select_states`, `scroll_containers`, `text_inputs`, `text_areas`,
+//! `code_editors`). PR 8.1-8.4b peeled every per-widget map off
+//! `WidgetStore` onto `Window.element_states` (the unified
+//! `(type_id, id_hash) -> *S` keyed pool). What was left fit the
+//! "cross-cutting per-window animation storage" shape — one widget
+//! can drive multiple concurrent animations against different ids,
+//! so they can't go on the per-element pool — and is owned naturally
+//! by `animation/`, not `context/`. PR 8.4c lifts them here and
+//! retires the `WidgetStore` namespace entirely. See
+//! `docs/cleanup-implementation-plan.md` PR 8.4c.
+//!
+//! ## What's NOT here
+//!
+//! `ChangeTracker` (the `cx.changed(key, value)` backing storage)
+//! lived alongside the animation pools on `WidgetStore` pre-PR-8.4c
+//! but is unrelated to animation lifecycle — it's per-frame value-
+//! diffing across arbitrary keys. PR 8.4c promotes it to a direct
+//! `Window.change_tracker: ChangeTracker` field. The two subsystems
+//! were only colocated because `WidgetStore` was the historical
+//! "miscellaneous retained-storage" bucket.
+//!
+//! ## Frame-driven eviction (deferred)
+//!
+//! Each pool retains entries indefinitely until the caller invokes
+//! `removeAnimation` / `swapRemove` explicitly. The `animateById` /
+//! `animateOnById` paths use `last_queried_frame + frame_counter`
+//! heuristics to detect "completed AND not queried last frame"
+//! (component was hidden) and restart on re-mount, but that is not
+//! the same shape as GPUI's two-frame swap-discipline eviction
+//! against `next_frame` / `rendered_frame`. Lifting these pools onto
+//! `Frame` with carry-forward fall-through is tracked alongside the
+//! rest of the per-frame transients (`focus`, `mouse_listeners`,
+//! `tab_stops`) that PR 7c.3 deferred for the same reason. See
+//! `context/frame.zig` for the existing double buffer that anchors
+//! the future migration.
 
 const std = @import("std");
-// PR 8.4b — the `TextInputState` / `TextAreaState` / `CodeEditorState`
-// engine-type imports retired alongside the per-type StringHashMap
-// fields and accessors. Storage lives on `Window.element_states`
-// now (the keyed pool introduced in PR 8.1), keyed by
-// `(EngineType, LayoutId.id)`. The two `Bounds` aliases were only
-// used by the `default_*_bounds` fields that seeded the
-// pre-PR-8.4b create-on-touch path; the pool's create-on-touch
-// site (`Builder.renderInput` / `renderTextArea` / `renderCodeEditor`)
-// computes bounds from layout output instead, so the defaults are
-// gone too. Same retirement shape PR 8.4a used for
-// `ScrollContainer` / `scroll_containers`.
-const animation = @import("../animation/animation.zig");
+const animation = @import("animation.zig");
 const AnimationState = animation.AnimationState;
 const AnimationConfig = animation.AnimationConfig;
 const AnimationHandle = animation.AnimationHandle;
 const AnimationId = animation.AnimationId;
-const spring_mod = @import("../animation/spring.zig");
+const spring_mod = @import("spring.zig");
 const SpringState = spring_mod.SpringState;
 const SpringConfig = spring_mod.SpringConfig;
 const SpringHandle = spring_mod.SpringHandle;
-const stagger_mod = @import("../animation/stagger.zig");
+const stagger_mod = @import("stagger.zig");
 const StaggerConfig = stagger_mod.StaggerConfig;
-const motion_mod = @import("../animation/motion.zig");
+const motion_mod = @import("motion.zig");
 const MotionConfig = motion_mod.MotionConfig;
 const MotionHandle = motion_mod.MotionHandle;
 const MotionPhase = motion_mod.MotionPhase;
 const MotionState = motion_mod.MotionState;
 const SpringMotionConfig = motion_mod.SpringMotionConfig;
 const SpringMotionState = motion_mod.SpringMotionState;
-const hashString = @import("../animation/animation.zig").hashString;
-const change_tracker_mod = @import("change_tracker.zig");
-const ChangeTracker = change_tracker_mod.ChangeTracker;
+const hashString = animation.hashString;
 
-// PR 8.2 — `SelectState` and the `select_states: AutoHashMap(u32, SelectState)`
-// field that used to live here have moved off `WidgetStore`. The state
-// type is now declared in `components/select.zig` (the widget owns its
-// own state struct), and the storage is the unified
-// `Window.element_states` keyed pool. The four `*SelectState` accessors
-// (`getOrCreateSelectState`, `getSelectState`, `closeSelectState`,
-// `toggleSelectState`) were retired alongside the field — every former
-// caller now goes through `window.element_states.withElementState`,
-// `get`, or `remove` directly. This is the first slice of PR 8
-// validating the pool's call-site shape on a real consumer; subsequent
-// 8.x slices peel `text_input` / `text_area` / `code_editor` /
-// `scroll_container` off `WidgetStore` the same way. See
-// `docs/cleanup-implementation-plan.md` PR 8.2.
-
-pub const WidgetStore = struct {
+pub const AnimationStore = struct {
     allocator: std.mem.Allocator,
     /// IO instance for monotonic timing. Stored on the struct because
     /// animations sample the `awake` clock every frame and callers
-    /// (e.g. `cx.animate`) come through methods, not free functions.
-    /// `std.Io` is a pair of pointers into a process-lifetime vtable —
-    /// safe and cheap to copy.
+    /// (e.g. `cx.animations.tween`) come through methods, not free
+    /// functions. `std.Io` is a pair of pointers into a
+    /// process-lifetime vtable — safe and cheap to copy.
     io: std.Io,
-    // PR 8.4b — `text_inputs` / `text_areas` / `code_editors`
-    // StringHashMaps retired (lifted onto `Window.element_states`
-    // keyed by `(EngineType, LayoutId.id)`). The matching
-    // `accessed_this_frame` ptr-keyed set is also gone: it only
-    // existed to bridge the StringHashMap key memory across frames,
-    // and the pool keys directly on the layout-id hash with no duped
-    // string. Same retirement shape PR 8.4a used for
-    // `scroll_containers`.
-
-    // PR 8.2 — `select_states` field retired. Select open/close state
-    // lives on `Window.element_states` keyed by `(SelectState, id_hash)`
-    // alongside every other element-attached state type.
 
     // u32-keyed animation storage
     animations: std.AutoArrayHashMapUnmanaged(u32, AnimationState),
@@ -85,39 +92,12 @@ pub const WidgetStore = struct {
     spring_motions: std.AutoArrayHashMapUnmanaged(u32, SpringMotionState),
     active_motion_count: u32 = 0,
 
-    // Change detection (fixed-capacity, zero allocation after init)
-    change_tracker: ChangeTracker = .{},
-
     const Self = @This();
-
-    // =========================================================================
-    // PR 8.4b — retired generic widget helpers
-    // =========================================================================
-    //
-    // Pre-PR-8.4b this struct carried four `getOrCreateWidget` /
-    // `removeWidget` / `getFocusedWidget` / `deinitWidgetMap` helpers
-    // parameterised over `T ∈ { TextInputState, TextAreaState,
-    // CodeEditorState }`. They mediated between the public
-    // `textInput` / `textArea` / `codeEditor` accessors and the
-    // per-type `StringHashMap(*T)` fields above. PR 8.4b retires the
-    // maps onto `Window.element_states` (keyed by
-    // `(T, LayoutId.id)`) and the helpers go with them — the pool's
-    // own `getOrInsert` / `get` / `remove` cover all four shapes.
-    // The focused-widget walk that `getFocusedWidget` previously did
-    // is replaced in `runtime/input.zig` by per-pending-list lookups
-    // (the focused widget rendered this frame, so its layout id is
-    // in one of the `pending_*` lists).
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .allocator = allocator,
             .io = io,
-            // PR 8.4b — no per-type widget maps to init. Storage
-            // lives on `Window.element_states` now (see field-block
-            // comment above).
-            // PR 8.2 — `select_states` field retired (lifted onto
-            // `Window.element_states`). No init line here, no
-            // matching `deinit` line below.
             .animations = .empty,
             .springs = .empty,
             .motions = .empty,
@@ -126,12 +106,6 @@ pub const WidgetStore = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // PR 8.4b — the `deinitWidgetMap` calls for the three text
-        // engine maps are gone; teardown now happens via
-        // `Window.element_states.deinit()` walking the keyed-pool
-        // entries through their type-erased deinit thunks. Same
-        // path that handles `ScrollContainer` (PR 8.4a) and
-        // `SelectState` (PR 8.2).
         self.animations.deinit(self.allocator);
         self.springs.deinit(self.allocator);
         self.motions.deinit(self.allocator);
@@ -174,7 +148,6 @@ pub const WidgetStore = struct {
         return self.animateById(animation.hashString(id), config);
     }
 
-    /// Restart animation by hashed ID
     /// Restart animation by hashed ID
     pub fn restartAnimationById(self: *Self, anim_id: u32, config: AnimationConfig) AnimationHandle {
         const gop = self.animations.getOrPut(self.allocator, anim_id) catch {
@@ -281,10 +254,6 @@ pub const WidgetStore = struct {
     pub fn hasActiveAnimations(self: *const Self) bool {
         return self.active_animation_count > 0 or self.active_spring_count > 0 or self.active_motion_count > 0;
     }
-
-    // =========================================================================
-    // Frame Lifecycle
-    // =========================================================================
 
     // =========================================================================
     // Spring Methods
@@ -485,12 +454,11 @@ pub const WidgetStore = struct {
         return self.springMotionById(hashString(id), show, config);
     }
 
+    // =========================================================================
+    // Frame Lifecycle
+    // =========================================================================
+
     pub fn beginFrame(self: *Self) void {
-        // PR 8.4b — `accessed_this_frame.clearRetainingCapacity()`
-        // retired alongside the StringHashMap-keyed text widget maps;
-        // there is no per-frame access set to reset on the pool
-        // (slots persist until the widget calls `.remove` explicitly,
-        // same retention semantics as `ScrollContainer` / `Select`).
         self.active_animation_count = 0; // Reset - will be incremented as animations are queried
         self.active_spring_count = 0; // Reset - will be incremented as springs are queried
         self.active_motion_count = 0; // Reset - will be incremented as motions are queried
@@ -498,67 +466,4 @@ pub const WidgetStore = struct {
     }
 
     pub fn endFrame(_: *Self) void {}
-
-    // =========================================================================
-    // Text engine accessors retired in PR 8.4b
-    // =========================================================================
-    //
-    // Pre-PR-8.4b this struct exposed a fan of accessors against the
-    // three retired StringHashMaps:
-    //
-    //   * `textInput` / `textInputOrPanic` / `getTextInput` /
-    //     `removeTextInput` / `hasTextInput` / `textInputCount` /
-    //     `getFocusedTextInput`
-    //   * `textArea` / `textAreaOrPanic` / `getTextArea` /
-    //     `removeTextArea` / `getFocusedTextArea`
-    //   * `codeEditor` / `codeEditorOrPanic` / `getCodeEditor` /
-    //     `removeCodeEditor` / `getFocusedCodeEditor`
-    //   * `blurAll` (walked all three maps and called `blur()` on every
-    //     entry)
-    //
-    // All retired alongside the maps. The `*OrCreate*` shape moved
-    // to `Window.element_states.getOrInsert(EngineType, layout_id.id,
-    // EngineType.init(allocator, bounds))` (called from the
-    // matching `Builder.render*` site, see `ui/builder.zig`); the
-    // `get*` shape moved to `Window.element_states.get(EngineType,
-    // layout_id.id)`; the `remove*` shape moved to
-    // `Window.element_states.remove(EngineType, layout_id.id)`. The
-    // `getFocused*` walk was replaced by
-    // `runtime/input.zig::focusedTextInput` / `focusedTextArea` /
-    // `focusedCodeEditor` (each iterates the matching `pending_*`
-    // list, hits the pool by layout-id hash, and returns the first
-    // `isFocused()` match). `blurAll` is no longer needed at this
-    // layer — `Window.blurAll` now goes through the focus manager,
-    // which already drives the focused widget's `.blur()` through
-    // its `Focusable` vtable.
-    //
-    // The `ScrollContainer` accessors retired in PR 8.4a were
-    // documented in the same shape; PR 8.4b removes the standalone
-    // section and folds the rationale here. See
-    // `docs/cleanup-implementation-plan.md` PR 8.4b for the full
-    // call-site sweep.
-    //
-    // `hasTextInput` / `textInputCount` were unused outside their
-    // own definitions and are retired without replacement — the pool
-    // exposes `contains(S, id_hash)` and `len()` for callers who
-    // need either signal.
-
-    // =========================================================================
-    // Select State (internal open/close for Select widgets)
-    // =========================================================================
-    //
-    // PR 8.2 — the four `*SelectState` accessors that used to live
-    // here (`getOrCreateSelectState` / `getSelectState` /
-    // `closeSelectState` / `toggleSelectState`) have been retired.
-    // `Select` is the first consumer of `Window.element_states`, the
-    // unified keyed pool introduced in PR 8.1. Former callers now
-    // route through `window.element_states.withElementState(SelectState,
-    // id_hash, SelectState.defaultInit)` (open-or-create read),
-    // `.get` (read-only peek), or `.remove` (explicit teardown). The
-    // toggle/close helpers moved into `components/select.zig` next
-    // to the widget itself — they are widget-specific control-flow
-    // (mutate one bool through the borrowed `*SelectState`), not
-    // framework-level storage policy. See
-    // `docs/cleanup-implementation-plan.md` PR 8.2 for the full
-    // call-site sweep.
 };

@@ -169,7 +169,8 @@ pub const MotionHandle = struct {
 // Tick Logic — Tween-Based
 // =============================================================================
 
-/// Tick a tween-based motion container. Called by WidgetStore each frame.
+/// Tick a tween-based motion container. Called by `AnimationStore`
+/// (`animation/store.zig`) each frame.
 ///
 /// State machine:
 ///   exited  --[show=true]--> entering --[complete]--> entered

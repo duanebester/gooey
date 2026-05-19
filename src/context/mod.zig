@@ -7,7 +7,13 @@
 //! - `DispatchTree` - Event routing through element hierarchy
 //! - `Entity` / `EntityMap` - Reactive entity system for component state
 //! - `HandlerRef` - Type-erased callback storage for UI events
-//! - `WidgetStore` - Retained storage for stateful widgets
+//! - `ElementStates` - Unified keyed pool for per-element retained state
+//! - `ChangeTracker` - Per-frame value-diffing storage (backs `cx.changed`)
+//!
+//! PR 8.4c — the `WidgetStore` namespace retired. Per-widget retained
+//! state lives on `ElementStates` (PR 8.1–8.4b); the four animation
+//! pools live on `animation.AnimationStore` (PR 8.4c); `ChangeTracker`
+//! is a peer field on `Window` directly.
 
 const std = @import("std");
 
@@ -242,15 +248,27 @@ pub const packArg = handler.packArg;
 pub const unpackArg = handler.unpackArg;
 
 // =============================================================================
-// Widget Store
+// Retained-state storage (PR 8.4c retired `WidgetStore`)
 // =============================================================================
-
-pub const widget_store = @import("widget_store.zig");
-
-pub const WidgetStore = widget_store.WidgetStore;
-
-// Note: `change_tracker.zig` is intentionally not re-exported here.
-// It is an implementation detail of `WidgetStore`, not part of the public API.
+//
+// Pre-PR-8.4c this section re-exported `widget_store` /
+// `WidgetStore` — the historical catch-all retained-storage namespace.
+// PR 8.1–8.4b lifted every per-widget map onto `ElementStates`; PR
+// 8.4c lifted the residual four animation pools onto
+// `animation/store.zig::AnimationStore` and promoted `ChangeTracker`
+// to a direct `Window` field. There is no replacement umbrella type
+// to re-export here — callers reach the surviving subsystems
+// directly:
+//
+//   - per-element state → `window.element_states.*`
+//   - animation pools → `window.animations.*`
+//     (or, more commonly, `cx.animations.<verb>(...)`)
+//   - value-change diffing → `window.change_tracker.*`
+//     (or `cx.changed(key, value)` at the call site)
+//
+// `change_tracker.zig` is still imported by `cx.zig`'s `changed`
+// helper for its free `hashValue` function; it is deliberately not
+// re-exported as part of the public `context` namespace.
 
 // =============================================================================
 // Tests

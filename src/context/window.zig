@@ -122,18 +122,37 @@ const Scene = scene_mod.Scene;
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
 
-// Widgets
-const widget_store_mod = @import("widget_store.zig");
-const WidgetStore = widget_store_mod.WidgetStore;
-
 // PR 4 — break the `context → widgets` backward edge.
 //
 // Concrete widget state types (`TextInput`, `TextArea`, `CodeEditorState`)
 // no longer leak into `Window`. Focus is driven through the `Focusable`
-// vtable in `context/focus.zig`, and direct widget access goes through
-// `window.widgets.*` from callers higher up the stack (`runtime/`, `cx.zig`,
-// user examples). See `docs/cleanup-implementation-plan.md` PR 4 and the
-// cleanup direction in `docs/architectural-cleanup-plan.md` §4.
+// vtable in `context/focus.zig`. PR 8.4b retired the per-widget
+// retained-state maps onto `window.element_states` (the unified keyed
+// pool from PR 8.1); PR 8.4c retired the residual cross-cutting
+// `WidgetStore` namespace itself — the four animation pools live on
+// `animation/store.zig::AnimationStore` (composed below as the
+// `animations` field), and `ChangeTracker` lives directly on `Window`
+// as a peer field. See `docs/cleanup-implementation-plan.md` PR 4 /
+// PR 8.4c and the cleanup direction in
+// `docs/architectural-cleanup-plan.md` §4.
+
+// PR 8.4c — retained-state animation pools. Lifted off the retired
+// `context/widget_store.zig::WidgetStore` next to the engines that
+// drive them. The four pools (tween / spring / motion / spring-motion)
+// don't fit the per-element shape that `Window.element_states`
+// encodes (one widget can drive multiple concurrent animations against
+// different ids), so they keep their own typed storage. See
+// `animation/store.zig` for the rationale.
+const animation_store_mod = @import("../animation/store.zig");
+const AnimationStore = animation_store_mod.AnimationStore;
+
+// PR 8.4c — per-frame value-diffing storage. Previously colocated
+// with the animation pools on `WidgetStore`; promoted to a direct
+// `Window` field because it's unrelated to animation lifecycle (it
+// backs `cx.changed(key, value)` and applies to arbitrary call-site
+// values, not animation ids).
+const change_tracker_mod = @import("change_tracker.zig");
+const ChangeTracker = change_tracker_mod.ChangeTracker;
 
 // Platform
 const platform = @import("../platform/mod.zig");
@@ -371,8 +390,18 @@ pub const Window = struct {
     // collapsing the duplicate ownership-shape footprint on
     // `Window` to a single `resources` field.
 
-    // Widgets (retained across frames)
-    widgets: WidgetStore,
+    /// Animation pools (retained across frames). PR 8.4c — lifted off
+    /// the retired `widgets: WidgetStore` field. Hosts the four
+    /// u32-keyed pools driving tween / spring / motion / spring-motion;
+    /// see `animation/store.zig`.
+    animations: AnimationStore,
+
+    /// Per-frame value-diffing storage backing `cx.changed(key, value)`.
+    /// PR 8.4c — promoted from `WidgetStore.change_tracker` to a peer
+    /// `Window` field. Fixed-capacity (no allocation after init), so
+    /// the default value is a complete initialisation; no init/deinit
+    /// hook is needed.
+    change_tracker: ChangeTracker = .{},
 
     /// PR 8.1 / 8.2 — unified `(id_hash, type_id) -> *S` keyed pool
     /// for element-attached state. Heap-allocated because the
@@ -825,7 +854,10 @@ pub const Window = struct {
             // below are back-compat aliases populated from the same
             // heap addresses (see field-decl doc-comments).
             .resources = resources,
-            .widgets = WidgetStore.init(allocator, io),
+            // PR 8.4c — was `.widgets = WidgetStore.init(allocator, io)`
+            // pre-retirement. The `change_tracker` peer field
+            // default-initialises (fixed-capacity, no alloc).
+            .animations = AnimationStore.init(allocator, io),
             // PR 8.1 / 8.2 — borrowed `*ElementStates` view onto
             // the heap allocation above. Ownership is transferred
             // here: `result` is the canonical owner from this
@@ -1009,7 +1041,12 @@ pub const Window = struct {
         // slice threads `app: *App` through this function's
         // signature so the field is set inline.
         self.focus = FocusManager.init(allocator);
-        self.widgets = WidgetStore.init(allocator, io);
+        // PR 8.4c — was `self.widgets = WidgetStore.init(allocator, io)`
+        // pre-retirement. `change_tracker` lands via the explicit
+        // assignment below (this path is field-by-field init to avoid
+        // a ~400 KB stack temp, so defaults don't apply automatically).
+        self.animations = AnimationStore.init(allocator, io);
+        self.change_tracker = .{};
 
         // PR 8.1 / 8.2 — heap-allocate the element-state pool
         // and initialise it in place at its final address. Same
@@ -1208,7 +1245,8 @@ pub const Window = struct {
                 shared_resources.svg_atlas,
                 shared_resources.image_atlas,
             ),
-            .widgets = WidgetStore.init(allocator, io),
+            // PR 8.4c — see `initOwned` for the matching note.
+            .animations = AnimationStore.init(allocator, io),
             // PR 8.1 / 8.2 — owned `*ElementStates`. See the
             // matching block in `initOwned` for the
             // heap-allocation rationale (128 KiB > WASM stack).
@@ -1353,7 +1391,9 @@ pub const Window = struct {
         // `self.app` is left `undefined` here; the caller assigns
         // it post-init. See the matching note in `initOwnedPtr`.
         self.focus = FocusManager.init(allocator);
-        self.widgets = WidgetStore.init(allocator, io);
+        // PR 8.4c — see `initOwnedPtr` for the matching note.
+        self.animations = AnimationStore.init(allocator, io);
+        self.change_tracker = .{};
 
         // PR 8.1 / 8.2 — element-state pool. Per-window even in
         // multi-window mode (see the matching block in
@@ -1442,7 +1482,10 @@ pub const Window = struct {
 
         // Blur handlers use fixed-capacity storage, no cleanup needed
 
-        self.widgets.deinit();
+        // PR 8.4c — was `self.widgets.deinit()` pre-retirement.
+        // `change_tracker` is fixed-capacity with no allocation, so it
+        // has no `deinit` to call.
+        self.animations.deinit();
 
         // PR 8.1 / 8.2 — tear down the unified element-state
         // pool. `ElementStates.deinit` walks every populated
@@ -1573,7 +1616,10 @@ pub const Window = struct {
         self.debugger().beginFrame(self.io);
 
         self.frame_count += 1;
-        self.widgets.beginFrame();
+        // PR 8.4c — was `self.widgets.beginFrame()` pre-retirement.
+        // `change_tracker` carries no per-frame state to reset (the
+        // diff is keyed by call-site comptime hash, not by frame).
+        self.animations.beginFrame();
         self.focus.beginFrame();
         self.resources.image_atlas.beginFrame();
 
@@ -1655,7 +1701,8 @@ pub const Window = struct {
     /// hoisted) `App.beginFrame`; lifting both halves keeps the
     /// pair together at the layer the work belongs to.
     pub fn endFrame(self: *Self) ![]const RenderCommand {
-        self.widgets.endFrame();
+        // PR 8.4c — was `self.widgets.endFrame()` pre-retirement.
+        self.animations.endFrame();
         self.focus.endFrame();
 
         // PR 7c.2 — `self.app.endFrame()` was hoisted out of
@@ -1707,7 +1754,7 @@ pub const Window = struct {
 
     /// Check if any animations are running (call after endFrame)
     pub fn hasActiveAnimations(self: *const Self) bool {
-        return self.widgets.hasActiveAnimations();
+        return self.animations.hasActiveAnimations();
     }
 
     // =========================================================================
@@ -1791,7 +1838,7 @@ pub const Window = struct {
     }
 
     // =========================================================================
-    // Widget Access — moved to `window.widgets.*`
+    // Widget Access — moved to `window.element_states.get(T, id)`
     // =========================================================================
     //
     // PR 4 (`docs/cleanup-implementation-plan.md`): the per-widget-type
@@ -1802,8 +1849,9 @@ pub const Window = struct {
     // `context → widgets` backward edge into `Window`. They are deleted
     // outright — PR 8.4b further retires the `widgets.textInput` /
     // `widgets.textArea` / `widgets.codeEditor` proxy accessors that
-    // PR 4 callers were pointed at. Callers in `runtime/`, `cx.zig`,
-    // and user code now reach the engine state through
+    // PR 4 callers were pointed at, and PR 8.4c retires the
+    // `widgets:` field they hung off entirely. Callers in `runtime/`,
+    // `cx.zig`, and user code now reach the engine state through
     // `window.element_states.get(EngineType, layout_id.id)`, and
     // trigger focus via the generic `window.focusWidget(id)` below
     // (which routes through the `Focusable` vtable on `FocusManager`
@@ -2282,7 +2330,14 @@ fn testWindow() Window {
         // second `Frame` slot for the double buffer — neither
         // change touches this stub because the deferred-command
         // path doesn't render.
-        .widgets = undefined,
+        //
+        // PR 8.4c — `widgets: WidgetStore = undefined` retired
+        // alongside the field. `animations` is the replacement
+        // field (lives on `AnimationStore`); the deferred-command
+        // path doesn't reach into it either. `change_tracker`
+        // carries an in-struct default and so doesn't need an
+        // explicit literal here.
+        .animations = undefined,
         .focus = undefined,
 
         // PR 7b.3 — `entities` lifted onto `App`. The deferred-
