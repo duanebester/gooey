@@ -1,7 +1,7 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 const Cx = gooey.Cx;
 
 // Define action types
@@ -18,7 +18,7 @@ const AppState = struct {
 var state = AppState{};
 
 pub fn main(init: std.process.Init) !void {
-    try gooey.runCx(AppState, &state, render, .{
+    try gooey.run(AppState, &state, render, .{
         .title = "Actions Demo",
     }, init);
 }

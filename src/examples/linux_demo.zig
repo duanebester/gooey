@@ -15,12 +15,12 @@ const Platform = platform.Platform;
 // to free up the `Window` name for the framework-level wrapper
 // landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
 const PlatformWindow = platform.PlatformWindow;
-const Scene = gooey.Scene;
-const Quad = gooey.Quad;
-const Shadow = gooey.Shadow;
-const Hsla = gooey.Hsla;
-const Corners = gooey.Corners;
-const Edges = gooey.Edges;
+const Scene = gooey.scene.Scene;
+const Quad = gooey.scene.Quad;
+const Shadow = gooey.scene.Shadow;
+const Hsla = gooey.scene.Hsla;
+const Corners = gooey.core.Corners;
+const Edges = gooey.core.Edges;
 const Color = gooey.Color;
 const input = gooey.input;
 

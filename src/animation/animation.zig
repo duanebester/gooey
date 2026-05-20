@@ -10,7 +10,7 @@
 //!
 //! ```zig
 //! fn render(cx: *Cx) void {
-//!     const anim = cx.animate("fade-in", .{ .duration_ms = 300 });
+//!     const anim = cx.animations.tween("fade-in", .{ .duration_ms = 300 });
 //!     cx.render(ui.box(.{
 //!         .background = ui.Color.rgba(0.2, 0.5, 1.0, anim.progress),
 //!     }, .{}));
@@ -299,7 +299,8 @@ pub const AnimationState = struct {
 // Animation Handle (returned to user code)
 // =============================================================================
 
-/// Lightweight handle returned by cx.animate()
+/// Lightweight handle returned by `cx.animations.tween()` /
+/// `cx.animations.tweenComptime()`.
 /// Contains the computed progress value and control methods
 pub const AnimationHandle = struct {
     /// Current progress (0.0 to 1.0), with easing applied

@@ -15,10 +15,10 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
-const Svg = gooey.Svg;
-const Icons = gooey.Icons;
-const Image = gooey.Image;
+const Button = gooey.components.Button;
+const Svg = gooey.components.Svg;
+const Icons = gooey.components.Icons;
+const Image = gooey.components.Image;
 
 // =============================================================================
 // Application State

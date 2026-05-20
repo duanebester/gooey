@@ -11,8 +11,8 @@ const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 
-const Button = gooey.Button;
-const Modal = gooey.Modal;
+const Button = gooey.components.Button;
+const Modal = gooey.components.Modal;
 
 // =============================================================================
 // State
@@ -295,7 +295,7 @@ const CustomModalContent = struct {
 // Event Handling
 // =============================================================================
 
-fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
+fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
     if (event == .key_down) {
         const key = event.key_down;
         const s = cx.state(AppState);

@@ -12,9 +12,9 @@ const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const DataTableState = gooey.DataTableState;
-const SortDirection = gooey.SortDirection;
-const Button = gooey.Button;
+const DataTableState = gooey.widgets.DataTableState;
+const SortDirection = gooey.widgets.SortDirection;
+const Button = gooey.components.Button;
 
 const ui = gooey.ui;
 

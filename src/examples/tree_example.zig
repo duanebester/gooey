@@ -12,14 +12,14 @@ const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const TreeListState = gooey.TreeListState;
-const TreeEntry = gooey.TreeEntry;
-const Button = gooey.Button;
+const TreeListState = gooey.widgets.TreeListState;
+const TreeEntry = gooey.widgets.TreeEntry;
+const Button = gooey.components.Button;
 
 const ui = gooey.ui;
 
-const Svg = gooey.Svg;
-const Icons = gooey.Icons;
+const Svg = gooey.components.Svg;
+const Icons = gooey.components.Icons;
 
 // =============================================================================
 // Constants

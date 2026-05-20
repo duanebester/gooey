@@ -45,24 +45,16 @@ const a11y = @import("accessibility/accessibility.zig");
 const change_tracker_mod = @import("context/change_tracker.zig");
 const handler_mod = @import("context/handler.zig");
 const entity_mod = @import("context/entity.zig");
+// Widget engine-state pools — the `cx.textField` / `cx.textAreaWidget` /
+// `cx.codeEditorWidget` / `cx.scrollView` accessors keyed off these.
+// PR 9 dropped the unused `UniformList*` / `VirtualList*` /
+// `DataTable*` / `TreeList*` aliases along with the deleted deprecated
+// list/table forwarders — callers go through `cx.lists.*` directly now
+// and the list/table state types are imported there.
 const text_field_mod = @import("widgets/text_input_state.zig");
 const text_area_mod = @import("widgets/text_area_state.zig");
 const code_editor_mod = @import("widgets/code_editor_state.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
-const uniform_list_mod = @import("widgets/uniform_list.zig");
-const UniformListState = uniform_list_mod.UniformListState;
-const UniformListStyle = ui_mod.UniformListStyle;
-const virtual_list_mod = @import("widgets/virtual_list.zig");
-const VirtualListState = virtual_list_mod.VirtualListState;
-const VirtualListStyle = ui_mod.VirtualListStyle;
-const data_table_mod = @import("widgets/data_table.zig");
-const DataTableState = data_table_mod.DataTableState;
-const DataTableStyle = ui_mod.DataTableStyle;
-const ColRange = data_table_mod.ColRange;
-const tree_list_mod = @import("widgets/tree_list.zig");
-const TreeListState = tree_list_mod.TreeListState;
-const TreeEntry = tree_list_mod.TreeEntry;
-const TreeListStyle = ui_mod.TreeListStyle;
 
 // PR 8.2 — `SelectState` lives next to the widget in
 // `components/select.zig` now (was a `WidgetStore` field pre-PR-8.2).
@@ -88,38 +80,26 @@ const LayoutId = layout_id_mod.LayoutId;
 const text_mod = @import("text/mod.zig");
 pub const TextMeasurement = text_mod.TextMeasurement;
 
-// Animation types (re-exported from root.zig for users)
+// Animation module — only `hashString` is still needed on `cx.zig`
+// itself (for `cx.changed`'s key hashing). PR 9 dropped the individual
+// `Animation` / `SpringConfig` / `MotionConfig` aliases that the
+// retired animation forwarders used; callers reach those types through
+// `cx.animations.*` or the `animation.*` namespace directly.
 const animation_mod = @import("animation/mod.zig");
-const Animation = animation_mod.AnimationConfig;
-const AnimationHandle = animation_mod.AnimationHandle;
 
-// Spring types
-const spring_mod = @import("animation/spring.zig");
-const SpringConfig = spring_mod.SpringConfig;
-const SpringHandle = spring_mod.SpringHandle;
-
-// Stagger types
-const stagger_mod = @import("animation/stagger.zig");
-const StaggerConfig = stagger_mod.StaggerConfig;
-
-// Motion types
-const motion_mod = @import("animation/motion.zig");
-const MotionConfig = motion_mod.MotionConfig;
-const MotionHandle = motion_mod.MotionHandle;
-const SpringMotionConfig = motion_mod.SpringMotionConfig;
-
-// Handler types (re-exported from root.zig for users)
+// Handler types — `cx.update` / `cx.command` / `cx.onSelect` build
+// `HandlerRef`s; `OnSelectHandler` is the multi-entry variant for
+// `Select`.
 const HandlerRef = handler_mod.HandlerRef;
 const OnSelectHandler = handler_mod.OnSelectHandler;
 pub const typeId = handler_mod.typeId;
 const packArg = handler_mod.packArg;
 const unpackArg = handler_mod.unpackArg;
 
-// Entity types (re-exported from root.zig for users)
+// Entity types — only `EntityId` survives PR 9's forwarder deletion;
+// the user-facing `Entity` / `EntityMap` / `EntityContext` generics
+// route through `cx.entities.*` (which imports them locally).
 const EntityId = entity_mod.EntityId;
-const Entity = entity_mod.Entity;
-const EntityMap = entity_mod.EntityMap;
-const EntityContext = entity_mod.EntityContext;
 
 // UI types (re-exported from root.zig for users)
 const Theme = ui_mod.Theme;
@@ -556,20 +536,9 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Entities (deprecated forwarders — see `cx/entities.zig`; PR 9 removes)
+    // Entities (PR 5 deprecated forwarders deleted in PR 9 — reach for
+    // `cx.entities.*` directly.)
     // =========================================================================
-    pub fn createEntity(self: *Self, comptime T: type, value: T) !Entity(T) {
-        return self.entities.create(T, value);
-    }
-    pub fn readEntity(self: *Self, comptime T: type, entity: Entity(T)) ?*const T {
-        return self.entities.read(T, entity);
-    }
-    pub fn writeEntity(self: *Self, comptime T: type, entity: Entity(T)) ?*T {
-        return self.entities.write(T, entity);
-    }
-    pub fn entityCx(self: *Self, comptime T: type, entity: Entity(T)) ?EntityContext(T) {
-        return self.entities.context(T, entity);
-    }
 
     /// Request a UI re-render.
     pub fn notify(self: *Self) void {
@@ -577,30 +546,11 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Focus (deprecated forwarders — see `cx/focus.zig`; removed in PR 9)
+    // Focus (PR 5 deprecated forwarders deleted in PR 9 — reach for
+    // `cx.focus.*` directly. `focusTextField` / `focusTextArea` both
+    // collapsed onto `cx.focus.widget(id)` since the text-field /
+    // text-area distinction merged in PR 4.)
     // =========================================================================
-
-    // Deprecated: use `cx.focus.*` instead. The text-field /
-    // text-area distinction collapsed in PR 4 — both routed through
-    // `Window.focusWidget` already.
-    pub fn focusNext(self: *Self) void {
-        self.focus.next();
-    }
-    pub fn focusPrev(self: *Self) void {
-        self.focus.prev();
-    }
-    pub fn blurAll(self: *Self) void {
-        self.focus.blurAll();
-    }
-    pub fn focusTextField(self: *Self, id: []const u8) void {
-        self.focus.widget(id);
-    }
-    pub fn focusTextArea(self: *Self, id: []const u8) void {
-        self.focus.widget(id);
-    }
-    pub fn isElementFocused(self: *Self, id: []const u8) bool {
-        return self.focus.isElementFocused(id);
-    }
 
     // Widget access (for advanced use cases). Each returns `null` if
     // no widget with that id has been registered. The returned types
@@ -711,51 +661,10 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Animations (deprecated forwarders — see `cx/animations.zig`; PR 9 removes)
+    // Animations (PR 5 deprecated forwarders deleted in PR 9 — reach for
+    // `cx.animations.*` directly.) The verb mapping for callers porting
+    // off the old names is documented in `docs/CHANGELOG.md`.
     // =========================================================================
-
-    pub fn animateComptime(self: *Self, comptime id: []const u8, config: Animation) AnimationHandle {
-        return self.animations.tweenComptime(id, config);
-    }
-    pub fn animate(self: *Self, id: []const u8, config: Animation) AnimationHandle {
-        return self.animations.tween(id, config);
-    }
-    pub fn restartAnimationComptime(self: *Self, comptime id: []const u8, config: Animation) AnimationHandle {
-        return self.animations.restartComptime(id, config);
-    }
-    pub fn restartAnimation(self: *Self, id: []const u8, config: Animation) AnimationHandle {
-        return self.animations.restart(id, config);
-    }
-    pub fn animateOnComptime(self: *Self, comptime id: []const u8, trigger: anytype, config: Animation) AnimationHandle {
-        return self.animations.tweenOnComptime(id, trigger, config);
-    }
-    pub fn animateOn(self: *Self, id: []const u8, trigger: anytype, config: Animation) AnimationHandle {
-        return self.animations.tweenOn(id, trigger, config);
-    }
-    pub fn springComptime(self: *Self, comptime id: []const u8, config: SpringConfig) SpringHandle {
-        return self.animations.springComptime(id, config);
-    }
-    pub fn spring(self: *Self, id: []const u8, config: SpringConfig) SpringHandle {
-        return self.animations.spring(id, config);
-    }
-    pub fn staggerComptime(self: *Self, comptime id: []const u8, index: u32, total_count: u32, config: StaggerConfig) AnimationHandle {
-        return self.animations.staggerComptime(id, index, total_count, config);
-    }
-    pub fn stagger(self: *Self, id: []const u8, index: u32, total_count: u32, config: StaggerConfig) AnimationHandle {
-        return self.animations.stagger(id, index, total_count, config);
-    }
-    pub fn motionComptime(self: *Self, comptime id: []const u8, show: bool, config: MotionConfig) MotionHandle {
-        return self.animations.motionComptime(id, show, config);
-    }
-    pub fn motion(self: *Self, id: []const u8, show: bool, config: MotionConfig) MotionHandle {
-        return self.animations.motion(id, show, config);
-    }
-    pub fn springMotionComptime(self: *Self, comptime id: []const u8, show: bool, config: SpringMotionConfig) MotionHandle {
-        return self.animations.springMotionComptime(id, show, config);
-    }
-    pub fn springMotion(self: *Self, id: []const u8, show: bool, config: SpringMotionConfig) MotionHandle {
-        return self.animations.springMotion(id, show, config);
-    }
 
     // =========================================================================
     // Change detection
@@ -776,53 +685,11 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Lists / tables (deprecated forwarders — see `cx/lists.zig`; PR 9 removes)
+    // Lists / tables (PR 5 deprecated forwarders deleted in PR 9 — reach
+    // for `cx.lists.*` directly. The `DataTableCallbacks(Cx)` generic
+    // type now lives at `cx.lists.Lists.DataTableCallbacks(Cx)` as its
+    // sole canonical home.)
     // =========================================================================
-
-    pub fn uniformList(
-        self: *Self,
-        id: []const u8,
-        list_state: *UniformListState,
-        style: UniformListStyle,
-        comptime render_item: fn (index: u32, cx: *Self) void,
-    ) void {
-        self.lists.uniform(id, list_state, style, render_item);
-    }
-
-    pub fn treeList(
-        self: *Self,
-        id: []const u8,
-        tree_state: *TreeListState,
-        style: TreeListStyle,
-        comptime render_item: fn (entry: *const TreeEntry, cx: *Self) void,
-    ) void {
-        self.lists.tree(id, tree_state, style, render_item);
-    }
-
-    pub fn virtualList(
-        self: *Self,
-        id: []const u8,
-        list_state: *VirtualListState,
-        style: VirtualListStyle,
-        comptime render_item: fn (index: u32, cx: *Self) f32,
-    ) void {
-        self.lists.virtual(id, list_state, style, render_item);
-    }
-
-    /// Deprecated alias: same type as `cx.lists.DataTableCallbacks(Cx)`.
-    pub fn DataTableCallbacks(comptime CxType: type) type {
-        return lists_mod.Lists.DataTableCallbacks(CxType);
-    }
-
-    pub fn dataTable(
-        self: *Self,
-        id: []const u8,
-        table_state: *DataTableState,
-        style: DataTableStyle,
-        comptime callbacks: DataTableCallbacks(Self),
-    ) void {
-        self.lists.dataTable(id, table_state, style, callbacks);
-    }
 };
 
 // =============================================================================

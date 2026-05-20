@@ -11,8 +11,8 @@ const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 
-const Button = gooey.Button;
-const Tooltip = gooey.Tooltip;
+const Button = gooey.components.Button;
+const Tooltip = gooey.components.Tooltip;
 
 // =============================================================================
 // State

@@ -19,7 +19,7 @@
 //! var list_state = VirtualListState.init(1000, 32.0); // count, default height
 //!
 //! // In your render function - callback returns item height:
-//! cx.virtualList("chat-list", &list_state, .{ .grow_height = true }, renderMessage);
+//! cx.lists.virtual("chat-list", &list_state, .{ .grow_height = true }, renderMessage);
 //!
 //! fn renderMessage(index: u32, cx: *Cx) f32 {
 //!     const msg = messages[index];

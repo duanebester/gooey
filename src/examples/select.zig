@@ -13,7 +13,7 @@ const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 
-const Select = gooey.Select;
+const Select = gooey.components.Select;
 
 // =============================================================================
 // State

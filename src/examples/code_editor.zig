@@ -16,11 +16,11 @@ const file_dialog = gooey.file_dialog;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const Button = gooey.Button;
-const CodeEditor = gooey.CodeEditor;
-const TreeListState = gooey.TreeListState;
-const TreeEntry = gooey.TreeEntry;
-const Svg = gooey.Svg;
+const Button = gooey.components.Button;
+const CodeEditor = gooey.components.CodeEditor;
+const TreeListState = gooey.widgets.TreeListState;
+const TreeEntry = gooey.widgets.TreeEntry;
+const Svg = gooey.components.Svg;
 const Lucide = gooey.components.Lucide;
 
 // =============================================================================
@@ -316,7 +316,7 @@ const AppState = struct {
     /// `g.widgets.codeEditor(id)` accessor (see
     /// `docs/cleanup-implementation-plan.md` PR 8.4b).
     fn sourceCodeEditor(g: *gooey.Window) ?*gooey.widgets.CodeEditorState {
-        const hash: u64 = @as(u64, gooey.LayoutId.fromString("source").id);
+        const hash: u64 = @as(u64, gooey.layout.LayoutId.fromString("source").id);
         return g.element_states.get(gooey.widgets.CodeEditorState, hash);
     }
 

@@ -19,22 +19,22 @@ pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Window = gooey.Window;
-const Theme = gooey.Theme;
+const Theme = gooey.ui.Theme;
 
 // Components
-const Button = gooey.Button;
-const Checkbox = gooey.Checkbox;
-const TextInput = gooey.TextInput;
-const TextArea = gooey.TextArea;
-const Tab = gooey.Tab;
-const RadioButton = gooey.RadioButton;
-const RadioGroup = gooey.RadioGroup;
-const ProgressBar = gooey.ProgressBar;
-const Svg = gooey.Svg;
-const Icons = gooey.Icons;
-const Select = gooey.Select;
-const Tooltip = gooey.Tooltip;
-const Modal = gooey.Modal;
+const Button = gooey.components.Button;
+const Checkbox = gooey.components.Checkbox;
+const TextInput = gooey.components.TextInput;
+const TextArea = gooey.components.TextArea;
+const Tab = gooey.components.Tab;
+const RadioButton = gooey.components.RadioButton;
+const RadioGroup = gooey.components.RadioGroup;
+const ProgressBar = gooey.components.ProgressBar;
+const Svg = gooey.components.Svg;
+const Icons = gooey.components.Icons;
+const Select = gooey.components.Select;
+const Tooltip = gooey.components.Tooltip;
+const Modal = gooey.components.Modal;
 const Color = gooey.Color;
 
 // =============================================================================
@@ -349,7 +349,7 @@ const NavLogo = struct {
             // Image component handles WASM async loading automatically!
             // - On native: loads from file system directly
             // - On WASM: fetches via browser, shows placeholder while loading
-            gooey.Image{
+            gooey.components.Image{
                 .src = "assets/gooey-logo-final.png",
                 .width = 32,
                 .height = 20,
@@ -1710,7 +1710,7 @@ const CustomPathsCard = struct {
 // Event Handling
 // =============================================================================
 
-fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
+fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
     const s = cx.state(AppState);
     const g = cx.window();
 

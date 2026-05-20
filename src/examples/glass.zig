@@ -9,7 +9,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 const Color = ui.Color;
 
 const AppState = struct {
@@ -82,7 +82,7 @@ const card_bg = Color.rgba(1, 1, 1, 0.1);
 pub fn main(init: std.process.Init) !void {
     var state = AppState{};
 
-    try gooey.runCx(AppState, &state, render, .{
+    try gooey.run(AppState, &state, render, .{
         .title = "Glass Demo",
         .width = 600,
         .height = 400,

@@ -12,9 +12,9 @@ const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const VirtualListState = gooey.VirtualListState;
-const ScrollStrategy = gooey.ScrollStrategy;
-const Button = gooey.Button;
+const VirtualListState = gooey.widgets.VirtualListState;
+const ScrollStrategy = gooey.widgets.ScrollStrategy;
+const Button = gooey.components.Button;
 
 const ui = gooey.ui;
 

@@ -18,7 +18,7 @@ pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 
 // Web-specific file dialog
 const file_dialog = if (platform.is_wasm) platform.web.file_dialog else struct {};

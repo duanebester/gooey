@@ -9,8 +9,8 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = ui.Color;
-const Easing = gooey.Easing;
-const Button = gooey.Button;
+const Easing = gooey.animation.Easing;
+const Button = gooey.components.Button;
 
 // =============================================================================
 // App State
@@ -327,8 +327,8 @@ const SpinnerBall = struct {
         std.debug.assert(self.progress >= 0.0);
         std.debug.assert(self.progress <= 1.0);
 
-        const spinner_size = gooey.lerp(30.0, 40.0, self.progress);
-        const opacity = gooey.lerp(0.4, 1.0, self.progress);
+        const spinner_size = gooey.animation.lerp(30.0, 40.0, self.progress);
+        const opacity = gooey.animation.lerp(0.4, 1.0, self.progress);
 
         cx.render(ui.box(.{
             .width = spinner_size,
@@ -346,7 +346,7 @@ const SpinnerBall = struct {
 var state = AppState{};
 
 pub fn main(init: std.process.Init) !void {
-    try gooey.runCx(AppState, &state, render, .{
+    try gooey.run(AppState, &state, render, .{
         .title = "Animation Demo",
         .width = 550,
         .height = 550,

@@ -11,7 +11,7 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Svg = gooey.components.Svg;
 const Lucide = gooey.components.Lucide;
-const UniformListState = gooey.UniformListState;
+const UniformListState = gooey.widgets.UniformListState;
 
 // =============================================================================
 // Grid Layout Constants

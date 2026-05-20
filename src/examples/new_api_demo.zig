@@ -19,7 +19,7 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 const Color = ui.Color;
 
 // =============================================================================

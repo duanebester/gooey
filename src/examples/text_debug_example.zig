@@ -17,7 +17,7 @@ pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 const text_mod = gooey.text;
 const text_debug = text_mod.text_debug;
 

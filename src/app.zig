@@ -19,10 +19,10 @@
 //!     });
 //! }
 //!
-//! fn render(ui: *gooey.UI) void {
-//!     ui.vstack(.{ .gap = 16 }, .{
+//! fn render(cx: *gooey.Cx) void {
+//!     cx.render(gooey.ui.vstack(.{ .gap = 16 }, .{
 //!         gooey.ui.text("Hello", .{}),
-//!     });
+//!     }));
 //! }
 //! ```
 
@@ -137,19 +137,22 @@ pub fn App(
 /// The returned struct contains init/frame/resize functions that are
 /// automatically exported via @export when the type is analyzed.
 ///
-/// Example:
+/// Note: this is the WASM-specific generator. Application code should
+/// reach for `gooey.App` instead — it auto-dispatches to `WebApp` on
+/// WASM targets and to the native `App` shape everywhere else.
+///
+/// Example (cross-platform, preferred):
 /// ```zig
 /// var state = AppState{};
-///
-/// // Create the WebApp type - this triggers the exports
-/// const App = gooey.WebApp(AppState, &state, render, .{
+/// const App = gooey.App(AppState, &state, render, .{
 ///     .title = "My App",
 ///     .width = 800,
 ///     .height = 600,
 /// });
 ///
-/// // Force type analysis to ensure exports are emitted
-/// comptime { _ = App; }
+/// pub fn main(init: std.process.Init) !void {
+///     try App.main(init);
+/// }
 /// ```
 pub fn WebApp(
     comptime State: type,

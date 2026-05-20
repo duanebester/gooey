@@ -20,9 +20,9 @@ const platform = gooey.platform;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
-const Checkbox = gooey.Checkbox;
-const TextInput = gooey.TextInput;
+const Button = gooey.components.Button;
+const Checkbox = gooey.components.Checkbox;
+const TextInput = gooey.components.TextInput;
 
 /// Colorful flowing plasma effect (MSL - macOS)
 pub const plasma_shader_msl =
@@ -169,7 +169,7 @@ const AppState = struct {
     is_running: bool = false,
 
     // Tasks
-    tasks: [MaxTasks]gooey.Entity(Task) = [_]gooey.Entity(Task){gooey.Entity(Task).nil()} ** MaxTasks,
+    tasks: [MaxTasks]gooey.context.Entity(Task) = [_]gooey.context.Entity(Task){gooey.context.Entity(Task).nil()} ** MaxTasks,
     task_count: usize = 0,
     input_text: []const u8 = "",
 
@@ -246,7 +246,7 @@ const AppState = struct {
         // StringHashMap-keyed `text_inputs` map; reach the engine
         // state through `Window.element_states` keyed by
         // `LayoutId.id`.
-        const input_hash: u64 = @as(u64, gooey.LayoutId.fromString("task-input").id);
+        const input_hash: u64 = @as(u64, gooey.layout.LayoutId.fromString("task-input").id);
         if (g.element_states.get(gooey.widgets.TextInputState, input_hash)) |input| {
             input.clear();
         }
@@ -283,7 +283,7 @@ const AppState = struct {
     // Helper methods (no context needed)
     // =========================================================================
 
-    fn tasksSlice(self: *const AppState) []const gooey.Entity(Task) {
+    fn tasksSlice(self: *const AppState) []const gooey.context.Entity(Task) {
         return self.tasks[0..self.task_count];
     }
 
@@ -415,7 +415,7 @@ const TaskInput = struct {
 };
 
 const TaskItem = struct {
-    task: gooey.Entity(Task),
+    task: gooey.context.Entity(Task),
     index: usize,
 
     pub fn render(self: @This(), cx: *Cx) void {

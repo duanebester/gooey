@@ -17,7 +17,7 @@ const platform = gooey.platform;
 pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 
 // =============================================================================
 // Application State

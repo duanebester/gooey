@@ -244,6 +244,11 @@ pub const App = app.App;
 pub const handler = @import("handler.zig");
 
 pub const HandlerRef = handler.HandlerRef;
+// PR 9 Task 2.5 — promoted `OnSelectHandler` to a sibling re-export
+// so `root.zig`'s `pub const OnSelectHandler = context.handler.OnSelectHandler`
+// alias can collapse to the shorter `context.OnSelectHandler` path that
+// matches every other context-namespaced type.
+pub const OnSelectHandler = handler.OnSelectHandler;
 pub const packArg = handler.packArg;
 pub const unpackArg = handler.unpackArg;
 
@@ -276,4 +281,9 @@ pub const unpackArg = handler.unpackArg;
 
 test {
     std.testing.refAllDecls(@This());
+    // PR 9 Task 5 — compile-time `_owned: bool` audit. Lives next to
+    // `Window` so it picks up reaches into sibling sub-structs without
+    // an extra import hop from `root.zig`. The audit's allow-list +
+    // rationale are documented in the audit file's header.
+    std.testing.refAllDecls(@import("owned_flag_audit.zig"));
 }

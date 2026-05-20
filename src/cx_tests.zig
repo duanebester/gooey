@@ -426,10 +426,12 @@ test "toggle collection pattern" {
 }
 
 test "DataTableCallbacks type structure" {
-    // Verify that DataTableCallbacks can be instantiated with the expected fields
-    const TestCx = Cx;
-
-    const Callbacks = TestCx.DataTableCallbacks(TestCx);
+    // PR 9 deleted the deprecated `Cx.DataTableCallbacks(Cx)` alias
+    // alongside the rest of the `cx.lists.*` forwarders; the canonical
+    // generic lives at `cx.lists.Lists.DataTableCallbacks(Cx)` now.
+    // The struct shape itself is unchanged.
+    const lists = @import("cx/lists.zig");
+    const Callbacks = lists.Lists.DataTableCallbacks(Cx);
 
     // Verify the struct has the expected fields
     const info = @typeInfo(Callbacks);
@@ -482,14 +484,11 @@ test "sub-namespace fields are zero-sized (no Cx layout growth)" {
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(element_states_ns.ElementStates));
 }
 
-test "DataTableCallbacks: deprecated alias produces same type as cx.lists" {
-    // Zig caches comptime function results by argument identity, so
-    // both calls return the *same* type — callers using either name
-    // can hand their struct literal to either API.
-    const Via_Cx = Cx.DataTableCallbacks(Cx);
-    const Via_Lists = lists_ns.Lists.DataTableCallbacks(Cx);
-    try std.testing.expectEqual(Via_Cx, Via_Lists);
-}
+// PR 9 deleted the `Cx.DataTableCallbacks(Cx)` deprecated-alias test
+// alongside the alias itself — the canonical generic lives at
+// `cx.lists.Lists.DataTableCallbacks(Cx)` now. The remaining
+// `DataTableCallbacks type structure` test above pins the struct's
+// field layout against that canonical name.
 
 test "sub-namespace methods are reachable as decls" {
     // The deprecated forwarders on `Cx` and the namespace methods

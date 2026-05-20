@@ -37,22 +37,12 @@ const wasm_imports = if (is_wasm) @import("../platform/web/imports.zig") else st
     pub fn err(comptime _: []const u8, _: anytype) void {}
     pub fn log(comptime _: []const u8, _: anytype) void {}
 };
-const wasm_loader = if (is_wasm)
-    @import("../platform/web/image_loader.zig")
-else
-    struct {
-        pub const DecodedImage = struct {
-            width: u32,
-            height: u32,
-            pixels: []u8,
-            owned: bool,
-            pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
-        };
-        pub fn loadFromUrlAsync(_: []const u8, _: anytype) ?u32 {
-            return null;
-        }
-        pub fn init(_: std.mem.Allocator) void {}
-    };
+// PR 9 Task 2.5 — was a private `wasm_loader` conditional-stub here;
+// consolidated into `platform.web.image_loader` so the public alias in
+// `root.zig` and this private alias here resolve to the same module on
+// WASM and to the same no-op stub on native.
+const platform = @import("../platform/mod.zig");
+const wasm_loader = platform.web.image_loader;
 
 // =============================================================================
 // WASM Image Loading State

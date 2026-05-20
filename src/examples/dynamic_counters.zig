@@ -16,7 +16,7 @@ const platform = gooey.platform;
 pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 
 // =============================================================================
 // Models
@@ -47,7 +47,7 @@ const Counter = struct {
 const MaxCounters = 10;
 
 const AppState = struct {
-    counters: [MaxCounters]gooey.Entity(Counter) = [_]gooey.Entity(Counter){gooey.Entity(Counter).nil()} ** MaxCounters,
+    counters: [MaxCounters]gooey.context.Entity(Counter) = [_]gooey.context.Entity(Counter){gooey.context.Entity(Counter).nil()} ** MaxCounters,
     counter_count: usize = 0,
     next_label: u8 = 'A',
 
@@ -91,7 +91,7 @@ const AppState = struct {
     // Helper methods (no context needed)
     // =========================================================================
 
-    fn countersSlice(self: *const AppState) []const gooey.Entity(Counter) {
+    fn countersSlice(self: *const AppState) []const gooey.context.Entity(Counter) {
         return self.counters[0..self.counter_count];
     }
 };
@@ -102,7 +102,7 @@ const AppState = struct {
 
 /// Individual counter card - uses pure methods via EntityContext
 const CounterCard = struct {
-    counter: gooey.Entity(Counter),
+    counter: gooey.context.Entity(Counter),
 
     pub fn render(self: @This(), cx: *Cx) void {
         const g = cx.window();
@@ -125,7 +125,7 @@ const CounterCard = struct {
 };
 
 const CounterButtons = struct {
-    counter: gooey.Entity(Counter),
+    counter: gooey.context.Entity(Counter),
 
     pub fn render(self: @This(), cx: *Cx) void {
         var entity_cx = cx.entities.context(Counter, self.counter) orelse return;

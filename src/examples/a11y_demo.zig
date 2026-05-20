@@ -16,7 +16,7 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 
 // =============================================================================
 // Application State
@@ -296,7 +296,7 @@ const ToggleSection = struct {
 
             ui.hstack(.{ .gap = 12 }, .{
                 // Notifications toggle - Checkbox has built-in a11y
-                gooey.Checkbox{
+                gooey.components.Checkbox{
                     .id = "notifications",
                     .checked = self.notifications,
                     .label = if (self.notifications) "Notifications On" else "Notifications Off",
@@ -304,7 +304,7 @@ const ToggleSection = struct {
                     .on_click_handler = cx.update(AppState.toggleNotifications),
                 },
                 // Dark mode toggle - Checkbox has built-in a11y
-                gooey.Checkbox{
+                gooey.components.Checkbox{
                     .id = "dark_mode",
                     .checked = self.dark_mode,
                     .label = if (self.dark_mode) "Dark Mode On" else "Dark Mode Off",

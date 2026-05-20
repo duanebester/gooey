@@ -1,76 +1,93 @@
-//! gooey - A minimal GPU-accelerated UI framework for Zig
+//! Gooey \u2014 top-level public surface.
 //!
-//! Inspired by GPUI, targeting macOS with Metal rendering.
+//! Two tiers:
+//!   1. The seven flat re-exports below are the curated core. They
+//!      satisfy ~all uses across `src/examples/*.zig` and are the
+//!      only names guaranteed to live at `gooey.X`.
+//!   2. Everything else lives under a namespace
+//!      (`gooey.core.Rect`, `gooey.components.Button`,
+//!      `gooey.animation.lerp`, \u2026). A namespace is the
+//!      source-of-truth home; the curated-core flat names are
+//!      re-exports for ergonomics only.
 //!
-//! ## Module Organization
+//! Earlier drafts of this layout planned a `src/prelude.zig` file plus
+//! `usingnamespace gooey.prelude;` in example headers. Zig 0.16 removed
+//! `usingnamespace`, so the prelude file collapses into this top-section
+//! comment.
 //!
-//! Gooey is organized into logical namespaces:
-//!
-//! - `core` - Foundational types (geometry, color)
-//! - `input` - Input events, keycodes, action bindings
-//! - `scene` - GPU primitives (Quad, Shadow, GlyphInstance)
-//! - `context` - Application context (Window, focus, dispatch, entity)
-//! - `animation` - Animation system (easing, interpolation)
-//! - `layout` - Clay-inspired layout engine
-//! - `text` - Text rendering with backend abstraction
-//! - `ui` - Declarative UI builder and primitives
-//! - `components` - High-level UI components (Button, TextInput, etc.)
-//! - `widgets` - Stateful widget implementations
-//! - `platform` - Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU)
-//! - `debug` - Debugging tools (inspector, profiler, render stats)
-//!
-//! ## Quick Start
-//!
-//! For simple apps, use the convenience exports at the top level:
+//! ## Quick start
 //!
 //! ```zig
+//! const std = @import("std");
 //! const gooey = @import("gooey");
 //!
-//! pub fn main() !void {
-//!     try gooey.run(.{
-//!         .title = "My App",
-//!         .render = render,
-//!     });
+//! pub const std_options = gooey.std_options;
+//!
+//! var state = struct { count: i32 = 0 }{};
+//!
+//! pub fn main(init: std.process.Init) !void {
+//!     try gooey.run(AppState, &state, render, .{
+//!         .title = "Counter",
+//!     }, init);
 //! }
 //!
-//! fn render(ui: *gooey.UI) void {
-//!     ui.vstack(.{ .gap = 16 }, .{
-//!         gooey.ui.text("Hello, gooey!", .{}),
-//!     });
+//! fn render(cx: *gooey.Cx) void {
+//!     cx.render(gooey.ui.vstack(.{ .gap = 16 }, .{
+//!         gooey.ui.text("Hello", .{}),
+//!     }));
 //! }
-//! ```
-//!
-//! ## Explicit Imports
-//!
-//! For larger apps, use the namespaced modules:
-//!
-//! ```zig
-//! const gooey = @import("gooey");
-//! const Color = gooey.core.Color;
-//! const LayoutEngine = gooey.layout.LayoutEngine;
-//! const TextSystem = gooey.text.TextSystem;
 //! ```
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 // =============================================================================
-// WASM-compatible logging
+// Curated core (7)
 // =============================================================================
 
-/// Platform-aware logger — works on native and WASM without `std_options`.
+/// Run an app with the unified `Cx` context. The framework's one-liner
+/// entry point. Used by ~all `pub fn main(init)` example bodies.
+pub const run = @import("app.zig").runCx;
+
+/// Cross-platform app generator. Picks the WASM `WebApp` shape on
+/// freestanding targets and the native shape everywhere else; the
+/// resulting type exposes a `pub fn main(init: std.process.Init)` that
+/// `pub fn main = App.main;` lines hand the OS entry point off to.
+pub const App = @import("app.zig").App;
+
+/// The unified rendering context handed to every `render` callback.
+/// Holds the state pointer, layout builder, animation pools, and the
+/// `cx.lists` / `cx.animations` / `cx.focus` / `cx.entities` /
+/// `cx.element_states` sub-namespaces.
+pub const Cx = @import("app.zig").Cx;
+
+/// Framework-level window wrapper (was `Gooey` pre-PR 7b.1b). Holds
+/// per-window subsystems \u2014 focus, hover, animations, change tracker,
+/// element-state pool, \u2026 \u2014 and the OS-level `PlatformWindow` handle.
+pub const Window = @import("context/mod.zig").Window;
+
+/// Literal-friendly color value used inside render fns (`Color.rgb(\u2026)`).
+/// `Rect` / `Size` / `Bounds` live under `gooey.core` since they are
+/// almost always layout return values, never typed explicitly.
+pub const Color = @import("core/mod.zig").Color;
+
+/// Platform-aware logger. Works on native and WASM without
+/// `std_options`. Pair with the `gooey.std_options` one-liner if you
+/// want `std.log` to route through here too.
 ///
-/// ```
+/// ```zig
 /// const log = gooey.log.scoped(.myapp);
 /// log.info("connected to {s}", .{host});
 /// ```
 pub const log = @import("log.zig");
 
-/// Pre-configured `std.Options` that routes `std.log` through the browser
-/// console on WASM and uses the default log function on native.
+/// Pre-configured `std.Options` that routes `std.log` through the
+/// browser console on WASM and falls back to the default `logFn` on
+/// native. **Zig contract** \u2014 looked up by name on the root source
+/// file, so this declaration must keep its exact name and stay at the
+/// top level.
 ///
-/// Add this single line to your root source file:
-/// ```
+/// ```zig
 /// pub const std_options = gooey.std_options;
 /// ```
 pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
@@ -78,9 +95,104 @@ pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
 else
     .{};
 
-/// WASM-compatible log function for use with std_options.
-/// Prefer `gooey.std_options` (one-liner) or `gooey.log` (zero-config).
-pub fn wasmLogFn(
+// =============================================================================
+// Namespaces
+// =============================================================================
+//
+// Each namespace below is the canonical home for the types underneath
+// it. Examples reach for `gooey.components.Button`, `gooey.core.Rect`,
+// `gooey.animation.lerp`, etc. PR 9 removed the duplicate flat aliases
+// (`gooey.Button`, `gooey.Rect`, \u2026) that lived next to these
+// namespaces.
+
+/// Core primitives: geometry (`Point` / `Rect` / `Bounds`), color,
+/// element IDs, custom shaders.
+pub const core = @import("core/mod.zig");
+
+/// Input events: keycodes, mouse buttons, modifiers, event phases.
+pub const input = @import("input/mod.zig");
+
+/// Scene primitives for GPU rendering (`Quad`, `Shadow`, `Hsla`,
+/// `GlyphInstance`, `render_bridge`).
+pub const scene = @import("scene/mod.zig");
+
+/// Application context: focus manager, dispatch, entity system,
+/// handler types, `Window` (also re-exported in the curated core).
+pub const context = @import("context/mod.zig");
+
+/// Animation system: time-based interpolation, springs, motions,
+/// staggers, the `AnimationStore` pool composed onto `Window`.
+pub const animation = @import("animation/mod.zig");
+
+/// Clay-inspired layout engine. Layout primitives and the engine itself.
+pub const layout = @import("layout/layout.zig");
+
+/// Text rendering system with backend abstraction (`TextSystem`,
+/// `FontFace`, `TextMeasurement`).
+pub const text = @import("text/mod.zig");
+
+/// Declarative UI builder + theme + style types.
+pub const ui = @import("ui/mod.zig");
+
+/// High-level UI components: `Button`, `TextInput`, `Modal`, `Svg`,
+/// `Image`, `Tooltip`, \u2026 (the previously flat `gooey.Button` etc. land
+/// here in PR 9).
+pub const components = @import("components/mod.zig");
+
+/// Stateful widget engines: virtual / uniform / tree lists, data table,
+/// scroll container.
+pub const widgets = @import("widgets/mod.zig");
+
+/// Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU) and the
+/// `web.image_loader` async WASM image-decode shim.
+pub const platform = @import("platform/mod.zig");
+
+/// Event loop, frame rendering, multi-window app generator.
+pub const runtime = @import("runtime/mod.zig");
+
+/// Image loading and atlas caching (native async loader + WASM
+/// `platform.web.image_loader` callbacks).
+pub const image = @import("image/mod.zig");
+
+/// SVG parsing, rasterization, and atlas caching.
+pub const svg = @import("svg/mod.zig");
+
+/// Debug tools: inspector, profiler, render stats.
+pub const debug = @import("debug/mod.zig");
+
+/// Form validation utilities (pure functions).
+pub const validation = @import("validation.zig");
+
+/// Accessibility (A11Y): screen reader and assistive technology support.
+pub const accessibility = @import("accessibility/mod.zig");
+
+/// AI integration: canvas command buffer for LLM-driven drawing.
+pub const ai = @import("ai/mod.zig");
+
+/// Cross-platform file dialogs (open/save). Async on WASM via
+/// `platform.web.file_dialog`.
+pub const file_dialog = @import("file_dialog.zig");
+
+/// App entry-point types (`Cx`, `App`, `WebApp`, `CxConfig`, \u2026). The
+/// curated-core `run` / `App` / `Cx` are re-exported above; reach for
+/// the rest through this namespace.
+pub const app = @import("app.zig");
+
+/// Testing utilities and mock implementations. Only compiled when
+/// running tests, so it adds no bloat to production builds.
+pub const testing = if (builtin.is_test)
+    @import("testing/mod.zig")
+else
+    struct {};
+
+// =============================================================================
+// Internal helpers
+// =============================================================================
+
+/// WASM-compatible log function used by `std_options`. Not part of the
+/// public API \u2014 callers should reach for `gooey.log` (zero-config) or
+/// the `gooey.std_options` one-liner instead.
+fn wasmLogFn(
     comptime level: std.log.Level,
     comptime scope: @EnumLiteral(),
     comptime format: []const u8,
@@ -104,348 +216,192 @@ pub fn wasmLogFn(
 }
 
 // =============================================================================
-// Module Namespaces (for explicit imports)
-// =============================================================================
-
-/// Core primitives: geometry, color (foundational types with no internal deps)
-pub const core = @import("core/mod.zig");
-
-/// Input system: events, keycodes, action bindings
-pub const input = @import("input/mod.zig");
-
-/// Scene: GPU primitives for rendering
-pub const scene = @import("scene/mod.zig");
-
-/// Context: application context, focus, dispatch, entity system
-pub const context = @import("context/mod.zig");
-
-/// Animation: time-based interpolation for UI transitions
-pub const animation = @import("animation/mod.zig");
-
-/// Debug tools: inspector, profiler, render stats
-pub const debug = @import("debug/mod.zig");
-
-/// Layout engine (Clay-inspired)
-pub const layout = @import("layout/layout.zig");
-
-/// Form validation utilities (pure functions)
-pub const validation = @import("validation.zig");
-
-/// Accessibility (A11Y) - screen reader and assistive technology support
-pub const accessibility = @import("accessibility/mod.zig");
-
-/// AI integration: canvas command buffer for LLM-driven drawing
-pub const ai = @import("ai/mod.zig");
-
-/// Text rendering system with backend abstraction
-pub const text = @import("text/mod.zig");
-
-/// Declarative UI builder
-pub const ui = @import("ui/mod.zig");
-
-/// Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU)
-pub const platform = @import("platform/mod.zig");
-
-/// Cross-platform file dialogs (open/save)
-/// - macOS: NSOpenPanel / NSSavePanel
-/// - Linux: XDG Desktop Portal
-/// - WASM: returns null (use platform.web.file_dialog for async API)
-pub const file_dialog = @import("file_dialog.zig");
-
-/// Runtime: event loop, frame rendering, input handling, window management
-pub const runtime = @import("runtime/mod.zig");
-
-/// Image loading and caching
-pub const image = @import("image/mod.zig");
-
-/// Stateful widget implementations
-pub const widgets = @import("widgets/mod.zig");
-
-// Components (preferred)
-pub const components = @import("components/mod.zig");
-pub const Button = components.Button;
-pub const Checkbox = components.Checkbox;
-pub const TextInput = components.TextInput;
-pub const TextArea = components.TextArea;
-pub const CodeEditor = components.CodeEditor;
-pub const ProgressBar = components.ProgressBar;
-pub const RadioGroup = components.RadioGroup;
-pub const RadioButton = components.RadioButton;
-pub const Tab = components.Tab;
-pub const TabBar = components.TabBar;
-pub const Svg = components.Svg;
-pub const Icons = components.Icons;
-pub const Lucide = components.Lucide;
-pub const Select = components.Select;
-pub const Image = components.Image;
-pub const AspectRatio = components.AspectRatio;
-pub const Tooltip = components.Tooltip;
-pub const Modal = components.Modal;
-pub const ValidatedTextInput = components.ValidatedTextInput;
-
-// =============================================================================
-// App Entry Point (most common usage)
-// =============================================================================
-
-pub const app = @import("app.zig");
-
-// =============================================================================
-// Convenience Exports (backward compatible, for quick prototyping)
-// =============================================================================
-
-// Geometry (most commonly used)
-pub const Color = core.Color;
-pub const Point = core.Point;
-pub const Size = core.Size;
-pub const Rect = core.Rect;
-pub const Bounds = core.Bounds;
-pub const PointF = core.PointF;
-pub const SizeF = core.SizeF;
-pub const BoundsF = core.BoundsF;
-pub const Edges = core.Edges;
-pub const Corners = core.Corners;
-pub const Pixels = core.Pixels;
-
-// Input events (from input module)
-pub const InputEvent = input.InputEvent;
-pub const KeyEvent = input.KeyEvent;
-pub const KeyCode = input.KeyCode;
-pub const MouseEvent = input.MouseEvent;
-pub const MouseButton = input.MouseButton;
-pub const Modifiers = input.Modifiers;
-
-// Scene primitives (from scene module)
-pub const Scene = scene.Scene;
-pub const Quad = scene.Quad;
-pub const Shadow = scene.Shadow;
-pub const Hsla = scene.Hsla;
-pub const GlyphInstance = scene.GlyphInstance;
-
-/// SVG parsing, rasterization, and atlas caching
-pub const svg = @import("svg/mod.zig");
-
-// Image support
-pub const ImageAtlas = image.ImageAtlas;
-pub const ImageSource = image.ImageSource;
-pub const ImageData = image.ImageData;
-pub const ObjectFit = image.ObjectFit;
-
-// WASM async image loader (only available on WASM targets)
-pub const wasm_image_loader = if (platform.is_wasm)
-    @import("platform/web/image_loader.zig")
-else
-    struct {
-        pub const DecodedImage = struct {
-            width: u32,
-            height: u32,
-            pixels: []u8,
-            owned: bool,
-            pub fn deinit(_: *@This(), _: @import("std").mem.Allocator) void {}
-        };
-        pub const DecodeCallback = *const fn (u32, ?DecodedImage) void;
-        pub fn init(_: @import("std").mem.Allocator) void {}
-        pub fn loadFromUrlAsync(_: []const u8, _: DecodeCallback) ?u32 {
-            return null;
-        }
-        pub fn loadFromMemoryAsync(_: []const u8, _: DecodeCallback) ?u32 {
-            return null;
-        }
-    };
-
-// Render bridge (from scene module)
-pub const render_bridge = scene.render_bridge;
-
-// Event system (from input module)
-pub const Event = input.Event;
-pub const EventPhase = input.EventPhase;
-pub const EventResult = input.EventResult;
-
-// Element types
-pub const ElementId = core.ElementId;
-
-// Framework window context (from context module).
-//
-// PR 7b.1b — `Gooey` (the framework wrapper struct) was renamed to
-// `Window`. The OS-level handle is now `PlatformWindow` (renamed in
-// PR 7b.1a from `platform.Window`). See
-// `docs/cleanup-implementation-plan.md` PR 7b and
-// `architectural-cleanup-plan.md` §10.
-pub const Window = context.Window;
-
-// PR 8.4c — `WidgetStore` retired. Per-element retained state lives on
-// `Window.element_states` (PR 8.1–8.4b); the four animation pools live
-// on `animation.AnimationStore`, composed onto `Window.animations`
-// (PR 8.4c); `ChangeTracker` is a peer field on `Window` directly. No
-// public umbrella type replaces `WidgetStore` — callers reach each
-// subsystem on `Window` directly, mirroring `Window.focus`,
-// `Window.hover`, etc.
-pub const AnimationStore = animation.AnimationStore;
-
-// Layout (commonly used types)
-pub const LayoutEngine = layout.LayoutEngine;
-pub const LayoutId = layout.LayoutId;
-pub const Sizing = layout.Sizing;
-pub const Padding = layout.Padding;
-pub const CornerRadius = layout.CornerRadius;
-pub const LayoutConfig = layout.LayoutConfig;
-pub const BoundingBox = layout.BoundingBox;
-
-// Virtual list (for large datasets)
-pub const UniformListState = widgets.UniformListState;
-pub const VirtualListState = widgets.VirtualListState;
-pub const VisibleRange = widgets.VisibleRange;
-pub const ScrollStrategy = widgets.ScrollStrategy;
-
-// Data table (virtualized 2D table)
-pub const DataTableState = widgets.DataTableState;
-pub const DataTableColumn = widgets.DataTableColumn;
-pub const SortDirection = widgets.SortDirection;
-pub const RowRange = widgets.RowRange;
-pub const ColRange = widgets.ColRange;
-pub const VisibleRange2D = widgets.VisibleRange2D;
-
-// Tree list (virtualized hierarchical list)
-pub const TreeListState = widgets.TreeListState;
-pub const TreeNode = widgets.TreeNode;
-pub const TreeEntry = widgets.TreeEntry;
-pub const TreeLineChar = widgets.TreeLineChar;
-
-// Focus system (from context module)
-pub const FocusId = context.FocusId;
-pub const FocusHandle = context.FocusHandle;
-pub const FocusManager = context.FocusManager;
-pub const FocusEvent = context.FocusEvent;
-
-// =============================================================================
-// Cx API (Unified Context - Recommended)
-// =============================================================================
-
-/// The unified rendering context
-pub const Cx = app.Cx;
-
-/// Run an app with the unified Cx context (recommended for stateful apps)
-pub const runCx = app.runCx;
-
-/// Web app generator (for WASM targets)
-pub const WebApp = app.WebApp;
-/// Unified app generator (works for native and web)
-pub const App = app.App;
-
-// Window management (multi-window support)
-pub const WindowId = platform.WindowId;
-pub const WindowRegistry = platform.WindowRegistry;
-pub const WindowHandle = runtime.WindowHandle;
-pub const WindowContext = runtime.WindowContext;
-
-// Multi-window App (for apps with multiple windows sharing resources)
-pub const MultiWindowApp = runtime.MultiWindowApp;
-pub const AppWindowOptions = runtime.AppWindowOptions;
-pub const MAX_WINDOWS = runtime.MAX_WINDOWS;
-
-/// Configuration for runCx
-pub const CxConfig = app.CxConfig;
-
-/// Font configuration for app initialization
-pub const FontConfig = context.FontConfig;
-
-// Custom shaders
-pub const CustomShader = core.CustomShader;
-
-// Entity system (from context module)
-pub const Entity = context.Entity;
-pub const EntityId = context.EntityId;
-pub const EntityMap = context.EntityMap;
-pub const EntityContext = context.EntityContext;
-pub const isView = context.isView;
-
-// Handler system (from context module)
-pub const HandlerRef = context.HandlerRef;
-pub const OnSelectHandler = context.handler.OnSelectHandler;
-pub const typeId = context.typeId;
-
-// Animation system (types from animation module for convenience)
-pub const Animation = animation.Animation;
-pub const AnimationHandle = animation.AnimationHandle;
-pub const Easing = animation.Easing;
-pub const Duration = animation.Duration;
-pub const lerp = animation.lerp;
-pub const lerpInt = animation.lerpInt;
-pub const lerpColor = animation.lerpColor;
-
-// Spring physics (from animation module)
-pub const spring_mod = @import("animation/spring.zig");
-pub const SpringConfig = spring_mod.SpringConfig;
-pub const SpringHandle = spring_mod.SpringHandle;
-
-// Stagger animations (from animation module)
-pub const stagger_mod = @import("animation/stagger.zig");
-pub const StaggerConfig = stagger_mod.StaggerConfig;
-pub const StaggerDirection = stagger_mod.StaggerDirection;
-
-// Motion containers (from animation module)
-pub const motion_mod = @import("animation/motion.zig");
-pub const MotionConfig = motion_mod.MotionConfig;
-pub const MotionHandle = motion_mod.MotionHandle;
-pub const MotionPhase = motion_mod.MotionPhase;
-pub const SpringMotionConfig = motion_mod.SpringMotionConfig;
-
-// Text system
-pub const TextSystem = text.TextSystem;
-pub const FontFace = text.FontFace;
-pub const TextMeasurement = text.TextMeasurement;
-
-// UI builder
-pub const Builder = ui.Builder;
-
-// Theme system
-pub const Theme = ui.Theme;
-
-// UI style types
-pub const Box = ui.Box;
-pub const StackStyle = ui.StackStyle;
-pub const CenterStyle = ui.CenterStyle;
-pub const ScrollStyle = ui.ScrollStyle;
-pub const UniformListStyle = ui.UniformListStyle;
-pub const VirtualListStyle = ui.VirtualListStyle;
-pub const TreeListStyle = ui.TreeListStyle;
-pub const DataTableStyle = ui.DataTableStyle;
-pub const InputStyle = ui.InputStyle;
-pub const TextAreaStyle = ui.TextAreaStyle;
-pub const CodeEditorStyle = ui.CodeEditorStyle;
-
-// Platform (for direct access)
-pub const MacPlatform = platform.Platform;
-// PR 7b.1a — `Window` re-export renamed to `PlatformWindow` to free
-// up the `Window` name for the framework-level wrapper landing in
-// PR 7b.1b. See `src/platform/mod.zig` for the rationale.
-pub const PlatformWindow = platform.PlatformWindow;
-// Platform interfaces (for runtime polymorphism)
-pub const PlatformVTable = platform.PlatformVTable;
-pub const WindowVTable = platform.WindowVTable;
-pub const PlatformCapabilities = platform.PlatformCapabilities;
-pub const WindowOptions = platform.WindowOptions;
-pub const RendererCapabilities = platform.RendererCapabilities;
-
-// File dialogs
-pub const PathPromptOptions = platform.PathPromptOptions;
-pub const PathPromptResult = platform.PathPromptResult;
-pub const SavePromptOptions = platform.SavePromptOptions;
-
-// =============================================================================
-// Testing Utilities (only available in test builds)
-// =============================================================================
-
-/// Testing utilities and mock implementations
-/// Only compiled when running tests to avoid bloating production builds
-pub const testing = if (builtin.is_test)
-    @import("testing/mod.zig")
-else
-    struct {};
-
-// =============================================================================
 // Tests
 // =============================================================================
 
 test {
     std.testing.refAllDecls(@This());
+    // PR 9 — the previous root.zig had ~120 flat aliases of the form
+    // `pub const Foo = ns.Foo`. `refAllDecls(@This())` referenced each
+    // one, which forced *struct-level* analysis of the underlying
+    // type and pulled in any `test {}` blocks living inside that
+    // struct's body. After the slim, the curated 7 + namespace exports
+    // reach mod.zig files (which have their own `refAllDecls`), but
+    // type-level analysis of every leaf struct is now lazy. Most leaf
+    // structs' tests are still discovered via their own file's
+    // top-level `test {}` blocks; a handful of files keep their tests
+    // *inside* struct bodies and need an explicit comptime touch here
+    // to stay in the discovery set. The list mirrors the demotion
+    // ledger — if any of these later move into a mod.zig with its own
+    // `refAllDecls`, drop the corresponding line here.
+    comptime {
+        // Borrow the top-level namespace aliases without shadowing them.
+        const anim = animation;
+        const comp = components;
+        const wid = widgets;
+        const u = ui;
+        const lay = layout;
+        const plat = platform;
+        const txt = text;
+        const ctx = context;
+        const sc = scene;
+        const inp = input;
+        const img = image;
+        const rt = runtime;
+        const co = core;
+
+        // Animation leaves (these were `spring_mod` / `stagger_mod` /
+        // `motion_mod` flat aliases pre-PR-9).
+        _ = anim.SpringConfig;
+        _ = anim.SpringHandle;
+        _ = anim.StaggerConfig;
+        _ = anim.StaggerDirection;
+        _ = anim.MotionConfig;
+        _ = anim.MotionHandle;
+        _ = anim.MotionPhase;
+        _ = anim.SpringMotionConfig;
+        _ = anim.Animation;
+        _ = anim.AnimationHandle;
+        _ = anim.AnimationStore;
+        _ = anim.Easing;
+        _ = anim.Duration;
+
+        // Components.
+        _ = comp.Button;
+        _ = comp.Checkbox;
+        _ = comp.TextInput;
+        _ = comp.TextArea;
+        _ = comp.CodeEditor;
+        _ = comp.ProgressBar;
+        _ = comp.RadioGroup;
+        _ = comp.RadioButton;
+        _ = comp.Tab;
+        _ = comp.TabBar;
+        _ = comp.Svg;
+        _ = comp.Icons;
+        _ = comp.Lucide;
+        _ = comp.Select;
+        _ = comp.Image;
+        _ = comp.AspectRatio;
+        _ = comp.Tooltip;
+        _ = comp.Modal;
+        _ = comp.ValidatedTextInput;
+
+        // Widgets.
+        _ = wid.UniformListState;
+        _ = wid.VirtualListState;
+        _ = wid.DataTableState;
+        _ = wid.TreeListState;
+
+        // UI styles.
+        _ = u.Builder;
+        _ = u.Theme;
+        _ = u.Box;
+        _ = u.StackStyle;
+
+        // Layout.
+        _ = lay.LayoutEngine;
+        _ = lay.LayoutId;
+        _ = lay.LayoutConfig;
+
+        // Platform / runtime / text.
+        _ = plat.Platform;
+        _ = plat.PlatformWindow;
+        _ = rt.WindowHandle;
+        _ = rt.MultiWindowApp;
+        _ = txt.TextSystem;
+        _ = txt.FontFace;
+
+        // Context.
+        _ = ctx.Entity;
+        _ = ctx.HandlerRef;
+        _ = ctx.OnSelectHandler;
+        _ = ctx.FocusManager;
+        _ = ctx.FontConfig;
+
+        // Scene / input / image / core leaves.
+        _ = sc.Scene;
+        _ = sc.Quad;
+        _ = sc.Shadow;
+        _ = inp.InputEvent;
+        _ = inp.KeyEvent;
+        _ = img.ImageAtlas;
+        _ = co.CustomShader;
+    }
+    // Leaf files with file-level `test {}` blocks that previously
+    // depended on a flat alias in root.zig for analysis-discovery.
+    // PR 9 removed those aliases, so we anchor the leaves here to
+    // keep the test count stable. `inline for` lets us list paths in
+    // bulk; `std.testing.refAllDecls(@This())` only touches a file's
+    // top-level decls, but the file's own `test {}` blocks become
+    // part of the test binary once the file is reachable, which the
+    // `@import` call below guarantees.
+    inline for (.{
+        // Animation leaves — ex-flat-aliased `spring_mod` / `stagger_mod` /
+        // `motion_mod`.
+        @import("animation/spring.zig"),
+        @import("animation/stagger.zig"),
+        @import("animation/motion.zig"),
+        @import("animation/animation.zig"),
+        @import("animation/store.zig"),
+
+        // Widget engines — ex-flat-aliased through `cx.zig`'s direct
+        // file imports.
+        @import("widgets/data_table.zig"),
+        @import("widgets/tree_list.zig"),
+        @import("widgets/uniform_list.zig"),
+        @import("widgets/virtual_list.zig"),
+        @import("widgets/code_editor_state.zig"),
+        @import("widgets/text_input_state.zig"),
+        @import("widgets/text_area_state.zig"),
+        @import("widgets/scroll_container.zig"),
+        @import("widgets/edit_history.zig"),
+        @import("widgets/text_common.zig"),
+
+        // Scene leaves — path/polyline/svg test-heavy files.
+        @import("scene/path.zig"),
+        @import("scene/path_instance.zig"),
+        @import("scene/path_mesh.zig"),
+        @import("scene/mesh_pool.zig"),
+        @import("scene/polyline.zig"),
+        @import("scene/svg_instance.zig"),
+        @import("scene/image_instance.zig"),
+        @import("scene/gradient.zig"),
+        @import("scene/batch_iterator.zig"),
+        @import("scene/render_bridge.zig"),
+
+        // Layout leaves.
+        @import("layout/layout.zig"),
+        @import("layout/engine.zig"),
+        @import("layout/arena.zig"),
+
+        // SVG leaves.
+        @import("svg/path.zig"),
+        @import("svg/atlas.zig"),
+        @import("svg/rasterizer.zig"),
+
+        // Image leaves.
+        @import("image/atlas.zig"),
+        @import("image/loader.zig"),
+
+        // Context / accessibility / AI leaves.
+        @import("context/element_states.zig"),
+        @import("context/global.zig"),
+        @import("context/dispatch.zig"),
+        @import("context/change_tracker.zig"),
+        @import("context/handler.zig"),
+        @import("context/entity.zig"),
+        @import("accessibility/integration_test.zig"),
+        @import("accessibility/tree.zig"),
+        @import("ai/json_parser.zig"),
+        @import("ai/theme_color.zig"),
+        @import("ai/ai_canvas.zig"),
+
+        // UI / core leaves.
+        @import("ui/primitives.zig"),
+        @import("core/triangulator.zig"),
+        @import("validation.zig"),
+    }) |leaf| {
+        std.testing.refAllDecls(leaf);
+    }
 }

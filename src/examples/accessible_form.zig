@@ -21,10 +21,10 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
-const Checkbox = gooey.Checkbox;
-const TextInput = gooey.TextInput;
-const Select = gooey.Select;
+const Button = gooey.components.Button;
+const Checkbox = gooey.components.Checkbox;
+const TextInput = gooey.components.TextInput;
+const Select = gooey.components.Select;
 
 // =============================================================================
 // Form State

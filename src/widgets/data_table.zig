@@ -20,7 +20,7 @@
 //! table_state.addColumn(.{ .width_px = 100, .sortable = true }) catch unreachable;
 //!
 //! // In your render function:
-//! cx.dataTable("my-table", &table_state, .{ .grow = true }, .{
+//! cx.lists.dataTable("my-table", &table_state, .{ .grow = true }, .{
 //!     .render_header = renderHeader,
 //!     .render_cell = renderCell,
 //! });

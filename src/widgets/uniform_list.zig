@@ -14,7 +14,7 @@
 //! var list_state = UniformListState.init(1000, 32.0);
 //!
 //! // In your render function:
-//! cx.uniformList("file-list", &list_state, .{ .grow_height = true }, renderItem);
+//! cx.lists.uniform("file-list", &list_state, .{ .grow_height = true }, renderItem);
 //!
 //! fn renderItem(index: u32, cx: *Cx) void {
 //!     cx.render(ui.box(.{ .height = 32 }, .{ ui.text("Item", .{}) }));

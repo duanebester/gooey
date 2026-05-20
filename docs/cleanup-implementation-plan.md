@@ -82,20 +82,20 @@ them out here so they don't get re-litigated in review:
 
 ## 2. Tracker — at-a-glance
 
-| PR  | Scope                    | Cleanup items                                      | 0.16 audits                                                | Risk        | Status                     |
-| --- | ------------------------ | -------------------------------------------------- | ---------------------------------------------------------- | ----------- | -------------------------- |
-| 0   | Mechanical sweep         | —                                                  | `@Type` split, local-address returns, `ArrayList` `.empty` | Low         | ☑ (no-op, audit only)      |
-| 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☑                          |
-| 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☑                          |
-| 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☑                          |
-| 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
-| 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
-| 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
+| PR  | Scope                    | Cleanup items                                      | 0.16 audits                                                | Risk        | Status                                                                                                                                             |
+| --- | ------------------------ | -------------------------------------------------- | ---------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | Mechanical sweep         | —                                                  | `@Type` split, local-address returns, `ArrayList` `.empty` | Low         | ☑ (no-op, audit only)                                                                                                                              |
+| 1   | `image/` + `Gooey`       | #1 (ImageLoader), #9 (Asset(T) seed)               | `@Type` in atlases, redundant arena mutex                  | Low         | ☑                                                                                                                                                  |
+| 2   | `scene/svg.zig` + `svg/` | #12                                                | `@Type` on path-parsing, vector indexing on rasterizer     | Low         | ☑                                                                                                                                                  |
+| 3   | `context/` extractions   | #1 finish, #8 (SubscriberSet)                      | `@Type` on a11y tree builders                              | Low         | ☑                                                                                                                                                  |
+| 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                                                                                                                                                  |
+| 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                                                                                                                                                  |
+| 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                                                                                                                                                  |
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ☑ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d + 7d-framework landed; 7d-examples absorbed into 7d-framework — see notes; 7e resolved — see PR 9) |
-| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed) |
-| 9   | `root.zig` slim + flags  | #13, #14 (finish)                                  | `pub fn main(init)` example sweep (from 7d-examples)       | Medium      | ☐                          |
-| 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
-| 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
+| 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed)                                                                                         |
+| 9   | `root.zig` slim + flags  | #13, #14 (finish)                                  | `pub fn main(init)` example sweep (from 7d-examples)       | Medium      | ☑ (landed)                                                                                                                                         |
+| 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                                                                                                                                                  |
+| 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                                                                                                                                                  |
 
 Cleanup item numbers reference the synthesis table in
 [`architectural-cleanup-plan.md` §Synthesis](./architectural-cleanup-plan.md#synthesis-the-cleanup-plan).
@@ -176,11 +176,7 @@ subsystem; lay the foundation for a generic `Asset(T)` cache.
 
 **Tasks:**
 
-- [x] Move these fields out of `Gooey` and into a new `ImageLoader`:
-      - `image_load_results` (cap `MAX_IMAGE_LOAD_RESULTS = 32`)
-      - `pending_image_loads` (cap `MAX_PENDING_IMAGE_LOADS = 64`)
-      - `failed_image_loads` (cap `MAX_FAILED_IMAGE_LOADS = 128`)
-      - The `Io.Group` + `Io.Queue(LoadResult)` pair that drives them.
+- [x] Move these fields out of `Gooey` and into a new `ImageLoader`: - `image_load_results` (cap `MAX_IMAGE_LOAD_RESULTS = 32`) - `pending_image_loads` (cap `MAX_PENDING_IMAGE_LOADS = 64`) - `failed_image_loads` (cap `MAX_FAILED_IMAGE_LOADS = 128`) - The `Io.Group` + `Io.Queue(LoadResult)` pair that drives them.
 - [x] `ImageLoader` exposes `init(io, gpa)`, `deinit`, `enqueue(url)`,
       `drain(callback)`. No `*Gooey` reference; takes `io` and the atlas
       pointer it writes into.
@@ -359,7 +355,7 @@ self-contained subsystems into peer modules. **No public API change.**
       `a11y_tree`, `a11y_platform_bridge`, `a11y_bridge`,
       `a11y_enabled`, `a11y_check_counter`.
 - [x] Introduce `SubscriberSet(comptime Key, comptime Cb,
-    comptime cap)` (cleanup item #8). Use it as the storage for
+  comptime cap)` (cleanup item #8). Use it as the storage for
       `BlurHandlerRegistry` and `CancelRegistry` to validate the
       generic shape on real callers before PR 8 leans on it.
 - [x] 0.16: audit `accessibility.zig` for `@Type` usage in the tree
@@ -824,7 +820,7 @@ so each lands green on its own.
 
 - ☑ **7a — `AppResources` + drop `_owned` flags.** Landed on
   `cleanup/pr-7a-app-resources`. `Build Summary: 9/9 steps succeeded;
-  1057/1057 tests passed` (vs. 1053 on PR 6 — the +4 are
+1057/1057 tests passed` (vs. 1053 on PR 6 — the +4 are
   `AppResources`'s own ownership-shape tests). Five of six `_owned`
   flags retired; remaining `image_loader` per-window placement
   reserved for 7b. See "Sub-PR 7a" below.
@@ -854,7 +850,7 @@ so each lands green on its own.
     `multi_window_app.zig::App`. Either way every `Window`
     borrows `*App` so cross-window entity observation becomes
     structurally possible. `Build Summary: 9/9 steps succeeded;
-    1061/1061 tests passed` (+4 vs. 1057 — the four `App`
+1061/1061 tests passed` (+4 vs. 1057 — the four `App`
     init/deinit/cross-window-share tests). See "Sub-PR 7b.3"
     below.
   - ☑ **7b.4 — Lift `keymap` and `*const Theme` off `Window`
@@ -879,7 +875,7 @@ so each lands green on its own.
     three callers (`runtime/runner.zig`,
     `runtime/multi_window_app.zig`, `app.zig::WebApp`) added
     `try` in step. `Build Summary: 9/9 steps succeeded;
-    1063/1063 tests passed` (+2 vs. 1061 — the two new
+1063/1063 tests passed` (+2 vs. 1061 — the two new
     `App.keymap()` tests covering single-window access and the
     cross-window-share property the lift unlocks). See
     "Sub-PR 7b.4" below.
@@ -922,9 +918,9 @@ so each lands green on its own.
     fixture. `App.deinit` order rewrote to teardown the
     loader first (so in-flight fetches unwind against a
     still-live atlas — atlas is upstream-owned on
-    `AppResources` and torn down *after* `App.deinit`
+    `AppResources` and torn down _after_ `App.deinit`
     returns), then `entities`, then `globals`. `Build
-    Summary: 9/9 steps succeeded; 1066/1066 tests passed`
+Summary: 9/9 steps succeeded; 1066/1066 tests passed`
     (+3 vs. 1063 — three new `App` tests covering
     `bindImageLoader` single-bind, the unbound-deinit
     safety net for test fixtures, and the
@@ -976,7 +972,7 @@ so each lands green on its own.
     landing the API surface first means the follow-up only
     has to relocate one method call, not split bundled
     work along the way. `Build Summary: 9/9 steps
-    succeeded; 1069/1069 tests passed` (+3 vs. 7b.5's 1066
+succeeded; 1069/1069 tests passed` (+3 vs. 7b.5's 1066
     — three new `App.beginFrame` / `endFrame` tests). See
     "Sub-PR 7c.1" below.
   - ☑ **7c.2 — Hoist `App.beginFrame` / `App.endFrame`
@@ -1007,15 +1003,15 @@ so each lands green on its own.
     call out the new caller (`renderFrameImpl`, not
     `Window`), and the matching block on
     `Window.beginFrame` / `Window.endFrame` documents
-    that the hoisted call runs *outside* the function,
+    that the hoisted call runs _outside_ the function,
     with the order constraint preserved by the runtime
     driver. `Build Summary: 9/9 steps succeeded;
-    1069/1069 tests passed` (no delta vs. 7c.1 — pure
+1069/1069 tests passed` (no delta vs. 7c.1 — pure
     relocation; the three 7c.1 tests on
     `App.beginFrame` / `App.endFrame` still pin the
     method-level contract, and every example exercises
     the relocated call site through `zig build
-    install`). See "Sub-PR 7c.2" below.
+install`). See "Sub-PR 7c.2" below.
   - ◐ 7c.3 — Introduce `Frame` struct holding `scene` +
     `dispatch` + per-frame transient state; double-buffer
     `rendered_frame` / `next_frame` with `mem.swap` at
@@ -1026,7 +1022,7 @@ so each lands green on its own.
       `cleanup/pr-7c3a-frame-struct`. New
       `src/context/frame.zig` introduces a `Frame`
       struct owning `scene: *Scene` + `dispatch:
-      *DispatchTree` behind a single `owned: bool` flag
+*DispatchTree` behind a single `owned: bool` flag
       — same shape as `AppResources` from PR 7a, the
       symmetry deliberate since `Window` will end up
       holding one `AppResources` (app-lifetime shared)
@@ -1049,7 +1045,7 @@ so each lands green on its own.
       double-buffer landing only has to wire callers,
       not introduce a third constructor on a stable
       type. `Build Summary: 9/9 steps succeeded;
-      1073/1073 tests passed` (+4 vs. 7c.2's 1069 —
+1073/1073 tests passed` (+4 vs. 7c.2's 1069 —
       the four new `Frame` tests covering `initOwned`,
       `initOwnedInPlace`, `borrowed` deinit no-op, and
       zero-viewport tolerance). See "Sub-PR 7c.3a"
@@ -1072,7 +1068,7 @@ so each lands green on its own.
       lines. Same retirement shape PR 7b.6 used for
       the `text_system` / `svg_atlas` / `image_atlas`
       triplet. `Build Summary: 9/9 steps succeeded;
-      1073/1073 tests passed` (no delta vs. 7c.3a's
+1073/1073 tests passed` (no delta vs. 7c.3a's
       1073 — pure call-site sweep, no new tests; the
       four `Frame` tests landed in 7c.3a continue to
       pin the ownership-shape contract). See "Sub-PR
@@ -1087,7 +1083,7 @@ so each lands green on its own.
       `window.frame.scene` / `window.frame.dispatch`
       was writing the frame currently under
       construction), and added `Window.rendered_frame:
-      Frame` for the previously-built tree.
+Frame` for the previously-built tree.
       `mem.swap(&window.rendered_frame, &window.next_frame)`
       at the end of every tick in
       `runtime/frame.zig::renderFrameImpl`, then
@@ -1138,15 +1134,15 @@ so each lands green on its own.
       pointers it was handed at `init` time, so the
       per-tick reset block in `renderFrameImpl` adds
       `builder.scene = window.next_frame.scene;
-      builder.dispatch = window.next_frame.dispatch;`
+builder.dispatch = window.next_frame.dispatch;`
       alongside the `id_counter = 0` and pending-queue
       clears — keeps the cached pointers tracking
       `next_frame.*` across every swap. `Build
-      Summary: 9/9 steps succeeded; 1076/1076 tests
-      passed` (+3 vs. 7c.3b's 1073 — three new `Frame`
+Summary: 9/9 steps succeeded; 1076/1076 tests
+passed` (+3 vs. 7c.3b's 1073 — three new `Frame`
       `mem.swap` tests covering scene+dispatch
       exchange between two owning Frames, `owned =
-      true` preservation across arbitrary swap counts,
+true` preservation across arbitrary swap counts,
       and post-swap recycle landing on the right
       pointees without disturbing the
       just-rotated-into-rendered_frame pair). See
@@ -1166,7 +1162,7 @@ so each lands green on its own.
       `next.clear()`, with build writes landing in
       `next_frame`. Renaming `frame` → `rendered_frame`
       would have forced every build call site to flip
-      to `next_frame` *and* reshape the swap semantics
+      to `next_frame` _and_ reshape the swap semantics
       in a follow-up slice, doubling the diff. The
       GPUI-faithful direction (`frame` → `next_frame`,
       add `rendered_frame`) made 7c.3c the single
@@ -1192,7 +1188,7 @@ so each lands green on its own.
       pass per frame goes away. (2)
       `hovered_ancestors` cache simplification: the
       32-entry parent-chain cache in
-      `context/hover.zig` exists *because* the
+      `context/hover.zig` exists _because_ the
       dispatch tree resets before the next mouse
       move arrives
       (`architectural-cleanup-plan.md` §11 calls
@@ -1218,10 +1214,11 @@ so each lands green on its own.
       in by retiring the start-of-frame reset
       entirely (tick 0 sees the same effective
       state via `Frame.initOwned`'s fresh dispatch).
-      None of these wins land *in* 7c.3c — the slice's job
+      None of these wins land _in_ 7c.3c — the slice's job
       was the swap and the field rename; each
       follow-up slice cashes in one of the wins
       above against the new shape.
+
     - ☑ **7c.3d — Retire `refreshHover` and the
       start-of-frame `next_frame.dispatch.reset()`.**
       Landed on `cleanup/pr-7c3d-retire-refresh-hover`.
@@ -1264,13 +1261,14 @@ so each lands green on its own.
       section recording why the cache fields and method
       are gone, so a future reader doesn't reintroduce
       them. `Build Summary: 9/9 steps succeeded; 1076/1076
-      tests passed` (no delta vs. 7c.3c's 1076 — pure
+tests passed` (no delta vs. 7c.3c's 1076 — pure
       removal of dead code + two existing-test assertion
       drops on the retired fields; the post-shape
       behaviour is already pinned by every existing
       `updateHover`-exercising test through input event
       paths and by every example through `zig build
-      install`). See "Sub-PR 7c.3d" below.
+install`). See "Sub-PR 7c.3d" below.
+
 - ☑ 7d-framework — `App.main(init: std.process.Init)` /
   `WebApp.main` / `runCx` accept `init`. Landed on
   `cleanup/pr-7d-framework`. The pre-flight scope of
@@ -1285,7 +1283,7 @@ so each lands green on its own.
   across 36 examples in one shot, with no `gooey.X` →
   `gooey.<ns>.X` demoted-name rewrites — those stay
   reserved for PR 9b/9c. `Build Summary: 9/9 steps
-  succeeded; 1103/1103 tests passed` (no delta vs.
+succeeded; 1103/1103 tests passed` (no delta vs.
   PR 8.4c — pure plumbing). **Full landing notes in
   [`pr-7d-framework-preflight.md`](./pr-7d-framework-preflight.md)**
   including the deviation rationale and the WASM
@@ -1300,8 +1298,9 @@ so each lands green on its own.
   Folded into PR 9 Task 5 (the structural audit pin).
 
 **Goal:** split `Gooey` into `App` (process-lifetime, shared resources)
-+ `Window` (per-window frame state) + `Frame` (per-frame double
-buffer). Eliminate every `_owned: bool` flag.
+
+- `Window` (per-window frame state) + `Frame` (per-frame double
+  buffer). Eliminate every `_owned: bool` flag.
 
 **Write scope:**
 
@@ -1420,7 +1419,7 @@ and §17 (no ownership flags).
       `runtime/multi_window_app.zig` continue to call them as
       before. No call-site churn this sub-PR.
 - [x] `Build Summary: 9/9 steps succeeded; 1057/1057 tests
-      passed` (+4 vs. PR 6's 1053 — the four `AppResources`
+    passed` (+4 vs. PR 6's 1053 — the four `AppResources`
       ownership-shape tests).
 - [x] `zig build install` builds all examples (single-window
       and multi-window) without warnings.
@@ -1429,7 +1428,7 @@ and §17 (no ownership flags).
 
 - **`resources.owned` is disarmed after by-value copy in
   `initOwned`.** The local `var resources = try
-  AppResources.initOwned(...)` is copied by value into
+AppResources.initOwned(...)` is copied by value into
   `result.resources`. Without flipping `resources.owned = false`
   on the local immediately after the copy, a later `errdefer`
   in the same function (e.g. a `globals.setOwned` failure)
@@ -1763,7 +1762,7 @@ without also having to introduce the ownership story.
 - [x] WASM `WebApp.initImpl` heap-allocates a `ContextApp`
       and wires it onto the single window.
 - [x] `Build Summary: 9/9 steps succeeded; 1061/1061 tests
-      passed` (+4 vs. 1057 — the four new `App` tests).
+    passed` (+4 vs. 1057 — the four new `App` tests).
 - [x] `zig build install` builds all examples (single-window
       and multi-window) without warnings.
 
@@ -1919,6 +1918,7 @@ baseline.
     errdefers and the `result.globals.deinit` call inside
     `Window.deinit` if a later caller fails). Documented
     inline in each path.
+
   - `Window.keymap()` becomes a one-line forwarder:
     `return self.app.keymap();`. Existing call sites
     (`window.keymap().bind(...)` / `.match(...)` in
@@ -1929,6 +1929,7 @@ baseline.
     `*Keymap`; a follow-up that retires the forwarder once
     enough callers route through `*App` directly can drop
     the alias and the import together.
+
 - `src/ui/builder.zig` — `setTheme` writes to
   `g.app.globals.replaceBorrowedConst(Theme, t)` and `theme()`
   reads from `g.app.globals.getConst(Theme) orelse &Theme.light`.
@@ -1973,7 +1974,7 @@ baseline.
       `app.zig::WebApp` learn `try` for the new `App.init*`
       signatures.
 - [x] `Build Summary: 9/9 steps succeeded; 1063/1063 tests
-      passed` (+2 vs. PR 7b.3's 1061 — the two new
+    passed` (+2 vs. PR 7b.3's 1061 — the two new
       `App.keymap()` tests covering single-window access and
       the cross-window-share property).
 - [x] `zig build install` builds all examples (single-window
@@ -2109,7 +2110,7 @@ across the full `App → WindowContext → Window` call chain.
       pass `&self.resources` directly. Drop now-orphaned
       type-alias imports.
 - [x] `Build Summary: 9/9 steps succeeded; 1057/1057 tests
-      passed` (same count as 7a/7b.1a/7b.1b/7b.2 baseline; this
+    passed` (same count as 7a/7b.1a/7b.1b/7b.2 baseline; this
       sub-PR adds no new tests — it's a pure surface-area
       reduction and the existing 1057 tests already cover every
       code path that crosses the rewritten boundary).
@@ -2148,8 +2149,8 @@ across the full `App → WindowContext → Window` call chain.
   out to `examples/`.
 - **Signature collapse keeps the bundle bundled.** The
   pre-7b.6 chain `App.createWindowContext →
-  WindowContext.initWithSharedResources →
-  Window.initWithSharedResources` unbundled
+WindowContext.initWithSharedResources →
+Window.initWithSharedResources` unbundled
   `self.resources.{text_system, svg_atlas, image_atlas}` at
   the top, threaded the three pointers as separate
   parameters through two function boundaries, and rebundled
@@ -2248,9 +2249,9 @@ the reasoning.
 
 The loader needs an `*ImageAtlas` at `initInPlace` time, but
 the atlas lives on `AppResources`, which is constructed
-*after* `App.init` on the single-window path
+_after_ `App.init` on the single-window path
 (`Window.initOwned` creates the owning `AppResources`) and
-*before* `App.init` on the multi-window path
+_before_ `App.init` on the multi-window path
 (`multi_window_app::App.init` creates `self.resources`
 first, then `self.context_app = ContextApp.init(...)`
 embeds the `context.App` by value). Threading
@@ -2321,7 +2322,7 @@ site.
        because the loader teardown must run while the
        atlas is still live, and the atlas is
        upstream-owned on `AppResources` which is torn
-       down *after* `App.deinit` returns).
+       down _after_ `App.deinit` returns).
     3. `globals.deinit` (Keymap, etc.).
   - Three new tests: bind path against a real
     `ImageAtlas`, unbound-deinit safety (test fixtures
@@ -2423,7 +2424,7 @@ site.
       `image/loader.zig` to reflect the post-7b.5
       state.
 - [x] `Build Summary: 9/9 steps succeeded; 1066/1066
-      tests passed` (+3 vs. PR 7b.4's 1063 — three new
+    tests passed` (+3 vs. PR 7b.4's 1063 — three new
       `App` tests covering single-bind,
       unbound-deinit safety, and the
       cross-window-share property).
@@ -2462,7 +2463,7 @@ site.
   `ImageLoader.drain`, but also conceivably via
   direct `image_atlas.cacheImage` calls from a future
   eviction-re-fetch path). The atlas is upstream-owned
-  on `AppResources` and torn down *after* `App.deinit`
+  on `AppResources` and torn down _after_ `App.deinit`
   returns, so loader-first ordering means the atlas
   is guaranteed live during cancellation. Pre-7b.5
   the pre-existing `Window.deinit` did
@@ -2476,7 +2477,7 @@ site.
   different pointer would mean either (a) the caller
   mixed up `App` instances (e.g. handed
   `multi_window_app::App.context_app` a window's
-  borrowed `AppResources` from a *different* parent),
+  borrowed `AppResources` from a _different_ parent),
   or (b) the parent rebuilt `AppResources`
   mid-lifetime (which the framework does not do today
   and would invalidate every borrowing window's
@@ -2530,10 +2531,10 @@ site.
   by-value construction (e.g. a unit test that
   builds a loader on the stack and copies to heap).
   The retirement was of the
-  `Window.fixupImageLoadQueue` *forwarder*, not the
+  `Window.fixupImageLoadQueue` _forwarder_, not the
   underlying primitive. The test
   `ImageLoader: fixupQueue restores the queue
-  pointer after a copy` continues to pin the
+pointer after a copy` continues to pin the
   primitive's contract.
 
 **Result:** `Build Summary: 9/9 steps succeeded;
@@ -2662,7 +2663,7 @@ along the way.
       clearing, unbound-loader safety, and bound-loader
       drain.
 - [x] `Build Summary: 9/9 steps succeeded; 1069/1069
-      tests passed` (+3 vs. PR 7b.5's 1066).
+    tests passed` (+3 vs. PR 7b.5's 1066).
 - [x] `zig build install` builds all examples
       (single-window and multi-window) without warnings.
 
@@ -2684,7 +2685,7 @@ along the way.
   always bind before the first frame, so the guard is
   moot in production.
 - **Order inside `App.beginFrame` is load-bearing.**
-  Loader drain runs *first* — `EntityMap.beginFrame`
+  Loader drain runs _first_ — `EntityMap.beginFrame`
   walks `frame_observations` and calls `unobserve`, which
   only touches entity slots. If a future pipeline lands
   entity-attached image fetches (a view entity that owns
@@ -2858,7 +2859,7 @@ change for single-window flows.
       hooks" block in `app.zig` to reflect the
       relocated caller.
 - [x] `Build Summary: 9/9 steps succeeded; 1069/1069
-      tests passed` (no delta vs. 7c.1 — the
+    tests passed` (no delta vs. 7c.1 — the
       relocation is pure, so the three 7c.1
       method-level tests on `App.beginFrame` /
       `App.endFrame` still pin the same contract).
@@ -2896,9 +2897,9 @@ change for single-window flows.
   7c.1's comment block flagged carries forward to 7c.2
   unchanged. Fixing it requires a centralised tick
   driver at the platform → runtime boundary that fires
-  `app.beginFrame()` once *before* any window's render
+  `app.beginFrame()` once _before_ any window's render
   callback runs, then drives each window's render in
-  sequence, then fires `app.endFrame()` once *after*
+  sequence, then fires `app.endFrame()` once _after_
   the last window has finished. That driver lands in
   7c.3+ alongside the `Frame` double-buffer, which
   needs the same once-per-tick anchor for its
@@ -2934,9 +2935,9 @@ change for single-window flows.
   it from the call order.
 - **No cleanup of the 7c.1 tests required.** The three
   tests added in 7c.1 (`App: beginFrame clears stale
-  entity observations`, `App: beginFrame is a no-op
-  when image_loader is unbound`, `App: beginFrame
-  drains image_loader when bound`) all exercise the
+entity observations`, `App: beginFrame is a no-op
+when image_loader is unbound`, `App: beginFrame
+drains image_loader when bound`) all exercise the
   methods directly, not through `Window`. They keep
   pinning the method-level contract regardless of who
   calls them; 7c.2 is invisible from their
@@ -2968,8 +2969,8 @@ collapses the matching two pairs of `T.deinit` +
 double-buffering with `mem::swap`](./architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap).
 
 **Why this lands as its own slice:** PR 7c.3 in the
-original sketch was "introduce `Frame` *and* wire
-the double-buffer *and* sweep call sites" — a
+original sketch was "introduce `Frame` _and_ wire
+the double-buffer _and_ sweep call sites" — a
 single PR touching the struct definition, ~167
 call sites, the swap point, and the borrowed-view
 shape would have dwarfed every previous 7-slice's
@@ -3051,7 +3052,7 @@ per-pointer flags):**
   the one subsystem `Window` needs to keep
   distinct from the `Frame` bundle for the 7c.3c
   swap to make sense: the swap point lives
-  *between* `endFrame` (which produces commands
+  _between_ `endFrame` (which produces commands
   from `layout`) and the next `beginFrame`
   (which clears `next_frame.scene`). If layout
   were inside `Frame`, the swap would also swap
@@ -3071,7 +3072,7 @@ per-pointer flags):**
   four tests, and the `borrowed`-shape API
   surface reserved for 7c.3c) —
   - `Frame.initOwned(allocator, viewport_width,
-    viewport_height) !Self` —
+viewport_height) !Self` —
     heap-allocates `Scene` + `DispatchTree`,
     calls `scene.setViewport` +
     `scene.enableCulling` inline so callers
@@ -3080,7 +3081,7 @@ per-pointer flags):**
     not NaN) and exit (pointers non-null,
     distinct heap addresses).
   - `Frame.initOwnedInPlace(self, allocator,
-    viewport_width, viewport_height) !void` —
+viewport_width, viewport_height) !void` —
     same semantics, marked `noinline` per
     CLAUDE.md §14 so the WASM stack budget
     stays bounded across the two internal
@@ -3088,7 +3089,7 @@ per-pointer flags):**
     / `Window.initWithSharedResourcesPtr` (the
     WASM stack-overflow-safe init paths).
   - `Frame.borrowed(allocator, scene, dispatch)
-    Self` — reserved for PR 7c.3c. Builds an
+Self` — reserved for PR 7c.3c. Builds an
     `owned = false` view over
     already-initialised pointees; `deinit`
     becomes a no-op so the same backing
@@ -3108,14 +3109,14 @@ per-pointer flags):**
     PR 7c.3a diff minimal at the
     `Window.deinit` site.
   - Four tests: `initOwned allocates and
-    frees cleanly`, `initOwnedInPlace produces
-    an owned instance`, `borrowed deinit is a
-    no-op (no double-free)`, `zero viewport
-    is accepted`. The third test is the
+frees cleanly`, `initOwnedInPlace produces
+an owned instance`, `borrowed deinit is a
+no-op (no double-free)`, `zero viewport
+is accepted`. The third test is the
     load-bearing one — it constructs an
     owning parent, borrows from it, tears the
     borrowed view down, then lets `defer
-    parent.deinit()` run; if the borrowed
+parent.deinit()` run; if the borrowed
     `deinit` had freed the parent's pointees,
     the parent's teardown would double-free
     under `testing.allocator`. Same coverage
@@ -3125,7 +3126,7 @@ per-pointer flags):**
 - `src/context/window.zig` —
   - New `frame: Frame = undefined` field on
     `Window`, placed adjacent to `layout:
-    *LayoutEngine` so the two "rebuilt every
+*LayoutEngine` so the two "rebuilt every
     frame" subsystems read together in the
     struct header. The field's doc-comment
     spells out the ownership-uniform
@@ -3134,7 +3135,7 @@ per-pointer flags):**
     the `undefined` default for `testWindow`
     test fixtures.
   - `scene: *Scene` and `dispatch:
-    *DispatchTree` doc-comments rewritten to
+*DispatchTree` doc-comments rewritten to
     mark the fields as PR 7c.3a back-compat
     aliases. They still exist as plain
     pointer fields (mirror of `frame.scene` /
@@ -3145,32 +3146,32 @@ per-pointer flags):**
     two fields.
   - `Window.initOwned` — the inline
     `allocator.create(Scene)` + `Scene.init`
-    + `setViewport` + `enableCulling` +
-    `errdefer` block (8 lines) and the inline
-    `allocator.create(DispatchTree)` +
-    `DispatchTree.init` + `errdefer` block
-    (3 lines) replaced with a single `var
-    frame = try Frame.initOwned(allocator, w,
-    h)` + `errdefer frame.deinit()` (4
-    lines). The struct literal grows a
-    `.frame = frame` line; `.scene` and
-    `.dispatch` reach into `frame.scene` /
-    `frame.dispatch` so the back-compat
-    aliases land at the same heap addresses.
-    Post-literal, `frame.owned = false` is
-    set so a later errdefer can't
-    double-free against `result.frame.deinit()`
-    in the caller — exact mirror of the
-    `resources.owned = false` line PR 7a
-    added.
+    - `setViewport` + `enableCulling` +
+      `errdefer` block (8 lines) and the inline
+      `allocator.create(DispatchTree)` +
+      `DispatchTree.init` + `errdefer` block
+      (3 lines) replaced with a single `var
+frame = try Frame.initOwned(allocator, w,
+h)` + `errdefer frame.deinit()` (4
+      lines). The struct literal grows a
+      `.frame = frame` line; `.scene` and
+      `.dispatch` reach into `frame.scene` /
+      `frame.dispatch` so the back-compat
+      aliases land at the same heap addresses.
+      Post-literal, `frame.owned = false` is
+      set so a later errdefer can't
+      double-free against `result.frame.deinit()`
+      in the caller — exact mirror of the
+      `resources.owned = false` line PR 7a
+      added.
   - `Window.initOwnedPtr` — same shape, but
     `Frame.initOwnedInPlace(&self.frame,
-    allocator, w, h)` writes directly into
+allocator, w, h)` writes directly into
     the heap-allocated `Window`'s `frame`
     slot, avoiding the by-value-copy disarm.
     The field-by-field block sets `self.scene
-    = self.frame.scene` and `self.dispatch =
-    self.frame.dispatch` for the alias
+= self.frame.scene` and `self.dispatch =
+self.frame.dispatch` for the alias
     mirror.
   - `Window.initWithSharedResources` /
     `Window.initWithSharedResourcesPtr` —
@@ -3199,8 +3200,8 @@ per-pointer flags):**
     reader.
 
 - `src/context/mod.zig` — add `pub const
-  frame = @import("frame.zig"); pub const
-  Frame = frame.Frame;` re-export alongside
+frame = @import("frame.zig"); pub const
+Frame = frame.Frame;` re-export alongside
   the existing `app_resources` block. The
   header comment summarises the symmetry
   between `AppResources` and `Frame` so a
@@ -3229,7 +3230,7 @@ per-pointer flags):**
       `src/context/mod.zig` alongside
       `AppResources`.
 - [x] `Build Summary: 9/9 steps succeeded;
-      1073/1073 tests passed` (+4 vs. PR
+    1073/1073 tests passed` (+4 vs. PR
       7c.2's 1069 — the four new `Frame`
       ownership tests).
 - [x] `zig build install` builds all examples
@@ -3260,7 +3261,7 @@ per-pointer flags):**
   `undefined` (the deferred-command tests
   never reach through `scene` or
   `dispatch`). The new `frame: Frame =
-  undefined` field default keeps the same
+undefined` field default keeps the same
   shape — no test edits needed. Adding a
   real `Frame` to the fixture would pull in
   `Scene` + `DispatchTree` heap allocations
@@ -3280,7 +3281,7 @@ per-pointer flags):**
   the local `errdefer` cleanup —
   `result.frame` (which copied through with
   `owned = true` because it captured the
-  literal *before* the disarm) is the only
+  literal _before_ the disarm) is the only
   one that will free the pointees. Exact
   mirror of the `resources.owned = false`
   line PR 7a added for the `AppResources`
@@ -3290,7 +3291,7 @@ per-pointer flags):**
   into `self.frame` (the final heap
   address), so there's no intermediate
   by-value copy to disarm against. `errdefer
-  self.frame.deinit()` is wired correctly —
+self.frame.deinit()` is wired correctly —
   if a later `try` unwinds, the bundle tears
   down exactly once at its final heap
   address. Same shape as
@@ -3347,7 +3348,7 @@ per-pointer flags):**
   `rendered_frame: Frame` (renaming the
   current `frame` field) and call
   `mem.swap(&window.rendered_frame,
-  &window.next_frame)` at frame boundary.
+&window.next_frame)` at frame boundary.
   Post-swap, the `Frame` whose pointees
   were consumed becomes the "next frame"
   target. The borrowed shape is reserved
@@ -3572,7 +3573,7 @@ per-frame rendering state.
       fixture) to call out 7c.3b's alias
       retirement instead of pointing forward to it.
 - [x] `Build Summary: 9/9 steps succeeded;
-      1073/1073 tests passed` (no delta vs. PR
+    1073/1073 tests passed` (no delta vs. PR
       7c.3a's 1073 — pure mechanical sweep, no
       new tests).
 - [x] `zig build install` builds all examples
@@ -3596,8 +3597,7 @@ per-frame rendering state.
   every existing test that exercises
   scene/dispatch behaviour through any code path
   continues to pass without modification.
-  Verified via the test count being unchanged at
-  1073.
+  Verified via the test count being unchanged at 1073.
 - **`testWindow` fixture stays minimal.**
   Pre-7c.3b the fixture had to set
   `.scene = undefined` and
@@ -3646,7 +3646,7 @@ per-frame rendering state.
   `Window.frame` to `Window.rendered_frame`,
   add `Window.next_frame`, and call
   `mem.swap(&self.rendered_frame,
-  &self.next_frame)` at frame boundary. Every
+&self.next_frame)` at frame boundary. Every
   call site 7c.3b just rewrote already reaches
   through `window.frame.*`; 7c.3c's relocation
   becomes a single rename
@@ -3721,7 +3721,7 @@ declaration. The literal-plan direction
 (renaming `frame` → `rendered_frame` and
 adding `next_frame` for the build target)
 would have forced every build call site to
-flip from `frame.*` → `next_frame.*` *and*
+flip from `frame.*` → `next_frame.*` _and_
 reshape the swap semantics in a follow-up
 slice, doubling the diff. PR 7c.3b's
 forward-compat sketch read "7c.3c will
@@ -3747,38 +3747,38 @@ buffer instead of the live build target on
 every tick after the first. Three options
 were considered:
 
-  - **Option (a) — sync `builder.scene` /
-    `builder.dispatch` from
-    `window.next_frame.*` once per tick
-    inside `renderFrameImpl`** (chosen). Two
-    extra assignments alongside the
-    existing per-tick `id_counter = 0` and
-    pending-queue clears; total cost is two
-    pointer writes per tick. Keeps the
-    `Builder.init` shape unchanged for the
-    ~50 build-call-site widgets that read
-    `self.dispatch` directly.
-  - **Option (b) — make `Builder` hold a
-    `*Window` and dereference
-    `window.next_frame.{scene,dispatch}`
-    on every read** (rejected). Cleaner at
-    the type level but every
-    `self.dispatch.pushNode()` /
-    `self.dispatch.setLayoutId()` /
-    `self.dispatch.popNode()` would learn
-    an extra indirection in the hot path.
-    The hot loops in
-    `Builder.boxWithLayoutIdImpl` push and
-    pop dispatch nodes per primitive;
-    adding a pointer chase per access
-    would be measurable on dense scenes.
-  - **Option (c) — refactor `Builder` to
-    not cache the pointers at all
-    (recompute from `*Window` lazily)**
-    (rejected). Same cost as (b) at every
-    use site, plus a wider blast radius
-    (every `Builder` call site learns a
-    new method signature).
+- **Option (a) — sync `builder.scene` /
+  `builder.dispatch` from
+  `window.next_frame.*` once per tick
+  inside `renderFrameImpl`** (chosen). Two
+  extra assignments alongside the
+  existing per-tick `id_counter = 0` and
+  pending-queue clears; total cost is two
+  pointer writes per tick. Keeps the
+  `Builder.init` shape unchanged for the
+  ~50 build-call-site widgets that read
+  `self.dispatch` directly.
+- **Option (b) — make `Builder` hold a
+  `*Window` and dereference
+  `window.next_frame.{scene,dispatch}`
+  on every read** (rejected). Cleaner at
+  the type level but every
+  `self.dispatch.pushNode()` /
+  `self.dispatch.setLayoutId()` /
+  `self.dispatch.popNode()` would learn
+  an extra indirection in the hot path.
+  The hot loops in
+  `Builder.boxWithLayoutIdImpl` push and
+  pop dispatch nodes per primitive;
+  adding a pointer chase per access
+  would be measurable on dense scenes.
+- **Option (c) — refactor `Builder` to
+  not cache the pointers at all
+  (recompute from `*Window` lazily)**
+  (rejected). Same cost as (b) at every
+  use site, plus a wider blast radius
+  (every `Builder` call site learns a
+  new method signature).
 
 The chosen option lives in
 `renderFrameImpl`'s per-tick reset block:
@@ -3807,79 +3807,79 @@ that's "currently displayed" rotates into
 the platform pointer must follow the
 rotation. The choice was either:
 
-  - **Option (a) — `setScene` follows the
-    swap** (chosen). `renderFrameImpl`
-    calls
-    `pw.setScene(window.rendered_frame.scene)`
-    immediately after the `mem.swap` so
-    the platform's scene pointer always
-    identifies the just-built scene. The
-    macOS `setScene` is mutex-aware
-    (`render_in_progress` short-circuit
-    skips the mutex when called from
-    inside `displayLinkCallback`, which is
-    where `renderFrameImpl` runs), so the
-    extra call is a single pointer
-    assignment plus `requestRender`. Web
-    skips this branch entirely because
-    `getPlatformWindow()` returns null on
-    the web target — `WebApp.frame` reads
-    through `g_window.?.rendered_frame.scene`
-    directly each tick.
-  - **Option (b) — content-swap instead of
-    pointer-swap** (rejected). Keeping the
-    platform's scene pointer stable across
-    swaps would require swapping `Scene`
-    contents (vertex buffers, draw lists)
-    instead of pointers — defeats the
-    point of `mem.swap` (which is meant
-    to be O(1) struct copy). Discarded
-    immediately.
-  - **Option (c) — let the platform
-    re-fetch `window.rendered_frame.scene`
-    each render** (rejected for native).
-    Web does this naturally because
-    `WebApp.frame` is the render driver.
-    Native displayLinkCallback / Linux
-    render path doesn't have a `*Window`
-    handle on the path that calls
-    `renderer.renderScene` — threading one
-    through would touch every platform's
-    render entry point. Doing the
-    `setScene` update at the framework
-    layer (post-swap inside
-    `renderFrameImpl`) keeps the platform
-    code unchanged.
+- **Option (a) — `setScene` follows the
+  swap** (chosen). `renderFrameImpl`
+  calls
+  `pw.setScene(window.rendered_frame.scene)`
+  immediately after the `mem.swap` so
+  the platform's scene pointer always
+  identifies the just-built scene. The
+  macOS `setScene` is mutex-aware
+  (`render_in_progress` short-circuit
+  skips the mutex when called from
+  inside `displayLinkCallback`, which is
+  where `renderFrameImpl` runs), so the
+  extra call is a single pointer
+  assignment plus `requestRender`. Web
+  skips this branch entirely because
+  `getPlatformWindow()` returns null on
+  the web target — `WebApp.frame` reads
+  through `g_window.?.rendered_frame.scene`
+  directly each tick.
+- **Option (b) — content-swap instead of
+  pointer-swap** (rejected). Keeping the
+  platform's scene pointer stable across
+  swaps would require swapping `Scene`
+  contents (vertex buffers, draw lists)
+  instead of pointers — defeats the
+  point of `mem.swap` (which is meant
+  to be O(1) struct copy). Discarded
+  immediately.
+- **Option (c) — let the platform
+  re-fetch `window.rendered_frame.scene`
+  each render** (rejected for native).
+  Web does this naturally because
+  `WebApp.frame` is the render driver.
+  Native displayLinkCallback / Linux
+  render path doesn't have a `*Window`
+  handle on the path that calls
+  `renderer.renderScene` — threading one
+  through would touch every platform's
+  render entry point. Doing the
+  `setScene` update at the framework
+  layer (post-swap inside
+  `renderFrameImpl`) keeps the platform
+  code unchanged.
 
 **Hover read-side split (`updateHover` vs.
 `refreshHover`):** the two hover entry
 points need different dispatch trees.
 
-  - `Window.updateHover(x, y)` is called
-    from `runtime/input.zig` mouse move
-    events, which arrive *between frames*
-    (after frame N's swap, before frame
-    N+1's build). The dispatch tree the
-    user is currently *seeing* lives on
-    `rendered_frame.dispatch`, so this
-    reads through there.
-  - `Window.refreshHover()` is called from
-    `runtime/frame.zig::renderFrameImpl`
-    after the bounds-sync pass, *before*
-    the end-of-frame swap. At that moment
-    the just-built tree (with current
-    bounds) lives on `next_frame.dispatch`;
-    `rendered_frame.dispatch` still holds
-    the previous frame. Reading
-    `next_frame.dispatch` here updates the
-    hover state to match the bounds the
-    user is *about to see*. The follow-up
-    slice that retires `refreshHover` per
-    win (1) above removes this method
-    entirely — once input always
-    hit-tests against `rendered_frame`,
-    the post-build rerun becomes
-    redundant.
+- `Window.updateHover(x, y)` is called
+  from `runtime/input.zig` mouse move
+  events, which arrive _between frames_
+  (after frame N's swap, before frame
+  N+1's build). The dispatch tree the
+  user is currently _seeing_ lives on
+  `rendered_frame.dispatch`, so this
+  reads through there.
+- `Window.refreshHover()` is called from
+  `runtime/frame.zig::renderFrameImpl`
+  after the bounds-sync pass, _before_
+  the end-of-frame swap. At that moment
+  the just-built tree (with current
+  bounds) lives on `next_frame.dispatch`;
+  `rendered_frame.dispatch` still holds
+  the previous frame. Reading
+  `next_frame.dispatch` here updates the
+  hover state to match the bounds the
+  user is _about to see_. The follow-up
+  slice that retires `refreshHover` per
+  win (1) above removes this method
+  entirely — once input always
+  hit-tests against `rendered_frame`,
+  the post-build rerun becomes
+  redundant.
 
 A single `dispatch: *DispatchTree`
 parameter would have been simpler at the
@@ -3917,12 +3917,12 @@ of the `mem.swap` boundary.
   `window.next_frame.*`. New end-of-frame
   block does
   `std.mem.swap(Frame, &window.rendered_frame,
-  &window.next_frame); window.next_frame.scene.clear();
-  window.next_frame.dispatch.reset();`
+&window.next_frame); window.next_frame.scene.clear();
+window.next_frame.dispatch.reset();`
   followed by the platform `setScene`
   update. Per-tick reset block adds the
   two `builder.scene = ...; builder.dispatch
-  = ...;` lines per the pre-flight pivot
+= ...;` lines per the pre-flight pivot
   above. New `Frame` import in the imports
   block (used by the `mem.swap` call).
 - `src/runtime/render.zig` — every
@@ -3987,7 +3987,7 @@ of the `mem.swap` boundary.
       rendered/next pair as the canonical
       shape.
 - [x] `Build Summary: 9/9 steps succeeded;
-      1076/1076 tests passed` (+3 vs. PR
+    1076/1076 tests passed` (+3 vs. PR
       7c.3b's 1073 — the three new
       `mem.swap` tests).
 - [x] `zig build install` builds all
@@ -4043,7 +4043,7 @@ of the `mem.swap` boundary.
   `borrowed` at all. It's a physical
   struct exchange between two owning
   slots, both of which retain `owned =
-  true` post-swap. `Frame.borrowed`
+true` post-swap. `Frame.borrowed`
   remains useful for diagnostic /
   transient inspection of either buffer
   (e.g. a debug overlay reading
@@ -4063,12 +4063,12 @@ of the `mem.swap` boundary.
   point at the just-built scene. The GPU
   rendering inside the same
   `displayLinkCallback` then renders the
-  freshly-swapped scene — *no* one-frame
+  freshly-swapped scene — _no_ one-frame
   display delay is introduced. (A
   start-of-frame swap variant would have
   introduced a one-frame delay because
   the GPU would render `rendered_frame`
-  *before* `next_frame` was built; the
+  _before_ `next_frame` was built; the
   end-of-frame variant chosen here keeps
   the pre-7c.3c first-frame behaviour
   intact.)
@@ -4113,9 +4113,9 @@ trigger.
 **Why this is now safe (post-7c.3c invariants):**
 
 - Input always hit-tests against
-  `rendered_frame.dispatch`, the *previously-built tree
+  `rendered_frame.dispatch`, the _previously-built tree
   with bounds already synced and rotated into
-  `rendered_frame` by the end-of-frame `mem.swap`*. The
+  `rendered_frame` by the end-of-frame `mem.swap`_. The
   bounds sync runs against `next_frame.dispatch` inside
   `renderFrameImpl` (after `endFrame()` returns commands),
   then the swap rotates the synced tree into
@@ -4149,12 +4149,12 @@ trigger.
   into the cache (they were only read by `refresh`).
   `initInPlace` drops the two field clears. The
   module-level doc-block rewrites the `## What lives
-  here` enumeration to drop the cache fields, retitles
+here` enumeration to drop the cache fields, retitles
   the decoupling section from `## Decoupling from
-  Gooey` to `## Decoupling from Window` (the rename
+Gooey` to `## Decoupling from Window` (the rename
   landed in 7b.1b but this file's docs hadn't been
   swept), and adds a new `## History — refresh
-  retirement (PR 7c.3d)` section recording why the
+retirement (PR 7c.3d)` section recording why the
   cache fields and method are gone. The `update`
   function gains a 7c.3d note in its doc-comment
   spelling out the post-shape contract: `tree` is
@@ -4163,7 +4163,7 @@ trigger.
   caller is `Window.updateHover`), and the
   double-buffer guarantees that tree has bounds
   already synced. Two existing tests (`HoverState:
-  init produces an empty, no-change state` and
+init produces an empty, no-change state` and
   `HoverState: initInPlace matches init`) drop their
   two `last_mouse_*` field assertions each.
 - `src/context/window.zig` — remove `Window.refreshHover`.
@@ -4208,7 +4208,7 @@ trigger.
       site recording the retirement and the
       post-shape invariant.
 - [x] `Build Summary: 9/9 steps succeeded;
-      1076/1076 tests passed` (no delta vs. 7c.3c).
+    1076/1076 tests passed` (no delta vs. 7c.3c).
 - [x] `zig build install` builds all examples
       (single-window and multi-window) without
       warnings.
@@ -4269,7 +4269,7 @@ trigger.
 - **`hovered_ancestors` cache stays load-bearing.**
   Win (2) of the 7c.3c plan — replacing the
   32-entry parent-chain cache with a live re-walk
-  of `rendered_frame.dispatch` — is *not* part of
+  of `rendered_frame.dispatch` — is _not_ part of
   this slice. The cache is still load-bearing for
   `isHoveredOrDescendant` reads between frames
   against the just-built rendered_frame tree, and
@@ -4383,7 +4383,7 @@ write scope of each landing is small enough to review and revert:
       `pub const TextInput = struct {...}` (the engine: text buffer,
       cursor, IME, edit history) collided with
       `components/text_input.zig`'s `pub const TextInput = struct
-      {...}` (the user-facing chrome component). PR 8.2 established
+    {...}` (the user-facing chrome component). PR 8.2 established
       the convention that each stateful widget owns one state
       declaration next to its component (`SelectState` in
       `components/select.zig`); applying that to the text-widget
@@ -4405,6 +4405,7 @@ write scope of each landing is small enough to review and revert:
       framework. Pinned by 5 new `Bounds.contains` tests covering
       interior hit, left/top inclusive, right/bottom exclusive,
       every-direction outside, and the zero-size degenerate case.
+
 - [x] **PR 8.4a** — `scroll_container` migrated onto
       `Window.element_states`. Smallest of the four remaining
       retained-storage widgets and the only one with no
@@ -4481,11 +4482,11 @@ warnings.
 **Files added:**
 
 - `src/context/element_states.zig` (~880 lines: ~430 lines of code
-  + ~450 lines of doc comments and tests). Public surface:
-  `MAX_ELEMENT_STATES = 4096`, `TypeId`, `typeId(T)`, `Key`,
-  `ElementStates` with `init` / `initInPlace` / `deinit` /
-  `withElementState` / `insert` / `get` / `contains` /
-  `hasRoom` / `len` / `remove`.
+  - ~450 lines of doc comments and tests). Public surface:
+    `MAX_ELEMENT_STATES = 4096`, `TypeId`, `typeId(T)`, `Key`,
+    `ElementStates` with `init` / `initInPlace` / `deinit` /
+    `withElementState` / `insert` / `get` / `contains` /
+    `hasRoom` / `len` / `remove`.
 
 **Files edited:**
 
@@ -4757,7 +4758,6 @@ PR 7c.3+. The `Cx` surface introduced here is forward-compatible
 with that shape: `cx.element_states.with` returns `*S` regardless
 of which underlying frame map serviced the lookup.
 
-
 ### PR 8.4-prep landing notes (engine-type rename + shared Bounds)
 
 **Status:** ✅ landed.
@@ -4772,12 +4772,12 @@ install` clean.
 **Two commits:**
 
 1. **`widgets: promote shared Bounds to text_common.zig with
-   half-open semantics`.** Adds `pub const Bounds = struct { x, y,
-   width, height: f32, pub fn contains(...) bool }` to
+half-open semantics`.** Adds `pub const Bounds = struct { x, y,
+width, height: f32, pub fn contains(...) bool }` to
    `widgets/text_common.zig` (the existing shared-utilities home
    for the text-widget family — UTF-8 navigation, selection,
    position helpers). Replaces the three duplicate `pub const
-   Bounds = struct {...}` definitions in `text_input_state.zig`,
+Bounds = struct {...}` definitions in `text_input_state.zig`,
    `text_area_state.zig`, `code_editor_state.zig` with one-line
    re-exports (`pub const Bounds = common.Bounds`) so existing
    `*_state.Bounds` import paths in `WidgetStore`,
@@ -4788,19 +4788,19 @@ install` clean.
    exclusive, every-direction outside, zero-size degenerate).
 
 2. **`widgets: rename engine types TextInput → TextInputState,
-   TextArea → TextAreaState`.** Pure mechanical type rename across 6
+TextArea → TextAreaState`.** Pure mechanical type rename across 6
    files: `widgets/text_input_state.zig`,
    `widgets/text_area_state.zig`, `widgets/code_editor_state.zig`,
    `widgets/mod.zig`, `context/widget_store.zig`, `cx.zig`. The
    user-facing chrome components in `components/text_input.zig` /
    `components/text_area.zig` keep their `TextInput` / `TextArea`
    names (declarative literals like `TextInput{ .id = "...",
-   .placeholder = "..." }` are unchanged for application code). The
-   accessor *verbs* on `WidgetStore` (`textInput`,
+.placeholder = "..." }` are unchanged for application code). The
+   accessor _verbs_ on `WidgetStore` (`textInput`,
    `textInputOrPanic`, `getFocusedTextInput`, ...) are also
    intentionally preserved — they're the framework's public API for
    "give me the engine state for this widget id" and only the
-   *return types* are renamed.
+   _return types_ are renamed.
 
 **Why a separate prep PR.** PR 8.4 is the storage migration:
 lifting `TextInputState` + `TextAreaState` off the per-type
@@ -4903,7 +4903,7 @@ existing `ElementStates` container introduced in PR 8.1.
 **Files edited:**
 
 - `src/context/element_states.zig` — adds `getOrInsert(comptime
-  S, id_hash, initial: S) !*S`. The runtime-init twin of
+S, id_hash, initial: S) !*S`. The runtime-init twin of
   `withElementState`: same get-or-create shape, but accepts a
   caller-built initial value rather than a comptime `default`
   factory. Stateful widgets like `ScrollContainer`,
@@ -4934,7 +4934,7 @@ existing `ElementStates` container introduced in PR 8.1.
 
 - `src/cx.zig` — `cx.scrollView(id)` routes through
   `g.element_states.getOrInsert(ScrollContainer, hash,
-  ScrollContainer.init(g.allocator))` (was
+ScrollContainer.init(g.allocator))` (was
   `g.widgets.scrollContainer(id)`). Hashes the string id once at
   the boundary via `LayoutId.fromString(id).id`. Failure modes
   (OOM / `error.ElementStatesAtCapacity`) collapse to `null` so
@@ -4966,13 +4966,13 @@ existing `ElementStates` container introduced in PR 8.1.
 
 - `src/runtime/frame.zig` — `renderCommands`'s scrollbar
   rendering branch reads through `window.element_states.get(
-  ScrollContainer, pending.layout_id.id)`. Read-only `get`
+ScrollContainer, pending.layout_id.id)`. Read-only `get`
   rather than `getOrInsert` because the slot was already seeded
   by `Builder.scroll` earlier in the frame.
 
 - `src/widgets/data_table.zig`, `src/widgets/uniform_list.zig`,
   `src/widgets/virtual_list.zig` — each `syncScroll(b, id,
-  state)` helper hashes the string id at the boundary and
+state)` helper hashes the string id at the boundary and
   reaches into the pool with read-only `get`. The helper still
   accepts `id: []const u8` because callers compose ids
   dynamically (e.g. `tree_list` derives ids from node paths);
@@ -5071,7 +5071,7 @@ pool.
 **Files edited:**
 
 - `src/widgets/text_input_state.zig` — drops the unused `id:
-  ElementId` field, the `getId()` method, and the
+ElementId` field, the `getId()` method, and the
   `core/element_id.zig` import. Collapses `init` and
   `initWithId` into a single `init(allocator, bounds)`
   constructor (the unique-id counter inside the pre-PR-8.4b
@@ -5091,7 +5091,7 @@ pool.
   text-input section refreshed to describe the post-PR-8.4b
   ownership shape (engine state lives on
   `Window.element_states`, keyed by `(EngineType,
-  layout_id.id)`) instead of the pre-PR-8.4b `WidgetStore`
+layout_id.id)`) instead of the pre-PR-8.4b `WidgetStore`
   ownership shape.
 
 - `src/context/widget_store.zig` — drops the three
@@ -5119,7 +5119,7 @@ pool.
   `renderTextArea` / `renderCodeEditor` are the create-on-touch
   sites: each seeds the pool entry on first render via
   `g.element_states.getOrInsert(EngineType, layout_id.id,
-  EngineType.init(g.allocator, default_bounds))` and reuses the
+EngineType.init(g.allocator, default_bounds))` and reuses the
   resulting borrow for both the focus-state read (border colour)
   and the focus-vtable wire-up (`FocusHandle.withWidget(ti.focusable())`).
   Reusing the borrow lets each render pay for at most one pool
@@ -5147,7 +5147,7 @@ pool.
   `syncCodeEditorBoundVariablesCx`) flips from the retired
   `widgets.getFocusedText*` / `widgets.text*` accessors to
   these helpers (or to `window.element_states.get(EngineType,
-  pending.layout_id.id)` for the pending-list-keyed paths).
+pending.layout_id.id)` for the pending-list-keyed paths).
   Each per-event handler shares one `builder` borrow across
   all three text-widget arms so the pending-list walk is paid
   for at most once per event.
@@ -5156,7 +5156,7 @@ pool.
   `renderTextAreas` / `renderCodeEditors` switch from
   `window.widgets.text*(pending.id)` to
   `window.element_states.get(EngineType, @as(u64,
-  pending.layout_id.id))`. Read-only `get` because
+pending.layout_id.id))`. Read-only `get` because
   `Builder.render*` already seeded the slot earlier this frame;
   a `null` return means the seed itself failed (capacity
   exhaustion or OOM at builder time), in which case skipping
@@ -5182,7 +5182,7 @@ pool.
   `widgets.text*` / `widgets.codeEditor` proxy accessors that
   PR 4 callers were pointed at. Post-PR-8.4b the canonical
   call shape is `window.element_states.get(EngineType,
-  layout_id.id)`.
+layout_id.id)`.
 
 - `src/examples/code_editor.zig`, `src/examples/pomodoro.zig`,
   `src/examples/showcase.zig` — example-side rewires.
@@ -5217,26 +5217,26 @@ through three per-type accessors on `WidgetStore`
 and calling `isFocused()` on every entry. Two replacement
 shapes were considered:
 
-  - **Walk the matching `pending_*` list and look up each
-    entry in the pool by `layout_id.id`** (chosen). The
-    pending lists are bounded
-    (`MAX_PENDING_INPUTS = 256`,
-    `MAX_PENDING_TEXT_AREAS = 64`,
-    `MAX_PENDING_CODE_EDITORS = 32`) per CLAUDE.md §4's
-    hard-cap rule, and the focused widget rendered this frame
-    so its layout id is in one of the lists. Same upper-bound
-    shape the pre-PR-8.4b StringHashMap walk had, without the
-    dynamically-grown map.
-  - **Extend `Focusable` with a `typeId()` accessor and
-    discriminate the focus manager's cached
-    `focused_widget: ?Focusable` by type** (rejected). Pulls
-    `TypeId` (a pool concept) into `context/focus.zig`, where
-    it doesn't belong. The `Focusable` vtable's job is to
-    drive `focus()` / `blur()` / `isFocused()` polymorphically
-    — the framework deliberately doesn't know about the
-    concrete widget type at the focus layer. Discriminating by
-    type id at the dispatch site would have re-introduced the
-    `context → widgets` backward edge PR 4 worked to retire.
+- **Walk the matching `pending_*` list and look up each
+  entry in the pool by `layout_id.id`** (chosen). The
+  pending lists are bounded
+  (`MAX_PENDING_INPUTS = 256`,
+  `MAX_PENDING_TEXT_AREAS = 64`,
+  `MAX_PENDING_CODE_EDITORS = 32`) per CLAUDE.md §4's
+  hard-cap rule, and the focused widget rendered this frame
+  so its layout id is in one of the lists. Same upper-bound
+  shape the pre-PR-8.4b StringHashMap walk had, without the
+  dynamically-grown map.
+- **Extend `Focusable` with a `typeId()` accessor and
+  discriminate the focus manager's cached
+  `focused_widget: ?Focusable` by type** (rejected). Pulls
+  `TypeId` (a pool concept) into `context/focus.zig`, where
+  it doesn't belong. The `Focusable` vtable's job is to
+  drive `focus()` / `blur()` / `isFocused()` polymorphically
+  — the framework deliberately doesn't know about the
+  concrete widget type at the focus layer. Discriminating by
+  type id at the dispatch site would have re-introduced the
+  `context → widgets` backward edge PR 4 worked to retire.
 
 The chosen shape lives in `runtime/input.zig` as three pure
 helpers (`focusedTextInput` / `focusedTextArea` /
@@ -5296,7 +5296,6 @@ eviction shape lands later alongside the rest of the GPUI
 
 ---
 
-
 ### PR 8.4c landing notes (residual `WidgetStore` shrink-down)
 
 **Status:** ✅ landed.
@@ -5307,19 +5306,19 @@ pure refactor with identical retention semantics, so no new tests
 are introduced). `zig build install` clean.
 
 **Note on the 8.4c slot.** PR 8.4b's task-list entry says
-*"collapsing what was planned as PRs 8.4b + 8.4c into a single
-landing"* — that was correct at the time for the original
+_"collapsing what was planned as PRs 8.4b + 8.4c into a single
+landing"_ — that was correct at the time for the original
 `code_editor_state` arm of 8.4c (which folded into 8.4b because
 the focused-widget dispatch already touched all three text
-engines together). What PR 8.4b did *not* land was the residual
+engines together). What PR 8.4b did _not_ land was the residual
 cross-cutting state left on `WidgetStore` after every
 per-widget map had been peeled off: the four animation pools
 (`animations`, `springs`, `motions`, `spring_motions`, all
 u32-keyed `AutoArrayHashMapUnmanaged`) and the
 `change_tracker: ChangeTracker` field. PR 8.4c is that final
 shrink-down. The two paths the cleanup plan kept open for this
-slot — *lift onto `Frame` with frame-keyed eviction* or
-*collapse to a one-field holder* — resolved to the collapse
+slot — _lift onto `Frame` with frame-keyed eviction_ or
+_collapse to a one-field holder_ — resolved to the collapse
 path; the rationale is in the trailing "Why collapse, not
 frame-keyed eviction" section below.
 
@@ -5336,7 +5335,7 @@ frame-keyed eviction" section below.
   `removeAnimationById` / `removeAnimation` / `springById` /
   `spring` / `staggerById` / `stagger` / `motionById` /
   `motion` / `springMotionById` / `springMotion`). The file
-  header records the move rationale, what's *not* here
+  header records the move rationale, what's _not_ here
   (`ChangeTracker`, promoted to a peer `Window` field), and the
   still-deferred frame-keyed eviction shape — a future migration
   alongside `focus` / `mouse_listeners` / `tab_stops` onto
@@ -5351,7 +5350,6 @@ frame-keyed eviction" section below.
 
 - `src/context/window.zig` — replaces the `widgets: WidgetStore`
   field with two peer fields:
-
   - `animations: AnimationStore` (the four pools, lifted off
     `WidgetStore` verbatim).
   - `change_tracker: ChangeTracker = .{}` (the per-frame
@@ -5421,7 +5419,7 @@ frame-keyed eviction" section below.
   point at `AnimationStore` / `animation/store.zig`. Two were
   section headers (`// Animation State (stored in WidgetStore)`
   → `// Animation State (stored in AnimationStore — see
-  animation/store.zig)`); one was a tick-function header
+animation/store.zig)`); one was a tick-function header
   comment in `motion.zig`. The file header on `animation.zig`
   records the rename for readers who arrive here looking for
   the historical name.
@@ -5430,35 +5428,35 @@ frame-keyed eviction" section below.
 left two paths open for this slot. The chosen path is the
 collapse:
 
-  - The animation pools' retention semantics are *already*
-    decoupled from `WidgetStore`'s frame lifecycle —
-    `last_queried_frame` + `frame_counter` heuristics in
-    `animateById` / `animateOnById` detect "completed AND not
-    queried last frame" (component was hidden) and restart on
-    re-mount. Replacing that with the GPUI swap-discipline
-    shape (fall-through from `next_frame.animations` to
-    `rendered_frame.animations` with carry-forward on hit)
-    would have been a behavioral change (2-frame eviction
-    semantics) layered on top of the structural change
-    (`WidgetStore` retirement). The two concerns are
-    independent; bundling them would have meant the structural
-    cleanup couldn't land without also vetting the behavioral
-    upgrade for every animation call site in every demo.
-  - Frame-keyed eviction is naturally a peer to PR 7c.3's
-    deferred "migrate `focus` / `mouse_listeners` /
-    `tab_stops` onto `Frame`" work — the
-    double-buffer-with-carry-forward shape is a `Frame`
-    concern, not a `WidgetStore` concern. Doing it inside
-    PR 8 would have conflated two cleanups along an
-    arbitrary boundary.
-  - Definition-of-done for PR 8 (*"All existing widget-state
-    hash maps deleted"*, *"Adding `widgets/foo_state.zig`
-    requires zero edits to the framework"*) was already met
-    after 8.4b. PR 8.4c's remaining structural job was the
-    namespace deletion — collapsing `WidgetStore` into its
-    two natural homes (`AnimationStore` in `animation/`,
-    `ChangeTracker` directly on `Window`) closes that job
-    without taking on the orthogonal behavioral upgrade.
+- The animation pools' retention semantics are _already_
+  decoupled from `WidgetStore`'s frame lifecycle —
+  `last_queried_frame` + `frame_counter` heuristics in
+  `animateById` / `animateOnById` detect "completed AND not
+  queried last frame" (component was hidden) and restart on
+  re-mount. Replacing that with the GPUI swap-discipline
+  shape (fall-through from `next_frame.animations` to
+  `rendered_frame.animations` with carry-forward on hit)
+  would have been a behavioral change (2-frame eviction
+  semantics) layered on top of the structural change
+  (`WidgetStore` retirement). The two concerns are
+  independent; bundling them would have meant the structural
+  cleanup couldn't land without also vetting the behavioral
+  upgrade for every animation call site in every demo.
+- Frame-keyed eviction is naturally a peer to PR 7c.3's
+  deferred "migrate `focus` / `mouse_listeners` /
+  `tab_stops` onto `Frame`" work — the
+  double-buffer-with-carry-forward shape is a `Frame`
+  concern, not a `WidgetStore` concern. Doing it inside
+  PR 8 would have conflated two cleanups along an
+  arbitrary boundary.
+- Definition-of-done for PR 8 (_"All existing widget-state
+  hash maps deleted"_, _"Adding `widgets/foo_state.zig`
+  requires zero edits to the framework"_) was already met
+  after 8.4b. PR 8.4c's remaining structural job was the
+  namespace deletion — collapsing `WidgetStore` into its
+  two natural homes (`AnimationStore` in `animation/`,
+  `ChangeTracker` directly on `Window`) closes that job
+  without taking on the orthogonal behavioral upgrade.
 
 The doc-comment at the top of `animation/store.zig` records
 the deferral chain so a future reader doesn't re-litigate
@@ -5476,9 +5474,9 @@ puts the storage next to the types it stores. The dependency
 edge from `context/window.zig` into `animation/store.zig` is
 the same shape every other `context → engine` import has
 (e.g. `context/window.zig → text/text_system.zig`,
-`context/window.zig → svg/atlas.zig`); it is *not* the
+`context/window.zig → svg/atlas.zig`); it is _not_ the
 `context → widgets` backward edge PR 4 broke (that one was
-about concrete widget *state* types leaking into `Window`'s
+about concrete widget _state_ types leaking into `Window`'s
 field list).
 
 **Why `ChangeTracker` is a peer field on `Window`, not on
@@ -5506,7 +5504,6 @@ migration that PR 7c.3 deferred. See the doc-comment block
 at the top of `animation/store.zig` for the deferral chain.
 
 ---
-
 
 ## PR 9 — `root.zig` slim + ownership flag drop + 7d-examples entry-point sweep
 
@@ -5567,7 +5564,7 @@ historical record of why the curated-7 list still applies.
 
 **Tasks:**
 
-- [ ] **Task 1 — Reshape `root.zig` to a 7-name curated-core
+- [x] **Task 1 — Reshape `root.zig` to a 7-name curated-core
       header + namespaces section.** The curated 7 stay flat at
       `gooey.X` (matching the pre-0.16 prelude list); everything
       else moves to its namespace. Shortlist landed during the
@@ -5664,7 +5661,7 @@ historical record of why the curated-7 list still applies.
       reach for it (grep confirmed — only doc-comments mention it
       in examples).
 
-- [ ] **Task 2 — Demote the rest of `root.zig`'s ~123 non-core
+- [x] **Task 2 — Demote the rest of `root.zig`'s ~123 non-core
       flat re-exports** into namespace re-exports
       (`gooey.components.Button`, `gooey.core.Rect`, etc.). The
       7 curated-core names from Task 1 stay flat.
@@ -5700,7 +5697,7 @@ historical record of why the curated-7 list still applies.
       doc-comments removed (the 7 curated-core names stay) →
       `root.zig` goes from 451 → ~50 lines.
 
-- [ ] **Task 2.5 — Module-side prep (lands before Task 2's
+- [x] **Task 2.5 — Module-side prep (lands before Task 2's
       deletes).** Three small additions so the deletions land
       cleanly:
 
@@ -5728,7 +5725,7 @@ historical record of why the curated-7 list still applies.
          (`scene/mod.zig:145`). No work, just confirmed during
          inventory.
 
-- [ ] **Task 3 — Delete every deprecated `cx.foo` forwarder**
+- [x] **Task 3 — Delete every deprecated `cx.foo` forwarder**
       added in PR 5 in favor of `cx.lists.foo` / `cx.animate.foo`
       / etc.
 
@@ -5751,7 +5748,7 @@ historical record of why the curated-7 list still applies.
       `std.process.argsAlloc` (already true in `src/` per
       the audit; reconfirmed during the 7d-framework sweep).
 
-- [ ] **Task 5 — (folded from 7e) Pin the structural `_owned`
+- [x] **Task 5 — (folded from 7e) Pin the structural `_owned`
       audit.** Add a compile-time test (or `build.zig` grep step)
       that fails if any `_owned: bool` field appears on `Window`
       or any of its sub-structs. `AppResources.owned` and
@@ -5765,13 +5762,13 @@ historical record of why the curated-7 list still applies.
 **Examples sweep — concrete touch list.** From the usage grep,
 only 5 demoted names are touched by more than ~5 example files:
 
-| Symbol | Example uses | Migration |
-|---|---|---|
-| `gooey.Button` | 27 | → `gooey.components.Button` |
-| `gooey.Image` | 18 | → `gooey.components.Image` |
-| `gooey.Entity` | 11 | → `gooey.context.Entity` |
-| `gooey.Color` | 10 | → no change (`Color` stays in curated core) |
-| `gooey.lerp` | 10 | → `gooey.animation.lerp` |
+| Symbol         | Example uses | Migration                                   |
+| -------------- | ------------ | ------------------------------------------- |
+| `gooey.Button` | 27           | → `gooey.components.Button`                 |
+| `gooey.Image`  | 18           | → `gooey.components.Image`                  |
+| `gooey.Entity` | 11           | → `gooey.context.Entity`                    |
+| `gooey.Color`  | 10           | → no change (`Color` stays in curated core) |
+| `gooey.lerp`   | 10           | → `gooey.animation.lerp`                    |
 
 Everything else: ≤5 sites total, mechanical.
 
@@ -5830,6 +5827,191 @@ green):
   `zig build test`.
 - A migration note in `CHANGELOG.md` listing every renamed
   symbol.
+
+### PR 9 landing notes
+
+**Status:** ✅ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1121/1121 tests
+passed` (vs. PR 8.4c's 1103 — +21 from the explicit
+test-discovery anchor block in `root.zig` reaching leaf files the
+pre-PR-9 flat aliases used to touch incidentally, +3 from the
+new `_owned` audit tests, -2 from the deprecated forwarder /
+`DataTableCallbacks` alias test deletions). `zig build install`
+builds all 39 examples clean.
+
+**Definition-of-done deviations:**
+
+- `wc -l src/root.zig` = **407**, not <80. The 80-line target
+  assumed namespace re-exports would transitively force
+  `test {}` block analysis in leaf files (the way the pre-PR-9
+  flat aliases did). They don't — `std.testing.refAllDecls`
+  walks decls by reference but does not recurse through
+  namespace imports' nested decls, and Zig 0.16's lazy comptime
+  analysis means leaf-file tests stay out of the test binary
+  unless something forces analysis of that file. Without an
+  explicit anchor block, the slim drops ~41 tests off the
+  baseline. The corrective recursive `refAllDeclsRecursive`
+  utility was tried first and surfaced ~4 pre-existing dormant
+  compilation bugs in unrelated subsystems
+  (`accessibility/mod.zig:41` references an undefined
+  `Accessibility` decl, `animation/store.zig:376` calls a
+  non-pub `exitConfig`, `components/tabs.zig:223` has a
+  type-coercion issue, `ui/canvas.zig` mishandles
+  `*const PathMesh` as optional, `widgets/text_area_state.zig:404`
+  switches on an auto-layout struct). Those are real bugs but
+  out of scope for the cleanup PR; the explicit anchor block
+  sidesteps them by reaching only the well-formed leaves we
+  care about. The anchor block carries the rationale inline so
+  a future reader doesn't try to shrink it back.
+
+**Files added:**
+
+- `src/context/owned_flag_audit.zig` (~130 lines: ~70 lines of
+  code + ~60 lines of doc-comment header explaining the
+  retirement chain). Compile-time audit: walks `Window`'s field
+  list and fails the build if any `_owned: bool` or `owned: bool`
+  field appears outside the explicit allow-list. The
+  allow-list (`isAllowListedField`) carries four entries:
+  `AppResources.owned` (PR 7a ownership discriminator),
+  `Frame.owned` (PR 7c.3a ownership discriminator),
+  `DecodedImage.owned` (per-entry WASM image-loader cache marker),
+  `ShapedRun.owned` (per-entry text-shaping cache marker). Three
+  tests: the audit fires against `Window`, the allow-list pins
+  `AppResources.owned` and `Frame.owned` presence (so a
+  rename catches as a test failure, not a silent allow-list
+  miss). Hooked into `zig build test` through
+  `context/mod.zig`'s `test {}` block.
+
+- `docs/CHANGELOG.md`. New file. Migration index listing every
+  demoted name + its new namespace path, the 28 deleted
+  `cx.foo` forwarders + their `cx.<sub-namespace>.bar`
+  replacements, the curated-core seven, and the `_owned: bool`
+  audit's allow-list.
+
+**Files edited (high-impact):**
+
+- `src/root.zig` — 451 → 407 lines. Top section: 7 curated-core
+  re-exports (`run`, `App`, `Cx`, `Window`, `Color`, `log`,
+  `std_options`). Middle section: 21 namespace re-exports
+  (`core`, `input`, `scene`, `context`, `animation`, `layout`,
+  `text`, `ui`, `components`, `widgets`, `platform`, `runtime`,
+  `image`, `svg`, `debug`, `validation`, `accessibility`, `ai`,
+  `file_dialog`, `app`, `testing`). Bottom section:
+  `wasmLogFn` (private, used by `std_options`) and the test
+  block. The test block includes (a) the standard
+  `refAllDecls(@This())`, (b) a comptime block touching ~70
+  leaf types previously reached through flat aliases (verbose
+  but explicit), (c) an `inline for` over leaf-module imports
+  whose file-level `test {}` blocks dropped out of the
+  discovery set after the slim.
+
+- `src/platform/mod.zig` — the `pub const web` struct gains a
+  fifth member (`image_loader`) on the WASM branch and a
+  parallel stub on the native branch. Replaces the duplicate
+  `wasm_image_loader` shim that used to live in both
+  `root.zig` (public) and `runtime/render.zig` (private).
+
+- `src/runtime/render.zig` — drops the private `wasm_loader`
+  conditional shim (12 lines of dead duplicate) in favour of
+  `const wasm_loader = platform.web.image_loader;`. Same shape
+  the public alias now resolves through.
+
+- `src/context/mod.zig` — `OnSelectHandler` promoted to a
+  direct re-export next to `HandlerRef` (was reachable only
+  through `context.handler.OnSelectHandler`, which made the
+  `gooey.OnSelectHandler` deletion in PR 9 Task 2 messier than
+  it needed to be). The `test {}` block now also walks
+  `owned_flag_audit.zig`.
+
+- `src/cx.zig` — deletes 28 deprecated forwarder methods
+  (`createEntity` / `readEntity` / `writeEntity` / `entityCx` /
+  `focusNext` / `focusPrev` / `blurAll` / `focusTextField` /
+  `focusTextArea` / `isElementFocused` / `animateComptime` /
+  `animate` / `restartAnimationComptime` / `restartAnimation` /
+  `animateOnComptime` / `animateOn` / `springComptime` /
+  `spring` / `staggerComptime` / `stagger` / `motionComptime` /
+  `motion` / `springMotionComptime` / `springMotion` /
+  `uniformList` / `treeList` / `virtualList` / `dataTable`) and
+  the `Cx.DataTableCallbacks(CxType)` deprecated alias. Cleans
+  up ~25 now-unused imports (the `Animation` / `SpringConfig` /
+  `MotionConfig` etc. aliases that only the deleted forwarders
+  referenced). File shrinks from 871 → ~720 lines.
+
+- `src/cx_tests.zig` — deletes the `DataTableCallbacks:
+deprecated alias produces same type as cx.lists`
+  equivalence test (the deprecated alias is gone). The
+  `DataTableCallbacks type structure` test points at
+  `cx.lists.Lists.DataTableCallbacks(Cx)` (the canonical
+  generic) rather than the deleted `Cx.DataTableCallbacks(Cx)`
+  alias.
+
+- `src/app.zig` — doc-block example rewritten from the
+  stale-pre-PR-7d `gooey.UI` shape to the post-PR-9
+  `pub fn main(init: std.process.Init)` + `*gooey.Cx` shape.
+  The `WebApp` doc-block reroutes the example through the
+  cross-platform `gooey.App` generator (now the only
+  documented WASM entry point).
+
+- `src/examples/*.zig` — 31 example files updated by a
+  scripted sweep (`/tmp/gooey_rewrite.pl`). Every
+  `gooey.<DemotedName>` reference flips to its namespace
+  (`gooey.components.Button`, `gooey.context.Entity`,
+  `gooey.animation.lerp`, …). `gooey.runCx` → `gooey.run`
+  across 4 examples. The Color / Cx / App / Window curated
+  names stay untouched.
+
+- `src/examples/spaceship.zig` — 11 `cx.animate*` / `cx.spring*`
+  call sites flipped to `cx.animations.tween*` /
+  `cx.animations.spring*` etc.
+
+- `src/animation/animation.zig`, `src/widgets/data_table.zig`,
+  `src/widgets/uniform_list.zig`, `src/widgets/virtual_list.zig`
+  — four doc-comment-only updates rewriting `cx.animate(...)` /
+  `cx.dataTable(...)` / `cx.uniformList(...)` / `cx.virtualList(...)`
+  to the `cx.animations.tween(...)` / `cx.lists.dataTable(...)`
+  / `cx.lists.uniform(...)` / `cx.lists.virtual(...)` shape.
+
+**Why the test-discovery anchor block is necessary.** Three
+alternatives were considered before landing the explicit list:
+
+- **Option (a) — explicit leaf anchors** (chosen). `root.zig`'s
+  test block ends with an `inline for ([...]) |ns| { refAllDecls(ns); }`
+  block that touches ~45 leaf files. Verbose but stable: every
+  anchored file becomes a guaranteed-discovered file, with
+  inline rationale recorded next to the list.
+- **Option (b) — recursive `refAllDeclsRecursive` utility**
+  (rejected). A `refAllDeclsRecursive(comptime T: type)`
+  helper walking every nested struct/enum/union declaration
+  would have been a single 15-line function instead of a 70-
+  line anchor list. It surfaced 4 pre-existing dormant
+  compilation bugs (enumerated above) on first run, all in
+  subsystems orthogonal to PR 9's scope. Fixing them is
+  appropriate follow-up work but not a blocker for PR 9. The
+  recursive utility lives at HEAD for whoever picks up the
+  follow-up.
+- **Option (c) — accept the test-count drop** (rejected). 41
+  tests is small in absolute terms but represents real
+  coverage of `widgets/data_table.zig`, `widgets/tree_list.zig`,
+  `animation/spring.zig`, etc. Losing it silently to a
+  re-export reshuffle would be a regression.
+
+**Why `MacPlatform` and `WebApp` deletions are safe.** The grep
+results are unambiguous: zero out-of-tree references for either
+name. `gooey.MacPlatform` is only referenced inside the
+`platform/macos/` subtree (which uses the un-prefixed
+`MacPlatform` struct directly, not the `gooey.MacPlatform`
+alias). `gooey.WebApp` survives only as a doc-comment in
+`src/app.zig` (rewritten in PR 9 to reach for `gooey.App`).
+Neither name appears in any example file.
+
+**Why the `cx.foo` deprecation period was short.** PR 5 (the
+sub-namespacing landing) carried the deprecated forwarders
+specifically as a migration aid for in-tree call sites; the
+doc records the intent that they'd be deleted in PR 9 once the
+sub-namespaces stabilised. Five months elapsed between PR 5 and
+PR 9 — enough time for every internal caller (just `spaceship.zig`
+in the end) to migrate to the new shape.
 
 ---
 
