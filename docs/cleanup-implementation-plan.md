@@ -91,7 +91,7 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed; 7d split into 7d-framework (pending standalone prep PR before PR 9) + 7d-examples (folded into PR 9); 7e resolved — see PR 9) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ☑ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d + 7d-framework landed; 7d-examples absorbed into 7d-framework — see notes; 7e resolved — see PR 9) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed) |
 | 9   | `root.zig` slim + flags  | #13, #14 (finish)                                  | `pub fn main(init)` example sweep (from 7d-examples)       | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
@@ -1271,21 +1271,31 @@ so each lands green on its own.
       `updateHover`-exercising test through input event
       paths and by every example through `zig build
       install`). See "Sub-PR 7c.3d" below.
-- ☐ 7d-framework — `App.main(init: std.process.Init)` /
-  `WebApp.main` / `runCx` accept `init`. Framework-side only;
-  no user-facing example sweep. Standalone prep PR; must
-  land before PR 9 Task 4. The 2026-05-19 audit's claim that
-  "framework entry points landed this shape earlier" was
-  wrong — `src/app.zig` still has bare `pub fn main() !void`
-  at both `App.main` (L100) and `WebApp.main` (L453); this
-  slice is what actually lands the framework-side change.
-  **Full pre-flight plan in
+- ☑ 7d-framework — `App.main(init: std.process.Init)` /
+  `WebApp.main` / `runCx` accept `init`. Landed on
+  `cleanup/pr-7d-framework`. The pre-flight scope of
+  "framework-side only, no user-facing example sweep"
+  proved unworkable: Zig 0.16's `pub fn main(init)`
+  contract is satisfied by the runtime providing `init`,
+  so examples cannot construct it themselves to keep
+  calling the new `App.main(init)`. The slice therefore
+  absorbed the entire 7d-examples mechanical sweep
+  (`pub fn main(init: std.process.Init)` signature +
+  forwarded `init` arg to `App.main` / `gooey.runCx`)
+  across 36 examples in one shot, with no `gooey.X` →
+  `gooey.<ns>.X` demoted-name rewrites — those stay
+  reserved for PR 9b/9c. `Build Summary: 9/9 steps
+  succeeded; 1103/1103 tests passed` (no delta vs.
+  PR 8.4c — pure plumbing). **Full landing notes in
   [`pr-7d-framework-preflight.md`](./pr-7d-framework-preflight.md)**
-  — file/line targets, do-not-do list, acceptance
-  criteria, and the pre-PR-open sanity-check greps.
-- ☐ 7d-examples — Migrate 39 examples + `src/app.zig`
-  doc-block examples to `pub fn main(init: std.process.Init)`.
-  Folded into PR 9 (see PR 9 Task 4).
+  including the deviation rationale and the WASM
+  `wasmInit` shadow fix.
+- ☑ 7d-examples — Absorbed into 7d-framework's
+  mechanical sweep above (the framework signature change
+  could not land without it). PR 9 Task 4 is therefore
+  already done; PR 9 only needs to land the demoted-name
+  (`gooey.Button` → `gooey.components.Button`, etc.)
+  rewrites against the already-migrated entry-point shape.
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
   Folded into PR 9 Task 5 (the structural audit pin).
 
@@ -5722,18 +5732,24 @@ historical record of why the curated-7 list still applies.
       added in PR 5 in favor of `cx.lists.foo` / `cx.animate.foo`
       / etc.
 
-- [ ] **Task 4 — (folded from 7d-examples) Migrate every example
-      to `pub fn main(init: std.process.Init)`** per
+- [x] **Task 4 — (folded from 7d-examples, then folded again
+      into 7d-framework) Migrate every example to
+      `pub fn main(init: std.process.Init)`** per
       [§9 "Juicy Main"](./zig-0.16-changes.md#9-juicy-main).
-      Touches all 39 files in `src/examples/` plus the
-      `src/app.zig` doc-block examples. Threaded `io`, `arena`,
-      `gpa` come from `init`; no example reaches for
+      Landed as part of 7d-framework because the framework
+      signature change forced the example sweep into the
+      same PR — examples cannot construct `std.process.Init`
+      themselves, so the moment `App.main` requires `init`,
+      every example calling `App.main()` must learn the new
+      signature in lockstep. 36 of 39 examples migrated
+      (the 3 holdouts: `ai_canvas.zig` already had the new
+      shape pre-7d; `linux_demo.zig` and `multi_window.zig`
+      don't call `App.main` / `runCx` at all and stayed on
+      bare `pub fn main() !void`, which is one of the three
+      valid Zig 0.16 shapes). No example reaches for
       `std.os.argv` / `std.process.getEnvMap` /
-      `std.process.argsAlloc` (already true in `src/` per the
-      audit, but pin it in this sweep by removing the bare-main
-      signatures that would invite reintroduction).
-      **Requires 7d-framework (`App.main(init)`) to have landed
-      already** — see the "Hard dependency" callout above.
+      `std.process.argsAlloc` (already true in `src/` per
+      the audit; reconfirmed during the 7d-framework sweep).
 
 - [ ] **Task 5 — (folded from 7e) Pin the structural `_owned`
       audit.** Add a compile-time test (or `build.zig` grep step)

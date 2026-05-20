@@ -6,8 +6,11 @@
 > auto-formatted on save and a 6000-line normalization pass
 > would obscure the substantive change.
 
-**Status:** ☐ not started — branch will be
-`cleanup/pr-7d-framework` off `main`.
+**Status:** ☑ landed on `cleanup/pr-7d-framework`. See
+"Landing notes" section below for the deviation from the
+original pre-flight scope (the framework-side-only plan
+proved unworkable and absorbed the 7d-examples mechanical
+sweep).
 
 **Hard dependency for:** PR 9 Task 4 (the 39-example
 `pub fn main(init: std.process.Init)` sweep). 9a / 9b / 9c
@@ -315,3 +318,150 @@ If any of these greps return surprising results (signature
 moved, body already migrated, etc.), update this doc
 before opening the PR — don't paper over the drift in the
 commit message.
+
+
+---
+
+## Landing notes (PR 7d-framework)
+
+**Status:** ☑ landed. `Build Summary: 9/9 steps succeeded;
+1103/1103 tests passed` (no delta vs. PR 8.4c's 1103 —
+this slice is pure plumbing, no new tests). `zig build
+install` clean (71/71 binaries).
+
+### What actually landed
+
+The pre-flight's "framework-side only, no example sweep"
+scope proved unworkable in the Zig 0.16 reality. The
+diagnosis:
+
+- `std.process.Init` is a *runtime-provided* value. There
+  is no public constructor; the Zig start code populates
+  it before calling `main`. Examples cannot construct it
+  themselves.
+- The framework signature change makes `App.main` require
+  an `init` parameter (so the runner can use `init.gpa`
+  instead of an in-place `DebugAllocator` and `init.io`
+  instead of the global single-threaded fallback).
+- Every example that calls `App.main()` from a bare
+  `pub fn main() !void { return App.main(); }` therefore
+  fails to compile the moment the framework signature
+  flips — they have no `init` value to forward.
+
+Three resolution paths were considered, in order:
+
+1. **Make `App.main` accept an optional/defaulted `init`**
+   (rejected — Zig has no default args; the workaround
+   was to construct a fake `init` with `undefined` fields
+   which would be a worse failure mode).
+2. **Keep `App.main` no-arg by constructing `init`
+   internally** (rejected — `std.process.Init`'s fields
+   like `arena` and `environ_map` cannot be conjured
+   without runtime support).
+3. **Migrate the examples in the same PR** (chosen).
+   A one-line mechanical change per example: change the
+   signature to `pub fn main(init: std.process.Init)` and
+   forward `init` to `App.main(init)` or as the trailing
+   arg to `gooey.runCx(..., init)`.
+
+The cleanup-implementation-plan.md already anticipated
+this fold-up as PR 9 Task 4 (the "folded from 7d-examples"
+sweep) — 7d-framework simply absorbed it one PR earlier
+because the framework signature change couldn't land
+without it.
+
+### Scope summary
+
+- `src/runtime/runner.zig` — `runCx` accepts `init` as
+  trailing parameter; uses `init.gpa` instead of in-place
+  `DebugAllocator`, falls back to `init.io` instead of
+  `std.Io.Threaded.global_single_threaded.io()`.
+- `src/app.zig` —
+  - Native `App.main` flipped to
+    `pub fn main(init: std.process.Init) !void`, forwards
+    `init` as trailing arg to `runCx`.
+  - WASM `WebApp.main` flipped to match the native arm's
+    signature; body discards `init` (`_ = init;`) because
+    WASM bootstrap is JS-driven.
+  - Module-level doc-block example flipped to the new
+    shape.
+  - WASM `pub fn init() callconv(.c) void` renamed to
+    `pub fn wasmInit()` to avoid shadowing the new `init`
+    parameter on `WebApp.main`. The JS-visible export
+    name stays `"init"` (the `@export` decl names the
+    symbol independently of the Zig identifier).
+- `src/examples/ai_canvas.zig` — `App.main()` →
+  `App.main(init)` (drops the pre-7d workaround that
+  read `init.io` and then discarded `init.gpa`).
+- 35 other examples calling `App.main()` — mechanical
+  one-line signature + forwarder change.
+- 4 examples calling `gooey.runCx(...)` directly
+  (`actions.zig`, `animation.zig`, `glass.zig`,
+  `window_features.zig`) — signature change + `init`
+  added as trailing arg to the `runCx` call.
+- 4 examples without a `std` import (`layout.zig`,
+  `select.zig`, `tooltip.zig`, `modal.zig`) — added
+  `const std = @import("std");` so the new signature
+  resolves.
+- 2 examples (`linux_demo.zig`, `multi_window.zig`) that
+  don't call `App.main` / `runCx` at all stayed on bare
+  `pub fn main() !void` — that's one of the three valid
+  Zig 0.16 main shapes and they construct their own
+  allocator / io directly.
+
+`git diff --stat` total: **39 files changed, 142
+insertions, 87 deletions**. Much larger than the
+pre-flight's "≤ 4 files" target — but that target was
+based on the framework-side-only scope that proved
+unworkable.
+
+### Diff sanity grep (post-landing)
+
+```
+$ grep -n "DebugAllocator" src/runtime/runner.zig
+72:/// previous in-place `DebugAllocator` is replaced with `init.gpa`,
+88:    // throwaway `DebugAllocator` inside the runner. `init.gpa` is the
+$ grep -n "global_single_threaded" src/runtime/runner.zig
+260:        /// `std.Io.Threaded.global_single_threaded` fallback in favour
+```
+
+The remaining `DebugAllocator` / `global_single_threaded`
+references in `runner.zig` are all in doc comments
+explaining what was retired. The runtime construction
+itself is gone.
+
+### Why `wasmInit` rename instead of a parameter rename
+
+The shadow conflict was between `pub fn init()` (the
+WASM JS-callable export) and the new `init` parameter on
+`WebApp.main`. Two fixes were possible:
+
+- Rename the `init` *parameter* on `WebApp.main` to
+  something like `process_init`. Asymmetric with the
+  native arm and breaks the Zig 0.16 convention that the
+  parameter is named `init`. Every Zig 0.16 example in
+  the stdlib uses `init`, and `App.main`'s native arm
+  also uses `init`.
+- Rename the `init` *function* (the WASM export) to
+  `wasmInit`. The JS-visible export name is controlled
+  by `@export(...).name` independently of the Zig
+  identifier, so the JS contract is preserved
+  (`@export(&Self.wasmInit, .{ .name = "init" })`).
+
+The second was chosen because (1) it preserves the
+Zig 0.16 convention on `main`, (2) the rename is one
+declaration site + one `@export` line, and (3) no
+external code references `WebApp.init` directly
+(verified via repo-wide grep).
+
+### Open follow-ups
+
+- PR 9 Task 4 (the 39-example `pub fn main(init)` sweep)
+  is now ☑ done.
+- The pre-flight's `gooey.run(init, .{...})` curated-core
+  wrapper still lands in PR 9 Task 1 (the curated-7
+  re-export). After PR 9 lands, examples can flip from
+  `gooey.runCx(..., init)` and `App.main(init)` /
+  `App(...).main(init)` to the cleaner `gooey.run(init,
+  .{...})` shape. That migration is a PR 9 deliverable,
+  not a 7d-framework one.
