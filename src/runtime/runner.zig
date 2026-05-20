@@ -66,15 +66,31 @@ const InputEvent = input_mod.InputEvent;
 ///
 /// Each window gets its own WindowContext stored in user_data, enabling
 /// future multi-window support.
+///
+/// PR 7d-framework — `init` is the Zig 0.16 `std.process.Init` value
+/// threaded through from `pub fn main(init: std.process.Init)`. The
+/// previous in-place `DebugAllocator` is replaced with `init.gpa`,
+/// and the global single-threaded `Io` fallback is replaced with
+/// `init.io`. `init` is last in the parameter list because the four
+/// preceding parameters are all comptime / comptime-known; the
+/// curated-core `gooey.run(init, .{...})` wrapper that lands in PR 9
+/// will reorder to put `init` first to match every Zig 0.16
+/// `pub fn main(init)` example in the stdlib. See
+/// `docs/pr-7d-framework-preflight.md` for the design rationale.
 pub fn runCx(
     comptime State: type,
     state: *State,
     comptime render: fn (*Cx) void,
     config: CxConfig(State),
+    init: std.process.Init,
 ) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // PR 7d-framework — own the `Allocator` rather than constructing a
+    // throwaway `DebugAllocator` inside the runner. `init.gpa` is the
+    // Debug-build leak-checking allocator the Zig runtime hands us;
+    // outside Debug it is whatever default the runtime selected. Either
+    // way it lives at least as long as `main` does, which is strictly
+    // longer than this function's stack frame.
+    const allocator = init.gpa;
 
     // Initialize platform
     var plat = try Platform.init();
@@ -113,8 +129,14 @@ pub fn runCx(
         plat.setActiveWindow(window);
     }
 
-    // Resolve IO: use caller-provided instance or fall back to global single-threaded.
-    const io = config.io orelse std.Io.Threaded.global_single_threaded.io();
+    // Resolve IO: use caller-provided instance or fall back to `init.io`.
+    //
+    // PR 7d-framework — the fallback is now `init.io` (the
+    // runtime-selected `Io` for this target) rather than the
+    // global single-threaded singleton. `CxConfig.io` stays
+    // optional for callers that want to override (multi-window
+    // wires its own `Io.Group` here).
+    const io = config.io orelse init.io;
 
     // PR 7b.3 — heap-allocate an `App` and hand `*App` to the
     // window. The single-window flow has exactly one borrower
@@ -235,7 +257,11 @@ pub fn CxConfig(comptime State: type) type {
         full_size_content: bool = false,
 
         /// IO interface for async work (filesystem, network, concurrency).
-        /// When null, falls back to `std.Io.Threaded.global_single_threaded`.
+        /// When null, falls back to `init.io` (the `std.process.Init`
+        /// value passed to `pub fn main(init: std.process.Init)`).
+        /// PR 7d-framework retired the previous
+        /// `std.Io.Threaded.global_single_threaded` fallback in favour
+        /// of the runtime-selected default.
         io: ?std.Io = null,
     };
 }

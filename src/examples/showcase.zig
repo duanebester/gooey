@@ -234,8 +234,8 @@ const App = gooey.App(AppState, &state, render, .{
     .on_event = onEvent,
 });
 
-pub fn main() !void {
-    try App.main();
+pub fn main(init: std.process.Init) !void {
+    try App.main(init);
 }
 
 // =============================================================================

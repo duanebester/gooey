@@ -189,7 +189,7 @@ fn onResize(cx: *Cx, width: f64, height: f64) void {
     std.debug.print("Window resized to {d:.0} × {d:.0} (resize #{d})\n", .{ width, height, s.resize_count });
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     try gooey.runCx(AppState, &state, render, .{
         .title = "Window Features Demo",
         .width = 600,
@@ -205,5 +205,5 @@ pub fn main() !void {
         // Lifecycle callbacks
         .on_close = onClose,
         .on_resize = onResize,
-    });
+    }, init);
 }

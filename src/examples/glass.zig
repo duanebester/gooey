@@ -79,7 +79,7 @@ const text_color = Color.rgba(1, 1, 1, 0.95);
 const text_muted = Color.rgba(1, 1, 1, 0.6);
 const card_bg = Color.rgba(1, 1, 1, 0.1);
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var state = AppState{};
 
     try gooey.runCx(AppState, &state, render, .{
@@ -95,7 +95,7 @@ pub fn main() !void {
         .glass_corner_radius = 10.0, // Try 10 to match typical window corners
         .titlebar_transparent = true,
         .full_size_content = false,
-    });
+    }, init);
 }
 
 fn render(cx: *Cx) void {

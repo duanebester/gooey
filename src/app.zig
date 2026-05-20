@@ -12,8 +12,8 @@
 //!
 //! var state = struct { count: i32 = 0 }{};
 //!
-//! pub fn main() !void {
-//!     try gooey.run(.{
+//! pub fn main(init: std.process.Init) !void {
+//!     try gooey.run(init, .{
 //!         .title = "Counter",
 //!         .render = render,
 //!     });
@@ -98,7 +98,13 @@ pub fn App(
         return WebApp(State, state, render, config);
     } else {
         return struct {
-            pub fn main() !void {
+            // PR 7d-framework — `main` accepts `init: std.process.Init`
+            // per Zig 0.16's "Juicy Main" contract
+            // (`docs/zig-0.16-changes.md#9-juicy-main`). The value is
+            // forwarded to `runCx` as the trailing argument; every
+            // other field in the `.{...}` config literal below is
+            // identical to the pre-7d-framework shape.
+            pub fn main(init: std.process.Init) !void {
                 try runCx(State, state, render, .{
                     .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
                     .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
@@ -117,7 +123,7 @@ pub fn App(
                     // Font configuration
                     .font = if (@hasField(@TypeOf(config), "font")) config.font else null,
                     .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
-                });
+                }, init);
             }
         };
     }
@@ -192,8 +198,15 @@ pub fn WebApp(
         else
             null;
 
-        /// Initialize the application (called from JavaScript)
-        pub fn init() callconv(.c) void {
+        /// Initialize the application (called from JavaScript).
+        ///
+        /// PR 7d-framework — renamed from `init` to `wasmInit` so it
+        /// doesn't shadow the `init: std.process.Init` parameter on
+        /// `WebApp.main` below. The JS-visible export name is still
+        /// `"init"` (the `@export` call at the bottom of this struct
+        /// names the symbol independently of the Zig identifier),
+        /// so no JS-side change is required.
+        pub fn wasmInit() callconv(.c) void {
             initImpl() catch |err| {
                 web_imports.err("Init failed: {}", .{err});
             };
@@ -451,15 +464,24 @@ pub fn WebApp(
 
         /// No-op main for API compatibility with native App.
         /// On WASM, JavaScript calls init() directly via the exported function.
-        /// This exists so `App.main()` compiles on both native and web targets.
-        pub fn main() !void {
+        /// This exists so `App.main(init)` compiles on both native and web targets.
+        ///
+        /// PR 7d-framework — takes `init` for signature parity with the
+        /// native arm. The value is discarded because WASM initialization
+        /// is driven by JavaScript calling the `callconv(.c)` exports
+        /// directly (`init` / `frame` / `resize`), not by the Zig
+        /// runtime calling `main`.
+        pub fn main(init: std.process.Init) !void {
+            _ = init;
             // WASM initialization is driven by JavaScript calling the exported init().
             // This function exists only for API compatibility.
         }
 
         // Export functions for WASM - this comptime block runs when the type is analyzed
         comptime {
-            @export(&Self.init, .{ .name = "init" });
+            // PR 7d-framework — Zig identifier is `wasmInit`, but the
+            // JS-visible export name stays `"init"`.
+            @export(&Self.wasmInit, .{ .name = "init" });
             @export(&Self.frame, .{ .name = "frame" });
             @export(&Self.resize, .{ .name = "resize" });
         }

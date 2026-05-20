@@ -424,6 +424,6 @@ const EffectCombinedItem = struct {
     }
 };
 
-pub fn main() !void {
-    return App.main();
+pub fn main(init: std.process.Init) !void {
+    return App.main(init);
 }

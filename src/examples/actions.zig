@@ -17,10 +17,10 @@ const AppState = struct {
 
 var state = AppState{};
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     try gooey.runCx(AppState, &state, render, .{
         .title = "Actions Demo",
-    });
+    }, init);
 }
 
 fn setupKeymap(cx: *Cx) void {

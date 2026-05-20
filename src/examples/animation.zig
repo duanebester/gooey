@@ -345,10 +345,10 @@ const SpinnerBall = struct {
 
 var state = AppState{};
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     try gooey.runCx(AppState, &state, render, .{
         .title = "Animation Demo",
         .width = 550,
         .height = 550,
-    });
+    }, init);
 }
