@@ -410,12 +410,23 @@ comptime {
     _ = @TypeOf(gooey.run);
     _ = @TypeOf(gooey.App);
     _ = gooey.Color;
-    _ = gooey.Button;
+    _ = gooey.components.Button;
     // …
 }
 ```
 
 This catches accidental Tier-1 deletions in PR review.
+
+**☑️ Landed via PR 11a** — see
+[`cleanup-implementation-plan.md` PR 11a landing notes](./cleanup-implementation-plan.md#pr-11a-landing-notes).
+The actual `src/api_check.zig` is structured into four pin
+sections (`pinCuratedCore`, `pinNamespaces`,
+`pinTier1Namespaced*`, `pinCxSubNamespaces`) to keep each
+comptime block short and to make a failing build cleanly identify
+which Tier slice lost a name. The post-PR-9 namespace shape means
+`Button` lives at `gooey.components.Button`, not the flat
+`gooey.Button` the original sketch above used — the live pin
+list in `src/api_check.zig` is the source of truth.
 
 ---
 
@@ -887,7 +898,7 @@ Combining all the above:
 | 13 | Curated 7-name flat block in `root.zig`; demote rest to namespaces (no separate `prelude.zig` — Zig 0.16 removed `usingnamespace`) | `prelude.rs` (philosophy only; not the file shape) | Medium (breaking) | API surface becomes legible |
 | 14 | Encode ownership in types — drop all `_owned: bool` flags | `Option<T>` / `Box<dyn>` patterns | Medium | Memory safety improves |
 | 15 | Split `layout/engine.zig` per pass | n/a | Medium | Frees the engine from 4,000-line gravity |
-| 16 | Add `api_check.zig` compile-time pinning of Tier-1 surface | n/a | Low | Prevents future regressions |
+| 16 | Add `api_check.zig` compile-time pinning of Tier-1 surface (☑️ landed via PR 11a) | n/a | Low | Prevents future regressions |
 | 17 | Three-phase Element lifecycle (request_layout / prepaint / paint) | `Element` trait | Large | Tooltips, drag previews, autoscroll done correctly |
 
 ## Recommended ordering

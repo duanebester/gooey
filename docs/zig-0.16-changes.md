@@ -1308,8 +1308,12 @@ Things to be aware of going forward:
   [`cleanup-implementation-plan.md` PR 0](./cleanup-implementation-plan.md#pr-0--mechanical-016-sweep)).
   `grep -rn "@Type(" src/` returns 0 matches as of `main` @ `4d350e1`
   (v0.1.2); all 18 `@typeInfo` call sites already use the lower-case
-  tag form. Per-module re-audits at the head of PR 4, PR 6, PR 8, PR 11
-  if/when meta-programming is added.
+  tag form. Per-module re-audits ran at the head of PR 4, PR 6, PR 8;
+  PR 11a (`api_check.zig`) re-confirmed: the new pin list uses
+  `@TypeOf` / `@FieldType` only, no `@Type` reflection construction,
+  so no migration needed. PR 11b (three-phase Element trait, deferred)
+  is the last pending re-audit slot; the audit will run when the
+  trait codegen is drafted.
 - ✅ **Compile errors on returning local addresses** — folded into PR 0
   (audit-only). `zig build` against 0.16.0 surfaces no
   "address of local returned" diagnostics. Re-checked at the head of

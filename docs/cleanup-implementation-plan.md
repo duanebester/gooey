@@ -6426,7 +6426,7 @@ to the PR that absorbs it. Update both this doc and §28 when a PR lands.
 
 | 0.16 takeaway                            | Folded into                                         |
 | ---------------------------------------- | --------------------------------------------------- |
-| `@Type` removal — comptime type building | PR 0 (sweep) + PR 4, PR 6, PR 8, PR 11 (per-module) |
+| `@Type` removal — comptime type building | PR 0 (sweep) + PR 4, PR 6, PR 8, PR 11a (api_check is `@Type`-free); PR 11b pending |
 | Vectors no runtime indexing              | PR 0 + PR 2 (rasterizer) + PR 10 (layout SIMD)      |
 | Local-address return compile errors      | PR 0                                                |
 | `ArrayList` `.empty`                     | PR 0                                                |
