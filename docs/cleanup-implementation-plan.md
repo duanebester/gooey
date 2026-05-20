@@ -40,7 +40,7 @@
 9. [PR 6 — `DrawPhase` + `Global(G)`](#pr-6--drawphase--globalg)
 10. [PR 7 — App/Window split + `Frame` double buffer](#pr-7--appwindow-split--frame-double-buffer)
 11. [PR 8 — Unified `element_states`](#pr-8--unified-element_states)
-12. [PR 9 — `prelude.zig` trim + ownership flag drop](#pr-9--preludezig-trim--ownership-flag-drop)
+12. [PR 9 — `root.zig` slim + ownership flag drop + 7d-examples entry-point sweep](#pr-9--rootzig-slim--ownership-flag-drop--7d-examples-entry-point-sweep)
 13. [PR 10 — Layout engine split + fuzz targets](#pr-10--layout-engine-split--fuzz-targets)
 14. [PR 11 — API check + three-phase Element lifecycle](#pr-11--api-check--three-phase-element-lifecycle)
 15. [Out of scope (tracked separately)](#out-of-scope-tracked-separately)
@@ -91,9 +91,9 @@ them out here so they don't get re-litigated in review:
 | 4   | Backward edges           | #2 (Focusable vtable), #3 (list layout to widgets) | `@Type` on vtable codegen                                  | Medium      | ☑                          |
 | 5   | `cx.zig` namespaces      | #4                                                 | —                                                          | Low         | ☑                          |
 | 6   | `DrawPhase` + globals    | #7, #10                                            | `@Type` on type-keyed globals                              | Low         | ☑                          |
-| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed) |
+| 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ◐ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d landed; 7d split into 7d-framework (pending standalone prep PR before PR 9) + 7d-examples (folded into PR 9); 7e resolved — see PR 9) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed) |
-| 9   | prelude + flags          | #13, #14 (finish)                                  | —                                                          | Medium      | ☐                          |
+| 9   | `root.zig` slim + flags  | #13, #14 (finish)                                  | `pub fn main(init)` example sweep (from 7d-examples)       | Medium      | ☐                          |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                          |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                          |
 
@@ -1271,8 +1271,19 @@ so each lands green on its own.
       `updateHover`-exercising test through input event
       paths and by every example through `zig build
       install`). See "Sub-PR 7c.3d" below.
-- ☐ 7d — `pub fn main(init: *Init)`-shaped entry point.
+- ☐ 7d-framework — `App.main(init: std.process.Init)` /
+  `WebApp.main` / `runCx` accept `init`. Framework-side only;
+  no example changes. Standalone prep PR; must land before
+  PR 9 Task 4. The 2026-05-19 audit's claim that "framework
+  entry points landed this shape earlier" was wrong —
+  `src/app.zig` still has bare `pub fn main() !void` at
+  both `App.main` (L100) and `WebApp.main` (L453); this
+  slice is what actually lands the framework-side change.
+- ☐ 7d-examples — Migrate 39 examples + `src/app.zig`
+  doc-block examples to `pub fn main(init: std.process.Init)`.
+  Folded into PR 9 (see PR 9 Task 4).
 - ☐ 7e — Final `_owned` sweep + `grep -n "_owned" src/` returns nothing.
+  Folded into PR 9 Task 5 (the structural audit pin).
 
 **Goal:** split `Gooey` into `App` (process-lifetime, shared resources)
 + `Window` (per-window frame state) + `Frame` (per-frame double
@@ -2990,7 +3001,7 @@ per-pointer flags):**
   call site to learn about two `Frame` shapes
   simultaneously. Landing the flag now matches
   what 7a did for `AppResources`; PR 9
-  ("`prelude.zig` trim + ownership flag drop")
+  ("`root.zig` slim + ownership flag drop")
   is where every flag-style ownership
   discriminator gets retired together, after
   every consumer has migrated.
@@ -5483,37 +5494,322 @@ at the top of `animation/store.zig` for the deferral chain.
 ---
 
 
-## PR 9 — `prelude.zig` trim + ownership flag drop
+## PR 9 — `root.zig` slim + ownership flag drop + 7d-examples entry-point sweep
 
-**Goal:** finish the API hygiene work that was deferred earlier.
-**Breaking** — bumps the public surface.
+**Goal:** finish the API hygiene work that was deferred earlier,
+and absorb PR 7's two carry-over tasks (7d-examples entry-point
+migration, 7e ownership-flag audit pin). **Breaking** — bumps
+the public surface.
+
+**Why fold 7d-examples in here:** the only `pub fn main()`
+survivors are the 39 example files in `src/examples/` plus the
+`src/app.zig` doc-block examples (2026-05-19 audit). PR 9
+already commits to touching every example for the `cx.foo`
+forwarder rewrite and the demoted-name migration, so doing the
+entry-point signature migration in the same sweep avoids two
+passes over identical files. See the 7d-examples entry in
+PR 7's sub-task list for the state-of-the-world that justifies
+the fold.
+
+**Hard dependency:** 7d-framework (`App.main` / `WebApp.main` /
+`runCx` accept `init: std.process.Init`) must land first as a
+standalone prep PR. PR 7's tracker still shows ☐ 7d because the
+framework-side signature change hasn't landed; without it, no
+example can adopt the `main(init)` shape. 7d-framework is small
+and well-bounded — it touches `src/app.zig` only and threads
+`init` through to `runCx`. It is _not_ included in PR 9 because
+(a) its risk profile is "framework runtime entry-point", which
+is independent from the re-export hygiene work below, and
+(b) keeping the two separately revertable preserves the bisect
+property if either breaks downstream embedders.
+
+**`usingnamespace` removal — context for the shape below.** Zig
+0.16 removed `usingnamespace`. The earlier draft of PR 9 (lost
+from an unsaved editor buffer; reconstructed here from the
+2026-05-21 inventory pass and the conversation that designed
+the Option A shape) specified a `src/prelude.zig` file with
+`pub usingnamespace struct { … }` and example headers reading
+`usingnamespace gooey.prelude;` — neither compiles on 0.16. The
+fix is **no separate prelude file at all**. Instead, `root.zig`
+keeps exactly 7 flat re-exports as the curated core (the same 7
+the old prelude file would have exposed), with everything else
+demoted to namespaces. Each example reaches `gooey.Cx`,
+`gooey.App`, `gooey.Color`, … directly — one fewer hop than
+`gooey.prelude.X` would have provided, and no per-example
+`usingnamespace` boilerplate to read past. See
+[§15 prelude philosophy](./architectural-cleanup-plan.md#15-the-preludes-philosophy--tiny-curated-re-export)
+for the rationale; that section's pre-0.16 sketch is the
+historical record of why the curated-7 list still applies.
 
 **Write scope:**
 
-- `src/root.zig` (slim down)
-- `src/prelude.zig` (new, ~10 names)
+- `src/root.zig` (slim down to the 7 curated re-exports +
+  namespaces — ~50 lines)
 - `src/cx.zig` (delete deprecated forwarders from PR 5)
-- examples + docs (one big sweep)
+- `src/app.zig` (update doc-block `main` examples to match)
+- `src/examples/*.zig` (39 files — demoted-name rewrites +
+  `pub fn main(init: std.process.Init)` signature)
+- examples-adjacent docs (one big sweep)
 
 **Tasks:**
 
-- [ ] Define `prelude.zig` with at most 10 names: `run`, `App`,
-      `Window`, `Cx`, `Color`, plus a few constants
-      (cap based on
-      [§15 prelude philosophy](./architectural-cleanup-plan.md#15-the-preluders-philosophy--tiny-curated-re-export)).
-- [ ] Demote the rest of `root.zig`'s 100+ flat re-exports into
-      namespace re-exports (`gooey.widgets.Button`,
-      `gooey.geometry.Rect`, etc.).
-- [ ] Delete every deprecated `cx.foo` forwarder added in PR 5 in
-      favor of `cx.lists.foo` / `cx.animate.foo` / etc.
-- [ ] Confirm no `_owned: bool` survived PR 7. If any did, kill them
-      here.
+- [ ] **Task 1 — Reshape `root.zig` to a 7-name curated-core
+      header + namespaces section.** The curated 7 stay flat at
+      `gooey.X` (matching the pre-0.16 prelude list); everything
+      else moves to its namespace. Shortlist landed during the
+      2026-05-21 inventory pass over `src/root.zig` (451 lines,
+      168 `pub` decls, ~130 flat aliases). Usage data:
+      `grep gooey.X src/examples/*.zig` over 39 example files.
+
+      | # | Curated-core name | Resolves to | Justification |
+      |---|---|---|---|
+      | 1 | `run` | `app.runCx` | Literal one-liner entry point. 35/39 examples. Drops the awkward `Cx` suffix now that the legacy path is gone. |
+      | 2 | `App` | `app.App` | `pub fn main` generator. 35/39 examples. |
+      | 3 | `Cx` | `app.Cx` | Render-callback parameter type. 38/39 examples. |
+      | 4 | `Window` | `context.Window` | Framework wrapper. Needed for render-fn signatures, global-state APIs, multi-window story. 15 explicit uses; conceptually present everywhere. |
+      | 5 | `Color` | `core.Color` | The single literal-friendly value type used inside render fns (`Color.rgb(…)`). 10/39 uses. `Rect`/`Size`/`Bounds` are layout returns, almost never typed explicitly. |
+      | 6 | `std_options` | root const | **Zig contract** — looked up by name on the root source file. Must live at `gooey.std_options` for the documented `pub const std_options = gooey.std_options;` one-liner to route logs to the browser console on WASM. |
+      | 7 | `log` | `log.zig` | Sibling of `std_options`. The doc-block in `root.zig` already promises `gooey.log.scoped(.myapp)` as the zero-config entry point. |
+
+      **Borderline candidates explicitly cut** (with rationale,
+      so future re-litigation has the reasoning):
+
+      | Candidate | Uses | Why not |
+      |---|---|---|
+      | `Button` | 27 | §15's rule is _no concrete component types_. If `Button` is in, then `TextInput, Modal, Image, Checkbox, Svg, …` have weaker but real cases too. Drawing the line at zero concrete components keeps the curated core principled. |
+      | `runCx` | 4 | Superseded by `run`. Delete the long name. |
+      | `Image` | 18 | Same reasoning as `Button`. Reach via `gooey.components.Image`. |
+      | `Entity` | 11 | Power-user type. `gooey.context.Entity`. |
+      | `lerp` | 10 | Animation primitive. `gooey.animation.lerp`. |
+      | `Theme` | 2 | Genuine candidate, but only 2 uses and the theming story isn't settled. Reserve a slot for when it is. |
+
+      Target shape for `root.zig` (~50 lines, well under the
+      80-line ceiling):
+
+      ```zig
+      //! Gooey — top-level public surface.
+      //!
+      //! Two tiers:
+      //!   1. The seven flat re-exports below are the curated core.
+      //!      They satisfy ~all uses across `src/examples/*.zig` and
+      //!      are the only names guaranteed to live at `gooey.X`.
+      //!   2. Everything else lives under a namespace
+      //!      (`gooey.core.Rect`, `gooey.components.Button`,
+      //!      `gooey.animation.lerp`, …). A namespace is the
+      //!      source-of-truth home; the curated-core flat names
+      //!      are re-exports for ergonomics only.
+      //!
+      //! Earlier drafts of this layout planned a `src/prelude.zig`
+      //! file plus `usingnamespace gooey.prelude;` in example
+      //! headers. Zig 0.16 removed `usingnamespace`, so the prelude
+      //! file collapses into this top-section comment.
+
+      const std = @import("std");
+      const builtin = @import("builtin");
+
+      // ============ Curated core (7) ============
+
+      pub const run         = @import("app.zig").runCx;
+      pub const App         = @import("app.zig").App;
+      pub const Cx          = @import("app.zig").Cx;
+      pub const Window      = @import("context/mod.zig").Window;
+      pub const Color       = @import("core/mod.zig").Color;
+      pub const log         = @import("log.zig");
+      pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
+          .{ .logFn = wasmLogFn } else .{};
+
+      // ============ Namespaces ============
+
+      pub const core          = @import("core/mod.zig");
+      pub const input         = @import("input/mod.zig");
+      pub const scene         = @import("scene/mod.zig");
+      pub const context       = @import("context/mod.zig");
+      pub const animation     = @import("animation/mod.zig");
+      pub const layout        = @import("layout/layout.zig");
+      pub const text          = @import("text/mod.zig");
+      pub const ui            = @import("ui/mod.zig");
+      pub const components    = @import("components/mod.zig");
+      pub const widgets       = @import("widgets/mod.zig");
+      pub const platform      = @import("platform/mod.zig");
+      pub const runtime       = @import("runtime/mod.zig");
+      pub const image         = @import("image/mod.zig");
+      pub const svg           = @import("svg/mod.zig");
+      pub const debug         = @import("debug/mod.zig");
+      pub const validation    = @import("validation.zig");
+      pub const accessibility = @import("accessibility/mod.zig");
+      pub const ai            = @import("ai/mod.zig");
+      pub const file_dialog   = @import("file_dialog.zig");
+      pub const app           = @import("app.zig");
+      pub const testing       = if (builtin.is_test) @import("testing/mod.zig") else struct {};
+
+      // Internal — referenced by name from `std_options`.
+      fn wasmLogFn(/* … */) void { /* unchanged body … */ }
+      ```
+
+      `wasmLogFn` drops `pub`; nothing outside `root.zig` should
+      reach for it (grep confirmed — only doc-comments mention it
+      in examples).
+
+- [ ] **Task 2 — Demote the rest of `root.zig`'s ~123 non-core
+      flat re-exports** into namespace re-exports
+      (`gooey.components.Button`, `gooey.core.Rect`, etc.). The
+      7 curated-core names from Task 1 stay flat.
+
+      **Demotion ledger.** Every row below is a pure deletion
+      because the symbol is already reachable through its
+      namespace (verified against each `mod.zig` during the
+      inventory pass):
+
+      | Cluster | Lines to delete from `root.zig` | Reachable as |
+      |---|---|---|
+      | Components (19) | `Button, Checkbox, TextInput, TextArea, CodeEditor, ProgressBar, RadioGroup, RadioButton, Tab, TabBar, Svg, Icons, Lucide, Select, Image, AspectRatio, Tooltip, Modal, ValidatedTextInput` | `gooey.components.*` |
+      | Geometry (10) | `Point, Size, Rect, Bounds, PointF, SizeF, BoundsF, Edges, Corners, Pixels` | `gooey.core.*` (`Color` stays in curated core, see Task 1) |
+      | Input (6) | `InputEvent, KeyEvent, KeyCode, MouseEvent, MouseButton, Modifiers` | `gooey.input.*` |
+      | Event system (4) | `Event, EventPhase, EventResult, ElementId` | `gooey.input.*` + `gooey.core.ElementId` |
+      | Scene (6) | `Scene, Quad, Shadow, Hsla, GlyphInstance, render_bridge` | `gooey.scene.*` |
+      | Image (5) | `ImageAtlas, ImageSource, ImageData, ObjectFit, wasm_image_loader` | `gooey.image.*`; `wasm_image_loader` migrates to `platform.web.image_loader` — see Task 2.5 below |
+      | Window/runtime (8) | `AnimationStore, WindowId, WindowRegistry, WindowHandle, WindowContext, MultiWindowApp, AppWindowOptions, MAX_WINDOWS` | `Window` stays in curated core (see Task 1); `gooey.animation.AnimationStore`; rest at `gooey.platform.*` or `gooey.runtime.*` |
+      | Layout (7) | `LayoutEngine, LayoutId, Sizing, Padding, CornerRadius, LayoutConfig, BoundingBox` | `gooey.layout.*` |
+      | Widgets state (14) | `UniformListState, VirtualListState, VisibleRange, ScrollStrategy, DataTableState, DataTableColumn, SortDirection, RowRange, ColRange, VisibleRange2D, TreeListState, TreeNode, TreeEntry, TreeLineChar` | `gooey.widgets.*` |
+      | Focus (4) | `FocusId, FocusHandle, FocusManager, FocusEvent` | `gooey.context.*` |
+      | Cx/App (3) | `runCx, WebApp, CxConfig` | `Cx`/`App`/`run` stay in curated core (see Task 1); `CxConfig` at `gooey.runtime.CxConfig`; **`WebApp` deleted outright** (only `App` calls it, kept internal in `app.zig`); **`runCx` deleted outright** in favor of curated-core `run` |
+      | Font/shader (2) | `FontConfig, CustomShader` | `gooey.context.FontConfig`, `gooey.core.CustomShader` |
+      | Entity (5) | `Entity, EntityId, EntityMap, EntityContext, isView` | `gooey.context.*` |
+      | Handler (3) | `HandlerRef, OnSelectHandler, typeId` | `gooey.context.HandlerRef`, `gooey.context.OnSelectHandler` (new, see Task 2.5), `gooey.context.typeId` |
+      | Animation core (7) | `Animation, AnimationHandle, Easing, Duration, lerp, lerpInt, lerpColor` | `gooey.animation.*` |
+      | Animation sub-mods (11) | `spring_mod, SpringConfig, SpringHandle, stagger_mod, StaggerConfig, StaggerDirection, motion_mod, MotionConfig, MotionHandle, MotionPhase, SpringMotionConfig` | `gooey.animation.spring`, `gooey.animation.stagger`, `gooey.animation.motion` are already namespaces; concrete types at `gooey.animation.*` |
+      | Text (3) | `TextSystem, FontFace, TextMeasurement` | `gooey.text.*` |
+      | UI styles (13) | `Builder, Theme, Box, StackStyle, CenterStyle, ScrollStyle, UniformListStyle, VirtualListStyle, TreeListStyle, DataTableStyle, InputStyle, TextAreaStyle, CodeEditorStyle` | `gooey.ui.*` |
+      | Platform (10) | `MacPlatform, PlatformWindow, PlatformVTable, WindowVTable, PlatformCapabilities, WindowOptions, RendererCapabilities, PathPromptOptions, PathPromptResult, SavePromptOptions` | `gooey.platform.*` — **`MacPlatform` deleted outright**, callers use `gooey.platform.Platform` |
+
+      **Total:** ~123 lines of flat aliases plus their
+      doc-comments removed (the 7 curated-core names stay) →
+      `root.zig` goes from 451 → ~50 lines.
+
+- [ ] **Task 2.5 — Module-side prep (lands before Task 2's
+      deletes).** Three small additions so the deletions land
+      cleanly:
+
+      1. **`wasm_image_loader` → `platform.web.image_loader`.**
+         The conditional-stub block currently lives in _two_
+         places: `root.zig:234-256` (the public alias) and
+         `runtime/render.zig:40-50` (a private `wasm_loader`
+         alias that reaches the WASM-only loader directly,
+         missed by the original grep). Move the conditional
+         stub into `platform/mod.zig`'s inline `pub const web`
+         struct (the existing `is_wasm`-gated branch already
+         exposes `platform`, `window`, `imports`, and
+         `file_dialog` — add `image_loader` next to them, plus
+         a parallel stub in the `else` branch). Both call sites
+         then resolve through `gooey.platform.web.image_loader.*`,
+         eliminating the duplicate.
+      2. **`OnSelectHandler` promotion.** Reachable today as
+         `context.handler.OnSelectHandler` (`handler` is a
+         `pub const` in `context/mod.zig:244`). Add a sibling
+         re-export next to `HandlerRef`:
+         `pub const OnSelectHandler = handler.OnSelectHandler;`.
+         Mirrors `HandlerRef`, lets the `root.zig` deletion be
+         unconditional.
+      3. **`render_bridge`** — already at `scene.render_bridge`
+         (`scene/mod.zig:145`). No work, just confirmed during
+         inventory.
+
+- [ ] **Task 3 — Delete every deprecated `cx.foo` forwarder**
+      added in PR 5 in favor of `cx.lists.foo` / `cx.animate.foo`
+      / etc.
+
+- [ ] **Task 4 — (folded from 7d-examples) Migrate every example
+      to `pub fn main(init: std.process.Init)`** per
+      [§9 "Juicy Main"](./zig-0.16-changes.md#9-juicy-main).
+      Touches all 39 files in `src/examples/` plus the
+      `src/app.zig` doc-block examples. Threaded `io`, `arena`,
+      `gpa` come from `init`; no example reaches for
+      `std.os.argv` / `std.process.getEnvMap` /
+      `std.process.argsAlloc` (already true in `src/` per the
+      audit, but pin it in this sweep by removing the bare-main
+      signatures that would invite reintroduction).
+      **Requires 7d-framework (`App.main(init)`) to have landed
+      already** — see the "Hard dependency" callout above.
+
+- [ ] **Task 5 — (folded from 7e) Pin the structural `_owned`
+      audit.** Add a compile-time test (or `build.zig` grep step)
+      that fails if any `_owned: bool` field appears on `Window`
+      or any of its sub-structs. `AppResources.owned` and
+      `Frame.owned` are explicitly allow-listed — they are the
+      deliberate two-shape ownership discriminators landed in
+      7a / 7c.3a. The cache-marker `owned: bool` fields on
+      `DecodedImage` (web image loader) and `ShapedRun` (text)
+      are also allow-listed — they're per-entry "free this
+      slice?" markers, not lifecycle flags.
+
+**Examples sweep — concrete touch list.** From the usage grep,
+only 5 demoted names are touched by more than ~5 example files:
+
+| Symbol | Example uses | Migration |
+|---|---|---|
+| `gooey.Button` | 27 | → `gooey.components.Button` |
+| `gooey.Image` | 18 | → `gooey.components.Image` |
+| `gooey.Entity` | 11 | → `gooey.context.Entity` |
+| `gooey.Color` | 10 | → no change (`Color` stays in curated core) |
+| `gooey.lerp` | 10 | → `gooey.animation.lerp` |
+
+Everything else: ≤5 sites total, mechanical.
+
+**Commit order inside PR 9** (keeps each commit independently
+green):
+
+1. Module-side prep (Task 2.5): one commit each
+   (`platform.web.image_loader` move + duplicate stub cleanup;
+   `context.OnSelectHandler` re-export).
+2. Migrate the vertical proof: `counter.zig` first, then
+   `tooltip.zig`. Confirms the example shape works
+   end-to-end (`gooey.<ns>.X` for demoted names +
+   `pub fn main(init: std.process.Init)` signature). No
+   `usingnamespace` step is involved; each example just
+   changes the small set of demoted-name references plus the
+   `main` signature line.
+3. Sweep the remaining 37 examples + `src/app.zig` doc-block
+   examples. The Task 4 (`pub fn main(init: std.process.Init)`)
+   migration lands in the same commits — both touch the same
+   line in each file.
+4. Delete `cx.foo` deprecated forwarders (Task 3). Independent
+   of the demotion work — can land in parallel with steps 2–3
+   if a different agent picks it up.
+5. Slim `src/root.zig` to the target shape. With nothing
+   referencing the demoted flat aliases anymore, this is a
+   pure delete commit.
+6. Owned-flag audit (Task 5) — compile-time test in
+   `build.zig`'s test step that fails if any `_owned: bool`
+   field appears outside the allow-list.
+7. `CHANGELOG.md` migration table.
+
+**Risk callouts:**
+
+- **`std_options` lookup** — Zig finds `std_options` by walking
+  the root source file, so the `pub const std_options` in
+  `root.zig` must keep its exact name and stay at the top
+  level. The curated-core list keeps it there.
+- **`gooey.app` namespace stays** — even with the curated-core
+  flat re-exports, power users still want `gooey.app.CxConfig`
+  etc. Don't delete the namespace alias; it's distinct from
+  the curated-core entries.
+- **`MacPlatform` deletion** — verify no out-of-tree consumers
+  (Spaceship/showcase tools, docs, README snippets) before the
+  slim commit. Quick repo-wide grep gates the deletion.
 
 **Definition of done:**
 
 - `wc -l src/root.zig` < 80.
-- All examples updated.
-- A migration note in `CHANGELOG.md` listing every renamed symbol.
+- `root.zig` exposes exactly 7 flat re-exports as the curated
+  core (`run`, `App`, `Cx`, `Window`, `Color`, `log`,
+  `std_options`); the rest live under namespaces.
+- All 39 examples on `pub fn main(init: std.process.Init)`; no
+  bare `pub fn main()` left in `src/examples/` or
+  `src/app.zig` doc-blocks.
+- Allow-listed `owned: bool` audit (task 5) running in
+  `zig build test`.
+- A migration note in `CHANGELOG.md` listing every renamed
+  symbol.
 
 ---
 

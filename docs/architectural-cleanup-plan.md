@@ -698,7 +698,14 @@ Compare to our `root.zig` which has 100+ flat aliases (`gooey.spring_mod`,
 in §6 was on the right track, but **GPUI's prelude is even tighter** — they
 don't even surface concrete types in the prelude.
 
-Concrete equivalent for Gooey:
+**Zig 0.16 collapses the file-vs-flat distinction.** GPUI's prelude
+ergonomic depends on Rust's `use crate::prelude::*;` shape, which Zig
+historically mirrored via `usingnamespace gooey.prelude;`. Zig 0.16
+removed `usingnamespace` entirely. Without it, a `src/prelude.zig` file
+buys nothing — `gooey.prelude.Cx` is just a longer name for `gooey.Cx`,
+and creating two paths to the same name overloads the surface (CLAUDE.md
+§9 "Don't overload names with multiple meanings"). The earlier sketch
+in this section recommended:
 
 ```zig
 // gooey/src/prelude.zig
@@ -710,8 +717,38 @@ pub usingnamespace struct {
 };
 ```
 
-Everything else lives at `gooey.core.Color`, `gooey.ui.text`,
-`gooey.components.Button`. Cleaner discovery, no aliasing.
+That doesn't compile on 0.16. The post-0.16 equivalent for Gooey is
+therefore **a curated-core block inside `root.zig` itself**, not a
+separate file:
+
+```zig
+// gooey/src/root.zig
+// ============ Curated core (the 7 names ~every example uses) ============
+pub const run         = @import("app.zig").runCx;
+pub const App         = @import("app.zig").App;
+pub const Cx          = @import("app.zig").Cx;
+pub const Window      = @import("context/mod.zig").Window;
+pub const Color       = @import("core/mod.zig").Color;
+pub const log         = @import("log.zig");
+pub const std_options = /* … Zig contract: looked up by name on root */;
+
+// ============ Namespaces ============
+pub const core          = @import("core/mod.zig");
+pub const components    = @import("components/mod.zig");
+// … etc.
+```
+
+Everything else lives at `gooey.core.Rect`, `gooey.ui.text`,
+`gooey.components.Button`. Cleaner discovery, no aliasing, no
+`usingnamespace` requirement. The curation criteria stay the same as the
+pre-0.16 sketch: a name earns a flat slot iff (a) >50% of examples use
+it, (b) it has no obvious namespace home, OR (c) Zig itself looks it up
+by name at the root (`std_options`).
+
+The shortlist and the rationale for what's in / out lives in
+[`cleanup-implementation-plan.md` PR 9 Task 1](./cleanup-implementation-plan.md#pr-9--rootzig-slim--ownership-flag-drop--7d-examples-entry-point-sweep);
+this section captures the philosophy, that section captures the
+shipping list.
 
 ---
 
@@ -847,7 +884,7 @@ Combining all the above:
 | 10 | `Global(G)` type-keyed singletons; move debugger/keymap/theme out of `Gooey` | `Global` trait | Low | `Gooey` shrinks; user extensibility |
 | 11 | Single `element_states: HashMap((id, TypeId), *anyopaque)` replaces per-type widget maps | `with_element_state` | Medium | Adding widgets = zero framework work |
 | 12 | Consolidate `scene/svg.zig` + `svg/` into one `svg/` module | n/a | Low | Removes name collision; one less Vec2 |
-| 13 | Tiny `prelude.zig` (5–10 names); demote rest to namespaces in `root.zig` | `prelude.rs` | Medium (breaking) | API surface becomes legible |
+| 13 | Curated 7-name flat block in `root.zig`; demote rest to namespaces (no separate `prelude.zig` — Zig 0.16 removed `usingnamespace`) | `prelude.rs` (philosophy only; not the file shape) | Medium (breaking) | API surface becomes legible |
 | 14 | Encode ownership in types — drop all `_owned: bool` flags | `Option<T>` / `Box<dyn>` patterns | Medium | Memory safety improves |
 | 15 | Split `layout/engine.zig` per pass | n/a | Medium | Frees the engine from 4,000-line gravity |
 | 16 | Add `api_check.zig` compile-time pinning of Tier-1 surface | n/a | Low | Prevents future regressions |
@@ -865,7 +902,7 @@ Combining all the above:
 6. **#5 + #6 — `App`/`Window` split + `Frame` double buffer** (medium-high
    risk, big PR — the architectural earthquake).
 7. **#11 + #12 — Unified `element_states` + SVG consolidation**.
-8. **#13 + #14 — Trim `prelude.zig`, drop ownership flags** (breaking).
+8. **#13 + #14 — Slim `root.zig` to a curated-core block, drop ownership flags** (breaking).
 9. **#15 + #16 — Engine split, API check**.
 10. **#17 — Three-phase Element lifecycle** (largest, most transformative).
 
