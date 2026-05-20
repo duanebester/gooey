@@ -1273,12 +1273,16 @@ so each lands green on its own.
       install`). See "Sub-PR 7c.3d" below.
 - ☐ 7d-framework — `App.main(init: std.process.Init)` /
   `WebApp.main` / `runCx` accept `init`. Framework-side only;
-  no example changes. Standalone prep PR; must land before
-  PR 9 Task 4. The 2026-05-19 audit's claim that "framework
-  entry points landed this shape earlier" was wrong —
-  `src/app.zig` still has bare `pub fn main() !void` at
-  both `App.main` (L100) and `WebApp.main` (L453); this
+  no user-facing example sweep. Standalone prep PR; must
+  land before PR 9 Task 4. The 2026-05-19 audit's claim that
+  "framework entry points landed this shape earlier" was
+  wrong — `src/app.zig` still has bare `pub fn main() !void`
+  at both `App.main` (L100) and `WebApp.main` (L453); this
   slice is what actually lands the framework-side change.
+  **Full pre-flight plan in
+  [`pr-7d-framework-preflight.md`](./pr-7d-framework-preflight.md)**
+  — file/line targets, do-not-do list, acceptance
+  criteria, and the pre-PR-open sanity-check greps.
 - ☐ 7d-examples — Migrate 39 examples + `src/app.zig`
   doc-block examples to `pub fn main(init: std.process.Init)`.
   Folded into PR 9 (see PR 9 Task 4).
