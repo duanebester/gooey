@@ -95,7 +95,7 @@ them out here so they don't get re-litigated in review:
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed)                                                                                         |
 | 9   | `root.zig` slim + flags  | #13, #14 (finish)                                  | `pub fn main(init)` example sweep (from 7d-examples)       | Medium      | ☑ (landed)                                                                                                                                         |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☑ (landed)                                                                                                                                         |
-| 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                                                                                                                                                  |
+| 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☑️ partial (11a `api_check.zig` landed; 11b three-phase Element lifecycle deferred — see notes)                                                       |
 
 Cleanup item numbers reference the synthesis table in
 [`architectural-cleanup-plan.md` §Synthesis](./architectural-cleanup-plan.md#synthesis-the-cleanup-plan).
@@ -6239,32 +6239,154 @@ that unblocks tooltips, drag previews, and autoscroll done correctly.
 **Write scope:**
 
 - `src/api_check.zig` (new)
-- `src/element/element.zig` (new — Element trait)
-- every widget that needs lifecycle phases
-- `build.zig` (wire `api_check.zig` into the test step)
+- `src/element/element.zig` (new — Element trait, PR 11b)
+- every widget that needs lifecycle phases (PR 11b)
+- `build.zig` (wire `api_check.zig` into the test step) — absorbed
+  into `src/root.zig`'s test discovery list; see PR 11a landing notes
 
 **Tasks:**
 
-- [ ] `api_check.zig` mirrors `core/interface_verify.zig` but for
-      Tier-1 public names. Reference
+- [x] **PR 11a** — `api_check.zig` mirrors `core/interface_verify.zig`
+      but for Tier-1 public names. Reference
       [§8 public-API verification](./architectural-cleanup-plan.md#8-public-api-verification).
-- [ ] Define the Element trait per
+      Landed on `cleanup/pr-11a-api-check`. See PR 11a landing notes
+      below.
+- [ ] **PR 11b** — Define the Element trait per
       [§18](./architectural-cleanup-plan.md#18-element-lifecycle-as-an-explicit-three-phase-trait):
       `request_layout` → `prepaint` → `paint`, with intermediate
-      state types `RequestLayoutState` and `PrepaintState`.
-- [ ] Convert tooltips, drag previews, scroll-into-view to use the
-      three-phase model. They're currently wedged into single-phase
-      paint.
-- [ ] Combine with PR 6's `DrawPhase` assertions — phase entry/exit
-      asserts that the previous phase completed.
-- [ ] 0.16: any `@Type`-style trait codegen here uses the new
-      builtins.
+      state types `RequestLayoutState` and `PrepaintState`. **Deferred**
+      — see "PR 11b status" note below.
+- [ ] **PR 11b** — Convert tooltips, drag previews, scroll-into-view
+      to use the three-phase model. They're currently wedged into
+      single-phase paint.
+- [ ] **PR 11b** — Combine with PR 6's `DrawPhase` assertions — phase
+      entry/exit asserts that the previous phase completed.
+- [ ] **PR 11b** — 0.16: any `@Type`-style trait codegen here uses the
+      new builtins.
 
 **Definition of done:**
 
-- Tooltips render in their correct stacking order.
-- Scroll-into-view works on dynamically-sized lists.
-- `api_check.zig` compiled into the test binary.
+- [x] `api_check.zig` compiled into the test binary. **PR 11a.**
+- [ ] Tooltips render in their correct stacking order. **PR 11b.**
+- [ ] Scroll-into-view works on dynamically-sized lists. **PR 11b.**
+
+### PR 11a landing notes
+
+**Status:** ☑ landed on `cleanup/pr-11a-api-check`.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1122/1122 tests
+passed` (+1 vs. PR 10's 1121 — the new `test "tier 1 public API
+surface compiles"` block in `src/api_check.zig`).
+
+**File added.** `src/api_check.zig` (424 lines). Mirrors the shape of
+`core/interface_verify.zig` but pins the Tier-1 *consumer-facing*
+surface rather than platform-backend interfaces. The file is
+organised into four pin sections, each a `fn pin*()` with a single
+`comptime { ... }` body:
+
+- **Tier 1 — curated core (7).** `gooey.run`, `gooey.App`,
+  `gooey.Cx`, `gooey.Window`, `gooey.Color`, `gooey.log`,
+  `gooey.std_options`. Functions (`run`, `App`) are pinned via
+  `@TypeOf(...)` because both are generic; the value-shape types
+  are pinned by direct reference. `std_options` deliberately also
+  pins its *value identity* (not just type) so a future rename to
+  e.g. `std_log_options` fails the build at the actual decl.
+- **Tier 2 — namespace anchors.** Every top-level namespace declared
+  in `root.zig` (`core`, `input`, `scene`, …, `app`, 20 total).
+  Tier-3 names live *inside* these, so a Tier-2 deletion would
+  silently demote everything below it.
+- **Tier 3 — namespaced Tier-1 names.** Per-namespace `pin*`
+  function (`pinTier1NamespacedCore`, `pinTier1NamespacedComponents`,
+  …). Seeded by
+  `grep -rohE 'gooey\\.<ns>\\.[A-Z][a-zA-Z_]*' src/examples/ | sort -u`
+  — the surface that example bodies concretely depend on. Per
+  CLAUDE.md §5 ("70-line function limit") each `pin*` block stays
+  short and a failing build cleanly identifies which namespace lost
+  the name.
+- **`Cx` sub-namespaces.** Pinned via `@FieldType(gooey.Cx,
+  "lists")` / `"animations"` / `"focus"` / `"entities"` /
+  `"element_states"`. The promise is the **field name** stays
+  addressable — the inner sub-namespace APIs are audited
+  elsewhere. Also pins the heavily-used `Cx` methods (`update`,
+  `notify`, `render`, `state`, `window`, `theme`, `windowSize`) so
+  render-fn boilerplate stays compilable.
+
+**Wiring.** No `build.zig` change. `src/root.zig`'s test block
+already has an `inline for (.{ @import("…"), … }) |leaf|
+{ std.testing.refAllDecls(leaf); }` discovery list for test-only
+files; `@import("api_check.zig")` joins that list as the last entry,
+so `zig build test` picks up the `test "tier 1 public API surface
+compiles"` block without `api_check` itself becoming a public name
+on `gooey.*` (which would have been recursive — pinning the thing
+that pins). Same shape as the existing
+`@import("accessibility/integration_test.zig")` test-only leaf.
+
+**Verified failure mode.** Temporarily renamed
+`pub const Cx = @import("app.zig").Cx;` to `pub const CxDeleted = …;`
+and re-ran `zig build test`. The build failed with:
+
+```
+src/api_check.zig:87:18: error: root source file struct 'root' has no member named 'Cx'
+        _ = gooey.Cx;
+src/api_check.zig:408:23: note: called at comptime here
+        pinCuratedCore();
+```
+
+Exactly the precise-pointer-at-the-deleted-name diagnostic the PR
+plan §8 description called for. Restored the rename; build returned
+to 1122/1122 green.
+
+**Doc-comment caveat.** Zig 0.16 forbids `///` doc comments on
+`test` blocks (parse error). The `test "tier 1 public API surface
+compiles"` test carries its rationale as `//` line comments
+immediately above the block instead — noted in the file so a future
+reader doesn't try to "upgrade" them. The four `pin*` helpers above
+it retain `///` doc-comments since they're functions.
+
+**Adding / removing pins.** The file's top-comment documents the
+contract: a Tier-1 deletion must be paired with the corresponding
+`_ = ...` line removal in the same commit. PR reviewers gate Tier-1
+renames at `api_check.zig` — no silent removals. New Tier-1 names
+(e.g. when a new `pub const` is added to `root.zig` or a new name is
+used by an example) get an explicit pin line.
+
+**Cross-reference index.** No 0.16-changes audit lands with this
+sub-PR — `api_check.zig` is pure architectural work. The §28
+takeaway table in `zig-0.16-changes.md` is unchanged.
+
+### PR 11b status
+
+**Deferred to a separate, larger investigation.** PR 11b is the
+three-phase Element trait (`request_layout` → `prepaint` → `paint`)
+with flowing `RequestLayoutState` / `PrepaintState`, per
+`architectural-cleanup-plan.md` §18.
+
+Why it isn't bundled with 11a:
+
+- The current rendering model is fundamentally **two-phase** —
+  `DrawPhase.prepaint` (layout-decl) and `DrawPhase.paint`
+  (scene-emit), enforced at the `Window` level by PR 6's
+  `assertAdvance` ladder. Adopting a per-Element three-phase trait
+  isn't an incremental edit — it rewrites how
+  `Builder.processChildren` drives every component.
+- Today's `processChildren` is comptime duck-typing: it walks the
+  child tuple, checks for `primitive_type` and `render`, and calls
+  through with `*Builder` or `*Cx`. Moving to typed phase trait
+  state means ~20 components + ~10 widgets re-fit their `render`
+  signature into three associated callbacks with intermediate state
+  types.
+- `architectural-cleanup-plan.md` §18 explicitly says: "Defer this
+  one — it's structurally bigger than the rest. But it should be in
+  the architectural backlog." The tracker row marks PR 11 "Large"
+  risk; 11a clears the low-risk half. 11b benefits from a separate
+  design pre-flight doc (trait shape, deferred-paint queue,
+  three-state lifetime contract) **before** code.
+
+Next step on 11b is a design doc draft (likely
+`docs/element-lifecycle-design.md`) covering the trait shape and
+the per-component migration path, then a discrete sub-PR series
+that lands the trait first, then re-fits components in batches
+(probably grouped by primitive vs. component vs. widget).
 
 ---
 
