@@ -185,6 +185,30 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_charts_tests.step);
 
         // =====================================================================
+        // Layout Fuzz Targets (PR 10)
+        // =====================================================================
+        //
+        // `src/layout/fuzz.zig` declares `test "fuzz: …"` blocks that call
+        // `std.testing.fuzz`. Routing them through `b.addTest` with the
+        // layout module's transitive imports gives us `zig build fuzz` for
+        // a single-shot smoke run, and `zig build fuzz -- --fuzz` for the
+        // 0.16 infinite-mode runner.
+        const fuzz_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/layout/fuzz.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+        const run_fuzz = b.addRunArtifact(fuzz_tests);
+        if (b.args) |args| run_fuzz.addArgs(args);
+        const fuzz_step = b.step("fuzz", "Run layout-engine fuzz targets (pass --fuzz for infinite mode)");
+        fuzz_step.dependOn(&run_fuzz.step);
+
+        // =====================================================================
         // Layout Benchmarks
         // =====================================================================
 
