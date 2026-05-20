@@ -401,6 +401,17 @@ test {
         @import("ui/primitives.zig"),
         @import("core/triangulator.zig"),
         @import("validation.zig"),
+
+        // PR 11a — Tier-1 public-API pin list. Lives in the
+        // test-only discovery set (not on the public `gooey.*`
+        // surface) so it can't accidentally become a name it is
+        // itself meant to guard. The single `test "tier 1 public
+        // API surface compiles"` block inside this file runs
+        // every Tier-1 reference at comptime and fails the build
+        // with a precise line on accidental rename/deletion. See
+        // `docs/cleanup-implementation-plan.md` PR 11 and
+        // `docs/architectural-cleanup-plan.md` §8.
+        @import("api_check.zig"),
     }) |leaf| {
         std.testing.refAllDecls(leaf);
     }
