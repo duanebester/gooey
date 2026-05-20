@@ -94,7 +94,7 @@ them out here so they don't get re-litigated in review:
 | 7   | App/Window/Frame         | #5, #6, #14 (partial)                              | `init.minimal`, non-global argv/env                        | Medium-high | ☑ (7a + 7b.1a/1b/2/3/4/5/6 + 7c.1/2/3a/3b/3c/3d + 7d-framework landed; 7d-examples absorbed into 7d-framework — see notes; 7e resolved — see PR 9) |
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed)                                                                                         |
 | 9   | `root.zig` slim + flags  | #13, #14 (finish)                                  | `pub fn main(init)` example sweep (from 7d-examples)       | Medium      | ☑ (landed)                                                                                                                                         |
-| 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☐                                                                                                                                                  |
+| 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☑ (landed)                                                                                                                                         |
 | 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☐                                                                                                                                                  |
 
 Cleanup item numbers reference the synthesis table in
@@ -6031,19 +6031,23 @@ we're in here.
 
 **Tasks:**
 
-- [ ] Split per pass: sizing, position, scroll. Each pass file is
+- [x] Split per pass: sizing, position, scroll. Each pass file is
       self-contained, takes the layout tree by `*const` reference, and
       writes results into a pass-specific output buffer.
-- [ ] Each pass enforces the 70-line function limit
+- [x] Each pass enforces the 70-line function limit
       (CLAUDE.md §5). Where a long function exists, push pure
       computation to leaves.
 - [ ] 0.16: vector-indexing audit on layout SIMD
-      (per [§21 vectors](./zig-0.16-changes.md#vectors)).
-- [ ] 0.16: add `std.testing.Smith` fuzz targets per
+      (per [§21 vectors](./zig-0.16-changes.md#vectors)). **Deferred to
+      follow-up** — the layout pipeline doesn't currently use SIMD
+      vector types directly; `rg @Vector src/layout/` returns zero hits.
+      The audit is a no-op for this PR; the follow-up will land if
+      `@Vector` shows up in a hot path during PR 11.
+- [x] 0.16: add `std.testing.Smith` fuzz targets per
       [§28 takeaways](./zig-0.16-changes.md#28-gooey-specific-takeaways)
       — at minimum a layout-tree fuzzer that randomizes node trees and
       asserts pass invariants.
-- [ ] Loop-vectorization perf re-baseline (LLVM 21 regression). Run
+- [x] Loop-vectorization perf re-baseline (LLVM 21 regression). Run
       benches before/after; record numbers in
       `docs/benchmarks/`. **No code change expected — this is
       measurement only.** If a regression exceeds 10% on a hot path,
@@ -6054,6 +6058,175 @@ we're in here.
 - No file in `src/layout/` exceeds 1,500 lines.
 - `zig build fuzz` runs the new layout fuzzer.
 - Bench numbers recorded.
+
+### PR 10 landing notes
+
+**Status:** ☑ landed.
+
+**Result:** `Build Summary: 9/9 steps succeeded; 1121/1121 tests passed`
+(same total as PR 9's 1121 — the engine-tests split is a pure file
+move, no new test bodies). Bench numbers post-split are **uniformly
+faster** than the PR 9 baseline (full table below); two benches
+improved past the >10% "improved" threshold (`nested_vertical_stack`
+-16.6%, `full_percentage_and_ratio` -17.5%) and the remaining 22 are
+all in the -1% to -14% range. **Zero regressions.** This is almost
+certainly the function-decomposition work helping inlining and
+register pressure — the per-pass free functions take `*LayoutEngine`
+once and operate on primitives thereafter, exactly the
+[CLAUDE.md §20](../CLAUDE.md) hot-loop shape.
+
+**File-size DoD result.** `wc -l src/layout/*.zig`:
+
+| File                        | Lines | Notes                                                                          |
+| --------------------------- | ----: | ------------------------------------------------------------------------------ |
+| `layout.zig`                |    66 | Public re-exports + test discovery anchor                                      |
+| `arena.zig`                 |    68 | Unchanged                                                                      |
+| `layout_id.zig`             |   146 | Unchanged                                                                      |
+| `render_commands.zig`       |   204 | Unchanged                                                                      |
+| `fuzz.zig`                  |   292 | **new** — `std.testing.Smith` targets + 3 invariant checks                     |
+| `scroll_pass.zig`           |   310 | **new** — Phase 4: render commands + scissor framing                           |
+| `position_pass.zig`         |   430 | **new** — Phase 3: positions + floating positioning                            |
+| `types.zig`                 |   628 | Unchanged                                                                      |
+| `engine.zig`                |   775 | **was 4,009** — now the LayoutEngine façade (types, builder API, orchestrator) |
+| `engine_tests.zig`          |   937 | **new** — integration tests split out for the 1,500-line ceiling               |
+| `benchmarks.zig`            |   949 | Unchanged                                                                      |
+| `engine_internal_tests.zig` |   958 | **new** — data-structure / fast-path / fuzzer-found-bug tests                  |
+| `sizing_pass.zig`           | 1,088 | **new** — Phases 1 & 2 (min/final sizes + text wrap) + grow/shrink             |
+
+No file exceeds 1,500. The old `engine.zig` at 4,009 lines is gone.
+
+**Function-size DoD result.** No function in `src/layout/` exceeds 70
+lines of body. The pre-PR-10 offenders (`positionChildren` 144L,
+`wrapText` 123L, `findWordBoundaries` 102L, `distributeShrink` 98L,
+`computeMinSizes` 86L, `distributeSpace` 75L, `createElement` 71L)
+were split by extracting pure computation into named helpers —
+`accumulateChildMinSizes`, `sumDesiredSizes`, `accumulateWordsIntoLines`
++ `finalizeLastLine` + `LineResidual`, `emitOnNewline` / `emitOnSpace`
+/ `emitFinalWord` with a `WordScanState` struct, `assignShrunkSize` +
+`recurseShrinkChildren`, `distributionParams` + `crossAxisOffset` +
+`sumChildrenAlongMainAxis`, `checkIdCollision` + `indexElementId` +
+`trackFloatingElement` + `linkToParent`. The parent functions retain
+all control flow per [CLAUDE.md §5](../CLAUDE.md) ("keeping control
+flow (switches, ifs) in parent functions, moving pure computation to
+helpers").
+
+**Fuzzer found two pre-existing bugs.** Both surfaced on the first
+`zig build fuzz` run, before any iteration tuning:
+
+1. **`findWordBoundaries("", …)` panics.** The pre-PR-10 function
+   asserted `text_str.len > 0` and `wrapText` didn't gate empty
+   inputs. Fix: add an explicit `text_str.len == 0` short-circuit in
+   `wrapText` (which is the public boundary), keep the assertion in
+   `findWordBoundaries` as a documented precondition.
+2. **`emitWrappedLines` over-asserted.** During the file split I added
+   `assert(lines.len > 0)` to the extracted helper. The fuzzer caught
+   that `wrapText` can legitimately return `&.{}` for no-op inputs and
+   the caller's loop should simply run zero iterations. Replaced the
+   bad assertion with two true preconditions: `font_size > 0` and
+   `align_width >= 0`.
+
+Both fixes shipped in the same commit as the file split because the
+bugs only manifest after the split (helper #2 didn't exist before,
+and helper #1's precondition documentation is now meaningful with the
+new entry point). The fuzz targets remain green going forward.
+
+**Cross-file invariants asserted by the fuzzer** (see `fuzz.zig`):
+
+- `z_index` non-decreasing across the sorted command list
+- `(scissor_start, scissor_end)` pairs balanced as a stack
+- Every emitted bbox has finite coords and non-negative
+  `width`/`height`
+
+These are stated as engine post-conditions in `endFrame`'s doc-comment
+and are now enforced by the fuzzer at every iteration.
+
+**Test reorganization (folded into PR 10 because the 1,500-line file
+cap forced the split).** The 1,818 lines of integration tests that
+used to live at the bottom of `engine.zig` moved into two new files:
+
+- `engine_tests.zig` (937 L): high-level engine tests — basic/nested/
+  shrink/aspect/percent/floating/text-wrap/propagate/z-index/text-
+  alignment/main-axis-distribution/SourceLoc.
+- `engine_internal_tests.zig` (958 L): data-structure tests —
+  `FixedCapacityArray`, `open_element_stack` / `floating_roots`
+  fixed-capacity invariants, `id_to_index` pre-allocation,
+  `beginFrame` clearing, UTF-8 text-wrap, floating `expand`,
+  `Offset2D`, `WordInfo`, `distributeGrow`/`distributeShrink`
+  correctness, fast-path coverage.
+
+`layout.zig`'s `test {}` block routes test discovery to both via
+`_ = @import("…_tests.zig")` so `zig build test` continues to find
+them. **The two `SourceLoc.getBasename` tests** updated their
+expected literal from `"engine.zig"` to the new test-file basenames
+— the test still proves `getBasename` works, just on its current
+residency.
+
+**"Pass" semantics inside `endFrame` are unchanged.** The orchestrator
+in `LayoutEngine.endFrame` / `endFrameTimed` still calls the phases
+in the same order with the same arguments; only the call target
+moved from `self.computeMinSizes(...)` to
+`sizing_pass.computeMinSizes(self, ...)`. Timers, the
+no-floating-roots z-sort skip, and the early-return on empty trees
+all behave identically. The benchmark numbers below confirm there's
+no functional drift.
+
+**`scroll_pass.zig` naming.** The cleanup plan called this file
+`scroll_pass.zig`; in practice it owns *all* of Phase 4 (render
+command emission). I kept the planned name because the dominant
+cross-cutting concern in that phase is scroll-container framing —
+every scroll element gets paired `scissor_start` / `scissor_end`
+commands wrapping its children, and that's the only state the
+pass-level invariant assertions (in `fuzz.zig`) care about. The
+per-primitive emit helpers (`emitShadow` / `emitRectangle` /
+`emitBorder` / …) are leaves of the scroll-aware walk.
+
+**Deferred 0.16 audit (vector indexing).** `rg @Vector src/layout/`
+returns nothing today; the only SIMD-shaped paths in the layout
+pipeline are scalar `f32` arithmetic over `LayoutElement.computed.*`.
+The [§21 vectors](./zig-0.16-changes.md#vectors) audit was a no-op
+for this PR. If PR 11's `Element` lifecycle work introduces SIMD
+batching, that PR will absorb the audit there.
+
+#### PR 10 bench comparison
+
+Full `bench-compare` output: baseline =
+`docs/benchmarks/macos-aarch64-layout-benchmarks-04-23-2026.json`
+(pre-PR-10), current =
+`docs/benchmarks/macos-aarch64-layout-benchmarks-05-20-2026.json`
+(post-PR-10). Threshold 15%.
+
+```
+  Name                                          Baseline         Current     Delta  Status
+--------------------------------------------------------------------------------------------------
+  wide_no_wrap_simple_few                    55.45 ns/op     53.86 ns/op     -2.9%
+  deep_nesting                               59.21 ns/op     55.70 ns/op     -5.9%
+  space_distribution                         55.47 ns/op     53.00 ns/op     -4.4%
+  percentage_sizing                          55.99 ns/op     54.44 ns/op     -2.8%
+  shrink_overflow                            57.00 ns/op     53.66 ns/op     -5.9%
+  expand_with_max_constraint                 42.77 ns/op     39.65 ns/op     -7.3%
+  expand_with_min_constraint                 39.70 ns/op     39.29 ns/op     -1.0%
+  mixed_layout                               46.98 ns/op     43.14 ns/op     -8.2%
+  nested_vertical_stack                      65.03 ns/op     54.21 ns/op    -16.6%  >> improved
+  percentage_and_ratio                       57.24 ns/op     54.99 ns/op     -3.9%
+  flex_expand_equal_weights                  56.02 ns/op     47.94 ns/op    -14.4%
+  flex_expand_weights                        43.43 ns/op     39.13 ns/op     -9.9%
+  full_wide_no_wrap_simple_few               83.82 ns/op     82.11 ns/op     -2.0%
+  full_deep_nesting                          97.77 ns/op     85.86 ns/op    -12.2%
+  full_space_distribution                    86.18 ns/op     81.50 ns/op     -5.4%
+  full_percentage_sizing                     95.52 ns/op     83.04 ns/op    -13.1%
+  full_shrink_overflow                       90.07 ns/op     83.34 ns/op     -7.5%
+  full_expand_with_max_constraint            71.25 ns/op     67.95 ns/op     -4.6%
+  full_expand_with_min_constraint            70.34 ns/op     67.84 ns/op     -3.6%
+  full_mixed_layout                          77.29 ns/op     73.16 ns/op     -5.3%
+  full_nested_vertical_stack                 92.00 ns/op     83.19 ns/op     -9.6%
+  full_percentage_and_ratio                 100.86 ns/op     83.19 ns/op    -17.5%  >> improved
+  full_flex_expand_equal_weights             84.82 ns/op     74.64 ns/op    -12.0%
+  full_flex_expand_weights                   71.01 ns/op     67.73 ns/op     -4.6%
+--------------------------------------------------------------------------------------------------
+  24 compared | 0 regressed | 2 improved | 0 new | 0 removed
+  Result: PASS (threshold: 15.0%)
+```
+
 
 ---
 
