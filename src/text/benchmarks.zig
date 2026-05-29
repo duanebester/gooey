@@ -146,6 +146,8 @@ const IterationSamples = struct {
         const ops_f: f64 = @floatFromInt(operation_count);
 
         return .{
+            // The slice is sorted ascending, so slice[0] is the fastest sample (the min).
+            .min_per_op_ns = @as(f64, @floatFromInt(slice[0])) / ops_f,
             .p50_per_op_ns = @as(f64, @floatFromInt(slice[p50_index])) / ops_f,
             .p99_per_op_ns = @as(f64, @floatFromInt(slice[p99_index])) / ops_f,
         };
@@ -154,6 +156,7 @@ const IterationSamples = struct {
 
 /// Percentile statistics computed from iteration samples.
 const PercentileResult = struct {
+    min_per_op_ns: f64,
     p50_per_op_ns: f64,
     p99_per_op_ns: f64,
 };
@@ -167,6 +170,7 @@ const BenchmarkResult = struct {
     operation_count: u32,
     total_time_ns: u64,
     iterations: u32,
+    min_per_op_ns: f64,
     p50_per_op_ns: f64,
     p99_per_op_ns: f64,
 
@@ -375,6 +379,7 @@ fn benchAtlasReserve(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -430,6 +435,7 @@ fn benchAtlasReserveMixed(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -513,6 +519,7 @@ fn benchAtlasSet(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -582,6 +589,7 @@ fn benchAtlasReserveAndSet(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -643,6 +651,7 @@ fn benchAtlasGrow(
         .operation_count = 1,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -706,6 +715,7 @@ fn benchShapeCold(
         .operation_count = 1,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -771,6 +781,7 @@ fn benchShapeWarm(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -847,6 +858,7 @@ fn benchShapeWarmArena(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -914,6 +926,7 @@ fn benchShapeWarmInto(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -973,6 +986,7 @@ fn benchMeasureText(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1031,6 +1045,7 @@ fn benchMeasureTextWrapped(
         .operation_count = count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1096,6 +1111,7 @@ fn benchGlyphRasterCold(
         .operation_count = glyph_count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1165,6 +1181,7 @@ fn benchGlyphRasterWarm(
         .operation_count = operation_count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1241,6 +1258,7 @@ fn benchGlyphRasterWarmSubpixel(
         .operation_count = operation_count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1327,6 +1345,7 @@ fn benchGlyphRasterWarmPerGlyph(
         .operation_count = operation_count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1423,6 +1442,7 @@ fn benchGlyphRasterWarmBatch(
         .operation_count = operation_count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1466,6 +1486,7 @@ fn benchRenderText(
             .operation_count = operation_count,
             .total_time_ns = 0,
             .iterations = 0,
+            .min_per_op_ns = 0,
             .p50_per_op_ns = 0,
             .p99_per_op_ns = 0,
         };
@@ -1513,6 +1534,7 @@ fn benchRenderText(
         .operation_count = operation_count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .min_per_op_ns = percentiles.min_per_op_ns,
         .p50_per_op_ns = percentiles.p50_per_op_ns,
         .p99_per_op_ns = percentiles.p99_per_op_ns,
     };
@@ -1890,6 +1912,7 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.operation_count,
         result.total_time_ns,
         result.iterations,
+        result.min_per_op_ns,
         result.p50_per_op_ns,
         result.p99_per_op_ns,
     ));

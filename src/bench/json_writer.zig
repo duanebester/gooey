@@ -53,6 +53,15 @@ const os_name: []const u8 = @tagName(builtin.os.tag);
 const arch_name: []const u8 = @tagName(builtin.cpu.arch);
 
 // =============================================================================
+// Re-exports
+// =============================================================================
+
+/// The per-iteration timing accumulator the harnesses feed. Re-exported here
+/// because `json_writer.zig` is the root of the `bench` module, so harnesses
+/// reach it as `bench.Sampler` alongside `bench.entry` / `bench.Reporter`.
+pub const Sampler = @import("sampler.zig").Sampler;
+
+// =============================================================================
 // Entry — one benchmark result
 // =============================================================================
 
@@ -71,6 +80,15 @@ pub const Entry = struct {
 
     /// Number of timed iterations completed.
     iterations: u32 = 0,
+
+    /// Whether `min_per_op_ns` contains a recorded value. Every harness emits
+    /// it now, but the flag lets a hand-constructed `Entry` (or a future
+    /// caller) opt out, and mirrors the tolerant shape `has_percentiles` uses.
+    has_min: bool = false,
+
+    /// Minimum observed per-operation nanoseconds — the best-of-N estimator
+    /// the regression gate classifies on (see `bench/sampler.zig`).
+    min_per_op_ns: f64 = 0.0,
 
     /// Whether percentile fields contain meaningful data.
     /// True only for text benchmarks that collect per-iteration samples.
@@ -111,20 +129,26 @@ pub const Entry = struct {
 // Entry Constructors
 // =============================================================================
 
-/// Create an entry from the common benchmark result fields.
+/// Create an entry from the common benchmark result fields. `min_per_op_ns`
+/// is the best-of-N estimator from the harness `Sampler`; pass 0 only for a
+/// genuinely unmeasured entry.
 pub fn entry(
     name: []const u8,
     operation_count: u32,
     total_time_ns: u64,
     iterations: u32,
+    min_per_op_ns: f64,
 ) Entry {
     std.debug.assert(name.len > 0);
     std.debug.assert(iterations > 0);
+    std.debug.assert(min_per_op_ns >= 0.0);
 
     var e: Entry = .{
         .operation_count = operation_count,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
+        .has_min = true,
+        .min_per_op_ns = min_per_op_ns,
     };
     const copy_length: u32 = @intCast(@min(name.len, MAX_NAME_LENGTH));
     @memcpy(e.name[0..copy_length], name[0..copy_length]);
@@ -132,19 +156,23 @@ pub fn entry(
     return e;
 }
 
-/// Create an entry that includes p50/p99 percentile data (text benchmarks).
+/// Create an entry that includes the min plus p50/p99 percentile data (text
+/// benchmarks). Arguments are ordered by ascending percentile — min (p0),
+/// p50, p99 — so the float arguments are hard to transpose at the call site.
 pub fn entryWithPercentiles(
     name: []const u8,
     operation_count: u32,
     total_time_ns: u64,
     iterations: u32,
+    min_per_op_ns: f64,
     p50_per_op_ns: f64,
     p99_per_op_ns: f64,
 ) Entry {
-    std.debug.assert(p50_per_op_ns >= 0.0);
+    std.debug.assert(min_per_op_ns >= 0.0);
+    std.debug.assert(p50_per_op_ns >= min_per_op_ns);
     std.debug.assert(p99_per_op_ns >= p50_per_op_ns);
 
-    var e = entry(name, operation_count, total_time_ns, iterations);
+    var e = entry(name, operation_count, total_time_ns, iterations, min_per_op_ns);
     e.has_percentiles = true;
     e.p50_per_op_ns = p50_per_op_ns;
     e.p99_per_op_ns = p99_per_op_ns;
@@ -215,10 +243,13 @@ const JsonBenchmarkEntry = struct {
     iterations: u32,
     avg_time_ms: f64,
     time_per_op_ns: f64,
+    min_per_op_ns: ?f64,
     p50_per_op_ns: ?f64,
     p99_per_op_ns: ?f64,
 
     /// Convert from the fixed-capacity Entry to a JSON-serializable form.
+    /// Optional fields serialize as `null` when unrecorded, so a reader on an
+    /// older schema (no min) can fall back tolerantly.
     fn fromEntry(e: *const Entry) JsonBenchmarkEntry {
         std.debug.assert(e.name_length > 0);
         std.debug.assert(e.iterations > 0);
@@ -230,6 +261,7 @@ const JsonBenchmarkEntry = struct {
             .iterations = e.iterations,
             .avg_time_ms = e.avgTimeMs(),
             .time_per_op_ns = e.timePerOpNs(),
+            .min_per_op_ns = if (e.has_min) e.min_per_op_ns else null,
             .p50_per_op_ns = if (e.has_percentiles) e.p50_per_op_ns else null,
             .p99_per_op_ns = if (e.has_percentiles) e.p99_per_op_ns else null,
         };
@@ -487,18 +519,28 @@ pub const Reporter = struct {
 // Tests
 // =============================================================================
 
+// Pull the shared Sampler's tests into this (the bench module root) test
+// binary. A bare `pub const Sampler = @import(...)` alias does not cause Zig
+// to discover the imported file's `test` blocks, so reference it explicitly.
+test {
+    _ = @import("sampler.zig");
+}
+
 test "entry: name is copied and truncated correctly" {
-    const e = entry("convex_128", 128, 5000, 10);
+    const e = entry("convex_128", 128, 5000, 10, 4.0);
     std.debug.assert(e.name_length == 10);
     std.debug.assert(std.mem.eql(u8, e.nameSlice(), "convex_128"));
     std.debug.assert(e.operation_count == 128);
     std.debug.assert(e.iterations == 10);
     std.debug.assert(!e.has_percentiles);
+    // `entry` always records a min, even when percentiles are absent.
+    std.debug.assert(e.has_min);
+    std.debug.assert(e.min_per_op_ns == 4.0);
 }
 
 test "entry: avgTimeMs and timePerOpNs compute correctly" {
     // 1_000_000 ns total, 10 iterations → 100_000 ns avg → 0.1 ms.
-    const e = entry("test", 100, 1_000_000, 10);
+    const e = entry("test", 100, 1_000_000, 10, 950.0);
     const avg_ms = e.avgTimeMs();
     const per_op_ns = e.timePerOpNs();
 
@@ -512,8 +554,10 @@ test "entry: avgTimeMs and timePerOpNs compute correctly" {
 }
 
 test "entryWithPercentiles: percentile fields are set" {
-    const e = entryWithPercentiles("shaped_warm", 50, 2_000_000, 20, 42.5, 128.7);
+    const e = entryWithPercentiles("shaped_warm", 50, 2_000_000, 20, 30.0, 42.5, 128.7);
     std.debug.assert(e.has_percentiles);
+    std.debug.assert(e.has_min);
+    std.debug.assert(e.min_per_op_ns == 30.0);
     std.debug.assert(e.p50_per_op_ns == 42.5);
     std.debug.assert(e.p99_per_op_ns == 128.7);
 }
@@ -523,8 +567,8 @@ test "reporter: addEntry collects entries" {
     std.debug.assert(reporter.count == 0);
     std.debug.assert(!reporter.json_enabled); // No --json-dir in empty argv.
 
-    reporter.addEntry(entry("bench_a", 10, 500, 5));
-    reporter.addEntry(entry("bench_b", 20, 1000, 10));
+    reporter.addEntry(entry("bench_a", 10, 500, 5, 40.0));
+    reporter.addEntry(entry("bench_b", 20, 1000, 10, 40.0));
     std.debug.assert(reporter.count == 2);
     std.debug.assert(std.mem.eql(u8, reporter.entries[0].nameSlice(), "bench_a"));
     std.debug.assert(std.mem.eql(u8, reporter.entries[1].nameSlice(), "bench_b"));
@@ -532,7 +576,7 @@ test "reporter: addEntry collects entries" {
 
 test "reporter: finish is no-op when json is disabled" {
     var reporter = Reporter.init("noop", Io.failing, &.{});
-    reporter.addEntry(entry("x", 1, 100, 1));
+    reporter.addEntry(entry("x", 1, 100, 1, 100.0));
     // Must not crash or attempt file I/O.
     reporter.finish();
 }
@@ -576,25 +620,38 @@ test "reporter: buildFilePath produces expected format" {
 }
 
 test "JsonBenchmarkEntry.fromEntry: converts without percentiles" {
-    const e = entry("test_bench", 64, 1_000_000, 10);
+    const e = entry("test_bench", 64, 1_000_000, 10, 1200.0);
     const json_entry = JsonBenchmarkEntry.fromEntry(&e);
 
     std.debug.assert(std.mem.eql(u8, json_entry.name, "test_bench"));
     std.debug.assert(json_entry.operation_count == 64);
     std.debug.assert(json_entry.total_time_ns == 1_000_000);
     std.debug.assert(json_entry.iterations == 10);
-    // Percentiles must be null when not collected.
+    // Min is recorded even without percentiles; the percentiles stay null.
+    std.debug.assert(json_entry.min_per_op_ns.? == 1200.0);
     std.debug.assert(json_entry.p50_per_op_ns == null);
     std.debug.assert(json_entry.p99_per_op_ns == null);
 }
 
 test "JsonBenchmarkEntry.fromEntry: converts with percentiles" {
-    const e = entryWithPercentiles("shaped_warm", 50, 2_000_000, 20, 42.5, 128.7);
+    const e = entryWithPercentiles("shaped_warm", 50, 2_000_000, 20, 30.0, 42.5, 128.7);
     const json_entry = JsonBenchmarkEntry.fromEntry(&e);
 
     std.debug.assert(std.mem.eql(u8, json_entry.name, "shaped_warm"));
+    std.debug.assert(json_entry.min_per_op_ns.? == 30.0);
     std.debug.assert(json_entry.p50_per_op_ns.? == 42.5);
     std.debug.assert(json_entry.p99_per_op_ns.? == 128.7);
+}
+
+/// Read a parsed JSON number as f64. JSON has a single number type, so the
+/// parser stores an integer-valued number (e.g. the float 5.0 stringified as
+/// `5`) as `.integer`; callers that expect a float must accept both.
+fn jsonNumberAsF64(v: std.json.Value) f64 {
+    return switch (v) {
+        .float => |f| f,
+        .integer => |i| @floatFromInt(i),
+        else => unreachable, // A JSON number is expected at this field.
+    };
 }
 
 test "reporter: serializePayload produces valid JSON" {
@@ -603,8 +660,8 @@ test "reporter: serializePayload produces valid JSON" {
     // per-test `std.testing.io` instance (backed by `Io.Threaded`)
     // instead of `Io.failing`, which would return `Timestamp.zero`.
     var reporter = Reporter.init("test_mod", std.testing.io, &.{});
-    reporter.addEntry(entry("alpha", 10, 500_000, 50));
-    reporter.addEntry(entryWithPercentiles("beta", 20, 1_000_000, 100, 5.0, 15.0));
+    reporter.addEntry(entry("alpha", 10, 500_000, 50, 900.0));
+    reporter.addEntry(entryWithPercentiles("beta", 20, 1_000_000, 100, 4.0, 5.0, 15.0));
 
     const json_bytes = try reporter.serializePayload();
     defer std.heap.page_allocator.free(json_bytes);
@@ -630,5 +687,12 @@ test "reporter: serializePayload produces valid JSON" {
     std.debug.assert(benchmarks.items.len == 2);
     std.debug.assert(std.mem.eql(u8, benchmarks.items[0].object.get("name").?.string, "alpha"));
     std.debug.assert(benchmarks.items[0].object.get("p50_per_op_ns").? == .null);
-    std.debug.assert(benchmarks.items[1].object.get("p50_per_op_ns").?.float == 5.0);
+    // JSON has no separate float type, so an integer-valued float like 5.0
+    // round-trips as `.integer`; read both percentiles tolerantly.
+    std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("p50_per_op_ns").?) == 5.0);
+    std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("p99_per_op_ns").?) == 15.0);
+    // Min is recorded for every entry now (even the percentile-less "alpha"),
+    // and round-trips as a number for the entry that set it explicitly.
+    std.debug.assert(benchmarks.items[0].object.get("min_per_op_ns").? != .null);
+    std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("min_per_op_ns").?) == 4.0);
 }
