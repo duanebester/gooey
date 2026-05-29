@@ -292,6 +292,55 @@ pub const KeyState = enum(u32) {
     pressed = 1,
 };
 
+pub const TouchListener = extern struct {
+    down: ?*const fn (
+        data: ?*anyopaque,
+        touch: *Touch,
+        serial: u32,
+        time: u32,
+        surface: *Surface,
+        id: i32,
+        x: Fixed,
+        y: Fixed,
+    ) callconv(.c) void = null,
+    up: ?*const fn (
+        data: ?*anyopaque,
+        touch: *Touch,
+        serial: u32,
+        time: u32,
+        id: i32,
+    ) callconv(.c) void = null,
+    motion: ?*const fn (
+        data: ?*anyopaque,
+        touch: *Touch,
+        time: u32,
+        id: i32,
+        x: Fixed,
+        y: Fixed,
+    ) callconv(.c) void = null,
+    frame: ?*const fn (
+        data: ?*anyopaque,
+        touch: *Touch,
+    ) callconv(.c) void = null,
+    cancel: ?*const fn (
+        data: ?*anyopaque,
+        touch: *Touch,
+    ) callconv(.c) void = null,
+    shape: ?*const fn (
+        data: ?*anyopaque,
+        touch: *Touch,
+        id: i32,
+        major: Fixed,
+        minor: Fixed,
+    ) callconv(.c) void = null,
+    orientation: ?*const fn (
+        data: ?*anyopaque,
+        touch: *Touch,
+        id: i32,
+        orientation: Fixed,
+    ) callconv(.c) void = null,
+};
+
 pub const OutputListener = extern struct {
     geometry: ?*const fn (
         data: ?*anyopaque,
@@ -570,6 +619,7 @@ pub extern "wayland-client" var wl_callback_interface: Interface;
 pub extern "wayland-client" var wl_seat_interface: Interface;
 pub extern "wayland-client" var wl_pointer_interface: Interface;
 pub extern "wayland-client" var wl_keyboard_interface: Interface;
+pub extern "wayland-client" var wl_touch_interface: Interface;
 pub extern "wayland-client" var wl_output_interface: Interface;
 pub extern "wayland-client" var wl_shm_interface: Interface;
 
@@ -1119,6 +1169,27 @@ pub fn keyboardDestroy(keyboard: *Keyboard) void {
     // Use wl_proxy_destroy directly instead of release request
     // The release request requires wl_seat version 3+ and can cause issues
     wl_proxy_destroy(@ptrCast(keyboard));
+}
+
+// Touch operations
+pub fn seatGetTouch(seat: *Seat) ?*Touch {
+    const result = wl_proxy_marshal_flags(
+        @ptrCast(seat),
+        2, // WL_SEAT_GET_TOUCH
+        &wl_touch_interface,
+        wl_proxy_get_version(@ptrCast(seat)),
+        0,
+        @as(?*anyopaque, null),
+    );
+    return @ptrCast(@alignCast(result));
+}
+
+pub fn touchAddListener(touch: *Touch, listener: *const TouchListener, data: ?*anyopaque) bool {
+    return wl_proxy_add_listener(@ptrCast(touch), @ptrCast(listener), data) == 0;
+}
+
+pub fn touchDestroy(touch: *Touch) void {
+    wl_proxy_destroy(@ptrCast(touch));
 }
 
 // Output operations

@@ -150,6 +150,13 @@ pub const CompositionEvent = struct {
     text: []const u8,
 };
 
+/// A single touch point on a touch screen or trackpad
+pub const TouchEvent = struct {
+    position: geometry.Point(f64),
+    /// Touch point identifier, unique per active touch within a gesture sequence.
+    id: i32,
+};
+
 pub const InputEvent = union(enum) {
     mouse_down: MouseEvent,
     mouse_up: MouseEvent,
@@ -165,4 +172,9 @@ pub const InputEvent = union(enum) {
     text_input: TextInputEvent,
     /// IME composition state changed (preedit text)
     composition: CompositionEvent,
+    touch_down: TouchEvent,
+    touch_up: TouchEvent,
+    touch_moved: TouchEvent,
+    /// All active touch points on the surface were cancelled by the compositor.
+    touch_cancelled,
 };

@@ -516,6 +516,26 @@ pub fn compositionEvent(text: []const u8) input.InputEvent {
     };
 }
 
+/// Construct a touch_down InputEvent
+pub fn touchDownEvent(id: i32, x: f64, y: f64) input.InputEvent {
+    return .{ .touch_down = .{ .id = id, .position = .{ .x = x, .y = y } } };
+}
+
+/// Construct a touch_up InputEvent
+pub fn touchUpEvent(id: i32, x: f64, y: f64) input.InputEvent {
+    return .{ .touch_up = .{ .id = id, .position = .{ .x = x, .y = y } } };
+}
+
+/// Construct a touch_moved InputEvent
+pub fn touchMovedEvent(id: i32, x: f64, y: f64) input.InputEvent {
+    return .{ .touch_moved = .{ .id = id, .position = .{ .x = x, .y = y } } };
+}
+
+/// Construct a touch_cancelled InputEvent
+pub fn touchCancelledEvent() input.InputEvent {
+    return .touch_cancelled;
+}
+
 // =============================================================================
 // Click Detection
 // =============================================================================

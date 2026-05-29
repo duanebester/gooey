@@ -62,6 +62,16 @@ const keyboard_listener = wayland.KeyboardListener{
     .repeat_info = LinuxPlatform.keyboardRepeatInfo,
 };
 
+const touch_listener = wayland.TouchListener{
+    .down = LinuxPlatform.touchDown,
+    .up = LinuxPlatform.touchUp,
+    .motion = LinuxPlatform.touchMotion,
+    .frame = LinuxPlatform.touchFrame,
+    .cancel = LinuxPlatform.touchCancel,
+    .shape = LinuxPlatform.touchShape,
+    .orientation = LinuxPlatform.touchOrientation,
+};
+
 // Text input V3 listener for IME support
 const text_input_listener = wayland.ZwpTextInputV3Listener{
     .enter = LinuxPlatform.textInputEnter,
@@ -90,6 +100,7 @@ pub const LinuxPlatform = struct {
     seat: ?*wayland.Seat = null,
     pointer: ?*wayland.Pointer = null,
     keyboard: ?*wayland.Keyboard = null,
+    touch: ?*wayland.Touch = null,
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
@@ -115,6 +126,9 @@ pub const LinuxPlatform = struct {
 
     // Active window for interactive operations (move/resize)
     active_window: ?*LinuxWindow = null,
+
+    // Window receiving the current touch gesture sequence
+    touch_window: ?*LinuxWindow = null,
 
     // Scale factor from output
     scale_factor: i32 = 1,
@@ -775,6 +789,18 @@ pub const LinuxPlatform = struct {
             self.keyboard = null;
         }
 
+        // Handle touch
+        if (caps.touch and self.touch == null) {
+            std.debug.print("touch: seat advertises touch capability, acquiring device\n", .{});
+            self.touch = wayland.seatGetTouch(seat);
+            if (self.touch) |t| {
+                _ = wayland.touchAddListener(t, &touch_listener, self);
+            }
+        } else if (!caps.touch and self.touch != null) {
+            wayland.touchDestroy(self.touch.?);
+            self.touch = null;
+        }
+
         // Create text input if we now have seat and manager
         if (self.text_input_manager != null and self.text_input == null) {
             self.text_input = wayland.zwpTextInputManagerV3GetTextInput(self.text_input_manager.?, seat);
@@ -1054,6 +1080,139 @@ pub const LinuxPlatform = struct {
         _ = pointer;
         _ = axis;
         _ = direction;
+    }
+
+    // =========================================================================
+    // Touch Callbacks
+    // =========================================================================
+
+    fn touchDown(
+        data: ?*anyopaque,
+        touch: *wayland.Touch,
+        serial: u32,
+        time: u32,
+        surface: *wayland.Surface,
+        id: i32,
+        x: wayland.Fixed,
+        y: wayland.Fixed,
+    ) callconv(.c) void {
+        _ = touch;
+        _ = serial;
+        _ = time;
+        const self: *Self = @ptrCast(@alignCast(data));
+        const px = wayland.fixedToDouble(x);
+        const py = wayland.fixedToDouble(y);
+        std.debug.print("touch: down id={d} pos=({d:.1},{d:.1})\n", .{ id, px, py });
+
+        // Find the window owning this surface; fall back to active window.
+        var iter = self.window_registry.iterator();
+        while (iter.next()) |window_id| {
+            const window = self.window_registry.getTyped(LinuxWindow, window_id.*) orelse continue;
+            if (window.wl_surface == surface) {
+                self.touch_window = window;
+                break;
+            }
+        }
+        if (self.touch_window == null) {
+            std.debug.print("touch: surface lookup failed, using active_window\n", .{});
+            self.touch_window = self.active_window;
+        }
+
+        if (self.touch_window) |window| {
+            const event = linux_input.touchDownEvent(id, px, py);
+            _ = window.handleInput(event);
+        } else {
+            std.debug.print("touch: no window to dispatch to\n", .{});
+        }
+    }
+
+    fn touchUp(
+        data: ?*anyopaque,
+        touch: *wayland.Touch,
+        serial: u32,
+        time: u32,
+        id: i32,
+    ) callconv(.c) void {
+        _ = touch;
+        _ = serial;
+        _ = time;
+        const self: *Self = @ptrCast(@alignCast(data));
+
+        if (self.touch_window) |window| {
+            // Reuse the last known position for the up event — the protocol
+            // does not repeat coordinates on up, only on down and motion.
+            const event = linux_input.touchUpEvent(id, 0, 0);
+            _ = window.handleInput(event);
+        }
+    }
+
+    fn touchMotion(
+        data: ?*anyopaque,
+        touch: *wayland.Touch,
+        time: u32,
+        id: i32,
+        x: wayland.Fixed,
+        y: wayland.Fixed,
+    ) callconv(.c) void {
+        _ = touch;
+        _ = time;
+        const self: *Self = @ptrCast(@alignCast(data));
+
+        if (self.touch_window) |window| {
+            const event = linux_input.touchMovedEvent(id, wayland.fixedToDouble(x), wayland.fixedToDouble(y));
+            _ = window.handleInput(event);
+        }
+    }
+
+    fn touchFrame(
+        data: ?*anyopaque,
+        touch: *wayland.Touch,
+    ) callconv(.c) void {
+        _ = data;
+        _ = touch;
+        // Frame signals the end of a batch of touch events for the same
+        // logical instant. No action needed — events are dispatched immediately.
+    }
+
+    fn touchCancel(
+        data: ?*anyopaque,
+        touch: *wayland.Touch,
+    ) callconv(.c) void {
+        _ = touch;
+        const self: *Self = @ptrCast(@alignCast(data));
+
+        if (self.touch_window) |window| {
+            _ = window.handleInput(linux_input.touchCancelledEvent());
+        }
+        self.touch_window = null;
+    }
+
+    fn touchShape(
+        data: ?*anyopaque,
+        touch: *wayland.Touch,
+        id: i32,
+        major: wayland.Fixed,
+        minor: wayland.Fixed,
+    ) callconv(.c) void {
+        _ = data;
+        _ = touch;
+        _ = id;
+        _ = major;
+        _ = minor;
+        // Shape (contact ellipse) is not yet surfaced in the event model.
+    }
+
+    fn touchOrientation(
+        data: ?*anyopaque,
+        touch: *wayland.Touch,
+        id: i32,
+        orientation: wayland.Fixed,
+    ) callconv(.c) void {
+        _ = data;
+        _ = touch;
+        _ = id;
+        _ = orientation;
+        // Orientation (contact angle) is not yet surfaced in the event model.
     }
 
     fn keyboardEnter(
