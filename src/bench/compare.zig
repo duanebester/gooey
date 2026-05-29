@@ -56,6 +56,14 @@ const DEFAULT_THRESHOLD_PERCENT: f64 = 15.0;
 /// no amount of jitter explains.
 const MIN_NS_FOR_THRESHOLD: f64 = 10.0;
 
+/// Multiple by which a sub-floor benchmark must grow before it counts as
+/// a real regression rather than `.noisy`.  Near the floor, jitter alone
+/// routinely doubles a measurement, so a fixed absolute delta produces
+/// false positives (observed 9.49 -> 19.84 ns/op = +109% on byte-identical
+/// code).  Requiring a 4x jump that also clears the floor isolates genuine
+/// order-of-magnitude blowups (e.g. 2 -> 50 ns/op) from sub-floor noise.
+const CATASTROPHIC_JUMP_MULTIPLIER: f64 = 4.0;
+
 /// p99 tail latency is only gated at or above this baseline, in ns/op.
 ///
 /// At nanosecond scale the p99 reflects OS scheduling preemptions, not
@@ -574,9 +582,16 @@ fn classifyAvgStatus(baseline_ns: f64, current_ns: f64, base_threshold: f64) Com
     std.debug.assert(base_threshold > 0.0);
 
     if (baseline_ns < MIN_NS_FOR_THRESHOLD) {
-        // Too fast to gate by percentage.  Only a large absolute jump
-        // (>= one floor's worth of ns) survives as a real regression.
-        if ((current_ns - baseline_ns) >= MIN_NS_FOR_THRESHOLD) return .regression;
+        // Too fast to gate by percentage.  Only an order-of-magnitude
+        // blowup survives as a real regression: the current value must
+        // both clear the floor AND be at least CATASTROPHIC_JUMP_MULTIPLIER
+        // times the baseline.  A fixed absolute delta is wrong here — near
+        // the floor, noise alone doubles a benchmark (9.49 -> 19.84 ns is
+        // a +10 ns jump that is pure jitter, not a regression), whereas a
+        // genuine blowup (2 -> 50 ns) clears a 4x multiple with room.
+        const catastrophic = current_ns >= MIN_NS_FOR_THRESHOLD and
+            current_ns >= baseline_ns * CATASTROPHIC_JUMP_MULTIPLIER;
+        if (catastrophic) return .regression;
         return .noisy;
     }
 
@@ -1285,6 +1300,25 @@ test "compareReports: sub-floor catastrophic absolute jump still flags" {
 
     std.debug.assert(result.count_regressions == 1);
     std.debug.assert(result.entries[0].status == .regression);
+}
+
+test "compareReports: sub-floor noise-doubling stays noisy, not regression" {
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    // 9.49 -> 19.84 ns/op = +109%, but the baseline is below the 10 ns
+    // floor and the jump is only ~2x. This is jitter near the floor
+    // (the CI false positive on nested_list_20x50), not a 4x blowup.
+    baseline.entries[0] = makeTestEntry("near_floor", 9.49);
+    current.entries[0] = makeTestEntry("near_floor", 19.84);
+
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.count_regressions == 0);
+    std.debug.assert(result.entries[0].status == .noisy);
 }
 
 test "compareReports: scaled threshold absorbs small-bench variance" {
