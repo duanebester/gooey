@@ -52,6 +52,7 @@ const context = gooey.context;
 const DispatchTree = context.DispatchTree;
 const DispatchNodeId = context.DispatchNodeId;
 const EntityMap = context.EntityMap;
+const EntityId = context.EntityId;
 const BoundingBox = gooey.BoundingBox;
 
 // =============================================================================
@@ -422,7 +423,7 @@ fn benchMarkDirty(
 
     // Create entities.
     const Counter = struct { value: u32 };
-    var ids: [4096]gooey.EntityId = undefined;
+    var ids: [4096]EntityId = undefined;
     std.debug.assert(entity_count <= ids.len);
 
     for (0..entity_count) |i| {
@@ -480,7 +481,7 @@ fn benchMarkDirtyDuplicates(
     defer entities.deinit();
 
     const Counter = struct { value: u32 };
-    var ids: [4096]gooey.EntityId = undefined;
+    var ids: [4096]EntityId = undefined;
     std.debug.assert(entity_count <= ids.len);
 
     for (0..entity_count) |i| {
