@@ -5,7 +5,14 @@ live in `docs/cleanup-implementation-plan.md`; this file is the
 migration index callers reach for when upgrading across a breaking
 change.
 
-## Unreleased \u2014 PR 9 (`root.zig` slim + ownership-flag audit)
+## 0.2.0 — 2026-05-29 (architectural cleanup: `App`/`Window`/`Cx` split, `root.zig` slim)
+
+First release cutting the GPUI-inspired architectural cleanup (cleanup
+PRs 1–11a). The `Gooey` god object is split into `App` / `Window` /
+`Cx`; per-type widget maps are unified onto an `element_states` pool;
+the layout engine is split per-pass; and `api_check.zig` pins the
+Tier-1 public surface at comptime. The headline user-facing break is
+the `root.zig` slim described below.
 
 **Breaking.** Top-level `gooey.X` flat aliases shrunk from ~120 names
 down to seven curated-core re-exports. Every other symbol moved under
@@ -17,15 +24,15 @@ deleted; callers must reach for `cx.lists.*`, `cx.animations.*`,
 
 These seven names stay flat at `gooey.X`:
 
-| Name | Resolves to |
-| ---- | ----------- |
-| `gooey.run` | `app.runCx` (renamed from `gooey.runCx`) |
-| `gooey.App` | `app.App` |
-| `gooey.Cx` | `app.Cx` |
-| `gooey.Window` | `context.Window` |
-| `gooey.Color` | `core.Color` |
-| `gooey.log` | `log.zig` |
-| `gooey.std_options` | root `std.Options` constant |
+| Name                | Resolves to                              |
+| ------------------- | ---------------------------------------- |
+| `gooey.run`         | `app.runCx` (renamed from `gooey.runCx`) |
+| `gooey.App`         | `app.App`                                |
+| `gooey.Cx`          | `app.Cx`                                 |
+| `gooey.Window`      | `context.Window`                         |
+| `gooey.Color`       | `core.Color`                             |
+| `gooey.log`         | `log.zig`                                |
+| `gooey.std_options` | root `std.Options` constant              |
 
 ### Migration table \u2014 flat aliases demoted
 
@@ -33,16 +40,16 @@ The full list mirrors PR 9 Task 2 in
 [`cleanup-implementation-plan.md`](./cleanup-implementation-plan.md). The
 high-volume migrations (\u2265 5 example uses) are called out at the top.
 
-| Before | After |
-| ------ | ----- |
-| `gooey.runCx` | `gooey.run` |
-| `gooey.Button` | `gooey.components.Button` |
-| `gooey.Image` | `gooey.components.Image` |
-| `gooey.Entity` | `gooey.context.Entity` |
-| `gooey.lerp` | `gooey.animation.lerp` |
+| Before            | After                        |
+| ----------------- | ---------------------------- |
+| `gooey.runCx`     | `gooey.run`                  |
+| `gooey.Button`    | `gooey.components.Button`    |
+| `gooey.Image`     | `gooey.components.Image`     |
+| `gooey.Entity`    | `gooey.context.Entity`       |
+| `gooey.lerp`      | `gooey.animation.lerp`       |
 | `gooey.TextInput` | `gooey.components.TextInput` |
-| `gooey.Svg` | `gooey.components.Svg` |
-| `gooey.Checkbox` | `gooey.components.Checkbox` |
+| `gooey.Svg`       | `gooey.components.Svg`       |
+| `gooey.Checkbox`  | `gooey.components.Checkbox`  |
 
 Lower-volume \u2014 mechanical:
 
@@ -103,37 +110,37 @@ PR 5 introduced the `cx.lists.*` / `cx.animations.*` / `cx.focus.*` /
 `cx.entities.*` sub-namespaces alongside the original flat methods
 (`cx.animate`, `cx.uniformList`, \u2026). PR 9 removes the flat forwarders:
 
-| Before | After |
-| ------ | ----- |
-| `cx.animate(id, cfg)` | `cx.animations.tween(id, cfg)` |
-| `cx.animateComptime(id, cfg)` | `cx.animations.tweenComptime(id, cfg)` |
-| `cx.animateOn(id, trigger, cfg)` | `cx.animations.tweenOn(id, trigger, cfg)` |
-| `cx.animateOnComptime(id, trigger, cfg)` | `cx.animations.tweenOnComptime(id, trigger, cfg)` |
-| `cx.restartAnimation(id, cfg)` | `cx.animations.restart(id, cfg)` |
-| `cx.restartAnimationComptime(id, cfg)` | `cx.animations.restartComptime(id, cfg)` |
-| `cx.spring(id, cfg)` | `cx.animations.spring(id, cfg)` |
-| `cx.springComptime(id, cfg)` | `cx.animations.springComptime(id, cfg)` |
-| `cx.stagger(id, i, n, cfg)` | `cx.animations.stagger(id, i, n, cfg)` |
-| `cx.staggerComptime(id, i, n, cfg)` | `cx.animations.staggerComptime(id, i, n, cfg)` |
-| `cx.motion(id, show, cfg)` | `cx.animations.motion(id, show, cfg)` |
-| `cx.motionComptime(id, show, cfg)` | `cx.animations.motionComptime(id, show, cfg)` |
-| `cx.springMotion(id, show, cfg)` | `cx.animations.springMotion(id, show, cfg)` |
-| `cx.springMotionComptime(id, show, cfg)` | `cx.animations.springMotionComptime(id, show, cfg)` |
-| `cx.createEntity(T, value)` | `cx.entities.create(T, value)` |
-| `cx.readEntity(T, entity)` | `cx.entities.read(T, entity)` |
-| `cx.writeEntity(T, entity)` | `cx.entities.write(T, entity)` |
-| `cx.entityCx(T, entity)` | `cx.entities.context(T, entity)` |
-| `cx.focusNext()` | `cx.focus.next()` |
-| `cx.focusPrev()` | `cx.focus.prev()` |
-| `cx.blurAll()` | `cx.focus.blurAll()` |
-| `cx.focusTextField(id)` | `cx.focus.widget(id)` |
-| `cx.focusTextArea(id)` | `cx.focus.widget(id)` |
-| `cx.isElementFocused(id)` | `cx.focus.isElementFocused(id)` |
-| `cx.uniformList(id, state, style, render)` | `cx.lists.uniform(id, state, style, render)` |
-| `cx.treeList(id, state, style, render)` | `cx.lists.tree(id, state, style, render)` |
-| `cx.virtualList(id, state, style, render)` | `cx.lists.virtual(id, state, style, render)` |
-| `cx.dataTable(id, state, style, callbacks)` | `cx.lists.dataTable(id, state, style, callbacks)` |
-| `Cx.DataTableCallbacks(Cx)` | `cx.lists.Lists.DataTableCallbacks(Cx)` |
+| Before                                      | After                                               |
+| ------------------------------------------- | --------------------------------------------------- |
+| `cx.animate(id, cfg)`                       | `cx.animations.tween(id, cfg)`                      |
+| `cx.animateComptime(id, cfg)`               | `cx.animations.tweenComptime(id, cfg)`              |
+| `cx.animateOn(id, trigger, cfg)`            | `cx.animations.tweenOn(id, trigger, cfg)`           |
+| `cx.animateOnComptime(id, trigger, cfg)`    | `cx.animations.tweenOnComptime(id, trigger, cfg)`   |
+| `cx.restartAnimation(id, cfg)`              | `cx.animations.restart(id, cfg)`                    |
+| `cx.restartAnimationComptime(id, cfg)`      | `cx.animations.restartComptime(id, cfg)`            |
+| `cx.spring(id, cfg)`                        | `cx.animations.spring(id, cfg)`                     |
+| `cx.springComptime(id, cfg)`                | `cx.animations.springComptime(id, cfg)`             |
+| `cx.stagger(id, i, n, cfg)`                 | `cx.animations.stagger(id, i, n, cfg)`              |
+| `cx.staggerComptime(id, i, n, cfg)`         | `cx.animations.staggerComptime(id, i, n, cfg)`      |
+| `cx.motion(id, show, cfg)`                  | `cx.animations.motion(id, show, cfg)`               |
+| `cx.motionComptime(id, show, cfg)`          | `cx.animations.motionComptime(id, show, cfg)`       |
+| `cx.springMotion(id, show, cfg)`            | `cx.animations.springMotion(id, show, cfg)`         |
+| `cx.springMotionComptime(id, show, cfg)`    | `cx.animations.springMotionComptime(id, show, cfg)` |
+| `cx.createEntity(T, value)`                 | `cx.entities.create(T, value)`                      |
+| `cx.readEntity(T, entity)`                  | `cx.entities.read(T, entity)`                       |
+| `cx.writeEntity(T, entity)`                 | `cx.entities.write(T, entity)`                      |
+| `cx.entityCx(T, entity)`                    | `cx.entities.context(T, entity)`                    |
+| `cx.focusNext()`                            | `cx.focus.next()`                                   |
+| `cx.focusPrev()`                            | `cx.focus.prev()`                                   |
+| `cx.blurAll()`                              | `cx.focus.blurAll()`                                |
+| `cx.focusTextField(id)`                     | `cx.focus.widget(id)`                               |
+| `cx.focusTextArea(id)`                      | `cx.focus.widget(id)`                               |
+| `cx.isElementFocused(id)`                   | `cx.focus.isElementFocused(id)`                     |
+| `cx.uniformList(id, state, style, render)`  | `cx.lists.uniform(id, state, style, render)`        |
+| `cx.treeList(id, state, style, render)`     | `cx.lists.tree(id, state, style, render)`           |
+| `cx.virtualList(id, state, style, render)`  | `cx.lists.virtual(id, state, style, render)`        |
+| `cx.dataTable(id, state, style, callbacks)` | `cx.lists.dataTable(id, state, style, callbacks)`   |
+| `Cx.DataTableCallbacks(Cx)`                 | `cx.lists.Lists.DataTableCallbacks(Cx)`             |
 
 ### Entry-point shape
 
