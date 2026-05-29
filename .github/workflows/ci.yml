@@ -17,9 +17,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Build baseline benchmark artifacts on main and on the long-lived
+    # integration branches so the PR bench-gate has a same-lineage baseline
+    # to download.
+    branches: [main, "integration/**"]
   pull_request:
-    branches: [main]
+    # Run the full pipeline (bench-gate included) for PRs targeting main or an
+    # integration branch.  Without the integration entry, PRs onto
+    # integration/* would not trigger CI at all.
+    branches: [main, "integration/**"]
   workflow_dispatch: {}
 
 # Cancel in-progress runs for the same branch (except main)
