@@ -45,6 +45,14 @@ pub fn build(b: *std.Build) void {
     }
     compare_step.dependOn(&compare_run.step);
 
+    // Unit tests for the comparison/gating logic itself.  Built here
+    // (platform-independent) and wired into each branch's `test` step
+    // below so CI actually exercises the regression gate's own rules.
+    const compare_tests = b.addTest(.{
+        .root_module = compare_exe.root_module,
+    });
+    const run_compare_tests = b.addRunArtifact(compare_tests);
+
     // Platform detection
     const is_native_macos = target.result.os.tag == .macos;
     const is_native_linux = target.result.os.tag == .linux;
@@ -183,6 +191,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_exe_tests.step);
         test_step.dependOn(&run_charts_tests.step);
+        test_step.dependOn(&run_compare_tests.step);
 
         // =====================================================================
         // Layout Fuzz Targets (PR 10)
@@ -620,6 +629,7 @@ pub fn build(b: *std.Build) void {
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_compare_tests.step);
 
         // =====================================================================
         // Valgrind Memory Leak Detection

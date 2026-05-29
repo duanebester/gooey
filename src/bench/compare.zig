@@ -43,6 +43,54 @@ const MAX_META_STRING_LENGTH: u32 = 32;
 /// time_per_op_ns increases by more than this percentage is flagged.
 const DEFAULT_THRESHOLD_PERCENT: f64 = 15.0;
 
+/// Absolute floor for percentage-based gating, in ns/op.
+///
+/// Below ~10 ns/op a measurement is dominated by timer resolution,
+/// cache-line placement, and scheduler jitter rather than by the code
+/// under test.  A percentage delta there carries no signal: two runs of
+/// byte-identical code routinely swing far past the threshold (observed
+/// 0.40 -> 0.58 ns/op = +46%, 1.97 -> 3.52 ns/op = +79%).  Entries whose
+/// baseline is below this floor are reported as `.noisy` and never fail
+/// the build — unless the *absolute* growth is itself >= this floor (see
+/// below), which would indicate a genuine order-of-magnitude blowup that
+/// no amount of jitter explains.
+const MIN_NS_FOR_THRESHOLD: f64 = 10.0;
+
+/// p99 tail latency is only gated at or above this baseline, in ns/op.
+///
+/// At nanosecond scale the p99 reflects OS scheduling preemptions, not
+/// the code path — identical code produces p99 swings of +138% on these
+/// micro-benchmarks.  Real tail-latency regressions worth gating show up
+/// in the genuinely expensive operations (cold text shaping ~28 us,
+/// buffer growth ~470 us), so we only let p99 fail the build once the
+/// baseline tail is >= 1 us.  Below that, p99 is printed for human
+/// insight but is informational only.
+const P99_MIN_NS_FOR_THRESHOLD: f64 = 1000.0;
+
+/// Extra slack applied to the p99 gate on top of the magnitude-scaled
+/// threshold.  Even above 1 us, tails of FFI/syscall-bound benchmarks
+/// (cold text shaping crosses into CoreText/HarfBuzz) swing materially
+/// run-to-run on byte-identical code — observed up to +31% on a ~40 us
+/// p99.  A 3x multiplier clears that measured noise while still failing
+/// on a genuine tail blowup (>= ~1.5x at the 15% default).  Means are
+/// far more stable and keep the tighter, unmultiplied gate.
+const P99_THRESHOLD_MULTIPLIER: f64 = 3.0;
+
+/// Magnitude bands for the scaled threshold.  Faster benchmarks carry
+/// proportionally more run-to-run variance, so they earn a looser
+/// relative bound; only benchmarks at or above the medium ceiling are
+/// held to the full (tightest) configured threshold.
+const SMALL_BENCH_NS_CEILING: f64 = 100.0;
+const MEDIUM_BENCH_NS_CEILING: f64 = 1000.0;
+
+/// Threshold multipliers applied per magnitude band.  A 50 ns/op
+/// benchmark tolerates 2.5x the base threshold (37.5% at the 15%
+/// default); a 500 ns/op benchmark tolerates 1.5x (22.5%); a >= 1 us
+/// benchmark is held to 1.0x (15%).  These widen the gate just enough to
+/// absorb measured variance without letting real regressions through.
+const SMALL_BENCH_THRESHOLD_MULTIPLIER: f64 = 2.5;
+const MEDIUM_BENCH_THRESHOLD_MULTIPLIER: f64 = 1.5;
+
 /// Maximum JSON file size we will attempt to read (4 MB).
 /// 256 entries with full names and percentiles serializes to ~100 KB;
 /// 4 MB provides 40x headroom for unexpected verbosity.
@@ -149,6 +197,10 @@ const ComparisonStatus = enum(u8) {
     improvement = 2,
     new_entry = 3,
     removed_entry = 4,
+    /// Matched, but too fast (below `MIN_NS_FOR_THRESHOLD`) for a
+    /// percentage delta to mean anything.  Displayed with its delta for
+    /// human insight, but never fails the build.
+    noisy = 5,
 };
 
 /// One row in the comparison table.
@@ -187,6 +239,7 @@ const ComparisonResult = struct {
     count_improvements: u32 = 0,
     count_new: u32 = 0,
     count_removed: u32 = 0,
+    count_noisy: u32 = 0,
 
     fn addEntry(self: *ComparisonResult, e: ComparisonEntry) void {
         std.debug.assert(self.count < MAX_ENTRIES * 2);
@@ -490,6 +543,50 @@ fn deltaPercent(baseline: f64, current: f64) f64 {
     return ((current - baseline) / baseline) * 100.0;
 }
 
+/// Scale the configured threshold by the baseline magnitude.  Faster
+/// benchmarks carry proportionally more variance, so they earn a looser
+/// relative bound (see the multiplier constants for the rationale).
+/// `reference_ns` is the baseline value the delta was computed against
+/// (avg or p99); `base_threshold` is the user/default percentage.
+fn effectiveThreshold(reference_ns: f64, base_threshold: f64) f64 {
+    std.debug.assert(reference_ns >= 0.0);
+    std.debug.assert(base_threshold > 0.0);
+
+    if (reference_ns < SMALL_BENCH_NS_CEILING) {
+        return base_threshold * SMALL_BENCH_THRESHOLD_MULTIPLIER;
+    }
+    if (reference_ns < MEDIUM_BENCH_NS_CEILING) {
+        return base_threshold * MEDIUM_BENCH_THRESHOLD_MULTIPLIER;
+    }
+    return base_threshold;
+}
+
+/// Classify the average (mean) dimension of a matched comparison.
+///
+/// Below `MIN_NS_FOR_THRESHOLD` the percentage is meaningless, so the
+/// entry is `.noisy` unless the *absolute* growth is itself at least a
+/// full floor's worth of ns — a jump that large on a sub-floor benchmark
+/// is an order-of-magnitude blowup, not jitter, and must still fail.
+/// Above the floor, the magnitude-scaled threshold gates both directions.
+fn classifyAvgStatus(baseline_ns: f64, current_ns: f64, base_threshold: f64) ComparisonStatus {
+    std.debug.assert(baseline_ns >= 0.0);
+    std.debug.assert(current_ns >= 0.0);
+    std.debug.assert(base_threshold > 0.0);
+
+    if (baseline_ns < MIN_NS_FOR_THRESHOLD) {
+        // Too fast to gate by percentage.  Only a large absolute jump
+        // (>= one floor's worth of ns) survives as a real regression.
+        if ((current_ns - baseline_ns) >= MIN_NS_FOR_THRESHOLD) return .regression;
+        return .noisy;
+    }
+
+    const eff = effectiveThreshold(baseline_ns, base_threshold);
+    const delta = deltaPercent(baseline_ns, current_ns);
+    if (delta > eff) return .regression;
+    if (delta < -eff) return .improvement;
+    return .ok;
+}
+
 /// Compare two reports and populate a ComparisonResult.
 /// Iterates current entries first (to detect matches and new entries),
 /// then scans baseline for removed entries.
@@ -577,20 +674,29 @@ fn populateMatchedComparison(
         comp.delta_p99_percent = deltaPercent(baseline_entry.p99_per_op_ns, current_entry.p99_per_op_ns);
     }
 
-    // A regression is flagged if EITHER the average or the p99 tail
-    // latency exceeds the threshold.  Tail latency regressions matter
-    // even when the average looks fine (rule 7: back-of-envelope).
-    const avg_regressed = comp.delta_percent > threshold_percent;
-    const p99_regressed = comp.has_percentiles and comp.delta_p99_percent > threshold_percent;
-    const avg_improved = comp.delta_percent < -threshold_percent;
+    // Classify the average dimension first: this honours the absolute
+    // floor (sub-floor entries become `.noisy`) and the magnitude-scaled
+    // threshold for everything above it.
+    var status = classifyAvgStatus(
+        baseline_entry.time_per_op_ns,
+        current_entry.time_per_op_ns,
+        threshold_percent,
+    );
 
-    if (avg_regressed or p99_regressed) {
-        comp.status = .regression;
-    } else if (avg_improved) {
-        comp.status = .improvement;
-    } else {
-        comp.status = .ok;
+    // Tail-latency regressions matter even when the average looks fine
+    // (rule 7: back-of-envelope), but only once the tail is large enough
+    // to be a stable signal — below `P99_MIN_NS_FOR_THRESHOLD` the p99 is
+    // scheduler noise (see the constant's rationale).  A genuine p99
+    // regression always wins, upgrading the row to `.regression`.
+    const p99_gated = comp.has_percentiles and
+        comp.baseline_p99 >= P99_MIN_NS_FOR_THRESHOLD;
+    if (p99_gated) {
+        const p99_threshold = effectiveThreshold(comp.baseline_p99, threshold_percent) *
+            P99_THRESHOLD_MULTIPLIER;
+        if (comp.delta_p99_percent > p99_threshold) status = .regression;
     }
+
+    comp.status = status;
 }
 
 /// Increment the regression/improvement counters on the result.
@@ -600,6 +706,7 @@ fn updateResultCounters(result: *ComparisonResult, status: ComparisonStatus) voi
     switch (status) {
         .regression => result.count_regressions += 1,
         .improvement => result.count_improvements += 1,
+        .noisy => result.count_noisy += 1,
         .ok, .new_entry, .removed_entry => {},
     }
 }
@@ -730,17 +837,25 @@ fn printEntryRow(entry: *const ComparisonEntry) void {
 }
 
 /// Print a sub-line showing p99 comparison, indented under the main row.
+/// When the baseline tail is below `P99_MIN_NS_FOR_THRESHOLD` the p99 is
+/// not gated (it is scheduler noise at that scale), so we tag the line
+/// `[informational]` to explain why a large p99 delta did not fail.
 fn printPercentileLine(entry: *const ComparisonEntry) void {
     std.debug.assert(entry.has_percentiles);
 
     const sign: []const u8 = if (entry.delta_p99_percent >= 0) "+" else "";
+    const note: []const u8 = if (entry.baseline_p99 < P99_MIN_NS_FOR_THRESHOLD)
+        "  [informational]"
+    else
+        "";
     std.debug.print("  {s:>" ++ widthStr(COLUMN_WIDTH_NAME) ++ "}" ++
-        "  p99: {d:.2} -> {d:.2} ns/op ({s}{d:.1}%)\n", .{
+        "  p99: {d:.2} -> {d:.2} ns/op ({s}{d:.1}%){s}\n", .{
         "",
         entry.baseline_p99,
         entry.current_p99,
         sign,
         entry.delta_p99_percent,
+        note,
     });
 }
 
@@ -751,10 +866,11 @@ fn printSummary(result: *const ComparisonResult, threshold_percent: f64) void {
     printRepeat('-', TABLE_WIDTH);
     std.debug.print("\n", .{});
 
-    std.debug.print("  {d} compared | {d} regressed | {d} improved | {d} new | {d} removed\n", .{
+    std.debug.print("  {d} compared | {d} regressed | {d} improved | {d} noisy | {d} new | {d} removed\n", .{
         result.count_compared,
         result.count_regressions,
         result.count_improvements,
+        result.count_noisy,
         result.count_new,
         result.count_removed,
     });
@@ -799,6 +915,7 @@ fn statusLabel(status: ComparisonStatus) []const u8 {
         .improvement => ">> improved",
         .new_entry => "(new)",
         .removed_entry => "(removed)",
+        .noisy => "-- noisy (sub-floor)",
     };
 }
 
@@ -844,6 +961,15 @@ fn printUsage() void {
         \\  baseline.json    Path to the baseline benchmark JSON report.
         \\  current.json     Path to the current benchmark JSON report.
         \\  --threshold N    Regression threshold in percent (default: 15.0).
+        \\
+        \\Noise handling:
+        \\  Benchmarks below 10 ns/op are reported as noisy and never
+        \\  fail the build (a percentage delta is meaningless at timer/
+        \\  cache/scheduler scale), unless they grow by >= 10 ns/op in
+        \\  absolute terms.  The threshold is scaled up for fast
+        \\  benchmarks (2.5x under 100 ns/op, 1.5x under 1 us/op).  p99
+        \\  tail latency only gates at or above 1 us/op; below that it is
+        \\  printed for insight but is informational only.
         \\
         \\Exit codes:
         \\  0    No regressions detected.
@@ -1049,17 +1175,20 @@ test "compareReports: detects regressions and improvements" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
+    // High-band values (>= 1 us) so the base 15% threshold applies
+    // directly, with no magnitude scaling, keeping the math obvious.
+
     // Entry "fast" — 10% slower (below 15% threshold).
-    baseline.entries[0] = makeTestEntry("fast", 100.0);
-    current.entries[0] = makeTestEntry("fast", 110.0);
+    baseline.entries[0] = makeTestEntry("fast", 1000.0);
+    current.entries[0] = makeTestEntry("fast", 1100.0);
 
     // Entry "slow" — 25% slower (above threshold).
-    baseline.entries[1] = makeTestEntry("slow", 100.0);
-    current.entries[1] = makeTestEntry("slow", 125.0);
+    baseline.entries[1] = makeTestEntry("slow", 1000.0);
+    current.entries[1] = makeTestEntry("slow", 1250.0);
 
     // Entry "better" — 20% faster (improvement).
-    baseline.entries[2] = makeTestEntry("better", 100.0);
-    current.entries[2] = makeTestEntry("better", 80.0);
+    baseline.entries[2] = makeTestEntry("better", 1000.0);
+    current.entries[2] = makeTestEntry("better", 800.0);
 
     baseline.count = 3;
     current.count = 3;
@@ -1099,13 +1228,16 @@ test "compareReports: detects new and removed entries" {
     std.debug.assert(result.count_removed == 1);
 }
 
-test "compareReports: p99 regression flags even when avg is ok" {
+test "compareReports: p99 regression flags even when avg is ok (tail >= 1us)" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // Average is only 5% slower (below threshold), but p99 is 30% worse.
-    baseline.entries[0] = makeTestEntryWithPercentiles("tail_bad", 100.0, 200.0);
-    current.entries[0] = makeTestEntryWithPercentiles("tail_bad", 105.0, 260.0);
+    // Average is only 5% slower (below threshold), but p99 is 60% worse
+    // — past the 45% p99 gate (15% base x 1.0 high band x 3.0 p99 slack).
+    // The baseline tail (5 us) is above P99_MIN_NS_FOR_THRESHOLD, so the
+    // p99 regression is gated and flags the row.
+    baseline.entries[0] = makeTestEntryWithPercentiles("tail_bad", 2000.0, 5000.0);
+    current.entries[0] = makeTestEntryWithPercentiles("tail_bad", 2100.0, 8000.0);
 
     baseline.count = 1;
     current.count = 1;
@@ -1115,6 +1247,101 @@ test "compareReports: p99 regression flags even when avg is ok" {
     std.debug.assert(result.count_regressions == 1);
     std.debug.assert(result.entries[0].status == .regression);
     std.debug.assert(result.entries[0].has_percentiles);
+}
+
+test "compareReports: sub-floor entries are noisy, never regressions" {
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    // 0.40 -> 0.58 ns/op = +46%, but both are far below the 10 ns floor.
+    // This is the exact shape of the CI false positive (swap_remove_1000).
+    baseline.entries[0] = makeTestEntry("tiny", 0.40);
+    current.entries[0] = makeTestEntry("tiny", 0.58);
+
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.count_regressions == 0);
+    std.debug.assert(result.count_noisy == 1);
+    std.debug.assert(result.entries[0].status == .noisy);
+}
+
+test "compareReports: sub-floor catastrophic absolute jump still flags" {
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    // 2 -> 50 ns/op: a 25x blowup. The percentage is meaningless at this
+    // scale, but the absolute growth (48 ns) exceeds a full floor, so it
+    // is a genuine order-of-magnitude regression we must not hide.
+    baseline.entries[0] = makeTestEntry("blowup", 2.0);
+    current.entries[0] = makeTestEntry("blowup", 50.0);
+
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.count_regressions == 1);
+    std.debug.assert(result.entries[0].status == .regression);
+}
+
+test "compareReports: scaled threshold absorbs small-bench variance" {
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    // 30 -> 39 ns/op = +30%. In the small band (< 100 ns) the effective
+    // threshold is 2.5 x 15% = 37.5%, so this run-to-run jitter is NOT a
+    // regression. The same +30% at >= 1 us (high band) would flag.
+    baseline.entries[0] = makeTestEntry("jittery", 30.0);
+    current.entries[0] = makeTestEntry("jittery", 39.0);
+
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.count_regressions == 0);
+    std.debug.assert(result.entries[0].status == .ok);
+}
+
+test "compareReports: p99 below 1us is informational, not gated" {
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    // Avg is flat, p99 doubles (+138%) — but the tail is only tens of ns,
+    // pure scheduler noise. Mirrors the CI false positive on
+    // shape_warm_arena_short_13ch_x100 (p99 37.92 -> 90.42 ns/op).
+    baseline.entries[0] = makeTestEntryWithPercentiles("arena_short", 36.85, 37.92);
+    current.entries[0] = makeTestEntryWithPercentiles("arena_short", 37.50, 90.42);
+
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.count_regressions == 0);
+    std.debug.assert(result.entries[0].status != .regression);
+}
+
+test "compareReports: moderate us-scale p99 swing is tolerated" {
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    // ~40 us cold-shape benchmark whose p99 swings +31% run-to-run on
+    // identical code (FFI into CoreText). Above the 1 us floor but under
+    // the 45% p99 gate, so it must NOT fail. Mirrors scaling_shape_200ch.
+    baseline.entries[0] = makeTestEntryWithPercentiles("cold_shape", 39607.0, 50042.0);
+    current.entries[0] = makeTestEntryWithPercentiles("cold_shape", 40854.0, 65666.0);
+
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.count_regressions == 0);
+    std.debug.assert(result.entries[0].status != .regression);
 }
 
 test "widthStr: produces correct digit strings" {
