@@ -53,6 +53,15 @@ pub fn build(b: *std.Build) void {
     });
     const run_compare_tests = b.addRunArtifact(compare_tests);
 
+    // Unit tests for the JSON writer + shared timing Sampler (the bench
+    // module root). Wired into each branch's `test` step below so the
+    // harness-facing schema and min/best-of-N accumulator are exercised in
+    // CI without needing a macOS-only benchmark executable to run.
+    const bench_tests = b.addTest(.{
+        .root_module = bench_mod,
+    });
+    const run_bench_tests = b.addRunArtifact(bench_tests);
+
     // Platform detection
     const is_native_macos = target.result.os.tag == .macos;
     const is_native_linux = target.result.os.tag == .linux;
@@ -192,6 +201,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_exe_tests.step);
         test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_compare_tests.step);
+        test_step.dependOn(&run_bench_tests.step);
 
         // =====================================================================
         // Layout Fuzz Targets (PR 10)
@@ -630,6 +640,7 @@ pub fn build(b: *std.Build) void {
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_compare_tests.step);
+        test_step.dependOn(&run_bench_tests.step);
 
         // =====================================================================
         // Valgrind Memory Leak Detection

@@ -56,6 +56,14 @@ const DEFAULT_THRESHOLD_PERCENT: f64 = 15.0;
 /// no amount of jitter explains.
 const MIN_NS_FOR_THRESHOLD: f64 = 10.0;
 
+/// Multiple by which a sub-floor benchmark must grow before it counts as
+/// a real regression rather than `.noisy`.  Near the floor, jitter alone
+/// routinely doubles a measurement, so a fixed absolute delta produces
+/// false positives (observed 9.49 -> 19.84 ns/op = +109% on byte-identical
+/// code).  Requiring a 4x jump that also clears the floor isolates genuine
+/// order-of-magnitude blowups (e.g. 2 -> 50 ns/op) from sub-floor noise.
+const CATASTROPHIC_JUMP_MULTIPLIER: f64 = 4.0;
+
 /// p99 tail latency is only gated at or above this baseline, in ns/op.
 ///
 /// At nanosecond scale the p99 reflects OS scheduling preemptions, not
@@ -122,6 +130,12 @@ const ParsedEntry = struct {
     iterations: u32 = 0,
     avg_time_ms: f64 = 0.0,
     time_per_op_ns: f64 = 0.0,
+
+    // Best-of-N estimator. `has_min` is false for baselines written before
+    // the schema carried it, which is exactly when the gate falls back to
+    // classifying on the mean (`time_per_op_ns`).
+    has_min: bool = false,
+    min_per_op_ns: f64 = 0.0,
 
     has_percentiles: bool = false,
     p50_per_op_ns: f64 = 0.0,
@@ -211,6 +225,14 @@ const ComparisonEntry = struct {
     baseline_ns_per_op: f64 = 0.0,
     current_ns_per_op: f64 = 0.0,
     delta_percent: f64 = 0.0,
+
+    /// Whether both entries carry a min, in which case the status is
+    /// classified on the min (best-of-N) rather than the mean. The mean is
+    /// still shown in the main row for human context.
+    gated_on_min: bool = false,
+    baseline_min: f64 = 0.0,
+    current_min: f64 = 0.0,
+    delta_min_percent: f64 = 0.0,
 
     /// Whether both entries have percentile data.
     has_percentiles: bool = false,
@@ -512,6 +534,16 @@ fn extractEntry(obj: std.json.ObjectMap) ParsedEntry {
         e.time_per_op_ns = jsonAsFloat(v) orelse 0.0;
     }
 
+    // Min field: present as float or null (or absent on an older baseline).
+    // A null/absent value leaves `has_min` false so the gate falls back to
+    // the mean for this entry.
+    if (obj.get("min_per_op_ns")) |v| {
+        if (jsonAsFloat(v)) |min_per_op| {
+            e.has_min = true;
+            e.min_per_op_ns = min_per_op;
+        }
+    }
+
     // Percentile fields: present as float or null in the JSON.
     if (obj.get("p50_per_op_ns")) |v| {
         if (jsonAsFloat(v)) |p50| {
@@ -574,9 +606,16 @@ fn classifyAvgStatus(baseline_ns: f64, current_ns: f64, base_threshold: f64) Com
     std.debug.assert(base_threshold > 0.0);
 
     if (baseline_ns < MIN_NS_FOR_THRESHOLD) {
-        // Too fast to gate by percentage.  Only a large absolute jump
-        // (>= one floor's worth of ns) survives as a real regression.
-        if ((current_ns - baseline_ns) >= MIN_NS_FOR_THRESHOLD) return .regression;
+        // Too fast to gate by percentage.  Only an order-of-magnitude
+        // blowup survives as a real regression: the current value must
+        // both clear the floor AND be at least CATASTROPHIC_JUMP_MULTIPLIER
+        // times the baseline.  A fixed absolute delta is wrong here — near
+        // the floor, noise alone doubles a benchmark (9.49 -> 19.84 ns is
+        // a +10 ns jump that is pure jitter, not a regression), whereas a
+        // genuine blowup (2 -> 50 ns) clears a 4x multiple with room.
+        const catastrophic = current_ns >= MIN_NS_FOR_THRESHOLD and
+            current_ns >= baseline_ns * CATASTROPHIC_JUMP_MULTIPLIER;
+        if (catastrophic) return .regression;
         return .noisy;
     }
 
@@ -666,6 +705,17 @@ fn populateMatchedComparison(
     comp.current_ns_per_op = current_entry.time_per_op_ns;
     comp.delta_percent = deltaPercent(baseline_entry.time_per_op_ns, current_entry.time_per_op_ns);
 
+    // Min comparison when both sides recorded it. The min (best-of-N) is the
+    // estimator least perturbed by runner noise, so it — not the mean — is
+    // what the central-tendency status gates on when available.
+    const both_have_min = baseline_entry.has_min and current_entry.has_min;
+    if (both_have_min) {
+        comp.gated_on_min = true;
+        comp.baseline_min = baseline_entry.min_per_op_ns;
+        comp.current_min = current_entry.min_per_op_ns;
+        comp.delta_min_percent = deltaPercent(baseline_entry.min_per_op_ns, current_entry.min_per_op_ns);
+    }
+
     // Percentile comparison when both sides have data.
     if (baseline_entry.has_percentiles and current_entry.has_percentiles) {
         comp.has_percentiles = true;
@@ -674,12 +724,17 @@ fn populateMatchedComparison(
         comp.delta_p99_percent = deltaPercent(baseline_entry.p99_per_op_ns, current_entry.p99_per_op_ns);
     }
 
-    // Classify the average dimension first: this honours the absolute
-    // floor (sub-floor entries become `.noisy`) and the magnitude-scaled
-    // threshold for everything above it.
+    // Classify central tendency on the most stable estimator available: the
+    // min (best-of-N) when both sides recorded it, otherwise the mean. This
+    // is the one decision that changed when min landed; the same floor,
+    // magnitude-scaling, and noisy/regression rules apply either way, just to
+    // a far less jittery input. The mean fallback keeps an older baseline
+    // (no min) gating exactly as before.
+    const central_baseline = if (both_have_min) baseline_entry.min_per_op_ns else baseline_entry.time_per_op_ns;
+    const central_current = if (both_have_min) current_entry.min_per_op_ns else current_entry.time_per_op_ns;
     var status = classifyAvgStatus(
-        baseline_entry.time_per_op_ns,
-        current_entry.time_per_op_ns,
+        central_baseline,
+        central_current,
         threshold_percent,
     );
 
@@ -830,10 +885,33 @@ fn printEntryRow(entry: *const ComparisonEntry) void {
         status_str,
     });
 
+    // Sub-line for the min (best-of-N) when both sides recorded it: this is
+    // the estimator the status gates on, so show it explicitly.
+    if (entry.gated_on_min) {
+        printMinLine(entry);
+    }
+
     // Sub-line for p99 tail latency when percentile data exists.
     if (entry.has_percentiles) {
         printPercentileLine(entry);
     }
+}
+
+/// Print a sub-line showing the min (best-of-N) comparison, indented under
+/// the main row and tagged `[gated]` because the status is classified on it
+/// rather than on the mean shown in the headline row.
+fn printMinLine(entry: *const ComparisonEntry) void {
+    std.debug.assert(entry.gated_on_min);
+
+    const sign: []const u8 = if (entry.delta_min_percent >= 0) "+" else "";
+    std.debug.print("  {s:>" ++ widthStr(COLUMN_WIDTH_NAME) ++ "}" ++
+        "  min: {d:.2} -> {d:.2} ns/op ({s}{d:.1}%)  [gated]\n", .{
+        "",
+        entry.baseline_min,
+        entry.current_min,
+        sign,
+        entry.delta_min_percent,
+    });
 }
 
 /// Print a sub-line showing p99 comparison, indented under the main row.
@@ -1203,6 +1281,63 @@ test "compareReports: detects regressions and improvements" {
     std.debug.assert(result.count_removed == 0);
 }
 
+test "compareReports: gates on min, so a noisy mean swing alone is not a regression" {
+    // Both sides recorded a min. The mean jumped +30% (the kind of phantom
+    // swing identical-code reruns produce), but the best-of-N min moved only
+    // +3%. Because the status classifies on the min, the row stays clean —
+    // this is the whole point of the min gate.
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    baseline.entries[0] = makeTestEntryWithMin("noisy_mean", 1000.0, 1000.0);
+    current.entries[0] = makeTestEntryWithMin("noisy_mean", 1300.0, 1030.0);
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.entries[0].gated_on_min);
+    std.debug.assert(result.entries[0].status == .ok);
+    std.debug.assert(result.count_regressions == 0);
+}
+
+test "compareReports: a genuine min regression still flags even when the mean looks flat" {
+    // The mean barely moved (+1%) but the best-of-N min jumped +30%, which is
+    // a real, reproducible slowdown of the central cost — must flag.
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    baseline.entries[0] = makeTestEntryWithMin("min_regressed", 1000.0, 1000.0);
+    current.entries[0] = makeTestEntryWithMin("min_regressed", 1010.0, 1300.0);
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.entries[0].gated_on_min);
+    std.debug.assert(result.entries[0].status == .regression);
+    std.debug.assert(result.count_regressions == 1);
+}
+
+test "compareReports: falls back to mean gating when min is absent (old baseline)" {
+    // Neither entry carries a min (an older baseline schema). The gate must
+    // degrade to the mean-based classification it used before min existed:
+    // a +25% mean jump is still a regression.
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    baseline.entries[0] = makeTestEntry("legacy", 1000.0);
+    current.entries[0] = makeTestEntry("legacy", 1250.0);
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(!result.entries[0].gated_on_min);
+    std.debug.assert(result.entries[0].status == .regression);
+    std.debug.assert(result.count_regressions == 1);
+}
+
 test "compareReports: detects new and removed entries" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
@@ -1285,6 +1420,25 @@ test "compareReports: sub-floor catastrophic absolute jump still flags" {
 
     std.debug.assert(result.count_regressions == 1);
     std.debug.assert(result.entries[0].status == .regression);
+}
+
+test "compareReports: sub-floor noise-doubling stays noisy, not regression" {
+    var baseline: ParsedReport = .{};
+    var current: ParsedReport = .{};
+
+    // 9.49 -> 19.84 ns/op = +109%, but the baseline is below the 10 ns
+    // floor and the jump is only ~2x. This is jitter near the floor
+    // (the CI false positive on nested_list_20x50), not a 4x blowup.
+    baseline.entries[0] = makeTestEntry("near_floor", 9.49);
+    current.entries[0] = makeTestEntry("near_floor", 19.84);
+
+    baseline.count = 1;
+    current.count = 1;
+
+    const result = compareReports(&baseline, &current, 15.0);
+
+    std.debug.assert(result.count_regressions == 0);
+    std.debug.assert(result.entries[0].status == .noisy);
 }
 
 test "compareReports: scaled threshold absorbs small-bench variance" {
@@ -1390,5 +1544,12 @@ fn makeTestEntryWithPercentiles(name: []const u8, time_per_op_ns: f64, p99: f64)
     e.has_percentiles = true;
     e.p50_per_op_ns = time_per_op_ns; // Use avg as p50 for simplicity.
     e.p99_per_op_ns = p99;
+    return e;
+}
+
+fn makeTestEntryWithMin(name: []const u8, time_per_op_ns: f64, min_per_op_ns: f64) ParsedEntry {
+    var e = makeTestEntry(name, time_per_op_ns);
+    e.has_min = true;
+    e.min_per_op_ns = min_per_op_ns;
     return e;
 }
