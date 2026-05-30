@@ -109,13 +109,13 @@ const RowContent = struct {
     start: u32,
     end: u32,
 
-    pub fn render(self: RowContent, b: *ui.Builder) void {
+    pub fn render(self: RowContent, cx: *ui.Cx) void {
         std.debug.assert(self.start <= self.end);
         std.debug.assert(self.end <= TOTAL_ICONS);
 
         var i = self.start;
         while (i < self.end) : (i += 1) {
-            b.box(.{
+            cx.box(.{
                 .width = CELL_SIZE,
                 .height = CELL_SIZE,
                 .alignment = .{ .main = .center, .cross = .center },

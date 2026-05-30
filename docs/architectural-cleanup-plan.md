@@ -850,6 +850,26 @@ architecture that gets us there.
 Defer this one — it's structurally bigger than the rest. But it should be
 in the architectural backlog.
 
+> **Considered and rejected for a simplicity-first framework (PR 11b).**
+> A design pre-flight concluded this trait is the right architecture for a
+> _framework-expressiveness_ goal but the wrong one for Gooey's stated
+> goal of being the simplest way to build apps: it is neutral-to-slower
+> than today's monomorphized comptime `processChild` (it pushes toward
+> per-element state + an explicit three-pass walk + a deferred-draw
+> queue), its value-flow state is the exact pattern that blows the 1 MB
+> WASM stack (§14 of `CLAUDE.md`), and it forces all 38 trivial
+> one-method components into three callbacks for a capability 90% never
+> need. The capabilities it would unlock (correct overlay stacking,
+> tooltips, drag previews, scroll-into-view) are instead delivered by one
+> _internal_ deferred-paint queue (PR 11b.3) plus narrow purpose-built
+> mechanisms — no author-visible trait. Source-location-derived ids were
+> rejected in the same pre-flight: Zig has no caller-location capture
+> (`@src()` is lexical only), so the egui/GPUI auto-id model does not
+> port; PR 11b.2a uses parent-scoped hierarchical auto-ids instead.
+> Revisit the trait only if a concrete future feature (drag-and-drop,
+> advanced popovers) demands per-element prepaint logic. See
+> [`cleanup-implementation-plan.md` PR 11b strategy](./cleanup-implementation-plan.md#pr-11b-strategy-revised--simplicity-first).
+
 ---
 
 ## 19. `with_element_state(global_id, fn(state) -> (R, state))`

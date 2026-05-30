@@ -23,10 +23,8 @@
 //! ```
 
 const ui = @import("../ui/mod.zig");
-const layout_mod = @import("../layout/layout.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
-const LayoutId = layout_mod.LayoutId;
 
 /// Creates a Tooltip component that wraps a child element.
 /// The tooltip appears when the user hovers over the child.
@@ -79,8 +77,8 @@ pub fn Tooltip(comptime ChildType: type) type {
 
         const Self = @This();
 
-        pub fn render(self: Self, b: *ui.Builder) void {
-            const t = b.theme();
+        pub fn render(self: Self, cx: *ui.Cx) void {
+            const t = cx.theme();
 
             // Resolve font size: explicit override OR one below theme base
             // Tooltips are intentionally slightly smaller than body text
@@ -92,29 +90,30 @@ pub fn Tooltip(comptime ChildType: type) type {
             const text_col = self.text_color orelse t.text;
             const radius = self.corner_radius orelse t.radius_md;
 
-            // Use provided ID or derive from text
-            const id = self.id orelse self.text;
-            const layout_id = LayoutId.fromString(id);
+            // Resolve identity once (PR 11b.2b). Null ⇒ parent-scoped auto id
+            // (PR 11b.2a) rather than the tooltip text, so two same-text
+            // tooltips no longer share one hover area.
+            const layout_id = cx.idFor(self.id);
 
             // Check if this tooltip's hover area OR any descendant is hovered
-            const is_hovered = if (b.getGooey()) |g|
+            const is_hovered = if (cx.getGooey()) |g|
                 g.isHoveredOrDescendant(layout_id.id)
             else
                 false;
 
             // Push accessible element for the tooltip trigger
             // The tooltip text serves as an accessible description
-            const a11y_pushed = b.accessible(.{
+            const a11y_pushed = cx.accessible(.{
                 .layout_id = layout_id,
                 .role = .group,
                 .description = self.accessible_description orelse self.text,
             });
-            defer if (a11y_pushed) b.accessibleEnd();
+            defer if (a11y_pushed) cx.accessibleEnd();
 
             // HoverArea contains both the child and the tooltip popup.
             // This ensures the floating popup's parent IS the hover area,
             // so attach_to_parent positions correctly relative to the trigger.
-            b.boxWithId(id, .{}, .{
+            cx.boxWithLayoutId(layout_id, .{}, .{
                 self.child,
                 // Tooltip popup (only visible when hovered)
                 TooltipPopup{
@@ -147,17 +146,17 @@ const TooltipPopup = struct {
     corner_radius: f32,
     gap: f32,
 
-    pub fn render(self: TooltipPopup, b: *ui.Builder) void {
+    pub fn render(self: TooltipPopup, cx: *ui.Cx) void {
         if (!self.visible) return;
 
         // Push accessible element (role: tooltip)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .role = .tooltip,
             .name = self.text,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.box(.{
+        cx.box(.{
             .max_width = self.max_width,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding * 0.75 } },
             .background = self.background,

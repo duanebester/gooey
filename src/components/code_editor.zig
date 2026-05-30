@@ -155,8 +155,8 @@ pub const CodeEditor = struct {
     accessible_name: ?[]const u8 = null, // Label for screen readers
     accessible_description: ?[]const u8 = null,
 
-    pub fn render(self: CodeEditor, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: CodeEditor, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Resolve colors: explicit value OR theme default (dark theme for code)
         const background = self.background orelse t.surface;
@@ -189,15 +189,15 @@ pub const CodeEditor = struct {
         const layout_id = LayoutId.fromString(self.id);
 
         // Push accessible element (role: textarea for code editor)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .textarea,
             .name = self.accessible_name orelse if (self.placeholder.len > 0) self.placeholder else "Code editor",
             .description = self.accessible_description,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.box(.{}, .{
+        cx.box(.{}, .{
             ui.codeEditor(self.id, .{
                 .placeholder = self.placeholder,
                 .bind = self.bind,

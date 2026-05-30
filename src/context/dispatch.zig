@@ -147,6 +147,18 @@ pub const DispatchNode = struct {
     /// Number of children (for iteration)
     child_count: u32 = 0,
 
+    /// Per-parent sibling counter for auto-generated layout ids (PR 11b.2a).
+    /// `Builder.generateId` reads-and-increments this on the *current* open
+    /// node (the parent of the element being opened) so each auto-id'd child
+    /// gets a stable, parent-scoped sibling index — `hash(parent_layout_id,
+    /// sibling_index)`. Distinct from `child_count`: that counts dispatch
+    /// children actually pushed, whereas this counts every `generateId` call
+    /// (including leaf primitives like spacers / svg / image that never push
+    /// a dispatch node), so two adjacent auto-id'd leaves can't collide.
+    /// Reset to 0 each frame in `pushNode` (reuse path) and defaulted on the
+    /// append path.
+    auto_child_counter: u32 = 0,
+
     /// Heap-allocated listener block — null for nodes without listeners.
     /// Lazily allocated on first listener registration. Reduces per-node
     /// inline size by ~232 bytes (10 × ArrayListUnmanaged → 1 pointer).
@@ -421,6 +433,7 @@ pub const DispatchTree = struct {
             node.focus_id = null;
             node.key_context = null;
             node.child_count = 0;
+            node.auto_child_counter = 0;
             node.drag_source = null;
             node.drop_target = null;
             node.pointer_events_none = false;

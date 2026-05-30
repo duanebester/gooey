@@ -193,8 +193,8 @@ pub const ValidatedTextInput = struct {
     // Render
     // =========================================================================
 
-    pub fn render(self: ValidatedTextInput, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: ValidatedTextInput, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Resolve colors: explicit value OR theme default
         const label_color = self.label_color orelse t.text;
@@ -230,7 +230,7 @@ pub const ValidatedTextInput = struct {
             (self.border_color_focused orelse t.border_focus);
 
         // Container for the whole field
-        b.box(.{
+        cx.box(.{
             .width = self.width,
             .direction = .column,
             .gap = self.gap,
@@ -311,9 +311,9 @@ const LabelRow = struct {
     error_color: Color,
     label_size: u16,
 
-    pub fn render(self: LabelRow, b: *ui.Builder) void {
+    pub fn render(self: LabelRow, cx: *ui.Cx) void {
         if (self.label) |lbl| {
-            b.box(.{
+            cx.box(.{
                 .direction = .row,
                 .gap = 2,
             }, .{
@@ -337,9 +337,9 @@ const RequiredIndicator = struct {
     color: Color,
     size: u16,
 
-    pub fn render(self: RequiredIndicator, b: *ui.Builder) void {
+    pub fn render(self: RequiredIndicator, cx: *ui.Cx) void {
         if (self.show) {
-            b.box(.{}, .{
+            cx.box(.{}, .{
                 ui.text("*", .{
                     .color = self.color,
                     .size = self.size,
@@ -377,7 +377,7 @@ const InputField = struct {
     is_required: bool,
     described_by_id: ?*const [64]u8,
 
-    pub fn render(self: InputField, b: *ui.Builder) void {
+    pub fn render(self: InputField, cx: *ui.Cx) void {
         const layout_id = LayoutId.fromString(self.id);
 
         // Build accessibility state
@@ -405,7 +405,7 @@ const InputField = struct {
         else
             null;
 
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .textbox,
             .name = self.accessible_name orelse self.placeholder,
@@ -414,11 +414,11 @@ const InputField = struct {
             .state = a11y_state,
             .described_by_id = described_by,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
         // Use fill_width so box expands horizontally within parent column,
         // height will fit to the input child automatically.
-        b.box(.{
+        cx.box(.{
             .fill_width = true,
         }, .{
             ui.input(self.id, .{
@@ -456,7 +456,7 @@ const HelperText = struct {
     helper_size: u16,
     live_region: a11y.Live,
 
-    pub fn render(self: HelperText, b: *ui.Builder) void {
+    pub fn render(self: HelperText, cx: *ui.Cx) void {
         // Get the ID as a slice (trimming null bytes)
         var id_len: usize = 0;
         while (id_len < self.id.len and self.id[id_len] != 0) : (id_len += 1) {}
@@ -474,23 +474,23 @@ const HelperText = struct {
 
             // Push accessible element for error with live region
             // This enables screen readers to announce validation errors
-            const a11y_pushed = b.accessible(.{
+            const a11y_pushed = cx.accessible(.{
                 .layout_id = layout_id,
                 .role = .alert,
                 .name = screen_reader_msg,
                 .live = self.live_region,
             });
-            defer if (a11y_pushed) b.accessibleEnd();
+            defer if (a11y_pushed) cx.accessibleEnd();
 
             // Display the visual error message (may differ from screen reader message)
-            b.box(.{ .min_height = min_height }, .{
+            cx.box(.{ .min_height = min_height }, .{
                 ui.text(err, .{
                     .color = self.error_color,
                     .size = self.helper_size,
                 }),
             });
         } else if (self.help_text) |help| {
-            b.box(.{ .min_height = min_height }, .{
+            cx.box(.{ .min_height = min_height }, .{
                 ui.text(help, .{
                     .color = self.help_color,
                     .size = self.helper_size,
@@ -498,7 +498,7 @@ const HelperText = struct {
             });
         } else {
             // Empty placeholder to maintain consistent layout
-            b.box(.{ .min_height = min_height }, .{});
+            cx.box(.{ .min_height = min_height }, .{});
         }
     }
 };

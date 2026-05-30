@@ -8,15 +8,16 @@
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
-const layout_mod = @import("../layout/layout.zig");
-const LayoutId = layout_mod.LayoutId;
 
 pub const ProgressBar = struct {
     /// Progress value from 0.0 to 1.0
     progress: f32,
 
-    /// ID for accessibility (optional)
-    id: []const u8 = "progress",
+    /// ID for accessibility / hover correlation (PR 11b.2b). Null ⇒ stable
+    /// parent-scoped auto id (PR 11b.2a). The old default `"progress"` made
+    /// every progress bar on a screen share one id; positional auto-ids keep
+    /// them distinct.
+    id: ?[]const u8 = null,
 
     // Sizing
     width: f32 = 200,
@@ -35,8 +36,8 @@ pub const ProgressBar = struct {
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
-    pub fn render(self: ProgressBar, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: ProgressBar, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Resolve colors: explicit value OR theme default
         const background = self.background orelse t.muted.withAlpha(0.2);
@@ -47,10 +48,15 @@ pub const ProgressBar = struct {
         const clamped = @max(0.0, @min(1.0, self.progress));
         const fill_width = self.width * clamped;
 
-        const layout_id = LayoutId.fromString(self.id);
+        // Resolve identity once and use it for *both* the a11y correlation
+        // and the box (PR 11b.2b). Previously the a11y call referenced
+        // `LayoutId.fromString(self.id)` while the box below used `cx.box`'s
+        // auto id — two different ids, so a11y bounds correlation pointed at
+        // an element that didn't exist.
+        const layout_id = cx.idFor(self.id);
 
         // Push accessible element (role: progressbar)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .progressbar,
             .name = self.accessible_name orelse "Progress",
@@ -59,9 +65,9 @@ pub const ProgressBar = struct {
             .value_max = 100.0,
             .value_now = clamped * 100.0,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.box(.{
+        cx.boxWithLayoutId(layout_id, .{
             .width = self.width,
             .height = self.height,
             .background = background,
@@ -90,11 +96,11 @@ const ProgressFillBar = struct {
     secondary_width: ?f32,
     secondary_color: Color,
 
-    pub fn render(self: ProgressFillBar, b: *ui.Builder) void {
+    pub fn render(self: ProgressFillBar, cx: *ui.Cx) void {
         // Secondary fill (e.g., buffer progress) rendered behind primary
         if (self.secondary_width) |sw| {
             if (sw > 0) {
-                b.box(.{
+                cx.box(.{
                     .width = sw,
                     .height = self.height,
                     .background = self.secondary_color,
@@ -105,7 +111,7 @@ const ProgressFillBar = struct {
 
         // Primary fill
         if (self.width > 0) {
-            b.box(.{
+            cx.box(.{
                 .width = self.width,
                 .height = self.height,
                 .background = self.color,

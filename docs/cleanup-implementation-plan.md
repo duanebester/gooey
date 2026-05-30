@@ -42,7 +42,7 @@
 11. [PR 8 — Unified `element_states`](#pr-8--unified-element_states)
 12. [PR 9 — `root.zig` slim + ownership flag drop + 7d-examples entry-point sweep](#pr-9--rootzig-slim--ownership-flag-drop--7d-examples-entry-point-sweep)
 13. [PR 10 — Layout engine split + fuzz targets](#pr-10--layout-engine-split--fuzz-targets)
-14. [PR 11 — API check + three-phase Element lifecycle](#pr-11--api-check--three-phase-element-lifecycle)
+14. [PR 11 — API check + Cx unification](#pr-11--api-check--cx-unification)
 15. [Out of scope (tracked separately)](#out-of-scope-tracked-separately)
 16. [Cross-reference index](#cross-reference-index)
 
@@ -95,7 +95,7 @@ them out here so they don't get re-litigated in review:
 | 8   | element_states           | #11                                                | Heaviest `@Type` work                                      | Medium      | ☑ (8.1 + 8.2 + 8.3 + 8.4-prep + 8.4a + 8.4b + 8.4c landed)                                                                                         |
 | 9   | `root.zig` slim + flags  | #13, #14 (finish)                                  | `pub fn main(init)` example sweep (from 7d-examples)       | Medium      | ☑ (landed)                                                                                                                                         |
 | 10  | Layout engine            | #15                                                | Vector indexing, `std.testing.Smith` fuzz targets          | Medium      | ☑ (landed)                                                                                                                                         |
-| 11  | API check + Element      | #16, #17                                           | `@Type` on Element trait if any                            | Large       | ☑️ partial (11a `api_check.zig` landed; 11b three-phase Element lifecycle deferred — see notes)                                                       |
+| 11  | API check + `Cx` unification | #16, #17 (revised) | `@Type`-free (collapse introduces none) | Medium | ☑ (11a + 11b.1 + 11b.2a + 11b.2b + 11b.3a + 11b.3b landed; three-phase `Element` trait + source-location ids rejected, see notes) |
 
 Cleanup item numbers reference the synthesis table in
 [`architectural-cleanup-plan.md` §Synthesis](./architectural-cleanup-plan.md#synthesis-the-cleanup-plan).
@@ -6230,19 +6230,28 @@ Full `bench-compare` output: baseline =
 
 ---
 
-## PR 11 — API check + three-phase Element lifecycle
+## PR 11 — API check + `Cx` unification
 
-**Goal:** lock down the public API at compile time, and adopt the
-three-phase Element lifecycle (`request_layout` / `prepaint` / `paint`)
-that unblocks tooltips, drag previews, and autoscroll done correctly.
+**Goal:** lock down the public API at compile time (**PR 11a**, landed),
+then make app authoring as simple as possible (**PR 11b**) by collapsing
+the dual component signature into a single `*Cx` context, removing
+element-ID boilerplate, and unifying the five ad-hoc deferred-paint
+queues into one internal mechanism. The GPUI-style three-phase `Element`
+trait is **explicitly rejected** for a simplicity-first framework — see
+the "PR 11b strategy" note below.
 
 **Write scope:**
 
-- `src/api_check.zig` (new)
-- `src/element/element.zig` (new — Element trait, PR 11b)
-- every widget that needs lifecycle phases (PR 11b)
-- `build.zig` (wire `api_check.zig` into the test step) — absorbed
-  into `src/root.zig`'s test discovery list; see PR 11a landing notes
+- `src/api_check.zig` (new) — PR 11a, landed.
+- `src/ui/builder.zig` — collapse the dual `processChild` signature;
+  consolidate the deferred-paint queues (PR 11b).
+- `src/cx.zig` — becomes the sole component context (PR 11b).
+- `src/components/*` — 38 components migrate `render(self, *Builder)` →
+  `render(self, *Cx)` (PR 11b).
+- `src/runtime/frame.zig` — retire the bespoke `renderTextInputs` /
+  `renderTextAreas` / `renderCodeEditors` / `renderCanvasElements` /
+  `registerPendingScrollRegions` fan-out onto one queue (PR 11b).
+- ID-derivation call sites across `components/*` / `widgets/*` (PR 11b).
 
 **Tasks:**
 
@@ -6251,24 +6260,107 @@ that unblocks tooltips, drag previews, and autoscroll done correctly.
       [§8 public-API verification](./architectural-cleanup-plan.md#8-public-api-verification).
       Landed on `cleanup/pr-11a-api-check`. See PR 11a landing notes
       below.
-- [ ] **PR 11b** — Define the Element trait per
-      [§18](./architectural-cleanup-plan.md#18-element-lifecycle-as-an-explicit-three-phase-trait):
-      `request_layout` → `prepaint` → `paint`, with intermediate
-      state types `RequestLayoutState` and `PrepaintState`. **Deferred**
-      — see "PR 11b status" note below.
-- [ ] **PR 11b** — Convert tooltips, drag previews, scroll-into-view
-      to use the three-phase model. They're currently wedged into
-      single-phase paint.
-- [ ] **PR 11b** — Combine with PR 6's `DrawPhase` assertions — phase
-      entry/exit asserts that the previous phase completed.
-- [ ] **PR 11b** — 0.16: any `@Type`-style trait codegen here uses the
-      new builtins.
+- [x] **PR 11b.1 — Collapse `Builder` into `Cx`.** Make `*Cx` the single
+      component `render` signature. `Cx` already _wraps_ a `*Builder`
+      (`cx.zig`: `_builder: *Builder`; `cx.render` forwards to
+      `builder.processChildren`), so this is a consumer-side migration,
+      not a rewrite. Migrate all 38 `render(self, *Builder)` components to
+      `render(self, *Cx)` (presentation-only components reach the drawing
+      primitives through `cx`), then delete the dual-signature branch in
+      `processChild` so there is exactly one way to write a component.
+      **Landed** — see PR 11b.1 landing notes below.
+- [x] **PR 11b.2 — ID ergonomics (re-scoped).** Drop the manual
+      `LayoutId.fromString` + `boxWithId` duplication and make element
+      identity correct-by-default without inventing string keys.
+      **Source-location-derived ids are rejected** — Zig has no
+      caller-location capture (see the 11b.2 strategy note below), so the
+      original "comptime source-location hash" approach is infeasible. Two
+      feasible slices replace it:
+  - [x] **PR 11b.2a — hierarchical auto-ids.** Replace the flat per-frame
+        `Builder.generateId` counter (`builder.zig`) with a parent-scoped
+        id — `hash(parent_layout_id, sibling_index)`, reusing the existing
+        `LayoutId.childIndexed` (`layout/layout_id.zig`). The parent
+        dispatch node is already known at element-open
+        (`DispatchTree.currentNode`, `context/dispatch.zig`), so this is
+        one hash at a point we already hash. Fixes the two flat-counter
+        footguns: (1) same-content siblings collide — e.g. two `Button`s
+        with the same label share hover/press state
+        (`examples/counter.zig` builds exactly this; `button.zig` derives
+        `id = self.id orelse self.label`); (2) inserting a conditional
+        element shifts every later auto-id on reflow, so hover/focus/
+        animation state jumps to the wrong element. Zero author-facing
+        change; perf-neutral. **Landed** — see PR 11b.2a landing notes
+        below.
+  - [x] **PR 11b.2b — kill component-author duplication.** ~20 components
+        compute `LayoutId.fromString(self.id)` for the a11y call **and**
+        pass `self.id` to `cx.boxWithId(self.id, …)` (hashing the same
+        string twice, two spellings of one identity). Return the resolved
+        `LayoutId` from `cx.boxWithId` / add `cx.idFor(id)` so the a11y
+        call reuses it, and make `id` optional on _presentational_
+        components (auto-derived via 11b.2a). **Landed** — see PR 11b.2b
+        landing notes below.
+  - [x] **Explicit ids stay for stateful widgets — by design.** `input` /
+        `textArea` / `codeEditor` / `scroll` / `select` key retained state
+        in `Window.element_states` by id hash and must survive
+        reorderings — exactly where positional / source-location ids are
+        fragile (a conditional above an input would swap its identity and
+        lose focus + text). Requiring an explicit id here is correct, not
+        boilerplate.
+- [x] **PR 11b.3 — Unify deferred paint (staged).** The "five queues →
+      one" framing flattens a real structural split in `runtime/frame.zig`,
+      so this lands in two slices:
+  - [x] **PR 11b.3a — unify the three text-widget passes.**
+        `renderTextInputs` / `renderTextAreas` / `renderCodeEditors` are
+        structurally identical post-layout passes (look up bounds → look up
+        pool state → sync bounds + style → `widget.render(scene,
+        text_system, scale_factor)`). Collapse `pending_inputs` /
+        `pending_text_areas` / `pending_code_editors` + their three
+        `renderXxx` functions into one ordered queue + one pass. Use a
+        **control-plane / data-plane** split (CLAUDE.md §8): the queue
+        holds tiny `{ kind, index }` records (control plane) that preserve
+        tree order and index into the existing right-sized typed pools
+        (data plane). Avoid a tagged union over the style structs — it
+        would size every slot to the largest variant (`CodeEditorStyle`)
+        and bloat the static buffer (§2, §4). Dispatch with a comptime
+        `switch (kind)` — no runtime trait objects, no by-value per-element
+        state (§6, §14). Tree-order interleaving is also strictly more
+        correct than today's grouped order for overlapping widgets.
+        **Landed** — see PR 11b.3a landing notes below.
+  - [x] **PR 11b.3b — evaluate canvas + scroll.** These do **not** fit a
+        pure post-layout queue: `pending_canvas` reserves draw orders
+        _inline_ during `renderCommands` (matching `cmd.id`) and
+        `pending_scrolls` paints scrollbars _inline_ at `scissor_end` (plus
+        feeds `registerPendingScrollRegions`). Both are coupled to the
+        command-replay pass. Fold them into the unified queue only if the
+        result stays simpler than the inline coupling they have today;
+        otherwise leave them as documented exceptions. Decide during
+        11b.3b, not up front. **Decided: documented inline-pass exceptions**
+        — see PR 11b.3b landing notes below.
+- [x] **PR 11b** — 0.16: the collapse stays `@Type`-free; no comptime
+      type-building is introduced.
 
 **Definition of done:**
 
 - [x] `api_check.zig` compiled into the test binary. **PR 11a.**
-- [ ] Tooltips render in their correct stacking order. **PR 11b.**
-- [ ] Scroll-into-view works on dynamically-sized lists. **PR 11b.**
+- [x] Exactly one component `render` signature (`*Cx`); the `*Builder`
+      branch in `processChild` is deleted. **PR 11b.1.**
+- [x] `Builder.generateId` is parent-scoped; same-content siblings no
+      longer collide and auto-ids are stable under sibling-subtree
+      reflow. **PR 11b.2a.**
+- [x] Presentational components require no `id`; `cx.idFor` resolves the
+      `LayoutId` once and `cx.boxWithLayoutId` reuses it, so no component
+      hashes one id twice. Stateful widgets (`input` / `textArea` /
+      `codeEditor` / `scroll` / `select`) keep explicit ids by design.
+      **PR 11b.2b.**
+- [x] The three text-widget queues + their `renderTextInputs` /
+      `renderTextAreas` / `renderCodeEditors` fan-out functions in
+      `runtime/frame.zig` are replaced by one ordered `{ kind, index }`
+      queue + one pass over the typed pools. **PR 11b.3a.**
+- [x] Canvas + scroll are recorded as documented inline-pass exceptions
+      (simpler than folding into the post-layout queue, which would
+      reintroduce the z-ordering they exist to get right). **PR 11b.3b.**
+- [x] Three-phase `Element` trait remains unbuilt and is recorded as
+      rejected (revisit only on a concrete feature need). **PR 11b.**
 
 ### PR 11a landing notes
 
@@ -6354,39 +6446,358 @@ used by an example) get an explicit pin line.
 sub-PR — `api_check.zig` is pure architectural work. The §28
 takeaway table in `zig-0.16-changes.md` is unchanged.
 
-### PR 11b status
+### PR 11b strategy (revised — simplicity-first)
 
-**Deferred to a separate, larger investigation.** PR 11b is the
-three-phase Element trait (`request_layout` → `prepaint` → `paint`)
-with flowing `RequestLayoutState` / `PrepaintState`, per
-`architectural-cleanup-plan.md` §18.
+**Status:** ☑ complete — 11b.1, 11b.2 (a + b), and 11b.3 (a + b) all
+landed (see landing notes below). **Scope changed** from the original
+"three-phase Element lifecycle" to "collapse `Builder` into `Cx` + ID
+ergonomics + unified deferred paint."
 
-Why it isn't bundled with 11a:
+**Why the pivot.** The original 11b proposed porting GPUI's three-phase
+`Element` trait (`request_layout` → `prepaint` → `paint`, with flowing
+`RequestLayoutState` / `PrepaintState`) per
+`architectural-cleanup-plan.md` §18. A design pre-flight reached the
+opposite conclusion: that trait is the right architecture for a
+_framework-expressiveness_ goal, but the **wrong** one for Gooey's stated
+goal of being the simplest, most convenient way to build apps. Reasons:
 
-- The current rendering model is fundamentally **two-phase** —
-  `DrawPhase.prepaint` (layout-decl) and `DrawPhase.paint`
-  (scene-emit), enforced at the `Window` level by PR 6's
-  `assertAdvance` ladder. Adopting a per-Element three-phase trait
-  isn't an incremental edit — it rewrites how
-  `Builder.processChildren` drives every component.
-- Today's `processChildren` is comptime duck-typing: it walks the
-  child tuple, checks for `primitive_type` and `render`, and calls
-  through with `*Builder` or `*Cx`. Moving to typed phase trait
-  state means ~20 components + ~10 widgets re-fit their `render`
-  signature into three associated callbacks with intermediate state
-  types.
-- `architectural-cleanup-plan.md` §18 explicitly says: "Defer this
-  one — it's structurally bigger than the rest. But it should be in
-  the architectural backlog." The tracker row marks PR 11 "Large"
-  risk; 11a clears the low-risk half. 11b benefits from a separate
-  design pre-flight doc (trait shape, deferred-paint queue,
-  three-state lifetime contract) **before** code.
+- **Not a performance win.** Today's `processChild` is comptime
+  duck-typing — fully monomorphized, inlined, no vtables. A uniform
+  per-element trait pushes toward intermediate per-element state, an
+  explicit-stack three-pass walk (recursion is banned — CLAUDE.md §6),
+  and a deferred-draw queue. That is neutral-to-slower, not faster.
+- **Fights our own rules.** The trait's value-flow state
+  (`request_layout` returns state by value) is the exact pattern that
+  blows the 1 MB WASM stack (CLAUDE.md §14); a faithful port has to
+  pool-allocate and init-in-place from day one — i.e. deviate
+  immediately.
+- **Makes the common case worse.** All 38 library components are the
+  trivial one-method `render(self, b) { b.box(...) }` shape and never
+  need deferral. Forcing them into three callbacks + associated state
+  types is a large ergonomic regression for the 90% that don't benefit.
+- **Deferral is a framework concern, not an author concern.** Nobody
+  building an app should implement `prepaint` / `paint` to get a tooltip
+  — they write `Tooltip{ ... }`. The only justified slice of the original
+  plan is the _internal_ deferred-paint consolidation (11b.3), which
+  needs no author-visible trait.
 
-Next step on 11b is a design doc draft (likely
-`docs/element-lifecycle-design.md`) covering the trait shape and
-the per-component migration path, then a discrete sub-PR series
-that lands the trait first, then re-fits components in batches
-(probably grouped by primitive vs. component vs. widget).
+**The capabilities are not lost.** Correct overlay stacking, tooltips,
+drag previews, and scroll-into-view on dynamic lists are delivered by the
+one internal deferred-paint queue (11b.3) plus narrow, purpose-built
+mechanisms (e.g. a "measure target, scroll next frame" request), not by a
+general element trait. Purpose-built internal primitives keep the
+author-facing model flat — the correct trade for an app framework.
+
+**What 11b does now.** Three independent, sequenceable slices:
+
+1. **11b.1 — `Builder` → `Cx` collapse.** The dual signature is a
+   migration artifact, not a design axis: `Cx` was introduced later as
+   the unified context and _wraps_ `Builder`, but the 38 library
+   components were written against the older `*Builder` API and never
+   migrated, so `processChild` duck-types both. Collapse toward `*Cx`
+   (strictly more capable; already contains the `Builder`). Highest
+   DX-per-effort item on the board.
+2. **11b.2 — ID ergonomics (re-scoped).** _Originally_ "call-site-derived
+   (source-location hash) stable ids." **Rejected** — Zig has no
+   caller-location capture: `@src()` is lexical (it resolves to the one
+   site inside `builder.zig`, identical for every element), Zig has no
+   default parameter values to smuggle a caller `@src()` through, and a
+   per-site hash collides across loop iterations regardless. Forcing the
+   author to pass `@src()` is the already-existing `boxTracked` path —
+   more boilerplate than a string, not less. Re-scoped to two feasible
+   wins: (11b.2a) parent-scoped hierarchical auto-ids in
+   `Builder.generateId`, and (11b.2b) removing the `LayoutId.fromString` +
+   `boxWithId` double-hash in components and making presentational ids
+   optional. Explicit ids are retained for stateful widgets by design.
+3. **11b.3 — unified deferred paint (staged).** _Not_ a flat
+   "five → one." The three text-widget passes (`renderTextInputs` /
+   `renderTextAreas` / `renderCodeEditors`) are structurally identical and
+   collapse cleanly into one ordered `{ kind, index }` queue over the
+   existing typed pools (11b.3a). Canvas + scroll render _inline_ during
+   the command-replay pass (`pending_canvas` reserves draw orders at
+   `cmd.id`; `pending_scrolls` paints scrollbars at `scissor_end`), so they
+   fold in only if it stays simpler than today's coupling — decided in
+   11b.3b.
+
+**Sequencing.** 11b.1 first (the simplification the other two build on,
+and the biggest author-facing win), then 11b.2 and 11b.3 in either order.
+Each is a discrete sub-PR. `architectural-cleanup-plan.md` §18 should be
+annotated to record the three-phase trait as **considered and rejected
+for a simplicity-first framework**, retained in the backlog only if a
+concrete future feature (drag-and-drop, advanced popovers) demands
+per-element prepaint logic. The same annotation should record
+**source-location-derived ids as rejected** — Zig has no caller-location
+capture (`@src()` is lexical only), so the egui/GPUI auto-id model does
+not port; see the 11b.2 task entry for the feasible re-scope.
+
+### PR 11b.1 landing notes
+
+**Status:** ☑ landed.
+
+**Result:** `Build Summary: 1156/1156 tests passed`, `zig build test`
+exits 0 — at parity with the pre-change baseline (verified by stashing
+the change and re-running: identical exit code and the same two
+pre-existing harness "failed command" lines on unrelated chart/window
+test binaries, which pass when run directly). No net test delta: this is
+a consumer-side migration, and the existing dispatch tests already pin
+every path that crosses the rewritten boundary.
+
+**One component signature.** All 37 `render(self, *ui.Builder)` functions
+(36 across `src/components/*` + one `RowContent` in
+`src/examples/lucide_demo.zig`) migrated to `render(self, *ui.Cx)`, plus
+`select.zig`'s private `resolveState(self, *ui.Builder, …)` helper. The
+dual-signature branch in `Builder.processChild` is deleted — there is now
+exactly one way to write a component.
+
+**`Cx` gained the drawing surface.** The 38 components only reached for
+seven `Builder` methods. Three (`accessible`, `accessibleEnd`, `theme`)
+already existed on `Cx`; PR 11b.1 added the other four as thin, inlined
+forwarders to the wrapped `_builder`: `box`, `boxWithId`, `getGooey`, and
+`with`. `Cx.with` deliberately routes through the `*Cx`-aware
+`processChildren` (not `Builder.with`, which passed `*Builder`) while
+keeping the `@compileError` guard against non-renderable arguments.
+
+**`b.window` → `cx.getGooey()`.** `select.zig` read the builder's optional
+`window: ?*Window` field directly. `Cx.window()` asserts non-null, so the
+migration maps this to the new `Cx.getGooey()` forwarder to preserve the
+nullable, recover-by-disable semantics.
+
+**Type plumbing.** `src/ui/mod.zig` re-exports `pub const Cx =
+@import("../cx.zig").Cx;` so component files spell `*ui.Cx` with no extra
+import. `cx.zig` already imports `ui/mod.zig` for `ui.Box` / `ui.Builder`;
+the reverse edge is a plain type re-export (no value, no layout
+dependency) and introduces no comptime import cycle — verified by build.
+
+**Negative-space fix (CLAUDE.md §11, §17).** The old new-pattern branch
+silently skipped the element when `cx_ptr` was null ("Cx not available,
+skip"). The collapsed path asserts the invariant instead
+(`self.cx_ptr orelse unreachable`): `cx_ptr` is wired at construction in
+`app.zig` and `runtime/window_context.zig`, so a null there is a
+programming error, not a recoverable state. A `@compileError` also guards
+against a component whose second `render` parameter isn't a typed pointer.
+
+**Dead code removed.** With every `b.with(...)` call site migrated to
+`cx.with(...)`, `Builder.with` had no callers and would no longer compile
+if instantiated (it passes `*Builder` to a now-`*Cx` `render`). It was
+removed; a comment at its former site records the rationale so a future
+reader reaches for `Cx.with`.
+
+**WASM.** No WASM build step is active on Zig 0.16 (deferred per
+`build.zig`), and the change is method-level — no struct-layout impact —
+so there was nothing WASM-side to validate.
+
+**Still open in 11b.** 11b.2 (ID ergonomics — re-scoped) and 11b.3 (internal
+deferred-paint unification) are untouched. The `tabs.zig`
+`blendColors(a, b: Color, …)` parameter named `b` was left alone (it is
+not a builder); the migration was scoped to avoid it.
+
+### PR 11b.2a landing notes
+
+**Status:** ☑ landed.
+
+**Result:** `Build Summary: 13/13 steps succeeded; 1159/1159 tests
+passed` (+3 vs. PR 11b.3a's 1156 — three new `generateId` tests in
+`src/ui/builder.zig`: same-parent siblings never collide, ids are stable
+across frames for an unchanged tree shape, and the same sibling index
+under different parents does not collide).
+
+**The change.** `Builder.generateId` (`ui/builder.zig`) replaced the
+flat per-frame counter (`LayoutId.fromInt(++id_counter)`) with a
+parent-scoped `hash(parent_layout_id, sibling_index)` via the existing
+`LayoutId.childIndexed` (`layout/layout_id.zig`). The parent is the
+currently-open element — already on the dispatch stack at the point
+`generateId` runs (it runs _before_ the new element pushes its own node,
+in `boxWithIdTracked` / `idFor`), so reading it is free. The sibling
+index is a new `auto_child_counter: u32` field on `DispatchNode`
+(`context/dispatch.zig`), reset to 0 in `pushNode`'s reuse path and
+defaulted on the append path.
+
+**Why a separate counter, not `child_count`.** `child_count` counts
+dispatch children actually pushed; `auto_child_counter` counts every
+`generateId` call under a parent — including leaf primitives (spacers,
+svg, image) that call `generateId` but never push a dispatch node. Using
+`child_count` would give two adjacent auto-id'd leaves the same index and
+collide (a real Debug `seen_ids` warning + clobbered `id_to_index`
+lookup). The dedicated counter keeps every auto id distinct.
+
+**Footguns fixed.** (1) Same-content siblings no longer collide: the old
+flat counter held global uniqueness only by luck of unchanged order, and
+components that fell back to a content string (`Button` → `self.label`)
+collided outright on same-label siblings. (2) Reflow in a _sibling_
+subtree no longer perturbs these ids — the blast radius of an
+insert/remove is now one parent's children, so hover / focus / animation
+state stays pinned to the same element across frames. Explicit-id
+siblings don't bump the counter, so adding a named element next to
+auto-id'd ones leaves their indices untouched.
+
+**Root fallback.** When no element is open (the user's top-level box has
+no explicit id), `currentNode()` is `.invalid` and the function falls
+back to the per-frame `id_counter`, still mixed through `childIndexed`
+so the hash domain matches the nested case. `id_counter` is still reset
+to 0 each tick in `runtime/frame.zig`.
+
+**Assertions (CLAUDE.md §3).** A `comptime` assert pins the auto-id seed
+non-empty (the surprising invariant: an empty seed would collapse the
+auto-id hash domain onto the parent id); each branch asserts the sibling
+index stays under `MAX_AUTO_SIBLINGS` (= layout engine's
+`MAX_ELEMENTS_PER_FRAME`, the hard per-parent ceiling — CLAUDE.md §4).
+
+**0.16 / WASM.** `@Type`-free. Method-level change plus one `u32` field
+on `DispatchNode`; no struct returned by value, no WASM-stack impact.
+
+### PR 11b.2b landing notes
+
+**Status:** ☑ landed.
+
+**Result:** `Build Summary: 13/13 steps succeeded; 1159/1159 tests
+passed` (no delta vs. 11b.2a — this is a consumer-side dedup; existing
+component + a11y tests pin every migrated path).
+
+**`Cx` gained two methods** (`cx.zig`). `idFor(id: ?[]const u8)
+LayoutId` resolves an element id _once_ — an explicit string hashes
+through `LayoutId.fromString`, a null id falls back to the parent-scoped
+auto id (`generateId`, 11b.2a). `boxWithLayoutId(layout_id, props,
+children)` forwards to the existing `Builder.boxWithLayoutId`. The plan
+offered "return the resolved `LayoutId` from `cx.boxWithId` / add
+`cx.idFor`"; `idFor` is the chosen half — returning a value from
+`boxWithId` would break every statement-position call site, and the a11y
+push happens _before_ the box anyway, so a return value couldn't be
+reused by it. `idFor` + `boxWithLayoutId` reuses one resolved id across
+both.
+
+**The double-hash, killed.** ~12 components computed
+`LayoutId.fromString(self.id)` (or `self.label`) for the
+`cx.accessible(.{ .layout_id = … })` call **and** passed the same string
+to `cx.boxWithId(self.id, …)`, hashing it twice. Migrated to one
+`const layout_id = cx.idFor(self.id);` reused by both the a11y call and
+`cx.boxWithLayoutId(layout_id, …)`: `button`, `checkbox`,
+`progress_bar`, `radio_group` (RadioButton + RadioGroup), `tabs` (Tab +
+TabBar + TabBarItem), `tooltip`, `image`, `svg`, `modal` (threaded the
+resolved id through `ModalOverlay` instead of re-hashing), `select`
+(outer container; inner state stays keyed by the string id).
+
+**Correctness bug fixed in passing.** Several presentational components
+(`progress_bar`, `tabs`, `radio_group`'s RadioButton, `image`, `svg`)
+pushed their a11y node with `layout_id = fromString(self.id)` but emitted
+their box via plain `cx.box(…)`, which auto-id'd — so the a11y bounds
+correlation pointed at an element id that didn't exist. Routing both
+through one `idFor` + `boxWithLayoutId` makes the a11y node and the box
+share one id.
+
+**Presentational ids made optional.** `checkbox`, `progress_bar`,
+`radio_group`, `tabs` had a required or hard-defaulted string id
+(`"progress"`, `"radio-group"`, `"tabs"` collided across instances);
+all are now `id: ?[]const u8 = null`, auto-derived via 11b.2a when
+omitted. `button` / `image` / `svg` / `tooltip` were already optional but
+fell back to a _content_ string (`label` / `src` / `path` / `text`) that
+collided on same-content siblings; they now fall back to the
+parent-scoped auto id. Dead `LayoutId` / `layout_mod` import aliases left
+behind by the migration were removed (CLAUDE.md §10).
+
+**Stateful widgets unchanged by design.** `input` / `textArea` /
+`codeEditor` / `validated_text_input` wrap a primitive keyed by the
+string id (`ui.input(self.id, …)`) whose state lives in
+`Window.element_states`; their explicit id stays required. They retain a
+benign internal double-hash (a11y hashes `self.id`, the primitive
+pipeline hashes it again — guaranteed to match); deduping it would mean
+threading a `LayoutId` through the `InputPrimitive` / `renderInput`
+pipeline, more surface area than the win, so it's left as-is.
+
+### PR 11b.3a landing notes
+
+**Status:** ☑ landed.
+
+**Result:** `zig build test` exits 0 — at parity with the pre-change
+baseline. The two pre-existing harness "failed command" lines on the
+unrelated chart/window test binaries persist (documented since PR 11b.1)
+and pass when run directly: the window binary reports `All 1022 tests
+passed`, the chart binary `All 94 tests passed`. No net test delta — this
+is an internal render-pass restructuring, and the existing text-widget
+dispatch / focused-widget tests already pin every path that crosses the
+rewritten boundary.
+
+**Control plane / data plane (CLAUDE.md §8).** The three typed pools
+(`pending_inputs` / `pending_text_areas` / `pending_code_editors` in
+`ui/builder.zig`) are kept as the **data plane** — right-sized, typed,
+already seeded with per-widget style + inner dimensions during the build
+pass. A new **control-plane** queue `pending_text_widgets:
+ArrayList(PendingTextWidget)` records one tiny `{ kind: TextWidgetKind,
+index: u32 }` per widget (8 bytes) in tree order. `renderInput` /
+`renderTextArea` / `renderCodeEditor` each append to their typed pool as
+before, then mirror a control record via the private
+`enqueuePendingTextWidget(kind, index)` helper — but only after
+confirming the data-plane append landed (`if (pool.items.len >
+saved_index)`), so the recorded index always resolves to a live slot.
+
+**Why not a tagged union.** A `union(enum)` over the three style structs
+would size every slot to the largest variant (`CodeEditorStyle`), bloating
+the static buffer for the common (input/area) case (CLAUDE.md §2, §4). The
+`{ kind, index }` split keeps each control slot at 8 bytes and leaves the
+heavy per-widget state in the right-sized typed pools.
+
+**One pass, comptime dispatch.** `runtime/frame.zig`'s three
+structurally-identical `renderTextInputs` / `renderTextAreas` /
+`renderCodeEditors` full passes collapse into one `renderTextWidgets` walk
+over `pending_text_widgets`. A `switch (entry.kind)` (comptime-resolved,
+no runtime trait objects, no by-value per-element state — CLAUDE.md §6,
+§14) indexes the matching pool and calls a per-kind leaf helper
+(`renderTextInput` / `renderTextArea` / `renderCodeEditor`, now singular,
+one element each). Control flow (the switch) stays in the parent; the
+meaty per-kind style-sync + `widget.render(...)` work lives in the leaf
+helpers, each well under the 70-line limit (CLAUDE.md §5). The `orelse
+continue` skips in the old loops became `orelse return` in the leaves
+(same fail-safe: a missing bounds or pool slot skips just that widget).
+
+**Strictly more correct ordering.** The old fan-out painted all inputs,
+then all areas, then all editors. The unified queue replays in tree order,
+so overlapping widgets of different kinds now stack in declaration order
+rather than grouped-by-kind order. No example depends on the old grouping.
+
+**Limits + assertions.** `MAX_PENDING_TEXT_WIDGETS = MAX_PENDING_INPUTS +
+MAX_PENDING_TEXT_AREAS + MAX_PENDING_CODE_EDITORS` (352) caps the queue at
+the three pools combined (CLAUDE.md §4). `enqueuePendingTextWidget`
+asserts the `u32` index fits and the queue cap is not exceeded; the frame
+driver asserts `pending_text_widgets.items.len <=
+MAX_PENDING_TEXT_WIDGETS` alongside the existing per-pool asserts, and
+`renderTextWidgets` asserts `entry.index < pool.items.len` before each
+index (CLAUDE.md §3, §18).
+
+**Untouched by design.** `registerBlurHandlers` still iterates the three
+typed pools directly (order-independent, keyed by id) and is unaffected.
+`runtime/input.zig`'s `focusedTextInput` / `focusedTextArea` /
+`focusedCodeEditor` also walk the typed pools directly — the data plane is
+unchanged, so they need no migration. Canvas + scroll remain inline in the
+command-replay pass; folding them in (or recording them as documented
+exceptions) is **PR 11b.3b**.
+
+### PR 11b.3b landing notes
+
+**Status:** ☑ landed — **decision: keep canvas + scroll as documented
+inline-pass exceptions.**
+
+**Result:** no code restructuring; one documenting comment added in
+`runtime/frame.zig` above the `renderCommands` call. Build unchanged at
+1159/1159.
+
+**Why not fold into the unified queue.** The 11b.3a queue is a _pure
+post-layout pass_: walk `{ kind, index }` records, look up bounds, paint.
+Canvas and scroll are not post-layout — both are coupled to the
+command-replay loop (`renderCommands`) for z-ordering:
+
+- `pending_canvas` must reserve its draw-order block
+  (`reserveCanvasOrders(256)`) and capture the live clip at the exact
+  moment `cmd.id` is replayed, so the canvas paints in the correct z-band
+  relative to siblings.
+- `pending_scrolls` must paint its scrollbars at the matching
+  `scissor_end` so they land after scroll content but before sibling
+  elements (and it feeds `registerPendingScrollRegions` for hit testing).
+
+Moving either into a post-layout queue would reintroduce exactly the
+z-ordering they exist to get right — strictly _more_ complex than the
+inline coupling. Per the 11b.3 task ("fold them in only if the result
+stays simpler"), they stay inline, now recorded as intentional exceptions
+in `runtime/frame.zig` so a future reader doesn't try to "finish" the
+unification.
 
 ---
 
@@ -6426,7 +6837,7 @@ to the PR that absorbs it. Update both this doc and §28 when a PR lands.
 
 | 0.16 takeaway                            | Folded into                                         |
 | ---------------------------------------- | --------------------------------------------------- |
-| `@Type` removal — comptime type building | PR 0 (sweep) + PR 4, PR 6, PR 8, PR 11a (api_check is `@Type`-free); PR 11b pending |
+| `@Type` removal — comptime type building | PR 0 (sweep) + PR 4, PR 6, PR 8, PR 11a (api_check is `@Type`-free); PR 11b complete (collapse is `@Type`-free) |
 | Vectors no runtime indexing              | PR 0 + PR 2 (rasterizer) + PR 10 (layout SIMD)      |
 | Local-address return compile errors      | PR 0                                                |
 | `ArrayList` `.empty`                     | PR 0                                                |

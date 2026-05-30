@@ -250,19 +250,19 @@ pub const Select = struct {
         }
     };
 
-    pub fn render(self: Select, b: *ui.Builder) void {
+    pub fn render(self: Select, cx: *ui.Cx) void {
         std.debug.assert(self.id.len > 0);
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
         const layout_id = LayoutId.fromString(self.id);
-        const t = b.theme();
+        const t = cx.theme();
         const font_size = self.font_size orelse t.font_size_base;
         std.debug.assert(font_size > 0);
-        const resolved = self.resolveState(b, layout_id);
+        const resolved = self.resolveState(cx, layout_id);
         const colors = self.resolveColors(t, resolved.is_open);
 
         // Accessibility: combobox role
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .combobox,
             .name = self.accessible_name orelse self.placeholder,
@@ -274,10 +274,13 @@ pub const Select = struct {
                 .has_popup = true,
             },
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        // Container: trigger + dropdown
-        b.boxWithId(self.id, .{
+        // Container: trigger + dropdown. Reuse the already-resolved
+        // `layout_id` (PR 11b.2b) instead of re-hashing `self.id` through
+        // `boxWithId` — `self.id` is a stateful, retained-by-id widget, so
+        // the explicit id stays required, but it's hashed exactly once.
+        cx.boxWithLayoutId(layout_id, .{
             .width = self.width,
         }, .{
             SelectTrigger{
@@ -307,7 +310,7 @@ pub const Select = struct {
                 .selected_background = colors.selected_bg,
                 .hover_background = colors.option_hover_bg,
                 .text_color = colors.text_col,
-                .checkmark_color = b.theme().primary,
+                .checkmark_color = cx.theme().primary,
                 .border_color = colors.border,
                 .font_size = font_size,
                 .corner_radius = colors.radius,
@@ -326,7 +329,7 @@ pub const Select = struct {
     }
 
     /// Resolve open/close state and handlers — internal vs external.
-    fn resolveState(self: Select, b: *ui.Builder, layout_id: LayoutId) ResolvedState {
+    fn resolveState(self: Select, cx: *ui.Cx, layout_id: LayoutId) ResolvedState {
         // Legacy path: caller manages open/close externally
         if (!self.usesInternalState()) {
             std.debug.assert(self.on_select != null or self.handlers != null or
@@ -346,7 +349,7 @@ pub const Select = struct {
         // toggle/close handlers wired up. Same recover-by-disable
         // shape the pre-PR-8.2 path had against the `?*SelectState`
         // null return.
-        const g = b.window orelse return ResolvedState.disabled();
+        const g = cx.getGooey() orelse return ResolvedState.disabled();
         const id_hash = layout_id.id;
         std.debug.assert(id_hash != 0);
         const ss = g.element_states.withElementState(
@@ -429,13 +432,13 @@ const SelectTrigger = struct {
     padding: f32,
     disabled: bool,
 
-    pub fn render(self: SelectTrigger, b: *ui.Builder) void {
+    pub fn render(self: SelectTrigger, cx: *ui.Cx) void {
         std.debug.assert(self.font_size > 0);
         std.debug.assert(self.padding >= 0);
 
         const opacity: f32 = if (self.disabled) 0.6 else 1.0;
 
-        b.box(.{
+        cx.box(.{
             .fill_width = true,
             .height = @as(f32, @floatFromInt(self.font_size)) + self.padding * 2 + 4,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding / 2 } },
@@ -469,10 +472,10 @@ const ChevronIcon = struct {
     color: Color,
     size: f32,
 
-    pub fn render(self: ChevronIcon, b: *ui.Builder) void {
+    pub fn render(self: ChevronIcon, cx: *ui.Cx) void {
         std.debug.assert(self.size > 0);
         const icon_path = if (self.is_open) Icons.chevron_up else Icons.chevron_down;
-        b.box(.{
+        cx.box(.{
             .width = self.size,
             .height = self.size,
             .alignment = .{ .main = .center, .cross = .center },
@@ -505,11 +508,11 @@ const SelectDropdown = struct {
     corner_radius: f32,
     padding: f32,
 
-    pub fn render(self: SelectDropdown, b: *ui.Builder) void {
+    pub fn render(self: SelectDropdown, cx: *ui.Cx) void {
         if (!self.is_open) return;
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
-        b.box(.{
+        cx.box(.{
             .width = self.min_width,
             .padding = .{ .all = 4 },
             .background = self.background,
@@ -561,14 +564,14 @@ const SelectOptions = struct {
     corner_radius: f32,
     padding: f32,
 
-    pub fn render(self: SelectOptions, b: *ui.Builder) void {
+    pub fn render(self: SelectOptions, cx: *ui.Cx) void {
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
         for (self.options, 0..) |label, i| {
             const handler: ?HandlerRef = self.resolveOptionHandler(i);
             const is_selected = if (self.selected) |sel| sel == i else false;
 
-            b.with(SelectOption{
+            cx.with(SelectOption{
                 .label = label,
                 .is_selected = is_selected,
                 .on_click_handler = handler,
@@ -618,10 +621,10 @@ const SelectOption = struct {
     corner_radius: f32,
     padding: f32,
 
-    pub fn render(self: SelectOption, b: *ui.Builder) void {
+    pub fn render(self: SelectOption, cx: *ui.Cx) void {
         const bg = if (self.is_selected) self.selected_background else Color.transparent;
 
-        b.box(.{
+        cx.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding * 0.7 } },
             .background = bg,
@@ -651,9 +654,9 @@ const SelectCheckmark = struct {
     visible: bool,
     color: Color,
 
-    pub fn render(self: SelectCheckmark, b: *ui.Builder) void {
+    pub fn render(self: SelectCheckmark, cx: *ui.Cx) void {
         if (self.visible) {
-            b.box(.{
+            cx.box(.{
                 .width = 16,
                 .height = 16,
                 .alignment = .{ .main = .center, .cross = .center },
@@ -662,7 +665,7 @@ const SelectCheckmark = struct {
             });
         } else {
             // Empty space to maintain alignment
-            b.box(.{
+            cx.box(.{
                 .width = 16,
                 .height = 16,
             }, .{});

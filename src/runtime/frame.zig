@@ -147,6 +147,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.pending_inputs.clearRetainingCapacity();
     builder.pending_text_areas.clearRetainingCapacity();
     builder.pending_code_editors.clearRetainingCapacity();
+    builder.pending_text_widgets.clearRetainingCapacity();
     builder.pending_scrolls.clearRetainingCapacity();
     builder.pending_canvas.clearRetainingCapacity();
     builder.pending_scrolls_by_layout_id.clearRetainingCapacity();
@@ -161,6 +162,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
     std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
+    // PR 11b.3a — the unified control queue holds one record per
+    // text widget, so it cannot exceed the three pools combined.
+    std.debug.assert(builder.pending_text_widgets.items.len <= Builder.MAX_PENDING_TEXT_WIDGETS);
     std.debug.assert(builder.pending_scrolls.items.len <= Builder.MAX_PENDING_SCROLLS);
     std.debug.assert(builder.pending_canvas.items.len <= Builder.MAX_PENDING_CANVAS);
 
@@ -236,19 +240,26 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Render all commands (includes SVGs and images inline for correct z-ordering)
     // Scrollbars are rendered inline when their scissor_end is encountered
     // Canvas draw orders are reserved during this pass for correct z-ordering
+    //
+    // PR 11b.3b — canvas + scroll are *deliberately* not folded into the
+    // unified text-widget queue (PR 11b.3a). That queue is a pure
+    // post-layout pass: walk records, look up bounds, paint. Canvas and
+    // scroll are not post-layout — they are coupled to *this* command-replay
+    // loop for z-ordering: `pending_canvas` must reserve its draw-order block
+    // (and capture the live clip) at the exact moment `cmd.id` is replayed,
+    // and `pending_scrolls` must paint its scrollbars at the matching
+    // `scissor_end` so they land after scroll content but before siblings.
+    // Moving either into a post-layout queue would reintroduce the
+    // z-ordering they exist to get right — strictly more complex than the
+    // inline coupling here. They stay as documented inline exceptions.
     try renderCommands(window, @constCast(builder), commands);
 
     // Register blur handlers from pending items
     registerBlurHandlers(window, builder);
 
-    // Render text inputs
-    try renderTextInputs(window, builder);
-
-    // Render text areas
-    try renderTextAreas(window, builder);
-
-    // Render code editors
-    try renderCodeEditors(window, builder);
+    // Render the text widgets (inputs / text areas / code editors) in a
+    // single tree-ordered pass over the unified control queue (PR 11b.3a).
+    try renderTextWidgets(window, builder);
 
     // Render canvas elements (custom vector graphics)
     renderCanvasElements(window, builder);
@@ -398,114 +409,141 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
     }
 }
 
-/// Render all pending text inputs
-fn renderTextInputs(window: *Window, builder: *const Builder) !void {
-    for (builder.pending_inputs.items) |pending| {
-        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const input_widget = window.element_states.get(TextInputState, @as(u64, pending.layout_id.id)) orelse continue;
-
-        // If disabled and currently focused, blur it
-        if (pending.style.disabled and input_widget.isFocused()) {
-            input_widget.blur();
+/// Render every pending text widget in one tree-ordered pass.
+///
+/// PR 11b.3a — the three structurally-identical post-layout passes
+/// (`renderTextInputs` / `renderTextAreas` / `renderCodeEditors`)
+/// collapse into this single walk over `pending_text_widgets`, the
+/// unified control queue. Each `{ kind, index }` record selects the
+/// matching typed data-plane pool; a comptime `switch (kind)` picks the
+/// per-kind render helper — no runtime trait objects, no by-value
+/// per-element state (CLAUDE.md §6, §14). Control flow (the switch)
+/// stays in this parent; the meaty per-kind work lives in the leaf
+/// helpers (CLAUDE.md §5). Tree-order replay is strictly more correct
+/// than the old grouped order when widgets of different kinds overlap.
+fn renderTextWidgets(window: *Window, builder: *const Builder) !void {
+    for (builder.pending_text_widgets.items) |entry| {
+        switch (entry.kind) {
+            .input => {
+                std.debug.assert(entry.index < builder.pending_inputs.items.len);
+                try renderTextInput(window, &builder.pending_inputs.items[entry.index]);
+            },
+            .text_area => {
+                std.debug.assert(entry.index < builder.pending_text_areas.items.len);
+                try renderTextArea(window, &builder.pending_text_areas.items[entry.index]);
+            },
+            .code_editor => {
+                std.debug.assert(entry.index < builder.pending_code_editors.items.len);
+                try renderCodeEditor(window, &builder.pending_code_editors.items[entry.index]);
+            },
         }
-
-        const inset = pending.style.padding + pending.style.border_width;
-        // Compute inner_width from layout bounds when fill_width is true
-        const inner_width = if (pending.style.fill_width)
-            bounds.width - (inset * 2)
-        else
-            pending.inner_width;
-        input_widget.bounds = .{
-            .x = bounds.x + inset,
-            .y = bounds.y + inset,
-            .width = inner_width,
-            .height = pending.inner_height,
-        };
-        input_widget.setPlaceholder(pending.style.placeholder);
-        // Use muted color for disabled inputs
-        input_widget.style.text_color = if (pending.style.disabled)
-            render_bridge.colorToHsla(pending.style.placeholder_color)
-        else
-            render_bridge.colorToHsla(pending.style.text_color);
-        input_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
-        input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
-        input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
-        input_widget.secure = pending.style.secure;
-        try input_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
     }
 }
 
-/// Render all pending text areas
-fn renderTextAreas(window: *Window, builder: *const Builder) !void {
-    for (builder.pending_text_areas.items) |pending| {
-        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ta_widget = window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse continue;
+/// Render a single pending text input. A missing bounds or pool slot is
+/// a skip (the slot is seeded at builder time; absence means the seed
+/// itself failed this frame — capacity or OOM).
+fn renderTextInput(window: *Window, pending: *const Builder.PendingInput) !void {
+    const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
+    const input_widget = window.element_states.get(TextInputState, @as(u64, pending.layout_id.id)) orelse return;
 
-        const inset = pending.style.padding + pending.style.border_width;
-        // Compute inner_width from layout bounds when fill_width is true
-        const inner_width = if (pending.style.fill_width)
-            bounds.width - (inset * 2)
-        else
-            pending.inner_width;
-
-        ta_widget.bounds = .{
-            .x = bounds.x + inset,
-            .y = bounds.y + inset,
-            .width = inner_width,
-            .height = pending.inner_height,
-        };
-        ta_widget.style.text_color = render_bridge.colorToHsla(pending.style.text_color);
-        ta_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
-        ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
-        ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
-        ta_widget.setPlaceholder(pending.style.placeholder);
-        try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
+    // If disabled and currently focused, blur it
+    if (pending.style.disabled and input_widget.isFocused()) {
+        input_widget.blur();
     }
+
+    const inset = pending.style.padding + pending.style.border_width;
+    // Compute inner_width from layout bounds when fill_width is true
+    const inner_width = if (pending.style.fill_width)
+        bounds.width - (inset * 2)
+    else
+        pending.inner_width;
+    input_widget.bounds = .{
+        .x = bounds.x + inset,
+        .y = bounds.y + inset,
+        .width = inner_width,
+        .height = pending.inner_height,
+    };
+    input_widget.setPlaceholder(pending.style.placeholder);
+    // Use muted color for disabled inputs
+    input_widget.style.text_color = if (pending.style.disabled)
+        render_bridge.colorToHsla(pending.style.placeholder_color)
+    else
+        render_bridge.colorToHsla(pending.style.text_color);
+    input_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
+    input_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
+    input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
+    input_widget.secure = pending.style.secure;
+    try input_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
 }
 
-/// Render all pending code editors
-fn renderCodeEditors(window: *Window, builder: *const Builder) !void {
-    for (builder.pending_code_editors.items) |pending| {
-        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        const ce_widget = window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id)) orelse continue;
+/// Render a single pending text area.
+fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !void {
+    const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
+    const ta_widget = window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse return;
 
-        const inset = pending.style.padding + pending.style.border_width;
-        ce_widget.setBounds(.{
-            .x = bounds.x + inset,
-            .y = bounds.y + inset,
-            .width = pending.inner_width,
-            .height = pending.inner_height,
-        });
+    const inset = pending.style.padding + pending.style.border_width;
+    // Compute inner_width from layout bounds when fill_width is true
+    const inner_width = if (pending.style.fill_width)
+        bounds.width - (inset * 2)
+    else
+        pending.inner_width;
 
-        // Update code editor specific settings
-        ce_widget.show_line_numbers = pending.style.show_line_numbers;
-        ce_widget.gutter_width = pending.style.gutter_width;
-        ce_widget.tab_size = pending.style.tab_size;
-        ce_widget.use_hard_tabs = pending.style.use_hard_tabs;
+    ta_widget.bounds = .{
+        .x = bounds.x + inset,
+        .y = bounds.y + inset,
+        .width = inner_width,
+        .height = pending.inner_height,
+    };
+    ta_widget.style.text_color = render_bridge.colorToHsla(pending.style.text_color);
+    ta_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
+    ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
+    ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
+    ta_widget.setPlaceholder(pending.style.placeholder);
+    try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
+}
 
-        // Update style colors
-        ce_widget.style.text.text_color = render_bridge.colorToHsla(pending.style.text_color);
-        ce_widget.style.text.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
-        ce_widget.style.text.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
-        ce_widget.style.text.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
-        ce_widget.style.gutter_background = render_bridge.colorToHsla(pending.style.gutter_background);
-        ce_widget.style.line_number_color = render_bridge.colorToHsla(pending.style.line_number_color);
-        ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
-        ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
-        ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
+/// Render a single pending code editor.
+fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) !void {
+    const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
+    const ce_widget = window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id)) orelse return;
 
-        // Status bar settings
-        ce_widget.show_status_bar = pending.style.show_status_bar;
-        ce_widget.status_bar_height = pending.style.status_bar_height;
-        ce_widget.style.status_bar_background = render_bridge.colorToHsla(pending.style.status_bar_background);
-        ce_widget.style.status_bar_text_color = render_bridge.colorToHsla(pending.style.status_bar_text_color);
-        ce_widget.style.status_bar_separator_color = render_bridge.colorToHsla(pending.style.status_bar_separator_color);
-        ce_widget.language_mode = pending.style.language_mode;
-        ce_widget.encoding = pending.style.encoding;
+    const inset = pending.style.padding + pending.style.border_width;
+    ce_widget.setBounds(.{
+        .x = bounds.x + inset,
+        .y = bounds.y + inset,
+        .width = pending.inner_width,
+        .height = pending.inner_height,
+    });
 
-        ce_widget.setPlaceholder(pending.style.placeholder);
-        try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
-    }
+    // Update code editor specific settings
+    ce_widget.show_line_numbers = pending.style.show_line_numbers;
+    ce_widget.gutter_width = pending.style.gutter_width;
+    ce_widget.tab_size = pending.style.tab_size;
+    ce_widget.use_hard_tabs = pending.style.use_hard_tabs;
+
+    // Update style colors
+    ce_widget.style.text.text_color = render_bridge.colorToHsla(pending.style.text_color);
+    ce_widget.style.text.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
+    ce_widget.style.text.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
+    ce_widget.style.text.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
+    ce_widget.style.gutter_background = render_bridge.colorToHsla(pending.style.gutter_background);
+    ce_widget.style.line_number_color = render_bridge.colorToHsla(pending.style.line_number_color);
+    ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
+    ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
+    ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
+
+    // Status bar settings
+    ce_widget.show_status_bar = pending.style.show_status_bar;
+    ce_widget.status_bar_height = pending.style.status_bar_height;
+    ce_widget.style.status_bar_background = render_bridge.colorToHsla(pending.style.status_bar_background);
+    ce_widget.style.status_bar_text_color = render_bridge.colorToHsla(pending.style.status_bar_text_color);
+    ce_widget.style.status_bar_separator_color = render_bridge.colorToHsla(pending.style.status_bar_separator_color);
+    ce_widget.language_mode = pending.style.language_mode;
+    ce_widget.encoding = pending.style.encoding;
+
+    ce_widget.setPlaceholder(pending.style.placeholder);
+    try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
 }
 
 /// Update IME cursor position for focused text widget.

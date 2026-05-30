@@ -13,11 +13,12 @@ const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;
 const Svg = @import("svg.zig").Svg;
 const Icons = @import("svg.zig").Icons;
-const layout_mod = @import("../layout/layout.zig");
-const LayoutId = layout_mod.LayoutId;
 
 pub const Checkbox = struct {
-    id: []const u8,
+    // PR 11b.2b — presentational components require no id. When null, the
+    // box gets a stable parent-scoped auto id (PR 11b.2a). Pass an explicit
+    // id only when you need to address this checkbox from outside its render.
+    id: ?[]const u8 = null,
     checked: bool,
     label: ?[]const u8 = null,
 
@@ -39,8 +40,8 @@ pub const Checkbox = struct {
     accessible_name: ?[]const u8 = null, // Override label for screen readers
     accessible_description: ?[]const u8 = null,
 
-    pub fn render(self: Checkbox, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: Checkbox, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Resolve font size: explicit override OR theme base
         const font_size = self.font_size orelse t.font_size_base;
@@ -54,10 +55,10 @@ pub const Checkbox = struct {
         const label_col = self.label_color orelse t.text;
         const radius = self.corner_radius orelse t.radius_sm;
 
-        const layout_id = LayoutId.fromString(self.id);
+        const layout_id = cx.idFor(self.id);
 
         // Push accessible element (role: checkbox)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .checkbox,
             .name = self.accessible_name orelse self.label orelse self.id,
@@ -66,10 +67,10 @@ pub const Checkbox = struct {
                 .checked = self.checked,
             },
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
         // Outer container - clickable row
-        b.boxWithId(self.id, .{
+        cx.boxWithLayoutId(layout_id, .{
             .direction = .row,
             .gap = 8,
             .alignment = .{ .cross = .center },
@@ -103,8 +104,8 @@ const CheckboxBox = struct {
     checkmark_color: Color,
     corner_radius: f32,
 
-    pub fn render(self: CheckboxBox, b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: CheckboxBox, cx: *ui.Cx) void {
+        cx.box(.{
             .width = self.size,
             .height = self.size,
             .background = if (self.checked) self.checked_background else self.unchecked_background,
@@ -123,9 +124,9 @@ const Checkmark = struct {
     color: Color,
     size: f32,
 
-    pub fn render(self: Checkmark, b: *ui.Builder) void {
+    pub fn render(self: Checkmark, cx: *ui.Cx) void {
         if (self.visible) {
-            b.box(.{
+            cx.box(.{
                 .alignment = .{ .main = .center, .cross = .center },
             }, .{
                 Svg{ .path = Icons.check, .size = self.size * 0.7, .color = self.color },
@@ -139,9 +140,9 @@ const CheckboxLabel = struct {
     color: Color,
     font_size: u16,
 
-    pub fn render(self: CheckboxLabel, b: *ui.Builder) void {
+    pub fn render(self: CheckboxLabel, cx: *ui.Cx) void {
         if (self.label) |lbl| {
-            b.box(.{}, .{
+            cx.box(.{}, .{
                 ui.text(lbl, .{ .color = self.color, .size = self.font_size }),
             });
         }

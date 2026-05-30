@@ -209,6 +209,22 @@ pub const Builder = struct {
     pub const MAX_PENDING_CODE_EDITORS = 32;
     pub const MAX_PENDING_SCROLLS = 64;
     pub const MAX_PENDING_CANVAS = canvas_mod.MAX_PENDING_CANVAS;
+    // PR 11b.3a — the unified text-widget control queue holds one
+    // `{ kind, index }` record per text widget, across all three
+    // kinds, so its cap is the sum of the three data-plane pools.
+    pub const MAX_PENDING_TEXT_WIDGETS =
+        MAX_PENDING_INPUTS + MAX_PENDING_TEXT_AREAS + MAX_PENDING_CODE_EDITORS;
+    // PR 11b.2a — a single parent cannot hold more auto-id'd children than
+    // the layout engine's per-frame element cap, so the sibling index used
+    // to derive a parent-scoped auto id is bounded by it. Asserted in
+    // `generateId` so a runaway loop fails fast rather than silently
+    // wrapping the `u32` counter.
+    pub const MAX_AUTO_SIBLINGS = layout_mod.engine.MAX_ELEMENTS_PER_FRAME;
+
+    // PR 11b.2a — fixed seed string mixed into every auto id's hash so the
+    // auto-id hash domain can't collapse onto a parent's own layout id (which
+    // is `hashString(parent_string, grandparent_id)` — a different seed path).
+    const AUTO_ID_SEED = "\x00auto";
 
     allocator: std.mem.Allocator,
     layout: *LayoutEngine,
@@ -245,6 +261,20 @@ pub const Builder = struct {
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
     pending_code_editors: std.ArrayList(PendingCodeEditor),
+
+    /// PR 11b.3a — unified control-plane queue for the post-layout
+    /// text-widget render pass. The three pools above are the data
+    /// plane (right-sized, typed); this queue records one tiny
+    /// `{ kind, index }` per widget in tree order so the render pass
+    /// can replay all three kinds interleaved in the order they were
+    /// built. Tree-order replay is strictly more correct than the
+    /// old grouped (inputs, then areas, then editors) order when
+    /// widgets of different kinds overlap. A `{ kind, index }` record
+    /// (rather than a tagged union over the style structs) keeps each
+    /// slot at 8 bytes instead of sizing every slot to the largest
+    /// variant (`CodeEditorStyle`) — control plane / data plane split,
+    /// CLAUDE.md §8.
+    pending_text_widgets: std.ArrayList(PendingTextWidget),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
     pending_canvas: std.ArrayListUnmanaged(canvas_mod.PendingCanvas),
 
@@ -261,7 +291,21 @@ pub const Builder = struct {
     /// frame-render boundary that used to free the duped key.
     active_scroll_drag_id: ?u32 = null,
 
-    const PendingInput = struct {
+    /// PR 11b.3a — the kind discriminant for the unified text-widget
+    /// control queue. Mirrors the three typed data-plane pools; the
+    /// render pass switches on it at comptime (no runtime trait
+    /// objects) to pick the matching pool and per-kind render path.
+    pub const TextWidgetKind = enum { input, text_area, code_editor };
+
+    /// PR 11b.3a — one control-plane record: which pool, and which
+    /// slot within it. 8 bytes; the heavy per-widget state stays in
+    /// the typed pools.
+    pub const PendingTextWidget = struct {
+        kind: TextWidgetKind,
+        index: u32,
+    };
+
+    pub const PendingInput = struct {
         id: []const u8,
         layout_id: LayoutId,
         style: InputStyle,
@@ -270,7 +314,7 @@ pub const Builder = struct {
         on_blur_handler: ?HandlerRef = null,
     };
 
-    const PendingTextArea = struct {
+    pub const PendingTextArea = struct {
         id: []const u8,
         layout_id: LayoutId,
         style: TextAreaStyle,
@@ -312,6 +356,7 @@ pub const Builder = struct {
             .pending_scrolls = .empty,
             .pending_text_areas = .empty,
             .pending_code_editors = .empty,
+            .pending_text_widgets = .empty,
             .pending_canvas = .empty,
             .pending_scrolls_by_layout_id = .{},
             .active_scroll_drag_id = null,
@@ -322,9 +367,29 @@ pub const Builder = struct {
         self.pending_inputs.deinit(self.allocator);
         self.pending_text_areas.deinit(self.allocator);
         self.pending_code_editors.deinit(self.allocator);
+        self.pending_text_widgets.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
         self.pending_canvas.deinit(self.allocator);
         self.pending_scrolls_by_layout_id.deinit(self.allocator);
+    }
+
+    // =========================================================================
+    // Text-widget control queue (PR 11b.3a)
+    // =========================================================================
+
+    /// Record a `{ kind, index }` control-plane entry pointing at the
+    /// slot a `renderInput` / `renderTextArea` / `renderCodeEditor`
+    /// just appended to its typed data-plane pool. Callers must invoke
+    /// this only after confirming the data-plane append landed, so the
+    /// recorded index always resolves to a live slot during the
+    /// post-layout render pass.
+    fn enqueuePendingTextWidget(self: *Self, kind: TextWidgetKind, index: usize) void {
+        std.debug.assert(index <= std.math.maxInt(u32));
+        std.debug.assert(self.pending_text_widgets.items.len < MAX_PENDING_TEXT_WIDGETS);
+        self.pending_text_widgets.append(self.allocator, .{
+            .kind = kind,
+            .index = @intCast(index),
+        }) catch {};
     }
 
     // =========================================================================
@@ -928,16 +993,12 @@ pub const Builder = struct {
     // =========================================================================
     // Component Integration
     // =========================================================================
-
-    /// Render any component (struct with `render` method)
-    pub fn with(self: *Self, component: anytype) void {
-        const T = @TypeOf(component);
-        if (@typeInfo(T) == .@"struct" and @hasDecl(T, "render")) {
-            component.render(self);
-        } else {
-            @compileError("with() requires a struct with a `render` method");
-        }
-    }
+    //
+    // `Builder.with` was removed in PR 11b.1. It passed `*Builder` to a
+    // component's `render`, but components now author against `*Cx`, so
+    // the only correct entry point is `Cx.with` (which routes through the
+    // `*Cx`-aware dispatch). All former `b.with(...)` call sites migrated
+    // to `cx.with(...)`.
 
     // =========================================================================
     // Conditionals
@@ -1265,28 +1326,28 @@ pub const Builder = struct {
             return;
         }
 
-        // Check for components
-        // Check for components (structs with render method)
+        // Check for components (structs with a `render` method). Since
+        // PR 11b.1 there is exactly one component signature:
+        // `render(self, *Cx)`. The old `render(self, *Builder)` branch is
+        // gone, so authors have a single way to write a component.
         if (@hasDecl(T, "render")) {
             const render_fn = @field(T, "render");
-            const RenderFnType = @TypeOf(render_fn);
-            const fn_info = @typeInfo(RenderFnType).@"fn";
+            const fn_info = @typeInfo(@TypeOf(render_fn)).@"fn";
 
-            // Check if render expects *Cx (new pattern) or *Builder (old pattern)
             if (fn_info.params.len >= 2) {
-                const SecondParam = fn_info.params[1].type orelse *Self;
+                const CxType = fn_info.params[1].type orelse
+                    @compileError("component `render` must take a typed `*Cx` second parameter");
 
-                if (SecondParam == *Self) {
-                    // Old pattern: render(self, *Builder)
-                    child.render(self);
-                } else if (self.cx_ptr) |cx_raw| {
-                    // New pattern: render(self, *Cx) - cast and call
-                    const CxType = SecondParam;
-                    const cx: CxType = @ptrCast(@alignCast(cx_raw));
-                    child.render(cx);
-                } else {
-                    // Cx not available, skip
-                }
+                // The builder always has a bound `cx_ptr` while rendering
+                // — it is wired at construction in `app.zig` and
+                // `runtime/window_context.zig`. A null here means a
+                // component is being processed outside a real frame,
+                // which is a programming error, not a recoverable state
+                // (CLAUDE.md §11, §17: assert the invariant, never
+                // silently drop the element).
+                const cx_raw = self.cx_ptr orelse unreachable;
+                const cx: CxType = @ptrCast(@alignCast(cx_raw));
+                child.render(cx);
             }
             return;
         }
@@ -1402,6 +1463,7 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Store for later text rendering with inner dimensions
+        const input_index = self.pending_inputs.items.len;
         self.pending_inputs.append(self.allocator, .{
             .id = inp.id,
             .layout_id = layout_id,
@@ -1410,6 +1472,12 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = inp.style.on_blur_handler,
         }) catch {};
+        // Mirror into the unified control queue only when the data-plane
+        // append landed, so tree-order replay never indexes a slot that
+        // failed to allocate (PR 11b.3a).
+        if (self.pending_inputs.items.len > input_index) {
+            self.enqueuePendingTextWidget(.input, input_index);
+        }
 
         // Register focus with FocusManager (only if not disabled).
         // PR 4: also attach the widget's `Focusable` vtable so the
@@ -1505,6 +1573,7 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Store for later text rendering
+        const text_area_index = self.pending_text_areas.items.len;
         self.pending_text_areas.append(self.allocator, .{
             .id = ta.id,
             .layout_id = layout_id,
@@ -1513,6 +1582,11 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = ta.style.on_blur_handler,
         }) catch {};
+        // Mirror into the unified control queue only on a successful
+        // data-plane append (PR 11b.3a).
+        if (self.pending_text_areas.items.len > text_area_index) {
+            self.enqueuePendingTextWidget(.text_area, text_area_index);
+        }
 
         // Register focus with FocusManager. PR 4: attach the widget's
         // `Focusable` vtable so the focus manager can drive the
@@ -1603,6 +1677,7 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Store for later rendering
+        const code_editor_index = self.pending_code_editors.items.len;
         self.pending_code_editors.append(self.allocator, .{
             .id = ce.id,
             .layout_id = layout_id,
@@ -1611,6 +1686,11 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = ce.style.on_blur_handler,
         }) catch {};
+        // Mirror into the unified control queue only on a successful
+        // data-plane append (PR 11b.3a).
+        if (self.pending_code_editors.items.len > code_editor_index) {
+            self.enqueuePendingTextWidget(.code_editor, code_editor_index);
+        }
 
         // Register focus with FocusManager. PR 4: attach the widget's
         // `Focusable` vtable — same pattern as `renderInput` /
@@ -1845,8 +1925,148 @@ pub const Builder = struct {
     // Internal: ID Generation
     // =========================================================================
 
+    /// Generate a stable, parent-scoped layout id for an element the author
+    /// did not name explicitly (PR 11b.2a).
+    ///
+    /// The old implementation was a flat per-frame counter
+    /// (`LayoutId.fromInt(++id_counter)`). That had two footguns: (1) it was
+    /// global, so inserting or removing *any* element shifted the auto-id of
+    /// *every* later element on reflow, so hover / focus / animation state
+    /// jumped to the wrong element; and (2) components that fell back to a
+    /// content string (e.g. a `Button` deriving `id = self.label`) collided
+    /// when two same-content siblings existed.
+    ///
+    /// The new id is `hash(parent_layout_id, sibling_index)` via
+    /// `LayoutId.childIndexed`. The parent is the currently-open element,
+    /// already on the dispatch stack at this point (this runs *before* the
+    /// new element pushes its own node), so reading it is free. The sibling
+    /// index is the parent dispatch node's `auto_child_counter`, which counts
+    /// only `generateId` calls under that parent. Two consequences:
+    ///   - Reflow in a *sibling* subtree no longer perturbs these ids (the
+    ///     blast radius of an insert/remove is now one parent's children).
+    ///   - Explicit-id siblings don't bump the counter, so adding a named
+    ///     element next to auto-id'd ones leaves their indices untouched.
     pub fn generateId(self: *Self) LayoutId {
+        // The seed must stay non-empty or the auto-id hash domain collapses
+        // onto the parent id; this is a critical, surprising invariant.
+        comptime std.debug.assert(AUTO_ID_SEED.len > 0);
+
+        const parent_node_id = self.dispatch.currentNode();
+        if (self.dispatch.getNode(parent_node_id)) |parent| {
+            const sibling_index = parent.auto_child_counter;
+            std.debug.assert(sibling_index < MAX_AUTO_SIBLINGS);
+            parent.auto_child_counter += 1;
+            // Parents always reach here via `boxWithLayoutIdImpl`, which calls
+            // `setLayoutId` immediately after `pushNode` and before any child
+            // renders, so `layout_id` is populated; `orelse 0` is defensive.
+            const parent_layout_id = parent.layout_id orelse 0;
+            return LayoutId.childIndexed(parent_layout_id, AUTO_ID_SEED, sibling_index);
+        }
+
+        // Root scope: no element is open yet (e.g. the user's top-level box has
+        // no explicit id). Fall back to the per-frame flat counter, still mixed
+        // through `childIndexed` so the hash domain matches the nested case.
         self.id_counter += 1;
-        return LayoutId.fromInt(self.id_counter);
+        std.debug.assert(self.id_counter < MAX_AUTO_SIBLINGS);
+        return LayoutId.childIndexed(0, AUTO_ID_SEED, self.id_counter);
     }
 };
+
+// PR 11b.2a — hierarchical auto-id tests.
+//
+// Goal: prove the three properties the parent-scoped scheme buys us, using a
+// `Builder` driven over a real `DispatchTree` (the only collaborator
+// `generateId` reads). Methodology: open parent nodes by hand on the dispatch
+// stack — exactly what `boxWithLayoutIdImpl` does at element-open — then call
+// `generateId` and compare the resulting hashes.
+fn testBuilderHarness(
+    allocator: std.mem.Allocator,
+    engine: *LayoutEngine,
+    scene_ptr: *Scene,
+    tree: *DispatchTree,
+) Builder {
+    engine.* = LayoutEngine.init(allocator);
+    scene_ptr.* = Scene.init(allocator);
+    tree.* = DispatchTree.init(allocator);
+    return Builder.init(allocator, engine, scene_ptr, tree);
+}
+
+test "generateId: same-parent siblings never collide" {
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    // Open a parent, as `boxWithLayoutIdImpl` does (pushNode → setLayoutId).
+    _ = tree.pushNode();
+    tree.setLayoutId(LayoutId.fromString("parent").id);
+
+    // Two auto-id'd children with identical content still get distinct ids —
+    // the flat-counter scheme relied on global uniqueness; the parent-scoped
+    // scheme gets it from the per-parent sibling index instead.
+    const first = builder.generateId();
+    const second = builder.generateId();
+    try std.testing.expect(first.id != second.id);
+}
+
+test "generateId: stable across frames for the same tree shape" {
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    const parent_hash = LayoutId.fromString("parent").id;
+
+    // Frame 1.
+    _ = tree.pushNode();
+    tree.setLayoutId(parent_hash);
+    const frame1_a = builder.generateId();
+    const frame1_b = builder.generateId();
+    tree.popNode();
+
+    // Frame 2: same tree shape ⇒ identical auto-ids. This is what keeps
+    // hover / focus / animation state pinned to the same element across
+    // frames; the flat counter only held this by luck of unchanged order.
+    tree.reset();
+    _ = tree.pushNode();
+    tree.setLayoutId(parent_hash);
+    const frame2_a = builder.generateId();
+    const frame2_b = builder.generateId();
+
+    try std.testing.expectEqual(frame1_a.id, frame2_a.id);
+    try std.testing.expectEqual(frame1_b.id, frame2_b.id);
+}
+
+test "generateId: same sibling index under different parents does not collide" {
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    // First child (index 0) of parent A.
+    _ = tree.pushNode();
+    tree.setLayoutId(LayoutId.fromString("parent-a").id);
+    const a0 = builder.generateId();
+    tree.popNode();
+
+    // First child (index 0) of parent B. Same sibling index, different parent
+    // ⇒ different hash, because the parent's layout id seeds the hash.
+    _ = tree.pushNode();
+    tree.setLayoutId(LayoutId.fromString("parent-b").id);
+    const b0 = builder.generateId();
+    tree.popNode();
+
+    try std.testing.expect(a0.id != b0.id);
+}

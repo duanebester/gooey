@@ -598,11 +598,79 @@ pub const Cx = struct {
     }
 
     /// Render an element tree. Works with any renderable — `ui.*`
-    /// primitives, layout containers, components whose `render`
-    /// accepts `*Cx` *or* `*ui.Builder`. Auto-dispatch picks the right
-    /// signature so callers don't reach for the builder manually.
+    /// primitives, layout containers, and components whose `render`
+    /// accepts `*Cx`.
     pub fn render(self: *Self, element: anytype) void {
         self._builder.processChildren(element);
+    }
+
+    // =========================================================================
+    // Drawing primitives (PR 11b.1)
+    //
+    // Components author against `*Cx`; these forward the imperative
+    // drawing surface to the wrapped `Builder` so a component body reads
+    // `cx.box(...)` rather than reaching through `cx.builder()`. Kept as
+    // thin one-liners so the call is inlined — no extra indirection vs.
+    // calling `Builder` directly (CLAUDE.md §10: no redundant aliases).
+    // =========================================================================
+
+    /// Open a box and process its children. Mirrors `Builder.box`.
+    pub fn box(self: *Self, props: ui_mod.Box, children: anytype) void {
+        self._builder.box(props, children);
+    }
+
+    /// Box with an explicit string id. Mirrors `Builder.boxWithId`.
+    pub fn boxWithId(self: *Self, id: ?[]const u8, props: ui_mod.Box, children: anytype) void {
+        self._builder.boxWithId(id, props, children);
+    }
+
+    /// Resolve an element id *once* (PR 11b.2b). An explicit string hashes
+    /// through `LayoutId.fromString`; a null id falls back to the
+    /// parent-scoped auto id (`Builder.generateId`, PR 11b.2a).
+    ///
+    /// This kills the component-author double-hash: ~20 components used to
+    /// compute `LayoutId.fromString(self.id)` for the accessibility call
+    /// *and* hand `self.id` to `cx.boxWithId(self.id, ...)`, hashing the
+    /// same string twice as two spellings of one identity. The pattern is
+    /// now `const layout_id = cx.idFor(self.id);` once, reused by both the
+    /// `cx.accessible(.{ .layout_id = layout_id, ... })` call and
+    /// `cx.boxWithLayoutId(layout_id, ...)`.
+    ///
+    /// Auto-id timing matches `boxWithId`: when `id` is null this calls
+    /// `generateId` while the parent is still the open element, so the
+    /// resolved id is the same one a later `boxWithLayoutId` would carry.
+    pub fn idFor(self: *Self, id: ?[]const u8) LayoutId {
+        if (id) |string_id| return LayoutId.fromString(string_id);
+        return self._builder.generateId();
+    }
+
+    /// Open a box with a pre-resolved `LayoutId`. Mirrors
+    /// `Builder.boxWithLayoutId`. Pair with `idFor` so a component hashes
+    /// its id exactly once (PR 11b.2b).
+    pub fn boxWithLayoutId(self: *Self, layout_id: LayoutId, props: ui_mod.Box, children: anytype) void {
+        self._builder.boxWithLayoutId(layout_id, props, children);
+    }
+
+    /// Render a single child component immediately. Unlike
+    /// `Builder.with` (which passes `*Builder`), this routes through the
+    /// `*Cx`-aware dispatch so the child's `render(self, *Cx)` is
+    /// invoked. Retains `Builder.with`'s compile-time guard so a
+    /// non-renderable argument fails the build rather than silently
+    /// no-ops (CLAUDE.md §17: errors are not silently discarded).
+    pub fn with(self: *Self, component: anytype) void {
+        const Component = @TypeOf(component);
+        if (@typeInfo(Component) == .@"struct" and @hasDecl(Component, "render")) {
+            self._builder.processChildren(component);
+        } else {
+            @compileError("with() requires a struct with a `render` method");
+        }
+    }
+
+    /// The owning `Window`, or null if the builder has none bound.
+    /// Mirrors `Builder.getGooey`; prefer `cx.window()` when the window
+    /// is known to be present (it asserts non-null).
+    pub fn getGooey(self: *Self) ?*Window {
+        return self._builder.getGooey();
     }
 
     // =========================================================================

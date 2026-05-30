@@ -96,8 +96,8 @@ pub fn Modal(comptime ChildType: type) type {
 
         const Self = @This();
 
-        pub fn render(self: Self, b: *ui.Builder) void {
-            const t = b.theme();
+        pub fn render(self: Self, cx: *ui.Cx) void {
+            const t = cx.theme();
 
             // Resolve colors: explicit value OR theme default
             const backdrop = self.backdrop_color orelse Color.rgba(0, 0, 0, 0.5);
@@ -110,7 +110,7 @@ pub fn Modal(comptime ChildType: type) type {
                     break :blk if (self.is_open) AnimationHandle.complete else AnimationHandle.idle;
                 }
 
-                const g = b.getGooey() orelse {
+                const g = cx.getGooey() orelse {
                     // Fallback if no Gooey available
                     break :blk if (self.is_open) AnimationHandle.complete else AnimationHandle.idle;
                 };
@@ -128,23 +128,27 @@ pub fn Modal(comptime ChildType: type) type {
             // Only render when open or animating out
             if (!self.is_open and !anim.running) return;
 
-            const layout_id = LayoutId.fromString(self.id);
+            // Resolve identity once (PR 11b.2b) and thread it into the
+            // overlay box below, so the dialog id is hashed exactly once.
+            // `self.id` stays required: Modal retains animation + dispatch
+            // state keyed by it.
+            const layout_id = cx.idFor(self.id);
 
             // Push accessible element (role: dialog)
-            const a11y_pushed = b.accessible(.{
+            const a11y_pushed = cx.accessible(.{
                 .layout_id = layout_id,
                 .role = .dialog,
                 .name = self.accessible_name orelse self.id,
                 .description = self.accessible_description,
             });
-            defer if (a11y_pushed) b.accessibleEnd();
+            defer if (a11y_pushed) cx.accessibleEnd();
 
             // Calculate animated values
             const progress = if (self.is_open) anim.progress else 1.0 - anim.progress;
 
             // Render the modal structure
-            b.with(ModalOverlay(ChildType){
-                .id = self.id,
+            cx.with(ModalOverlay(ChildType){
+                .layout_id = layout_id,
                 .progress = progress,
                 .backdrop_color = backdrop,
                 .on_backdrop_click = if (self.close_on_backdrop) self.on_close else null,
@@ -162,7 +166,7 @@ pub fn Modal(comptime ChildType: type) type {
 /// Internal: Full-viewport overlay with backdrop
 fn ModalOverlay(comptime ChildType: type) type {
     return struct {
-        id: []const u8,
+        layout_id: LayoutId,
         progress: f32,
         backdrop_color: Color,
         on_backdrop_click: ?HandlerRef,
@@ -173,9 +177,10 @@ fn ModalOverlay(comptime ChildType: type) type {
         corner_radius: f32,
         shadow: ?ShadowConfig,
 
-        pub fn render(self: @This(), b: *ui.Builder) void {
-            // Full viewport overlay
-            b.boxWithId(self.id, .{
+        pub fn render(self: @This(), cx: *ui.Cx) void {
+            // Full viewport overlay. Uses the dialog's pre-resolved layout id
+            // (PR 11b.2b) so the overlay box and the a11y node share one hash.
+            cx.boxWithLayoutId(self.layout_id, .{
                 // Full viewport via floating with no parent attachment
                 .floating = .{
                     .attach_to_parent = false,
@@ -217,14 +222,14 @@ fn ModalContent(comptime ChildType: type) type {
         corner_radius: f32,
         shadow: ?ShadowConfig,
 
-        pub fn render(self: @This(), b: *ui.Builder) void {
+        pub fn render(self: @This(), cx: *ui.Cx) void {
             // Scale animation: starts at 95% and grows to 100%
             const scale = animation_mod.lerp(0.95, 1.0, self.progress);
 
             // Calculate scaled dimensions (if max_width is set)
             const scaled_max_width: ?f32 = if (self.max_width) |mw| mw * scale else null;
 
-            b.box(.{
+            cx.box(.{
                 .max_width = scaled_max_width,
                 .padding = .{ .all = self.padding },
                 .background = self.background,

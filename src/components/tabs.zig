@@ -28,8 +28,6 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const layout_mod = @import("../layout/layout.zig");
-const LayoutId = layout_mod.LayoutId;
 
 /// A single tab button. Can be used standalone or composed into a tab bar.
 pub const Tab = struct {
@@ -66,8 +64,8 @@ pub const Tab = struct {
         segmented,
     };
 
-    pub fn render(self: Tab, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: Tab, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Resolve font size: explicit override OR theme base
         const font_size = self.font_size orelse t.font_size_base;
@@ -80,10 +78,12 @@ pub const Tab = struct {
         const inactive_text = self.inactive_text_color orelse t.text;
         const radius = self.corner_radius orelse t.radius_md;
 
-        const layout_id = LayoutId.fromString(self.label);
+        // Resolve identity once for both a11y and the box (PR 11b.2b); the
+        // label was previously hashed for a11y while the box auto-id'd.
+        const layout_id = cx.idFor(self.label);
 
         // Push accessible element (role: tab)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .tab,
             .name = self.accessible_name orelse self.label,
@@ -93,7 +93,7 @@ pub const Tab = struct {
             .pos_in_set = self.pos_in_set,
             .set_size = self.set_size,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
         const bg = if (self.is_active) active_bg else inactive_bg;
         const text_color = if (self.is_active) active_text else inactive_text;
@@ -119,7 +119,7 @@ pub const Tab = struct {
             else => bg,
         };
 
-        b.box(.{
+        cx.boxWithLayoutId(layout_id, .{
             .padding = .{ .symmetric = .{ .x = self.padding_x, .y = self.padding_y } },
             .background = actual_bg,
             .hover_background = hover_bg,
@@ -148,7 +148,9 @@ pub const Tab = struct {
 /// A tab bar container that renders multiple tabs with simple fn callback.
 /// For more control (especially with Cx handlers), render Tab components directly.
 pub const TabBar = struct {
-    id: []const u8 = "tabs",
+    // PR 11b.2b — presentational; null ⇒ stable parent-scoped auto id
+    // (PR 11b.2a). The old `"tabs"` default collided across tab bars.
+    id: ?[]const u8 = null,
     tabs: []const []const u8,
     active: usize,
 
@@ -175,8 +177,8 @@ pub const TabBar = struct {
     // Accessibility
     accessible_name: ?[]const u8 = null,
 
-    pub fn render(self: TabBar, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: TabBar, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Resolve font size: explicit override OR theme base
         const font_size = self.font_size orelse t.font_size_base;
@@ -205,17 +207,17 @@ pub const TabBar = struct {
             else => null,
         };
 
-        const layout_id = LayoutId.fromString(self.id);
+        const layout_id = cx.idFor(self.id);
 
         // Push accessible element (role: tablist)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .tablist,
             .name = self.accessible_name orelse self.id,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.boxWithId(self.id, .{
+        cx.boxWithLayoutId(layout_id, .{
             .direction = .row,
             .gap = self.gap,
             .background = container_bg,
@@ -262,9 +264,9 @@ const TabBarItems = struct {
     grow: bool,
     set_size: u16,
 
-    pub fn render(self: TabBarItems, b: *ui.Builder) void {
+    pub fn render(self: TabBarItems, cx: *ui.Cx) void {
         for (self.tabs, 0..) |label, i| {
-            b.with(TabBarItem{
+            cx.with(TabBarItem{
                 .label = label,
                 .index = i,
                 .is_active = i == self.active,
@@ -306,7 +308,7 @@ const TabBarItem = struct {
     pos_in_set: u16,
     set_size: u16,
 
-    pub fn render(self: TabBarItem, b: *ui.Builder) void {
+    pub fn render(self: TabBarItem, cx: *ui.Cx) void {
         const bg = if (self.is_active) self.active_background else self.inactive_background;
         const text_color = if (self.is_active) self.active_text_color else self.inactive_text_color;
 
@@ -350,10 +352,11 @@ const TabBarItem = struct {
             break :blk ClickWrapper.call;
         } else null;
 
-        const layout_id = LayoutId.fromString(self.label);
+        // Resolve identity once for both a11y and the box (PR 11b.2b).
+        const layout_id = cx.idFor(self.label);
 
         // Push accessible element (role: tab)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .tab,
             .name = self.label,
@@ -363,9 +366,9 @@ const TabBarItem = struct {
             .pos_in_set = self.pos_in_set,
             .set_size = self.set_size,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.box(.{
+        cx.boxWithLayoutId(layout_id, .{
             .padding = .{ .symmetric = .{ .x = self.padding_x, .y = self.padding_y } },
             .background = actual_bg,
             .hover_background = hover_bg,

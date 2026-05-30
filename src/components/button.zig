@@ -11,8 +11,6 @@ const Color = ui.Color;
 const Theme = ui.Theme;
 const Box = ui.Box;
 const HandlerRef = ui.HandlerRef;
-const layout_mod = @import("../layout/layout.zig");
-const LayoutId = layout_mod.LayoutId;
 
 pub const Button = struct {
     label: []const u8,
@@ -63,8 +61,8 @@ pub const Button = struct {
         }
     };
 
-    pub fn render(self: Button, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: Button, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Get theme-based colors for variant
         const variant_colors = self.getVariantColors(t);
@@ -84,12 +82,16 @@ pub const Button = struct {
         const on_click = if (self.enabled) self.on_click else null;
         const on_click_handler = if (self.enabled) self.on_click_handler else null;
 
-        // Use explicit ID or derive from label
-        const id = self.id orelse self.label;
-        const layout_id = LayoutId.fromString(id);
+        // Resolve identity once (PR 11b.2b). An explicit id hashes through
+        // `idFor`; a null id now falls back to the parent-scoped auto id
+        // (PR 11b.2a) rather than the label. The old `self.id orelse
+        // self.label` fallback made two same-label buttons collide and
+        // share hover/press state — the exact footgun PR 11b.2 set out to
+        // kill. Positional auto-ids keep sibling buttons distinct.
+        const layout_id = cx.idFor(self.id);
 
         // Push accessible element (role: button)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .button,
             .name = self.accessible_name orelse self.label,
@@ -98,9 +100,9 @@ pub const Button = struct {
                 .disabled = !self.enabled,
             },
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.boxWithId(id, .{
+        cx.boxWithLayoutId(layout_id, .{
             .padding = self.size.padding(),
             .background = final_bg,
             .hover_background = final_hover,
