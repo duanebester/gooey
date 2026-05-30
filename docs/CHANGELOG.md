@@ -5,6 +5,32 @@ live in `docs/cleanup-implementation-plan.md`; this file is the
 migration index callers reach for when upgrading across a breaking
 change.
 
+## 0.2.1 — 2026-05-30
+
+Non-breaking follow-up to the 0.2.0 architectural cleanup. No public
+surface changes; existing 0.2.0 callers upgrade without edits.
+
+### Added
+
+- **Todo app example**, now the README headline example.
+- **Wayland touch events** support (contributed by @robert7k).
+- Linux examples wired into the build system (contributed by @robert7k).
+- Benchmark suites for animation, element-states, and accessibility.
+
+### Changed
+
+- **PR 11b — `Cx` unification**: `Builder` collapsed into `Cx`, with
+  hierarchical auto-ids, id dedup, and unified text-widget paint.
+
+### Fixed
+
+- Wayland touch cases adapted to the post-cleanup window handle.
+- Bench regression gate made robust to measurement noise: records
+  best-of-N min per op, gates on min with mean fallback, and treats
+  sub-floor blowups as a multiple rather than a fixed-ns delta.
+- Bench baseline resolved from the PR base branch, falling back to
+  `main`.
+
 ## 0.2.0 — 2026-05-29 (architectural cleanup: `App`/`Window`/`Cx` split, `root.zig` slim)
 
 First release cutting the GPUI-inspired architectural cleanup (cleanup
