@@ -391,7 +391,7 @@ jobs:
           FAILED=0
           : > bench-report.txt
 
-          for module in core layout context text; do
+          for module in core layout context text scene animation element-states accessibility; do
             BASELINE=$(ls baseline/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
             CURRENT=$(ls current/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
 

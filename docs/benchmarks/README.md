@@ -18,12 +18,16 @@ capture date:
 
 Modules captured:
 
-| File                                               | Source                       | Entries |
-| -------------------------------------------------- | ---------------------------- | ------- |
-| `macos-aarch64-layout-benchmarks-04-23-2026.json`  | `src/layout/benchmarks.zig`  | 24      |
-| `macos-aarch64-context-benchmarks-04-23-2026.json` | `src/context/benchmarks.zig` | 49      |
-| `macos-aarch64-core-benchmarks-04-23-2026.json`    | `src/core/benchmarks.zig`    | 59      |
-| `macos-aarch64-text-benchmarks-04-23-2026.json`    | `src/text/benchmarks.zig`    | 40      |
+| File                                                      | Source                                      | Entries |
+| --------------------------------------------------------- | ------------------------------------------- | ------- |
+| `macos-aarch64-layout-benchmarks-04-23-2026.json`         | `src/layout/benchmarks.zig`                 | 24      |
+| `macos-aarch64-context-benchmarks-04-23-2026.json`        | `src/context/benchmarks.zig`                | 49      |
+| `macos-aarch64-core-benchmarks-04-23-2026.json`           | `src/core/benchmarks.zig`                   | 59      |
+| `macos-aarch64-text-benchmarks-04-23-2026.json`           | `src/text/benchmarks.zig`                   | 40      |
+| `macos-aarch64-scene-benchmarks-05-30-2026.json`          | `src/scene/benchmarks.zig`                  | 23      |
+| `macos-aarch64-animation-benchmarks-05-30-2026.json`      | `src/animation/benchmarks.zig`              | 9       |
+| `macos-aarch64-element-states-benchmarks-05-30-2026.json` | `src/context/element_states_benchmarks.zig` | 8       |
+| `macos-aarch64-accessibility-benchmarks-05-30-2026.json`  | `src/accessibility/benchmarks.zig`          | 7       |
 
 Each entry carries `operation_count`, `total_time_ns`, `iterations`,
 `avg_time_ms`, `time_per_op_ns`, and (where measured) `p50_per_op_ns` /
@@ -39,9 +43,10 @@ even when the average is steady.
 zig build bench-all -Dbench-json-dir=docs/benchmarks
 ```
 
-Individual suites (`bench`, `bench-context`, `bench-core`, `bench-text`)
-accept the same `-Dbench-json-dir=` flag — useful when iterating on a
-single module.
+Individual suites (`bench`, `bench-context`, `bench-core`, `bench-text`,
+`bench-scene`, `bench-animation`, `bench-element-states`,
+`bench-accessibility`) accept the same `-Dbench-json-dir=` flag — useful when
+iterating on a single module.
 
 All benchmarks build at `ReleaseFast`. Adaptive iteration counts target
 ~50 ms wall-clock per entry, so a full `bench-all` run is bounded at a
@@ -110,6 +115,28 @@ A few orientation points from the initial capture (macOS arm64, M-series,
   the `endFrame` render path exploits.
 - **Context** — tree build is ~7–9 ns/op pushNode amortized, flat
   across widths up to 2000 siblings.
+- **Scene (data plane)** — primitive emission is flat ~4 ns/op and
+  allocation-free in steady state; `BatchIterator` drains coalesced
+  scenes at ~1 ns/prim (1 batch) vs ~20 ns/prim when fully interleaved
+  (1 batch/prim) — the cost of poor batching, quantified. `finish()`
+  sorting 128-byte `Quad` structs is the one hot spot (~3.3 ms for 8k
+  out-of-order quads); see `../scene-data-plane-performance.md`.
+  A realistic 5k-primitive frame (build + finish + batch drain) is
+  ~31 µs — under 0.4% of the 8.33 ms / 120 Hz budget.
+- **Animation** — an at-rest spring tick is ~1.1 ns (a single branch),
+  ~8× cheaper than the ~9 ns RK4 step it skips, so idle springs are
+  effectively free; a 256-spring store frame is ~6 µs (0.04% of the
+  60 Hz budget) and allocation-free in steady state. See
+  `../animation-performance.md`.
+- **Element states** — `get`/`withElementState` on a present key is an
+  O(count) linear scan: ~3.6 ns at 8 entries but ~981 ns at 4096, a
+  clean ~0.48 ns/comparison line that quantifies exactly when
+  `findIndex` should become a hash map. Steady-state lookups allocate
+  zero. See `../element-states-performance.md`.
+- **Accessibility** — `fingerprint.compute` is ~1.4 ns; a full
+  1000-element frame diff (snapshot + rebuild + dirty/removed) is
+  ~128 µs (~0.8% of the 60 Hz budget), and content churn adds
+  negligible cost on top. See `../accessibility-diff-performance.md`.
 
 These are not acceptance criteria — they're the shape of the curve.
 Regressions show up as shape changes, not absolute-number changes.
