@@ -65,6 +65,25 @@ pub const MAX_CLIP_STACK_DEPTH = limits.MAX_CLIP_STACK_DEPTH;
 
 pub const DrawOrder = u32;
 
+/// Capacity of the draw-order sort scratch (one u64 key per primitive). Sized
+/// to the largest single per-type array so the same buffer can be reused for
+/// every type's sort within a `finish()` call. Pre-allocated by `initCapacity`
+/// so the keyed sort never allocates in steady state (static-allocation, §2).
+pub const MAX_SORT_KEYS: u32 = blk: {
+    var maximum: u32 = 0;
+    for ([_]u32{
+        MAX_SHADOWS_PER_FRAME,
+        MAX_QUADS_PER_FRAME,
+        MAX_GLYPHS_PER_FRAME,
+        MAX_SVGS_PER_FRAME,
+        MAX_IMAGES_PER_FRAME,
+        MAX_POLYLINES_PER_FRAME,
+        MAX_POINT_CLOUDS_PER_FRAME,
+        MAX_COLORED_POINT_CLOUDS_PER_FRAME,
+    }) |capacity| maximum = @max(maximum, capacity);
+    break :blk maximum;
+};
+
 // ============================================================================
 // GPU Geometry Types (re-exported from geometry.zig)
 // ============================================================================
@@ -498,6 +517,138 @@ comptime {
 }
 
 // ============================================================================
+// Draw-order sort (indirect key sort)
+// ============================================================================
+//
+// `finish()` orders each per-type array by its `.order` field. Rather than hand
+// `std.sort.pdq` the payload arrays directly — which makes every swap move a fat
+// struct (a `Quad` is 128 B, a `GradientUniforms` 352 B) — we sort a compact
+// array of `(order, index)` keys (8 B each, cache-resident) and then permute the
+// payload into place once. This is Christer Ericson's "sort keys, not payloads"
+// (2008): the comparison sort touches only the small keys, and each payload
+// struct is moved at most once during the gather.
+
+/// Sentinel written into a key slot once its payload has been placed, so the
+/// outer permutation loop can skip cycles it has already walked. A real key is
+/// `(order << 32) | index`; reaching all-ones would require `index == 0xFFFF_FFFF`,
+/// which the per-frame limits (≤ 65536) make impossible — so there is no collision.
+const PERM_DONE: u64 = std.math.maxInt(u64);
+
+/// Pack a draw order and array index into a single sortable u64. The order
+/// occupies the high 32 bits (primary key) and the index the low 32 bits, so an
+/// ascending u64 sort breaks ties by insertion order — a stable, deterministic
+/// result, unlike the old unstable payload pdq.
+inline fn makeOrderKey(order: DrawOrder, index: u32) u64 {
+    return (@as(u64, order) << 32) | @as(u64, index);
+}
+
+fn ascendingU64(_: void, a: u64, b: u64) bool {
+    return a < b;
+}
+
+/// Comparator over a payload type's `.order` field, used only on the no-scratch
+/// fallback path (see `Scene.sortByOrder`).
+fn orderLessThan(comptime T: type) fn (void, T, T) bool {
+    return struct {
+        fn lessThan(_: void, a: T, b: T) bool {
+            return a.order < b.order;
+        }
+    }.lessThan;
+}
+
+/// Reorder `items` in place to `items[j] = old_items[perm[j]]`, where `perm[j]`
+/// is the low 32 bits of `keys[j]` (the original index that belongs in sorted
+/// slot `j`). Walks each permutation cycle once, holding the displaced element
+/// in `tmp` and reading one slot ahead before overwriting, so every payload is
+/// written exactly once. `keys` is consumed (slots are marked `PERM_DONE`).
+fn applyPermutation(comptime T: type, items: []T, keys: []u64) void {
+    std.debug.assert(items.len == keys.len);
+    const count: u32 = @intCast(items.len);
+
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        if (keys[i] == PERM_DONE) continue;
+        const first_source: u32 = @truncate(keys[i]);
+        if (first_source == i) {
+            keys[i] = PERM_DONE; // already in place; close the trivial cycle
+            continue;
+        }
+
+        const displaced = items[i]; // belongs at the cycle's closing slot
+        var slot = i;
+        while (true) {
+            const source: u32 = @truncate(keys[slot]);
+            keys[slot] = PERM_DONE;
+            if (source == i) {
+                items[slot] = displaced;
+                break;
+            }
+            items[slot] = items[source];
+            slot = source;
+        }
+    }
+}
+
+/// Parallel-array variant of `applyPermutation`: gathers `instances` and
+/// `gradients` with the same permutation so the two stay index-aligned. This is
+/// what lets the paths arrays be sorted together without the old O(n²) selection
+/// sort that hand-swapped both arrays per comparison.
+fn applyPermutationPaths(
+    instances: []PathInstance,
+    gradients: []GradientUniforms,
+    keys: []u64,
+) void {
+    std.debug.assert(instances.len == gradients.len);
+    std.debug.assert(instances.len == keys.len);
+    const count: u32 = @intCast(instances.len);
+
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        if (keys[i] == PERM_DONE) continue;
+        const first_source: u32 = @truncate(keys[i]);
+        if (first_source == i) {
+            keys[i] = PERM_DONE;
+            continue;
+        }
+
+        const displaced_instance = instances[i];
+        const displaced_gradient = gradients[i];
+        var slot = i;
+        while (true) {
+            const source: u32 = @truncate(keys[slot]);
+            keys[slot] = PERM_DONE;
+            if (source == i) {
+                instances[slot] = displaced_instance;
+                gradients[slot] = displaced_gradient;
+                break;
+            }
+            instances[slot] = instances[source];
+            gradients[slot] = gradients[source];
+            slot = source;
+        }
+    }
+}
+
+/// Sort the parallel `path_instances` / `path_gradients` arrays together by draw
+/// order. Paths are bounded by `MAX_PATHS_PER_FRAME` (4096), so the key scratch
+/// fits comfortably on the stack (32 KB) — no heap scratch, no allocation, and
+/// no dependence on the shared `sort_keys` buffer. Retires the previous O(n²)
+/// selection sort entirely.
+fn sortPathsByOrder(instances: []PathInstance, gradients: []GradientUniforms) void {
+    std.debug.assert(instances.len == gradients.len);
+    if (instances.len < 2) return; // 0 or 1 element is already ordered
+    std.debug.assert(instances.len <= MAX_PATHS_PER_FRAME);
+
+    const count: u32 = @intCast(instances.len);
+    var keys: [MAX_PATHS_PER_FRAME]u64 = undefined;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) keys[i] = makeOrderKey(instances[i].order, i);
+
+    std.sort.pdq(u64, keys[0..count], {}, ascendingU64);
+    applyPermutationPaths(instances, gradients, keys[0..count]);
+}
+
+// ============================================================================
 // Scene - collects primitives for rendering
 // ============================================================================
 
@@ -524,6 +675,10 @@ pub const Scene = struct {
     next_order: DrawOrder,
     // Clip mask stack for nested clipping regions
     clip_stack: std.ArrayListUnmanaged(ContentMask.ClipBounds),
+    // Scratch buffer of (order, index) keys reused by `finish()` to sort each
+    // per-type array indirectly (see the "Draw-order sort" section above).
+    // Pre-allocated by `initCapacity`; grown-and-retained by `init()` scenes.
+    sort_keys: std.ArrayListUnmanaged(u64),
     // Per-array dirty flags: track which arrays had out-of-order inserts (requiring sort)
     needs_sort_shadows: bool,
     needs_sort_quads: bool,
@@ -563,6 +718,7 @@ pub const Scene = struct {
             .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .empty,
+            .sort_keys = .empty,
             .needs_sort_shadows = false,
             .needs_sort_quads = false,
             .needs_sort_glyphs = false,
@@ -599,6 +755,7 @@ pub const Scene = struct {
             .mesh_pool = MeshPool.init(allocator),
             .next_order = 0,
             .clip_stack = .empty,
+            .sort_keys = .empty,
             .needs_sort_shadows = false,
             .needs_sort_quads = false,
             .needs_sort_glyphs = false,
@@ -626,6 +783,7 @@ pub const Scene = struct {
         try self.point_clouds.ensureTotalCapacity(allocator, MAX_POINT_CLOUDS_PER_FRAME);
         try self.colored_point_clouds.ensureTotalCapacity(allocator, MAX_COLORED_POINT_CLOUDS_PER_FRAME);
         try self.clip_stack.ensureTotalCapacity(allocator, MAX_CLIP_STACK_DEPTH);
+        try self.sort_keys.ensureTotalCapacity(allocator, MAX_SORT_KEYS);
 
         return self;
     }
@@ -642,6 +800,7 @@ pub const Scene = struct {
         self.point_clouds.deinit(self.allocator);
         self.colored_point_clouds.deinit(self.allocator);
         self.clip_stack.deinit(self.allocator);
+        self.sort_keys.deinit(self.allocator);
         self.mesh_pool.deinit();
     }
 
@@ -1441,86 +1600,68 @@ pub const Scene = struct {
         if (self.stats) |s| s.recordQuads(1);
     }
 
-    /// Finalize the scene for rendering.
-    /// Sorts primitives by draw order only for arrays that had out-of-order inserts.
-    pub fn finish(self: *Self) void {
-        // Only sort arrays that had out-of-order inserts
-        if (self.needs_sort_shadows) {
-            std.sort.pdq(Shadow, self.shadows.items, {}, struct {
-                fn lessThan(_: void, a: Shadow, b: Shadow) bool {
-                    return a.order < b.order;
-                }
-            }.lessThan);
-        }
-        if (self.needs_sort_quads) {
-            std.sort.pdq(Quad, self.quads.items, {}, struct {
-                fn lessThan(_: void, a: Quad, b: Quad) bool {
-                    return a.order < b.order;
-                }
-            }.lessThan);
-        }
-        if (self.needs_sort_glyphs) {
-            std.sort.pdq(GlyphInstance, self.glyphs.items, {}, struct {
-                fn lessThan(_: void, a: GlyphInstance, b: GlyphInstance) bool {
-                    return a.order < b.order;
-                }
-            }.lessThan);
-        }
-        if (self.needs_sort_svgs) {
-            std.sort.pdq(SvgInstance, self.svg_instances.items, {}, struct {
-                fn lessThan(_: void, a: SvgInstance, b: SvgInstance) bool {
-                    return a.order < b.order;
-                }
-            }.lessThan);
-        }
-        if (self.needs_sort_images) {
-            std.sort.pdq(ImageInstance, self.images.items, {}, struct {
-                fn lessThan(_: void, a: ImageInstance, b: ImageInstance) bool {
-                    return a.order < b.order;
-                }
-            }.lessThan);
-        }
-        if (self.needs_sort_paths) {
-            // Sort both path_instances and path_gradients together to maintain parallel alignment
-            const n = self.path_instances.items.len;
-            if (n > 1) {
-                // Simple in-place parallel sort using selection sort for correctness
-                // (path counts per frame are typically small, so O(n²) is acceptable)
-                var i: usize = 0;
-                while (i < n - 1) : (i += 1) {
-                    var min_idx = i;
-                    var j = i + 1;
-                    while (j < n) : (j += 1) {
-                        if (self.path_instances.items[j].order < self.path_instances.items[min_idx].order) {
-                            min_idx = j;
-                        }
-                    }
-                    if (min_idx != i) {
-                        // Swap both arrays at the same indices
-                        const tmp_path = self.path_instances.items[i];
-                        self.path_instances.items[i] = self.path_instances.items[min_idx];
-                        self.path_instances.items[min_idx] = tmp_path;
+    /// Acquire the sort-key scratch sized for `count` keys. With `initCapacity`
+    /// the buffer is pre-sized to `MAX_SORT_KEYS`, so this is a no-op there and
+    /// the keyed sort never allocates in steady state. An `init()` scene grows
+    /// the buffer once and retains it, mirroring how its primitive arrays grow.
+    /// Returns null only if growth fails (allocation pressure on an `init()`
+    /// scene); callers then fall back to a direct payload sort so `finish()`
+    /// stays infallible.
+    fn acquireSortKeys(self: *Self, count: u32) ?[]u64 {
+        std.debug.assert(count >= 2); // callers skip the sort for count < 2
+        self.sort_keys.ensureTotalCapacity(self.allocator, count) catch return null;
+        const buffer = self.sort_keys.allocatedSlice();
+        std.debug.assert(buffer.len >= count);
+        return buffer[0..count];
+    }
 
-                        const tmp_grad = self.path_gradients.items[i];
-                        self.path_gradients.items[i] = self.path_gradients.items[min_idx];
-                        self.path_gradients.items[min_idx] = tmp_grad;
-                    }
-                }
-            }
+    /// Sort a single per-type array ascending by `.order` using the indirect key
+    /// sort (see the "Draw-order sort" section). Falls back to a direct payload
+    /// pdq if the key scratch is unavailable, keeping the result correct under
+    /// allocation failure.
+    fn sortByOrder(self: *Self, comptime T: type, items: []T) void {
+        if (items.len < 2) return; // 0 or 1 element is already ordered
+        const count: u32 = @intCast(items.len);
+
+        const keys = self.acquireSortKeys(count) orelse {
+            std.sort.pdq(T, items, {}, orderLessThan(T));
+            return;
+        };
+        std.debug.assert(keys.len == count);
+
+        var i: u32 = 0;
+        while (i < count) : (i += 1) keys[i] = makeOrderKey(items[i].order, i);
+
+        std.sort.pdq(u64, keys, {}, ascendingU64);
+        applyPermutation(T, items, keys);
+    }
+
+    /// Finalize the scene for rendering.
+    /// Sorts primitives by draw order only for arrays that had out-of-order
+    /// inserts. Each array is ordered by an indirect key sort that moves the fat
+    /// payload structs at most once (see the "Draw-order sort" section above).
+    pub fn finish(self: *Self) void {
+        // Only sort arrays that had out-of-order inserts. `needs_sort_shadows`
+        // has no public setter today (there is no `insertShadowWithOrder`), but
+        // routing shadows through the same path keeps the nine types symmetric
+        // and correct the moment such an API is added.
+        if (self.needs_sort_shadows) self.sortByOrder(Shadow, self.shadows.items);
+        if (self.needs_sort_quads) self.sortByOrder(Quad, self.quads.items);
+        if (self.needs_sort_glyphs) self.sortByOrder(GlyphInstance, self.glyphs.items);
+        if (self.needs_sort_svgs) self.sortByOrder(SvgInstance, self.svg_instances.items);
+        if (self.needs_sort_images) self.sortByOrder(ImageInstance, self.images.items);
+        if (self.needs_sort_paths) {
+            // Paths carry a parallel gradient array; gather both with one
+            // permutation (retires the former O(n²) selection sort).
+            sortPathsByOrder(self.path_instances.items, self.path_gradients.items);
         }
-        if (self.needs_sort_polylines) {
-            std.sort.pdq(Polyline, self.polylines.items, {}, struct {
-                fn lessThan(_: void, a: Polyline, b: Polyline) bool {
-                    return a.order < b.order;
-                }
-            }.lessThan);
-        }
-        if (self.needs_sort_point_clouds) {
-            std.sort.pdq(PointCloud, self.point_clouds.items, {}, struct {
-                fn lessThan(_: void, a: PointCloud, b: PointCloud) bool {
-                    return a.order < b.order;
-                }
-            }.lessThan);
+        if (self.needs_sort_polylines) self.sortByOrder(Polyline, self.polylines.items);
+        if (self.needs_sort_point_clouds) self.sortByOrder(PointCloud, self.point_clouds.items);
+        // Previously missing: the flag was set on out-of-order inserts but never
+        // consumed, so colored point clouds rendered in insertion order. Wiring
+        // the branch in fixes that dead-invariant bug (§11, negative space).
+        if (self.needs_sort_colored_point_clouds) {
+            self.sortByOrder(ColoredPointCloud, self.colored_point_clouds.items);
         }
     }
 
@@ -1681,4 +1822,85 @@ test "insertQuadWithOrder interleaves correctly with BatchIterator" {
 
     // No more batches
     try testing.expect(iter.next() == null);
+}
+
+test "finish sorts all nine per-type draw-order arrays ascending" {
+    // Goal: prove every per-type array that can be flagged out-of-order is
+    // actually re-sorted by `finish()` — including `colored_point_clouds`, whose
+    // sort branch was previously missing (write-only flag), and the parallel
+    // path arrays, whose gradients must travel with their instances. We seed
+    // each array directly (white-box) with a descending-ish order permutation so
+    // a correct sort must move every element, then assert ascending order.
+    const testing = std.testing;
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+
+    // Distinct, non-monotonic orders: a stable ascending sort must reorder them
+    // to {0, 10, 20, 30, 40}.
+    const orders = [_]DrawOrder{ 40, 10, 30, 0, 20 };
+
+    // Append `n` default primitives of type `T` carrying the given orders.
+    // References only `std` (file scope) and its parameters — no outer locals —
+    // so it is a legal nested function in Zig.
+    const seed = struct {
+        fn run(
+            comptime T: type,
+            list: *std.ArrayListUnmanaged(T),
+            gpa: std.mem.Allocator,
+            order_values: []const DrawOrder,
+        ) !void {
+            for (order_values) |order| try list.append(gpa, .{ .order = order });
+        }
+    }.run;
+
+    const expectAscending = struct {
+        fn run(comptime T: type, items: []const T) !void {
+            var i: usize = 1;
+            while (i < items.len) : (i += 1) {
+                try std.testing.expect(items[i - 1].order <= items[i].order);
+            }
+        }
+    }.run;
+
+    try seed(Shadow, &scene.shadows, scene.allocator, &orders);
+    scene.needs_sort_shadows = true;
+    try seed(Quad, &scene.quads, scene.allocator, &orders);
+    scene.needs_sort_quads = true;
+    try seed(GlyphInstance, &scene.glyphs, scene.allocator, &orders);
+    scene.needs_sort_glyphs = true;
+    try seed(SvgInstance, &scene.svg_instances, scene.allocator, &orders);
+    scene.needs_sort_svgs = true;
+    try seed(ImageInstance, &scene.images, scene.allocator, &orders);
+    scene.needs_sort_images = true;
+    try seed(Polyline, &scene.polylines, scene.allocator, &orders);
+    scene.needs_sort_polylines = true;
+    try seed(PointCloud, &scene.point_clouds, scene.allocator, &orders);
+    scene.needs_sort_point_clouds = true;
+    try seed(ColoredPointCloud, &scene.colored_point_clouds, scene.allocator, &orders);
+    scene.needs_sort_colored_point_clouds = true;
+
+    // Paths: parallel instance/gradient arrays. Tag each gradient's `param0`
+    // with its instance's order so we can prove the gather kept them aligned.
+    for (orders) |order| {
+        try scene.path_instances.append(scene.allocator, .{ .order = order, .index_count = 1 });
+        try scene.path_gradients.append(scene.allocator, .{ .param0 = @floatFromInt(order) });
+    }
+    scene.needs_sort_paths = true;
+
+    scene.finish();
+
+    try expectAscending(Shadow, scene.shadows.items);
+    try expectAscending(Quad, scene.quads.items);
+    try expectAscending(GlyphInstance, scene.glyphs.items);
+    try expectAscending(SvgInstance, scene.svg_instances.items);
+    try expectAscending(ImageInstance, scene.images.items);
+    try expectAscending(Polyline, scene.polylines.items);
+    try expectAscending(PointCloud, scene.point_clouds.items);
+    try expectAscending(ColoredPointCloud, scene.colored_point_clouds.items);
+    try expectAscending(PathInstance, scene.path_instances.items);
+
+    // Parallel gather: each gradient must still sit beside its own instance.
+    for (scene.path_instances.items, scene.path_gradients.items) |instance, gradient| {
+        try testing.expectEqual(@as(f32, @floatFromInt(instance.order)), gradient.param0);
+    }
 }

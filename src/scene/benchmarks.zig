@@ -599,6 +599,70 @@ fn benchDrawOrderSort(
     return makeResult(name, count, total_time_ns, iterations, percentiles, 0);
 }
 
+/// Direct payload sort over the same shuffled quads: the pre-optimization
+/// baseline that moves whole 128-byte `Quad` structs on every swap. Paired with
+/// `benchDrawOrderSort` (the indirect key sort that `finish()` now uses) so
+/// `bench-compare` can size the payload-move tax on this hardware — the concrete
+/// before/after for Ericson's "sort keys, not payloads".
+fn benchDrawOrderSortStruct(
+    allocator: Allocator,
+    comptime name: []const u8,
+    count: u32,
+) !BenchmarkResult {
+    std.debug.assert(count > 1);
+    std.debug.assert(count <= MAX_QUADS_PER_FRAME);
+
+    var scene = try Scene.initCapacity(allocator);
+    defer scene.deinit();
+
+    const unsorted = try allocator.alloc(Quad, count);
+    defer allocator.free(unsorted);
+
+    try seedShuffledQuads(&scene, count, unsorted);
+    const items = scene.quads.items;
+    std.debug.assert(items.len == count);
+
+    const warmup_iters = getWarmupIterations(count);
+    const min_sample_iters = getMinSampleIterations(count);
+
+    for (0..warmup_iters) |_| {
+        @memcpy(items, unsorted);
+        pdqQuadsByOrder(items);
+    }
+
+    var total_time_ns: u64 = 0;
+    var iterations: u32 = 0;
+    var samples = IterationSamples.init();
+
+    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+        @memcpy(items, unsorted); // restore unsorted permutation (untimed)
+
+        const start = time.Instant.now();
+        pdqQuadsByOrder(items);
+        const end = time.Instant.now();
+        std.debug.assert(items[0].order <= items[count - 1].order);
+
+        const elapsed = end.since(start);
+        total_time_ns += elapsed;
+        samples.record(elapsed);
+        iterations += 1;
+    }
+
+    const percentiles = samples.computePercentiles(count);
+    return makeResult(name, count, total_time_ns, iterations, percentiles, 0);
+}
+
+/// The legacy sort: `std.sort.pdq` straight over the `Quad` payload array, so
+/// every swap shuffles 128 bytes. Isolated here purely as the benchmark
+/// baseline; production `finish()` no longer does this.
+fn pdqQuadsByOrder(items: []Quad) void {
+    std.sort.pdq(Quad, items, {}, struct {
+        fn lessThan(_: void, a: Quad, b: Quad) bool {
+            return a.order < b.order;
+        }
+    }.lessThan);
+}
+
 /// Clip stack: time `depth` pushClip calls (each intersecting the current clip)
 /// followed by `depth` popClip calls. Reports ns per push/pop pair — the cost
 /// of one nested clip level.
@@ -948,10 +1012,15 @@ pub fn main(init: std.process.Init) !void {
     // Draw-Order Sort
     // =========================================================================
 
-    printSectionHeader("Gooey Scene Benchmarks — Draw-Order Sort (finish() pdq over shuffled quads)");
+    printSectionHeader("Gooey Scene Benchmarks — Draw-Order Sort (finish() over shuffled quads)");
+    // Indirect key sort (what finish() now does) vs. the legacy payload sort, on
+    // identical shuffled inputs, so bench-compare can lock in the win.
     collect(&reporter, try benchDrawOrderSort(allocator, "sort_quads_1k", 1000));
     collect(&reporter, try benchDrawOrderSort(allocator, "sort_quads_8k", 8000));
     collect(&reporter, try benchDrawOrderSort(allocator, "sort_quads_32k", 32000));
+    collect(&reporter, try benchDrawOrderSortStruct(allocator, "sort_struct_quads_1k", 1000));
+    collect(&reporter, try benchDrawOrderSortStruct(allocator, "sort_struct_quads_8k", 8000));
+    collect(&reporter, try benchDrawOrderSortStruct(allocator, "sort_struct_quads_32k", 32000));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 
     // =========================================================================
