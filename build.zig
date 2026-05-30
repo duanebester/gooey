@@ -324,6 +324,139 @@ pub fn build(b: *std.Build) void {
         text_bench_step.dependOn(&text_bench_run.step);
 
         // =====================================================================
+        // Scene Benchmarks (data plane: scene build, batch iteration, frame e2e)
+        // =====================================================================
+
+        const scene_bench_exe = b.addExecutable(.{
+            .name = "scene-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/scene/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const scene_bench_step = b.step("bench-scene", "Run scene module (data plane) benchmarks");
+        const scene_bench_run = b.addRunArtifact(scene_bench_exe);
+        if (bench_json_dir) |dir| {
+            scene_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        scene_bench_step.dependOn(&scene_bench_run.step);
+
+        // The scene benchmark's `validate:` tests (primitive counts, batch
+        // coalescing, and the steady-state zero-allocation invariant) only run
+        // in Debug, where assertions are live. Wire them into `test` so the
+        // data-plane zero-alloc guarantee is a CI-gated fact, mirroring how
+        // `bench_tests` / `compare_tests` are already gated below.
+        const scene_bench_tests = b.addTest(.{
+            .root_module = scene_bench_exe.root_module,
+        });
+        const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
+        test_step.dependOn(&run_scene_bench_tests.step);
+
+        // =====================================================================
+        // Animation Benchmarks (per-frame spring physics + store dispatch)
+        // =====================================================================
+
+        const animation_bench_exe = b.addExecutable(.{
+            .name = "animation-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/animation/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const animation_bench_step = b.step("bench-animation", "Run animation module benchmarks");
+        const animation_bench_run = b.addRunArtifact(animation_bench_exe);
+        if (bench_json_dir) |dir| {
+            animation_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        animation_bench_step.dependOn(&animation_bench_run.step);
+
+        // The animation benchmark's `validate:` tests (spring physics sanity +
+        // the steady-state zero-allocation invariant) run only in Debug, where
+        // assertions are live. Wire them into `test` so the store's zero-alloc
+        // guarantee is a CI-gated fact, mirroring the scene suite above.
+        const animation_bench_tests = b.addTest(.{
+            .root_module = animation_bench_exe.root_module,
+        });
+        const run_animation_bench_tests = b.addRunArtifact(animation_bench_tests);
+        test_step.dependOn(&run_animation_bench_tests.step);
+
+        // =====================================================================
+        // Element-State Benchmarks (the keyed per-element retained-state pool)
+        // =====================================================================
+
+        const element_states_bench_exe = b.addExecutable(.{
+            .name = "element-states-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const element_states_bench_step = b.step("bench-element-states", "Run element-state pool benchmarks");
+        const element_states_bench_run = b.addRunArtifact(element_states_bench_exe);
+        if (bench_json_dir) |dir| {
+            element_states_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        element_states_bench_step.dependOn(&element_states_bench_run.step);
+
+        // Element-state `validate:` tests (lookup correctness + the steady-state
+        // zero-allocation invariant) run only in Debug — wire them into `test`.
+        const element_states_bench_tests = b.addTest(.{
+            .root_module = element_states_bench_exe.root_module,
+        });
+        const run_element_states_bench_tests = b.addRunArtifact(element_states_bench_tests);
+        test_step.dependOn(&run_element_states_bench_tests.step);
+
+        // =====================================================================
+        // Accessibility Benchmarks (per-frame fingerprint + tree diff)
+        // =====================================================================
+
+        const accessibility_bench_exe = b.addExecutable(.{
+            .name = "accessibility-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/accessibility/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const accessibility_bench_step = b.step("bench-accessibility", "Run accessibility module benchmarks");
+        const accessibility_bench_run = b.addRunArtifact(accessibility_bench_exe);
+        if (bench_json_dir) |dir| {
+            accessibility_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        accessibility_bench_step.dependOn(&accessibility_bench_run.step);
+
+        // Accessibility `validate:` tests (the diff's dirty/removed counts) run
+        // only in Debug — wire them into `test`.
+        const accessibility_bench_tests = b.addTest(.{
+            .root_module = accessibility_bench_exe.root_module,
+        });
+        const run_accessibility_bench_tests = b.addRunArtifact(accessibility_bench_tests);
+        test_step.dependOn(&run_accessibility_bench_tests.step);
+
+        // =====================================================================
         // Run All Benchmarks
         // =====================================================================
 
@@ -332,6 +465,10 @@ pub fn build(b: *std.Build) void {
         bench_all_step.dependOn(&context_bench_run.step);
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
+        bench_all_step.dependOn(&scene_bench_run.step);
+        bench_all_step.dependOn(&animation_bench_run.step);
+        bench_all_step.dependOn(&element_states_bench_run.step);
+        bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
         // Hot Reload Watcher
@@ -608,6 +745,155 @@ pub fn build(b: *std.Build) void {
         text_bench_step.dependOn(&text_bench_run.step);
 
         // =====================================================================
+        // Scene Benchmarks (data plane: scene build, batch iteration, frame e2e)
+        // =====================================================================
+
+        const scene_bench_exe = b.addExecutable(.{
+            .name = "scene-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/scene/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(scene_bench_exe);
+
+        const scene_bench_step = b.step("bench-scene", "Run scene module (data plane) benchmarks");
+        const scene_bench_run = b.addRunArtifact(scene_bench_exe);
+        if (bench_json_dir) |dir| {
+            scene_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        scene_bench_step.dependOn(&scene_bench_run.step);
+
+        // Scene benchmark `validate:` tests (counts, batch coalescing, and the
+        // steady-state zero-allocation invariant) run only in Debug. The
+        // dependOn is added in the Tests section below, once `test_step` exists.
+        const scene_bench_tests = b.addTest(.{
+            .root_module = scene_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(scene_bench_tests);
+        if (!skip_shader_compile) {
+            scene_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
+
+        // =====================================================================
+        // Animation Benchmarks (per-frame spring physics + store dispatch)
+        // =====================================================================
+
+        const animation_bench_exe = b.addExecutable(.{
+            .name = "animation-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/animation/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(animation_bench_exe);
+
+        const animation_bench_step = b.step("bench-animation", "Run animation module benchmarks");
+        const animation_bench_run = b.addRunArtifact(animation_bench_exe);
+        if (bench_json_dir) |dir| {
+            animation_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        animation_bench_step.dependOn(&animation_bench_run.step);
+
+        // Animation `validate:` tests (physics sanity + steady-state zero-alloc)
+        // run only in Debug. The dependOn is added in the Tests section below.
+        const animation_bench_tests = b.addTest(.{
+            .root_module = animation_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(animation_bench_tests);
+        if (!skip_shader_compile) {
+            animation_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_animation_bench_tests = b.addRunArtifact(animation_bench_tests);
+
+        // =====================================================================
+        // Element-State Benchmarks (the keyed per-element retained-state pool)
+        // =====================================================================
+
+        const element_states_bench_exe = b.addExecutable(.{
+            .name = "element-states-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(element_states_bench_exe);
+
+        const element_states_bench_step = b.step("bench-element-states", "Run element-state pool benchmarks");
+        const element_states_bench_run = b.addRunArtifact(element_states_bench_exe);
+        if (bench_json_dir) |dir| {
+            element_states_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        element_states_bench_step.dependOn(&element_states_bench_run.step);
+
+        // Element-state `validate:` tests run only in Debug. The dependOn is
+        // added in the Tests section below.
+        const element_states_bench_tests = b.addTest(.{
+            .root_module = element_states_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(element_states_bench_tests);
+        if (!skip_shader_compile) {
+            element_states_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_element_states_bench_tests = b.addRunArtifact(element_states_bench_tests);
+
+        // =====================================================================
+        // Accessibility Benchmarks (per-frame fingerprint + tree diff)
+        // =====================================================================
+
+        const accessibility_bench_exe = b.addExecutable(.{
+            .name = "accessibility-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/accessibility/benchmarks.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(accessibility_bench_exe);
+
+        const accessibility_bench_step = b.step("bench-accessibility", "Run accessibility module benchmarks");
+        const accessibility_bench_run = b.addRunArtifact(accessibility_bench_exe);
+        if (bench_json_dir) |dir| {
+            accessibility_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        accessibility_bench_step.dependOn(&accessibility_bench_run.step);
+
+        // Accessibility `validate:` tests run only in Debug. The dependOn is
+        // added in the Tests section below.
+        const accessibility_bench_tests = b.addTest(.{
+            .root_module = accessibility_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(accessibility_bench_tests);
+        if (!skip_shader_compile) {
+            accessibility_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_accessibility_bench_tests = b.addRunArtifact(accessibility_bench_tests);
+
+        // =====================================================================
         // Run All Benchmarks
         // =====================================================================
 
@@ -616,6 +902,10 @@ pub fn build(b: *std.Build) void {
         bench_all_step.dependOn(&context_bench_run.step);
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
+        bench_all_step.dependOn(&scene_bench_run.step);
+        bench_all_step.dependOn(&animation_bench_run.step);
+        bench_all_step.dependOn(&element_states_bench_run.step);
+        bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
         // Tests
@@ -641,6 +931,10 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
+        test_step.dependOn(&run_scene_bench_tests.step);
+        test_step.dependOn(&run_animation_bench_tests.step);
+        test_step.dependOn(&run_element_states_bench_tests.step);
+        test_step.dependOn(&run_accessibility_bench_tests.step);
 
         // =====================================================================
         // Valgrind Memory Leak Detection

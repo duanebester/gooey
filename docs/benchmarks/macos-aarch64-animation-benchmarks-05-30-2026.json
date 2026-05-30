@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "module": "animation",
+    "os": "macos",
+    "arch": "aarch64",
+    "date": "05-30-2026",
+    "timestamp_unix": 1780111745,
+    "entry_count": 9
+  },
+  "benchmarks": [
+    {
+      "name": "spring_step_256",
+      "operation_count": 256,
+      "total_time_ns": 50002004,
+      "iterations": 19817,
+      "avg_time_ms": 0.0025231873643841145,
+      "time_per_op_ns": 9.856200642125447,
+      "min_per_op_ns": 11.390625,
+      "p50_per_op_ns": 11.71875,
+      "p99_per_op_ns": 17.25390625
+    },
+    {
+      "name": "spring_step_1k",
+      "operation_count": 1024,
+      "total_time_ns": 50005859,
+      "iterations": 5791,
+      "avg_time_ms": 0.008635099119323088,
+      "time_per_op_ns": 8.432713983713953,
+      "min_per_op_ns": 8.1376953125,
+      "p50_per_op_ns": 8.259765625,
+      "p99_per_op_ns": 14.689453125
+    },
+    {
+      "name": "spring_tick_atrest_256",
+      "operation_count": 256,
+      "total_time_ns": 50000099,
+      "iterations": 179259,
+      "avg_time_ms": 0.00027892657551364225,
+      "time_per_op_ns": 1.089556935600165,
+      "min_per_op_ns": 0.9765625,
+      "p50_per_op_ns": 1.13671875,
+      "p99_per_op_ns": 1.140625
+    },
+    {
+      "name": "spring_tick_atrest_1k",
+      "operation_count": 1024,
+      "total_time_ns": 50000027,
+      "iterations": 40269,
+      "avg_time_ms": 0.0012416505748839058,
+      "time_per_op_ns": 1.2125493895350643,
+      "min_per_op_ns": 1.138671875,
+      "p50_per_op_ns": 1.220703125,
+      "p99_per_op_ns": 1.46484375
+    },
+    {
+      "name": "frame_springs_16",
+      "operation_count": 16,
+      "total_time_ns": 50000128,
+      "iterations": 332032,
+      "avg_time_ms": 0.0001505882806476484,
+      "time_per_op_ns": 9.411767540478026,
+      "min_per_op_ns": 5.1875,
+      "p50_per_op_ns": 10.375,
+      "p99_per_op_ns": 10.4375
+    },
+    {
+      "name": "frame_springs_64",
+      "operation_count": 64,
+      "total_time_ns": 50000852,
+      "iterations": 54794,
+      "avg_time_ms": 0.0009125242179800708,
+      "time_per_op_ns": 14.258190905938607,
+      "min_per_op_ns": 13.015625,
+      "p50_per_op_ns": 13.671875,
+      "p99_per_op_ns": 14.96875
+    },
+    {
+      "name": "frame_springs_256",
+      "operation_count": 256,
+      "total_time_ns": 50004130,
+      "iterations": 8341,
+      "avg_time_ms": 0.005994980218199256,
+      "time_per_op_ns": 23.417891477340845,
+      "min_per_op_ns": 22.78515625,
+      "p50_per_op_ns": 23.2734375,
+      "p99_per_op_ns": 25.87890625
+    },
+    {
+      "name": "frame_spring_motions_64",
+      "operation_count": 64,
+      "total_time_ns": 50000941,
+      "iterations": 51205,
+      "avg_time_ms": 0.0009764855189922859,
+      "time_per_op_ns": 15.257586234254468,
+      "min_per_op_ns": 14.3125,
+      "p50_per_op_ns": 14.984375,
+      "p99_per_op_ns": 15.625
+    },
+    {
+      "name": "frame_spring_motions_256",
+      "operation_count": 256,
+      "total_time_ns": 50001144,
+      "iterations": 8081,
+      "avg_time_ms": 0.006187494617002846,
+      "time_per_op_ns": 24.169900847667368,
+      "min_per_op_ns": 23.4375,
+      "p50_per_op_ns": 23.92578125,
+      "p99_per_op_ns": 42.31640625
+    }
+  ]
+}
