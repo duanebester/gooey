@@ -143,6 +143,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "glass", "src/examples/glass.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "window-features", "src/examples/window_features.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "counter", "src/examples/counter.zig", false);
+        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "todo", "src/examples/todo.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "layout", "src/examples/layout.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "select", "src/examples/select.zig", false);
         addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "dynamic-counters", "src/examples/dynamic_counters.zig", false);
@@ -190,6 +191,23 @@ pub fn build(b: *std.Build) void {
         });
         const run_exe_tests = b.addRunArtifact(exe_tests);
 
+        // Example tests — keep the README's headline example honest by running
+        // its pure-state unit tests in CI. The example also builds as an
+        // executable via `addNativeExample`/`installArtifact` above, so both
+        // its render paths and its state model are exercised.
+        const todo_example_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/todo.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "objc", .module = objc_dep.module("objc") },
+                },
+            }),
+        });
+        const run_todo_example_tests = b.addRunArtifact(todo_example_tests);
+
         // Charts tests
         const charts_tests = b.addTest(.{
             .root_module = charts_mod,
@@ -199,6 +217,7 @@ pub fn build(b: *std.Build) void {
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_exe_tests.step);
+        test_step.dependOn(&run_todo_example_tests.step);
         test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
@@ -491,6 +510,7 @@ pub fn build(b: *std.Build) void {
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "lucide-demo", "src/examples/lucide_demo.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "animation", "src/examples/animation.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "counter", "src/examples/counter.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "todo", "src/examples/todo.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "code-editor", "src/examples/code_editor.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "pomodoro", "src/examples/pomodoro.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "spaceship", "src/examples/spaceship.zig");
