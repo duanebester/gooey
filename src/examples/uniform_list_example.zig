@@ -11,9 +11,9 @@ const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const UniformListState = gooey.UniformListState;
-const ScrollStrategy = gooey.ScrollStrategy;
-const Button = gooey.Button;
+const UniformListState = gooey.widgets.UniformListState;
+const ScrollStrategy = gooey.widgets.ScrollStrategy;
+const Button = gooey.components.Button;
 
 const ui = gooey.ui;
 
@@ -136,7 +136,7 @@ const FileList = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        cx.uniformList(
+        cx.lists.uniform(
             "file-list",
             &s.list_state,
             .{
@@ -261,7 +261,7 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }

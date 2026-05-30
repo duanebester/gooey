@@ -11,13 +11,16 @@ const gooey = @import("gooey");
 
 const platform = gooey.platform;
 const Platform = platform.Platform;
-const Window = platform.Window;
-const Scene = gooey.Scene;
-const Quad = gooey.Quad;
-const Shadow = gooey.Shadow;
-const Hsla = gooey.Hsla;
-const Corners = gooey.Corners;
-const Edges = gooey.Edges;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+const PlatformWindow = platform.PlatformWindow;
+const Scene = gooey.scene.Scene;
+const Quad = gooey.scene.Quad;
+const Shadow = gooey.scene.Shadow;
+const Hsla = gooey.scene.Hsla;
+const Corners = gooey.core.Corners;
+const Edges = gooey.core.Edges;
 const Color = gooey.Color;
 const input = gooey.input;
 
@@ -124,7 +127,7 @@ const AppState = struct {
 };
 
 /// Input event handler callback
-fn handleInput(window: *Window, event: input.InputEvent) bool {
+fn handleInput(window: *PlatformWindow, event: input.InputEvent) bool {
     const state = window.getUserData(AppState) orelse return false;
 
     switch (event) {
@@ -286,7 +289,7 @@ fn handleInput(window: *Window, event: input.InputEvent) bool {
 }
 
 /// Render callback - called each frame before drawing
-fn handleRender(window: *Window) void {
+fn handleRender(window: *PlatformWindow) void {
     const state = window.getUserData(AppState) orelse return;
     state.rebuildScene();
     window.setScene(&state.scene);
@@ -309,7 +312,7 @@ pub fn main() !void {
     std.debug.print("Platform initialized. Creating window...\n", .{});
 
     // Create window
-    var window = try Window.init(allocator, &plat, .{
+    var window = try PlatformWindow.init(allocator, &plat, .{
         .title = "Gooey Linux Demo - Input Events",
         .width = 800,
         .height = 600,

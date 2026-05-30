@@ -10,7 +10,7 @@ const gooey = @import("gooey");
 const file_dialog = gooey.file_dialog;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 
 // =============================================================================
 // Application State
@@ -135,8 +135,8 @@ const App = gooey.App(AppState, &state, render, .{
     .height = 450,
 });
 
-pub fn main() !void {
-    return App.main();
+pub fn main(init: std.process.Init) !void {
+    return App.main(init);
 }
 
 // =============================================================================
@@ -259,7 +259,7 @@ const PathItem = struct {
     state: *const AppState,
     index: usize,
 
-    pub fn render(self: @This(), b: *gooey.Builder) void {
+    pub fn render(self: @This(), b: *gooey.ui.Builder) void {
         if (self.index >= self.state.path_count) return;
 
         const path = self.state.getPath(self.index);

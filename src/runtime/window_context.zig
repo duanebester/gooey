@@ -19,13 +19,25 @@ const builtin = @import("builtin");
 
 // Platform
 const platform = @import("../platform/mod.zig");
-const Window = platform.Window;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+const PlatformWindow = platform.PlatformWindow;
 const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .macos;
 
 // Core imports
-const gooey_mod = @import("../context/gooey.zig");
-const Gooey = gooey_mod.Gooey;
-const FontConfig = gooey_mod.FontConfig;
+const window_mod = @import("../context/window.zig");
+const Window = window_mod.Window;
+const FontConfig = window_mod.FontConfig;
+// PR 7b.3 — `App` owns application-lifetime state shared across
+// windows. The single-window flow heap-allocates one `App` here in
+// `WindowContext.init`; the multi-window flow embeds a `context.App`
+// inside `multi_window_app.zig::App` and hands `*App` to every
+// window. Either way `WindowContext` writes the borrowed pointer
+// onto `window.app` after the `Window` is constructed, so the field
+// is non-`undefined` before any frame runs.
+const app_mod = @import("../context/app.zig");
+const App = app_mod.App;
 const cx_mod = @import("../cx.zig");
 const Cx = cx_mod.Cx;
 const ui_mod = @import("../ui/mod.zig");
@@ -66,6 +78,15 @@ const image_mod = @import("../image/mod.zig");
 const MetalRenderer = if (is_mac) @import("../platform/macos/metal/metal.zig").Renderer else void;
 const ImageAtlas = image_mod.ImageAtlas;
 
+// PR 7b.6 — `initWithSharedResources` collapsed to take a single
+// `*const AppResources` parameter instead of three separate
+// `*TextSystem` / `*SvgAtlas` / `*ImageAtlas` pointers. The
+// pointee bundle is owned upstream (typically by `App` in
+// `multi_window_app.zig`) and lent borrowed-shape into every
+// per-window `Window`.
+const app_resources_mod = @import("../context/app_resources.zig");
+const AppResources = app_resources_mod.AppResources;
+
 /// Per-window context that replaces static CallbackState.
 /// Stored in window.user_data for callback access.
 pub fn WindowContext(comptime State: type) type {
@@ -76,8 +97,19 @@ pub fn WindowContext(comptime State: type) type {
         /// The unified UI context
         cx: Cx,
 
-        /// Gooey instance (owned, manages layout/scene/widgets)
-        gooey: *Gooey,
+        /// Framework window wrapper (owned, manages layout/scene/widgets)
+        window: *Window,
+
+        /// PR 7b.3 — borrowed `*App`. Single-window: owned by the
+        /// runner (`runtime/runner.zig`), heap-allocated once
+        /// per app. Multi-window: owned by-value inside
+        /// `multi_window_app.zig::App`. `WindowContext.deinit`
+        /// deliberately does not touch this pointer — the
+        /// upstream owner tears the `App` down after every
+        /// window's `WindowContext.deinit` has run, so cancel
+        /// groups attached to entities have a live `EntityMap`
+        /// to walk during entity removal.
+        app: *App,
 
         /// UI Builder instance
         builder: *Builder,
@@ -110,51 +142,106 @@ pub fn WindowContext(comptime State: type) type {
         // =====================================================================
 
         /// Initialize a WindowContext for a window.
-        /// Allocates Gooey and Builder on the heap.
+        /// Allocates Window and Builder on the heap.
+        ///
+        /// PR 7b.3 — `app` is borrowed from the caller (the
+        /// single-window runner heap-allocates one `App` per
+        /// process and hands `*App` here). `WindowContext` does
+        /// not own the `App` — `deinit` does not free it. The
+        /// caller must outlive every window borrowing the
+        /// pointer.
         pub fn init(
             allocator: std.mem.Allocator,
-            window: *Window,
+            platform_window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
             font_config: FontConfig,
+            app: *App,
             io: std.Io,
         ) !*Self {
             // Assertions: validate inputs (pointers must not be null-equivalent)
             std.debug.assert(@intFromPtr(state) != 0);
             std.debug.assert(@intFromPtr(render_fn) != 0);
+            std.debug.assert(@intFromPtr(app) != 0);
 
             // Allocate self on heap (WindowContext may be large)
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
-            // Initialize Gooey with owned resources (single-window mode)
-            const gooey = try allocator.create(Gooey);
-            errdefer allocator.destroy(gooey);
-            gooey.* = try Gooey.initOwned(allocator, window, font_config, io);
-            gooey.fixupImageLoadQueue();
-            errdefer gooey.deinit();
+            // Initialize Window with owned resources (single-window mode).
+            // PR 7b.1b — the framework wrapper local was renamed
+            // `gooey -> window` to match the struct rename. The OS-level
+            // handle that this function takes as input is now
+            // `platform_window` to keep the two unambiguous in the same
+            // scope.
+            const window = try allocator.create(Window);
+            errdefer allocator.destroy(window);
+            window.* = try Window.initOwned(allocator, platform_window, font_config, io);
+            // PR 7b.3 — wire the borrowed `*App` onto the freshly-
+            // initialised `Window`. `Window.initOwned` left
+            // `window.app` at its `undefined` default; this assignment
+            // is the latest moment that's safe (any earlier and the
+            // by-value copy from the `Window.initOwned` stack temp
+            // would not have happened yet). Every code path that
+            // reaches `window.app.*` runs after this point.
+            window.app = app;
+            errdefer window.deinit();
 
-            // Initialize UI Builder
+            // PR 7b.5 — bind the app-scoped `ImageLoader` against
+            // the window's owning `image_atlas`. `Window.initOwned`
+            // creates the owning `AppResources` (and therefore the
+            // backing `ImageAtlas`) on the single-window path, so
+            // this is the first moment a stable `*ImageAtlas` is
+            // available to hand to the loader. Single-bind is
+            // asserted inside `bindImageLoader`; the pre-7b.5
+            // `window.fixupImageLoadQueue` call retired alongside
+            // the `Window.image_loader` field — the loader now
+            // runs `initInPlace` directly at its `App` heap
+            // address, so no by-value-copy queue dangle is
+            // possible on this path. See `context/app.zig` file
+            // header for the two-phase init rationale.
+            app.bindImageLoader(window.resources.image_atlas);
+
+            // Initialize UI Builder.
+            //
+            // PR 7c.3c — the Builder writes scene primitives and
+            // dispatch nodes into the *build target*, which is
+            // `window.next_frame.*`. Builder caches the
+            // `*Scene` / `*DispatchTree` pointers in its own
+            // fields, so the `mem.swap` at the end of
+            // `runtime/frame.zig::renderFrameImpl` would leave
+            // those cached pointers identifying the now-rendered
+            // buffer instead of the live build target. The fix
+            // lives in `renderFrameImpl`'s per-tick builder reset
+            // block: alongside `id_counter = 0` and the pending
+            // queue clears, the reset writes
+            // `builder.scene = window.next_frame.scene` and
+            // `builder.dispatch = window.next_frame.dispatch` so
+            // Builder always tracks the current `next_frame.*`
+            // pair across the swap. The init-time pointers below
+            // are the frame-0 values; every subsequent tick
+            // overwrites them from the post-swap `next_frame.*`.
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
                 allocator,
-                gooey.layout,
-                gooey.scene,
-                gooey.dispatch,
+                window.layout,
+                window.next_frame.scene,
+                window.next_frame.dispatch,
             );
-            builder.gooey = gooey;
+            builder.window = window;
 
             // Initialize fields
             self.* = .{
                 .allocator = allocator,
-                .gooey = gooey,
+                .window = window,
+                .app = app,
                 .builder = builder,
                 .state = state,
                 .render_fn = render_fn,
                 .cx = Cx{
                     ._allocator = allocator,
-                    ._gooey = gooey,
+                    ._window = window,
                     ._builder = builder,
                     .state_ptr = @ptrCast(state),
                     .state_type_id = handler_mod.typeId(State),
@@ -165,70 +252,118 @@ pub fn WindowContext(comptime State: type) type {
             self.builder.cx_ptr = @ptrCast(&self.cx);
 
             // Assertions: validate initialization
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
+            std.debug.assert(@intFromPtr(self.window.app) == @intFromPtr(app));
 
             return self;
         }
 
         /// Initialize a WindowContext with shared resources (multi-window mode).
         /// The shared resources are owned by the App, not this context.
+        ///
+        /// PR 7b.6 — collapsed signature: takes a single
+        /// `*const AppResources` borrowed view from the parent
+        /// (`multi_window_app.zig::App`'s own owning `AppResources`).
+        /// Replaces the pre-7b.6 triplet of separate
+        /// `shared_text_system` / `shared_svg_atlas` /
+        /// `shared_image_atlas` pointers; the bundle was already
+        /// the unit of ownership in `App`, the pre-7b.6 signature
+        /// just unbundled it three times across the call chain.
         pub fn initWithSharedResources(
             allocator: std.mem.Allocator,
-            window: *Window,
+            platform_window: *PlatformWindow,
             state: *State,
             render_fn: *const fn (*Cx) void,
-            shared_text_system: *TextSystem,
-            shared_svg_atlas: *SvgAtlas,
-            shared_image_atlas: *ImageAtlas,
+            shared_resources: *const AppResources,
+            app: *App,
             io: std.Io,
         ) !*Self {
-            // Assertions: validate inputs
+            // Assertions: validate inputs.
             std.debug.assert(@intFromPtr(state) != 0);
             std.debug.assert(@intFromPtr(render_fn) != 0);
-            std.debug.assert(@intFromPtr(shared_text_system) != 0);
-            std.debug.assert(@intFromPtr(shared_svg_atlas) != 0);
-            std.debug.assert(@intFromPtr(shared_image_atlas) != 0);
+            std.debug.assert(@intFromPtr(shared_resources) != 0);
+            std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
+            std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
+            std.debug.assert(@intFromPtr(shared_resources.image_atlas) != 0);
+            std.debug.assert(@intFromPtr(app) != 0);
 
             // Allocate self on heap
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
-            // Initialize Gooey with shared resources (multi-window mode)
-            const gooey = try allocator.create(Gooey);
-            errdefer allocator.destroy(gooey);
-            gooey.* = try Gooey.initWithSharedResources(
+            // Initialize Window with shared resources (multi-window mode).
+            // PR 7b.1b — same naming convention as `init` above:
+            // `window` is the framework wrapper, `platform_window` is
+            // the OS-level handle.
+            const window = try allocator.create(Window);
+            errdefer allocator.destroy(window);
+            window.* = try Window.initWithSharedResources(
                 allocator,
-                window,
-                shared_text_system,
-                shared_svg_atlas,
-                shared_image_atlas,
+                platform_window,
+                shared_resources,
                 io,
             );
-            gooey.fixupImageLoadQueue();
-            errdefer gooey.deinit();
+            // PR 7b.3 — wire the borrowed `*App` from the upstream
+            // `multi_window_app.zig::App`. Every window in a
+            // multi-window app receives a pointer to the SAME
+            // `context.App` (embedded by-value inside the parent),
+            // which is exactly what enables cross-window entity
+            // observation.
+            window.app = app;
+            errdefer window.deinit();
 
-            // Initialize UI Builder
+            // PR 7b.5 — bind the app-scoped `ImageLoader` against
+            // the shared `image_atlas`. `App.bindImageLoader` is
+            // idempotent on same-atlas re-binds: the first window
+            // opened in this `App` runs `initInPlace` on the
+            // loader at its final heap address; every subsequent
+            // window hits the same-atlas short-circuit because
+            // every borrowed `AppResources` in this `App`'s
+            // lifetime points at the same upstream-owned
+            // `ImageAtlas`. Reaching through `shared_resources`
+            // (rather than `window.resources`) is a stylistic
+            // choice — both refer to the same heap address — but
+            // it makes the lifetime story explicit at the call
+            // site: the atlas is owned upstream, this window
+            // borrows. The pre-7b.5 `window.fixupImageLoadQueue`
+            // call retired alongside the `Window.image_loader`
+            // field; see the matching comment block in `init`
+            // and the `context/app.zig` file header.
+            app.bindImageLoader(shared_resources.image_atlas);
+
+            // Initialize UI Builder.
+            //
+            // PR 7c.3c — same `next_frame.*` build-target wiring as
+            // the single-window `init` above. The per-tick
+            // builder reset in `renderFrameImpl` re-fetches both
+            // `scene` and `dispatch` from `window.next_frame.*`
+            // so the cached pointers track every `mem.swap`; see
+            // the matching comment block on the single-window
+            // `init` and the reset block in
+            // `runtime/frame.zig::renderFrameImpl` for the
+            // rationale.
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
                 allocator,
-                gooey.layout,
-                gooey.scene,
-                gooey.dispatch,
+                window.layout,
+                window.next_frame.scene,
+                window.next_frame.dispatch,
             );
-            builder.gooey = gooey;
+            builder.window = window;
 
             // Initialize fields
             self.* = .{
                 .allocator = allocator,
-                .gooey = gooey,
+                .window = window,
+                .app = app,
                 .builder = builder,
                 .state = state,
                 .render_fn = render_fn,
                 .cx = Cx{
                     ._allocator = allocator,
-                    ._gooey = gooey,
+                    ._window = window,
                     ._builder = builder,
                     .state_ptr = @ptrCast(state),
                     .state_type_id = handler_mod.typeId(State),
@@ -239,8 +374,9 @@ pub fn WindowContext(comptime State: type) type {
             self.builder.cx_ptr = @ptrCast(&self.cx);
 
             // Assertions: validate initialization
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
+            std.debug.assert(@intFromPtr(self.window.app) == @intFromPtr(app));
 
             return self;
         }
@@ -248,14 +384,14 @@ pub fn WindowContext(comptime State: type) type {
         /// Clean up all resources owned by this WindowContext.
         pub fn deinit(self: *Self) void {
             // Assertions: validate self
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
 
             self.builder.deinit();
             self.allocator.destroy(self.builder);
 
-            self.gooey.deinit();
-            self.allocator.destroy(self.gooey);
+            self.window.deinit();
+            self.allocator.destroy(self.window);
 
             self.allocator.destroy(self);
         }
@@ -266,7 +402,7 @@ pub fn WindowContext(comptime State: type) type {
 
         /// Render callback - called by the window on each frame.
         /// Retrieves WindowContext from window.user_data.
-        pub fn onRender(window: *Window) void {
+        pub fn onRender(window: *PlatformWindow) void {
             const self = window.getUserData(Self) orelse return;
 
             // Guard against re-entrant rendering
@@ -277,7 +413,7 @@ pub fn WindowContext(comptime State: type) type {
             // Frame timing for budget warnings (debug builds only, skip first few frames).
             // Sample `.awake` (monotonic) so the elapsed delta can never be negative
             // even if NTP or the sysadmin adjusts the wall clock mid-frame.
-            const io = self.gooey.io;
+            const io = self.window.io;
             const start_ts = if (builtin.mode == .Debug)
                 std.Io.Timestamp.now(io, .awake)
             else
@@ -303,20 +439,20 @@ pub fn WindowContext(comptime State: type) type {
         }
 
         /// Input callback - called by the window for input events.
-        pub fn onInput(window: *Window, event: InputEvent) bool {
+        pub fn onInput(window: *PlatformWindow, event: InputEvent) bool {
             const self = window.getUserData(Self) orelse return false;
             return input_handler.handleInputCx(&self.cx, self.on_event, event);
         }
 
         /// Post-input callback - called after input handling with mutex released.
         /// Flushes deferred commands which may run nested event loops (modal dialogs).
-        pub fn onPostInput(window: *Window) void {
+        pub fn onPostInput(window: *PlatformWindow) void {
             const self = window.getUserData(Self) orelse return;
-            self.gooey.flushDeferredCommands();
+            self.window.flushDeferredCommands();
         }
 
         /// Close callback - called when window is about to close.
-        pub fn onClose(window: *Window) bool {
+        pub fn onClose(window: *PlatformWindow) bool {
             const self = window.getUserData(Self) orelse return true;
             if (self.on_close) |callback| {
                 return callback(&self.cx);
@@ -325,7 +461,7 @@ pub fn WindowContext(comptime State: type) type {
         }
 
         /// Resize callback - called when window size changes.
-        pub fn onResize(window: *Window, width: f64, height: f64) void {
+        pub fn onResize(window: *PlatformWindow, width: f64, height: f64) void {
             const self = window.getUserData(Self) orelse return;
             if (self.on_resize) |callback| {
                 callback(&self.cx, width, height);
@@ -338,9 +474,9 @@ pub fn WindowContext(comptime State: type) type {
 
         /// Configure all window callbacks and atlases.
         /// Call this after init() to connect the WindowContext to the window.
-        pub fn setupWindow(self: *Self, window: *Window) void {
+        pub fn setupWindow(self: *Self, window: *PlatformWindow) void {
             // Assertions: validate state
-            std.debug.assert(@intFromPtr(self.gooey) != 0);
+            std.debug.assert(@intFromPtr(self.window) != 0);
             std.debug.assert(@intFromPtr(self.builder) != 0);
 
             // Store self in window's user_data
@@ -353,26 +489,47 @@ pub fn WindowContext(comptime State: type) type {
             window.setResizeCallback(Self.onResize);
             window.setPostInputCallback(Self.onPostInput);
 
-            // Set atlases and scene
-            window.setTextAtlas(self.gooey.text_system.getAtlas());
-            window.setSvgAtlas(self.gooey.svg_atlas.*.getAtlas());
-            window.setImageAtlas(self.gooey.image_atlas.*.getAtlas());
-            window.setScene(self.gooey.scene);
+            // Set atlases and scene.
+            //
+            // PR 7c.3c — the platform window's scene pointer must
+            // track `window.rendered_frame.scene` (the GPU-side
+            // "currently displayed" buffer), not
+            // `window.next_frame.scene` (the build target). The
+            // `mem.swap` at the end of
+            // `runtime/frame.zig::renderFrameImpl` rotates the
+            // just-built scene into `rendered_frame.scene`, so
+            // the platform layer needs to follow that rotation:
+            // alongside the swap, `renderFrameImpl` calls
+            // `platform_window.setScene(window.rendered_frame.scene)`
+            // to point the GPU side at the new physical Scene
+            // allocation. The initial `setScene` below is the
+            // frame-0 setup — before any tick has run,
+            // `rendered_frame.scene` is the still-empty backing
+            // allocation that swap will rotate into the build
+            // target on tick 0; the renderFrameImpl-side update
+            // takes over from tick 1 onwards. (Pre-7c.3c, with a
+            // single buffer, the platform pointer never needed
+            // updating because there was only one Scene slot to
+            // track.)
+            window.setTextAtlas(self.window.resources.text_system.getAtlas());
+            window.setSvgAtlas(self.window.resources.svg_atlas.*.getAtlas());
+            window.setImageAtlas(self.window.resources.image_atlas.*.getAtlas());
+            window.setScene(self.window.rendered_frame.scene);
 
             // Set thread-safe atlas upload callbacks for multi-window scenarios (macOS only).
             // These callbacks hold the appropriate mutex during GPU upload, preventing races
             // where another window's DisplayLink thread modifies the atlas concurrently.
             if (comptime is_mac) {
                 window.setTextAtlasUploadCallback(
-                    @ptrCast(self.gooey.text_system),
+                    @ptrCast(self.window.resources.text_system),
                     Self.uploadTextAtlasLocked,
                 );
                 window.setSvgAtlasUploadCallback(
-                    @ptrCast(self.gooey.svg_atlas),
+                    @ptrCast(self.window.resources.svg_atlas),
                     Self.uploadSvgAtlasLocked,
                 );
                 window.setImageAtlasUploadCallback(
-                    @ptrCast(self.gooey.image_atlas),
+                    @ptrCast(self.window.resources.image_atlas),
                     Self.uploadImageAtlasLocked,
                 );
             }
@@ -455,11 +612,11 @@ test "WindowContext callback signature types" {
 
     const WinCtx = WindowContext(TestState);
 
-    // Verify callback function signatures match what Window expects
-    const render_cb: *const fn (*Window) void = WinCtx.onRender;
-    const input_cb: *const fn (*Window, InputEvent) bool = WinCtx.onInput;
-    const close_cb: *const fn (*Window) bool = WinCtx.onClose;
-    const resize_cb: *const fn (*Window, f64, f64) void = WinCtx.onResize;
+    // Verify callback function signatures match what PlatformWindow expects
+    const render_cb: *const fn (*PlatformWindow) void = WinCtx.onRender;
+    const input_cb: *const fn (*PlatformWindow, InputEvent) bool = WinCtx.onInput;
+    const close_cb: *const fn (*PlatformWindow) bool = WinCtx.onClose;
+    const resize_cb: *const fn (*PlatformWindow, f64, f64) void = WinCtx.onResize;
 
     // Assertions: callbacks are valid function pointers
     std.debug.assert(@intFromPtr(render_cb) != 0);

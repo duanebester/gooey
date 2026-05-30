@@ -12,9 +12,9 @@ const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const DataTableState = gooey.DataTableState;
-const SortDirection = gooey.SortDirection;
-const Button = gooey.Button;
+const DataTableState = gooey.widgets.DataTableState;
+const SortDirection = gooey.widgets.SortDirection;
+const Button = gooey.components.Button;
 
 const ui = gooey.ui;
 
@@ -463,7 +463,7 @@ const DataTable = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        cx.dataTable(
+        cx.lists.dataTable(
             "main-table",
             &s.table_state,
             .{
@@ -619,7 +619,7 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }

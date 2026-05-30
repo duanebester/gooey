@@ -3,6 +3,7 @@
 //! Simplified to debug floating dropdown behavior
 
 const gooey = @import("gooey");
+const std = @import("std");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
 pub const std_options = gooey.std_options;
@@ -10,7 +11,7 @@ const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 
 // =============================================================================
 // State
@@ -48,9 +49,9 @@ comptime {
 }
 
 // Native entry point
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 // =============================================================================
@@ -204,7 +205,7 @@ const BulletPoint = struct {
 // Event Handling
 // =============================================================================
 
-fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
+fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
     if (event == .key_down) {
         const key = event.key_down;
         const s = cx.state(AppState);

@@ -2,39 +2,24 @@
 //!
 //! Parses SVG path data into a format suitable for tessellation and GPU rendering.
 //! Adapted from cosmic graphics for the gooey rendering pipeline.
+//!
+//! Vector math types live in `core.vec2` so the SVG, scene-path, and
+//! triangulation pipelines all share one `Vec2` / `IndexSlice` (cleanup
+//! plan PR 2 — eliminates the `scene/svg.zig` ↔ `core/vec2.zig` Vec2
+//! collision).
 
 const std = @import("std");
-const scene = @import("mod.zig");
+const vec2_mod = @import("../core/vec2.zig");
 
-/// 2D Vector for path operations
-pub const Vec2 = struct {
-    x: f32 = 0,
-    y: f32 = 0,
+/// Re-exported here so existing call sites
+/// (`svg_mod.Vec2`, `svg.flattenPath(... Vec2 ...)`) keep compiling
+/// without reaching across module boundaries for the canonical type.
+pub const Vec2 = vec2_mod.Vec2;
 
-    pub fn init(x: f32, y: f32) Vec2 {
-        return .{ .x = x, .y = y };
-    }
-
-    pub fn add(self: Vec2, other: Vec2) Vec2 {
-        return .{ .x = self.x + other.x, .y = self.y + other.y };
-    }
-
-    pub fn sub(self: Vec2, other: Vec2) Vec2 {
-        return .{ .x = self.x - other.x, .y = self.y - other.y };
-    }
-
-    pub fn scale(self: Vec2, s: f32) Vec2 {
-        return .{ .x = self.x * s, .y = self.y * s };
-    }
-
-    pub fn cross(self: Vec2, other: Vec2) f32 {
-        return self.x * other.y - self.y * other.x;
-    }
-
-    pub fn length(self: Vec2) f32 {
-        return @sqrt(self.x * self.x + self.y * self.y);
-    }
-};
+/// Re-exported `IndexSlice` carries the optional `closed` flag used by
+/// stroke rasterization to distinguish subpaths terminated with `Z` from
+/// open subpaths (arcs, raw curves). Fill rasterization ignores it.
+pub const IndexSlice = vec2_mod.IndexSlice;
 
 /// SVG Path Commands
 pub const PathCommand = enum(u8) {
@@ -286,16 +271,6 @@ pub fn flattenArc(
         try output.append(allocator, Vec2.init(px, py));
     }
 }
-
-/// Polygon slice for tessellation
-pub const IndexSlice = struct {
-    start: u32,
-    end: u32,
-    /// Whether this subpath was explicitly closed with a Z command.
-    /// Open subpaths (e.g. arcs, curves) should NOT have their endpoints
-    /// joined when stroking.
-    closed: bool = false,
-};
 
 /// Parsed SVG Path - ready for flattening/tessellation
 pub const SvgPath = struct {

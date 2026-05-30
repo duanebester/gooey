@@ -31,6 +31,19 @@ pub const PlatformVTable = interface.PlatformVTable;
 /// Window interface for runtime polymorphism
 pub const WindowVTable = interface.WindowVTable;
 
+// PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the upcoming `Gooey → Window` rename
+// in PR 7b.1b. The two are very different things — `PlatformWindow` is
+// the OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas
+// on web); the framework-level `Window` will hold per-window frame
+// state. Keeping them under one name was always going to bite once the
+// `Gooey` god object split landed; this PR pre-empts the collision.
+//
+// See `docs/cleanup-implementation-plan.md` PR 7b for the broader
+// App/Window split, and `architectural-cleanup-plan.md` §10 for the
+// GPUI mapping where `platform_window: PlatformWindow` is the pattern
+// being adopted.
+
 /// Platform capabilities
 pub const PlatformCapabilities = interface.PlatformCapabilities;
 
@@ -88,8 +101,18 @@ else if (is_linux)
 else
     backend.MacPlatform;
 
-/// Window type for the current OS (compile-time selected)
-pub const Window = if (is_wasm)
+/// OS-level window handle for the current target (compile-time selected).
+///
+/// This is the platform's native window object — `NSWindow` on macOS
+/// (wrapped), `wl_surface` plus xdg-shell state on Linux/Wayland, an
+/// `HTMLCanvasElement`-backed shim on web. Framework code should
+/// generally treat it as opaque and reach for it through `Window`
+/// (the framework-level wrapper, see `context/gooey.zig`) rather than
+/// here.
+///
+/// Renamed from `Window` in PR 7b.1a so the framework wrapper can
+/// claim that name in PR 7b.1b without a `platform.Window` collision.
+pub const PlatformWindow = if (is_wasm)
     backend.WebWindow
 else if (is_linux)
     backend.Window
@@ -129,12 +152,45 @@ pub const linux = if (is_linux) struct {
     pub const VulkanRenderer = vk_renderer.VulkanRenderer;
 } else struct {};
 
+// PR 9 Task 2.5 — `image_loader` moved from `root.wasm_image_loader`
+// (and the duplicate private `runtime/render.zig::wasm_loader` shim) into
+// `platform.web.image_loader`. The conditional-stub lived in two places
+// historically; consolidating it here puts the platform-conditional logic
+// next to the rest of the `web` namespace (`platform`, `window`,
+// `imports`, `file_dialog`) and lets non-WASM callers resolve through the
+// same path without each call site rolling its own stub.
 pub const web = if (is_wasm) struct {
     pub const platform = @import("web/platform.zig");
     pub const window = @import("web/window.zig");
     pub const imports = @import("web/imports.zig");
     pub const file_dialog = @import("web/file_dialog.zig");
-} else struct {};
+    pub const image_loader = @import("web/image_loader.zig");
+} else struct {
+    // Stub mirroring `web/image_loader.zig`'s public surface so non-WASM
+    // call sites compile against the same names. All entry points are
+    // no-ops on native — runtime image loading on native goes through
+    // `image.ImageLoader` instead (the native-only async loader landed
+    // in PR 1; the WASM async path remains separate because browser
+    // `createImageBitmap` requires a JS round-trip).
+    pub const image_loader = struct {
+        pub const DecodedImage = struct {
+            width: u32,
+            height: u32,
+            pixels: []u8,
+            owned: bool,
+            pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
+        };
+        pub const DecodeCallback = *const fn (u32, ?DecodedImage) void;
+        pub fn init(_: std.mem.Allocator) void {}
+        pub fn deinit() void {}
+        pub fn loadFromUrlAsync(_: []const u8, _: DecodeCallback) ?u32 {
+            return null;
+        }
+        pub fn loadFromMemoryAsync(_: []const u8, _: DecodeCallback) ?u32 {
+            return null;
+        }
+    };
+};
 
 // =============================================================================
 // Helpers

@@ -30,8 +30,6 @@ const std = @import("std");
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
-const layout_mod = @import("../layout/layout.zig");
-const LayoutId = layout_mod.LayoutId;
 
 pub const Svg = struct {
     /// SVG path data (the `d` attribute from an SVG path element)
@@ -68,25 +66,28 @@ pub const Svg = struct {
     /// Unique identifier for accessibility (defaults to path hash)
     id: ?[]const u8 = null,
 
-    pub fn render(self: Svg, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: Svg, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Push accessible element for SVGs with alt text
-        // SVGs without alt are treated as decorative (presentation)
-        const layout_id = LayoutId.fromString(self.id orelse self.path);
+        // SVGs without alt are treated as decorative (presentation).
+        // Resolve identity once (PR 11b.2b); reused for the a11y node and the
+        // box below, which previously auto-id'd and so diverged from the a11y
+        // id. Null ⇒ parent-scoped auto id (PR 11b.2a).
+        const layout_id = cx.idFor(self.id);
         const a11y_pushed = if (self.alt) |alt_text|
-            b.accessible(.{
+            cx.accessible(.{
                 .layout_id = layout_id,
                 .role = .img,
                 .name = alt_text,
             })
         else
             // Decorative icon - explicitly mark as presentation
-            b.accessible(.{
+            cx.accessible(.{
                 .layout_id = layout_id,
                 .role = .presentation,
             });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
         // Determine final dimensions
         const w = self.width orelse self.size orelse 24;
@@ -104,7 +105,7 @@ pub const Svg = struct {
         const final_color = fill_color orelse Color.transparent;
 
         // Emit the SVG primitive (atlas handles caching internally)
-        b.box(.{
+        cx.boxWithLayoutId(layout_id, .{
             .width = w,
             .height = h,
         }, .{

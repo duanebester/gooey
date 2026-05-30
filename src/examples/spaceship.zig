@@ -27,10 +27,10 @@ pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
-const TextInput = gooey.TextInput;
-const Easing = gooey.Easing;
-const Svg = gooey.Svg;
+const Button = gooey.components.Button;
+const TextInput = gooey.components.TextInput;
+const Easing = gooey.animation.Easing;
+const Svg = gooey.components.Svg;
 
 // =============================================================================
 // Custom Spaceship SVG Icons (24x24 viewbox)
@@ -431,7 +431,7 @@ const AppState = struct {
 const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         // Fade in header on load
-        const fade = cx.animateComptime("header-fade", .{ .duration_ms = 600 });
+        const fade = cx.animations.tweenComptime("header-fade", .{ .duration_ms = 600 });
 
         cx.render(ui.box(.{
             .fill_width = true,
@@ -467,7 +467,7 @@ const StatusIndicator = struct {
         const s = cx.stateConst(AppState);
 
         // Pulse effect for non-nominal status
-        const pulse = cx.animateComptime("status-pulse", .{
+        const pulse = cx.animations.tweenComptime("status-pulse", .{
             .duration_ms = 1500,
             .easing = Easing.easeInOut,
             .mode = .ping_pong,
@@ -500,14 +500,14 @@ const AlertBadge = struct {
 
         if (s.active_alerts > 0) {
             // Urgent pulse for alerts
-            const pulse = cx.animateComptime("alert-pulse", .{
+            const pulse = cx.animations.tweenComptime("alert-pulse", .{
                 .duration_ms = 800,
                 .easing = Easing.easeInOut,
                 .mode = .ping_pong,
             });
 
             const scale = 1.0 + pulse.progress * 0.08;
-            const glow_alpha = gooey.lerp(0.8, 1.0, pulse.progress);
+            const glow_alpha = gooey.animation.lerp(0.8, 1.0, pulse.progress);
 
             cx.render(ui.box(.{
                 .padding = .{ .symmetric = .{ .x = 8 * scale, .y = 4 * scale } },
@@ -660,14 +660,14 @@ const JumpChargeRing = struct {
         const is_ready = s.jump_ready;
 
         // Charging animation - faster rotation effect via opacity
-        const charge_pulse = cx.animateComptime("jump-charge-pulse", .{
+        const charge_pulse = cx.animations.tweenComptime("jump-charge-pulse", .{
             .duration_ms = if (is_charging) 600 else 2000,
             .easing = Easing.easeInOut,
             .mode = .ping_pong,
         });
 
         // Ready glow - strong pulse when jump is ready
-        const ready_glow = cx.animateOnComptime("jump-ready-glow", is_ready, .{
+        const ready_glow = cx.animations.tweenOnComptime("jump-ready-glow", is_ready, .{
             .duration_ms = 400,
             .easing = Easing.easeOutBack,
         });
@@ -676,9 +676,9 @@ const JumpChargeRing = struct {
 
         // Intensity varies with state
         const intensity: f32 = if (is_ready)
-            gooey.lerp(0.2, 0.4, ready_glow.progress)
+            gooey.animation.lerp(0.2, 0.4, ready_glow.progress)
         else if (is_charging)
-            gooey.lerp(0.1, 0.25, charge_pulse.progress)
+            gooey.animation.lerp(0.1, 0.25, charge_pulse.progress)
         else
             0.1;
 
@@ -803,7 +803,7 @@ const GaugeBar = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Animate the gauge fill on value changes
-        const fill_anim = cx.animateOn(self.id, self.value, .{
+        const fill_anim = cx.animations.tweenOn(self.id, self.value, .{
             .duration_ms = 300,
             .easing = Easing.easeOutCubic,
         });
@@ -837,14 +837,14 @@ const ReactorStatus = struct {
 
         // Pulse intensity based on temperature
         const is_hot = s.reactor_temp > 850;
-        const pulse = cx.animateComptime("reactor-pulse", .{
+        const pulse = cx.animations.tweenComptime("reactor-pulse", .{
             .duration_ms = if (is_hot) 1000 else 2500,
             .easing = Easing.easeInOut,
             .mode = .ping_pong,
         });
 
         const temp_color = if (is_hot) Colors.orange else Colors.green;
-        const glow_intensity: f32 = if (is_hot) gooey.lerp(0.8, 1.0, pulse.progress) else 1.0;
+        const glow_intensity: f32 = if (is_hot) gooey.animation.lerp(0.8, 1.0, pulse.progress) else 1.0;
 
         cx.render(ui.box(.{
             .fill_width = true,
@@ -932,13 +932,13 @@ const CircleGauge = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         // All gauges share the same breathing animation - that's fine!
-        const breathe = cx.animateComptime("gauge-breathe", .{
+        const breathe = cx.animations.tweenComptime("gauge-breathe", .{
             .duration_ms = 3000,
             .easing = Easing.easeInOut,
             .mode = .ping_pong,
         });
 
-        const bg_alpha = gooey.lerp(0.06, 0.12, breathe.progress);
+        const bg_alpha = gooey.animation.lerp(0.06, 0.12, breathe.progress);
 
         cx.render(ui.box(.{
             .width = 100,
@@ -1112,14 +1112,14 @@ const AutopilotToggle = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Animate toggle state changes
-        const toggle_anim = cx.animateOnComptime("autopilot-toggle", self.active, .{
+        const toggle_anim = cx.animations.tweenOnComptime("autopilot-toggle", self.active, .{
             .duration_ms = 200,
             .easing = Easing.easeOut,
         });
 
         const target_color = if (self.active) Colors.green else Colors.red;
         // Blend from previous state
-        const current_alpha = gooey.lerp(0.1, 0.15, toggle_anim.progress);
+        const current_alpha = gooey.animation.lerp(0.1, 0.15, toggle_anim.progress);
 
         cx.render(ui.box(.{
             .fill_width = true,
@@ -1149,13 +1149,13 @@ const ShieldsToggle = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Animate toggle state changes
-        const toggle_anim = cx.animateOnComptime("shields-toggle", self.active, .{
+        const toggle_anim = cx.animations.tweenOnComptime("shields-toggle", self.active, .{
             .duration_ms = 200,
             .easing = Easing.easeOut,
         });
 
         const target_color = if (self.active) Colors.green else Colors.red;
-        const current_alpha = gooey.lerp(0.1, 0.15, toggle_anim.progress);
+        const current_alpha = gooey.animation.lerp(0.1, 0.15, toggle_anim.progress);
 
         cx.render(ui.box(.{
             .fill_width = true,
@@ -1201,13 +1201,13 @@ const NeonButton = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Subtle idle pulse for interactive buttons
-        const pulse = cx.animateComptime("btn-pulse", .{
+        const pulse = cx.animations.tweenComptime("btn-pulse", .{
             .duration_ms = 2000,
             .easing = Easing.easeInOut,
             .mode = .ping_pong,
         });
 
-        const bg_alpha = gooey.lerp(0.12, 0.18, pulse.progress);
+        const bg_alpha = gooey.animation.lerp(0.12, 0.18, pulse.progress);
 
         if (self.icon) |icon_path| {
             // Button with icon
@@ -1350,9 +1350,9 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 fn render(cx: *Cx) void {

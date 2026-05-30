@@ -13,9 +13,9 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = ui.Color;
-const Button = gooey.Button;
-const MultiWindowApp = gooey.MultiWindowApp;
-const WindowHandle = gooey.WindowHandle;
+const Button = gooey.components.Button;
+const MultiWindowApp = gooey.runtime.MultiWindowApp;
+const WindowHandle = gooey.runtime.WindowHandle;
 
 // =============================================================================
 // Main Window State

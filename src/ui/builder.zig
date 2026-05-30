@@ -18,11 +18,11 @@ const action_mod = @import("../input/actions.zig");
 const actionTypeId = action_mod.actionTypeId;
 const handler_mod = @import("../context/handler.zig");
 const entity_mod = @import("../context/entity.zig");
-const gooey_mod = @import("../context/gooey.zig");
+const window_mod = @import("../context/window.zig");
 const drag_mod = @import("../context/drag.zig");
 pub const HandlerRef = handler_mod.HandlerRef;
 pub const EntityId = entity_mod.EntityId;
-pub const Gooey = gooey_mod.Gooey;
+pub const Window = window_mod.Window;
 
 // Accessibility
 const a11y = @import("../accessibility/accessibility.zig");
@@ -57,6 +57,50 @@ const styles = @import("styles.zig");
 const primitives = @import("primitives.zig");
 const theme_mod = @import("theme.zig");
 pub const Theme = theme_mod.Theme;
+
+// PR 8.4 — `ScrollContainer` storage moved off
+// `WidgetStore.scroll_containers` onto `Window.element_states`. The
+// builder is the create-on-touch site for scroll regions, so it
+// reaches into the pool directly here. Same import shape as `cx.zig`
+// uses for `SelectState` post-PR 8.2.
+const scroll_container_mod = @import("../widgets/scroll_container.zig");
+const ScrollContainer = scroll_container_mod.ScrollContainer;
+
+// PR 8.4b — `TextInputState` / `TextAreaState` / `CodeEditorState`
+// storage moved off the per-type `WidgetStore` StringHashMaps onto
+// `Window.element_states`. `Builder.renderInput` / `renderTextArea`
+// / `renderCodeEditor` are the create-on-touch sites: each seeds
+// the pool entry on first render via `getOrInsert(EngineType,
+// layout_id.id, EngineType.init(allocator, default_bounds))` and
+// the rest of the framework (frame renderer, input handlers, focus
+// register) reads through `get` keyed by `layout_id.id`. Same
+// migration shape as `ScrollContainer` (PR 8.4a). The two `Bounds`
+// aliases land here so the seeded `init(...)` calls don't reach
+// into the engine modules for the type — the builder owns the
+// default-bounds policy.
+const text_input_state_mod = @import("../widgets/text_input_state.zig");
+const TextInputState = text_input_state_mod.TextInputState;
+const TextInputBounds = text_input_state_mod.Bounds;
+const text_area_state_mod = @import("../widgets/text_area_state.zig");
+const TextAreaState = text_area_state_mod.TextAreaState;
+const TextAreaBounds = text_area_state_mod.Bounds;
+const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
+const CodeEditorState = code_editor_state_mod.CodeEditorState;
+const CodeEditorBounds = code_editor_state_mod.Bounds;
+
+/// Default bounds used to seed a freshly-allocated text widget pool
+/// slot. `Builder.renderInput` / `renderTextArea` / `renderCodeEditor`
+/// pass these to `EngineType.init(...)` on the miss path; the actual
+/// per-frame bounds are recomputed and written by
+/// `runtime/frame.zig::renderTextInputs` / `renderTextAreas` /
+/// `renderCodeEditors` once layout has run, so the seed values are
+/// only observed by code that touches the widget before its first
+/// post-layout render (none today, but the assertions in the
+/// engines' `init` paths require sane geometry, e.g.
+/// `CodeEditorState.init` asserts `bounds.width > 0`).
+const DEFAULT_TEXT_INPUT_BOUNDS: TextInputBounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 };
+const DEFAULT_TEXT_AREA_BOUNDS: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 };
+const DEFAULT_CODE_EDITOR_BOUNDS: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 };
 
 pub const Color = styles.Color;
 pub const ShadowConfig = styles.ShadowConfig;
@@ -165,11 +209,27 @@ pub const Builder = struct {
     pub const MAX_PENDING_CODE_EDITORS = 32;
     pub const MAX_PENDING_SCROLLS = 64;
     pub const MAX_PENDING_CANVAS = canvas_mod.MAX_PENDING_CANVAS;
+    // PR 11b.3a — the unified text-widget control queue holds one
+    // `{ kind, index }` record per text widget, across all three
+    // kinds, so its cap is the sum of the three data-plane pools.
+    pub const MAX_PENDING_TEXT_WIDGETS =
+        MAX_PENDING_INPUTS + MAX_PENDING_TEXT_AREAS + MAX_PENDING_CODE_EDITORS;
+    // PR 11b.2a — a single parent cannot hold more auto-id'd children than
+    // the layout engine's per-frame element cap, so the sibling index used
+    // to derive a parent-scoped auto id is bounded by it. Asserted in
+    // `generateId` so a runaway loop fails fast rather than silently
+    // wrapping the `u32` counter.
+    pub const MAX_AUTO_SIBLINGS = layout_mod.engine.MAX_ELEMENTS_PER_FRAME;
+
+    // PR 11b.2a — fixed seed string mixed into every auto id's hash so the
+    // auto-id hash domain can't collapse onto a parent's own layout id (which
+    // is `hashString(parent_string, grandparent_id)` — a different seed path).
+    const AUTO_ID_SEED = "\x00auto";
 
     allocator: std.mem.Allocator,
     layout: *LayoutEngine,
     scene: *Scene,
-    gooey: ?*Gooey = null,
+    window: ?*Window = null,
     id_counter: u32 = 0,
 
     /// Dispatch tree for event routing (built alongside layout)
@@ -183,23 +243,69 @@ pub const Builder = struct {
     /// Cx pointer for new-style components (set by runCx)
     cx_ptr: ?*anyopaque = null,
 
-    /// Theme pointer for context-aware theming
-    theme_ptr: ?*const Theme = null,
+    // PR 6 / 7b.4 — theme storage lives on `App.globals` keyed by
+    // `*const Theme`. The Builder does not cache a `*const Theme`;
+    // `setTheme` writes through the type-keyed registry on the
+    // parent `Window`'s borrowed `*App` and `theme()` reads back
+    // from the same slot. Rationale: pre-7b.4 the theme slot was
+    // per-window — a tab swap in window A would not repaint window
+    // B. Lifting the slot to `App.globals` makes the active theme
+    // a true app-scoped value (one swap, every window sees the
+    // new colors) and matches the GPUI mapping in §10. Collapses
+    // two parallel stores (Builder.theme_ptr + the per-window
+    // Globals slot the original PR 6 sketch called for) into one
+    // app-scoped slot. See `docs/cleanup-implementation-plan.md`
+    // PR 6 / 7b.4.
 
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
     pending_code_editors: std.ArrayList(PendingCodeEditor),
+
+    /// PR 11b.3a — unified control-plane queue for the post-layout
+    /// text-widget render pass. The three pools above are the data
+    /// plane (right-sized, typed); this queue records one tiny
+    /// `{ kind, index }` per widget in tree order so the render pass
+    /// can replay all three kinds interleaved in the order they were
+    /// built. Tree-order replay is strictly more correct than the
+    /// old grouped (inputs, then areas, then editors) order when
+    /// widgets of different kinds overlap. A `{ kind, index }` record
+    /// (rather than a tagged union over the style structs) keeps each
+    /// slot at 8 bytes instead of sizing every slot to the largest
+    /// variant (`CodeEditorStyle`) — control plane / data plane split,
+    /// CLAUDE.md §8.
+    pending_text_widgets: std.ArrayList(PendingTextWidget),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
     pending_canvas: std.ArrayListUnmanaged(canvas_mod.PendingCanvas),
 
     /// Hashmap for O(1) scroll lookup by layout_id (avoids O(n) scan per scissor_end)
     pending_scrolls_by_layout_id: std.AutoHashMapUnmanaged(u32, usize),
 
-    /// Currently dragged scroll container ID (avoids O(n) scan per mouse drag event)
-    active_scroll_drag_id: ?[]const u8 = null,
+    /// Currently dragged scroll container ID (avoids O(n) scan per
+    /// mouse drag event). PR 8.4 — storage moved off
+    /// `WidgetStore.scroll_containers` (string-keyed) onto
+    /// `Window.element_states` (layout-id-hash-keyed), so the cached
+    /// drag id is now the u32 hash. Avoids re-hashing the string at
+    /// every drag event and — critically — sidesteps the lifetime
+    /// hazard of holding a borrowed `[]const u8` across the
+    /// frame-render boundary that used to free the duped key.
+    active_scroll_drag_id: ?u32 = null,
 
-    const PendingInput = struct {
+    /// PR 11b.3a — the kind discriminant for the unified text-widget
+    /// control queue. Mirrors the three typed data-plane pools; the
+    /// render pass switches on it at comptime (no runtime trait
+    /// objects) to pick the matching pool and per-kind render path.
+    pub const TextWidgetKind = enum { input, text_area, code_editor };
+
+    /// PR 11b.3a — one control-plane record: which pool, and which
+    /// slot within it. 8 bytes; the heavy per-widget state stays in
+    /// the typed pools.
+    pub const PendingTextWidget = struct {
+        kind: TextWidgetKind,
+        index: u32,
+    };
+
+    pub const PendingInput = struct {
         id: []const u8,
         layout_id: LayoutId,
         style: InputStyle,
@@ -208,7 +314,7 @@ pub const Builder = struct {
         on_blur_handler: ?HandlerRef = null,
     };
 
-    const PendingTextArea = struct {
+    pub const PendingTextArea = struct {
         id: []const u8,
         layout_id: LayoutId,
         style: TextAreaStyle,
@@ -250,6 +356,7 @@ pub const Builder = struct {
             .pending_scrolls = .empty,
             .pending_text_areas = .empty,
             .pending_code_editors = .empty,
+            .pending_text_widgets = .empty,
             .pending_canvas = .empty,
             .pending_scrolls_by_layout_id = .{},
             .active_scroll_drag_id = null,
@@ -260,9 +367,29 @@ pub const Builder = struct {
         self.pending_inputs.deinit(self.allocator);
         self.pending_text_areas.deinit(self.allocator);
         self.pending_code_editors.deinit(self.allocator);
+        self.pending_text_widgets.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
         self.pending_canvas.deinit(self.allocator);
         self.pending_scrolls_by_layout_id.deinit(self.allocator);
+    }
+
+    // =========================================================================
+    // Text-widget control queue (PR 11b.3a)
+    // =========================================================================
+
+    /// Record a `{ kind, index }` control-plane entry pointing at the
+    /// slot a `renderInput` / `renderTextArea` / `renderCodeEditor`
+    /// just appended to its typed data-plane pool. Callers must invoke
+    /// this only after confirming the data-plane append landed, so the
+    /// recorded index always resolves to a live slot during the
+    /// post-layout render pass.
+    fn enqueuePendingTextWidget(self: *Self, kind: TextWidgetKind, index: usize) void {
+        std.debug.assert(index <= std.math.maxInt(u32));
+        std.debug.assert(self.pending_text_widgets.items.len < MAX_PENDING_TEXT_WIDGETS);
+        self.pending_text_widgets.append(self.allocator, .{
+            .kind = kind,
+            .index = @intCast(index),
+        }) catch {};
     }
 
     // =========================================================================
@@ -303,14 +430,47 @@ pub const Builder = struct {
 
     /// Set the theme for this builder and all child components.
     /// Called at the start of render to establish theme context.
+    ///
+    /// PR 6 / 7b.4: writes through to `app.globals` keyed by
+    /// `Theme`. `replaceBorrowedConst` registers a fresh slot on
+    /// the first call and rebinds the pointer on subsequent calls
+    /// without growing the table — same behaviour the old
+    /// `theme_ptr` assignment had, just routed through the
+    /// type-keyed store on the parent `App`. Pre-7b.4 the slot
+    /// lived on `Window.globals`, which made cross-window theme
+    /// sharing structurally impossible; lifting to `App.globals`
+    /// is what makes a single `cx.setTheme(&Theme.dark)` repaint
+    /// every window in a multi-window app.
+    ///
+    /// Asserts `self.window` is wired. Every code path that builds
+    /// a frame (`Cx.setTheme`, the runtime drivers) goes through
+    /// a `Window`-attached builder; a null parent here is a
+    /// framework bug, not a runtime fallback.
     pub fn setTheme(self: *Self, t: *const Theme) void {
-        self.theme_ptr = t;
+        const g = self.window orelse {
+            std.debug.panic(
+                "Builder.setTheme: builder has no parent Window; cannot route theme through globals",
+                .{},
+            );
+        };
+        g.app.globals.replaceBorrowedConst(Theme, t);
     }
 
     /// Get the current theme, falling back to light theme if none set.
     /// Components use this to resolve null color fields.
+    ///
+    /// PR 6 / 7b.4: reads from `app.globals`. The `*const Theme`
+    /// slot may be empty (no `setTheme` yet this frame, or the
+    /// builder was stood up bare for a unit test that bypassed
+    /// the `App` wiring) — fall back to `&Theme.light` in that
+    /// case so the component path stays branch-free. Pre-7b.4
+    /// the slot was read from `window.globals`; the lift to
+    /// `app.globals` is transparent to call sites because every
+    /// `Window` that has a parent `App` wired (every framework
+    /// init path) reaches the same slot.
     pub fn theme(self: *Self) *const Theme {
-        return self.theme_ptr orelse &Theme.light;
+        const g = self.window orelse return &Theme.light;
+        return g.app.globals.getConst(Theme) orelse &Theme.light;
     }
 
     /// Get the typed context from within a component's render method.
@@ -344,8 +504,8 @@ pub const Builder = struct {
 
     /// Get an EntityContext for an entity from within a component's render method.
     ///
-    /// This is a convenience that combines `b.gooey` access with entity context creation,
-    /// eliminating the need for global Gooey references in entity-based components.
+    /// This is a convenience that combines `b.window` access with entity context creation,
+    /// eliminating the need for global Window references in entity-based components.
     ///
     /// ## Example
     ///
@@ -368,29 +528,29 @@ pub const Builder = struct {
         comptime T: type,
         entity: entity_mod.Entity(T),
     ) ?entity_mod.EntityContext(T) {
-        const g = self.gooey orelse return null;
+        const g = self.window orelse return null;
         return entity.context(g);
     }
 
-    /// Get the Gooey instance from within a component.
+    /// Get the Window instance from within a component.
     ///
-    /// Useful for reading entity data or other Gooey operations.
-    /// Returns null if Builder wasn't initialized with a Gooey reference.
-    pub fn getGooey(self: *Self) ?*Gooey {
-        return self.gooey;
+    /// Useful for reading entity data or other Window operations.
+    /// Returns null if Builder wasn't initialized with a Window reference.
+    pub fn getGooey(self: *Self) ?*Window {
+        return self.window;
     }
 
     /// Read an entity's data directly from Builder.
     /// Convenience wrapper around gooey.readEntity().
     pub fn readEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*const T {
-        const g = self.gooey orelse return null;
+        const g = self.window orelse return null;
         return g.readEntity(T, entity);
     }
 
     /// Write to an entity's data directly from Builder.
     /// Convenience wrapper around gooey.writeEntity().
     pub fn writeEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*T {
-        const g = self.gooey orelse return null;
+        const g = self.window orelse return null;
         return g.writeEntity(T, entity);
     }
 
@@ -413,8 +573,8 @@ pub const Builder = struct {
     /// // ... render visual element ...
     /// ```
     pub fn accessible(self: *Self, config: AccessibleConfig) bool {
-        const g = self.gooey orelse return false;
-        if (!g.a11y_enabled) return false;
+        const g = self.window orelse return false;
+        if (!g.a11y.isEnabled()) return false;
 
         // Phase 3: Auto-inject focus state from FocusManager
         // This centralizes focus tracking - components don't need to know about it
@@ -429,22 +589,23 @@ pub const Builder = struct {
 
         // Resolve string-based relationship IDs to element indices
         // Note: Target elements must be rendered earlier in the same frame
+        const a11y_tree = g.a11y.getTree();
         const labelled_by: ?u16 = if (config.labelled_by_id) |id|
-            g.a11y_tree.findElementByStringId(id)
+            a11y_tree.findElementByStringId(id)
         else
             null;
 
         const described_by: ?u16 = if (config.described_by_id) |id|
-            g.a11y_tree.findElementByStringId(id)
+            a11y_tree.findElementByStringId(id)
         else
             null;
 
         const controls: ?u16 = if (config.controls_id) |id|
-            g.a11y_tree.findElementByStringId(id)
+            a11y_tree.findElementByStringId(id)
         else
             null;
 
-        _ = g.a11y_tree.pushElement(.{
+        _ = a11y_tree.pushElement(.{
             .layout_id = config.layout_id,
             .role = config.role,
             .name = config.name,
@@ -470,9 +631,9 @@ pub const Builder = struct {
     /// End current accessible element.
     /// Must be called after accessible() returns true.
     pub fn accessibleEnd(self: *Self) void {
-        const g = self.gooey orelse return;
-        if (g.a11y_enabled) {
-            g.a11y_tree.popElement();
+        const g = self.window orelse return;
+        if (g.a11y.isEnabled()) {
+            g.a11y.getTree().popElement();
         }
     }
 
@@ -485,16 +646,14 @@ pub const Builder = struct {
     /// b.announce("Error: connection lost", .assertive);
     /// ```
     pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
-        const g = self.gooey orelse return;
-        if (g.a11y_enabled) {
-            g.a11y_tree.announce(message, priority);
-        }
+        const g = self.window orelse return;
+        g.a11y.announce(message, priority);
     }
 
     /// Check if accessibility is currently enabled
     pub fn isA11yEnabled(self: *Self) bool {
-        const g = self.gooey orelse return false;
-        return g.a11y_enabled;
+        const g = self.window orelse return false;
+        return g.a11y.isEnabled();
     }
 
     // =========================================================================
@@ -548,13 +707,13 @@ pub const Builder = struct {
         self.dispatch.setLayoutId(layout_id.id);
 
         // Resolve hover styles - check if this element is currently hovered
-        const is_hovered = if (self.gooey) |g|
+        const is_hovered = if (self.window) |g|
             g.isHovered(layout_id.id)
         else
             false;
 
         // Check if this is a valid drag-over target
-        const is_drag_over = if (self.gooey) |g| blk: {
+        const is_drag_over = if (self.window) |g| blk: {
             if (g.active_drag) |drag| {
                 if (props.drop_target) |drop| {
                     // Type must match AND cursor must be over this element
@@ -834,16 +993,12 @@ pub const Builder = struct {
     // =========================================================================
     // Component Integration
     // =========================================================================
-
-    /// Render any component (struct with `render` method)
-    pub fn with(self: *Self, component: anytype) void {
-        const T = @TypeOf(component);
-        if (@typeInfo(T) == .@"struct" and @hasDecl(T, "render")) {
-            component.render(self);
-        } else {
-            @compileError("with() requires a struct with a `render` method");
-        }
-    }
+    //
+    // `Builder.with` was removed in PR 11b.1. It passed `*Builder` to a
+    // component's `render`, but components now author against `*Cx`, so
+    // the only correct entry point is `Cx.with` (which routes through the
+    // `*Cx`-aware dispatch). All former `b.with(...)` call sites migrated
+    // to `cx.with(...)`.
 
     // =========================================================================
     // Conditionals
@@ -885,11 +1040,22 @@ pub const Builder = struct {
         _ = self.dispatch.pushNode();
         self.dispatch.setLayoutId(layout_id.id);
 
-        // Get scroll offset from retained widget
+        // Get scroll offset from retained widget. PR 8.4 — storage
+        // lifted off `WidgetStore.scroll_containers` onto
+        // `Window.element_states`; the layout-id hash is the pool
+        // key. The miss path here also seeds the pool entry so that
+        // the subsequent `registerPendingScrollRegions` walk can
+        // assume the slot exists, mirroring the pre-PR-8.4
+        // create-on-touch shape `widgets.scrollContainer(id)` had.
         var scroll_offset_x: f32 = 0;
         var scroll_offset_y: f32 = 0;
-        if (self.gooey) |g| {
-            if (g.widgets.scrollContainer(id)) |sc| {
+        if (self.window) |g| {
+            const sc_or_null = g.element_states.getOrInsert(
+                ScrollContainer,
+                @as(u64, layout_id.id),
+                ScrollContainer.init(g.allocator),
+            ) catch null;
+            if (sc_or_null) |sc| {
                 scroll_offset_x = sc.state.offset_x;
                 scroll_offset_y = sc.state.offset_y;
             }
@@ -1017,767 +1183,33 @@ pub const Builder = struct {
         return null;
     }
 
-    /// Track which scroll container is being dragged (for O(1) drag event handling)
-    pub fn setActiveScrollDrag(self: *Self, id: ?[]const u8) void {
+    /// Track which scroll container is being dragged (for O(1) drag
+    /// event handling). The `id` is the `LayoutId.id` u32 hash that
+    /// keys the `Window.element_states` slot post-PR 8.4.
+    pub fn setActiveScrollDrag(self: *Self, id: ?u32) void {
         self.active_scroll_drag_id = id;
     }
 
-    /// Get the currently dragged scroll container ID
-    pub fn getActiveScrollDrag(self: *const Self) ?[]const u8 {
+    /// Get the currently dragged scroll container ID (u32 layout-id
+    /// hash that keys `Window.element_states`).
+    pub fn getActiveScrollDrag(self: *const Self) ?u32 {
         return self.active_scroll_drag_id;
     }
 
     // =========================================================================
-    // Uniform List (Virtualized)
+    // List rendering helpers (moved per PR 4)
     // =========================================================================
-
-    const uniform_list = @import("../widgets/uniform_list.zig");
-    const UniformListState = uniform_list.UniformListState;
-
-    /// Computed layout parameters for uniform list (avoids recomputation).
-    pub const UniformListLayout = struct {
-        layout_id: LayoutId,
-        sizing: Sizing,
-        padding: Padding,
-        content_height: f32,
-        top_spacer_height: f32,
-        bottom_spacer_height: f32,
-        range: uniform_list.VisibleRange,
-        gap: u16,
-    };
-
-    /// Compute sizing from UniformListStyle - extracted to reduce duplication.
-    fn computeUniformListSizing(style: UniformListStyle) Sizing {
-        var sizing = Sizing.fitContent();
-
-        // Width sizing (default to grow if unspecified)
-        const grow_w = style.grow or style.grow_width;
-        if (grow_w) {
-            sizing.width = SizingAxis.grow();
-        } else if (style.width) |w| {
-            sizing.width = SizingAxis.fixed(w);
-        } else if (style.fill_width) {
-            sizing.width = SizingAxis.percent(1.0);
-        } else {
-            sizing.width = SizingAxis.grow(); // Default: grow to fill
-        }
-
-        // Height sizing (default to fixed for virtualization)
-        const grow_h = style.grow or style.grow_height;
-        if (grow_h) {
-            sizing.height = SizingAxis.grow();
-        } else if (style.height) |h| {
-            sizing.height = SizingAxis.fixed(h);
-        } else if (style.fill_height) {
-            sizing.height = SizingAxis.percent(1.0);
-        } else {
-            sizing.height = SizingAxis.fixed(uniform_list.DEFAULT_VIEWPORT_HEIGHT);
-        }
-
-        return sizing;
-    }
-
-    /// Convert style padding to layout Padding - extracted to reduce duplication.
-    fn computeUniformListPadding(style: UniformListStyle) Padding {
-        return switch (style.padding) {
-            .all => |v| Padding.all(@intFromFloat(v)),
-            .symmetric => |s| Padding.symmetric(@intFromFloat(s.x), @intFromFloat(s.y)),
-            .each => |e| .{
-                .top = @intFromFloat(e.top),
-                .right = @intFromFloat(e.right),
-                .bottom = @intFromFloat(e.bottom),
-                .left = @intFromFloat(e.left),
-            },
-        };
-    }
-
-    /// Sync scroll state between UniformListState and retained ScrollContainer.
-    /// Resolves PendingScrollRequest with accurate viewport dimensions to avoid jitter.
-    pub fn syncUniformListScroll(self: *Self, id: []const u8, state: *UniformListState) void {
-        const g = self.gooey orelse return;
-        const sc = g.widgets.scrollContainer(id) orelse return;
-
-        // Update viewport dimensions FIRST so calculations are accurate
-        state.viewport_height_px = sc.state.viewport_height;
-
-        if (state.pending_scroll) |request| {
-            // Resolve the scroll request with current accurate viewport dimensions
-            const target: f32 = switch (request) {
-                .absolute => |offset| offset,
-                .to_top => 0,
-                .to_end => state.maxScrollOffset(),
-                .to_item => |item| state.resolveScrollToItem(item.index, item.strategy),
-            };
-
-            // Apply resolved scroll to ScrollContainer (clamped to valid range)
-            const max_scroll = sc.state.maxScrollY();
-            sc.state.offset_y = std.math.clamp(target, 0, max_scroll);
-            state.scroll_offset_px = sc.state.offset_y;
-            state.pending_scroll = null; // Consume the request
-        } else {
-            // Normal sync: read current offset from ScrollContainer
-            state.scroll_offset_px = sc.state.offset_y;
-        }
-    }
-
-    /// Compute all layout parameters for uniform list.
-    pub fn computeUniformListLayout(
-        id: []const u8,
-        state: *const UniformListState,
-        style: UniformListStyle,
-    ) UniformListLayout {
-        const range = state.visibleRange();
-        const content_height = state.contentHeight();
-
-        return .{
-            .layout_id = LayoutId.fromString(id),
-            .sizing = computeUniformListSizing(style),
-            .padding = computeUniformListPadding(style),
-            .content_height = content_height,
-            .top_spacer_height = state.topSpacerHeight(range),
-            .bottom_spacer_height = state.bottomSpacerHeight(range),
-            .range = range,
-            .gap = @intFromFloat(style.gap),
-        };
-    }
-
-    /// Open the scroll viewport and content container elements.
-    /// Returns the content_id, or null if layout failed.
-    pub fn openUniformListElements(
-        self: *Self,
-        params: UniformListLayout,
-        style: UniformListStyle,
-        scroll_offset: f32,
-    ) ?LayoutId {
-        // Open scroll viewport element
-        self.layout.openElement(.{
-            .id = params.layout_id,
-            .layout = .{
-                .sizing = params.sizing,
-                .padding = params.padding,
-            },
-            .background_color = style.background,
-            .corner_radius = if (style.corner_radius > 0) CornerRadius.all(style.corner_radius) else .{},
-            .scroll = .{
-                .vertical = true,
-                .horizontal = false,
-                .scroll_offset = .{ .x = 0, .y = scroll_offset },
-            },
-        }) catch {
-            std.debug.assert(false); // Layout allocation failed
-            return null;
-        };
-
-        // Inner content container with full virtual height
-        const content_id = self.generateId();
-        self.layout.openElement(.{
-            .id = content_id,
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.grow(),
-                    .height = SizingAxis.fixed(params.content_height),
-                },
-                .layout_direction = .top_to_bottom,
-                .child_gap = params.gap,
-            },
-        }) catch {
-            self.layout.closeElement(); // Close viewport
-            std.debug.assert(false); // Layout allocation failed
-            return null;
-        };
-
-        return content_id;
-    }
-
-    /// Render a spacer element of given height for uniform list virtualization.
-    pub fn renderUniformListSpacer(self: *Self, height: f32) void {
-        if (height <= 0) return;
-
-        const spacer_id = self.generateId();
-        self.layout.openElement(.{
-            .id = spacer_id,
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.grow(),
-                    .height = SizingAxis.fixed(height),
-                },
-            },
-        }) catch {
-            std.debug.assert(false); // Spacer allocation failed
-            return;
-        };
-        self.layout.closeElement();
-    }
-
-    /// Register scroll handling for the uniform list.
-    pub fn registerUniformListScroll(
-        self: *Self,
-        id: []const u8,
-        params: UniformListLayout,
-        content_id: LayoutId,
-        style: UniformListStyle,
-    ) void {
-        const index = self.pending_scrolls.items.len;
-        self.pending_scrolls.append(self.allocator, .{
-            .id = id,
-            .layout_id = params.layout_id,
-            .style = .{
-                .vertical = true,
-                .horizontal = false,
-                .scrollbar_size = style.scrollbar_size,
-                .track_color = style.track_color,
-                .thumb_color = style.thumb_color,
-                .content_height = params.content_height,
-            },
-            .content_layout_id = content_id,
-        }) catch {
-            std.debug.assert(false); // Scroll registration failed
-            return;
-        };
-
-        self.pending_scrolls_by_layout_id.put(self.allocator, params.layout_id.id, index) catch {
-            std.debug.assert(false); // Scroll map insertion failed
-        };
-    }
-
-    // =========================================================================
-    // Virtual List (variable-height items)
-    // =========================================================================
-
-    const virtual_list = @import("../widgets/virtual_list.zig");
-    const VirtualListState = virtual_list.VirtualListState;
-
-    /// Layout parameters for virtual list rendering
-    pub const VirtualListLayout = struct {
-        layout_id: LayoutId,
-        sizing: Sizing,
-        padding: Padding,
-        content_height: f32,
-        top_spacer_height: f32,
-        bottom_spacer_height: f32,
-        range: @import("../widgets/virtual_list.zig").VisibleRange,
-        gap: u16,
-    };
-
-    /// Sync scroll state between VirtualListState and retained ScrollContainer.
-    pub fn syncVirtualListScroll(self: *Self, id: []const u8, state: *VirtualListState) void {
-        const g = self.gooey orelse return;
-        const sc = g.widgets.scrollContainer(id) orelse return;
-
-        // Update viewport dimensions FIRST so calculations are accurate
-        state.viewport_height_px = sc.state.viewport_height;
-
-        if (state.pending_scroll) |request| {
-            // Resolve the scroll request with current accurate viewport dimensions
-            const target: f32 = switch (request) {
-                .absolute => |offset| offset,
-                .to_top => 0,
-                .to_end => state.maxScrollOffset(),
-                .to_item => |item| state.resolveScrollToItem(item.index, item.strategy),
-            };
-
-            // Apply resolved scroll to ScrollContainer (clamped to valid range)
-            const max_scroll = sc.state.maxScrollY();
-            sc.state.offset_y = std.math.clamp(target, 0, max_scroll);
-            state.scroll_offset_px = sc.state.offset_y;
-            state.pending_scroll = null; // Consume the request
-        } else {
-            // Normal sync: read current offset from ScrollContainer
-            state.scroll_offset_px = sc.state.offset_y;
-        }
-    }
-
-    /// Compute sizing for virtual list viewport
-    fn computeVirtualListSizing(style: VirtualListStyle) Sizing {
-        var sizing = Sizing{
-            .width = SizingAxis.fit(),
-            .height = SizingAxis.fit(),
-        };
-
-        // Fixed dimensions
-        if (style.width) |w| sizing.width = SizingAxis.fixed(w);
-        if (style.height) |h| sizing.height = SizingAxis.fixed(h);
-
-        // Flexible sizing
-        if (style.grow) {
-            sizing.width = SizingAxis.grow();
-            sizing.height = SizingAxis.grow();
-        }
-        if (style.grow_width) sizing.width = SizingAxis.grow();
-        if (style.grow_height) sizing.height = SizingAxis.grow();
-        if (style.fill_width) sizing.width = SizingAxis.percent(1.0);
-        if (style.fill_height) sizing.height = SizingAxis.percent(1.0);
-
-        return sizing;
-    }
-
-    /// Compute padding for virtual list viewport
-    fn computeVirtualListPadding(style: VirtualListStyle) Padding {
-        return switch (style.padding) {
-            .all => |v| Padding.all(@intFromFloat(v)),
-            .symmetric => |s| Padding.symmetric(@intFromFloat(s.x), @intFromFloat(s.y)),
-            .each => |i| .{
-                .top = @intFromFloat(i.top),
-                .bottom = @intFromFloat(i.bottom),
-                .left = @intFromFloat(i.left),
-                .right = @intFromFloat(i.right),
-            },
-        };
-    }
-
-    /// Compute all layout parameters for virtual list.
-    pub fn computeVirtualListLayout(
-        id: []const u8,
-        state: *const VirtualListState,
-        style: VirtualListStyle,
-    ) VirtualListLayout {
-        const range = state.visibleRange();
-        const content_height = state.contentHeight();
-
-        return .{
-            .layout_id = LayoutId.fromString(id),
-            .sizing = computeVirtualListSizing(style),
-            .padding = computeVirtualListPadding(style),
-            .content_height = content_height,
-            .top_spacer_height = state.topSpacerHeight(range),
-            .bottom_spacer_height = state.bottomSpacerHeight(range),
-            .range = range,
-            .gap = @intFromFloat(style.gap),
-        };
-    }
-
-    /// Open the scroll viewport and content container elements for virtual list.
-    pub fn openVirtualListElements(
-        self: *Self,
-        params: VirtualListLayout,
-        style: VirtualListStyle,
-        scroll_offset: f32,
-    ) ?LayoutId {
-        // Open scroll viewport element
-        self.layout.openElement(.{
-            .id = params.layout_id,
-            .layout = .{
-                .sizing = params.sizing,
-                .padding = params.padding,
-            },
-            .background_color = style.background,
-            .corner_radius = if (style.corner_radius > 0) CornerRadius.all(style.corner_radius) else .{},
-            .scroll = .{
-                .vertical = true,
-                .horizontal = false,
-                .scroll_offset = .{ .x = 0, .y = scroll_offset },
-            },
-        }) catch {
-            std.debug.assert(false); // Layout allocation failed
-            return null;
-        };
-
-        // Inner content container with full virtual height
-        const content_id = self.generateId();
-        self.layout.openElement(.{
-            .id = content_id,
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.grow(),
-                    .height = SizingAxis.fixed(params.content_height),
-                },
-                .layout_direction = .top_to_bottom,
-                .child_gap = params.gap,
-            },
-        }) catch {
-            self.layout.closeElement(); // Close viewport
-            std.debug.assert(false); // Layout allocation failed
-            return null;
-        };
-
-        return content_id;
-    }
-
-    /// Render a spacer element for virtual list virtualization.
-    pub fn renderVirtualListSpacer(self: *Self, height: f32) void {
-        if (height <= 0) return;
-
-        const spacer_id = self.generateId();
-        self.layout.openElement(.{
-            .id = spacer_id,
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.grow(),
-                    .height = SizingAxis.fixed(height),
-                },
-            },
-        }) catch {
-            std.debug.assert(false); // Spacer allocation failed
-            return;
-        };
-        self.layout.closeElement();
-    }
-
-    /// Register scroll handling for the virtual list.
-    pub fn registerVirtualListScroll(
-        self: *Self,
-        id: []const u8,
-        params: VirtualListLayout,
-        content_id: LayoutId,
-        style: VirtualListStyle,
-    ) void {
-        const index = self.pending_scrolls.items.len;
-        self.pending_scrolls.append(self.allocator, .{
-            .id = id,
-            .layout_id = params.layout_id,
-            .style = .{
-                .vertical = true,
-                .horizontal = false,
-                .scrollbar_size = style.scrollbar_size,
-                .track_color = style.track_color,
-                .thumb_color = style.thumb_color,
-                .content_height = params.content_height,
-            },
-            .content_layout_id = content_id,
-        }) catch {
-            std.debug.assert(false); // Scroll registration failed
-            return;
-        };
-
-        self.pending_scrolls_by_layout_id.put(self.allocator, params.layout_id.id, index) catch {
-            std.debug.assert(false); // Scroll map insertion failed
-        };
-    }
-
-    // =========================================================================
-    // Data Table (virtualized 2D table, uniform row height)
-    // =========================================================================
-
-    const data_table = @import("../widgets/data_table.zig");
-    pub const DataTableState = data_table.DataTableState;
-
-    /// Layout parameters for data table rendering
-    const DataTableLayout = struct {
-        layout_id: LayoutId,
-        sizing: Sizing,
-        padding: Padding,
-        content_width: f32,
-        content_height: f32,
-        visible_range: data_table.VisibleRange2D,
-        top_spacer: f32,
-        bottom_spacer: f32,
-        left_spacer: f32,
-        right_spacer: f32,
-        row_gap: u16,
-    };
-
-    /// Compute sizing from DataTableStyle
-    fn computeDataTableSizing(style: DataTableStyle) Sizing {
-        var sizing = Sizing.fitContent();
-
-        // Width sizing
-        const grow_w = style.grow or style.grow_width;
-        if (grow_w) {
-            sizing.width = SizingAxis.grow();
-        } else if (style.width) |w| {
-            sizing.width = SizingAxis.fixed(w);
-        } else if (style.fill_width) {
-            sizing.width = SizingAxis.percent(1.0);
-        } else {
-            sizing.width = SizingAxis.fixed(data_table.DEFAULT_VIEWPORT_WIDTH);
-        }
-
-        // Height sizing
-        const grow_h = style.grow or style.grow_height;
-        if (grow_h) {
-            sizing.height = SizingAxis.grow();
-        } else if (style.height) |h| {
-            sizing.height = SizingAxis.fixed(h);
-        } else if (style.fill_height) {
-            sizing.height = SizingAxis.percent(1.0);
-        } else {
-            sizing.height = SizingAxis.fixed(data_table.DEFAULT_VIEWPORT_HEIGHT);
-        }
-
-        return sizing;
-    }
-
-    /// Convert style padding to layout Padding
-    fn computeDataTablePadding(style: DataTableStyle) Padding {
-        return switch (style.padding) {
-            .all => |v| Padding.all(@intFromFloat(v)),
-            .symmetric => |s| Padding.symmetric(@intFromFloat(s.x), @intFromFloat(s.y)),
-            .each => |e| .{
-                .top = @intFromFloat(e.top),
-                .right = @intFromFloat(e.right),
-                .bottom = @intFromFloat(e.bottom),
-                .left = @intFromFloat(e.left),
-            },
-        };
-    }
-
-    /// Sync scroll state between DataTableState and retained ScrollContainer
-    pub fn syncDataTableScroll(self: *Self, id: []const u8, state: *DataTableState) void {
-        const g = self.gooey orelse return;
-        const sc = g.widgets.scrollContainer(id) orelse return;
-
-        // Update viewport dimensions FIRST so calculations are accurate
-        state.viewport_width_px = sc.state.viewport_width;
-        state.viewport_height_px = sc.state.viewport_height;
-
-        if (state.pending_scroll != null) {
-            // Resolve the scroll request with current accurate viewport dimensions
-            state.resolvePendingScroll();
-            // Apply resolved scroll to ScrollContainer
-            const max_x = sc.state.maxScrollX();
-            const max_y = sc.state.maxScrollY();
-            sc.state.offset_x = std.math.clamp(state.scroll_offset_x, 0, max_x);
-            sc.state.offset_y = std.math.clamp(state.scroll_offset_y, 0, max_y);
-        } else {
-            // Normal sync: read current offset from ScrollContainer
-            state.scroll_offset_x = sc.state.offset_x;
-            state.scroll_offset_y = sc.state.offset_y;
-        }
-    }
-
-    /// Compute all layout parameters for data table
-    pub fn computeDataTableLayout(
-        id: []const u8,
-        state: *const DataTableState,
-        style: DataTableStyle,
-    ) DataTableLayout {
-        const range = state.visibleRange();
-
-        return .{
-            .layout_id = LayoutId.fromString(id),
-            .sizing = computeDataTableSizing(style),
-            .padding = computeDataTablePadding(style),
-            .content_width = state.contentWidth(),
-            .content_height = state.contentHeight(),
-            .visible_range = range,
-            .top_spacer = state.topSpacerHeight(range.rows),
-            .bottom_spacer = state.bottomSpacerHeight(range.rows),
-            .left_spacer = state.leftSpacerWidth(range.cols),
-            .right_spacer = state.rightSpacerWidth(range.cols),
-            .row_gap = @intFromFloat(style.row_gap),
-        };
-    }
-
-    /// Open the scroll viewport and content container elements for data table
-    pub fn openDataTableElements(
-        self: *Self,
-        params: DataTableLayout,
-        style: DataTableStyle,
-        scroll_x: f32,
-        scroll_y: f32,
-    ) ?LayoutId {
-        // Open scroll viewport element (both axes)
-        self.layout.openElement(.{
-            .id = params.layout_id,
-            .layout = .{
-                .sizing = params.sizing,
-                .padding = params.padding,
-            },
-            .background_color = style.background,
-            .corner_radius = if (style.corner_radius > 0) CornerRadius.all(style.corner_radius) else .{},
-            .scroll = .{
-                .vertical = true,
-                .horizontal = true,
-                .scroll_offset = .{ .x = scroll_x, .y = scroll_y },
-            },
-        }) catch {
-            std.debug.assert(false);
-            return null;
-        };
-
-        // Inner content container with full virtual size
-        const content_id = self.generateId();
-        self.layout.openElement(.{
-            .id = content_id,
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.fixed(params.content_width),
-                    .height = SizingAxis.fixed(params.content_height),
-                },
-                .layout_direction = .top_to_bottom,
-                .child_gap = params.row_gap,
-            },
-        }) catch {
-            self.layout.closeElement();
-            std.debug.assert(false);
-            return null;
-        };
-
-        return content_id;
-    }
-
-    /// Render a spacer element for data table virtualization
-    pub fn renderDataTableSpacer(self: *Self, width: f32, height: f32) void {
-        if (width <= 0 and height <= 0) return;
-
-        const spacer_id = self.generateId();
-        self.layout.openElement(.{
-            .id = spacer_id,
-            .layout = .{
-                .sizing = .{
-                    .width = if (width > 0) SizingAxis.fixed(width) else SizingAxis.grow(),
-                    .height = if (height > 0) SizingAxis.fixed(height) else SizingAxis.grow(),
-                },
-            },
-        }) catch {
-            std.debug.assert(false);
-            return;
-        };
-        self.layout.closeElement();
-    }
-
-    /// Register scroll handling for the data table
-    pub fn registerDataTableScroll(
-        self: *Self,
-        id: []const u8,
-        params: DataTableLayout,
-        content_id: LayoutId,
-        style: DataTableStyle,
-    ) void {
-        const index = self.pending_scrolls.items.len;
-        self.pending_scrolls.append(self.allocator, .{
-            .id = id,
-            .layout_id = params.layout_id,
-            .style = .{
-                .vertical = true,
-                .horizontal = true,
-                .scrollbar_size = style.scrollbar_size,
-                .track_color = style.track_color,
-                .thumb_color = style.thumb_color,
-                .content_height = params.content_height,
-                .content_width = params.content_width,
-            },
-            .content_layout_id = content_id,
-        }) catch {
-            std.debug.assert(false);
-            return;
-        };
-
-        self.pending_scrolls_by_layout_id.put(self.allocator, params.layout_id.id, index) catch {
-            std.debug.assert(false);
-        };
-    }
-
-    /// Render header cells with Cx callback
-    pub fn renderDataTableHeaderCx(
-        self: *Self,
-        state: *const DataTableState,
-        params: DataTableLayout,
-        style: DataTableStyle,
-        cx: anytype,
-        render_header: *const fn (u32, @TypeOf(cx)) void,
-    ) void {
-        // Open header row container
-        self.layout.openElement(.{
-            .id = self.generateId(),
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.fixed(params.content_width),
-                    .height = SizingAxis.fixed(state.header_height_px),
-                },
-                .layout_direction = .left_to_right,
-            },
-            .background_color = style.header_background,
-        }) catch return;
-
-        // Left spacer
-        if (params.left_spacer > 0) {
-            self.renderDataTableSpacer(params.left_spacer, state.header_height_px);
-        }
-
-        // Render visible header cells
-        const col_range = params.visible_range.cols;
-        var col = col_range.start;
-        while (col < col_range.end) : (col += 1) {
-            const col_width = state.columns[col].width_px;
-
-            self.layout.openElement(.{
-                .id = self.generateId(),
-                .layout = .{
-                    .sizing = .{
-                        .width = SizingAxis.fixed(col_width),
-                        .height = SizingAxis.fixed(state.header_height_px),
-                    },
-                },
-            }) catch continue;
-
-            render_header(col, cx);
-            self.layout.closeElement();
-        }
-
-        // Right spacer
-        if (params.right_spacer > 0) {
-            self.renderDataTableSpacer(params.right_spacer, state.header_height_px);
-        }
-
-        self.layout.closeElement(); // header row
-    }
-
-    /// Render a data row with Cx callback (default row container)
-    pub fn renderDataTableRowCx(
-        self: *Self,
-        state: *const DataTableState,
-        row: u32,
-        col_range: data_table.ColRange,
-        params: DataTableLayout,
-        style: DataTableStyle,
-        cx: anytype,
-        render_cell: *const fn (u32, u32, @TypeOf(cx)) void,
-    ) void {
-        const is_selected = state.selection.isRowSelected(row);
-        const is_alternate = row % 2 == 1;
-
-        const bg = if (is_selected)
-            style.row_selected_background
-        else if (is_alternate)
-            style.row_alternate_background
-        else
-            style.row_background;
-
-        // Open row container
-        self.layout.openElement(.{
-            .id = self.generateId(),
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.fixed(params.content_width),
-                    .height = SizingAxis.fixed(state.row_height_px),
-                },
-                .layout_direction = .left_to_right,
-            },
-            .background_color = bg,
-        }) catch return;
-
-        // Left spacer for columns before visible range
-        if (params.left_spacer > 0) {
-            self.renderDataTableSpacer(params.left_spacer, state.row_height_px);
-        }
-
-        // Render visible cells
-        var col = col_range.start;
-        while (col < col_range.end) : (col += 1) {
-            const col_width = state.columns[col].width_px;
-
-            self.layout.openElement(.{
-                .id = self.generateId(),
-                .layout = .{
-                    .sizing = .{
-                        .width = SizingAxis.fixed(col_width),
-                        .height = SizingAxis.fixed(state.row_height_px),
-                    },
-                },
-            }) catch continue;
-
-            render_cell(row, col, cx);
-            self.layout.closeElement();
-        }
-
-        // Right spacer
-        if (params.right_spacer > 0) {
-            self.renderDataTableSpacer(params.right_spacer, state.row_height_px);
-        }
-
-        self.layout.closeElement(); // row container
-    }
+    //
+    // The Uniform List, Virtual List, and Data Table builder helpers have
+    // been moved into their respective widget files
+    // (`src/widgets/uniform_list.zig`, `src/widgets/virtual_list.zig`,
+    // `src/widgets/data_table.zig`) per PR 4 of
+    // `docs/cleanup-implementation-plan.md` to break the `ui → widgets`
+    // backward edge. They take `*Builder` as their first argument and
+    // append to `b.pending_scrolls` directly. See those files for the
+    // moved helpers (`computeLayout`, `openElements`, `renderSpacer`,
+    // `registerScroll`, `syncScroll`, plus `renderHeaderCx` /
+    // `renderRowCx` for data tables).
 
     /// Register scroll container regions and update state
     pub fn registerPendingScrollRegions(self: *Self) void {
@@ -1791,8 +1223,14 @@ pub const Builder = struct {
                 const vp_content = viewport_content.?;
                 const ct = content_bounds.?;
 
-                if (self.gooey) |g| {
-                    if (g.widgets.scrollContainer(pending.id)) |sc| {
+                if (self.window) |g| {
+                    // PR 8.4 — the slot was seeded by `Builder.scroll`
+                    // earlier in the frame, so a read-only `get` is
+                    // sufficient here. If the slot is missing (only
+                    // possible under capacity exhaustion at scroll-time),
+                    // skip the bounds update for this frame; the
+                    // `pending_scrolls` queue will retry next render.
+                    if (g.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id))) |sc| {
                         // Update bounds (full bounding box for hit testing)
                         sc.bounds = .{
                             .x = vp.x,
@@ -1888,28 +1326,28 @@ pub const Builder = struct {
             return;
         }
 
-        // Check for components
-        // Check for components (structs with render method)
+        // Check for components (structs with a `render` method). Since
+        // PR 11b.1 there is exactly one component signature:
+        // `render(self, *Cx)`. The old `render(self, *Builder)` branch is
+        // gone, so authors have a single way to write a component.
         if (@hasDecl(T, "render")) {
             const render_fn = @field(T, "render");
-            const RenderFnType = @TypeOf(render_fn);
-            const fn_info = @typeInfo(RenderFnType).@"fn";
+            const fn_info = @typeInfo(@TypeOf(render_fn)).@"fn";
 
-            // Check if render expects *Cx (new pattern) or *Builder (old pattern)
             if (fn_info.params.len >= 2) {
-                const SecondParam = fn_info.params[1].type orelse *Self;
+                const CxType = fn_info.params[1].type orelse
+                    @compileError("component `render` must take a typed `*Cx` second parameter");
 
-                if (SecondParam == *Self) {
-                    // Old pattern: render(self, *Builder)
-                    child.render(self);
-                } else if (self.cx_ptr) |cx_raw| {
-                    // New pattern: render(self, *Cx) - cast and call
-                    const CxType = SecondParam;
-                    const cx: CxType = @ptrCast(@alignCast(cx_raw));
-                    child.render(cx);
-                } else {
-                    // Cx not available, skip
-                }
+                // The builder always has a bound `cx_ptr` while rendering
+                // — it is wired at construction in `app.zig` and
+                // `runtime/window_context.zig`. A null here means a
+                // component is being processed outside a real frame,
+                // which is a programming error, not a recoverable state
+                // (CLAUDE.md §11, §17: assert the invariant, never
+                // silently drop the element).
+                const cx_raw = self.cx_ptr orelse unreachable;
+                const cx: CxType = @ptrCast(@alignCast(cx_raw));
+                child.render(cx);
             }
             return;
         }
@@ -1961,11 +1399,27 @@ pub const Builder = struct {
             self.dispatch.setFocusable(focus_id);
         }
 
+        // PR 8.4b — seed the pool slot on first render and grab
+        // the borrow once for the focus check + focus-register step
+        // below. Same create-on-touch shape `Builder.scroll` uses
+        // for `ScrollContainer` (PR 8.4a). On capacity exhaustion or
+        // OOM the pool returns null; we collapse that to a disabled
+        // focus check (matches the pre-PR-8.4b `g.widgets.textInput`
+        // null-return semantics) and skip the vtable wire-up below.
+        const ti_or_null: ?*TextInputState = if (self.window) |g|
+            g.element_states.getOrInsert(
+                TextInputState,
+                @as(u64, layout_id.id),
+                TextInputState.init(g.allocator, DEFAULT_TEXT_INPUT_BOUNDS),
+            ) catch null
+        else
+            null;
+
         // Check if this input is focused (for border color) - disabled inputs are never focused
         const is_focused = if (inp.style.disabled)
             false
-        else if (self.gooey) |g|
-            if (g.textInput(inp.id)) |ti| ti.isFocused() else false
+        else if (ti_or_null) |ti|
+            ti.isFocused()
         else
             false;
 
@@ -1973,8 +1427,8 @@ pub const Builder = struct {
         const chrome = (inp.style.padding + inp.style.border_width) * 2;
         const input_height = inp.style.height orelse blk: {
             // Auto-size: get line height from font metrics
-            const line_height = if (self.gooey) |g|
-                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+            const line_height = if (self.window) |g|
+                if (g.resources.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0; // Fallback
             break :blk line_height + chrome;
@@ -2009,6 +1463,7 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Store for later text rendering with inner dimensions
+        const input_index = self.pending_inputs.items.len;
         self.pending_inputs.append(self.allocator, .{
             .id = inp.id,
             .layout_id = layout_id,
@@ -2017,13 +1472,33 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = inp.style.on_blur_handler,
         }) catch {};
+        // Mirror into the unified control queue only when the data-plane
+        // append landed, so tree-order replay never indexes a slot that
+        // failed to allocate (PR 11b.3a).
+        if (self.pending_inputs.items.len > input_index) {
+            self.enqueuePendingTextWidget(.input, input_index);
+        }
 
-        // Register focus with FocusManager (only if not disabled)
+        // Register focus with FocusManager (only if not disabled).
+        // PR 4: also attach the widget's `Focusable` vtable so the
+        // focus manager can drive `focus()` / `blur()` on the
+        // underlying `TextInput` without `context/` having to import
+        // the widget type. PR 8.4b — the widget pointer is stable
+        // across frames because `Window.element_states` heap-
+        // allocates each pool entry once per `(EngineType, id_hash)`
+        // and never moves it (slots are swap-removed on `.remove`,
+        // not relocated on insert). We reuse the borrow grabbed
+        // earlier so the focus check and focus-register step share a
+        // single pool lookup.
         if (!inp.style.disabled) {
-            if (self.gooey) |g| {
-                g.focus.register(FocusHandle.init(inp.id)
+            if (self.window) |g| {
+                var handle = FocusHandle.init(inp.id)
                     .tabIndex(inp.style.tab_index)
-                    .tabStop(inp.style.tab_stop));
+                    .tabStop(inp.style.tab_stop);
+                if (ti_or_null) |ti| {
+                    handle = handle.withWidget(ti.focusable());
+                }
+                g.focus.register(handle);
             }
         }
 
@@ -2041,17 +1516,28 @@ pub const Builder = struct {
         const focus_id = FocusId.init(ta.id);
         self.dispatch.setFocusable(focus_id);
 
+        // PR 8.4b — seed the pool slot on first render. See
+        // `renderInput` above for the full rationale.
+        const ta_state_or_null: ?*TextAreaState = if (self.window) |g|
+            g.element_states.getOrInsert(
+                TextAreaState,
+                @as(u64, layout_id.id),
+                TextAreaState.init(g.allocator, DEFAULT_TEXT_AREA_BOUNDS),
+            ) catch null
+        else
+            null;
+
         // Check if this textarea is focused (for border color)
-        const is_focused = if (self.gooey) |g|
-            if (g.textArea(ta.id)) |text_area| text_area.isFocused() else false
+        const is_focused = if (ta_state_or_null) |text_area|
+            text_area.isFocused()
         else
             false;
 
         // Calculate height: use explicit height or auto-size from rows * line_height
         const chrome = (ta.style.padding + ta.style.border_width) * 2;
         const textarea_height = ta.style.height orelse blk: {
-            const line_height = if (self.gooey) |g|
-                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+            const line_height = if (self.window) |g|
+                if (g.resources.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0;
             const rows_f: f32 = @floatFromInt(ta.style.rows);
@@ -2087,6 +1573,7 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Store for later text rendering
+        const text_area_index = self.pending_text_areas.items.len;
         self.pending_text_areas.append(self.allocator, .{
             .id = ta.id,
             .layout_id = layout_id,
@@ -2095,12 +1582,26 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = ta.style.on_blur_handler,
         }) catch {};
+        // Mirror into the unified control queue only on a successful
+        // data-plane append (PR 11b.3a).
+        if (self.pending_text_areas.items.len > text_area_index) {
+            self.enqueuePendingTextWidget(.text_area, text_area_index);
+        }
 
-        // Register focus with FocusManager
-        if (self.gooey) |g| {
-            g.focus.register(FocusHandle.init(ta.id)
+        // Register focus with FocusManager. PR 4: attach the widget's
+        // `Focusable` vtable so the focus manager can drive the
+        // `TextArea`'s `focus()` / `blur()` through the trait without
+        // importing the widget type into `context/`. PR 8.4b — reuse
+        // the borrow grabbed above so the focus check and the
+        // focus-register step share a single pool lookup.
+        if (self.window) |g| {
+            var handle = FocusHandle.init(ta.id)
                 .tabIndex(ta.style.tab_index)
-                .tabStop(ta.style.tab_stop));
+                .tabStop(ta.style.tab_stop);
+            if (ta_state_or_null) |text_area| {
+                handle = handle.withWidget(text_area.focusable());
+            }
+            g.focus.register(handle);
         }
 
         self.dispatch.popNode();
@@ -2120,17 +1621,28 @@ pub const Builder = struct {
         const focus_id = FocusId.init(ce.id);
         self.dispatch.setFocusable(focus_id);
 
+        // PR 8.4b — seed the pool slot on first render. See
+        // `renderInput` above for the full rationale.
+        const ce_state_or_null: ?*CodeEditorState = if (self.window) |g|
+            g.element_states.getOrInsert(
+                CodeEditorState,
+                @as(u64, layout_id.id),
+                CodeEditorState.init(g.allocator, DEFAULT_CODE_EDITOR_BOUNDS),
+            ) catch null
+        else
+            null;
+
         // Check if this code editor is focused (for border color)
-        const is_focused = if (self.gooey) |g|
-            if (g.codeEditor(ce.id)) |editor| editor.isFocused() else false
+        const is_focused = if (ce_state_or_null) |editor|
+            editor.isFocused()
         else
             false;
 
         // Calculate height: use explicit height or auto-size from rows * line_height
         const chrome = (ce.style.padding + ce.style.border_width) * 2;
         const editor_height = ce.style.height orelse blk: {
-            const line_height = if (self.gooey) |g|
-                if (g.text_system.getMetrics()) |m| m.line_height else 20.0
+            const line_height = if (self.window) |g|
+                if (g.resources.text_system.getMetrics()) |m| m.line_height else 20.0
             else
                 20.0;
             const rows_f: f32 = @floatFromInt(ce.style.rows);
@@ -2165,6 +1677,7 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Store for later rendering
+        const code_editor_index = self.pending_code_editors.items.len;
         self.pending_code_editors.append(self.allocator, .{
             .id = ce.id,
             .layout_id = layout_id,
@@ -2173,12 +1686,26 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = ce.style.on_blur_handler,
         }) catch {};
+        // Mirror into the unified control queue only on a successful
+        // data-plane append (PR 11b.3a).
+        if (self.pending_code_editors.items.len > code_editor_index) {
+            self.enqueuePendingTextWidget(.code_editor, code_editor_index);
+        }
 
-        // Register focus with FocusManager
-        if (self.gooey) |g| {
-            g.focus.register(FocusHandle.init(ce.id)
+        // Register focus with FocusManager. PR 4: attach the widget's
+        // `Focusable` vtable — same pattern as `renderInput` /
+        // `renderTextArea` above. The vtable lives in static storage,
+        // shared by all `CodeEditorState` instances. PR 8.4b — reuse
+        // the borrow grabbed above so the focus check and the
+        // focus-register step share a single pool lookup.
+        if (self.window) |g| {
+            var handle = FocusHandle.init(ce.id)
                 .tabIndex(ce.style.tab_index)
-                .tabStop(ce.style.tab_stop));
+                .tabStop(ce.style.tab_stop);
+            if (ce_state_or_null) |editor| {
+                handle = handle.withWidget(editor.focusable());
+            }
+            g.focus.register(handle);
         }
 
         self.dispatch.popNode();
@@ -2208,7 +1735,7 @@ pub const Builder = struct {
 
         // Check hover state
         const is_hovered = btn.style.enabled and
-            if (self.gooey) |g| g.isHovered(layout_id.id) else false;
+            if (self.window) |g| g.isHovered(layout_id.id) else false;
 
         const bg = switch (btn.style.style) {
             .primary => if (!btn.style.enabled)
@@ -2272,7 +1799,7 @@ pub const Builder = struct {
 
         // Check hover state
         const is_hovered = btn.style.enabled and
-            if (self.gooey) |g| g.isHovered(layout_id.id) else false;
+            if (self.window) |g| g.isHovered(layout_id.id) else false;
 
         const bg = switch (btn.style.style) {
             .primary => if (!btn.style.enabled)
@@ -2398,8 +1925,148 @@ pub const Builder = struct {
     // Internal: ID Generation
     // =========================================================================
 
+    /// Generate a stable, parent-scoped layout id for an element the author
+    /// did not name explicitly (PR 11b.2a).
+    ///
+    /// The old implementation was a flat per-frame counter
+    /// (`LayoutId.fromInt(++id_counter)`). That had two footguns: (1) it was
+    /// global, so inserting or removing *any* element shifted the auto-id of
+    /// *every* later element on reflow, so hover / focus / animation state
+    /// jumped to the wrong element; and (2) components that fell back to a
+    /// content string (e.g. a `Button` deriving `id = self.label`) collided
+    /// when two same-content siblings existed.
+    ///
+    /// The new id is `hash(parent_layout_id, sibling_index)` via
+    /// `LayoutId.childIndexed`. The parent is the currently-open element,
+    /// already on the dispatch stack at this point (this runs *before* the
+    /// new element pushes its own node), so reading it is free. The sibling
+    /// index is the parent dispatch node's `auto_child_counter`, which counts
+    /// only `generateId` calls under that parent. Two consequences:
+    ///   - Reflow in a *sibling* subtree no longer perturbs these ids (the
+    ///     blast radius of an insert/remove is now one parent's children).
+    ///   - Explicit-id siblings don't bump the counter, so adding a named
+    ///     element next to auto-id'd ones leaves their indices untouched.
     pub fn generateId(self: *Self) LayoutId {
+        // The seed must stay non-empty or the auto-id hash domain collapses
+        // onto the parent id; this is a critical, surprising invariant.
+        comptime std.debug.assert(AUTO_ID_SEED.len > 0);
+
+        const parent_node_id = self.dispatch.currentNode();
+        if (self.dispatch.getNode(parent_node_id)) |parent| {
+            const sibling_index = parent.auto_child_counter;
+            std.debug.assert(sibling_index < MAX_AUTO_SIBLINGS);
+            parent.auto_child_counter += 1;
+            // Parents always reach here via `boxWithLayoutIdImpl`, which calls
+            // `setLayoutId` immediately after `pushNode` and before any child
+            // renders, so `layout_id` is populated; `orelse 0` is defensive.
+            const parent_layout_id = parent.layout_id orelse 0;
+            return LayoutId.childIndexed(parent_layout_id, AUTO_ID_SEED, sibling_index);
+        }
+
+        // Root scope: no element is open yet (e.g. the user's top-level box has
+        // no explicit id). Fall back to the per-frame flat counter, still mixed
+        // through `childIndexed` so the hash domain matches the nested case.
         self.id_counter += 1;
-        return LayoutId.fromInt(self.id_counter);
+        std.debug.assert(self.id_counter < MAX_AUTO_SIBLINGS);
+        return LayoutId.childIndexed(0, AUTO_ID_SEED, self.id_counter);
     }
 };
+
+// PR 11b.2a — hierarchical auto-id tests.
+//
+// Goal: prove the three properties the parent-scoped scheme buys us, using a
+// `Builder` driven over a real `DispatchTree` (the only collaborator
+// `generateId` reads). Methodology: open parent nodes by hand on the dispatch
+// stack — exactly what `boxWithLayoutIdImpl` does at element-open — then call
+// `generateId` and compare the resulting hashes.
+fn testBuilderHarness(
+    allocator: std.mem.Allocator,
+    engine: *LayoutEngine,
+    scene_ptr: *Scene,
+    tree: *DispatchTree,
+) Builder {
+    engine.* = LayoutEngine.init(allocator);
+    scene_ptr.* = Scene.init(allocator);
+    tree.* = DispatchTree.init(allocator);
+    return Builder.init(allocator, engine, scene_ptr, tree);
+}
+
+test "generateId: same-parent siblings never collide" {
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    // Open a parent, as `boxWithLayoutIdImpl` does (pushNode → setLayoutId).
+    _ = tree.pushNode();
+    tree.setLayoutId(LayoutId.fromString("parent").id);
+
+    // Two auto-id'd children with identical content still get distinct ids —
+    // the flat-counter scheme relied on global uniqueness; the parent-scoped
+    // scheme gets it from the per-parent sibling index instead.
+    const first = builder.generateId();
+    const second = builder.generateId();
+    try std.testing.expect(first.id != second.id);
+}
+
+test "generateId: stable across frames for the same tree shape" {
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    const parent_hash = LayoutId.fromString("parent").id;
+
+    // Frame 1.
+    _ = tree.pushNode();
+    tree.setLayoutId(parent_hash);
+    const frame1_a = builder.generateId();
+    const frame1_b = builder.generateId();
+    tree.popNode();
+
+    // Frame 2: same tree shape ⇒ identical auto-ids. This is what keeps
+    // hover / focus / animation state pinned to the same element across
+    // frames; the flat counter only held this by luck of unchanged order.
+    tree.reset();
+    _ = tree.pushNode();
+    tree.setLayoutId(parent_hash);
+    const frame2_a = builder.generateId();
+    const frame2_b = builder.generateId();
+
+    try std.testing.expectEqual(frame1_a.id, frame2_a.id);
+    try std.testing.expectEqual(frame1_b.id, frame2_b.id);
+}
+
+test "generateId: same sibling index under different parents does not collide" {
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    // First child (index 0) of parent A.
+    _ = tree.pushNode();
+    tree.setLayoutId(LayoutId.fromString("parent-a").id);
+    const a0 = builder.generateId();
+    tree.popNode();
+
+    // First child (index 0) of parent B. Same sibling index, different parent
+    // ⇒ different hash, because the parent's layout id seeds the hash.
+    _ = tree.pushNode();
+    tree.setLayoutId(LayoutId.fromString("parent-b").id);
+    const b0 = builder.generateId();
+    tree.popNode();
+
+    try std.testing.expect(a0.id != b0.id);
+}

@@ -20,9 +20,9 @@ const platform = gooey.platform;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
-const Checkbox = gooey.Checkbox;
-const TextInput = gooey.TextInput;
+const Button = gooey.components.Button;
+const Checkbox = gooey.components.Checkbox;
+const TextInput = gooey.components.TextInput;
 
 /// Colorful flowing plasma effect (MSL - macOS)
 pub const plasma_shader_msl =
@@ -169,7 +169,7 @@ const AppState = struct {
     is_running: bool = false,
 
     // Tasks
-    tasks: [MaxTasks]gooey.Entity(Task) = [_]gooey.Entity(Task){gooey.Entity(Task).nil()} ** MaxTasks,
+    tasks: [MaxTasks]gooey.context.Entity(Task) = [_]gooey.context.Entity(Task){gooey.context.Entity(Task).nil()} ** MaxTasks,
     task_count: usize = 0,
     input_text: []const u8 = "",
 
@@ -229,10 +229,10 @@ const AppState = struct {
     }
 
     // =========================================================================
-    // Command methods - use with cx.command() (need Gooey access)
+    // Command methods - use with cx.command() (need Window access)
     // =========================================================================
 
-    pub fn addTask(self: *AppState, g: *gooey.Gooey) void {
+    pub fn addTask(self: *AppState, g: *gooey.Window) void {
         if (self.input_text.len == 0) return;
         if (self.task_count >= MaxTasks) return;
 
@@ -242,13 +242,18 @@ const AppState = struct {
         self.tasks[self.task_count] = task;
         self.task_count += 1;
 
-        if (g.textInput("task-input")) |input| {
+        // PR 8.4b — `g.widgets.textInput` retired alongside the
+        // StringHashMap-keyed `text_inputs` map; reach the engine
+        // state through `Window.element_states` keyed by
+        // `LayoutId.id`.
+        const input_hash: u64 = @as(u64, gooey.layout.LayoutId.fromString("task-input").id);
+        if (g.element_states.get(gooey.widgets.TextInputState, input_hash)) |input| {
             input.clear();
         }
         self.input_text = "";
     }
 
-    pub fn toggleTask(self: *AppState, g: *gooey.Gooey, task_index: usize) void {
+    pub fn toggleTask(self: *AppState, g: *gooey.Window, task_index: usize) void {
         if (task_index >= self.task_count) return;
 
         const entity = self.tasks[task_index];
@@ -257,7 +262,7 @@ const AppState = struct {
         }
     }
 
-    pub fn clearCompleted(self: *AppState, g: *gooey.Gooey) void {
+    pub fn clearCompleted(self: *AppState, g: *gooey.Window) void {
         var write_idx: usize = 0;
         for (0..self.task_count) |read_idx| {
             const entity = self.tasks[read_idx];
@@ -278,11 +283,11 @@ const AppState = struct {
     // Helper methods (no context needed)
     // =========================================================================
 
-    fn tasksSlice(self: *const AppState) []const gooey.Entity(Task) {
+    fn tasksSlice(self: *const AppState) []const gooey.context.Entity(Task) {
         return self.tasks[0..self.task_count];
     }
 
-    fn completedCount(self: *const AppState, g: *gooey.Gooey) usize {
+    fn completedCount(self: *const AppState, g: *gooey.Window) usize {
         var count: usize = 0;
         for (self.tasksSlice()) |entity| {
             if (g.readEntity(Task, entity)) |task| {
@@ -410,11 +415,11 @@ const TaskInput = struct {
 };
 
 const TaskItem = struct {
-    task: gooey.Entity(Task),
+    task: gooey.context.Entity(Task),
     index: usize,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const g = cx.gooey();
+        const g = cx.window();
         const data = g.readEntity(Task, self.task) orelse return;
 
         var id_buf: [32]u8 = undefined;
@@ -465,7 +470,7 @@ const TaskList = struct {
 const ClearDoneButton = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
-        const g = cx.gooey();
+        const g = cx.window();
 
         if (s.completedCount(g) > 0) {
             cx.render(ui.box(.{}, .{
@@ -511,9 +516,9 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 fn render(cx: *Cx) void {

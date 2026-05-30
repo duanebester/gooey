@@ -12,9 +12,9 @@ const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const VirtualListState = gooey.VirtualListState;
-const ScrollStrategy = gooey.ScrollStrategy;
-const Button = gooey.Button;
+const VirtualListState = gooey.widgets.VirtualListState;
+const ScrollStrategy = gooey.widgets.ScrollStrategy;
+const Button = gooey.components.Button;
 
 const ui = gooey.ui;
 
@@ -202,8 +202,8 @@ const ChatList = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        // Use cx.virtualList() - render callback receives *Cx and returns height
-        cx.virtualList(
+        // Use cx.lists.virtual() - render callback receives *Cx and returns height
+        cx.lists.virtual(
             "chat-list",
             &s.list_state,
             .{
@@ -360,7 +360,7 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }

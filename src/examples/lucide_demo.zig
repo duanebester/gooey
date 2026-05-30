@@ -11,7 +11,7 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Svg = gooey.components.Svg;
 const Lucide = gooey.components.Lucide;
-const UniformListState = gooey.UniformListState;
+const UniformListState = gooey.widgets.UniformListState;
 
 // =============================================================================
 // Grid Layout Constants
@@ -94,9 +94,9 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 // =============================================================================
@@ -109,13 +109,13 @@ const RowContent = struct {
     start: u32,
     end: u32,
 
-    pub fn render(self: RowContent, b: *ui.Builder) void {
+    pub fn render(self: RowContent, cx: *ui.Cx) void {
         std.debug.assert(self.start <= self.end);
         std.debug.assert(self.end <= TOTAL_ICONS);
 
         var i = self.start;
         while (i < self.end) : (i += 1) {
-            b.box(.{
+            cx.box(.{
                 .width = CELL_SIZE,
                 .height = CELL_SIZE,
                 .alignment = .{ .main = .center, .cross = .center },
@@ -144,7 +144,7 @@ const IconGrid = struct {
         std.debug.assert(TOTAL_ROWS > 0);
         std.debug.assert(state.list_state.item_count == TOTAL_ROWS);
 
-        cx.uniformList("icon-grid", &state.list_state, .{
+        cx.lists.uniform("icon-grid", &state.list_state, .{
             .fill_width = true,
             .grow_height = true,
             .background = ui.Color.hex(0x0f172a),

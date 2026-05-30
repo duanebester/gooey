@@ -25,23 +25,23 @@
 //! ```
 
 const std = @import("std");
-const Gooey = @import("gooey.zig").Gooey;
+const Window = @import("window.zig").Window;
 const entity_mod = @import("entity.zig");
 pub const EntityId = entity_mod.EntityId;
 
 /// Type-erased handler reference that can be stored and invoked later.
 ///
-/// The callback receives a `*Gooey` pointer and optional entity ID.
+/// The callback receives a `*Window` pointer and optional entity ID.
 pub const HandlerRef = struct {
-    /// The actual callback function (receives Gooey and entity ID)
-    callback: *const fn (*Gooey, EntityId) void,
+    /// The actual callback function (receives Window and entity ID)
+    callback: *const fn (*Window, EntityId) void,
 
     /// Entity ID this handler operates on (invalid = use root state)
     entity_id: EntityId = EntityId.invalid,
 
     /// Invoke this handler
-    pub fn invoke(self: HandlerRef, gooey: *Gooey) void {
-        self.callback(gooey, self.entity_id);
+    pub fn invoke(self: HandlerRef, window: *Window) void {
+        self.callback(window, self.entity_id);
     }
 };
 
@@ -54,7 +54,7 @@ pub const HandlerRef = struct {
 pub const OnSelectHandler = struct {
     /// Callback that unpacks a packed index (and optional id hash) from EntityId.
     /// Generated at comptime by `Cx.onSelect`.
-    callback: *const fn (*Gooey, EntityId) void,
+    callback: *const fn (*Window, EntityId) void,
 
     /// Create a HandlerRef for a specific option index.
     ///

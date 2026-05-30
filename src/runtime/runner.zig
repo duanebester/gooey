@@ -13,7 +13,7 @@
 //! **Multi-Window Ready**: This implementation uses per-window WindowContext
 //! stored in the window's user_data pointer. Each window has its own:
 //! - Cx context
-//! - Gooey instance (layout, scene, widgets)
+//! - Window instance (layout, scene, widgets)
 //! - Builder instance
 //! - User callbacks
 //!
@@ -35,14 +35,27 @@ const geometry_mod = @import("../core/geometry.zig");
 const input_mod = @import("../input/mod.zig");
 const handler_mod = @import("../context/handler.zig");
 const cx_mod = @import("../cx.zig");
-const gooey_mod = @import("../context/gooey.zig");
-const FontConfig = gooey_mod.FontConfig;
+const window_mod = @import("../context/window.zig");
+const FontConfig = window_mod.FontConfig;
+
+// PR 7b.3 — `App` owns application-lifetime state shared across
+// windows. The single-window flow heap-allocates one `App` here in
+// `runCx` and hands `*App` to the `WindowContext`. Pre-7b.3 the
+// entity map lived as a per-window field on `Window`; lifting it
+// onto `App` is the precondition for cross-window observation,
+// even though the single-window flow has only one borrower. See
+// `docs/cleanup-implementation-plan.md` PR 7b.3.
+const app_mod = @import("../context/app.zig");
+const App = app_mod.App;
 
 // Runtime imports
 const window_context = @import("window_context.zig");
 
 const Platform = platform.Platform;
-const Window = platform.Window;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+const PlatformWindow = platform.PlatformWindow;
 const Cx = cx_mod.Cx;
 const InputEvent = input_mod.InputEvent;
 
@@ -53,15 +66,31 @@ const InputEvent = input_mod.InputEvent;
 ///
 /// Each window gets its own WindowContext stored in user_data, enabling
 /// future multi-window support.
+///
+/// PR 7d-framework — `init` is the Zig 0.16 `std.process.Init` value
+/// threaded through from `pub fn main(init: std.process.Init)`. The
+/// previous in-place `DebugAllocator` is replaced with `init.gpa`,
+/// and the global single-threaded `Io` fallback is replaced with
+/// `init.io`. `init` is last in the parameter list because the four
+/// preceding parameters are all comptime / comptime-known; the
+/// curated-core `gooey.run(init, .{...})` wrapper that lands in PR 9
+/// will reorder to put `init` first to match every Zig 0.16
+/// `pub fn main(init)` example in the stdlib. See
+/// `docs/pr-7d-framework-preflight.md` for the design rationale.
 pub fn runCx(
     comptime State: type,
     state: *State,
     comptime render: fn (*Cx) void,
     config: CxConfig(State),
+    init: std.process.Init,
 ) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // PR 7d-framework — own the `Allocator` rather than constructing a
+    // throwaway `DebugAllocator` inside the runner. `init.gpa` is the
+    // Debug-build leak-checking allocator the Zig runtime hands us;
+    // outside Debug it is whatever default the runtime selected. Either
+    // way it lives at least as long as `main` does, which is strictly
+    // longer than this function's stack frame.
+    const allocator = init.gpa;
 
     // Initialize platform
     var plat = try Platform.init();
@@ -76,7 +105,7 @@ pub fn runCx(
     const bg_color = config.background_color orelse geometry_mod.Color.rgba(0.95, 0.95, 0.95, 1.0);
 
     // Create window
-    var window = try Window.init(allocator, &plat, .{
+    var window = try PlatformWindow.init(allocator, &plat, .{
         .title = config.title,
         .width = config.width,
         .height = config.height,
@@ -100,24 +129,56 @@ pub fn runCx(
         plat.setActiveWindow(window);
     }
 
-    // Resolve IO: use caller-provided instance or fall back to global single-threaded.
-    const io = config.io orelse std.Io.Threaded.global_single_threaded.io();
+    // Resolve IO: use caller-provided instance or fall back to `init.io`.
+    //
+    // PR 7d-framework — the fallback is now `init.io` (the
+    // runtime-selected `Io` for this target) rather than the
+    // global single-threaded singleton. `CxConfig.io` stays
+    // optional for callers that want to override (multi-window
+    // wires its own `Io.Group` here).
+    const io = config.io orelse init.io;
+
+    // PR 7b.3 — heap-allocate an `App` and hand `*App` to the
+    // window. The single-window flow has exactly one borrower
+    // today, but going through `App` keeps the call chain
+    // identical to the multi-window path (`multi_window_app.zig`)
+    // and makes the future runner consolidation in a later 7b
+    // slice a no-op for entity ownership.
+    //
+    // Defer order matters: `win_ctx.deinit()` (and the
+    // `window.deinit()` inside it) must run BEFORE
+    // `app.deinit()` so any cancel-group teardown driven by
+    // `Window` close still has a live `EntityMap` to walk —
+    // but `Window.deinit` was rewritten in 7b.3 to NOT touch
+    // `self.app`, so the strict ordering matters less than the
+    // ownership story. We still order the defers so the `App`
+    // outlives the `Window` for safety.
+    const app_ptr = try allocator.create(App);
+    defer allocator.destroy(app_ptr);
+    // PR 7b.4 — `App.initInPlace` returns `!void` now (was `void`)
+    // because it registers an owned `Keymap` in `app.globals`,
+    // and `Globals.setOwned` may fail with `OutOfMemory`. The
+    // `defer allocator.destroy(app_ptr)` above runs even on the
+    // error path, so a failure here doesn't leak the
+    // `allocator.create(App)` allocation.
+    try app_ptr.initInPlace(allocator, io);
+    defer app_ptr.deinit();
 
     // Create per-window context (replaces static CallbackState)
     const WinCtx = window_context.WindowContext(State);
     const win_ctx = try WinCtx.init(allocator, window, state, render, .{
         .font_name = config.font,
         .font_size = config.font_size,
-    }, io);
+    }, app_ptr, io);
     defer win_ctx.deinit();
 
     // Set user callbacks
     win_ctx.setCallbacks(config.on_event, config.on_close, config.on_resize);
 
-    // Set root state on this window's Gooey instance (not globally)
+    // Set root state on this window's Window instance (not globally)
     // This enables multi-window support where each window has its own state
-    win_ctx.gooey.setRootState(State, state);
-    defer win_ctx.gooey.clearRootState();
+    win_ctx.window.setRootState(State, state);
+    defer win_ctx.window.clearRootState();
 
     // Connect WindowContext to window (sets user_data and callbacks)
     win_ctx.setupWindow(window);
@@ -137,7 +198,7 @@ pub fn CxConfig(comptime State: type) type {
     const shader_mod = @import("../core/shader.zig");
 
     return struct {
-        title: []const u8 = "Gooey App",
+        title: []const u8 = "Window App",
         width: f64 = 800,
         height: f64 = 600,
         background_color: ?geometry_mod.Color = null,
@@ -155,7 +216,7 @@ pub fn CxConfig(comptime State: type) type {
 
         // Event callbacks
 
-        /// Called once after platform, window, and Gooey context are initialized,
+        /// Called once after platform, window, and Window context are initialized,
         /// before the first render. Use for one-time setup (HTTP clients, API keys, etc.)
         on_init: ?*const fn (*Cx) void = null,
 
@@ -196,7 +257,11 @@ pub fn CxConfig(comptime State: type) type {
         full_size_content: bool = false,
 
         /// IO interface for async work (filesystem, network, concurrency).
-        /// When null, falls back to `std.Io.Threaded.global_single_threaded`.
+        /// When null, falls back to `init.io` (the `std.process.Init`
+        /// value passed to `pub fn main(init: std.process.Init)`).
+        /// PR 7d-framework retired the previous
+        /// `std.Io.Threaded.global_single_threaded` fallback in favour
+        /// of the runtime-selected default.
         io: ?std.Io = null,
     };
 }

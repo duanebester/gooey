@@ -19,6 +19,18 @@ pub const animation = @import("animation.zig");
 pub const spring = @import("spring.zig");
 pub const stagger = @import("stagger.zig");
 pub const motion = @import("motion.zig");
+pub const store = @import("store.zig");
+
+// =============================================================================
+// Retained-state Store (per-window animation pools)
+// =============================================================================
+
+/// `AnimationStore` — retained per-window storage for the four
+/// animation pools (tween, spring, motion, spring_motion). PR 8.4c
+/// lifted this out of the retired `context/widget_store.zig`; the
+/// pools live next to the engines that drive them now. See
+/// `store.zig` for the rationale.
+pub const AnimationStore = store.AnimationStore;
 
 // =============================================================================
 // Core Types

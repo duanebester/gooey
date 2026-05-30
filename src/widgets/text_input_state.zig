@@ -1,4 +1,4 @@
-//! TextInput - editable single-line text field
+//! TextInputState - editable single-line text input engine
 //!
 //! Handles:
 //! - Text rendering with cursor
@@ -7,9 +7,19 @@
 //! - Selection (shift+arrow, shift+click)
 //! - Focus management
 //!
+//! Naming: this is the *engine* type — the heap-allocated state object
+//! that owns the text buffer, cursor, IME composition, edit history, and
+//! focus state for a single-line text input. The user-facing declarative
+//! component is `gooey.TextInput` in `components/text_input.zig`, which
+//! is what application code constructs as a literal
+//! (`TextInput{ .id = "...", .placeholder = "..." }`). The two types
+//! used to share the name `TextInput`, which only worked as long as no
+//! file imported both — the disambiguation is the prep work for PR 8.4
+//! lifting `TextInputState` onto the keyed `Window.element_states` pool.
+//!
 //! Example usage:
 //! ```
-//! var input = TextInput.init(allocator, .{ .x = 100, .y = 100, .width = 200, .height = 32 });
+//! var input = TextInputState.init(allocator, .{ .x = 100, .y = 100, .width = 200, .height = 32 });
 //! defer input.deinit();
 //!
 //! // In input handler:
@@ -51,11 +61,16 @@ const history_mod = @import("edit_history.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const element_id_mod = @import("../core/element_id.zig");
+// PR 8.4b — `core/element_id.zig` import retired alongside the
+// `id: ElementId` field and `getId()` method. The engine type is
+// keyed in the pool by the framework's `LayoutId.id` u32 hash; the
+// pre-PR-8.4b `ElementId` was strictly internal book-keeping that
+// survived from the days when the engine type owned its own id
+// space.
 const event = @import("../input/event.zig");
 const geometry = @import("../core/geometry.zig");
+const focus_mod = @import("../context/focus.zig");
 
-const ElementId = element_id_mod.ElementId;
 const Event = event.Event;
 const EventResult = event.EventResult;
 
@@ -68,18 +83,18 @@ const KeyCode = input_mod.KeyCode;
 const InputEvent = input_mod.InputEvent;
 const Modifiers = input_mod.Modifiers;
 
-/// Rectangle bounds for positioning
-pub const Bounds = struct {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-
-    pub fn contains(self: Bounds, px: f32, py: f32) bool {
-        return px >= self.x and px <= self.x + self.width and
-            py >= self.y and py <= self.y + self.height;
-    }
-};
+/// Rectangle bounds for positioning.
+///
+/// Re-exports the shared flat hot-loop rectangle from `text_common.zig`,
+/// which is the single source of truth for the text-widget family
+/// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
+/// alias preserves existing `text_input_state.Bounds` import paths in
+/// `widgets/mod.zig` and the `Builder.DEFAULT_TEXT_INPUT_BOUNDS`
+/// seed value (post-PR-8.4b: pre-PR-8.4b the alias was also used by
+/// the retired `WidgetStore.default_text_input_bounds` field). See
+/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
+/// hit-test rationale.
+pub const Bounds = common.Bounds;
 
 /// Visual style for text rendering (no chrome - that's handled by the component)
 pub const Style = struct {
@@ -95,11 +110,20 @@ pub const Style = struct {
     preedit_underline_color: Hsla = Hsla.init(0, 0, 0.3, 1),
 };
 
-/// TextInput - editable single-line text field
-pub const TextInput = struct {
+/// TextInputState — editable single-line text input engine.
+///
+/// See file header for the engine-vs-component naming rationale.
+pub const TextInputState = struct {
     allocator: std.mem.Allocator,
 
-    id: ElementId,
+    // PR 8.4b — `id: ElementId` field dropped. Pre-PR-8.4b it held
+    // either a counter-derived `ElementId.int(...)` (for `init`) or a
+    // `ElementId.named(id)` view of the duped key from
+    // `WidgetStore.text_inputs` (for `initWithId`). Post-PR-8.4b the
+    // pool keys on `LayoutId.id` (a u32 hash), there is no duped
+    // string for the field to point at, and the only reader
+    // (`getId()`) was unused outside its own definition. Same
+    // reduction PR 8.4a did to `ScrollContainer.id`.
 
     // Geometry
     bounds: Bounds,
@@ -139,8 +163,8 @@ pub const TextInput = struct {
     secure: bool = false,
 
     // Callbacks
-    on_change: ?*const fn (*TextInput) void = null,
-    on_submit: ?*const fn (*TextInput) void = null,
+    on_change: ?*const fn (*TextInputState) void = null,
+    on_submit: ?*const fn (*TextInputState) void = null,
 
     /// Cursor rect for IME candidate window positioning (set during render)
     cursor_rect: struct { x: f32 = 0, y: f32 = 0, width: f32 = 1.5, height: f32 = 20 } = .{},
@@ -153,39 +177,22 @@ pub const TextInput = struct {
     /// Cursor blink interval in milliseconds
     const BLINK_INTERVAL_MS: i64 = 530;
 
-    /// Initialize TextInput
-    /// Marked noinline to prevent stack accumulation
+    /// Initialize TextInputState.
+    /// Marked noinline to prevent stack accumulation.
+    ///
+    /// PR 8.4b — collapsed `init` and `initWithId` into a single
+    /// constructor now that `id: ElementId` is gone. The pre-PR-8.4b
+    /// `init` generated a counter-derived id only because the field
+    /// existed; with the field retired the counter was dead weight
+    /// and the call sites split (`init` for tests, `initWithId` for
+    /// `WidgetStore`) collapse onto a single shape.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
-        // Generate a unique integer ID for this instance
-        const unique_id = struct {
-            var next: u64 = 1;
-            fn get() u64 {
-                const id = next;
-                next += 1;
-                return id;
-            }
-        }.get();
         return .{
             .allocator = allocator,
             .bounds = bounds,
             .style = .{},
             .buffer = .empty,
             .preedit_buffer = .empty,
-            .id = ElementId.int(unique_id),
-            .edit_history = EditHistory.create(allocator),
-        };
-    }
-
-    /// Initialize with a string-based ID (for WidgetStore usage)
-    /// Marked noinline to prevent stack accumulation
-    pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
-        return .{
-            .allocator = allocator,
-            .bounds = bounds,
-            .style = .{},
-            .buffer = .empty,
-            .preedit_buffer = .empty,
-            .id = ElementId.named(id),
             .edit_history = EditHistory.create(allocator),
         };
     }
@@ -263,6 +270,16 @@ pub const TextInput = struct {
         return self.focused;
     }
 
+    /// Build a `Focusable` trait for this widget instance. Called by
+    /// the UI builder during render so the framework can drive focus
+    /// without importing the widget type — see PR 4 in
+    /// `docs/cleanup-implementation-plan.md`. The `Focusable.ptr` field
+    /// captures the heap-stable widget pointer; the vtable is shared
+    /// across all `TextInputState` instances and lives in static storage.
+    pub fn focusable(self: *Self) focus_mod.Focusable {
+        return focus_mod.Focusable.fromInstance(Self, self);
+    }
+
     // =========================================================================
     // Input Handling
     // =========================================================================
@@ -315,11 +332,6 @@ pub const TextInput = struct {
             self.bounds.width,
             self.bounds.height,
         );
-    }
-
-    /// Element interface: get ID
-    pub fn getId(self: *const Self) ElementId {
-        return self.id;
     }
 
     /// Element interface: can this element receive focus?
@@ -1106,10 +1118,10 @@ fn getTimestamp() i64 {
     return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }
 
-test "TextInput basic operations" {
+test "TextInputState basic operations" {
     const allocator = std.testing.allocator;
 
-    var input = TextInput.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
     defer input.deinit();
 
     // Test setText
@@ -1123,10 +1135,10 @@ test "TextInput basic operations" {
     try std.testing.expectEqual(@as(usize, 0), input.cursor_byte);
 }
 
-test "TextInput UTF-8 navigation" {
+test "TextInputState UTF-8 navigation" {
     const allocator = std.testing.allocator;
 
-    var input = TextInput.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
     defer input.deinit();
 
     // Test with emoji (4 bytes in UTF-8)
@@ -1141,10 +1153,10 @@ test "TextInput UTF-8 navigation" {
     try std.testing.expectEqual(@as(usize, 1), prev2); // position after 'a', before emoji
 }
 
-test "TextInput selection" {
+test "TextInputState selection" {
     const allocator = std.testing.allocator;
 
-    var input = TextInput.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
     defer input.deinit();
 
     try input.setText("Hello World");

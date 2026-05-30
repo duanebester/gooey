@@ -9,7 +9,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 const Color = ui.Color;
 
 const AppState = struct {
@@ -42,18 +42,25 @@ const AppState = struct {
         }
     };
 
-    /// Command method - needs Gooey access to change window glass
-    pub fn cycleStyleCmd(self: *AppState, g: *gooey.Gooey) void {
+    /// Command method - needs Window access to change window glass
+    pub fn cycleStyleCmd(self: *AppState, g: *gooey.Window) void {
         self.glass_style = self.glass_style.next();
 
         // g.window is already *Window, no cast needed!
-        const win_style: gooey.platform.Window.GlassStyle = switch (self.glass_style) {
+        // PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+        // to free up the `Window` name for the framework-level wrapper
+        // landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+        const win_style: gooey.platform.PlatformWindow.GlassStyle = switch (self.glass_style) {
             .none => .none,
             .blur => .blur,
             .glass_regular => .glass_regular,
             .glass_clear => .glass_clear,
         };
-        if (g.window) |w| {
+        // PR 7b.1b — `g.window` (the OS-level handle field on the
+        // framework wrapper) was renamed to `g.platform_window` so the
+        // wrapper struct itself could claim the name `Window`. The
+        // captured `w` is still a `*PlatformWindow`.
+        if (g.platform_window) |w| {
             w.setGlassStyle(win_style, self.opacity, self.corner_radius);
         }
     }
@@ -72,10 +79,10 @@ const text_color = Color.rgba(1, 1, 1, 0.95);
 const text_muted = Color.rgba(1, 1, 1, 0.6);
 const card_bg = Color.rgba(1, 1, 1, 0.1);
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var state = AppState{};
 
-    try gooey.runCx(AppState, &state, render, .{
+    try gooey.run(AppState, &state, render, .{
         .title = "Glass Demo",
         .width = 600,
         .height = 400,
@@ -88,7 +95,7 @@ pub fn main() !void {
         .glass_corner_radius = 10.0, // Try 10 to match typical window corners
         .titlebar_transparent = true,
         .full_size_content = false,
-    });
+    }, init);
 }
 
 fn render(cx: *Cx) void {

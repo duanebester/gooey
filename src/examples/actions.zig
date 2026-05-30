@@ -1,7 +1,7 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 const Cx = gooey.Cx;
 
 // Define action types
@@ -17,10 +17,10 @@ const AppState = struct {
 
 var state = AppState{};
 
-pub fn main() !void {
-    try gooey.runCx(AppState, &state, render, .{
+pub fn main(init: std.process.Init) !void {
+    try gooey.run(AppState, &state, render, .{
         .title = "Actions Demo",
-    });
+    }, init);
 }
 
 fn setupKeymap(cx: *Cx) void {
@@ -28,11 +28,11 @@ fn setupKeymap(cx: *Cx) void {
     if (s.initialized) return;
     s.initialized = true;
 
-    const g = cx.gooey();
-    g.keymap.bind(Undo, "cmd-z", null);
-    g.keymap.bind(Redo, "cmd-shift-z", null);
-    g.keymap.bind(Save, "cmd-s", "Editor");
-    g.keymap.bind(Cancel, "escape", null);
+    const g = cx.window();
+    g.keymap().bind(Undo, "cmd-z", null);
+    g.keymap().bind(Redo, "cmd-shift-z", null);
+    g.keymap().bind(Save, "cmd-s", "Editor");
+    g.keymap().bind(Cancel, "escape", null);
 }
 
 fn render(cx: *Cx) void {

@@ -61,11 +61,42 @@ const Icons = @import("svg.zig").Icons;
 const handler_mod = @import("../context/handler.zig");
 const OnSelectHandler = handler_mod.OnSelectHandler;
 const EntityId = handler_mod.EntityId;
-const gooey_mod = @import("../context/gooey.zig");
-const Gooey = gooey_mod.Gooey;
+const window_mod = @import("../context/window.zig");
+const Window = window_mod.Window;
 
 /// Hard cap on option count to prevent runaway loops.
 const MAX_SELECT_OPTIONS: usize = 4096;
+
+// =============================================================================
+// Internal state (PR 8.2 — lives next to the widget that owns it)
+// =============================================================================
+
+/// Internal open/close state for `Select`, attached to the widget's
+/// `LayoutId` hash and stored on `Window.element_states`.
+///
+/// Pre-PR-8.2 this lived in `context/widget_store.zig` alongside a
+/// dedicated `select_states: AutoHashMap(u32, SelectState)` field plus
+/// four accessor methods on `WidgetStore`. PR 8 collapses every
+/// per-type widget map onto the unified `ElementStates` keyed pool;
+/// `Select` is the first consumer (smallest, u32-keyed). The state
+/// type itself moved here so the widget owns its declaration —
+/// adding a new stateful widget is now a no-op in framework code.
+///
+/// `defaultInit` is the comptime function pointer
+/// `withElementState` runs on the miss path. It must take no
+/// parameters and return `Self` by value (the pool then
+/// `allocator.create(Self)` and assigns this value into the slot).
+pub const SelectState = struct {
+    is_open: bool = false,
+
+    /// Default-state factory for `withElementState`. Closed dropdown
+    /// is the only sensible initial state (a freshly-mounted Select
+    /// renders its trigger only — the dropdown materialises on the
+    /// first toggle).
+    pub fn defaultInit() SelectState {
+        return .{ .is_open = false };
+    }
+};
 
 // =============================================================================
 // Internal Handlers (module-level, used for internal open/close state)
@@ -73,19 +104,44 @@ const MAX_SELECT_OPTIONS: usize = 4096;
 
 /// Toggle a Select's internal open/close state.
 /// EntityId packs the LayoutId hash (u32) in the lower bits.
-fn internalToggle(g: *Gooey, packed_id: EntityId) void {
+///
+/// PR 8.2 — routed through `Window.element_states` instead of the
+/// retired `WidgetStore.toggleSelectState`. The miss-path allocation
+/// returns `error.OutOfMemory` or `error.ElementStatesAtCapacity`;
+/// either failure mode is handled by leaving the dropdown closed for
+/// this tick (caller can retry next frame) rather than panicking.
+/// Same defensive shape the pre-PR-8.2 path had with the
+/// `getOrPut catch return null` in the old `toggleSelectState`.
+fn internalToggle(g: *Window, packed_id: EntityId) void {
     const id_hash: u32 = @truncate(packed_id.id);
     std.debug.assert(id_hash != 0);
-    g.widgets.toggleSelectState(id_hash);
+
+    const ss = g.element_states.withElementState(
+        SelectState,
+        @as(u64, id_hash),
+        SelectState.defaultInit,
+    ) catch return;
+    ss.is_open = !ss.is_open;
+
     g.requestRender();
 }
 
 /// Close a Select's internal open/close state.
 /// EntityId packs the LayoutId hash (u32) in the lower bits.
-fn internalClose(g: *Gooey, packed_id: EntityId) void {
+///
+/// PR 8.2 — routed through `Window.element_states.get`. Unlike
+/// `internalToggle` we deliberately do NOT create the slot on miss:
+/// closing a never-opened Select is a no-op (the dropdown wasn't
+/// rendered, so there's no state to close), and creating one would
+/// add an empty entry to the pool every time a click-outside handler
+/// fires on an untouched Select.
+fn internalClose(g: *Window, packed_id: EntityId) void {
     const id_hash: u32 = @truncate(packed_id.id);
     std.debug.assert(id_hash != 0);
-    g.widgets.closeSelectState(id_hash);
+
+    if (g.element_states.get(SelectState, @as(u64, id_hash))) |ss| {
+        ss.is_open = false;
+    }
     g.requestRender();
 }
 
@@ -184,7 +240,7 @@ pub const Select = struct {
         toggle_handler: ?HandlerRef,
         close_handler: ?HandlerRef,
 
-        /// Fallback when Gooey context is unavailable (e.g. headless/test).
+        /// Fallback when Window context is unavailable (e.g. headless/test).
         fn disabled() ResolvedState {
             return .{
                 .is_open = false,
@@ -194,19 +250,19 @@ pub const Select = struct {
         }
     };
 
-    pub fn render(self: Select, b: *ui.Builder) void {
+    pub fn render(self: Select, cx: *ui.Cx) void {
         std.debug.assert(self.id.len > 0);
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
         const layout_id = LayoutId.fromString(self.id);
-        const t = b.theme();
+        const t = cx.theme();
         const font_size = self.font_size orelse t.font_size_base;
         std.debug.assert(font_size > 0);
-        const resolved = self.resolveState(b, layout_id);
+        const resolved = self.resolveState(cx, layout_id);
         const colors = self.resolveColors(t, resolved.is_open);
 
         // Accessibility: combobox role
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .combobox,
             .name = self.accessible_name orelse self.placeholder,
@@ -218,10 +274,13 @@ pub const Select = struct {
                 .has_popup = true,
             },
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        // Container: trigger + dropdown
-        b.boxWithId(self.id, .{
+        // Container: trigger + dropdown. Reuse the already-resolved
+        // `layout_id` (PR 11b.2b) instead of re-hashing `self.id` through
+        // `boxWithId` — `self.id` is a stateful, retained-by-id widget, so
+        // the explicit id stays required, but it's hashed exactly once.
+        cx.boxWithLayoutId(layout_id, .{
             .width = self.width,
         }, .{
             SelectTrigger{
@@ -251,7 +310,7 @@ pub const Select = struct {
                 .selected_background = colors.selected_bg,
                 .hover_background = colors.option_hover_bg,
                 .text_color = colors.text_col,
-                .checkmark_color = b.theme().primary,
+                .checkmark_color = cx.theme().primary,
                 .border_color = colors.border,
                 .font_size = font_size,
                 .corner_radius = colors.radius,
@@ -270,7 +329,7 @@ pub const Select = struct {
     }
 
     /// Resolve open/close state and handlers — internal vs external.
-    fn resolveState(self: Select, b: *ui.Builder, layout_id: LayoutId) ResolvedState {
+    fn resolveState(self: Select, cx: *ui.Cx, layout_id: LayoutId) ResolvedState {
         // Legacy path: caller manages open/close externally
         if (!self.usesInternalState()) {
             std.debug.assert(self.on_select != null or self.handlers != null or
@@ -282,11 +341,22 @@ pub const Select = struct {
             };
         }
 
-        // Internal state path: read from WidgetStore
-        const g = b.gooey orelse return ResolvedState.disabled();
+        // Internal state path: read from `Window.element_states`
+        // (PR 8.2 — was `g.widgets.getOrCreateSelectState(id_hash)`
+        // pre-PR-8.2). The pool's miss-path allocation can fail under
+        // OOM or capacity exhaustion; in either case fall back to the
+        // disabled state so the trigger still renders, just without
+        // toggle/close handlers wired up. Same recover-by-disable
+        // shape the pre-PR-8.2 path had against the `?*SelectState`
+        // null return.
+        const g = cx.getGooey() orelse return ResolvedState.disabled();
         const id_hash = layout_id.id;
         std.debug.assert(id_hash != 0);
-        const ss = g.widgets.getOrCreateSelectState(id_hash) orelse return ResolvedState.disabled();
+        const ss = g.element_states.withElementState(
+            SelectState,
+            @as(u64, id_hash),
+            SelectState.defaultInit,
+        ) catch return ResolvedState.disabled();
 
         return .{
             .is_open = ss.is_open,
@@ -362,13 +432,13 @@ const SelectTrigger = struct {
     padding: f32,
     disabled: bool,
 
-    pub fn render(self: SelectTrigger, b: *ui.Builder) void {
+    pub fn render(self: SelectTrigger, cx: *ui.Cx) void {
         std.debug.assert(self.font_size > 0);
         std.debug.assert(self.padding >= 0);
 
         const opacity: f32 = if (self.disabled) 0.6 else 1.0;
 
-        b.box(.{
+        cx.box(.{
             .fill_width = true,
             .height = @as(f32, @floatFromInt(self.font_size)) + self.padding * 2 + 4,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding / 2 } },
@@ -402,10 +472,10 @@ const ChevronIcon = struct {
     color: Color,
     size: f32,
 
-    pub fn render(self: ChevronIcon, b: *ui.Builder) void {
+    pub fn render(self: ChevronIcon, cx: *ui.Cx) void {
         std.debug.assert(self.size > 0);
         const icon_path = if (self.is_open) Icons.chevron_up else Icons.chevron_down;
-        b.box(.{
+        cx.box(.{
             .width = self.size,
             .height = self.size,
             .alignment = .{ .main = .center, .cross = .center },
@@ -438,11 +508,11 @@ const SelectDropdown = struct {
     corner_radius: f32,
     padding: f32,
 
-    pub fn render(self: SelectDropdown, b: *ui.Builder) void {
+    pub fn render(self: SelectDropdown, cx: *ui.Cx) void {
         if (!self.is_open) return;
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
-        b.box(.{
+        cx.box(.{
             .width = self.min_width,
             .padding = .{ .all = 4 },
             .background = self.background,
@@ -494,14 +564,14 @@ const SelectOptions = struct {
     corner_radius: f32,
     padding: f32,
 
-    pub fn render(self: SelectOptions, b: *ui.Builder) void {
+    pub fn render(self: SelectOptions, cx: *ui.Cx) void {
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
         for (self.options, 0..) |label, i| {
             const handler: ?HandlerRef = self.resolveOptionHandler(i);
             const is_selected = if (self.selected) |sel| sel == i else false;
 
-            b.with(SelectOption{
+            cx.with(SelectOption{
                 .label = label,
                 .is_selected = is_selected,
                 .on_click_handler = handler,
@@ -551,10 +621,10 @@ const SelectOption = struct {
     corner_radius: f32,
     padding: f32,
 
-    pub fn render(self: SelectOption, b: *ui.Builder) void {
+    pub fn render(self: SelectOption, cx: *ui.Cx) void {
         const bg = if (self.is_selected) self.selected_background else Color.transparent;
 
-        b.box(.{
+        cx.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding * 0.7 } },
             .background = bg,
@@ -584,9 +654,9 @@ const SelectCheckmark = struct {
     visible: bool,
     color: Color,
 
-    pub fn render(self: SelectCheckmark, b: *ui.Builder) void {
+    pub fn render(self: SelectCheckmark, cx: *ui.Cx) void {
         if (self.visible) {
-            b.box(.{
+            cx.box(.{
                 .width = 16,
                 .height = 16,
                 .alignment = .{ .main = .center, .cross = .center },
@@ -595,7 +665,7 @@ const SelectCheckmark = struct {
             });
         } else {
             // Empty space to maintain alignment
-            b.box(.{
+            cx.box(.{
                 .width = 16,
                 .height = 16,
             }, .{});

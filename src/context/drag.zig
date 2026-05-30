@@ -1,7 +1,7 @@
 //! Drag & Drop Types
 //!
 //! Core data structures for drag operations. Single active drag at a time,
-//! zero allocation after init (state stored inline in Gooey struct).
+//! zero allocation after init (state stored inline in Window struct).
 
 const std = @import("std");
 const geometry = @import("../core/geometry.zig");

@@ -15,10 +15,10 @@ const gooey = @import("gooey");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
-const Svg = gooey.Svg;
-const Icons = gooey.Icons;
-const Image = gooey.Image;
+const Button = gooey.components.Button;
+const Svg = gooey.components.Svg;
+const Icons = gooey.components.Icons;
+const Image = gooey.components.Image;
 
 // =============================================================================
 // Application State
@@ -73,9 +73,9 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 // =============================================================================

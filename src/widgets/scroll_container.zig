@@ -142,9 +142,6 @@ pub const ScrollState = struct {
 pub const ScrollContainer = struct {
     allocator: std.mem.Allocator,
 
-    /// Unique identifier
-    id: []const u8,
-
     /// Viewport bounds (set during layout)
     bounds: BoundingBox,
 
@@ -156,10 +153,18 @@ pub const ScrollContainer = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, id: []const u8) Self {
+    /// Initialize a scroll container.
+    ///
+    /// PR 8.4 — the `id: []const u8` constructor parameter was
+    /// dropped alongside the storage migration off `WidgetStore`.
+    /// The `id` field on this struct used to hold the duped key from
+    /// `WidgetStore.scroll_containers`; it was only ever written, never
+    /// read. With `Window.element_states` keyed on the `LayoutId.id`
+    /// hash there's no duped string for this struct to point at, so
+    /// the field is gone too.
+    pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .id = id,
             .bounds = .{},
             .state = .{},
             .style = .{},

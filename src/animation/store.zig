@@ -1,63 +1,82 @@
-//! WidgetStore - Simple retained storage for stateful widgets
+//! AnimationStore — retained per-window storage for animation pools.
 //!
-//! Now includes animation state management.
+//! Hosts the four u32-keyed `AutoArrayHashMapUnmanaged` pools that
+//! drive every tween, spring, stagger, and motion in the framework:
+//!
+//!   - `animations` — `AnimationState` (tween)
+//!   - `springs` — `SpringState`
+//!   - `motions` — `MotionState` (tween-based motion containers)
+//!   - `spring_motions` — `SpringMotionState`
+//!
+//! ## Why this exists (and why it lives here, not in `context/`)
+//!
+//! Pre-PR-8.4c the four pools lived on `context/widget_store.zig`'s
+//! `WidgetStore`, sharing space with the per-widget retained-state maps
+//! (`select_states`, `scroll_containers`, `text_inputs`, `text_areas`,
+//! `code_editors`). PR 8.1-8.4b peeled every per-widget map off
+//! `WidgetStore` onto `Window.element_states` (the unified
+//! `(type_id, id_hash) -> *S` keyed pool). What was left fit the
+//! "cross-cutting per-window animation storage" shape — one widget
+//! can drive multiple concurrent animations against different ids,
+//! so they can't go on the per-element pool — and is owned naturally
+//! by `animation/`, not `context/`. PR 8.4c lifts them here and
+//! retires the `WidgetStore` namespace entirely. See
+//! `docs/cleanup-implementation-plan.md` PR 8.4c.
+//!
+//! ## What's NOT here
+//!
+//! `ChangeTracker` (the `cx.changed(key, value)` backing storage)
+//! lived alongside the animation pools on `WidgetStore` pre-PR-8.4c
+//! but is unrelated to animation lifecycle — it's per-frame value-
+//! diffing across arbitrary keys. PR 8.4c promotes it to a direct
+//! `Window.change_tracker: ChangeTracker` field. The two subsystems
+//! were only colocated because `WidgetStore` was the historical
+//! "miscellaneous retained-storage" bucket.
+//!
+//! ## Frame-driven eviction (deferred)
+//!
+//! Each pool retains entries indefinitely until the caller invokes
+//! `removeAnimation` / `swapRemove` explicitly. The `animateById` /
+//! `animateOnById` paths use `last_queried_frame + frame_counter`
+//! heuristics to detect "completed AND not queried last frame"
+//! (component was hidden) and restart on re-mount, but that is not
+//! the same shape as GPUI's two-frame swap-discipline eviction
+//! against `next_frame` / `rendered_frame`. Lifting these pools onto
+//! `Frame` with carry-forward fall-through is tracked alongside the
+//! rest of the per-frame transients (`focus`, `mouse_listeners`,
+//! `tab_stops`) that PR 7c.3 deferred for the same reason. See
+//! `context/frame.zig` for the existing double buffer that anchors
+//! the future migration.
 
 const std = @import("std");
-const TextInput = @import("../widgets/text_input_state.zig").TextInput;
-const Bounds = @import("../widgets/text_input_state.zig").Bounds;
-const ScrollContainer = @import("../widgets/scroll_container.zig").ScrollContainer;
-const TextArea = @import("../widgets/text_area_state.zig").TextArea;
-const TextAreaBounds = @import("../widgets/text_area_state.zig").Bounds;
-const CodeEditorState = @import("../widgets/code_editor_state.zig").CodeEditorState;
-const CodeEditorBounds = @import("../widgets/code_editor_state.zig").Bounds;
-const animation = @import("../animation/animation.zig");
+const animation = @import("animation.zig");
 const AnimationState = animation.AnimationState;
 const AnimationConfig = animation.AnimationConfig;
 const AnimationHandle = animation.AnimationHandle;
 const AnimationId = animation.AnimationId;
-const spring_mod = @import("../animation/spring.zig");
+const spring_mod = @import("spring.zig");
 const SpringState = spring_mod.SpringState;
 const SpringConfig = spring_mod.SpringConfig;
 const SpringHandle = spring_mod.SpringHandle;
-const stagger_mod = @import("../animation/stagger.zig");
+const stagger_mod = @import("stagger.zig");
 const StaggerConfig = stagger_mod.StaggerConfig;
-const motion_mod = @import("../animation/motion.zig");
+const motion_mod = @import("motion.zig");
 const MotionConfig = motion_mod.MotionConfig;
 const MotionHandle = motion_mod.MotionHandle;
 const MotionPhase = motion_mod.MotionPhase;
 const MotionState = motion_mod.MotionState;
 const SpringMotionConfig = motion_mod.SpringMotionConfig;
 const SpringMotionState = motion_mod.SpringMotionState;
-const hashString = @import("../animation/animation.zig").hashString;
-const change_tracker_mod = @import("change_tracker.zig");
-const ChangeTracker = change_tracker_mod.ChangeTracker;
+const hashString = animation.hashString;
 
-/// Internal state for Select widgets, keyed by LayoutId hash (u32).
-/// Managed automatically when using `on_select` with the Select component.
-pub const SelectState = struct {
-    is_open: bool = false,
-};
-
-pub const WidgetStore = struct {
+pub const AnimationStore = struct {
     allocator: std.mem.Allocator,
     /// IO instance for monotonic timing. Stored on the struct because
     /// animations sample the `awake` clock every frame and callers
-    /// (e.g. `cx.animate`) come through methods, not free functions.
-    /// `std.Io` is a pair of pointers into a process-lifetime vtable —
-    /// safe and cheap to copy.
+    /// (e.g. `cx.animations.tween`) come through methods, not free
+    /// functions. `std.Io` is a pair of pointers into a
+    /// process-lifetime vtable — safe and cheap to copy.
     io: std.Io,
-    text_inputs: std.StringHashMap(*TextInput),
-    text_areas: std.StringHashMap(*TextArea),
-    code_editors: std.StringHashMap(*CodeEditorState),
-    scroll_containers: std.StringHashMap(*ScrollContainer),
-    /// Tracks which widgets were accessed this frame. Keyed by pointer
-    /// address of the heap-duped key in the widget map — avoids re-hashing
-    /// string contents every frame (pointer identity is sufficient because
-    /// each widget map entry owns a unique heap allocation).
-    accessed_this_frame: std.AutoHashMap([*]const u8, void),
-
-    // u32-keyed select state (open/close, keyed by LayoutId hash)
-    select_states: std.AutoHashMap(u32, SelectState),
 
     // u32-keyed animation storage
     animations: std.AutoArrayHashMapUnmanaged(u32, AnimationState),
@@ -73,114 +92,12 @@ pub const WidgetStore = struct {
     spring_motions: std.AutoArrayHashMapUnmanaged(u32, SpringMotionState),
     active_motion_count: u32 = 0,
 
-    // Change detection (fixed-capacity, zero allocation after init)
-    change_tracker: ChangeTracker = .{},
-
-    default_text_input_bounds: Bounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 },
-    default_text_area_bounds: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 },
-    default_code_editor_bounds: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 },
-
     const Self = @This();
-
-    // =========================================================================
-    // Generic widget helpers (eliminate duplication across widget types)
-    // =========================================================================
-
-    /// Look up a widget by `id` in `map`. If found, mark it as accessed this
-    /// frame and return the existing instance. If not found, heap-allocate a
-    /// new `T`, dupe the key, initialize via the type-specific init function,
-    /// store in the map, mark accessed, and return. Returns null only on OOM.
-    fn getOrCreateWidget(self: *Self, comptime T: type, map: *std.StringHashMap(*T), id: []const u8) ?*T {
-        std.debug.assert(id.len > 0);
-
-        // Return existing instance if found.
-        if (map.getEntry(id)) |entry| {
-            const stable_key = entry.key_ptr.*;
-            if (!self.accessed_this_frame.contains(stable_key.ptr)) {
-                self.accessed_this_frame.put(stable_key.ptr, {}) catch {};
-            }
-            return entry.value_ptr.*;
-        }
-
-        // Allocate new instance.
-        const instance = self.allocator.create(T) catch return null;
-
-        const owned_key = self.allocator.dupe(u8, id) catch {
-            self.allocator.destroy(instance);
-            return null;
-        };
-
-        // Initialize via the type-specific init function.
-        if (T == ScrollContainer) {
-            instance.* = ScrollContainer.init(self.allocator, owned_key);
-        } else if (T == TextInput) {
-            instance.* = TextInput.initWithId(self.allocator, self.default_text_input_bounds, owned_key);
-        } else if (T == TextArea) {
-            instance.* = TextArea.initWithId(self.allocator, self.default_text_area_bounds, owned_key);
-        } else if (T == CodeEditorState) {
-            instance.* = CodeEditorState.initWithId(self.allocator, self.default_code_editor_bounds, owned_key);
-        } else {
-            @compileError("getOrCreateWidget: unsupported widget type");
-        }
-
-        // Store in map and mark accessed.
-        map.put(owned_key, instance) catch {
-            instance.deinit();
-            self.allocator.destroy(instance);
-            self.allocator.free(owned_key);
-            return null;
-        };
-
-        self.accessed_this_frame.put(owned_key.ptr, {}) catch {};
-        return instance;
-    }
-
-    /// Remove a widget by `id`: deinit the instance, free the heap allocation
-    /// and the duped key, and remove from the accessed-this-frame set.
-    fn removeWidget(self: *Self, comptime T: type, map: *std.StringHashMap(*T), id: []const u8) void {
-        if (map.fetchRemove(id)) |kv| {
-            _ = self.accessed_this_frame.remove(kv.key.ptr);
-            kv.value.deinit();
-            self.allocator.destroy(kv.value);
-            self.allocator.free(kv.key);
-        }
-    }
-
-    /// Iterate a widget map and return the first focused instance, or null.
-    /// Only valid for types that expose `isFocused()` (TextInput, TextArea,
-    /// CodeEditorState).
-    fn getFocusedWidget(comptime T: type, map: *std.StringHashMap(*T)) ?*T {
-        var it = map.valueIterator();
-        while (it.next()) |val| {
-            if (val.*.isFocused()) {
-                return val.*;
-            }
-        }
-        return null;
-    }
-
-    /// Deinit every entry in a widget map: call `deinit` on each instance,
-    /// free the heap allocation, free the duped key, then deinit the map itself.
-    fn deinitWidgetMap(self: *Self, comptime T: type, map: *std.StringHashMap(*T)) void {
-        var it = map.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
-            self.allocator.free(entry.key_ptr.*);
-        }
-        map.deinit();
-    }
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .allocator = allocator,
             .io = io,
-            .text_inputs = std.StringHashMap(*TextInput).init(allocator),
-            .text_areas = std.StringHashMap(*TextArea).init(allocator),
-            .code_editors = std.StringHashMap(*CodeEditorState).init(allocator),
-            .scroll_containers = std.StringHashMap(*ScrollContainer).init(allocator),
-            .accessed_this_frame = std.AutoHashMap([*]const u8, void).init(allocator),
-            .select_states = std.AutoHashMap(u32, SelectState).init(allocator),
             .animations = .empty,
             .springs = .empty,
             .motions = .empty,
@@ -189,17 +106,10 @@ pub const WidgetStore = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.deinitWidgetMap(TextInput, &self.text_inputs);
-        self.deinitWidgetMap(TextArea, &self.text_areas);
-        self.deinitWidgetMap(CodeEditorState, &self.code_editors);
-        self.deinitWidgetMap(ScrollContainer, &self.scroll_containers);
-
-        self.select_states.deinit();
         self.animations.deinit(self.allocator);
         self.springs.deinit(self.allocator);
         self.motions.deinit(self.allocator);
         self.spring_motions.deinit(self.allocator);
-        self.accessed_this_frame.deinit();
     }
 
     // =========================================================================
@@ -238,7 +148,6 @@ pub const WidgetStore = struct {
         return self.animateById(animation.hashString(id), config);
     }
 
-    /// Restart animation by hashed ID
     /// Restart animation by hashed ID
     pub fn restartAnimationById(self: *Self, anim_id: u32, config: AnimationConfig) AnimationHandle {
         const gop = self.animations.getOrPut(self.allocator, anim_id) catch {
@@ -345,10 +254,6 @@ pub const WidgetStore = struct {
     pub fn hasActiveAnimations(self: *const Self) bool {
         return self.active_animation_count > 0 or self.active_spring_count > 0 or self.active_motion_count > 0;
     }
-
-    // =========================================================================
-    // Frame Lifecycle
-    // =========================================================================
 
     // =========================================================================
     // Spring Methods
@@ -549,8 +454,11 @@ pub const WidgetStore = struct {
         return self.springMotionById(hashString(id), show, config);
     }
 
+    // =========================================================================
+    // Frame Lifecycle
+    // =========================================================================
+
     pub fn beginFrame(self: *Self) void {
-        self.accessed_this_frame.clearRetainingCapacity();
         self.active_animation_count = 0; // Reset - will be incremented as animations are queried
         self.active_spring_count = 0; // Reset - will be incremented as springs are queried
         self.active_motion_count = 0; // Reset - will be incremented as motions are queried
@@ -558,156 +466,4 @@ pub const WidgetStore = struct {
     }
 
     pub fn endFrame(_: *Self) void {}
-
-    // =========================================================================
-    // TextInput (existing code)
-    // =========================================================================
-
-    pub fn textInput(self: *Self, id: []const u8) ?*TextInput {
-        return self.getOrCreateWidget(TextInput, &self.text_inputs, id);
-    }
-
-    pub fn textInputOrPanic(self: *Self, id: []const u8) *TextInput {
-        return self.textInput(id) orelse @panic("Failed to allocate TextInput");
-    }
-
-    // =========================================================================
-    // TextArea
-    // =========================================================================
-
-    pub fn textArea(self: *Self, id: []const u8) ?*TextArea {
-        return self.getOrCreateWidget(TextArea, &self.text_areas, id);
-    }
-
-    pub fn textAreaOrPanic(self: *Self, id: []const u8) *TextArea {
-        return self.textArea(id) orelse @panic("Failed to allocate TextArea");
-    }
-
-    pub fn getTextArea(self: *Self, id: []const u8) ?*TextArea {
-        return self.text_areas.get(id);
-    }
-
-    pub fn removeTextArea(self: *Self, id: []const u8) void {
-        self.removeWidget(TextArea, &self.text_areas, id);
-    }
-
-    pub fn getFocusedTextArea(self: *Self) ?*TextArea {
-        return getFocusedWidget(TextArea, &self.text_areas);
-    }
-
-    // =========================================================================
-    // CodeEditor
-    // =========================================================================
-
-    pub fn codeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
-        return self.getOrCreateWidget(CodeEditorState, &self.code_editors, id);
-    }
-
-    pub fn codeEditorOrPanic(self: *Self, id: []const u8) *CodeEditorState {
-        return self.codeEditor(id) orelse @panic("Failed to allocate CodeEditorState");
-    }
-
-    pub fn getCodeEditor(self: *Self, id: []const u8) ?*CodeEditorState {
-        return self.code_editors.get(id);
-    }
-
-    pub fn removeCodeEditor(self: *Self, id: []const u8) void {
-        self.removeWidget(CodeEditorState, &self.code_editors, id);
-    }
-
-    pub fn getFocusedCodeEditor(self: *Self) ?*CodeEditorState {
-        return getFocusedWidget(CodeEditorState, &self.code_editors);
-    }
-
-    // =========================================================================
-    // ScrollContainer (existing)
-    // =========================================================================
-
-    pub fn scrollContainer(self: *Self, id: []const u8) ?*ScrollContainer {
-        return self.getOrCreateWidget(ScrollContainer, &self.scroll_containers, id);
-    }
-
-    pub fn getScrollContainer(self: *Self, id: []const u8) ?*ScrollContainer {
-        return self.scroll_containers.get(id);
-    }
-
-    // =========================================================================
-    // TextInput helpers (existing)
-    // =========================================================================
-
-    pub fn removeTextInput(self: *Self, id: []const u8) void {
-        self.removeWidget(TextInput, &self.text_inputs, id);
-    }
-
-    pub fn getTextInput(self: *Self, id: []const u8) ?*TextInput {
-        return self.text_inputs.get(id);
-    }
-
-    pub fn hasTextInput(self: *Self, id: []const u8) bool {
-        return self.text_inputs.contains(id);
-    }
-
-    pub fn textInputCount(self: *Self) usize {
-        return self.text_inputs.count();
-    }
-
-    pub fn getFocusedTextInput(self: *Self) ?*TextInput {
-        return getFocusedWidget(TextInput, &self.text_inputs);
-    }
-
-    pub fn blurAll(self: *Self) void {
-        var it = self.text_inputs.valueIterator();
-        while (it.next()) |input| {
-            input.*.blur();
-        }
-        var ta_it = self.text_areas.valueIterator();
-        while (ta_it.next()) |ta| {
-            ta.*.blur();
-        }
-        var ce_it = self.code_editors.valueIterator();
-        while (ce_it.next()) |ce| {
-            ce.*.blur();
-        }
-    }
-
-    // =========================================================================
-    // Select State (internal open/close for Select widgets)
-    // =========================================================================
-
-    /// Get or create internal state for a Select widget, keyed by LayoutId hash.
-    /// Returns a mutable pointer to the SelectState.
-    pub fn getOrCreateSelectState(self: *Self, id_hash: u32) ?*SelectState {
-        std.debug.assert(id_hash != 0); // 0 is reserved (LayoutId.none)
-
-        const gop = self.select_states.getOrPut(id_hash) catch return null;
-        if (!gop.found_existing) {
-            gop.value_ptr.* = SelectState{};
-        }
-        return gop.value_ptr;
-    }
-
-    /// Get existing select state (returns null if not yet created).
-    pub fn getSelectState(self: *Self, id_hash: u32) ?*SelectState {
-        return self.select_states.getPtr(id_hash);
-    }
-
-    /// Close a select's internal state by id hash. No-op if state doesn't exist.
-    pub fn closeSelectState(self: *Self, id_hash: u32) void {
-        if (self.select_states.getPtr(id_hash)) |ss| {
-            ss.is_open = false;
-        }
-    }
-
-    /// Toggle a select's internal open/close state by id hash.
-    /// Creates the state if it doesn't exist yet.
-    pub fn toggleSelectState(self: *Self, id_hash: u32) void {
-        std.debug.assert(id_hash != 0);
-
-        const gop = self.select_states.getOrPut(id_hash) catch return;
-        if (!gop.found_existing) {
-            gop.value_ptr.* = SelectState{ .is_open = true };
-        } else {
-            gop.value_ptr.is_open = !gop.value_ptr.is_open;
-        }
-    }
 };

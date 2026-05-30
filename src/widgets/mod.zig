@@ -8,12 +8,16 @@
 //! ```zig
 //! const gooey = @import("gooey");
 //!
-//! // Components (preferred - declarative, themed)
+//! // Components (preferred — declarative, themed). The user-facing
+//! // types `TextInput` / `TextArea` live in `components/`.
 //! gooey.TextInput{ .id = "name", .placeholder = "Enter name" }
 //! gooey.TextArea{ .id = "bio", .placeholder = "Enter bio" }
 //!
-//! // Widgets (low-level - direct state access)
-//! const input = cx.textField("name");
+//! // Engines (low-level state objects — direct buffer / cursor / IME
+//! // access). These are the heap-allocated structs that the framework
+//! // retains across frames; their type names carry the `*State` suffix
+//! // to disambiguate from the user-facing components.
+//! const input: *gooey.widgets.TextInputState = cx.textField("name").?;
 //! input.setText("Hello");
 //! ```
 //!
@@ -25,24 +29,39 @@
 //! - `scroll_container` - Scrollable container state
 
 const std = @import("std");
+const interface_verify = @import("../core/interface_verify.zig");
 
 // =============================================================================
-// Text Input (single-line)
+// Text Input (single-line) — engine type
 // =============================================================================
+//
+// `TextInputState` is the engine: heap-allocated state owned by
+// `Window.element_states` (the keyed pool introduced in PR 8.1).
+// Pre-PR-8.4b the engine lived in a `WidgetStore.text_inputs`
+// StringHashMap; PR 8.4b lifted it onto the pool keyed by
+// `(TextInputState, layout_id.id)`. The user-facing declarative
+// component is `gooey.TextInput` in `components/text_input.zig`.
+// The two were merged under a single `TextInput` name historically;
+// PR 8.4-prep disambiguates them so PR 8.4b could lift the engine
+// onto the keyed pool without a name clash.
 
 pub const text_input_state = @import("text_input_state.zig");
 
-pub const TextInput = text_input_state.TextInput;
+pub const TextInputState = text_input_state.TextInputState;
 pub const TextInputBounds = text_input_state.Bounds;
 pub const TextInputStyle = text_input_state.Style;
 
 // =============================================================================
-// Text Area (multi-line)
+// Text Area (multi-line) — engine type
 // =============================================================================
+//
+// Same engine-vs-component split as `TextInputState` above:
+// `TextAreaState` is the heap-allocated engine; `gooey.TextArea` in
+// `components/text_area.zig` is the user-facing declarative component.
 
 pub const text_area_state = @import("text_area_state.zig");
 
-pub const TextArea = text_area_state.TextArea;
+pub const TextAreaState = text_area_state.TextAreaState;
 pub const TextAreaBounds = text_area_state.Bounds;
 pub const TextAreaStyle = text_area_state.Style;
 
@@ -139,6 +158,27 @@ pub const MAX_VISIBLE_ENTRIES = tree_list.MAX_VISIBLE_ENTRIES;
 pub const MAX_TREE_DEPTH = tree_list.MAX_TREE_DEPTH;
 pub const MAX_ROOT_NODES = tree_list.MAX_ROOT_NODES;
 pub const DEFAULT_INDENT_PX = tree_list.DEFAULT_INDENT_PX;
+
+// =============================================================================
+// Compile-time interface checks (PR 4)
+// =============================================================================
+//
+// Pin the `Focusable` trait shape on every focusable widget at the type
+// boundary. Per CLAUDE.md §3 and `docs/cleanup-implementation-plan.md` PR 4,
+// the failure mode for a missing method must be a compile error here, not a
+// silent runtime no-op when the builder skips `withWidget` or the focus
+// manager can't drive `blur()`.
+//
+// Adding a new focusable widget type means: (1) implement `focus`, `blur`,
+// `isFocused`, and `focusable` on the widget; (2) add a line below. The
+// rest of the framework — `context/`, `ui/`, `cx.zig` — does not need to
+// learn about the new type.
+
+comptime {
+    interface_verify.verifyFocusableInterface(TextInputState);
+    interface_verify.verifyFocusableInterface(TextAreaState);
+    interface_verify.verifyFocusableInterface(CodeEditorState);
+}
 
 // =============================================================================
 // Tests

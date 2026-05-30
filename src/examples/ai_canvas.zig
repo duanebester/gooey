@@ -143,9 +143,16 @@ comptime {
 
 pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
+    // PR 7d-framework — forward `init` to `App.main` so the framework
+    // uses `init.gpa` / `init.io` instead of an internally-constructed
+    // `DebugAllocator` and the global single-threaded `Io` singleton.
+    // The local `process_io` cache for the spike's reader thread is
+    // still read off `init.io` because the framework signature only
+    // gives `App` access to one `Io` value; the reader thread needs
+    // the same instance.
     process_io = init.io;
     spawnReaderThread();
-    return App.main();
+    return App.main(init);
 }
 
 // =============================================================================

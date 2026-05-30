@@ -16,7 +16,7 @@ const charts = @import("gooey-charts");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Theme = gooey.Theme;
+const Theme = gooey.ui.Theme;
 
 // =============================================================================
 // Constants (per CLAUDE.md — hard limits on everything)
@@ -268,9 +268,9 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 // =============================================================================
@@ -715,7 +715,7 @@ fn paintConversionRing(ctx: *ui.DrawContext) void {
 // Event Handling
 // =============================================================================
 
-fn onEvent(cx: *Cx, event: gooey.InputEvent) bool {
+fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
     // Handle keyboard shortcuts
     if (event == .key_down) {
         const key = event.key_down;

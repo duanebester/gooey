@@ -98,6 +98,7 @@ const BenchmarkResult = struct {
     operation_count: u32,
     total_time_ns: u64,
     iterations: u32,
+    min_time_ns: u64,
 
     pub fn avgTimeMs(self: BenchmarkResult) f64 {
         std.debug.assert(self.iterations > 0);
@@ -112,6 +113,14 @@ const BenchmarkResult = struct {
         const avg_ns = @as(f64, @floatFromInt(self.total_time_ns)) /
             @as(f64, @floatFromInt(self.iterations));
         return avg_ns / @as(f64, @floatFromInt(self.operation_count));
+    }
+
+    /// Minimum observed per-operation nanoseconds — the best-of-N estimator,
+    /// least perturbed by runner noise. Mirrors `timePerOpNs` on the min sample.
+    pub fn minPerOpNs(self: BenchmarkResult) f64 {
+        std.debug.assert(self.iterations > 0);
+        std.debug.assert(self.operation_count > 0);
+        return @as(f64, @floatFromInt(self.min_time_ns)) / @as(f64, @floatFromInt(self.operation_count));
     }
 
     pub fn print(self: BenchmarkResult) void {
@@ -292,18 +301,16 @@ fn benchTriangulate(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
     var last_index_count: usize = 0;
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         triangulator.reset();
         const start = time.Instant.now();
         const indices = triangulator.triangulate(polygon_vertices, polygon) catch unreachable;
         const end = time.Instant.now();
         last_index_count = indices.len;
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     // Result must be consumed to prevent dead-code elimination.
@@ -312,8 +319,9 @@ fn benchTriangulate(
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -347,17 +355,15 @@ fn benchStrokeExpand(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
     var last_output_count: usize = 0;
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         const start = time.Instant.now();
         const result = stroke_mod.expandStroke(path_points, stroke_width, cap, join, miter_limit, closed) catch unreachable;
         const end = time.Instant.now();
         last_output_count = result.points.len;
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     std.debug.assert(last_output_count > 0);
@@ -365,8 +371,9 @@ fn benchStrokeExpand(
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -396,17 +403,15 @@ fn benchStrokeToTriangles(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
     var last_triangle_count: usize = 0;
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         const start = time.Instant.now();
         const result = stroke_mod.expandStrokeToTriangles(path_points, stroke_width, cap, join, miter_limit, closed) catch unreachable;
         const end = time.Instant.now();
         last_triangle_count = result.indices.len / 3;
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     std.debug.assert(last_triangle_count > 0);
@@ -414,8 +419,9 @@ fn benchStrokeToTriangles(
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -448,10 +454,9 @@ fn benchFixedArrayAppendClear(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         var array: FixedArray(u32, 8192) = .{};
         const start = time.Instant.now();
         for (0..item_count) |i| {
@@ -464,15 +469,15 @@ fn benchFixedArrayAppendClear(
         array.clear();
         const end = time.Instant.now();
         std.debug.assert(array.len == 0);
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -503,10 +508,9 @@ fn benchFixedArrayPopCycle(
 
     // Timed sampling: fill outside timing window, pop inside.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         var array: FixedArray(u32, 8192) = .{};
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
@@ -524,15 +528,15 @@ fn benchFixedArrayPopCycle(
         // Sink must be observable per-iteration to prevent cross-iteration folding.
         std.mem.doNotOptimizeAway(pop_sink);
         std.debug.assert(array.len == 0);
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -563,10 +567,9 @@ fn benchFixedArraySwapRemove(
 
     // Timed sampling: fill outside timing window, remove inside.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         var array: FixedArray(u32, 8192) = .{};
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
@@ -577,15 +580,15 @@ fn benchFixedArraySwapRemove(
         }
         const end = time.Instant.now();
         std.debug.assert(array.len == 0);
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -617,10 +620,9 @@ fn benchFixedArrayOrderedRemove(
 
     // Timed sampling: fill outside timing window, remove inside.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         var array: FixedArray(u32, 8192) = .{};
         for (0..item_count) |i| {
             array.appendAssumeCapacity(@intCast(i));
@@ -631,15 +633,15 @@ fn benchFixedArrayOrderedRemove(
         }
         const end = time.Instant.now();
         std.debug.assert(array.len == 0);
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -678,17 +680,15 @@ fn benchVec2Normalize(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         const start = time.Instant.now();
         for (0..vector_count) |i| {
             sink = sink.add(vectors[i].normalize());
         }
         const end = time.Instant.now();
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     // Accumulated length must be finite (ensures work was not optimized away).
@@ -698,8 +698,9 @@ fn benchVec2Normalize(
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -746,10 +747,9 @@ fn benchRectContains(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         const start = time.Instant.now();
         for (0..point_count) |i| {
             if (rect.contains(test_points[i])) {
@@ -757,8 +757,7 @@ fn benchRectContains(
             }
         }
         const end = time.Instant.now();
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     // Hit count must be non-zero (some points are inside the rect).
@@ -767,8 +766,9 @@ fn benchRectContains(
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -810,18 +810,16 @@ fn benchElementIdHash(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         const start = time.Instant.now();
         for (0..hash_count) |i| {
             const element_id = ElementId.named(element_names[i % element_names.len]);
             hash_sink +%= element_id.hash();
         }
         const end = time.Instant.now();
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     // Hash sink must have accumulated values.
@@ -830,8 +828,9 @@ fn benchElementIdHash(
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -872,10 +871,9 @@ fn benchElementIdEquality(
 
     // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iterations) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
         const start = time.Instant.now();
         for (0..comparison_count) |i| {
             if (ids_a[i].eql(ids_b[i])) {
@@ -883,8 +881,7 @@ fn benchElementIdEquality(
             }
         }
         const end = time.Instant.now();
-        total_time_ns += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     // Some comparisons must have matched (even indices are equal).
@@ -893,8 +890,9 @@ fn benchElementIdEquality(
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -1091,6 +1089,7 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.operation_count,
         result.total_time_ns,
         result.iterations,
+        result.minPerOpNs(),
     ));
 }
 

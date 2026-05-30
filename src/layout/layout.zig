@@ -8,6 +8,9 @@ pub const layout_id = @import("layout_id.zig");
 pub const arena = @import("arena.zig");
 pub const render_commands = @import("render_commands.zig");
 pub const engine = @import("engine.zig");
+pub const sizing_pass = @import("sizing_pass.zig");
+pub const position_pass = @import("position_pass.zig");
+pub const scroll_pass = @import("scroll_pass.zig");
 
 // Re-export commonly used types
 pub const Sizing = types.Sizing;
@@ -52,6 +55,12 @@ pub const RenderData = render_commands.RenderData;
 pub const LayoutEngine = engine.LayoutEngine;
 pub const MeasureTextFn = engine.MeasureTextFn;
 
+// Anchor for test discovery: refAllDecls walks every `pub const`
+// above (which is how the per-pass test bodies and the engine tests
+// are reached at `zig build test`). The dedicated test files live
+// next to their production code so the per-pass write scope holds.
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("engine_tests.zig");
+    _ = @import("engine_internal_tests.zig");
 }

@@ -57,8 +57,8 @@ pub const TextArea = struct {
     accessible_name: ?[]const u8 = null, // Label for screen readers
     accessible_description: ?[]const u8 = null,
 
-    pub fn render(self: TextArea, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: TextArea, cx: *ui.Cx) void {
+        const t = cx.theme();
 
         // Resolve colors: explicit value OR theme default
         const background = self.background orelse t.surface;
@@ -77,15 +77,15 @@ pub const TextArea = struct {
         const layout_id = LayoutId.fromString(self.id);
 
         // Push accessible element (role: textarea)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .textarea,
             .name = self.accessible_name orelse self.placeholder,
             .description = self.accessible_description,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.box(.{ .fill_width = self.fill_width }, .{
+        cx.box(.{ .fill_width = self.fill_width }, .{
             ui.textArea(self.id, .{
                 .placeholder = self.placeholder,
                 .bind = self.bind,

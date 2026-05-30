@@ -40,8 +40,6 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const layout_mod = @import("../layout/layout.zig");
-const LayoutId = layout_mod.LayoutId;
 
 /// A single radio button. Can be used standalone or composed into groups.
 pub const RadioButton = struct {
@@ -65,8 +63,8 @@ pub const RadioButton = struct {
     pos_in_set: ?u16 = null, // 1-based position in group
     set_size: ?u16 = null, // Total items in group
 
-    pub fn render(self: RadioButton, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: RadioButton, cx: *ui.Cx) void {
+        const t = cx.theme();
         const font_size = self.font_size orelse t.font_size_base;
         std.debug.assert(font_size > 0);
 
@@ -76,10 +74,13 @@ pub const RadioButton = struct {
         const border = self.border_color orelse t.border;
         const label_col = self.label_color orelse t.text;
 
-        const layout_id = LayoutId.fromString(self.label);
+        // Resolve identity once for both a11y and the box (PR 11b.2b). The
+        // label is the radio's identity; previously a11y referenced it but
+        // the box used `cx.box`'s auto id, so the two diverged.
+        const layout_id = cx.idFor(self.label);
 
         // Push accessible element (role: radio)
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .radio,
             .name = self.accessible_name orelse self.label,
@@ -89,9 +90,9 @@ pub const RadioButton = struct {
             .pos_in_set = self.pos_in_set,
             .set_size = self.set_size,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.box(.{
+        cx.boxWithLayoutId(layout_id, .{
             .direction = .row,
             .gap = self.gap,
             .alignment = .{ .cross = .center },
@@ -116,8 +117,8 @@ const RadioCircle = struct {
     unselected_color: Color,
     border_color: Color,
 
-    pub fn render(self: RadioCircle, b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: RadioCircle, cx: *ui.Cx) void {
+        cx.box(.{
             .width = self.size,
             .height = self.size,
             .background = self.unselected_color,
@@ -140,9 +141,9 @@ const RadioDot = struct {
     size: f32,
     color: Color,
 
-    pub fn render(self: RadioDot, b: *ui.Builder) void {
+    pub fn render(self: RadioDot, cx: *ui.Cx) void {
         if (self.visible) {
-            b.box(.{
+            cx.box(.{
                 .width = self.size,
                 .height = self.size,
                 .background = self.color,
@@ -155,7 +156,9 @@ const RadioDot = struct {
 /// A radio group container that renders multiple radio buttons.
 /// Each option needs its own handler - use cx.updateWith() to create them.
 pub const RadioGroup = struct {
-    id: []const u8 = "radio-group",
+    // PR 11b.2b — presentational; null ⇒ stable parent-scoped auto id
+    // (PR 11b.2a). The old `"radio-group"` default collided across groups.
+    id: ?[]const u8 = null,
     options: []const []const u8,
     selected: usize,
 
@@ -180,8 +183,8 @@ pub const RadioGroup = struct {
 
     pub const Direction = enum { row, column };
 
-    pub fn render(self: RadioGroup, b: *ui.Builder) void {
-        const t = b.theme();
+    pub fn render(self: RadioGroup, cx: *ui.Cx) void {
+        const t = cx.theme();
         const font_size = self.font_size orelse t.font_size_base;
         std.debug.assert(font_size > 0);
 
@@ -191,17 +194,17 @@ pub const RadioGroup = struct {
         const border = self.border_color orelse t.border;
         const label_col = self.label_color orelse t.text;
 
-        const layout_id = LayoutId.fromString(self.id);
+        const layout_id = cx.idFor(self.id);
 
         // Push accessible group element
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .group,
             .name = self.accessible_name orelse self.id,
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
-        b.boxWithId(self.id, .{
+        cx.boxWithLayoutId(layout_id, .{
             .direction = if (self.direction == .row) .row else .column,
             .gap = self.gap,
             .alignment = .{ .cross = .start },
@@ -234,14 +237,14 @@ const RadioGroupItems = struct {
     font_size: u16,
     set_size: u16,
 
-    pub fn render(self: RadioGroupItems, b: *ui.Builder) void {
+    pub fn render(self: RadioGroupItems, cx: *ui.Cx) void {
         for (self.options, 0..) |label, i| {
             const handler: ?HandlerRef = if (self.handlers) |h|
                 (if (i < h.len) h[i] else null)
             else
                 null;
 
-            b.with(RadioButton{
+            cx.with(RadioButton{
                 .label = label,
                 .is_selected = i == self.selected,
                 .on_click_handler = handler,

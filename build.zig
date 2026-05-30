@@ -45,6 +45,23 @@ pub fn build(b: *std.Build) void {
     }
     compare_step.dependOn(&compare_run.step);
 
+    // Unit tests for the comparison/gating logic itself.  Built here
+    // (platform-independent) and wired into each branch's `test` step
+    // below so CI actually exercises the regression gate's own rules.
+    const compare_tests = b.addTest(.{
+        .root_module = compare_exe.root_module,
+    });
+    const run_compare_tests = b.addRunArtifact(compare_tests);
+
+    // Unit tests for the JSON writer + shared timing Sampler (the bench
+    // module root). Wired into each branch's `test` step below so the
+    // harness-facing schema and min/best-of-N accumulator are exercised in
+    // CI without needing a macOS-only benchmark executable to run.
+    const bench_tests = b.addTest(.{
+        .root_module = bench_mod,
+    });
+    const run_bench_tests = b.addRunArtifact(bench_tests);
+
     // Platform detection
     const is_native_macos = target.result.os.tag == .macos;
     const is_native_linux = target.result.os.tag == .linux;
@@ -183,6 +200,32 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_exe_tests.step);
         test_step.dependOn(&run_charts_tests.step);
+        test_step.dependOn(&run_compare_tests.step);
+        test_step.dependOn(&run_bench_tests.step);
+
+        // =====================================================================
+        // Layout Fuzz Targets (PR 10)
+        // =====================================================================
+        //
+        // `src/layout/fuzz.zig` declares `test "fuzz: …"` blocks that call
+        // `std.testing.fuzz`. Routing them through `b.addTest` with the
+        // layout module's transitive imports gives us `zig build fuzz` for
+        // a single-shot smoke run, and `zig build fuzz -- --fuzz` for the
+        // 0.16 infinite-mode runner.
+        const fuzz_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/layout/fuzz.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+        const run_fuzz = b.addRunArtifact(fuzz_tests);
+        if (b.args) |args| run_fuzz.addArgs(args);
+        const fuzz_step = b.step("fuzz", "Run layout-engine fuzz targets (pass --fuzz for infinite mode)");
+        fuzz_step.dependOn(&run_fuzz.step);
 
         // =====================================================================
         // Layout Benchmarks
@@ -596,6 +639,8 @@ pub fn build(b: *std.Build) void {
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_compare_tests.step);
+        test_step.dependOn(&run_bench_tests.step);
 
         // =====================================================================
         // Valgrind Memory Leak Detection

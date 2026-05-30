@@ -78,6 +78,7 @@ const BenchmarkResult = struct {
     node_count: u32,
     total_time_ns: u64,
     iterations: u32,
+    min_time_ns: u64,
 
     pub fn avgTimeMs(self: BenchmarkResult) f64 {
         const avg_ns: f64 = @as(f64, @floatFromInt(self.total_time_ns)) /
@@ -89,6 +90,14 @@ const BenchmarkResult = struct {
         const avg_ns = @as(f64, @floatFromInt(self.total_time_ns)) /
             @as(f64, @floatFromInt(self.iterations));
         return avg_ns / @as(f64, @floatFromInt(self.node_count));
+    }
+
+    /// Minimum observed per-node nanoseconds — the best-of-N estimator, least
+    /// perturbed by runner noise. Mirrors `timePerOpNs` on the min sample.
+    pub fn minPerOpNs(self: BenchmarkResult) f64 {
+        std.debug.assert(self.iterations > 0);
+        std.debug.assert(self.node_count > 0);
+        return @as(f64, @floatFromInt(self.min_time_ns)) / @as(f64, @floatFromInt(self.node_count));
     }
 
     pub fn print(self: BenchmarkResult) void {
@@ -139,10 +148,9 @@ fn runBenchmark(
     }
 
     // Sample - measure only layout computation (endFrame), not tree building
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
 
@@ -150,15 +158,15 @@ fn runBenchmark(
         _ = engine.endFrame() catch unreachable;
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .node_count = node_count,
-        .total_time_ns = total_time,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -190,25 +198,24 @@ fn runFullFrameBenchmark(
     }
 
     // Sample - measure entire frame: beginFrame + tree build + endFrame
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         const start = time.Instant.now();
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
         _ = engine.endFrame() catch unreachable;
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .node_count = node_count,
-        .total_time_ns = total_time,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -849,6 +856,7 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.node_count,
         result.total_time_ns,
         result.iterations,
+        result.minPerOpNs(),
     ));
 }
 

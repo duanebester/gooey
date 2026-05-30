@@ -32,6 +32,13 @@ const canvas_mod = @import("canvas.zig");
 
 pub const Builder = builder_mod.Builder;
 
+// Re-export the unified component context so component files can spell
+// their render signature `*ui.Cx` without a separate import. `cx.zig`
+// already imports this module for `ui.Box` / `ui.Builder`; the reverse
+// edge here is a plain type re-export (no value, no layout dependency),
+// so it introduces no comptime import cycle (PR 11b.1).
+pub const Cx = @import("../cx.zig").Cx;
+
 // =============================================================================
 // Primitive Functions
 // =============================================================================

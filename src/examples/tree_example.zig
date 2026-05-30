@@ -12,14 +12,14 @@ const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
-const TreeListState = gooey.TreeListState;
-const TreeEntry = gooey.TreeEntry;
-const Button = gooey.Button;
+const TreeListState = gooey.widgets.TreeListState;
+const TreeEntry = gooey.widgets.TreeEntry;
+const Button = gooey.components.Button;
 
 const ui = gooey.ui;
 
-const Svg = gooey.Svg;
-const Icons = gooey.Icons;
+const Svg = gooey.components.Svg;
+const Icons = gooey.components.Icons;
 
 // =============================================================================
 // Constants
@@ -229,7 +229,7 @@ const TreeView = struct {
         const s = cx.state(State);
         const theme = cx.theme();
 
-        cx.treeList(
+        cx.lists.tree(
             "file-tree",
             &s.tree,
             .{
@@ -426,7 +426,7 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }

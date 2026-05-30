@@ -4,7 +4,7 @@
 //! - Pure state methods with cx.update() for simple mutations
 //! - Command methods with cx.command() when entity ops needed
 //! - Dynamic entity creation and deletion
-//! - Entity-scoped operations with cx.entityCx()
+//! - Entity-scoped operations with cx.entities.context()
 //! - Auto-cleanup when entities are removed
 
 const std = @import("std");
@@ -16,7 +16,7 @@ const platform = gooey.platform;
 pub const std_options = gooey.std_options;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 
 // =============================================================================
 // Models
@@ -47,15 +47,15 @@ const Counter = struct {
 const MaxCounters = 10;
 
 const AppState = struct {
-    counters: [MaxCounters]gooey.Entity(Counter) = [_]gooey.Entity(Counter){gooey.Entity(Counter).nil()} ** MaxCounters,
+    counters: [MaxCounters]gooey.context.Entity(Counter) = [_]gooey.context.Entity(Counter){gooey.context.Entity(Counter).nil()} ** MaxCounters,
     counter_count: usize = 0,
     next_label: u8 = 'A',
 
     // =========================================================================
-    // Command methods - use with cx.command() (need Gooey access)
+    // Command methods - use with cx.command() (need Window access)
     // =========================================================================
 
-    pub fn addCounter(self: *AppState, g: *gooey.Gooey) void {
+    pub fn addCounter(self: *AppState, g: *gooey.Window) void {
         if (self.counter_count >= 10) return;
 
         const label: []const u8 = switch (self.next_label) {
@@ -78,7 +78,7 @@ const AppState = struct {
         self.next_label += 1;
     }
 
-    pub fn removeCounter(self: *AppState, g: *gooey.Gooey) void {
+    pub fn removeCounter(self: *AppState, g: *gooey.Window) void {
         if (self.counter_count == 0) return;
 
         self.counter_count -= 1;
@@ -91,7 +91,7 @@ const AppState = struct {
     // Helper methods (no context needed)
     // =========================================================================
 
-    fn countersSlice(self: *const AppState) []const gooey.Entity(Counter) {
+    fn countersSlice(self: *const AppState) []const gooey.context.Entity(Counter) {
         return self.counters[0..self.counter_count];
     }
 };
@@ -102,10 +102,10 @@ const AppState = struct {
 
 /// Individual counter card - uses pure methods via EntityContext
 const CounterCard = struct {
-    counter: gooey.Entity(Counter),
+    counter: gooey.context.Entity(Counter),
 
     pub fn render(self: @This(), cx: *Cx) void {
-        const g = cx.gooey();
+        const g = cx.window();
         const data = g.readEntity(Counter, self.counter) orelse return;
 
         cx.render(ui.box(.{
@@ -125,10 +125,10 @@ const CounterCard = struct {
 };
 
 const CounterButtons = struct {
-    counter: gooey.Entity(Counter),
+    counter: gooey.context.Entity(Counter),
 
     pub fn render(self: @This(), cx: *Cx) void {
-        var entity_cx = cx.entityCx(Counter, self.counter) orelse return;
+        var entity_cx = cx.entities.context(Counter, self.counter) orelse return;
 
         var dec_id_buf: [32]u8 = undefined;
         var inc_id_buf: [32]u8 = undefined;
@@ -146,7 +146,7 @@ const CounterButtons = struct {
 const TotalDisplay = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
-        const g = cx.gooey();
+        const g = cx.window();
 
         var total: i32 = 0;
         for (s.countersSlice()) |counter_entity| {
@@ -218,9 +218,9 @@ comptime {
 }
 
 // Native entry point
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 fn render(cx: *Cx) void {

@@ -17,9 +17,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Build baseline benchmark artifacts on main and on the long-lived
+    # integration branches so the PR bench-gate has a same-lineage baseline
+    # to download.
+    branches: [main, "integration/**"]
   pull_request:
-    branches: [main]
+    # Run the full pipeline (bench-gate included) for PRs targeting main or an
+    # integration branch.  Without the integration entry, PRs onto
+    # integration/* would not trigger CI at all.
+    branches: [main, "integration/**"]
   workflow_dispatch: {}
 
 # Cancel in-progress runs for the same branch (except main)
@@ -303,35 +309,71 @@ jobs:
             zig-cache-bench-macos-
             zig-cache-macos-
 
-      # Find the latest successful CI run on main and download its macOS
-      # benchmark artifact.  If no run exists or the artifact expired,
-      # skip comparison gracefully — the PR still gets benchmark numbers.
-      - name: Download baseline from main
+      # Find the latest successful CI run on the PR's base branch (falling
+      # back to main) and download its macOS benchmark artifact.  If no run
+      # exists or the artifact expired, skip comparison gracefully — the PR
+      # still gets benchmark numbers.
+      - name: Download baseline
         id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
+          # The branch this PR targets (e.g. main or integration/v0.2.0).
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -eo pipefail
 
-          RUN_ID=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
-            --jq '.workflow_runs[0].id // empty')
+          # Download the bench-macos artifact from the latest successful CI
+          # run on the given branch.  Returns non-zero (without downloading)
+          # when no usable run or artifact exists, so the caller can fall back.
+          # Uses -f fields so branch names with slashes (integration/v0.2.0)
+          # are URL-encoded correctly in the query string.
+          try_branch() {
+            branch="$1"
+            run_id=$(gh api -X GET \
+              "repos/${{ github.repository }}/actions/workflows/ci.yml/runs" \
+              -f branch="${branch}" -f status=success -f per_page=1 \
+              --jq '.workflow_runs[0].id // empty')
 
-          if [ -z "${RUN_ID}" ]; then
-            echo "No successful main run found -- skipping comparison."
-            echo "has_baseline=false" >> "${GITHUB_OUTPUT}"
-            exit 0
+            if [ -z "${run_id}" ]; then
+              echo "  no successful run on '${branch}'."
+              return 1
+            fi
+
+            echo "  downloading baseline from '${branch}' run ${run_id}..."
+            if ! gh run download "${run_id}" --name bench-macos --dir baseline/; then
+              echo "  artifact missing or expired for '${branch}' run ${run_id}."
+              return 1
+            fi
+
+            echo "baseline_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+            echo "baseline_branch=${branch}" >> "${GITHUB_OUTPUT}"
+            return 0
+          }
+
+          # Prefer a same-lineage baseline from the PR's base branch so that
+          # integration/* PRs compare against an integration baseline -- which
+          # carries the best-of-N `min` samples the gate relies on.  Without
+          # this, integration PRs always compared against main, whose older
+          # artifacts predate `min` and forced the noise-sensitive mean gate.
+          # Fall back to main when the base branch has no usable artifact yet.
+          OK=0
+          if [ -n "${BASE_REF}" ]; then
+            echo "Trying PR base branch '${BASE_REF}'..."
+            if try_branch "${BASE_REF}"; then OK=1; fi
           fi
 
-          echo "Downloading baseline from main run ${RUN_ID}..."
-          if ! gh run download "${RUN_ID}" --name bench-macos --dir baseline/; then
-            echo "Artifact not found or expired -- skipping comparison."
+          if [ "${OK}" -ne 1 ] && [ "${BASE_REF}" != "main" ]; then
+            echo "Falling back to 'main'..."
+            if try_branch "main"; then OK=1; fi
+          fi
+
+          if [ "${OK}" -ne 1 ]; then
+            echo "No baseline available -- skipping comparison."
             echo "has_baseline=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           echo "has_baseline=true" >> "${GITHUB_OUTPUT}"
-          echo "baseline_run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
           ls -la baseline/
 
       - name: Run benchmarks

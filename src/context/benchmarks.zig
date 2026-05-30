@@ -52,6 +52,7 @@ const context = gooey.context;
 const DispatchTree = context.DispatchTree;
 const DispatchNodeId = context.DispatchNodeId;
 const EntityMap = context.EntityMap;
+const EntityId = context.EntityId;
 const BoundingBox = gooey.BoundingBox;
 
 // =============================================================================
@@ -84,6 +85,15 @@ const BenchmarkResult = struct {
     operation_count: u32,
     total_time_ns: u64,
     iterations: u32,
+    min_time_ns: u64,
+
+    /// Minimum observed per-operation nanoseconds — the best-of-N estimator,
+    /// least perturbed by runner noise. Mirrors `timePerOpNs` on the min sample.
+    pub fn minPerOpNs(self: BenchmarkResult) f64 {
+        std.debug.assert(self.iterations > 0);
+        std.debug.assert(self.operation_count > 0);
+        return @as(f64, @floatFromInt(self.min_time_ns)) / @as(f64, @floatFromInt(self.operation_count));
+    }
 
     pub fn avgTimeMs(self: BenchmarkResult) f64 {
         std.debug.assert(self.iterations > 0);
@@ -248,24 +258,23 @@ fn benchTreeBuild(
     }
 
     // Sample: time reset + build together (both are per-frame costs).
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         const start = time.Instant.now();
         tree.reset();
         _ = buildFn(&tree);
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -293,25 +302,26 @@ fn benchHitTest(
 
     // Sample: three hit test points per iteration (center, corner, edge).
     const hits_per_iter: u32 = 3;
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         const start = time.Instant.now();
         std.mem.doNotOptimizeAway(tree.hitTest(500.0, 500.0));
         std.mem.doNotOptimizeAway(tree.hitTest(0.5, 0.5));
         std.mem.doNotOptimizeAway(tree.hitTest(999.0, 999.0));
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time / hits_per_iter,
-        .iterations = iterations,
+        // Both totals are scaled by hits_per_iter so mean and min stay
+        // comparable: each timed iteration covers three hitTest calls.
+        .total_time_ns = sampler.total_time_ns / hits_per_iter,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns / hits_per_iter,
     };
 }
 
@@ -337,10 +347,9 @@ fn benchReset(
     }
 
     // Sample: time only the reset call.
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         // Rebuild so reset has work to do.
         tree.reset();
         _ = buildFn(&tree);
@@ -349,15 +358,15 @@ fn benchReset(
         tree.reset();
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -385,10 +394,9 @@ fn benchFullFrame(
     }
 
     // Sample.
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         const start = time.Instant.now();
         tree.reset();
         _ = buildFn(&tree);
@@ -396,15 +404,15 @@ fn benchFullFrame(
         std.mem.doNotOptimizeAway(tree.hitTest(500.0, 500.0));
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = operation_count,
-        .total_time_ns = total_time,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -422,7 +430,7 @@ fn benchMarkDirty(
 
     // Create entities.
     const Counter = struct { value: u32 };
-    var ids: [4096]gooey.EntityId = undefined;
+    var ids: [4096]EntityId = undefined;
     std.debug.assert(entity_count <= ids.len);
 
     for (0..entity_count) |i| {
@@ -442,10 +450,9 @@ fn benchMarkDirty(
     }
 
     // Sample: mark all entities dirty, then process.
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         const start = time.Instant.now();
         for (ids[0..entity_count]) |id| {
             entities.markDirty(id);
@@ -453,15 +460,15 @@ fn benchMarkDirty(
         std.mem.doNotOptimizeAway(entities.processNotifications());
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = entity_count,
-        .total_time_ns = total_time,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -480,7 +487,7 @@ fn benchMarkDirtyDuplicates(
     defer entities.deinit();
 
     const Counter = struct { value: u32 };
-    var ids: [4096]gooey.EntityId = undefined;
+    var ids: [4096]EntityId = undefined;
     std.debug.assert(entity_count <= ids.len);
 
     for (0..entity_count) |i| {
@@ -503,10 +510,9 @@ fn benchMarkDirtyDuplicates(
     }
 
     // Sample: mark all entities dirty `rounds` times, then process.
-    var total_time: u64 = 0;
-    var iterations: u32 = 0;
+    var sampler: bench.Sampler = .{};
 
-    while (total_time < MIN_SAMPLE_TIME_NS or iterations < min_sample_iters) {
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
         const start = time.Instant.now();
         for (0..rounds) |_| {
             for (ids[0..entity_count]) |id| {
@@ -516,15 +522,15 @@ fn benchMarkDirtyDuplicates(
         std.mem.doNotOptimizeAway(entities.processNotifications());
         const end = time.Instant.now();
 
-        total_time += end.since(start);
-        iterations += 1;
+        sampler.record(end.since(start));
     }
 
     return .{
         .name = name,
         .operation_count = total_ops,
-        .total_time_ns = total_time,
-        .iterations = iterations,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
     };
 }
 
@@ -699,6 +705,7 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.operation_count,
         result.total_time_ns,
         result.iterations,
+        result.minPerOpNs(),
     ));
 }
 

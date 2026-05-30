@@ -1,11 +1,22 @@
-//! TextArea Widget - Multi-line text input with vertical scrolling
+//! TextAreaState - Multi-line text input engine with vertical scrolling
 //!
-//! Key differences from TextInput:
+//! Key differences from TextInputState:
 //! - Handles newlines (\n) in text
 //! - Vertical scrolling (renders only visible lines)
 //! - Line index cache for O(log n) line lookup
 //! - Up/down cursor navigation with preferred column
 //! - Multi-line selection rendering
+//!
+//! Naming: this is the *engine* type — the heap-allocated state object
+//! that owns the multi-line text buffer, line index, cursor, IME
+//! composition, edit history, and focus state. The user-facing
+//! declarative component is `gooey.TextArea` in
+//! `components/text_area.zig`, which is what application code
+//! constructs as a literal
+//! (`TextArea{ .id = "...", .placeholder = "..." }`). The two types
+//! used to share the name `TextArea`, which only worked as long as no
+//! file imported both — the disambiguation is the prep work for PR 8.4
+//! lifting `TextAreaState` onto the keyed `Window.element_states` pool.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -30,14 +41,19 @@ else
 const scene_mod = @import("../scene/mod.zig");
 const input_mod = @import("../input/events.zig");
 const text_mod = @import("../text/mod.zig");
-const element_id_mod = @import("../core/element_id.zig");
+// PR 8.4b — `core/element_id.zig` import retired alongside the
+// `id: ElementId` field and `getId()` method. Same reduction
+// `text_input_state.zig` does post-PR-8.4b: the engine type is
+// keyed by `LayoutId.id` (a u32 hash) on `Window.element_states`,
+// and the only reader of the field (`getId()`) was unused outside
+// its own definition.
 const event = @import("../input/event.zig");
 const common = @import("text_common.zig");
 const history_mod = @import("edit_history.zig");
+const focus_mod = @import("../context/focus.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const ElementId = element_id_mod.ElementId;
 const Event = event.Event;
 const EventResult = event.EventResult;
 const Scene = scene_mod.Scene;
@@ -54,17 +70,19 @@ pub const isCharBoundary = common.isCharBoundary;
 pub const Selection = common.Selection;
 pub const Position = common.Position;
 
-pub const Bounds = struct {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-
-    pub fn contains(self: Bounds, px: f32, py: f32) bool {
-        return px >= self.x and px <= self.x + self.width and
-            py >= self.y and py <= self.y + self.height;
-    }
-};
+/// Rectangle bounds for positioning.
+///
+/// Re-exports the shared flat hot-loop rectangle from `text_common.zig`,
+/// which is the single source of truth for the text-widget family
+/// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
+/// alias preserves existing `text_area_state.Bounds` import paths in
+/// `widgets/mod.zig`, `code_editor_state.zig`, and the
+/// `Builder.DEFAULT_TEXT_AREA_BOUNDS` seed value (post-PR-8.4b:
+/// pre-PR-8.4b the alias was also used by the retired
+/// `WidgetStore.default_text_area_bounds` field). See
+/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
+/// hit-test rationale.
+pub const Bounds = common.Bounds;
 
 pub const Style = struct {
     /// Text color (dark gray, near black)
@@ -96,10 +114,14 @@ pub const ScrollbarStyle = struct {
     thumb_radius: f32 = 4,
 };
 
-pub const TextArea = struct {
+/// TextAreaState — multi-line text input engine.
+///
+/// See file header for the engine-vs-component naming rationale.
+pub const TextAreaState = struct {
     allocator: std.mem.Allocator,
 
-    id: ElementId,
+    // PR 8.4b — `id: ElementId` field dropped (see file header for
+    // rationale).
 
     // Geometry
     bounds: Bounds,
@@ -149,7 +171,7 @@ pub const TextArea = struct {
     placeholder: []const u8 = "",
 
     // Callbacks
-    on_change: ?*const fn (*TextArea) void = null,
+    on_change: ?*const fn (*TextAreaState) void = null,
 
     /// Cursor rect for IME candidate window positioning (set during render)
     cursor_rect: struct { x: f32 = 0, y: f32 = 0, width: f32 = 1.5, height: f32 = 20 } = .{},
@@ -164,18 +186,16 @@ pub const TextArea = struct {
 
     const BLINK_INTERVAL_MS: i64 = 530;
 
-    /// Initialize TextArea
-    /// Marked noinline to prevent stack accumulation
+    /// Initialize TextAreaState.
+    /// Marked noinline to prevent stack accumulation.
+    ///
+    /// PR 8.4b — `init` and `initWithId` collapsed into a single
+    /// constructor now that `id: ElementId` is gone. The pre-PR-8.4b
+    /// `init` ran a counter-derived id only because the field
+    /// existed; with the field retired the counter was dead weight
+    /// and the call sites split (`init` for tests, `initWithId` for
+    /// `WidgetStore`) collapse onto a single shape.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
-        const unique_id = struct {
-            var next: u64 = 1;
-            fn get() u64 {
-                const id = next;
-                next += 1;
-                return id;
-            }
-        }.get();
-
         var line_starts: std.ArrayList(usize) = .empty;
         line_starts.append(allocator, 0) catch {};
 
@@ -186,25 +206,6 @@ pub const TextArea = struct {
             .buffer = .empty,
             .line_starts = line_starts,
             .preedit_buffer = .empty,
-            .id = ElementId.int(unique_id),
-            .edit_history = EditHistory.create(allocator),
-        };
-    }
-
-    /// Initialize TextArea with a string ID
-    /// Marked noinline to prevent stack accumulation
-    pub noinline fn initWithId(allocator: std.mem.Allocator, bounds: Bounds, id: []const u8) Self {
-        var line_starts: std.ArrayList(usize) = .empty;
-        line_starts.append(allocator, 0) catch {};
-
-        return .{
-            .allocator = allocator,
-            .bounds = bounds,
-            .style = .{},
-            .buffer = .empty,
-            .line_starts = line_starts,
-            .preedit_buffer = .empty,
-            .id = ElementId.named(id),
             .edit_history = EditHistory.create(allocator),
         };
     }
@@ -386,6 +387,15 @@ pub const TextArea = struct {
         return self.focused;
     }
 
+    /// Build a `Focusable` trait for this widget instance. Called by
+    /// the UI builder during render so the framework can drive focus
+    /// without importing the widget type — see PR 4 in
+    /// `docs/cleanup-implementation-plan.md`. The vtable is shared
+    /// across all `TextAreaState` instances and lives in static storage.
+    pub fn focusable(self: *Self) focus_mod.Focusable {
+        return focus_mod.Focusable.fromInstance(Self, self);
+    }
+
     // =========================================================================
     // Event Handling
     // =========================================================================
@@ -451,10 +461,6 @@ pub const TextArea = struct {
             .width = self.bounds.width,
             .height = self.bounds.height,
         };
-    }
-
-    pub fn getId(self: *const Self) ElementId {
-        return self.id;
     }
 
     pub fn canFocus(self: *const Self) bool {
@@ -1546,9 +1552,9 @@ fn getTimestamp() i64 {
 // Tests
 // =============================================================================
 
-test "TextArea basic operations" {
+test "TextAreaState basic operations" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("Hello\nWorld");
@@ -1556,9 +1562,9 @@ test "TextArea basic operations" {
     try std.testing.expectEqual(@as(usize, 2), ta.lineCount());
 }
 
-test "TextArea line index" {
+test "TextAreaState line index" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("Line 1\nLine 2\nLine 3");
@@ -1574,9 +1580,9 @@ test "TextArea line index" {
     try std.testing.expectEqual(@as(usize, 2), ta.lineForOffset(14));
 }
 
-test "TextArea line content" {
+test "TextAreaState line content" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("First\nSecond\nThird");
@@ -1586,9 +1592,9 @@ test "TextArea line content" {
     try std.testing.expectEqualStrings("Third", ta.lineContent(2));
 }
 
-test "TextArea cursor navigation" {
+test "TextAreaState cursor navigation" {
     const allocator = std.testing.allocator;
-    var ta = TextArea.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
     defer ta.deinit();
 
     try ta.setText("AB\nCD\nEF");

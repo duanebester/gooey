@@ -39,7 +39,6 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const layout_mod = @import("../layout/layout.zig");
 const CornerRadius = layout_mod.CornerRadius;
-const LayoutId = layout_mod.LayoutId;
 
 pub const Image = struct {
     /// Image source - file path or embedded asset path
@@ -84,23 +83,27 @@ pub const Image = struct {
     id: ?[]const u8 = null,
 
     /// Render the image component
-    pub fn render(self: Image, b: *ui.Builder) void {
+    pub fn render(self: Image, cx: *ui.Cx) void {
         // Push accessible element for images with alt text
-        // Images without alt are treated as decorative (presentation)
-        const layout_id = LayoutId.fromString(self.id orelse self.src);
+        // Images without alt are treated as decorative (presentation).
+        // Resolve identity once (PR 11b.2b) and reuse it for both the a11y
+        // node and the box below. Previously a11y referenced
+        // `fromString(self.id orelse self.src)` while the box auto-id'd, so
+        // the two pointed at different elements. Null ⇒ parent-scoped auto id.
+        const layout_id = cx.idFor(self.id);
         const a11y_pushed = if (self.alt) |alt_text|
-            b.accessible(.{
+            cx.accessible(.{
                 .layout_id = layout_id,
                 .role = .img,
                 .name = alt_text,
             })
         else
             // Decorative image - explicitly mark as presentation
-            b.accessible(.{
+            cx.accessible(.{
                 .layout_id = layout_id,
                 .role = .presentation,
             });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
         // Determine final dimensions
         const w = self.width orelse self.size;
@@ -119,7 +122,7 @@ pub const Image = struct {
             null;
 
         // Emit the image primitive
-        b.box(.{
+        cx.boxWithLayoutId(layout_id, .{
             .width = w,
             .height = h,
             .corner_radius = radius_value,

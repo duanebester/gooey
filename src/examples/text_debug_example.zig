@@ -17,7 +17,7 @@ pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.Button;
+const Button = gooey.components.Button;
 const text_mod = gooey.text;
 const text_debug = text_mod.text_debug;
 
@@ -74,9 +74,9 @@ comptime {
     _ = App;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (platform.is_wasm) unreachable;
-    return App.main();
+    return App.main(init);
 }
 
 // =============================================================================
@@ -235,7 +235,7 @@ const Instructions = struct {
 // =============================================================================
 
 fn logDebugInfo(cx: *Cx) void {
-    const text_system = cx.gooey().getTextSystem();
+    const text_system = cx.window().getTextSystem();
 
     debugLog("", .{});
     debugLog("========================================", .{});

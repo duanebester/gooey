@@ -12,17 +12,17 @@
 //!
 //! var state = struct { count: i32 = 0 }{};
 //!
-//! pub fn main() !void {
-//!     try gooey.run(.{
+//! pub fn main(init: std.process.Init) !void {
+//!     try gooey.run(init, .{
 //!         .title = "Counter",
 //!         .render = render,
 //!     });
 //! }
 //!
-//! fn render(ui: *gooey.UI) void {
-//!     ui.vstack(.{ .gap = 16 }, .{
+//! fn render(cx: *gooey.Cx) void {
+//!     cx.render(gooey.ui.vstack(.{ .gap = 16 }, .{
 //!         gooey.ui.text("Hello", .{}),
-//!     });
+//!     }));
 //! }
 //! ```
 
@@ -36,11 +36,22 @@ const runtime = @import("runtime/mod.zig");
 const runtime_render = @import("runtime/render.zig");
 
 // Core imports
-const gooey_mod = @import("context/gooey.zig");
+const window_mod = @import("context/window.zig");
 const input_mod = @import("input/mod.zig");
 const shader_mod = @import("core/shader.zig");
 const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
+
+// PR 7b.3 — `App` owns application-lifetime state shared across
+// windows (currently `entities`; later 7b slices add `keymap` /
+// `globals` / `image_loader`). The WASM bootstrap heap-allocates
+// one `App` here and hands `*App` to the single `Window` it
+// creates. Single-window flow on WASM mirrors the native runner
+// (`runtime/runner.zig`) — both go through `App` even though
+// there is only one borrower today, so the future runner
+// consolidation is a no-op for entity ownership.
+const context_app_mod = @import("context/app.zig");
+const ContextApp = context_app_mod.App;
 
 // Re-export runtime functions
 pub const runCx = runtime.runCx;
@@ -50,10 +61,14 @@ pub const handleInputCx = runtime.handleInputCx;
 
 // Re-export types
 pub const Cx = cx_mod.Cx;
-pub const GlassStyle = platform.Window.GlassStyle;
+// PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the upcoming `Window → Window` rename
+// in PR 7b.1b. The local `PlatformWindow` alias is used everywhere
+// below where the OS-level handle (vs. the framework wrapper) is meant.
+pub const GlassStyle = platform.PlatformWindow.GlassStyle;
 const Platform = platform.Platform;
-const Window = platform.Window;
-const Gooey = gooey_mod.Gooey;
+const PlatformWindow = platform.PlatformWindow;
+const Window = window_mod.Window;
 const Builder = ui_mod.Builder;
 const InputEvent = input_mod.InputEvent;
 
@@ -83,9 +98,15 @@ pub fn App(
         return WebApp(State, state, render, config);
     } else {
         return struct {
-            pub fn main() !void {
+            // PR 7d-framework — `main` accepts `init: std.process.Init`
+            // per Zig 0.16's "Juicy Main" contract
+            // (`docs/zig-0.16-changes.md#9-juicy-main`). The value is
+            // forwarded to `runCx` as the trailing argument; every
+            // other field in the `.{...}` config literal below is
+            // identical to the pre-7d-framework shape.
+            pub fn main(init: std.process.Init) !void {
                 try runCx(State, state, render, .{
-                    .title = if (@hasField(@TypeOf(config), "title")) config.title else "Gooey App",
+                    .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
                     .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                     .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
                     .background_color = if (@hasField(@TypeOf(config), "background_color")) config.background_color else null,
@@ -102,7 +123,7 @@ pub fn App(
                     // Font configuration
                     .font = if (@hasField(@TypeOf(config), "font")) config.font else null,
                     .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
-                });
+                }, init);
             }
         };
     }
@@ -116,19 +137,22 @@ pub fn App(
 /// The returned struct contains init/frame/resize functions that are
 /// automatically exported via @export when the type is analyzed.
 ///
-/// Example:
+/// Note: this is the WASM-specific generator. Application code should
+/// reach for `gooey.App` instead — it auto-dispatches to `WebApp` on
+/// WASM targets and to the native `App` shape everywhere else.
+///
+/// Example (cross-platform, preferred):
 /// ```zig
 /// var state = AppState{};
-///
-/// // Create the WebApp type - this triggers the exports
-/// const App = gooey.WebApp(AppState, &state, render, .{
+/// const App = gooey.App(AppState, &state, render, .{
 ///     .title = "My App",
 ///     .width = 800,
 ///     .height = 600,
 /// });
 ///
-/// // Force type analysis to ensure exports are emitted
-/// comptime { _ = App; }
+/// pub fn main(init: std.process.Init) !void {
+///     try App.main(init);
+/// }
 /// ```
 pub fn WebApp(
     comptime State: type,
@@ -150,8 +174,19 @@ pub fn WebApp(
         // Global state (WASM exports can't capture closures)
         var g_initialized: bool = false;
         var g_platform: ?Platform = null;
+        // PR 7b.1b — `g_window` (OS-level handle) renamed to
+        // `g_platform_window` so the framework wrapper rename
+        // (`Window → Window`) can claim `g_window` for itself in the
+        // sweep below. Mirrors the field rename on `Window` itself
+        // (`window → platform_window`) and the §10 GPUI sketch.
+        var g_platform_window: ?*PlatformWindow = null;
         var g_window: ?*Window = null;
-        var g_gooey: ?*Gooey = null;
+        // PR 7b.3 — heap-allocated `App` owning the shared
+        // `EntityMap`. WASM has no `defer` analog at file
+        // scope, so this leaks at process exit — same lifecycle
+        // as every other `g_*` global in this struct (the
+        // browser tab teardown reclaims the entire WASM heap).
+        var g_app: ?*ContextApp = null;
         var g_builder: ?*Builder = null;
         var g_cx: ?Cx = null;
         var g_renderer: ?*WebRenderer = null;
@@ -166,8 +201,15 @@ pub fn WebApp(
         else
             null;
 
-        /// Initialize the application (called from JavaScript)
-        pub fn init() callconv(.c) void {
+        /// Initialize the application (called from JavaScript).
+        ///
+        /// PR 7d-framework — renamed from `init` to `wasmInit` so it
+        /// doesn't shadow the `init: std.process.Init` parameter on
+        /// `WebApp.main` below. The JS-visible export name is still
+        /// `"init"` (the `@export` call at the bottom of this struct
+        /// names the symbol independently of the Zig identifier),
+        /// so no JS-side change is required.
+        pub fn wasmInit() callconv(.c) void {
             initImpl() catch |err| {
                 web_imports.err("Init failed: {}", .{err});
             };
@@ -180,39 +222,88 @@ pub fn WebApp(
             g_platform = try Platform.init();
 
             // Create window
-            g_window = try Window.init(allocator, &g_platform.?, .{
-                .title = if (@hasField(@TypeOf(config), "title")) config.title else "Gooey App",
+            g_platform_window = try PlatformWindow.init(allocator, &g_platform.?, .{
+                .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
                 .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                 .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
             });
 
-            // Initialize Gooey (owns layout, scene, text_system)
+            // Initialize Window (owns layout, scene, text_system)
             // Heap-allocated with initOwnedPtr to avoid ~400KB stack frame on WASM
-            const gooey_ptr = try allocator.create(Gooey);
-            const font_cfg = gooey_mod.FontConfig{
+            const window_ptr = try allocator.create(Window);
+            const font_cfg = window_mod.FontConfig{
                 .font_name = if (@hasField(@TypeOf(config), "font")) config.font else null,
                 .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
             };
             // WASM uses single-threaded IO — no fibers, sequential execution.
             const io = std.Io.Threaded.global_single_threaded.io();
 
-            try gooey_ptr.initOwnedPtr(allocator, g_window.?, font_cfg, io);
-            g_gooey = gooey_ptr;
+            // PR 7b.3 — allocate the shared `App` before the
+            // `Window` so it can be wired in immediately after
+            // `initOwnedPtr`. `initOwnedPtr` leaves
+            // `window_ptr.app` at its `undefined` default; the
+            // assignment a few lines below is the latest moment
+            // safe to install the borrowed pointer (any earlier
+            // and the `Window` does not exist yet).
+            const app_ptr = try allocator.create(ContextApp);
+            // PR 7b.4 — `ContextApp.initInPlace` returns `!void`
+            // now (was `void`) because it registers an owned
+            // `Keymap` in `app.globals`, and `Globals.setOwned`
+            // may fail with `OutOfMemory`. On WASM the bootstrap
+            // has no `defer` analog, so a failure here leaves the
+            // `allocator.create(ContextApp)` allocation orphaned
+            // until the browser tab teardown reclaims the entire
+            // WASM heap — same lifecycle as every other `g_*`
+            // global in this struct.
+            try app_ptr.initInPlace(allocator, io);
+            g_app = app_ptr;
+
+            try window_ptr.initOwnedPtr(allocator, g_platform_window.?, font_cfg, io);
+            // PR 7b.3 — wire the borrowed `*App` onto the freshly-
+            // initialised `Window`. Mirrors the same pattern in
+            // `runtime/window_context.zig::WindowContext.init`;
+            // every `cx.entities.*` access reaches through this
+            // pointer.
+            window_ptr.app = app_ptr;
+            // PR 7b.5 — bind the app-scoped `ImageLoader` against
+            // the window's owning `image_atlas`. Mirrors the
+            // single-window native path in
+            // `runtime/window_context.zig::WindowContext.init`:
+            // `Window.initOwnedPtr` creates the owning
+            // `AppResources` (and the backing `ImageAtlas`), so
+            // this is the first moment a stable `*ImageAtlas` is
+            // available to hand to the loader. `bindImageLoader`
+            // is idempotent on same-atlas re-binds (no-op on the
+            // second call), so the WASM-vs-native split here is
+            // structural rather than behavioural — both bind once
+            // per `App` lifetime against the same single window's
+            // atlas. See `context/app.zig` file header for the
+            // two-phase init rationale.
+            app_ptr.bindImageLoader(window_ptr.resources.image_atlas);
+            g_window = window_ptr;
 
             // Initialize Builder
             g_builder = try allocator.create(Builder);
+            // PR 7c.3c — build target is `next_frame.*`. The
+            // per-tick reset block in
+            // `runtime/frame.zig::renderFrameImpl` re-fetches
+            // both pointers from the post-swap `next_frame.*`
+            // each tick, so this init pair only has to be
+            // correct on tick 0; see the comment block on the
+            // matching `Builder.init` calls in
+            // `runtime/window_context.zig` for the rationale.
             g_builder.?.* = Builder.init(
                 allocator,
-                g_gooey.?.layout,
-                g_gooey.?.scene,
-                g_gooey.?.dispatch,
+                g_window.?.layout,
+                g_window.?.next_frame.scene,
+                g_window.?.next_frame.dispatch,
             );
-            g_builder.?.gooey = g_gooey.?;
+            g_builder.?.window = g_window.?;
 
             // Create Cx context
             g_cx = Cx{
                 ._allocator = allocator,
-                ._gooey = g_gooey.?,
+                ._window = g_window.?,
                 ._builder = g_builder.?,
                 .state_ptr = @ptrCast(state),
                 .state_type_id = cx_mod.typeId(State),
@@ -221,9 +312,9 @@ pub fn WebApp(
             // Wire up builder to cx
             g_builder.?.cx_ptr = @ptrCast(&g_cx.?);
 
-            // Set root state on this window's Gooey instance (not globally)
+            // Set root state on this window's Window instance (not globally)
             // This enables multi-window support where each window has its own state
-            g_gooey.?.setRootState(State, state);
+            g_window.?.setRootState(State, state);
 
             // Initialize GPU renderer
             // Heap-allocated with initInPlace to avoid ~1.15MB stack frame on WASM
@@ -248,8 +339,8 @@ pub fn WebApp(
             }
 
             // Upload initial atlases
-            g_renderer.?.uploadAtlas(g_gooey.?.text_system);
-            g_renderer.?.uploadSvgAtlas(g_gooey.?.svg_atlas);
+            g_renderer.?.uploadAtlas(g_window.?.resources.text_system);
+            g_renderer.?.uploadSvgAtlas(g_window.?.resources.svg_atlas);
 
             g_initialized = true;
 
@@ -269,14 +360,14 @@ pub fn WebApp(
             _ = timestamp;
             if (!g_initialized) return;
 
-            const w = g_window orelse return;
+            const w = g_platform_window orelse return;
             const cx = &g_cx.?;
 
             // Update window size
             w.updateSize();
-            g_gooey.?.width = @floatCast(w.size.width);
-            g_gooey.?.height = @floatCast(w.size.height);
-            g_gooey.?.scale_factor = @floatCast(w.scale_factor);
+            g_window.?.width = @floatCast(w.size.width);
+            g_window.?.height = @floatCast(w.size.height);
+            g_window.?.scale_factor = @floatCast(w.scale_factor);
 
             // =========================================================
             // INPUT PROCESSING (zero JS calls)
@@ -339,13 +430,27 @@ pub fn WebApp(
             const vh: f32 = @floatCast(w.size.height);
 
             // Sync atlas textures if glyphs/icons/images were added
-            g_renderer.?.syncAtlas(g_gooey.?.text_system);
-            g_renderer.?.syncSvgAtlas(g_gooey.?.svg_atlas);
-            g_renderer.?.syncImageAtlas(g_gooey.?.image_atlas);
+            g_renderer.?.syncAtlas(g_window.?.resources.text_system);
+            g_renderer.?.syncSvgAtlas(g_window.?.resources.svg_atlas);
+            g_renderer.?.syncImageAtlas(g_window.?.resources.image_atlas);
 
-            // Render to GPU
+            // Render to GPU.
+            //
+            // PR 7c.3c — the GPU presents `rendered_frame.scene`
+            // (the post-swap display buffer set up by the
+            // end-of-frame `mem.swap` in
+            // `runtime/frame.zig::renderFrameImpl`). Pre-7c.3c
+            // this read through the single-buffer
+            // `g_window.?.frame.scene`; with the double buffer,
+            // the just-built scene rotates through
+            // `rendered_frame.scene` after every tick. Web's
+            // platform layer doesn't cache a scene pointer, so
+            // the read happens fresh each `frame()` call — no
+            // setScene plumbing is needed on web (the
+            // `getPlatformWindow` short-circuit in
+            // `renderFrameImpl` covers the macOS / Linux side).
             const bg = w.background_color;
-            g_renderer.?.render(g_gooey.?.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
+            g_renderer.?.render(g_window.?.rendered_frame.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
 
             // Request next frame
             if (g_platform) |p| {
@@ -357,20 +462,29 @@ pub fn WebApp(
         pub fn resize(width: u32, height: u32) callconv(.c) void {
             _ = width;
             _ = height;
-            if (g_window) |w| w.updateSize();
+            if (g_platform_window) |w| w.updateSize();
         }
 
         /// No-op main for API compatibility with native App.
         /// On WASM, JavaScript calls init() directly via the exported function.
-        /// This exists so `App.main()` compiles on both native and web targets.
-        pub fn main() !void {
+        /// This exists so `App.main(init)` compiles on both native and web targets.
+        ///
+        /// PR 7d-framework — takes `init` for signature parity with the
+        /// native arm. The value is discarded because WASM initialization
+        /// is driven by JavaScript calling the `callconv(.c)` exports
+        /// directly (`init` / `frame` / `resize`), not by the Zig
+        /// runtime calling `main`.
+        pub fn main(init: std.process.Init) !void {
+            _ = init;
             // WASM initialization is driven by JavaScript calling the exported init().
             // This function exists only for API compatibility.
         }
 
         // Export functions for WASM - this comptime block runs when the type is analyzed
         comptime {
-            @export(&Self.init, .{ .name = "init" });
+            // PR 7d-framework — Zig identifier is `wasmInit`, but the
+            // JS-visible export name stays `"init"`.
+            @export(&Self.wasmInit, .{ .name = "init" });
             @export(&Self.frame, .{ .name = "frame" });
             @export(&Self.resize, .{ .name = "resize" });
         }

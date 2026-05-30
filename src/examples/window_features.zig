@@ -11,8 +11,8 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = ui.Color;
-const Button = gooey.Button;
-const Size = gooey.Size;
+const Button = gooey.components.Button;
+const Size = gooey.core.Size;
 
 const AppState = struct {
     window_width: f64 = 600,
@@ -189,8 +189,8 @@ fn onResize(cx: *Cx, width: f64, height: f64) void {
     std.debug.print("Window resized to {d:.0} × {d:.0} (resize #{d})\n", .{ width, height, s.resize_count });
 }
 
-pub fn main() !void {
-    try gooey.runCx(AppState, &state, render, .{
+pub fn main(init: std.process.Init) !void {
+    try gooey.run(AppState, &state, render, .{
         .title = "Window Features Demo",
         .width = 600,
         .height = 400,
@@ -205,5 +205,5 @@ pub fn main() !void {
         // Lifecycle callbacks
         .on_close = onClose,
         .on_resize = onResize,
-    });
+    }, init);
 }

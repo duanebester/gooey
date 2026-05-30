@@ -32,7 +32,10 @@ const std = @import("std");
 
 // Platform imports
 const platform = @import("../platform/mod.zig");
-const Window = platform.Window;
+// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
+// to free up the `Window` name for the framework-level wrapper
+// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+const PlatformWindow = platform.PlatformWindow;
 const WindowId = platform.WindowId;
 const WindowRegistry = platform.WindowRegistry;
 
@@ -148,8 +151,8 @@ pub fn WindowHandle(comptime State: type) type {
             std.debug.assert(self.id.isValid());
 
             if (registry.unregister(self.id)) |window_ptr| {
-                // Cast to Window and close it
-                const window: *Window = @ptrCast(@alignCast(window_ptr));
+                // Cast to PlatformWindow and close it
+                const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
                 window.close();
             }
         }
@@ -209,13 +212,13 @@ pub fn WindowHandle(comptime State: type) type {
         // =====================================================================
 
         /// Get the window pointer from the registry (mutable).
-        fn getWindow(self: Self, registry: *WindowRegistry) ?*Window {
-            return registry.getTyped(Window, self.id);
+        fn getWindow(self: Self, registry: *WindowRegistry) ?*PlatformWindow {
+            return registry.getTyped(PlatformWindow, self.id);
         }
 
         /// Get the window pointer from the registry (const).
-        fn getWindowConst(self: Self, registry: *const WindowRegistry) ?*Window {
-            return registry.getTyped(Window, self.id);
+        fn getWindowConst(self: Self, registry: *const WindowRegistry) ?*PlatformWindow {
+            return registry.getTyped(PlatformWindow, self.id);
         }
 
         // =====================================================================
