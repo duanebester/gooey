@@ -107,101 +107,55 @@ pub const BatchIterator = struct {
 
     /// Get the next batch of primitives to render
     pub fn next(self: *Self) ?PrimitiveBatch {
-        // Get the current order for each type (null if exhausted)
-        const shadow_order = self.peekOrder(.shadow);
-        const quad_order = self.peekOrder(.quad);
-        const glyph_order = self.peekOrder(.glyph);
-        const svg_order = self.peekOrder(.svg);
-        const image_order = self.peekOrder(.image);
-        const path_order = self.peekOrder(.path);
-        const polyline_order = self.peekOrder(.polyline);
-        const point_cloud_order = self.peekOrder(.point_cloud);
-        const colored_point_cloud_order = self.peekOrder(.colored_point_cloud);
+        // Draw-order priority for ties (lowest first), matching GPUI's fixed
+        // type order: shadow < quad < glyph < svg < image < path < polyline <
+        // point_cloud < colored_point_cloud. The arrays are in this order so the
+        // strict `<` below lets the earliest kind win an equal-order tie.
+        const orders = [_]?scene_mod.DrawOrder{
+            self.peekOrder(.shadow),
+            self.peekOrder(.quad),
+            self.peekOrder(.glyph),
+            self.peekOrder(.svg),
+            self.peekOrder(.image),
+            self.peekOrder(.path),
+            self.peekOrder(.polyline),
+            self.peekOrder(.point_cloud),
+            self.peekOrder(.colored_point_cloud),
+        };
+        const kinds = [_]PrimitiveKind{
+            .shadow, .quad,     .glyph,       .svg,                 .image,
+            .path,   .polyline, .point_cloud, .colored_point_cloud,
+        };
 
-        // Find minimum order (with tie-breaking by kind priority: shadow < quad < glyph < svg < image < path < polyline < point_cloud < colored_point_cloud)
+        // Single pass finds both the minimum order (which kind to emit) and the
+        // second-smallest order across all other types (the threshold at which
+        // the batch must stop). Folding the threshold into the min scan avoids a
+        // second 8-way `minOfOrders` pass per `next()` call. `batch_threshold`
+        // tracks the two smallest orders with multiplicity, so it equals the
+        // minimum order among every type except the chosen `min_kind`.
         var min_kind: ?PrimitiveKind = null;
         var min_order: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
+        var batch_threshold: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
 
-        if (shadow_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .shadow;
-            }
-        }
-        if (quad_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .quad;
-            }
-        }
-        if (glyph_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .glyph;
-            }
-        }
-        if (svg_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .svg;
-            }
-        }
-        if (image_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .image;
-            }
-        }
-        if (path_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .path;
-            }
-        }
-        if (polyline_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .polyline;
-            }
-        }
-        if (point_cloud_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .point_cloud;
-            }
-        }
-        if (colored_point_cloud_order) |order| {
-            if (order < min_order) {
-                min_order = order;
-                min_kind = .colored_point_cloud;
+        inline for (orders, kinds) |maybe_order, kind| {
+            if (maybe_order) |order| {
+                if (order < min_order) {
+                    batch_threshold = min_order; // previous min is now the runner-up
+                    min_order = order;
+                    min_kind = kind;
+                } else if (order < batch_threshold) {
+                    batch_threshold = order;
+                }
             }
         }
 
         const kind = min_kind orelse return null;
 
-        // Consume all consecutive primitives of this type until we hit
-        // a primitive of another type with a lower order
+        // Consume all consecutive primitives of this type until another type's
+        // order would interleave (i.e. `order >= batch_threshold`).
         return switch (kind) {
-            .shadow => self.consumeBatch(.shadow, minOfOrders(.{ quad_order, glyph_order, svg_order, image_order, path_order, polyline_order, point_cloud_order, colored_point_cloud_order })),
-            .quad => self.consumeBatch(.quad, minOfOrders(.{ shadow_order, glyph_order, svg_order, image_order, path_order, polyline_order, point_cloud_order, colored_point_cloud_order })),
-            .glyph => self.consumeBatch(.glyph, minOfOrders(.{ shadow_order, quad_order, svg_order, image_order, path_order, polyline_order, point_cloud_order, colored_point_cloud_order })),
-            .svg => self.consumeBatch(.svg, minOfOrders(.{ shadow_order, quad_order, glyph_order, image_order, path_order, polyline_order, point_cloud_order, colored_point_cloud_order })),
-            .image => self.consumeBatch(.image, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, path_order, polyline_order, point_cloud_order, colored_point_cloud_order })),
-            .path => self.consumeBatch(.path, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order, polyline_order, point_cloud_order, colored_point_cloud_order })),
-            .polyline => self.consumeBatch(.polyline, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order, path_order, point_cloud_order, colored_point_cloud_order })),
-            .point_cloud => self.consumeBatch(.point_cloud, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order, path_order, polyline_order, colored_point_cloud_order })),
-            .colored_point_cloud => self.consumeBatch(.colored_point_cloud, minOfOrders(.{ shadow_order, quad_order, glyph_order, svg_order, image_order, path_order, polyline_order, point_cloud_order })),
+            inline else => |comptime_kind| self.consumeBatch(comptime_kind, batch_threshold),
         };
-    }
-
-    /// Find the minimum order among a set of optional orders.
-    /// Returns maxInt if all are null.
-    fn minOfOrders(orders: [8]?scene_mod.DrawOrder) scene_mod.DrawOrder {
-        var min: scene_mod.DrawOrder = std.math.maxInt(scene_mod.DrawOrder);
-        inline for (orders) |maybe_order| {
-            if (maybe_order) |o| min = @min(min, o);
-        }
-        return min;
     }
 
     /// Peek at the order of the next primitive of a given type
@@ -444,14 +398,4 @@ test "BatchIterator - coalesces consecutive same type" {
 
     // Done
     try std.testing.expect(iter.next() == null);
-}
-
-test "minOfOrders - all null returns maxInt" {
-    const result = BatchIterator.minOfOrders(.{ null, null, null, null, null, null, null, null });
-    try std.testing.expectEqual(std.math.maxInt(scene_mod.DrawOrder), result);
-}
-
-test "minOfOrders - finds minimum" {
-    const result = BatchIterator.minOfOrders(.{ @as(?scene_mod.DrawOrder, 5), @as(?scene_mod.DrawOrder, 2), null, @as(?scene_mod.DrawOrder, 10), null, null, null, null });
-    try std.testing.expectEqual(@as(scene_mod.DrawOrder, 2), result);
 }
