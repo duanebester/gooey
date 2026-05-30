@@ -1,10 +1,5 @@
 //! Layout-engine fuzz targets.
 //!
-//! Wired in by PR 10 per
-//! [docs/cleanup-implementation-plan.md PR 10](../../docs/cleanup-implementation-plan.md#pr-10--layout-engine-split--fuzz-targets)
-//! and informed by [Zig 0.16 §26 Fuzzer](../../docs/zig-0.16-changes.md#fuzzer)
-//! and [§28 takeaways](../../docs/zig-0.16-changes.md#28-gooey-specific-takeaways).
-//!
 //! These targets generate random *valid* layout trees using
 //! `std.testing.Smith` and run a full `endFrame()` over each one. The goal
 //! is to catch crashes, assertion violations, and depth/capacity overruns

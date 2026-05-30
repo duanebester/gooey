@@ -1,50 +1,19 @@
 //! `BlurHandlerRegistry` — fixed-capacity store of "fire this handler
 //! when the named focusable is about to be blurred."
 //!
-//! Rationale (cleanup item #1, plan §7d in
-//! `docs/architectural-cleanup-plan.md`): the original implementation
-//! lived as three fields and four methods directly on `Window`
-//! (`blur_handlers`, `blur_handler_count`,
-//! `blur_handlers_invoked_this_transition`, plus
-//! `registerBlurHandler` / `clearBlurHandlers` / `getBlurHandler` /
-//! `invokeBlurHandlersForFocusedWidgets`). It is a textbook
-//! self-contained 100-line subsystem that the god struct does not need
-//! to be aware of.
+//! Backed by `SubscriberSet([]const u8, HandlerRef, ...)`. The slice
+//! key uses a content-equality comparator (`std.mem.eql`) so
+//! re-registering the same `id` on consecutive frames replaces in
+//! place rather than leaking a slot per frame. Past the cap the
+//! registry returns `.dropped` and the caller logs a warning.
 //!
-//! ## Storage
+//! `invoked_this_transition` is a re-entrancy latch: a single focus
+//! change passes through several call sites that must agree on whether
+//! the handler set has already fired this transition.
 //!
-//! Backed by `SubscriberSet([]const u8, HandlerRef, .{ ... })` per PR 3
-//! task list — using the same generic that backs `CancelRegistry`
-//! validates the trait shape on two distinct callers before PR 8 leans
-//! on it for `element_states`. The slice key uses a content-equality
-//! comparator (`std.mem.eql`) so re-registering the same `id` on
-//! consecutive frames replaces in place rather than leaking a slot per
-//! frame.
-//!
-//! Hard cap: `MAX_BLUR_HANDLERS = 64`. This matches the previous
-//! bespoke array. Past the cap the registry returns `.dropped` and the
-//! caller logs a warning — same behavior as before, now centralized in
-//! the generic.
-//!
-//! ## Re-entrancy guard
-//!
-//! `blur_handlers_invoked_this_transition` was tangled into `Window`
-//! purely so the multiple call paths (`blurAll`, `syncWidgetFocus`,
-//! `invokeBlurHandlersForFocusedWidgets`) could agree on whether the
-//! handler set had already fired during the current focus transition.
-//! It travels with the registry now — there is no semantic reason for
-//! `Window` to own that bit.
-//!
-//! ## What stays in `Window`
-//!
-//! `invokeBlurHandlersForFocusedWidgets` reaches across into the
-//! `WidgetStore` to walk text-input/text-area/code-editor maps. The
-//! registry can't own that walk without dragging widget types back
-//! into `context/`, which we explicitly want to avoid (see PR 4 — the
-//! `context → widgets` backward edge is supposed to die in the next
-//! PR). So `Window.invokeBlurHandlersForFocusedWidgets` keeps the walk
-//! and asks the registry for `getHandler(id)` on each focused widget;
-//! the registry no longer reaches outward.
+//! The registry does not reach outward. `Window` keeps the walk over
+//! its widget stores and asks `getHandler(id)` per focused widget, so
+//! widget types never leak back into `context/`.
 
 const std = @import("std");
 
@@ -59,18 +28,14 @@ const Insertion = subscriber_set_mod.Insertion;
 // Capacity caps
 // =============================================================================
 
-/// Hard cap on simultaneously-registered blur handlers.
-///
-/// 64 matches the pre-extraction `MAX_BLUR_HANDLERS`. A frame would
+/// Hard cap on simultaneously-registered blur handlers. A frame would
 /// have to mount more than 64 distinct text fields with `.on_blur`
-/// handlers to hit this limit — well above any realistic UI density.
-/// Past the cap we drop with a warning rather than crash; the old
-/// behaviour preserved.
+/// handlers to hit this — well above any realistic UI density. Past
+/// the cap we drop with a warning rather than crash.
 pub const MAX_BLUR_HANDLERS: u32 = 64;
 
-/// Reasonable upper bound on field IDs. The pre-extraction code
-/// asserted `id.len <= 256`; we keep the same value as a loud-fast
-/// check against accidentally-truncated heap garbage being passed in.
+/// Upper bound on field IDs — a loud-fast check against
+/// accidentally-truncated heap garbage being passed in as an ID.
 pub const MAX_BLUR_HANDLER_ID_LENGTH: usize = 256;
 
 // =============================================================================
@@ -101,14 +66,10 @@ pub const BlurHandlerRegistry = struct {
     /// one tested place rather than re-invented per registry.
     handlers: Set,
 
-    /// Re-entrancy guard for a focus transition.
-    ///
-    /// A single user-visible focus change can pass through several
-    /// internal call sites (`Window.blurAll`, `syncWidgetFocus`,
-    /// `invokeBlurHandlersForFocusedWidgets`); without this latch the
-    /// same `on_blur` callback would fire 2–3 times per transition.
-    /// The latch is set on first invocation and cleared by the runtime
-    /// once the transition is complete.
+    /// Re-entrancy guard for a focus transition. Without it, the same
+    /// `on_blur` callback would fire 2–3 times per transition as a
+    /// focus change passes through several call sites. Set on first
+    /// invocation, cleared by the runtime once the transition is done.
     invoked_this_transition: bool = false,
 
     const Self = @This();
@@ -126,9 +87,7 @@ pub const BlurHandlerRegistry = struct {
     }
 
     /// In-place initialization for sets embedded in a large parent
-    /// struct (per `CLAUDE.md` §13). The pre-extraction code did
-    /// field-by-field init in `Window.initOwnedPtr` to avoid stack
-    /// temps; that contract is preserved by delegating to the
+    /// struct. Field-by-field to avoid a stack temp, delegating to the
     /// generic's own `initInPlace`.
     pub fn initInPlace(self: *Self) void {
         self.handlers.initInPlace();
@@ -141,16 +100,14 @@ pub const BlurHandlerRegistry = struct {
 
     /// Register or replace the blur handler for `id`.
     ///
-    /// At capacity the call drops with a warning — same shape as the
-    /// pre-extraction code. The caller does not get a hard failure
-    /// because UI rendering should not crash on a degenerate widget
-    /// tree; the limit is high enough that hitting it indicates a
+    /// At capacity the call drops with a warning rather than a hard
+    /// failure — UI rendering should not crash on a degenerate widget
+    /// tree, and the limit is high enough that hitting it indicates a
     /// real bug elsewhere worth surfacing in logs.
     pub fn register(self: *Self, id: []const u8, handler: HandlerRef) void {
-        // Pair-assertions on the write boundary (per `CLAUDE.md` §3):
-        //   1. ID is non-empty — empty IDs collide and are a sign the
-        //      caller forgot to set one.
-        //   2. ID is bounded — a 4 GB slice as an ID is heap garbage.
+        // Write-boundary pair-assertions: ID is non-empty (empty IDs
+        // collide and signal a caller that forgot to set one) and
+        // bounded (a 4 GB slice as an ID is heap garbage).
         std.debug.assert(id.len > 0);
         std.debug.assert(id.len <= MAX_BLUR_HANDLER_ID_LENGTH);
 
@@ -158,9 +115,6 @@ pub const BlurHandlerRegistry = struct {
         switch (outcome) {
             .inserted, .replaced => {},
             .dropped => {
-                // Logged at warn — preserves the old behaviour where
-                // `Window.registerBlurHandler` warned and continued
-                // rather than crashing.
                 std.log.warn(
                     "Blur handler limit ({d}) exceeded - dropping handler for '{s}'",
                     .{ MAX_BLUR_HANDLERS, id },
@@ -170,9 +124,9 @@ pub const BlurHandlerRegistry = struct {
     }
 
     /// Drop every registered handler. Called at the start of each
-    /// frame before re-walking the pending-input list — the
-    /// registration is per-frame, not per-mount, because the layout
-    /// arena resets every frame and the IDs would otherwise dangle.
+    /// frame before re-walking the pending-input list: registration is
+    /// per-frame because the layout arena resets every frame and the
+    /// IDs would otherwise dangle.
     pub fn clearAll(self: *Self) void {
         self.handlers.clear();
         self.invoked_this_transition = false;
@@ -209,20 +163,17 @@ pub const BlurHandlerRegistry = struct {
     // -------------------------------------------------------------------------
 
     /// Mark the start of a single focus transition. Returns `true`
-    /// iff this is the first call to `beginTransition` since the last
-    /// `endTransition` / `clearAll` — the caller uses the return to
-    /// decide whether to invoke handlers or short-circuit.
+    /// iff this is the first call since the last `endTransition` /
+    /// `clearAll` — the caller uses the return to decide whether to
+    /// invoke handlers or short-circuit. Folding the latch and the
+    /// check into one method keeps callers from getting the order
+    /// wrong.
     ///
     /// Pattern:
     /// ```
     /// if (!registry.beginTransition()) return; // already fired
     /// // … walk focused widgets, fire handlers …
     /// ```
-    ///
-    /// The pre-extraction code expressed the same idea inline in
-    /// `invokeBlurHandlersForFocusedWidgets` with a bare bool check;
-    /// folding it into a method keeps the latch + the check in one
-    /// spot so future callers can't get the order wrong.
     pub fn beginTransition(self: *Self) bool {
         if (self.invoked_this_transition) return false;
         self.invoked_this_transition = true;

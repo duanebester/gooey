@@ -1,19 +1,14 @@
 //! Core layout engine — Clay-style flexbox layout algorithm.
 //!
-//! Post-PR-10, this file is the engine **facade**: it owns the
-//! `LayoutEngine` struct, its element/command/arena storage, the
-//! immediate-mode builder API (`openElement`/`closeElement`/`text`/`svg`/
-//! `image`), and the `endFrame` / `endFrameTimed` orchestrators. The four
-//! layout phases live in dedicated files alongside this one:
+//! Engine facade: owns the `LayoutEngine` struct, its element/command/arena
+//! storage, the immediate-mode builder API (`openElement`/`closeElement`/
+//! `text`/`svg`/`image`), and the `endFrame` orchestrator. The layout phases
+//! live in sibling files:
 //!
-//!   - `sizing_pass.zig`   — Phases 1 and 2 (min sizes, final sizes,
-//!                           text wrapping, grow/shrink distribution).
-//!   - `position_pass.zig` — Phase 3 (positions, floating positioning).
-//!   - `scroll_pass.zig`   — Phase 4 (render commands, scissor framing).
-//!   - `fuzz.zig`          — `std.testing.Smith` targets for the above.
-//!
-//! See [docs/cleanup-implementation-plan.md PR 10](../../docs/cleanup-implementation-plan.md#pr-10--layout-engine-split--fuzz-targets)
-//! for the rationale and the disjoint write-scope contract.
+//!   - `sizing_pass.zig`   — min sizes, final sizes, text wrapping.
+//!   - `position_pass.zig` — positions, floating positioning.
+//!   - `scroll_pass.zig`   — render commands, scissor framing.
+//!   - `fuzz.zig`          — fuzz targets for the above.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -49,54 +44,10 @@ const RenderCommandList = render_commands.RenderCommandList;
 const RenderCommandType = render_commands.RenderCommandType;
 
 // ============================================================================
-// Capacity Limits (per CLAUDE.md: put a limit on everything)
+// Capacity Limits
 // ============================================================================
 
-/// Maximum elements per frame - prevents unbounded growth
 pub const MAX_ELEMENTS_PER_FRAME = 16384;
-
-/// Per-phase timing breakdown for layout benchmarking and profiling.
-/// All values in nanoseconds. Zero-cost in production — `endFrame()` skips timing entirely;
-/// only `endFrameTimed()` pays the cost of 7 `std.Io.Timestamp.now(..., .awake)` calls (~350ns).
-pub const PhaseTimings = struct {
-    min_sizes_ns: u64 = 0,
-    final_sizes_ns: u64 = 0,
-    text_wrapping_ns: u64 = 0,
-    positions_ns: u64 = 0,
-    floating_ns: u64 = 0,
-    render_commands_ns: u64 = 0,
-    z_sort_ns: u64 = 0,
-    total_ns: u64 = 0,
-
-    pub fn printHeader() void {
-        std.debug.print("| {s:<40} | {s:>8} | {s:>9} | {s:>9} | {s:>9} | {s:>9} | {s:>9} | {s:>9} | {s:>9} |\n", .{
-            "Test", "Nodes", "MinSizes", "FinalSz", "TextWrap", "Position", "Float", "RenderCmd", "ZSort",
-        });
-    }
-
-    pub fn print(self: *const PhaseTimings, name: []const u8, node_count: u32, iterations: u32) void {
-        const iters: u64 = @intCast(iterations);
-        std.debug.assert(iters > 0);
-        std.debug.assert(node_count > 0);
-        std.debug.print("| {s:<40} | {d:>8} | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms | {d:>7.3} ms |\n", .{
-            name,
-            node_count,
-            @as(f64, @floatFromInt(self.min_sizes_ns / iters)) / 1_000_000.0,
-            @as(f64, @floatFromInt(self.final_sizes_ns / iters)) / 1_000_000.0,
-            @as(f64, @floatFromInt(self.text_wrapping_ns / iters)) / 1_000_000.0,
-            @as(f64, @floatFromInt(self.positions_ns / iters)) / 1_000_000.0,
-            @as(f64, @floatFromInt(self.floating_ns / iters)) / 1_000_000.0,
-            @as(f64, @floatFromInt(self.render_commands_ns / iters)) / 1_000_000.0,
-            @as(f64, @floatFromInt(self.z_sort_ns / iters)) / 1_000_000.0,
-        });
-    }
-};
-
-/// Result type for `endFrameTimed()` — named to avoid Zig anonymous-struct identity issues.
-pub const TimedResult = struct {
-    commands: []const RenderCommand,
-    timings: PhaseTimings,
-};
 
 /// Maximum nesting depth for open elements (e.g., nested containers)
 pub const MAX_OPEN_DEPTH = 64;
@@ -110,19 +61,19 @@ pub const MAX_TRACKED_IDS = 4096;
 /// Maximum lines per text element when wrapping
 pub const MAX_LINES_PER_TEXT = 1024;
 
-/// Maximum words per text element for word-level measurement caching (Phase 2.1)
+/// Maximum words per text element for word-level measurement caching
 pub const MAX_WORDS_PER_TEXT = 2048;
 
-/// Maximum recursion depth for layout tree traversal (per CLAUDE.md: put a limit on everything)
-/// Safe for typical 1MB stack - each frame is ~100-200 bytes, so 48 levels ≈ 10KB
-/// Real UI layouts rarely exceed 20 levels; this limit ensures fail-fast behavior
+/// Maximum recursion depth for layout tree traversal. ~100-200 bytes per
+/// frame, so 48 levels ≈ 10KB — safe for a 1MB stack. Real layouts rarely
+/// exceed 20 levels; this is a fail-fast cap.
 pub const MAX_RECURSION_DEPTH = 48;
 
 /// Threshold for treating a max constraint as effectively unconstrained
-/// Used in fast path to detect grow elements without meaningful upper bounds
+/// (detects grow elements without a meaningful upper bound in the fast path).
 pub const UNCONSTRAINED_MAX: f32 = 1e10;
 
-/// Word boundary info for efficient text wrapping (measured once per word, not per char)
+/// Word boundary info for text wrapping (measured once per word, not per char)
 pub const WordInfo = struct {
     start: u32, // byte offset where word starts
     end: u32, // byte offset where word ends (exclusive)
@@ -132,11 +83,11 @@ pub const WordInfo = struct {
 };
 
 // ============================================================================
-// Fixed Capacity Array (since std.BoundedArray doesn't exist in Zig 0.15)
+// Fixed Capacity Array
 // ============================================================================
 
-/// A fixed-capacity array that doesn't allocate after initialization.
-/// Used to avoid dynamic allocation during frame rendering per CLAUDE.md.
+/// A fixed-capacity array that doesn't allocate after init — used to avoid
+/// dynamic allocation during frame rendering.
 pub fn FixedCapacityArray(comptime T: type, comptime capacity: usize) type {
     return struct {
         buffer: [capacity]T = undefined,
@@ -180,16 +131,12 @@ pub const ScrollOffset = struct {
     y: f32 = 0,
 };
 
-/// Source location for debugging - captures where an element was created
-/// Uses fixed-size storage to avoid allocations (zero allocation after init)
+/// Where an element was created (for debugging). Stores compile-time string
+/// pointers, so it needs no allocation.
 pub const SourceLoc = struct {
-    /// File name (pointer to compile-time string, no allocation needed)
     file: ?[*:0]const u8 = null,
-    /// Line number
     line: u32 = 0,
-    /// Column number
     column: u32 = 0,
-    /// Function name (pointer to compile-time string)
     fn_name: ?[*:0]const u8 = null,
 
     pub const none: SourceLoc = .{};
@@ -212,14 +159,6 @@ pub const SourceLoc = struct {
     /// Get file name as a slice (for display)
     pub fn getFile(self: SourceLoc) ?[]const u8 {
         if (self.file) |f| {
-            return std.mem.span(f);
-        }
-        return null;
-    }
-
-    /// Get function name as a slice (for display)
-    pub fn getFnName(self: SourceLoc) ?[]const u8 {
-        if (self.fn_name) |f| {
             return std.mem.span(f);
         }
         return null;
@@ -295,7 +234,7 @@ pub const ComputedLayout = struct {
     min_height: f32 = 0,
     sized_width: f32 = 0,
     sized_height: f32 = 0,
-    /// Cached resolved parent index for floating elements (Phase 2.3 - eliminates hot-path HashMap lookup)
+    /// Cached resolved parent index for floating elements (avoids a hot-path HashMap lookup)
     resolved_floating_parent: ?u32 = null,
 };
 
@@ -328,7 +267,7 @@ pub const ElementList = struct {
             .allocator = allocator,
             .elements = .empty,
         };
-        // Pre-allocate per CLAUDE.md: static memory allocation at startup
+        // Pre-allocate at startup to avoid per-frame allocation
         list.elements.ensureTotalCapacity(allocator, MAX_ELEMENTS_PER_FRAME) catch {};
         return list;
     }
@@ -392,7 +331,7 @@ pub const LayoutEngine = struct {
     arena: LayoutArena,
     elements: ElementList,
     commands: RenderCommandList,
-    /// Stack of open container indices (fixed capacity per CLAUDE.md)
+    /// Stack of open container indices (fixed capacity)
     open_element_stack: FixedCapacityArray(u32, MAX_OPEN_DEPTH) = .{},
     root_index: ?u32 = null,
     viewport_width: f32 = 0,
@@ -403,7 +342,7 @@ pub const LayoutEngine = struct {
     seen_ids: std.AutoHashMap(u32, ?[]const u8),
     /// Maps element ID -> element index for O(1) lookups
     id_to_index: std.AutoHashMap(u32, u32),
-    /// Floating elements to position after main layout (fixed capacity per CLAUDE.md)
+    /// Floating elements to position after main layout (fixed capacity)
     floating_roots: FixedCapacityArray(u32, MAX_FLOATING_ROOTS) = .{},
 
     const Self = @This();
@@ -412,7 +351,7 @@ pub const LayoutEngine = struct {
         var seen_ids = std.AutoHashMap(u32, ?[]const u8).init(allocator);
         var id_to_index = std.AutoHashMap(u32, u32).init(allocator);
 
-        // Pre-allocate hash maps to avoid allocation during frame (per CLAUDE.md)
+        // Pre-allocate hash maps to avoid per-frame allocation
         seen_ids.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
         id_to_index.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
 
@@ -429,7 +368,6 @@ pub const LayoutEngine = struct {
     pub fn deinit(self: *Self) void {
         self.id_to_index.deinit();
         self.seen_ids.deinit();
-        // BoundedArrays don't need deinit (stack-allocated)
         self.commands.deinit();
         self.elements.deinit();
         self.arena.deinit();
@@ -444,8 +382,8 @@ pub const LayoutEngine = struct {
         self.arena.reset();
         self.elements.clear();
         self.commands.clear();
-        self.open_element_stack.len = 0; // BoundedArray: just reset length
-        self.floating_roots.len = 0; // BoundedArray: just reset length
+        self.open_element_stack.len = 0;
+        self.floating_roots.len = 0;
         if (comptime builtin.mode == .Debug) {
             self.seen_ids.clearRetainingCapacity();
         }
@@ -558,14 +496,10 @@ pub const LayoutEngine = struct {
         };
     }
 
-    /// Create an element and link it into the tree.
-    ///
-    /// Pre-PR-10 this function inlined ID-collision detection, the parent
-    /// linking walk, and floating-root bookkeeping. The body now reads as
-    /// a sequence of named steps so each concern can be reviewed in
-    /// isolation while keeping the function under the 70-line ceiling.
+    /// Create an element and link it into the tree. The body is a sequence
+    /// of named steps (collision check, indexing, floating bookkeeping,
+    /// parent linking) so each concern stays isolated.
     fn createElement(self: *Self, decl: ElementDeclaration, elem_type: ElementType) !u32 {
-        // Assertions per CLAUDE.md: minimum 2 per function
         std.debug.assert(self.elements.len() < MAX_ELEMENTS_PER_FRAME); // Prevent unbounded growth
         std.debug.assert(elem_type != .container or self.open_element_stack.len < MAX_OPEN_DEPTH); // Depth check for containers
 
@@ -621,8 +555,8 @@ pub const LayoutEngine = struct {
     }
 
     /// Record the index in `floating_roots` and resolve the parent ID into
-    /// an element index up-front. Phase 2.3 eliminated a hot-path HashMap
-    /// lookup in `computeFloatingPositions` by caching this here.
+    /// an element index up-front, so `computeFloatingPositions` avoids a
+    /// hot-path HashMap lookup.
     fn trackFloatingElement(self: *Self, index: u32, floating: types.FloatingConfig) void {
         self.floating_roots.append(index) catch @panic("floating_roots overflow - increase MAX_FLOATING_ROOTS");
         if (floating.parent_id) |pid| {
@@ -648,8 +582,7 @@ pub const LayoutEngine = struct {
         }
     }
 
-    /// End frame and compute layout (zero-cost — no timing instrumentation).
-    /// Phase ordering matches `endFrameTimed`; keep the two in lockstep.
+    /// End frame and compute layout, returning the render commands.
     pub fn endFrame(self: *Self) ![]const RenderCommand {
         if (self.root_index == null) return self.commands.items();
 
@@ -673,84 +606,13 @@ pub const LayoutEngine = struct {
         // Phase 4: Generate render commands.
         try scroll_pass.generateRenderCommands(self, root, 0, 1.0, 0);
 
-        // Sort by z-index only when floating elements exist (they're the only source of non-zero z_index).
-        // Skipping the sort saves ~O(n log n) work on frames with no dropdowns/tooltips/modals.
+        // Sort by z-index only when floating elements exist (the only source
+        // of non-zero z_index). Skips ~O(n log n) on float-free frames.
         if (self.floating_roots.len > 0) {
             self.commands.sortByZIndex();
         }
 
         return self.commands.items();
-    }
-
-    /// End frame with per-phase timing breakdown (for benchmarks and profiling).
-    /// Returns both the render commands and nanosecond timings for each layout phase.
-    /// Pays ~350ns overhead from 7 `std.Io.Timestamp.now(io, .awake)` calls.
-    ///
-    /// `io` is threaded in so the caller chooses which `std.Io` backend
-    /// to sample the clock on — benchmarks use the global single-threaded
-    /// instance; production callers pass `cx.io()` / `gooey.io`.
-    pub fn endFrameTimed(self: *Self, io: std.Io) !TimedResult {
-        var timings = PhaseTimings{};
-
-        if (self.root_index == null) return TimedResult{ .commands = self.commands.items(), .timings = timings };
-
-        const root = self.root_index.?;
-        // Monotonic `awake` clock — phase deltas can never go negative
-        // even if NTP or the sysadmin adjusts the wall clock mid-frame.
-        var t0 = std.Io.Timestamp.now(io, .awake);
-
-        // Phase 1: Compute minimum sizes (bottom-up).
-        sizing_pass.computeMinSizes(self, root, 0);
-        var t1 = std.Io.Timestamp.now(io, .awake);
-        timings.min_sizes_ns = durationNs(t0, t1);
-
-        // Phase 2: Compute final sizes (top-down).
-        sizing_pass.computeFinalSizes(self, root, self.viewport_width, self.viewport_height, 0);
-        t0 = std.Io.Timestamp.now(io, .awake);
-        timings.final_sizes_ns = durationNs(t1, t0);
-
-        // Phase 2b: Wrap text now that we know container widths.
-        try sizing_pass.computeTextWrapping(self, root);
-        t1 = std.Io.Timestamp.now(io, .awake);
-        timings.text_wrapping_ns = durationNs(t0, t1);
-
-        // Phase 3: Compute positions (top-down).
-        position_pass.computePositions(self, root, 0, 0, 0);
-        t0 = std.Io.Timestamp.now(io, .awake);
-        timings.positions_ns = durationNs(t1, t0);
-
-        // Phase 3b: Position floating elements (includes text wrapping for floats).
-        try position_pass.computeFloatingPositions(self);
-        t1 = std.Io.Timestamp.now(io, .awake);
-        timings.floating_ns = durationNs(t0, t1);
-
-        // Phase 4: Generate render commands.
-        try scroll_pass.generateRenderCommands(self, root, 0, 1.0, 0);
-        t0 = std.Io.Timestamp.now(io, .awake);
-        timings.render_commands_ns = durationNs(t1, t0);
-
-        // Sort by z-index only when floating elements exist (they're the only source of non-zero z_index).
-        // Skipping the sort saves ~O(n log n) work on frames with no dropdowns/tooltips/modals.
-        if (self.floating_roots.len > 0) {
-            self.commands.sortByZIndex();
-        }
-        t1 = std.Io.Timestamp.now(io, .awake);
-        timings.z_sort_ns = durationNs(t0, t1);
-
-        timings.total_ns = timings.min_sizes_ns + timings.final_sizes_ns +
-            timings.text_wrapping_ns + timings.positions_ns +
-            timings.floating_ns + timings.render_commands_ns + timings.z_sort_ns;
-
-        return TimedResult{ .commands = self.commands.items(), .timings = timings };
-    }
-
-    /// Convert a monotonic `(from, to)` timestamp pair into elapsed nanoseconds.
-    /// Extracted so the hot `endFrameTimed` body reads as data flow, not casts.
-    /// Monotonic clock guarantees the delta is non-negative — asserted.
-    inline fn durationNs(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
-        const ns = from.durationTo(to).toNanoseconds();
-        std.debug.assert(ns >= 0);
-        return @intCast(ns);
     }
 
     /// Get computed bounding box for an element by ID (O(1) lookup)

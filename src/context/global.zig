@@ -1,64 +1,35 @@
 //! `Globals` — type-keyed singleton store, capped at `MAX_GLOBALS`.
 //!
-//! GPUI-style "set/get/update a value of type `G`" registry, indexed
-//! by a comptime-stable type ID. Lets cross-cutting state (theme,
-//! keymap, debugger, future: settings, telemetry, focus debugger) live
-//! off `Gooey`'s direct field list while still being reachable in O(1)
-//! from anywhere with a `*Cx` / `*Gooey`.
+//! A "set/get/update a value of type `G`" registry, indexed by a
+//! comptime-stable type ID, so cross-cutting state (theme, keymap,
+//! debugger, ...) is reachable in O(1) without its own field on the
+//! owning context.
 //!
-//! Rationale (per `docs/cleanup-implementation-plan.md` PR 6):
+//! Capacity is fixed at `MAX_GLOBALS = 32`; past the cap `set` panics.
+//! The framework owns this list and 32 is far more than current use plus
+//! reasonable growth.
 //!
-//! `Gooey` had grown a long tail of single-purpose fields — `keymap`,
-//! `debugger`, and (historically) the theme pointer on `Builder`. Each
-//! addition forced a synchronized edit across the four init paths
-//! (`initOwned`, `initOwnedPtr`, `initWithSharedResources`,
-//! `initWithSharedResourcesPtr`) plus `deinit`. A type-keyed registry
-//! collapses that to a single `globals: Globals` field plus per-call
-//! `set`/`get` at the call site that owns the policy.
+//! Two ownership shapes. `setOwned(G, value)` heap-allocates a `*G` we own
+//! (deinit'd on `Globals.deinit`); `setBorrowed(G, ptr)` stores a
+//! caller-owned `*G` we never free (and `setBorrowedConst` its `*const`
+//! twin, e.g. `&Theme.dark` in static storage). Mixing shapes on one slot
+//! is illegal — `set*` checks the existing entry's ownership matches.
 //!
-//! ## Design choices
+//! Type ID is `@typeName(T).ptr` reinterpreted as `usize`: the compiler
+//! interns one `[*:0]const u8` per type, so the pointer is comptime-stable
+//! program-wide. No allocation, no string compare. Matches `entity.typeId`.
 //!
-//! - **Fixed capacity at comptime** (`MAX_GLOBALS = 32`). Per
-//!   CLAUDE.md §4 ("Put a Limit on Everything") every registry has a
-//!   hard cap. Past the cap, `set` panics — the framework owns this
-//!   list and 32 is far more than the audited PR 6 set (3) plus
-//!   reasonable future growth.
+//! Linear scan over a tagged array: with a cap of 32 it beats a hash map
+//! (no allocation, no collisions, table fits in two cache lines, worst case
+//! ~32 integer compares), and lookups happen once per accessor, not per
+//! frame element.
 //!
-//! - **Two ownership shapes.** `setOwned(G, value)` heap-allocates a
-//!   `*G` we own (deinit'd on `Globals.deinit`); `setBorrowed(G, ptr)`
-//!   stores a caller-owned `*G` we never free. The first covers
-//!   `Keymap` / `Debugger` (allocator-aware lifetimes); the second
-//!   covers `*const Theme` (callers pass `&Theme.dark` from static
-//!   storage). Mixing the shapes is illegal — `set*` checks that a
-//!   slot's existing entry, if any, matches the new ownership.
+//! No `remove`: the registry is `set`-once-per-key by convention; teardown
+//! is `Globals.deinit`.
 //!
-//! - **Type ID = `@typeName(T).ptr` interpret-as-`usize`.** Same trick
-//!   used by `entity.typeId` / `drag.dragTypeId`: the Zig compiler
-//!   guarantees one interned `[*:0]const u8` per type, so the pointer
-//!   value is comptime-stable across the whole program. No allocation,
-//!   no string compare, no `@typeInfo` recursion. Matches the existing
-//!   convention in `src/context/entity.zig` so consumers don't have to
-//!   learn a new ID scheme.
-//!
-//! - **Linear scan.** With a hard cap of 32, a tagged-array linear
-//!   scan beats a hash map: no allocation, no collision logic, the
-//!   whole table fits in two cache lines, and the worst-case lookup
-//!   is ~32 integer compares. `get` / `set` / `update` are all O(N)
-//!   with a tiny N — and called once per accessor, not per frame
-//!   element.
-//!
-//! - **No RAII handles.** The registry is `set`-once-per-key by
-//!   convention; teardown is `Globals.deinit`. We do not yet expose
-//!   `remove`. If a future need arises, add it then — premature
-//!   removal API is a footgun for the static-lifetime cases (theme).
-//!
-//! ## Phase interaction
-//!
-//! `Globals` carries no `DrawPhase` assertions itself — globals are
-//! read from every phase (theme during prepaint and paint, keymap
-//! during input dispatch, debugger across the entire frame). Phase
-//! restrictions live on the **callers** that read or mutate the
-//! payload, not on the registry that locates it.
+//! `Globals` carries no `DrawPhase` assertions itself — globals are read
+//! from every phase. Phase restrictions live on the callers that read or
+//! mutate the payload, not on the registry that locates it.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -67,10 +38,8 @@ const builtin = @import("builtin");
 // Limits
 // =============================================================================
 //
-// 32 is generous: PR 6 lands with three globals (theme, keymap,
-// debugger). Future PRs (focus debugger, settings, telemetry) push
-// the count toward ~10. Doubling that gives headroom without bloating
-// the table — the entry struct is small enough that the whole array
+// 32 is generous: current use is a handful of globals (theme, keymap,
+// debugger) and the entry struct is small enough that the whole array
 // fits in two 64-byte cache lines on a 64-bit target.
 
 pub const MAX_GLOBALS: u32 = 32;
@@ -80,7 +49,7 @@ pub const MAX_GLOBALS: u32 = 32;
 // =============================================================================
 
 /// Comptime-stable type identifier. Same shape and value space as
-/// `entity.typeId` so future consolidation is mechanical.
+/// `entity.typeId`.
 ///
 /// The pointer to `@typeName(T)` is interned by the compiler and
 /// stable for the lifetime of the program. Casting it to `usize`
@@ -97,10 +66,9 @@ pub fn typeId(comptime T: type) TypeId {
 // Storage
 // =============================================================================
 
-/// Ownership tag for a slot. Keeping this explicit (rather than e.g.
-/// "a non-null `deinit_fn` means owned") makes the invariant readable
-/// at the assertion sites and survives a future where some borrowed
-/// pointers grow optional teardown hooks.
+/// Ownership tag for a slot. Explicit (rather than inferring "non-null
+/// `deinit_fn` means owned") so the invariant is readable at the
+/// assertion sites.
 const Ownership = enum(u8) {
     /// Slot is unused. `ptr` is undefined.
     empty = 0,
@@ -166,8 +134,7 @@ pub const Globals = struct {
 
     /// High-water mark. Lookups scan `[0, count)` rather than the
     /// full capacity, so a sparsely-populated table stays fast. Never
-    /// decrements (we don't expose `remove`); when we do, this becomes
-    /// a denser invariant to maintain.
+    /// decrements (there is no `remove`).
     count: u32 = 0,
 
     const Self = @This();
@@ -196,16 +163,15 @@ pub const Globals = struct {
             if (entry.ownership == .empty) continue;
             if (entry.type_id != id) continue;
 
-            // Defensive: an empty slot shouldn't have a non-null ptr,
-            // but assert it anyway so a future `remove` that forgets
-            // to clear `ptr` fails here rather than miscompiling.
+            // Defensive: an empty slot shouldn't have a non-null ptr;
+            // assert it so a `remove` that forgets to clear `ptr` fails
+            // here rather than miscompiling.
             std.debug.assert(entry.ptr != null);
 
-            // Refuse to alias a const-borrowed slot as `*G`. Phrased
-            // positively (CLAUDE.md §11): the caller's invariant is
-            // "this slot was registered mutably". If that does not
-            // hold, fail loudly rather than silently returning a
-            // pointer that violates the borrow's promise.
+            // Refuse to alias a const-borrowed slot as `*G`: the caller's
+            // invariant is "this slot was registered mutably". If that
+            // does not hold, fail loudly rather than return a pointer that
+            // violates the borrow's promise.
             if (entry.ownership == .borrowed_const) {
                 std.debug.panic(
                     "Globals.get({s}): slot was registered via setBorrowedConst; " ++
@@ -256,16 +222,11 @@ pub const Globals = struct {
     ///
     /// We own the allocation. On `Globals.deinit`, if `G` exposes a
     /// `pub fn deinit(*G) void` or `pub fn deinit(*G, Allocator) void`
-    /// we call it before freeing. This matches the `Keymap` /
-    /// `Debugger` lifetime — both have allocator-aware teardown — so
-    /// the registry can swallow them without forcing the caller to
-    /// remember the right `deinit` shape.
+    /// we call it before freeing, so the caller need not remember the
+    /// right teardown shape.
     ///
-    /// Re-setting an existing owned slot is illegal: the framework
-    /// owns the global list and overwriting in place would silently
-    /// leak the previous payload. Catch it loudly. (If a future need
-    /// arises for "replace", add a dedicated `replaceOwned` that
-    /// deinits the old value explicitly.)
+    /// Re-setting an existing owned slot is illegal: overwriting in place
+    /// would silently leak the previous payload. Catch it loudly.
     pub fn setOwned(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -273,8 +234,7 @@ pub const Globals = struct {
         value: G,
     ) !void {
         const id = typeId(G);
-        // Slot must not already exist for `G` — see doc comment
-        // above on the no-overwrite policy.
+        // Slot must not already exist for `G` (no-overwrite policy).
         std.debug.assert(!self.has(G));
         std.debug.assert(self.count < MAX_GLOBALS);
 
@@ -291,16 +251,13 @@ pub const Globals = struct {
         };
         self.count = idx + 1;
 
-        // Pair-assert (CLAUDE.md §3): slot we just wrote must read
-        // back. Catches a future refactor that forgets to bump
-        // `count` or writes to the wrong index.
+        // Pair-assert: the slot we just wrote must read back. Catches a
+        // refactor that forgets to bump `count` or writes the wrong index.
         std.debug.assert(self.has(G));
     }
 
-    /// Register a caller-owned mutable `*G`. We never free this
-    /// pointer; the caller's lifetime must outlive the `Globals` (or
-    /// the caller must clear the slot before destroying the pointee
-    /// — not supported in this PR, see module doc).
+    /// Register a caller-owned mutable `*G`. We never free this pointer;
+    /// the caller's lifetime must outlive the `Globals`.
     pub fn setBorrowed(
         self: *Self,
         comptime G: type,
@@ -373,8 +330,8 @@ pub const Globals = struct {
             if (entry.type_id != id) continue;
             if (entry.ownership == .empty) continue;
 
-            // Asserting ownership == .borrowed (not "!= .owned") is
-            // the positive form per CLAUDE.md §11.
+            // Assert ownership == .borrowed (the positive form, not
+            // "!= .owned").
             std.debug.assert(entry.ownership == .borrowed);
             entry.ptr = @ptrCast(ptr);
             return;
@@ -412,7 +369,6 @@ pub const Globals = struct {
 
     /// Apply `mutator(*G)` to the stored value. Returns `false` if
     /// the slot is empty (caller can decide whether that's an error).
-    /// Convenience for the GPUI `update`-style call site.
     pub fn update(
         self: *Self,
         comptime G: type,

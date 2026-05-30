@@ -1,100 +1,31 @@
 //! Frame — per-window, per-frame rendering bundle.
 //!
-//! ## Why this exists
+//! Bundles the two "rebuilt every frame, owned by one Window" rendering
+//! subsystems — `Scene` and `DispatchTree` — into one struct with a single
+//! `owned: bool` ownership discriminator.
 //!
-//! Per `docs/cleanup-implementation-plan.md` PR 7c.3 (the second-to-last
-//! slice of the App/Window earthquake), the two "rebuilt every frame, owned
-//! by one Window" rendering subsystems — `Scene` and `DispatchTree` — are
-//! gathered into one struct. Before this extraction, `Window` carried each
-//! as an independent `*T` with its own `allocator.create` + `init` +
-//! `errdefer` block in every one of the four parallel init paths
-//! (`initOwned` / `initOwnedPtr` / `initWithSharedResources` /
-//! `initWithSharedResourcesPtr`), and a hard-coded teardown order in
-//! `Window.deinit`.
+//! ## Ownership & lifetime
 //!
-//! After this extraction:
+//! Two shapes:
 //!
-//!   - **Single-window**: `Window` owns *two* `Frame`s by value
-//!     (`rendered_frame` + `next_frame`); both are
-//!     `owned = true`. `mem.swap` between them at the frame
-//!     boundary doesn't change ownership — it swaps which slot
-//!     refers to which heap-allocated `Scene` / `DispatchTree`
-//!     pair, and both pairs remain owned by the parent `Window`
-//!     across every swap.
-//!   - **Multi-window**: each `Window` still owns its own pair (the
-//!     scene + dispatch tree are per-window state — they cannot be
-//!     shared across windows without breaking hit-testing).
-//!   - **Borrowed view** (`Frame.borrowed`): an `owned = false`
-//!     view over already-initialised pointees. PR 7c.3a introduced
-//!     the constructor as a complete API surface; PR 7c.3c uses
-//!     it for diagnostic / transient inspection of either buffer
-//!     across the swap (e.g. a debug overlay reading
-//!     `rendered_frame.dispatch` without taking ownership of its
-//!     teardown). The owning pair on `Window` always carries
-//!     `owned = true`.
+//!   1. **Owning** (`initOwned` / `initOwnedInPlace`, `owned = true`) —
+//!      this `Frame` allocated the two pointees and `deinit` frees them.
+//!      Each `Window` owns a pair by value: `rendered_frame` (the
+//!      previously-built tree, hit-tested between frames) and `next_frame`
+//!      (the build target). `mem.swap` between the two slots physically
+//!      exchanges the structs (pointers AND the `owned` flag), so both
+//!      remain owning across every swap and `Window.deinit` frees both
+//!      pairs. Scene + dispatch are per-window state and cannot be shared
+//!      across windows without breaking hit-testing.
+//!   2. **Borrowed** (`borrowed`, `owned = false`) — a view over
+//!      already-initialised pointees for diagnostic / transient inspection
+//!      (e.g. a debug overlay reading `rendered_frame.dispatch`); `deinit`
+//!      is a no-op so the owner remains the single tear-down path.
 //!
-//! See [`architectural-cleanup-plan.md` §11 frame double-buffering with
-//! `mem::swap`](../../docs/architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap)
-//! for the GPUI pattern this lands as a first concrete slice. The doc
-//! sketches `Frame` as carrying *every* per-frame transient
-//! (`focus`, `element_states`, `mouse_listeners`, `dispatch_tree`,
-//! `scene`, `hitboxes`, `deferred_draws`, `input_handlers`,
-//! `tooltip_requests`, `cursor_styles`, `tab_stops`); 7c.3a lands the
-//! two heaviest pointee subsystems as the structural anchor, and
-//! later 7c.3 slices migrate the rest piece by piece. Keeping the
-//! initial bundle small means the call-site sweep (PR 7c.3b) and the
-//! double-buffer landing (PR 7c.3c) each touch only a manageable
-//! cross-section of the codebase.
-//!
-//! ## What's NOT here yet
-//!
-//! - `focus`, `hover`, `mouse_listeners`, `tab_stops`. These are
-//!   per-frame transients per the GPUI mapping in §11, but they
-//!   currently live in standalone subsystems on `Window` (`focus:
-//!   FocusManager`, `hover: HoverState`, …). Migrating them belongs
-//!   in a later 7c.3 slice once the call-site sweep against `scene`
-//!   and `dispatch` is complete and the double-buffer is wired —
-//!   trying to move five subsystems in one PR would dwarf the
-//!   review surface 7c.3a / 7c.3b / 7c.3c can already absorb.
-//! - `element_states`. Reserved for PR 8 — it's the keyed pool that
-//!   replaces `WidgetStore`'s per-type maps, not a simple migration.
-//!   PR 7c.3c lays the structural groundwork (double-buffer with
-//!   `mem.swap` and a live `rendered_frame` between frames) so the
-//!   PR 8 fall-through lookup `next_frame.element_states ↦
-//!   rendered_frame.element_states` is a single-field addition
-//!   here, not a swap-semantics flip.
-//!
-//! ## Lifetime
-//!
-//! Allocated and owned in two shapes:
-//!
-//!   1. **By value, embedded in `Window`** — every window owns a
-//!      pair: `rendered_frame: Frame` (the previously-built tree
-//!      hit-tested against between frames) and `next_frame: Frame`
-//!      (the build target written by every render-pipeline call
-//!      site). Both carry `owned = true`. `Window.deinit` tears
-//!      both down via `Frame.deinit`.
-//!   2. **Borrowed view** (`Frame.borrowed`) — an `owned = false`
-//!      view over already-initialised pointees. The underlying
-//!      `Scene` / `DispatchTree` pointers stay owned by their
-//!      parent `Window` slot; the borrowed view's `deinit` is a
-//!      no-op. Used for diagnostic / transient inspection of
-//!      either buffer (e.g. a debug overlay reading
-//!      `rendered_frame.dispatch` without taking responsibility
-//!      for tearing down its scene + dispatch pair). Note that
-//!      `mem.swap` between the two owning slots in `Window`
-//!      doesn't go through `borrowed` — it physically swaps the
-//!      two `Frame` structs (including their `scene` / `dispatch`
-//!      pointers and `owned` flags), so both slots remain
-//!      `owned = true` post-swap and `Window.deinit` continues
-//!      to free both pointee pairs.
-//!
-//! The struct itself is roughly `@sizeOf(Allocator) + 2 * @sizeOf(*T)`
-//! plus a 1-byte `owned` flag — the heavy storage stays inside the two
-//! pointee subsystems, which were already heap-allocated for WASM
-//! stack reasons (CLAUDE.md §14: `Scene` carries multiple
-//! `ArrayListUnmanaged`s totalling tens of KB at full depth, and
-//! `DispatchTree` similarly).
+//! The struct is small (~24 bytes); the heavy storage lives in the two
+//! pointees, which are heap-allocated for WASM stack reasons (CLAUDE.md
+//! §14: `Scene` and `DispatchTree` each carry many KB of
+//! `ArrayListUnmanaged`s).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -107,48 +38,28 @@ const DispatchTree = dispatch_mod.DispatchTree;
 
 /// Bundle of per-window, per-frame rendering subsystems.
 ///
-/// Holds heap-allocated `Scene` and `DispatchTree`. The
-/// `owned: bool` field discriminates two ownership shapes:
+/// Holds heap-allocated `Scene` and `DispatchTree`. The `owned: bool`
+/// field discriminates two ownership shapes:
 ///
 ///   - `owned = true` — this `Frame` allocated the two pointees and
-///     `deinit` must free them. Set by `initOwned` /
-///     `initOwnedInPlace`. Both slots in `Window`
-///     (`rendered_frame` and `next_frame`) are always
-///     `owned = true` — `mem.swap` between them physically
-///     exchanges the entire struct, so both halves of the swap
-///     keep their owning shape and `Window.deinit` continues
-///     to free both pointee pairs.
-///   - `owned = false` — a borrowed view over already-initialised
-///     pointees. Used for diagnostic / transient inspection of
-///     either buffer (e.g. a debug overlay reading
-///     `rendered_frame.dispatch` without taking responsibility
-///     for tearing it down). `deinit` is a no-op so the upstream
-///     owner's later `deinit` is the single tear-down path.
-///     Set by `borrowed`.
-///
-/// This is the **only** ownership flag in the bundle — the per-field
-/// `scene_owned` / `dispatch_owned` flags that PR 7a's audit could
-/// have introduced were ruled out as tautological back then (no init
-/// path borrowed either pointer); 7c.3a does the actual extraction
-/// without re-introducing per-pointer flags. One flag, one struct.
-/// Same shape as `AppResources` from PR 7a — the symmetry is
-/// deliberate, since `Window` will end up holding one `AppResources`
-/// (app-lifetime shared) and one `Frame` (per-window per-tick) as
-/// its two ownership-bundle fields.
+///     `deinit` must free them. Set by `initOwned` / `initOwnedInPlace`.
+///     Both slots in `Window` (`rendered_frame` and `next_frame`) are
+///     always `owned = true`; `mem.swap` between them physically exchanges
+///     the whole struct, so both keep their owning shape and
+///     `Window.deinit` frees both pointee pairs.
+///   - `owned = false` — a borrowed view over already-initialised pointees
+///     for diagnostic / transient inspection (e.g. a debug overlay reading
+///     `rendered_frame.dispatch`). `deinit` is a no-op so the owner is the
+///     single tear-down path. Set by `borrowed`.
 pub const Frame = struct {
     allocator: Allocator,
 
     scene: *Scene,
     dispatch: *DispatchTree,
 
-    /// True when this struct owns the two pointees (allocated in an
-    /// `initOwned*` path). False when borrowed from another `Frame`
-    /// (a transient diagnostic view that doesn't tear the pointees
-    /// down). The owning slots on `Window` (both `rendered_frame`
-    /// and `next_frame`) always carry `true` — `mem.swap` between
-    /// them is a physical struct exchange, so both slots remain
-    /// owning across every swap. See struct doc-comment for the
-    /// two ownership shapes.
+    /// True when this struct owns the two pointees (`initOwned*` path);
+    /// false for a borrowed diagnostic view. See struct doc-comment for
+    /// the two shapes and the `mem.swap` invariant.
     owned: bool,
 
     const Self = @This();
@@ -159,25 +70,16 @@ pub const Frame = struct {
 
     /// Allocate and initialise both subsystems against `allocator`.
     ///
-    /// Returns a `Frame` that owns the heap allocations; the caller
-    /// is responsible for invoking `deinit` exactly once. The
-    /// `viewport_width` / `viewport_height` parameters drive
-    /// `scene.setViewport` + `scene.enableCulling` inline so callers
-    /// don't need a separate viewport-config step — every existing
-    /// `Window.init*` path did that work right after `Scene.init`.
-    ///
-    /// Used by single-window `Window.initOwned` and
-    /// `Window.initWithSharedResources`, both of which previously
-    /// open-coded the `allocator.create(Scene)` + `Scene.init` +
-    /// `setViewport` + `enableCulling` + `allocator.create(DispatchTree)`
-    /// + `DispatchTree.init` sequence inline.
+    /// Returns a `Frame` that owns the heap allocations; the caller must
+    /// invoke `deinit` exactly once. The `viewport_width` /
+    /// `viewport_height` parameters drive `scene.setViewport` +
+    /// `scene.enableCulling` inline so callers can't forget the step.
     pub fn initOwned(
         allocator: Allocator,
         viewport_width: f32,
         viewport_height: f32,
     ) !Self {
-        // Pair the input assertions with the post-init ones at the
-        // bottom of this function (CLAUDE.md §3 — "Pair assertions").
+        // Pair with the post-init assertions at the bottom of this function.
         std.debug.assert(viewport_width >= 0);
         std.debug.assert(viewport_height >= 0);
         std.debug.assert(!std.math.isNan(viewport_width));
@@ -188,10 +90,9 @@ pub const Frame = struct {
         scene.* = Scene.init(allocator);
         errdefer scene.deinit();
 
-        // Viewport culling — every pre-7c.3a `Window.init*` path did
-        // this immediately after `Scene.init`. Folding it in here
-        // means no caller can forget the step (which would silently
-        // disable culling and balloon GPU work on large scenes).
+        // Viewport culling — folded in here so no caller can forget the
+        // step (which would silently disable culling and balloon GPU work
+        // on large scenes).
         scene.setViewport(viewport_width, viewport_height);
         scene.enableCulling();
 
@@ -214,16 +115,13 @@ pub const Frame = struct {
         };
     }
 
-    /// In-place owning init for callers that need to avoid a stack
-    /// temp (WASM `Window.initOwnedPtr` /
-    /// `Window.initWithSharedResourcesPtr` are the primary callers).
-    /// Marked `noinline` per CLAUDE.md §14 so ReleaseSmall doesn't
-    /// combine the stack frame back into the caller.
+    /// In-place owning init for callers that need to avoid a stack temp.
+    /// Marked `noinline` so ReleaseSmall doesn't fold the stack frame back
+    /// into the caller (WASM stack budget — CLAUDE.md §14).
     ///
-    /// `self` must point at uninitialised memory; the function
-    /// writes every field. On error, any partially-allocated
-    /// subsystems are torn down via the same `errdefer` chain as
-    /// `initOwned`.
+    /// `self` must point at uninitialised memory; the function writes
+    /// every field. On error, partially-allocated subsystems are torn
+    /// down via the same `errdefer` chain as `initOwned`.
     pub noinline fn initOwnedInPlace(
         self: *Self,
         allocator: Allocator,
@@ -248,10 +146,7 @@ pub const Frame = struct {
         dispatch.* = DispatchTree.init(allocator);
 
         // Field-by-field — no struct literal — to avoid a stack temp
-        // (CLAUDE.md §14). The struct is small (~24 bytes) so the
-        // literal would not be ruinous, but the rule is "be
-        // consistent": every `initInPlace` writes field-by-field.
-        // Same shape as `AppResources.initOwnedInPlace`.
+        // (CLAUDE.md §14 WASM stack budget).
         self.allocator = allocator;
         self.scene = scene;
         self.dispatch = dispatch;
@@ -263,24 +158,16 @@ pub const Frame = struct {
     }
 
     // =========================================================================
-    // Borrowed init path (reserved for PR 7c.3c double-buffer)
+    // Borrowed init path
     // =========================================================================
 
-    /// Build a borrowed `Frame` view over already-initialised
-    /// pointees. `deinit` becomes a no-op for this instance — the
-    /// upstream owner is responsible for tearing the pointees down.
-    ///
-    /// Used for diagnostic / transient inspection of either buffer
-    /// without taking ownership of its teardown (e.g. a debug
-    /// overlay reading `rendered_frame.dispatch` while the parent
-    /// `Window` keeps the owning slot intact). Note that
-    /// `mem.swap` between the two owning slots on `Window` does
-    /// NOT go through this constructor — it physically swaps the
-    /// two `Frame` structs in place, so both slots stay
-    /// `owned = true` post-swap.
-    ///
-    /// Mirrors `AppResources.borrowed` from PR 7a — the API
-    /// symmetry is deliberate.
+    /// Build a borrowed `Frame` view over already-initialised pointees.
+    /// `deinit` is a no-op for this instance — the upstream owner tears
+    /// the pointees down. Used for diagnostic / transient inspection
+    /// (e.g. a debug overlay reading `rendered_frame.dispatch`).
+    /// `mem.swap` between `Window`'s owning slots does NOT go through this
+    /// constructor; it swaps the structs in place, leaving both
+    /// `owned = true`.
     pub fn borrowed(
         allocator: Allocator,
         scene: *Scene,
@@ -309,14 +196,9 @@ pub const Frame = struct {
     pub fn deinit(self: *Self) void {
         if (!self.owned) return;
 
-        // Order mirrors pre-7c.3a `Window.deinit`: dispatch first
-        // (it holds per-frame listener blocks that may reference
-        // event-loop state, but has no scene back-reference),
-        // then scene (which owns the per-frame draw lists). The
-        // reverse order would also be safe — there are no
-        // inter-pointer references between the two — but matching
-        // the historical order keeps the diff in `Window.deinit`
-        // minimal for the PR 7c.3a landing.
+        // Dispatch first (holds per-frame listener blocks), then scene
+        // (owns the per-frame draw lists). Order is not load-bearing —
+        // there are no inter-pointer references between the two.
         self.dispatch.deinit();
         self.allocator.destroy(self.dispatch);
 
@@ -335,14 +217,10 @@ pub const Frame = struct {
 // Tests
 // =============================================================================
 //
-// These tests pin the two ownership shapes against `std.testing.allocator`
-// — which would surface a leak or double-free immediately. The
-// `borrowed` path is verified by constructing an `owned = true` parent,
-// borrowing from it, and confirming the borrowed `deinit` is a no-op
-// (no double-free against the parent's allocations). Same coverage
-// shape as `app_resources.zig`'s test block — the symmetry between
-// the two bundles is load-bearing for readers who internalise the
-// pattern from one and want to read the other.
+// These tests pin the two ownership shapes against `std.testing.allocator`,
+// which surfaces any leak or double-free immediately. The `borrowed` path
+// is verified by borrowing from an owning parent and confirming the
+// borrowed `deinit` is a no-op (no double-free against the parent).
 
 const testing = std.testing;
 
@@ -404,12 +282,10 @@ test "Frame: borrowed deinit is a no-op (no double-free)" {
 }
 
 test "Frame: zero viewport is accepted" {
-    // Test fixtures sometimes construct a `Window` before the
-    // platform layer has reported a real surface size; the
-    // pre-7c.3a `Window.init*` paths tolerated a zero-sized
-    // viewport (culling is then a no-op until the first resize
-    // event). Pin the same tolerance here so the bundle
-    // doesn't reject a legitimate transient state.
+    // Test fixtures sometimes construct a `Window` before the platform
+    // layer reports a real surface size; a zero-sized viewport is a
+    // legitimate transient state (culling is a no-op until the first
+    // resize event), so the bundle must accept it.
     var frame = try Frame.initOwned(testing.allocator, 0, 0);
     defer frame.deinit();
 
@@ -419,17 +295,14 @@ test "Frame: zero viewport is accepted" {
 }
 
 // =============================================================================
-// PR 7c.3c — double-buffer `mem.swap` tests
+// Double-buffer `mem.swap` tests
 // =============================================================================
 //
-// Pin the swap semantics that `runtime/frame.zig::renderFrameImpl`
-// relies on: `std.mem.swap(Frame, &a, &b)` exchanges the entire
-// struct (both pointee pointers AND the `owned` flag), so two
-// owning `Frame`s remain owning across every swap and a single
-// `deinit` per slot covers both heap-allocated pairs across the
-// lifetime of the parent `Window`. These tests pin that
-// invariant directly against `testing.allocator` — a leak or a
-// double-free would surface immediately.
+// Pin the swap semantics that `runtime/frame.zig::renderFrameImpl` relies
+// on: `std.mem.swap(Frame, &a, &b)` exchanges the entire struct (both
+// pointee pointers AND the `owned` flag), so two owning `Frame`s remain
+// owning across every swap and a single `deinit` per slot covers both
+// heap-allocated pairs for the parent `Window`'s lifetime.
 
 test "Frame: mem.swap exchanges scene + dispatch between two owning Frames" {
     // Two owning `Frame`s with distinct viewport sizes so we can

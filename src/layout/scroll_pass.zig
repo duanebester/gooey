@@ -1,16 +1,12 @@
 //! Layout scroll/render pass — Phase 4 of the layout pipeline.
 //!
-//! Split out from `engine.zig` per
-//! [docs/cleanup-implementation-plan.md PR 10](../../docs/cleanup-implementation-plan.md#pr-10--layout-engine-split--fuzz-targets).
-//! Reads positioned elements from `position_pass.zig` and emits the
-//! flat `RenderCommandList` consumed by the rendering backend.
+//! Reads positioned elements from `position_pass.zig` and emits the flat
+//! `RenderCommandList` consumed by the rendering backend.
 //!
-//! The file is named `scroll_pass.zig` (per the cleanup plan) because the
-//! dominant cross-cutting concern in Phase 4 is scroll-container framing:
-//! every `scroll` element gets paired `scissor_start` / `scissor_end`
-//! commands wrapping its children. Background/text/svg/image emission is
-//! the other half — extracted into per-primitive `emit*Command` helpers so
-//! each one stays well under 70 lines per CLAUDE.md §5.
+//! The dominant concern is scroll-container framing: every `scroll` element
+//! gets paired `scissor_start` / `scissor_end` commands wrapping its
+//! children. Background/text/svg/image emission is the other half, split
+//! into per-primitive `emit*Command` helpers.
 //!
 //! Inherited state threads through the recursion:
 //!   - `inherited_z_index` — floating elements override; descendants
@@ -45,9 +41,8 @@ pub fn generateRenderCommands(
     inherited_opacity: f32,
     depth: u32,
 ) !void {
-    // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
     std.debug.assert(inherited_opacity >= 0 and inherited_opacity <= 1.0);
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
+    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
 
     const elem = engine.elements.get(index);
     const bbox = elem.computed.bounding_box;
@@ -207,11 +202,8 @@ fn emitTextCommands(engine: *LayoutEngine, elem: *LayoutElement, bbox: BoundingB
 }
 
 /// Emit one text command per wrapped line. Pure leaf — no recursion.
-///
-/// `lines` may be empty when `wrapText` short-circuited on a zero-length
-/// or no-op input — in that case the loop runs zero iterations and we
-/// emit nothing, which matches the pre-PR-10 behavior. The PR 10 fuzzer
-/// caught the original (too-strict) `assert(lines.len > 0)` here.
+/// `lines` may be empty (when `wrapText` short-circuited), in which case
+/// the loop emits nothing — do not assert non-empty here.
 fn emitWrappedLines(
     engine: *LayoutEngine,
     elem: *LayoutElement,

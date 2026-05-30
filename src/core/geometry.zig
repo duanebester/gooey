@@ -96,9 +96,6 @@ pub const GpuEdges = extern struct {
 /// Logical pixels (before scaling)
 pub const Pixels = f32;
 
-/// Scaled pixels (after applying scale factor)
-pub const ScaledPixels = f32;
-
 // =============================================================================
 // Point
 // =============================================================================

@@ -65,11 +65,8 @@ pub const DispatchNodeId = enum(u32) {
 /// shrink per-node size and improve cache locality during hit testing — most
 /// nodes carry zero listeners. Allocated lazily via `DispatchNode.getOrCreateListeners`
 /// on first listener registration. Retained across frames (cleared, not freed).
-/// Size: 10 × ArrayListUnmanaged = 240 bytes (vs 8 bytes for the pointer in DispatchNode).
 pub const ListenerBlock = struct {
     click_listeners: std.ArrayListUnmanaged(ClickListener) = .empty,
-    click_listeners_ctx: std.ArrayListUnmanaged(ClickListenerWithContext) = .empty,
-    click_listeners_data: std.ArrayListUnmanaged(ClickListenerWithData) = .empty,
     mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .empty,
     key_down_listeners: std.ArrayListUnmanaged(KeyListener) = .empty,
     simple_key_listeners: std.ArrayListUnmanaged(SimpleKeyListener) = .empty,
@@ -80,8 +77,6 @@ pub const ListenerBlock = struct {
 
     pub fn deinit(self: *ListenerBlock, allocator: std.mem.Allocator) void {
         self.click_listeners.deinit(allocator);
-        self.click_listeners_ctx.deinit(allocator);
-        self.click_listeners_data.deinit(allocator);
         self.mouse_down_listeners.deinit(allocator);
         self.key_down_listeners.deinit(allocator);
         self.simple_key_listeners.deinit(allocator);
@@ -94,8 +89,6 @@ pub const ListenerBlock = struct {
     /// Clear all listener arrays, retaining heap capacity for reuse next frame.
     pub fn clearRetainingCapacity(self: *ListenerBlock) void {
         self.click_listeners.clearRetainingCapacity();
-        self.click_listeners_ctx.clearRetainingCapacity();
-        self.click_listeners_data.clearRetainingCapacity();
         self.mouse_down_listeners.clearRetainingCapacity();
         self.key_down_listeners.clearRetainingCapacity();
         self.simple_key_listeners.clearRetainingCapacity();
@@ -239,18 +232,6 @@ pub const MouseListener = struct {
 /// Simple click handler (no phase/event access needed)
 pub const ClickListener = struct {
     callback: *const fn () void,
-};
-
-/// Click handler with context (for stateful widgets like checkboxes)
-pub const ClickListenerWithContext = struct {
-    callback: *const fn (ctx: *anyopaque) void,
-    context: *anyopaque,
-};
-
-/// Click handler with u32 data (for column/row indices in tables)
-pub const ClickListenerWithData = struct {
-    callback: *const fn (data: u32) void,
-    data: u32,
 };
 
 pub const KeyEvent = input_mod.KeyEvent;
@@ -700,42 +681,6 @@ pub const DispatchTree = struct {
         return self.nodes.items.len;
     }
 
-    pub fn maxDepth(self: *const Self) u32 {
-        if (!self.root.isValid()) return 0;
-        return self.computeDepth(self.root);
-    }
-
-    /// Compute the maximum depth of the subtree rooted at `root_id`.
-    /// Uses an explicit stack instead of recursion (Rule 6).
-    fn computeDepth(self: *const Self, root_id: DispatchNodeId) u32 {
-        const Entry = struct { node_id: DispatchNodeId, depth: u32 };
-
-        var stack: [MAX_TRAVERSAL_STACK]Entry = undefined;
-        var stack_len: u32 = 1;
-        stack[0] = .{ .node_id = root_id, .depth = 1 };
-
-        var max_depth: u32 = 0;
-
-        while (stack_len > 0) {
-            stack_len -= 1;
-            const entry = stack[stack_len];
-
-            const node = self.getNodeConst(entry.node_id) orelse continue;
-            max_depth = @max(max_depth, entry.depth);
-
-            var child = node.first_child;
-            while (child.isValid()) {
-                std.debug.assert(stack_len < MAX_TRAVERSAL_STACK); // Rule 4: hard cap.
-                stack[stack_len] = .{ .node_id = child, .depth = entry.depth + 1 };
-                stack_len += 1;
-                const child_node = self.getNodeConst(child) orelse break;
-                child = child_node.next_sibling;
-            }
-        }
-
-        return max_depth;
-    }
-
     // =========================================================================
     // Listener Registration (called during render)
     // =========================================================================
@@ -757,28 +702,6 @@ pub const DispatchTree = struct {
             node.getOrCreateListeners(self.allocator).click_listeners_handler.append(self.allocator, .{
                 .handler = ref,
             }) catch @panic("dispatch: click handler registration failed (OOM)");
-        }
-    }
-
-    /// Register a click handler with context on the current node
-    pub fn onClickWithContext(self: *Self, callback: *const fn (ctx: *anyopaque) void, context: *anyopaque) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.getOrCreateListeners(self.allocator).click_listeners_ctx.append(self.allocator, .{
-                .callback = callback,
-                .context = context,
-            }) catch @panic("dispatch: click context listener registration failed (OOM)");
-        }
-    }
-
-    /// Register a click handler with u32 data on the current node (for table columns/rows)
-    pub fn onClickWithData(self: *Self, callback: *const fn (data: u32) void, data: u32) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.getOrCreateListeners(self.allocator).click_listeners_data.append(self.allocator, .{
-                .callback = callback,
-                .data = data,
-            }) catch @panic("dispatch: click data listener registration failed (OOM)");
         }
     }
 
@@ -849,16 +772,6 @@ pub const DispatchTree = struct {
 
             for (lb.click_listeners.items) |listener| {
                 listener.callback();
-                handled = true;
-            }
-
-            for (lb.click_listeners_ctx.items) |listener| {
-                listener.callback(listener.context);
-                handled = true;
-            }
-
-            for (lb.click_listeners_data.items) |listener| {
-                listener.callback(listener.data);
                 handled = true;
             }
 

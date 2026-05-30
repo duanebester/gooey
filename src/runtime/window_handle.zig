@@ -32,9 +32,7 @@ const std = @import("std");
 
 // Platform imports
 const platform = @import("../platform/mod.zig");
-// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the framework-level wrapper
-// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+// `PlatformWindow` is the OS-level handle; `Window` is the framework wrapper.
 const PlatformWindow = platform.PlatformWindow;
 const WindowId = platform.WindowId;
 const WindowRegistry = platform.WindowRegistry;
@@ -56,10 +54,6 @@ pub fn WindowHandle(comptime State: type) type {
         id: WindowId,
 
         const Self = @This();
-
-        // =====================================================================
-        // Constants (per CLAUDE.md: "put a limit on everything")
-        // =====================================================================
 
         /// Type alias for the WindowContext with this State type
         const WinCtx = WindowContext(State);

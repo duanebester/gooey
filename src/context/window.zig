@@ -22,25 +22,20 @@
 //! // Render commands to scene...
 //! ```
 //!
-//! ## PR 3 — context/ subsystem extractions
+//! ## Composed subsystems
 //!
-//! Per `docs/cleanup-implementation-plan.md` PR 3, four subsystems that were
-//! previously bolted directly onto `Window` now live as peer modules:
+//! Several self-contained subsystems live as peer modules and are
+//! composed onto `Window` as ordinary fields:
 //!
-//!   - `hover: HoverState`        — see `hover.zig`         (was 6 fields here)
+//!   - `hover: HoverState`                  — see `hover.zig`
 //!   - `blur_handlers: BlurHandlerRegistry` — see `blur_handlers.zig`
 //!   - `cancel_registry: CancelRegistry`    — see `cancel_registry.zig`
-//!   - `a11y: A11ySystem`         — see `a11y_system.zig`   (was 5 fields here)
+//!   - `a11y: A11ySystem`                   — see `a11y_system.zig`
 //!
-//! Both `BlurHandlerRegistry` and `CancelRegistry` are backed by the new
-//! generic `SubscriberSet` (cleanup item #8) — two distinct call shapes
-//! validating the trait before PR 8 leans on it for `element_states`.
-//!
-//! No public API change: every method that previously sat on `Window`
-//! (`updateHover`, `registerBlurHandler`, `registerCancelGroup`,
-//! `isA11yEnabled`, …) is preserved as a one-line forwarder. Internal
-//! framework callers (`runtime/*.zig`, `ui/builder.zig`) reach into the
-//! sub-fields directly via `window.hover.*` / `window.a11y.*` / etc.
+//! Methods like `updateHover` / `registerBlurHandler` / `isA11yEnabled`
+//! are one-line forwarders; internal callers (`runtime/*.zig`,
+//! `ui/builder.zig`) reach the sub-fields directly via `window.hover.*`
+//! / `window.a11y.*` / etc.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -67,7 +62,7 @@ const debugger_mod = @import("../debug/debugger.zig");
 const render_stats = @import("../debug/render_stats.zig");
 
 // Accessibility (re-exported types only — owning subsystem lives in
-// `a11y_system.zig` per PR 3).
+// `a11y_system.zig`).
 const a11y = @import("../accessibility/accessibility.zig");
 
 // Layout
@@ -90,27 +85,15 @@ const entity_mod = @import("entity.zig");
 const EntityMap = entity_mod.EntityMap;
 pub const EntityId = entity_mod.EntityId;
 
-// PR 7b.3 — `App` owns application-lifetime state shared across
-// windows. The entity map lives there now (was a per-window
-// `EntityMap` field on this struct). PR 7b.4 — `Keymap` and the
-// `*const Theme` slot moved off `Window.globals` onto
-// `App.globals`; only `Debugger` remains as a per-window owned
-// global on this struct. Future slices add `image_loader`. Each
-// `Window` borrows the parent `App` via the `app: *App` field
-// below. See `app.zig` and `docs/cleanup-implementation-plan.md`
-// PR 7b.3 / 7b.4.
+// `App` owns application-lifetime state shared across windows (entity
+// map, keymap, app-scoped globals). Each `Window` borrows its parent
+// via the `app: *App` field below.
 const app_mod = @import("app.zig");
 const App = app_mod.App;
 
-// PR 7b.4 — `Keymap` is no longer registered on `Window.globals`;
-// the slot lives on `App.globals` and `Window.keymap()` is now
-// a forwarder to `self.app.keymap()`. The import alias survives
-// only because the forwarder's return type still names `*Keymap`
-// — every call site in this file that used to read or write the
-// slot directly has been retired. A future cleanup that retires
-// the forwarder altogether (once enough callers route through
-// `*App` directly) can drop both the alias and the import in
-// one sweep.
+// `Keymap` lives on `App.globals`; `Window.keymap()` forwards to
+// `self.app.keymap()`. The alias survives because the forwarder's
+// return type still names `*Keymap`.
 const action_mod = @import("../input/actions.zig");
 const Keymap = action_mod.Keymap;
 
@@ -122,45 +105,25 @@ const Scene = scene_mod.Scene;
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
 
-// PR 4 — break the `context → widgets` backward edge.
-//
-// Concrete widget state types (`TextInput`, `TextArea`, `CodeEditorState`)
-// no longer leak into `Window`. Focus is driven through the `Focusable`
-// vtable in `context/focus.zig`. PR 8.4b retired the per-widget
-// retained-state maps onto `window.element_states` (the unified keyed
-// pool from PR 8.1); PR 8.4c retired the residual cross-cutting
-// `WidgetStore` namespace itself — the four animation pools live on
-// `animation/store.zig::AnimationStore` (composed below as the
-// `animations` field), and `ChangeTracker` lives directly on `Window`
-// as a peer field. See `docs/cleanup-implementation-plan.md` PR 4 /
-// PR 8.4c and the cleanup direction in
-// `docs/architectural-cleanup-plan.md` §4.
+// Concrete widget state types don't leak into `Window`; focus is driven
+// through the `Focusable` vtable in `context/focus.zig`, and per-widget
+// retained state lives in `window.element_states`.
 
-// PR 8.4c — retained-state animation pools. Lifted off the retired
-// `context/widget_store.zig::WidgetStore` next to the engines that
-// drive them. The four pools (tween / spring / motion / spring-motion)
-// don't fit the per-element shape that `Window.element_states`
-// encodes (one widget can drive multiple concurrent animations against
-// different ids), so they keep their own typed storage. See
-// `animation/store.zig` for the rationale.
+// Retained-state animation pools (tween / spring / motion / spring-motion).
+// These keep their own typed storage rather than `element_states` because
+// one widget can drive multiple concurrent animations against different
+// ids — see `animation/store.zig`.
 const animation_store_mod = @import("../animation/store.zig");
 const AnimationStore = animation_store_mod.AnimationStore;
 
-// PR 8.4c — per-frame value-diffing storage. Previously colocated
-// with the animation pools on `WidgetStore`; promoted to a direct
-// `Window` field because it's unrelated to animation lifecycle (it
-// backs `cx.changed(key, value)` and applies to arbitrary call-site
-// values, not animation ids).
+// Per-frame value-diffing storage backing `cx.changed(key, value)`.
 const change_tracker_mod = @import("change_tracker.zig");
 const ChangeTracker = change_tracker_mod.ChangeTracker;
 
 // Platform
 const platform = @import("../platform/mod.zig");
-// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the framework-level wrapper
-// landing in PR 7b.1b. This alias names the OS-level handle
-// (NSWindow on macOS, wl_surface on Linux, canvas on web). The
-// `window: ?*PlatformWindow` field below holds that handle.
+// The OS-level window handle (NSWindow on macOS, wl_surface on Linux,
+// canvas on web), held by the `window: ?*PlatformWindow` field below.
 const PlatformWindow = platform.PlatformWindow;
 
 // Input
@@ -186,8 +149,8 @@ pub const DragState = drag_mod.DragState;
 const geometry = @import("../core/geometry.zig");
 const Point = geometry.Point;
 
-// Extracted subsystems (PR 3). Body lives in the named files; `Window`
-// composes them as ordinary fields.
+// Composed subsystems. Body lives in the named files; `Window` composes
+// them as ordinary fields.
 const hover_mod = @import("hover.zig");
 const HoverState = hover_mod.HoverState;
 const blur_handlers_mod = @import("blur_handlers.zig");
@@ -197,57 +160,37 @@ const CancelRegistry = cancel_registry_mod.CancelRegistry;
 const a11y_system_mod = @import("a11y_system.zig");
 const A11ySystem = a11y_system_mod.A11ySystem;
 
-// PR 7a — bundled rendering resources (text + svg + image) with a
-// single ownership flag. See `app_resources.zig` and
-// `docs/cleanup-implementation-plan.md` PR 7a. Retires the
-// per-field `*_owned: bool` triplet on `Window`.
+// Bundled rendering resources (text + svg + image) behind a single
+// ownership flag. See `app_resources.zig`.
 const app_resources_mod = @import("app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
-// PR 7c.3a / 7c.3c — bundled per-window per-frame rendering state
-// (scene + dispatch tree) with a single ownership flag. Same
-// shape as `AppResources` but for the per-frame transients. PR
-// 7c.3a landed the type and the single-`Frame`-per-`Window`
-// shape; PR 7c.3c upgrades that shape to a `rendered_frame` /
-// `next_frame` pair with `mem.swap` at the frame boundary, so
-// input handlers running between frames hit-test against the
-// last fully-built tree (`rendered_frame.dispatch`) while build
-// writes land in `next_frame.*`. See `frame.zig` and
-// `docs/cleanup-implementation-plan.md` PR 7c.3a / 7c.3c.
+// Bundled per-window per-frame rendering state (scene + dispatch tree)
+// behind a single ownership flag. Held as a `rendered_frame` /
+// `next_frame` pair swapped (`mem.swap`) at the frame boundary, so input
+// handlers running between frames hit-test against the last fully-built
+// tree (`rendered_frame.dispatch`) while build writes land in
+// `next_frame.*`. See `frame.zig`.
 const frame_mod = @import("frame.zig");
 const Frame = frame_mod.Frame;
 
-// PR 6 — explicit per-frame phase tagging. `current_phase` advances
+// Explicit per-frame phase tagging. `current_phase` advances
 // monotonically through `none → prepaint → paint → focus → none`;
 // `assertAdvance` enforces the legal transition table at each step.
-// See `docs/cleanup-implementation-plan.md` PR 6 and CLAUDE.md §3
-// ("Assertion Density").
 const draw_phase_mod = @import("draw_phase.zig");
 pub const DrawPhase = draw_phase_mod.DrawPhase;
 
-// PR 6 — type-keyed singleton storage for cross-cutting state.
-// Pre-7b.4 this slot owned `Keymap` + `Debugger` + the future
-// `*const Theme` slot; PR 7b.4 lifts `Keymap` and `*const Theme`
-// onto `App.globals` and leaves only `Debugger` here on `Window`
-// (its overlay quads, frame timing, and selected layout id are
-// per-window concerns — sharing one debugger across windows would
-// mix metrics from two unrelated frames). Adding a new
-// per-window global is still a one-line `setOwned` at init; the
-// app-scoped equivalents go on `App.globals` instead. See
-// `src/context/global.zig` and the file header on `app.zig`.
+// Type-keyed singleton storage for cross-cutting per-window state. Only
+// `Debugger` lives here (its overlay quads, frame timing, and selected
+// layout id are per-window — sharing one across windows would mix
+// metrics from unrelated frames); app-scoped globals live on
+// `App.globals` instead.
 const global_mod = @import("global.zig");
 const Globals = global_mod.Globals;
 
-// PR 8.1 / 8.2 — unified element-state keyed pool. PR 8.1
-// landed the container in isolation; PR 8.2 wires it onto
-// `Window` and ports `Select` (the smallest, u32-keyed widget
-// state) onto it as the first consumer. Subsequent 8.x slices
-// peel `text_input` / `text_area` / `code_editor` /
-// `scroll_container` off `WidgetStore` onto this same pool.
-// `Window.element_states` is heap-allocated (`*ElementStates`)
-// because the entry table is 128 KiB — too large for the WASM
-// stack budget per CLAUDE.md §14. See `element_states.zig` and
-// `docs/cleanup-implementation-plan.md` PR 8.2.
+// Unified `(id_hash, type_id) -> *S` keyed pool for element-attached state.
+// Heap-allocated (`*ElementStates`) because the entry table is 128 KiB, too
+// large for the WASM stack budget. See `element_states.zig`.
 const element_states_mod = @import("element_states.zig");
 const ElementStates = element_states_mod.ElementStates;
 
@@ -255,10 +198,9 @@ const ElementStates = element_states_mod.ElementStates;
 // Local infrastructure (deferred command queue)
 // =============================================================================
 //
-// The deferred-command queue stays on `Window` — unlike the four registries
-// extracted in PR 3, it is not a self-contained subsystem; it reaches into
-// the root-state pointer and the render-request flag every flush. Pulling
-// it out would require dragging both back through a parameter list.
+// The deferred-command queue stays on `Window`: it is not a self-contained
+// subsystem; it reaches into the root-state pointer and the render-request
+// flag every flush.
 
 const MAX_DEFERRED_COMMANDS = 32;
 
@@ -313,117 +255,62 @@ pub const Window = struct {
     // Threaded through the framework from main(); see cx.io() accessor.
     io: std.Io,
 
-    // Layout (immediate mode - rebuilt each frame). Always owned —
-    // the PR 7a `_owned` audit confirmed no init path borrows the
-    // layout engine, so the tautological `layout_owned: bool` flag
-    // retired alongside the `AppResources` extraction.
+    // Layout (immediate mode - rebuilt each frame). Always owned: no init
+    // path borrows the layout engine.
     layout: *LayoutEngine,
 
-    /// PR 7c.3a / 7c.3c — build-target Frame for the current tick.
-    /// Every render-pipeline call site that produces scene primitives
-    /// or dispatch nodes writes through `next_frame.scene` /
-    /// `next_frame.dispatch`. At the frame boundary,
+    /// Build-target Frame for the current tick. Every render-pipeline call
+    /// site that produces scene primitives or dispatch nodes writes through
+    /// `next_frame.scene` / `next_frame.dispatch`. At the frame boundary,
     /// `runtime/frame.zig::renderFrameImpl` calls
-    /// `mem.swap(&rendered_frame, &next_frame)` followed by
-    /// `next_frame.scene.clear()` + `next_frame.dispatch.reset()`
-    /// so the slot recycles the previous-frame buffer for the
-    /// next build pass. Both halves of the swap keep
-    /// `owned = true` — `mem.swap` is a physical struct exchange
-    /// between two owning slots, not a hand-off through
-    /// `Frame.borrowed`. Default `undefined` so test fixtures
-    /// that omit it (`testWindow` below) keep compiling without
-    /// explicit initialisation. See `frame.zig` and
-    /// `docs/cleanup-implementation-plan.md` PR 7c.3a / 7c.3c.
+    /// `mem.swap(&rendered_frame, &next_frame)` then clears the new
+    /// `next_frame` so the slot recycles the previous-frame buffer for the
+    /// next build pass. Both slots keep `owned = true`: `mem.swap` is a
+    /// physical struct exchange between two owning slots, not a hand-off
+    /// through `Frame.borrowed`. Default `undefined` so test fixtures keep
+    /// compiling. See `frame.zig`.
     next_frame: Frame = undefined,
 
-    /// PR 7c.3c — previously-built Frame, stable across the input
-    /// gap between frame N's build and frame N+1's swap.
-    /// Hit-testing for input events between frames reads through
-    /// `rendered_frame.dispatch` (the last fully-built tree, with
-    /// bounds already synced post-build), which is what the
-    /// double-buffer is *for* per
-    /// [`architectural-cleanup-plan.md` §11](../../docs/architectural-cleanup-plan.md#11-frame-double-buffering-with-memswap).
-    /// On the very first tick the slot is initialised empty (no
-    /// prior build has written to it yet) and any input arriving
-    /// before frame 0's build completes hit-tests against an empty
-    /// dispatch tree — a graceful no-op, not a crash. Both halves
-    /// of the swap keep `owned = true` (see `next_frame`'s
-    /// doc-comment). Default `undefined` so test fixtures keep
-    /// compiling without explicit initialisation; see
-    /// `frame.zig` and `docs/cleanup-implementation-plan.md` PR
-    /// 7c.3c.
+    /// Previously-built Frame, stable across the input gap between frame N's
+    /// build and frame N+1's swap. Input events between frames hit-test
+    /// through `rendered_frame.dispatch` (the last fully-built tree, bounds
+    /// already synced), which is what the double buffer is for. On the very
+    /// first tick the slot is empty, so input arriving before frame 0's
+    /// build hit-tests against an empty tree — a graceful no-op. Both slots
+    /// keep `owned = true` (see `next_frame`). Default `undefined` so test
+    /// fixtures keep compiling. See `frame.zig`.
     rendered_frame: Frame = undefined,
 
-    // PR 7c.3b — `scene: *Scene` back-compat alias retired. The
-    // pre-7c.3b field mirrored `frame.scene` to keep ~99 internal
-    // `window.scene.*` / `self.scene.*` call sites working across
-    // the 7c.3a landing. 7c.3b rewrote every call site to reach
-    // through `window.frame.scene` and dropped the duplicate
-    // pointer field, collapsing the per-frame rendering state to
-    // a single `frame: Frame` field. Same retirement shape PR
-    // 7b.6 used for the `text_system` / `svg_atlas` /
-    // `image_atlas` triplet. PR 7c.3c renamed that single
-    // `frame` slot to `next_frame` and added the
-    // `rendered_frame` slot above for the double buffer — build
-    // call sites reach through `next_frame.scene`, input
-    // hit-test sites reach through `rendered_frame.dispatch`.
-
-    /// PR 7a — bundled shared rendering resources. Owns or borrows
-    /// `text_system` / `svg_atlas` / `image_atlas` as one unit;
-    /// `resources.owned` discriminates the two shapes (single-window
-    /// owns; multi-window borrows from the parent `App`). Replaces
-    /// the previous `text_system_owned` / `svg_atlas_owned` /
-    /// `image_atlas_owned` flag triplet on this struct. Default
-    /// `undefined` so test fixtures that omit it
-    /// (`testWindow` below) keep compiling without explicit
-    /// initialisation. See `app_resources.zig` and
-    /// `docs/cleanup-implementation-plan.md` PR 7a.
+    /// Bundled shared rendering resources. Owns or borrows `text_system` /
+    /// `svg_atlas` / `image_atlas` as one unit; `resources.owned`
+    /// discriminates (single-window owns; multi-window borrows from the
+    /// parent `App`). Default `undefined` so test fixtures keep compiling.
+    /// See `app_resources.zig`.
     resources: AppResources = undefined,
 
-    // PR 7b.6 — back-compat aliases retired. The pre-7b.6 fields
-    // `text_system: *TextSystem` / `svg_atlas: *SvgAtlas` /
-    // `image_atlas: *ImageAtlas` mirrored `resources.*` to keep
-    // the ~28 internal `window.text_system` / `window.svg_atlas` /
-    // `window.image_atlas` call sites working across the 7a
-    // landing. PR 7b.6 rewrites every call site to reach through
-    // `window.resources.*` and drops the three pointer fields,
-    // collapsing the duplicate ownership-shape footprint on
-    // `Window` to a single `resources` field.
-
-    /// Animation pools (retained across frames). PR 8.4c — lifted off
-    /// the retired `widgets: WidgetStore` field. Hosts the four
-    /// u32-keyed pools driving tween / spring / motion / spring-motion;
-    /// see `animation/store.zig`.
+    /// Animation pools (retained across frames). Hosts the four u32-keyed
+    /// pools driving tween / spring / motion / spring-motion; see
+    /// `animation/store.zig`.
     animations: AnimationStore,
 
     /// Per-frame value-diffing storage backing `cx.changed(key, value)`.
-    /// PR 8.4c — promoted from `WidgetStore.change_tracker` to a peer
-    /// `Window` field. Fixed-capacity (no allocation after init), so
-    /// the default value is a complete initialisation; no init/deinit
-    /// hook is needed.
+    /// Fixed-capacity (no allocation after init), so the default value is a
+    /// complete initialisation; no init/deinit hook is needed.
     change_tracker: ChangeTracker = .{},
 
-    /// PR 8.1 / 8.2 — unified `(id_hash, type_id) -> *S` keyed pool
-    /// for element-attached state. Heap-allocated because the
-    /// entry table is 128 KiB (4096 slots × 32 B/slot), too large
-    /// for the WASM stack per CLAUDE.md §14. PR 8.2 ports
-    /// `Select` open/close state onto this pool as the first
-    /// consumer; subsequent 8.x slices peel `text_input` /
-    /// `text_area` / `code_editor` / `scroll_container` off
-    /// `widgets` (above) the same way. Default `undefined` so
-    /// test fixtures that omit it (`testWindow` below) keep
-    /// compiling without explicit initialisation. See
-    /// `element_states.zig` and
-    /// `docs/cleanup-implementation-plan.md` PR 8.2.
+    /// Unified `(id_hash, type_id) -> *S` keyed pool for element-attached
+    /// state. Heap-allocated because the entry table is 128 KiB (4096 slots
+    /// × 32 B/slot), too large for the WASM stack. Default `undefined` so
+    /// test fixtures keep compiling. See `element_states.zig`.
     element_states: *ElementStates = undefined,
 
     // Focus management
     focus: FocusManager,
 
-    /// Hover state (PR 3 extraction — see `hover.zig`).
-    /// Owns: hovered layout id, last cursor pos, ancestor chain cache,
-    /// hover-changed latch. Public field — internal callers reach in
-    /// via `window.hover.*` to avoid yet another forwarder layer.
+    /// Hover state (see `hover.zig`). Owns: hovered layout id, last cursor
+    /// pos, ancestor chain cache, hover-changed latch. Public field —
+    /// internal callers reach in via `window.hover.*` to avoid a forwarder
+    /// layer.
     hover: HoverState = .{},
 
     // Drag & Drop state
@@ -434,71 +321,39 @@ pub const Window = struct {
     /// Layout ID of current drop target (for drag-over styling)
     drag_over_target: ?u32 = null,
 
-    // PR 6 — `debugger` lives in `globals` now. Access via
-    // `window.debugger()`. The accessor reads from the type-keyed
-    // store; one indirection vs. a direct field, but it removes the
-    // last hard-coded singleton from the struct surface and makes
-    // adding future globals (settings, telemetry) a one-liner.
+    // `debugger` lives in `globals`; access via `window.debugger()`. The
+    // accessor reads from the type-keyed store — one indirection vs. a
+    // direct field, but it keeps singletons off the struct surface.
 
-    // PR 7c.3b — `dispatch: *DispatchTree` back-compat alias
-    // retired alongside the `scene` alias. The pre-7c.3b field
-    // mirrored `frame.dispatch` to keep ~68 internal call sites
-    // working across the 7c.3a landing. PR 7c.3c renamed
-    // `frame` → `next_frame`: build call sites reach through
-    // `next_frame.dispatch`, input hit-test sites reach through
-    // `rendered_frame.dispatch`.
-
-    // PR 6 / 7b.4 — `keymap` lives in `app.globals` now (see
-    // `app.zig`). `window.keymap()` is a forwarder so callers
-    // don't have to reach through `window.app.keymap()` themselves;
-    // a future cleanup may collapse the forwarder once enough
-    // callers route through `*App` directly.
-
-    /// Type-keyed singleton store (PR 6 — see `global.zig`).
-    /// PR 7b.4 — owns `Debugger` only; `Keymap` lifted onto
-    /// `App.globals`, and the `*const Theme` slot is now also
-    /// app-scoped (populated lazily by `Builder.setTheme` against
-    /// `window.app.globals`). Default-constructed
-    /// (`entries = @splat(Entry.empty)`); populated post-init by
-    /// every `init*` path via `setOwned`.
+    /// Type-keyed singleton store (see `global.zig`). Owns `Debugger` only;
+    /// `Keymap` and the `*const Theme` slot are app-scoped on `App.globals`.
+    /// Default-constructed; populated post-init by every `init*` path via
+    /// `setOwned`.
     globals: Globals = .{},
 
-    /// Current frame phase (PR 6 — see `draw_phase.zig`). Advances
-    /// monotonically through `none → prepaint → paint → focus →
-    /// none` across the frame lifecycle. Phase-restricted methods
-    /// assert against this value at entry; the helper `advancePhase`
-    /// pair-asserts every legal transition. Default `.none` covers
-    /// "constructed but never entered a frame".
+    /// Current frame phase (see `draw_phase.zig`). Advances monotonically
+    /// through `none → prepaint → paint → focus → none` across the frame
+    /// lifecycle. Phase-restricted methods assert against this value at
+    /// entry; the helper `advancePhase` pair-asserts every legal transition.
+    /// Default `.none` covers "constructed but never entered a frame".
     current_phase: DrawPhase = .none,
 
-    /// PR 7b.3 / 7b.4 — borrowed `*App` view onto application-
-    /// lifetime state shared across windows. Owns `entities`
-    /// (lifted off `Window` in 7b.3) and the `Keymap` /
-    /// `*const Theme` slots in `app.globals` (lifted in 7b.4);
-    /// future 7b slices add `image_loader`. The single-window
-    /// flow heap-allocates an `App` in `runtime/runner.zig` and
-    /// hands a pointer here; the multi-window flow embeds a
-    /// `context.App` inside `runtime/multi_window_app.zig::App`
-    /// and hands a pointer to that. Either way the pointee
-    /// outlives every borrowing `Window` — `Window.deinit` does
-    /// not touch this field; the upstream owner tears down the
-    /// `App` after the last `Window.deinit` returns.
-    ///
-    /// Default `undefined` so test fixtures (`testWindow`) and
-    /// init paths that haven't been threaded through the new
-    /// param yet keep compiling; every framework `init*` path
-    /// assigns this field before the first frame runs.
+    /// Borrowed `*App` view onto application-lifetime state shared across
+    /// windows: the entity map, and the `Keymap` / `*const Theme` slots in
+    /// `app.globals`. The single-window flow heap-allocates an `App` in
+    /// `runtime/runner.zig`; the multi-window flow embeds a `context.App`
+    /// inside `runtime/multi_window_app.zig::App`. Either way the pointee
+    /// outlives every borrowing `Window`: `Window.deinit` does not touch
+    /// this field; the upstream owner tears down the `App` after the last
+    /// `Window.deinit` returns. Default `undefined` so test fixtures
+    /// (`testWindow`) keep compiling; every `init*` path assigns it before
+    /// the first frame.
     app: *App = undefined,
 
-    // Platform — OS-level window handle (NSWindow on macOS, wl_surface
-    // on Linux, canvas on web). PR 7b.1b renamed this field from
-    // `window` to `platform_window` because the surrounding struct
-    // itself was renamed `Gooey → Window`; without this rename, every
-    // `self.window` inside `Window`'s methods would shadow the
-    // framework wrapper's name with the platform handle's name. The
-    // GPUI `App ↔ Window ↔ Context<T>` sketch in
-    // `architectural-cleanup-plan.md` §10 uses the same naming
-    // (`platform_window: PlatformWindow`).
+    // Platform — OS-level window handle (NSWindow on macOS, wl_surface on
+    // Linux, canvas on web). Named `platform_window` rather than `window`
+    // so it doesn't shadow the framework `Window` struct's name inside its
+    // own methods.
     platform_window: ?*PlatformWindow,
 
     // Frame state
@@ -510,10 +365,10 @@ pub const Window = struct {
     height: f32 = 0,
     scale_factor: f32 = 1.0,
 
-    /// Accessibility subsystem (PR 3 extraction — see `a11y_system.zig`).
-    /// Owns: tree, platform bridge storage, bridge dispatcher, the
-    /// "screen reader active" flag, and the periodic poll counter.
-    /// `undefined` until `initOwned` / `initOwnedPtr` etc wire it.
+    /// Accessibility subsystem (see `a11y_system.zig`). Owns: tree, platform
+    /// bridge storage, bridge dispatcher, the "screen reader active" flag,
+    /// and the periodic poll counter. `undefined` until `initOwned` /
+    /// `initOwnedPtr` etc wire it.
     a11y: A11ySystem = undefined,
 
     // Per-window root state for handler callbacks (multi-window support)
@@ -526,36 +381,25 @@ pub const Window = struct {
     deferred_commands: [MAX_DEFERRED_COMMANDS]DeferredCommand = undefined,
     deferred_count: u8 = 0,
 
-    /// Blur handler registry (PR 3 extraction — see `blur_handlers.zig`).
-    /// Backed by the generic `SubscriberSet`; cap is `MAX_BLUR_HANDLERS`
-    /// (64). `undefined` here so the parent's by-pointer init paths can
-    /// `initInPlace` without a stack temp; struct-literal init paths set
-    /// it explicitly.
+    /// Blur handler registry (see `blur_handlers.zig`). Backed by the
+    /// generic `SubscriberSet`; cap is `MAX_BLUR_HANDLERS` (64). `undefined`
+    /// here so the parent's by-pointer init paths can `initInPlace` without
+    /// a stack temp; struct-literal init paths set it explicitly.
     blur_handlers: BlurHandlerRegistry = undefined,
 
-    /// Cancel-group registry (PR 3 extraction — see `cancel_registry.zig`).
-    /// Backed by the generic `SubscriberSet`; cap is `MAX_CANCEL_GROUPS`
-    /// (64). All registered groups are cancelled in `deinit`.
+    /// Cancel-group registry (see `cancel_registry.zig`). Backed by the
+    /// generic `SubscriberSet`; cap is `MAX_CANCEL_GROUPS` (64). All
+    /// registered groups are cancelled in `deinit`.
     cancel_registry: CancelRegistry = undefined,
 
-    // PR 7b.5 — `image_loader` lifted off `Window` onto `App`.
-    // Pre-7b.5 every `Window` carried its own `ImageLoader`,
-    // which made cross-window dedup of in-flight URL fetches
-    // structurally impossible (window A and window B fetching
-    // the same URL in the same frame would each launch a
-    // background task and double the bandwidth). Post-7b.5 a
-    // single `ImageLoader` lives on `App`, the pending /
-    // failed sets are app-scoped, and the fetch group covers
-    // every window.
+    // `image_loader` lives on `App`, not `Window`: a single app-scoped
+    // loader lets in-flight URL fetches dedup across windows (two windows
+    // fetching the same URL share one background task) and keeps the
+    // pending / failed sets and fetch group app-wide.
     //
     // The forwarder methods below (`isImageLoadPending` /
-    // `isImageLoadFailed`) and `beginFrame`'s drain reach
-    // through `self.app.image_loader.*` now. The
-    // `fixupImageLoadQueue` method retired alongside this
-    // field — `App` is initialised at its final heap address
-    // and `App.bindImageLoader` runs `initInPlace` directly,
-    // so the by-value-copy queue dangle that `fixupQueue`
-    // was guarding against cannot happen on the new path.
+    // `isImageLoadFailed`) and `beginFrame`'s drain reach through
+    // `self.app.image_loader.*`.
 
     const Self = @This();
 
@@ -579,8 +423,7 @@ pub const Window = struct {
     // =========================================================================
     //
     // Body lives in `cancel_registry.zig`. The wrappers here preserve the
-    // call surface used by `cx.registerCancelGroup` / external apps until
-    // a future PR threads `*CancelRegistry` directly through `Cx`.
+    // call surface used by `cx.registerCancelGroup` / external apps.
 
     /// Register a cancel group for automatic cancellation on teardown.
     ///
@@ -594,10 +437,9 @@ pub const Window = struct {
 
     /// Unregister a cancel group (e.g., when async work completes normally).
     ///
-    /// Silent no-op when the group is not registered, matching the
-    /// pre-extraction behaviour. The boolean returned by the underlying
-    /// `CancelRegistry.unregister` is discarded — callers that need it
-    /// should use the registry directly.
+    /// Silent no-op when the group is not registered. The boolean returned
+    /// by the underlying `CancelRegistry.unregister` is discarded — callers
+    /// that need it should use the registry directly.
     pub fn unregisterCancelGroup(self: *Self, group: *std.Io.Group) void {
         _ = self.cancel_registry.unregister(group);
     }
@@ -606,29 +448,17 @@ pub const Window = struct {
     // Async Image Loading — forwarders to `app.image_loader`
     // =========================================================================
     //
-    // Body lives in `src/image/loader.zig` (`ImageLoader`). PR 7b.5
-    // lifted the loader off `Window` onto `App`; these forwarders
-    // route through `self.app.image_loader.*` so existing call
-    // sites in `runtime/render.zig` keep working without churn.
-    // The pre-7b.5 `fixupImageLoadQueue` forwarder retired
-    // alongside the field — `App.bindImageLoader` runs
-    // `initInPlace` at the loader's final heap address, so no
-    // by-value-copy queue dangle can happen on the new path.
-    //
-    // Forwarders rather than direct `window.app.image_loader.*`
-    // access at every call site keeps PR 7b.5 a focused lift —
-    // a follow-up cleanup can retire the forwarders once
-    // `runtime/render.zig` is comfortable reaching through
-    // `window.app` directly.
+    // Body lives in `src/image/loader.zig` (`ImageLoader`). The loader is
+    // app-scoped; these forwarders route through `self.app.image_loader.*`
+    // so call sites in `runtime/render.zig` don't reach through `window.app`
+    // themselves.
 
     /// Check whether a URL image fetch is already in flight.
-    /// Routed through the app-scoped loader (PR 7b.5).
     pub fn isImageLoadPending(self: *const Self, url_hash: u64) bool {
         return self.app.image_loader.isPending(url_hash);
     }
 
     /// Check whether a URL has previously failed to fetch.
-    /// Routed through the app-scoped loader (PR 7b.5).
     pub fn isImageLoadFailed(self: *const Self, url_hash: u64) bool {
         return self.app.image_loader.isFailed(url_hash);
     }
@@ -748,23 +578,14 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a / 7c.3c — allocate the two-`Frame` double buffer.
-        // Each `Frame.initOwned` allocates its own heap-backed
-        // `Scene` + `DispatchTree` pair; `mem.swap` between the
-        // two slots in `Window` exchanges which slot points at
-        // which pair. Both pairs are owned by the parent `Window`
-        // for its entire lifetime — `Window.deinit` tears both
-        // down. The `next_frame` pair is the build target every
-        // render-pipeline call site writes into during the current
-        // tick; `rendered_frame` carries the previously-built
-        // tree and stays alive across the input gap between
-        // frames so input handlers can hit-test against it.
-        // Replaces the pre-7c.3a four `allocator.create` + init +
-        // `setViewport`/`enableCulling` + errdefer blocks (two per
-        // pointee, doubled across both buffers). The two locals
-        // are copied into `result.{next,rendered}_frame` below;
-        // the heap pointers carried inside survive the by-value
-        // copy unchanged (same shape as `resources`).
+        // Allocate the two-`Frame` double buffer. Each `Frame.initOwned`
+        // allocates its own heap-backed `Scene` + `DispatchTree` pair;
+        // `mem.swap` between the two slots exchanges which slot points at
+        // which pair. Both pairs are owned by the `Window` for its entire
+        // lifetime; `Window.deinit` tears both down. The two locals are
+        // copied into `result.{next,rendered}_frame` below; the heap
+        // pointers inside survive the by-value copy (same shape as
+        // `resources`).
         var next_frame = try Frame.initOwned(
             allocator,
             @floatCast(platform_window.size.width),
@@ -779,12 +600,9 @@ pub const Window = struct {
         );
         errdefer rendered_frame.deinit();
 
-        // PR 7a — bundle text + SVG + image resources into one
-        // `AppResources`. Replaces three separate `allocator.create`
-        // + init + errdefer blocks plus the inline font-load step.
-        // The resulting struct is copied into `result.resources`
-        // below; the heap pointers it carries survive the by-value
-        // copy unchanged.
+        // Bundle text + SVG + image resources into one `AppResources`. The
+        // resulting struct is copied into `result.resources` below; the heap
+        // pointers it carries survive the by-value copy.
         var resources = try AppResources.initOwned(
             allocator,
             io,
@@ -796,22 +614,15 @@ pub const Window = struct {
         );
         errdefer resources.deinit();
 
-        // Set up text measurement callback against the bundled text
-        // system (same heap address as before, just routed through
-        // the bundle).
+        // Set up text measurement callback against the bundled text system.
         layout_engine.setMeasureTextFn(measureTextCallback, resources.text_system);
 
-        // PR 8.1 / 8.2 — heap-allocate the unified element-state
-        // pool. The 4096-slot entry table is 128 KiB (CLAUDE.md
-        // §14) so it cannot live by-value on `Window`; we hold a
-        // `*ElementStates` pointer instead. `initInPlace` zeroes
-        // every slot at the final heap address so no by-value
-        // copy of a 128 KiB struct ever crosses a stack frame.
-        // Same shape PR 7c.3a uses for the scene/dispatch heap
-        // pointees inside `Frame`. Errdefer pairs the
-        // `allocator.create` so any later `try` in this function
-        // (e.g. `globals.setOwned`) unwinds without leaking the
-        // pool.
+        // Heap-allocate the unified element-state pool: the 4096-slot entry
+        // table is 128 KiB, too large to live by-value on `Window`, so we
+        // hold a `*ElementStates` pointer. `initInPlace` zeroes every slot
+        // at the final heap address so no 128 KiB by-value copy crosses a
+        // stack frame. Errdefer pairs the `allocator.create` so any later
+        // `try` (e.g. `globals.setOwned`) unwinds without leaking the pool.
         const element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
         element_states.initInPlace(allocator);
         errdefer {
@@ -823,46 +634,27 @@ pub const Window = struct {
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            // PR 7c.3a / 7c.3c — the two `Frame` slots are copied
-            // by value below; each local's `owned` flag is
-            // disarmed post-literal (mirroring the
-            // `resources.owned = false` pattern) so a later
-            // errdefer can't tear the pointees down out from
-            // under `result.{next,rendered}_frame`. Build call
-            // sites reach through `result.next_frame.*`; input
-            // hit-test sites reach through
-            // `result.rendered_frame.*`. PR 7c.3b retired the
-            // `scene` / `dispatch` alias fields alongside the
-            // 7c.3a call-site sweep.
+            // Both `Frame` slots are copied by value; each local's `owned`
+            // flag is disarmed post-literal (like `resources.owned`) so a
+            // later errdefer can't tear the pointees down out from under
+            // `result.{next,rendered}_frame`.
             .next_frame = next_frame,
             .rendered_frame = rendered_frame,
-            // PR 7b.3 — `entities` lifted off `Window` onto `App`.
-            // The `app: *App` field is left at its `undefined`
-            // default here; the caller (`runtime/window_context.zig`)
-            // assigns it after this returns. The follow-up slice
-            // threads `app: *App` through this function's
-            // signature so the field is set before any frame runs.
-            // PR 6 / 7b.4 — `debugger` registers into `globals`
-            // below (post-literal so it can `try` and we can
-            // `errdefer` the cleanup chain). `keymap` lives on
-            // `app.globals` now and is registered there by
-            // `App.init` / `initInPlace`.
+            // `app: *App` is left at its `undefined` default; the caller
+            // (`runtime/window_context.zig`) assigns it before any frame
+            // runs. `debugger` registers into `globals` post-literal (so it
+            // can `try` under the `errdefer` cleanup chain); `keymap` lives
+            // on `app.globals`.
             .focus = FocusManager.init(allocator),
-            // PR 7a — single owned `resources` field replaces the
-            // `text_system` / `svg_atlas` / `image_atlas` triplet
-            // plus their `*_owned` flags. The three pointer fields
-            // below are back-compat aliases populated from the same
-            // heap addresses (see field-decl doc-comments).
+            // Single owned `resources` field; the heap pointers it carries
+            // come through the by-value copy unchanged.
             .resources = resources,
-            // PR 8.4c — was `.widgets = WidgetStore.init(allocator, io)`
-            // pre-retirement. The `change_tracker` peer field
-            // default-initialises (fixed-capacity, no alloc).
+            // `change_tracker` default-initialises (fixed-capacity, no
+            // alloc), so it needs no entry here.
             .animations = AnimationStore.init(allocator, io),
-            // PR 8.1 / 8.2 — borrowed `*ElementStates` view onto
-            // the heap allocation above. Ownership is transferred
-            // here: `result` is the canonical owner from this
-            // point forward, and `Window.deinit` frees the
-            // allocation. The errdefer above is paired by the
+            // Borrowed `*ElementStates` view onto the heap allocation above.
+            // Ownership transfers here: `result` is the canonical owner and
+            // `Window.deinit` frees it. The errdefer above is paired by the
             // disarm post-literal (see below).
             .element_states = element_states,
             .platform_window = platform_window,
@@ -880,38 +672,21 @@ pub const Window = struct {
             // see `initOwnedPtr` for the version without the by-value copy
             // dangling-pointer caveat.
             .a11y = undefined,
-            // PR 7b.5 — `image_loader` retired from `Window`'s
-            // field list. The shared loader lives on `App` now;
-            // `WindowContext.init` (the caller of this function)
-            // calls `app.bindImageLoader(window.resources.image_atlas)`
-            // after `Window.initOwned` returns and `window.app`
-            // has been wired. The pre-7b.5 `.image_loader =
-            // undefined` slot + `fixupImageLoadQueue` call below
-            // both retired — `App.bindImageLoader` runs
-            // `initInPlace` at the loader's final heap address,
-            // so the by-value-copy queue dangle that the fixup
-            // was guarding against cannot happen on the new path.
+            // `image_loader` is app-scoped: the caller
+            // (`WindowContext.init`) calls
+            // `app.bindImageLoader(window.resources.image_atlas)` after this
+            // returns and `window.app` is wired.
         };
-        // PR 7a — `result.resources` was set by-value above. Now
-        // that `result` is the canonical owner of the heap atlases,
-        // disarm the local `resources.owned` so a later errdefer
-        // (`globals.setOwned` failures) doesn't tear them down out
-        // from under `result`. Without this, a partial init would
-        // hit a double-free when the caller drops `result` after a
-        // success path that copies into the heap slot.
+        // `result` is now the canonical owner of the heap atlases, so disarm
+        // the local `resources.owned`: otherwise a later errdefer
+        // (`globals.setOwned` failure) would tear them down out from under
+        // `result` and double-free when the caller drops it.
         resources.owned = false;
 
-        // PR 7c.3a / 7c.3c — same disarm pattern for both halves
-        // of the double buffer. `result.next_frame` /
-        // `result.rendered_frame` are now the canonical owners of
-        // the four heap allocations (each Frame owns one Scene +
-        // one DispatchTree); the local copies carried
-        // `owned = true` flags through the by-value literal
-        // above, and their errdefers would tear the pointees down
-        // if a later `try` (e.g. `globals.setOwned`) unwinds.
-        // Without these disarms, that path would double-free
-        // against `result.{next,rendered}_frame.deinit()` in the
-        // caller.
+        // Same disarm for both halves of the double buffer:
+        // `result.{next,rendered}_frame` are now the canonical owners of the
+        // four heap allocations, so the local copies' errdefers must not
+        // fire on a later unwind.
         next_frame.owned = false;
         rendered_frame.owned = false;
 
@@ -922,30 +697,12 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         result.a11y.initInPlace(window_obj, view_obj);
 
-        // PR 7b.5 — image-loader init retired from `Window`. The
-        // caller (`runtime/window_context.zig::WindowContext.init`)
-        // calls `app.bindImageLoader(window.resources.image_atlas)`
-        // after this function returns and `window.app` has been
-        // assigned. The atlas pointer reached here is the same
-        // heap address either way (lives on `Window.resources`
-        // for single-window mode); only the binder moved.
-
-        // PR 6 / 7b.4 — populate per-window globals. Only
-        // `Debugger` remains here; `Keymap` lifted onto
-        // `App.globals` (registered by `App.init` /
-        // `initInPlace`). The owned `*Debugger` lives in
-        // `result.globals.entries`; ownership transfers when
-        // `result` is moved into the caller's storage (the entry
-        // holds a pointer to a stable heap address, so the
-        // by-value copy is safe — no fixup needed unlike
-        // `image_loader`).
-        //
-        // No `errdefer result.globals.deinit(allocator)` follows
-        // this last `try` — the next statement is `return result`,
-        // so an unwinding path past this point is structurally
-        // impossible. The pre-7b.4 errdefer here was paired with
-        // the now-retired `Keymap.setOwned` above; with that
-        // gone, the dangling errdefer would have been dead code.
+        // Per-window globals hold `Debugger` only (`Keymap` is on
+        // `App.globals`). The owned `*Debugger` lives in
+        // `result.globals.entries` and points at a stable heap address, so
+        // the by-value copy when `result` moves into the caller is safe. No
+        // `errdefer` follows this last `try`: the next statement is `return
+        // result`, so no unwinding path past this point exists.
         try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
 
         return result;
@@ -971,18 +728,13 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a / 7c.3c — initialise the two-`Frame` double
-        // buffer in place. Each `Frame.initOwnedInPlace` allocates
-        // a Scene + DispatchTree pair into the named slot; the
-        // call is `noinline` per CLAUDE.md §14 so the WASM stack
-        // budget stays bounded across the four internal
-        // subsystems. Build call sites reach through
-        // `self.next_frame.*`; input hit-test sites reach through
-        // `self.rendered_frame.*`. `mem.swap` at the frame
-        // boundary in `runtime/frame.zig::renderFrameImpl`
-        // exchanges the two slots; both stay `owned = true`
-        // across every swap, so `Window.deinit` continues to
-        // tear down both pairs.
+        // Initialise the two-`Frame` double buffer in place. Each
+        // `Frame.initOwnedInPlace` allocates a Scene + DispatchTree pair
+        // into the named slot; the call is `noinline` so the WASM stack
+        // budget stays bounded across the internal subsystems. `mem.swap` at
+        // the frame boundary exchanges the two slots; both stay
+        // `owned = true` across every swap, so `Window.deinit` tears down
+        // both pairs.
         try self.next_frame.initOwnedInPlace(
             allocator,
             @floatCast(platform_window.size.width),
@@ -997,11 +749,10 @@ pub const Window = struct {
         );
         errdefer self.rendered_frame.deinit();
 
-        // PR 7a — initialise shared rendering resources directly
-        // into `self.resources` (no stack temp). `initOwnedInPlace`
-        // is `noinline` per CLAUDE.md §14 so the WASM stack budget
-        // stays bounded across the three internal subsystems
-        // (TextSystem ~1.7MB, atlases hundreds of KB each).
+        // Initialise shared rendering resources directly into
+        // `self.resources` (no stack temp). `initOwnedInPlace` is `noinline`
+        // so the WASM stack budget stays bounded across the internal
+        // subsystems (TextSystem ~1.7MB, atlases hundreds of KB each).
         try self.resources.initOwnedInPlace(
             allocator,
             io,
@@ -1013,8 +764,7 @@ pub const Window = struct {
         );
         errdefer self.resources.deinit();
 
-        // Set up text measurement callback against the bundled text
-        // system.
+        // Set up text measurement callback against the bundled text system.
         layout_engine.setMeasureTextFn(measureTextCallback, self.resources.text_system);
 
         // Field-by-field init avoids ~400KB stack temp from struct literal
@@ -1022,40 +772,26 @@ pub const Window = struct {
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        // PR 7c.3b — `scene` / `dispatch` alias fields retired.
-        // PR 7c.3c — the per-frame rendering state lives on the
-        // double buffer: build call sites reach through
-        // `self.next_frame.scene` / `self.next_frame.dispatch`,
-        // input hit-test sites reach through
-        // `self.rendered_frame.dispatch`.
-        // PR 7b.6 — back-compat aliases removed. The three pointer
-        // fields that mirrored `self.resources.*` retired alongside
-        // the call-site sweep; reach through `self.resources.*` for
-        // the shared atlases now.
+        // Per-frame rendering state lives on the double buffer: build call
+        // sites reach through `self.next_frame.*`, input hit-test sites
+        // through `self.rendered_frame.dispatch`. Shared atlases are reached
+        // through `self.resources.*`.
         self.platform_window = platform_window;
 
-        // PR 7b.3 — `entities` lifted off `Window` onto `App`.
         // `self.app` is left `undefined` here; the caller
-        // (`runtime/window_context.zig` on the WASM Ptr path)
-        // assigns it after `initOwnedPtr` returns. The follow-up
-        // slice threads `app: *App` through this function's
-        // signature so the field is set inline.
+        // (`runtime/window_context.zig` on the WASM Ptr path) assigns it
+        // after `initOwnedPtr` returns.
         self.focus = FocusManager.init(allocator);
-        // PR 8.4c — was `self.widgets = WidgetStore.init(allocator, io)`
-        // pre-retirement. `change_tracker` lands via the explicit
-        // assignment below (this path is field-by-field init to avoid
-        // a ~400 KB stack temp, so defaults don't apply automatically).
+        // This path is field-by-field init (no struct-literal defaults), so
+        // `change_tracker` is assigned explicitly below.
         self.animations = AnimationStore.init(allocator, io);
         self.change_tracker = .{};
 
-        // PR 8.1 / 8.2 — heap-allocate the element-state pool
-        // and initialise it in place at its final address. Same
-        // shape as the matching block in `initOwned`; the WASM
-        // `*Ptr` paths exist precisely so 128 KiB structs like
-        // this one never live on the stack (CLAUDE.md §14).
-        // `errdefer` pairs the `allocator.create` so a later
-        // `try self.globals.setOwned(...)` failure unwinds
-        // without leaking the pool.
+        // Heap-allocate the element-state pool and initialise it in place at
+        // its final address: the WASM `*Ptr` paths exist precisely so
+        // 128 KiB structs never live on the stack. `errdefer` pairs the
+        // `allocator.create` so a later `try self.globals.setOwned(...)`
+        // failure unwinds without leaking the pool.
         self.element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
         self.element_states.initInPlace(allocator);
         errdefer {
@@ -1063,17 +799,12 @@ pub const Window = struct {
             allocator.destroy(self.element_states);
         }
 
-        // PR 6 — `globals` and `current_phase` start fresh. `self`
-        // is raw memory at this point (caller did `allocator.create`
-        // without zeroing), so explicit assignment is required —
-        // even default-valued fields would otherwise retain garbage.
+        // `globals` and `current_phase` start fresh. `self` is raw memory
+        // here (caller did `allocator.create` without zeroing), so explicit
+        // assignment is required — even default-valued fields would
+        // otherwise retain garbage.
         self.globals = .{};
         self.current_phase = .none;
-
-        // PR 7a — SVG and image atlas creation moved up into
-        // `self.resources.initOwnedInPlace` near the top of this
-        // function. The aliases were assigned alongside `text_system`
-        // in the field-by-field block above. No work remains here.
 
         // Scalar fields
         self.width = @floatCast(platform_window.size.width);
@@ -1081,7 +812,7 @@ pub const Window = struct {
         self.scale_factor = @floatCast(platform_window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
-        // PR 6 — `debugger` registered into `globals` below.
+        // `debugger` registered into `globals` below.
 
         // Pending/active drag state (re-init explicitly — `self` was raw memory)
         self.pending_drag = null;
@@ -1111,26 +842,13 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 
-        // PR 7b.5 — image-loader init retired from `Window`. The
-        // caller (`runtime/window_context.zig::WindowContext.init`
-        // on native, `app.zig::WebApp.initImpl` on WASM) calls
-        // `app.bindImageLoader(window.resources.image_atlas)` after
-        // this function returns and `window.app` has been wired.
-        // The shared loader runs `initInPlace` directly at its
-        // final `App` heap address, so the by-value-copy queue
-        // dangle that the pre-7b.5 fixup was guarding against
-        // cannot happen on the new path.
+        // `image_loader` is app-scoped: the caller binds it after this
+        // returns and `window.app` is wired.
 
-        // PR 6 / 7b.4 — populate per-window globals. Only
-        // `Debugger` remains here; `Keymap` lifted onto
-        // `App.globals`. `self` is at its final heap address;
-        // `setOwned` writes its bookkeeping directly there, no
-        // fixup required. No `errdefer` after this last `try`:
-        // see the matching note in `initOwned` — the pre-7b.4
-        // errdefer protected an intermediate state between two
-        // `setOwned` calls; with `Keymap` lifted onto `App` only
-        // the `Debugger` registration remains, and the function
-        // returns immediately after.
+        // Per-window globals hold `Debugger` only (`Keymap` is on
+        // `App.globals`). `self` is at its final heap address, so `setOwned`
+        // writes its bookkeeping directly. No `errdefer` after this last
+        // `try`: the function returns immediately after.
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
@@ -1138,24 +856,18 @@ pub const Window = struct {
     /// Used by MultiWindowApp to share expensive resources across windows.
     /// The caller retains ownership of the shared resources.
     ///
-    /// PR 7b.6 — collapsed signature: takes a single `*const AppResources`
-    /// borrowed-or-owned view from the parent (e.g. `App`'s own owning
-    /// `AppResources`). Replaces the pre-7b.6 triplet of
-    /// `shared_text_system: *TextSystem` / `shared_svg_atlas: *SvgAtlas`
-    /// / `shared_image_atlas: *ImageAtlas` parameters that this function
-    /// inherited from before the `AppResources` extraction. The caller
-    /// retains ownership of the `*const AppResources` pointee — every
-    /// `Window` produced this way embeds an `owned = false` borrowed
-    /// view, so `Window.deinit` is a no-op for the shared atlases.
+    /// Takes a single `*const AppResources` borrowed-or-owned view from the
+    /// parent. The caller retains ownership of the pointee — every `Window`
+    /// produced this way embeds an `owned = false` borrowed view, so
+    /// `Window.deinit` is a no-op for the shared atlases.
     pub fn initWithSharedResources(
         allocator: std.mem.Allocator,
         platform_window: *PlatformWindow,
         shared_resources: *const AppResources,
         io: std.Io,
     ) !Self {
-        // Assertions: validate inputs. Reach through the bundle so the
-        // pre-7b.6 per-pointer null checks survive — every later
-        // expression in this function indexes the same three slots.
+        // Assertions: validate inputs through the bundle (every later
+        // expression indexes the same three slots).
         std.debug.assert(@intFromPtr(shared_resources) != 0);
         std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
         std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
@@ -1169,15 +881,11 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a / 7c.3c — allocate the two-`Frame` double
-        // buffer (owned per-window even in multi-window mode —
-        // the scene + dispatch tree are per-window state and
-        // cannot be shared without breaking hit-testing).
-        // Same shape as the matching block in `initOwned`; both
-        // slots stay `owned = true` across the `mem.swap` at the
-        // frame boundary. The `{next,rendered}_frame.owned =
-        // false` disarms post-literal mirror the
-        // `resources.owned = false` pattern.
+        // Allocate the two-`Frame` double buffer (owned per-window even in
+        // multi-window mode: the scene + dispatch tree are per-window state
+        // and cannot be shared without breaking hit-testing). Both slots
+        // stay `owned = true` across the `mem.swap` at the frame boundary;
+        // the `owned = false` disarms post-literal mirror `resources.owned`.
         var next_frame = try Frame.initOwned(
             allocator,
             @floatCast(platform_window.size.width),
@@ -1195,14 +903,11 @@ pub const Window = struct {
         // Set up text measurement callback using shared text system
         layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
 
-        // PR 8.1 / 8.2 — element-state pool is per-window even
-        // in multi-window mode (the keys are per-window
-        // `LayoutId` hashes — sharing one pool across windows
-        // would conflate state for unrelated elements). Same
-        // heap-allocation shape as `initOwned`. The
-        // `AppResources` triplet is borrowed from the parent
-        // here, but `element_states` always carries `owned`
-        // semantics on this `Window`.
+        // Element-state pool is per-window even in multi-window mode (the
+        // keys are per-window `LayoutId` hashes; sharing one pool across
+        // windows would conflate state for unrelated elements). The
+        // `AppResources` triplet is borrowed, but `element_states` is always
+        // owned by this `Window`.
         const element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
         element_states.initInPlace(allocator);
         errdefer {
@@ -1214,30 +919,19 @@ pub const Window = struct {
             .allocator = allocator,
             .io = io,
             .layout = layout_engine,
-            // PR 7c.3a / 7c.3c — the two `Frame` slots are copied
-            // by value below; each local's `owned` flag is
-            // disarmed post-literal so a later errdefer can't
-            // tear the pointees down out from under
-            // `result.{next,rendered}_frame`. Build call sites
-            // reach through `result.next_frame.*`; input
-            // hit-test sites reach through
-            // `result.rendered_frame.*`. PR 7c.3b retired the
-            // `scene` / `dispatch` alias fields alongside the
-            // 7c.3a call-site sweep.
+            // Both `Frame` slots are copied by value; each local's `owned`
+            // flag is disarmed post-literal so a later errdefer can't tear
+            // the pointees down out from under `result.{next,rendered}_frame`.
             .next_frame = next_frame,
             .rendered_frame = rendered_frame,
-            // PR 7b.3 — `entities` lifted off `Window` onto `App`.
-            // `app: *App` is set by the caller post-init; see the
-            // matching note in `initOwned` above.
-            // PR 6 / 7b.4 — `debugger` registers into `globals`
-            // below; `keymap` lives on `app.globals`.
+            // `app: *App` is set by the caller post-init. `debugger`
+            // registers into `globals` below; `keymap` lives on
+            // `app.globals`.
             .focus = FocusManager.init(allocator),
-            // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
-            // (e.g. `MultiWindowApp`) owns the underlying pointees.
-            // `AppResources.deinit` is a no-op for `owned = false`,
-            // matching the pre-extraction `*_owned = false` semantics.
-            // The bundle's three pointer fields are copied through
-            // unchanged — same heap addresses as `shared_resources.*`.
+            // Borrowed `AppResources` view; the parent owns the pointees, so
+            // `AppResources.deinit` is a no-op for `owned = false`. The three
+            // pointer fields are copied through unchanged (same heap
+            // addresses as `shared_resources.*`).
             .resources = AppResources.borrowed(
                 allocator,
                 io,
@@ -1245,11 +939,9 @@ pub const Window = struct {
                 shared_resources.svg_atlas,
                 shared_resources.image_atlas,
             ),
-            // PR 8.4c — see `initOwned` for the matching note.
             .animations = AnimationStore.init(allocator, io),
-            // PR 8.1 / 8.2 — owned `*ElementStates`. See the
-            // matching block in `initOwned` for the
-            // heap-allocation rationale (128 KiB > WASM stack).
+            // Owned `*ElementStates`; see `initOwned` for the heap-allocation
+            // rationale (128 KiB > WASM stack).
             .element_states = element_states,
             .platform_window = platform_window,
             .width = @floatCast(platform_window.size.width),
@@ -1259,23 +951,16 @@ pub const Window = struct {
             .blur_handlers = BlurHandlerRegistry.init(),
             .cancel_registry = CancelRegistry.init(),
             .a11y = undefined,
-            // PR 7b.5 — `image_loader` retired from `Window`'s
-            // field list. In multi-window mode the parent
-            // `multi_window_app::App.init` has already called
-            // `context_app.bindImageLoader(resources.image_atlas)`
-            // against the same shared atlas every window's
-            // borrowed `AppResources` points at; this function
-            // does NOT re-bind. See the matching comment block
-            // in `initOwned` and the file header.
+            // `image_loader` is app-scoped: in multi-window mode the parent
+            // `multi_window_app::App.init` has already bound it against the
+            // same shared atlas every window's borrowed `AppResources`
+            // points at; this function does NOT re-bind.
         };
 
-        // PR 7c.3a / 7c.3c — disarm both local `owned` flags now
-        // that `result.{next,rendered}_frame` are the canonical
-        // owners. Mirrors the `resources.owned = false` line in
-        // `initOwned`; the rationale is identical (prevent a
-        // double-free against
-        // `result.{next,rendered}_frame.deinit()` if a later
-        // `try` unwinds via either local's errdefer).
+        // Disarm both local `owned` flags now that
+        // `result.{next,rendered}_frame` are the canonical owners (prevents
+        // a double-free if a later `try` unwinds via either local's
+        // errdefer).
         next_frame.owned = false;
         rendered_frame.owned = false;
 
@@ -1284,25 +969,15 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         result.a11y.initInPlace(window_obj, view_obj);
 
-        // PR 7b.5 — image-loader init retired from `Window`. The
-        // shared loader on `App` (already bound by
-        // `multi_window_app::App.init` against the same atlas
-        // this function's `shared_resources.image_atlas` points
-        // at) handles every window's URL fetches. The
-        // `shared_resources.image_atlas` here is identical heap
-        // address to what `bindImageLoader` was called with —
-        // every window in a multi-window app has the same
-        // shared atlas in its borrowed `AppResources`, and
-        // there is exactly one bind per `App` lifetime.
+        // `image_loader` is app-scoped: the shared loader on `App` (bound
+        // once by `multi_window_app::App.init` against this same atlas)
+        // handles every window's URL fetches; this function does NOT bind.
 
-        // PR 6 / 7b.4 — same globals registration as `initOwned`.
-        // Only `Debugger` is per-window here; `Keymap` lives on
-        // `app.globals`. The shared-resources path doesn't change
-        // the per-window `Debugger`'s lifetime — every window
-        // still owns its own debugger so its overlay quads /
-        // frame timing / selected layout id stay scoped to its
-        // own scene. No `errdefer` after this last `try`: see the
-        // matching note in `initOwned`.
+        // Per-window globals hold `Debugger` only (`Keymap` is on
+        // `app.globals`). Every window owns its own debugger so its overlay
+        // quads / frame timing / selected layout id stay scoped to its own
+        // scene. No `errdefer` after this last `try`: the function returns
+        // immediately after.
         try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
 
         return result;
@@ -1312,9 +987,8 @@ pub const Window = struct {
     /// Used by MultiWindowApp on WASM to avoid stack overflow.
     /// Marked noinline to prevent stack accumulation.
     ///
-    /// PR 7b.6 — collapsed signature: takes `*const AppResources`
-    /// instead of three separate pointers. See the comment on
-    /// `initWithSharedResources` above for the rationale.
+    /// Takes `*const AppResources` instead of three separate pointers; see
+    /// `initWithSharedResources` above.
     pub noinline fn initWithSharedResourcesPtr(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -1336,15 +1010,10 @@ pub const Window = struct {
             allocator.destroy(layout_engine);
         }
 
-        // PR 7c.3a / 7c.3c — initialise the two-`Frame` double
-        // buffer in place. Same shape as the matching block in
-        // `initOwnedPtr`. The scene + dispatch tree are
-        // per-window state and remain owned per-window even in
-        // multi-window mode (only `AppResources` is borrowed) —
-        // both `next_frame` and `rendered_frame` carry their
-        // own owning Scene + DispatchTree pair. Build call sites
-        // reach through `self.next_frame.*`; input hit-test
-        // sites reach through `self.rendered_frame.*`.
+        // Initialise the two-`Frame` double buffer in place. The scene +
+        // dispatch tree are per-window state and remain owned per-window
+        // even in multi-window mode (only `AppResources` is borrowed); both
+        // slots carry their own owning Scene + DispatchTree pair.
         try self.next_frame.initOwnedInPlace(
             allocator,
             @floatCast(platform_window.size.width),
@@ -1366,17 +1035,10 @@ pub const Window = struct {
         self.allocator = allocator;
         self.io = io;
         self.layout = layout_engine;
-        // PR 7c.3b — `scene` / `dispatch` alias fields retired.
-        // PR 7c.3c — build call sites reach through
-        // `self.next_frame.scene` / `self.next_frame.dispatch`,
-        // input hit-test sites reach through
-        // `self.rendered_frame.dispatch`.
 
-        // PR 7a / 7b.6 — borrowed `AppResources` view; the parent
-        // owns the pointees. By-value init is safe — the struct only
-        // carries the three pointers plus the `owned = false` flag,
-        // no internal self-references. The bundle's pointer fields
-        // are copied through unchanged.
+        // Borrowed `AppResources` view; the parent owns the pointees.
+        // By-value init is safe — the struct only carries the three pointers
+        // plus the `owned = false` flag, no internal self-references.
         self.resources = AppResources.borrowed(
             allocator,
             io,
@@ -1387,20 +1049,16 @@ pub const Window = struct {
 
         self.platform_window = platform_window;
 
-        // PR 7b.3 — `entities` lifted off `Window` onto `App`.
-        // `self.app` is left `undefined` here; the caller assigns
-        // it post-init. See the matching note in `initOwnedPtr`.
+        // `self.app` is left `undefined` here; the caller assigns it
+        // post-init (see `initOwnedPtr`).
         self.focus = FocusManager.init(allocator);
-        // PR 8.4c — see `initOwnedPtr` for the matching note.
         self.animations = AnimationStore.init(allocator, io);
         self.change_tracker = .{};
 
-        // PR 8.1 / 8.2 — element-state pool. Per-window even in
-        // multi-window mode (see the matching block in
-        // `initWithSharedResources`). The WASM `*Ptr` paths
-        // exist precisely so 128 KiB structs don't live on the
-        // stack (CLAUDE.md §14); `initInPlace` writes at the
-        // final heap address.
+        // Element-state pool, per-window even in multi-window mode (see
+        // `initWithSharedResources`). The WASM `*Ptr` paths exist precisely
+        // so 128 KiB structs don't live on the stack; `initInPlace` writes
+        // at the final heap address.
         self.element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
         self.element_states.initInPlace(allocator);
         errdefer {
@@ -1408,8 +1066,7 @@ pub const Window = struct {
             allocator.destroy(self.element_states);
         }
 
-        // PR 6 — `globals` and `current_phase` start fresh (same as
-        // `initOwnedPtr` — `self` is raw memory).
+        // `globals` and `current_phase` start fresh (`self` is raw memory).
         self.globals = .{};
         self.current_phase = .none;
 
@@ -1419,7 +1076,7 @@ pub const Window = struct {
         self.scale_factor = @floatCast(platform_window.scale_factor);
         self.frame_count = 0;
         self.needs_render = false;
-        // PR 6 — `debugger` registered into `globals` below.
+        // `debugger` registered into `globals` below.
 
         // Pending/active drag state
         self.pending_drag = null;
@@ -1444,34 +1101,22 @@ pub const Window = struct {
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 
-        // PR 7b.5 — image-loader init retired from `Window`. The
-        // shared loader on `App` (bound once by
-        // `multi_window_app::App.init` against the same atlas
-        // `shared_resources.image_atlas` points at) handles
-        // every window's URL fetches. See the matching comment
-        // in `initWithSharedResources` and the file header on
-        // `App` for the two-phase init rationale.
+        // `image_loader` is app-scoped: the shared loader on `App` (bound
+        // once by `multi_window_app::App.init` against this same atlas)
+        // handles every window's URL fetches; this function does NOT bind.
 
-        // PR 6 / 7b.4 — same per-window globals registration as
-        // `initOwnedPtr`. Only `Debugger` here; `Keymap` lives on
-        // `app.globals`. No `errdefer` after this last `try`:
-        // see the matching note in `initOwned`.
+        // Per-window globals hold `Debugger` only (`Keymap` is on
+        // `app.globals`). No `errdefer` after this last `try`: the function
+        // returns immediately after.
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
     pub fn deinit(self: *Self) void {
-        // PR 7b.5 — image-loader teardown retired from
-        // `Window.deinit`. The shared loader lives on `App`
-        // now; `App.deinit` is responsible for closing the
-        // result queue and cancelling the fetch group. The
-        // upstream owner (`runtime/runner.zig` in single-window
-        // mode, `multi_window_app::App.deinit` in multi-window
-        // mode) tears the `App` down *after* every
-        // `Window.deinit` has run, which is the correct order:
-        // background fetches need a live result queue to
-        // unwind against, and `App.deinit`'s `cancel` of the
-        // fetch group needs the queue still open during the
-        // cancel-point check on background tasks.
+        // `image_loader` teardown is `App`'s responsibility (closing the
+        // result queue and cancelling the fetch group). The upstream owner
+        // tears the `App` down *after* every `Window.deinit` has run, which
+        // is the correct order: background fetches need a live result queue
+        // to unwind against during the fetch group's cancel-point check.
 
         // Cancel all registered cancel groups before any teardown.
         // Blocking is acceptable — we are shutting down.
@@ -1482,70 +1127,46 @@ pub const Window = struct {
 
         // Blur handlers use fixed-capacity storage, no cleanup needed
 
-        // PR 8.4c — was `self.widgets.deinit()` pre-retirement.
-        // `change_tracker` is fixed-capacity with no allocation, so it
-        // has no `deinit` to call.
+        // `change_tracker` is fixed-capacity with no allocation, so it has no
+        // `deinit` to call.
         self.animations.deinit();
 
-        // PR 8.1 / 8.2 — tear down the unified element-state
-        // pool. `ElementStates.deinit` walks every populated
-        // slot and runs its type-erased deinit thunk before
-        // freeing each payload, so the pool's invariants survive
-        // teardown order against the rest of the `Window`
-        // subsystems above. Free the pool's own heap allocation
-        // last (`destroy`) — `deinit` only tears down its
-        // entries, not the table backing itself.
+        // Tear down the unified element-state pool. `ElementStates.deinit`
+        // walks every populated slot and runs its type-erased deinit thunk
+        // before freeing each payload. Free the pool's own heap allocation
+        // last (`destroy`) — `deinit` only tears down its entries, not the
+        // table backing itself.
         self.element_states.deinit();
         self.allocator.destroy(self.element_states);
 
         self.focus.deinit();
-        // PR 7b.3 — `entities` lifted onto `App`. The borrowed
-        // `*App` is owned upstream (single-window: by
-        // `runtime/window_context.zig`; multi-window: by
-        // `runtime/multi_window_app.zig::App`); both call
-        // `App.deinit` after every `Window.deinit` has run.
-        // `Window.deinit` deliberately does not touch
-        // `self.app` — it would be a use-after-free in the
-        // multi-window case where one `App` outlives many
-        // `Window` instances.
+        // The borrowed `*App` is owned upstream; the owner calls `App.deinit`
+        // after every `Window.deinit` has run. `Window.deinit` deliberately
+        // does not touch `self.app` — that would be a use-after-free in the
+        // multi-window case where one `App` outlives many `Window`s.
 
-        // PR 7a — single teardown call covers text_system +
-        // svg_atlas + image_atlas. `AppResources.deinit` is a no-op
-        // when borrowed (multi-window mode), otherwise frees the
-        // three subsystems in image → svg → text order. Replaces
-        // three flag-guarded free blocks (`*_owned: bool` triplet)
-        // at this point in the function.
+        // Single teardown call covers text_system + svg_atlas + image_atlas.
+        // `AppResources.deinit` is a no-op when borrowed (multi-window mode),
+        // otherwise frees the three subsystems in image → svg → text order.
         self.resources.deinit();
 
-        // PR 6 / 7b.4 — teardown covers `Debugger` only (the
-        // single per-window owned global remaining after 7b.4).
-        // `Keymap.deinit` runs from `App.deinit` instead. The
-        // thunk built at `setOwned` time picks the right shape
-        // per type (`fn(*Self) void` vs.
-        // `fn(*Self, Allocator) void`), so
-        // each global teardown matches its declared `deinit`.
+        // Teardown covers `Debugger` only (the single per-window owned
+        // global); `Keymap.deinit` runs from `App.deinit`. The thunk built
+        // at `setOwned` time picks the right shape per type so each global
+        // teardown matches its declared `deinit`.
         self.globals.deinit(self.allocator);
 
-        // PR 7c.3a / 7c.3c — tear down the two-`Frame` double
-        // buffer. Each `Frame.deinit` frees its Scene +
-        // DispatchTree pair in dispatch → scene order; both
-        // slots carry `owned = true` regardless of how many
-        // `mem.swap` calls have run (the swap is a physical
-        // struct exchange between two owning slots, not a
-        // hand-off through `Frame.borrowed`). Order between the
-        // two slots is irrelevant — they share no inter-pointer
-        // references — but `next_frame` first matches the build
-        // direction (the freshly-cleared buffer goes first) and
-        // mirrors the field declaration order on the struct.
+        // Tear down the two-`Frame` double buffer. Each `Frame.deinit` frees
+        // its Scene + DispatchTree pair; both slots carry `owned = true`
+        // regardless of how many `mem.swap` calls have run (the swap is a
+        // physical struct exchange between two owning slots, not a hand-off
+        // through `Frame.borrowed`). Order between the slots is irrelevant
+        // (they share no inter-pointer references).
         self.next_frame.deinit();
         self.rendered_frame.deinit();
 
-        // PR 7a — `layout` is always owned (no init path ever
-        // leaves it borrowed); the tautological `layout_owned`
-        // flag retired alongside the `AppResources` extraction.
-        // Free unconditionally. (`scene` joined `dispatch`
-        // inside `Frame` in PR 7c.3a — see the `frame.deinit`
-        // call above.)
+        // `layout` is always owned (no init path leaves it borrowed), so
+        // free unconditionally.
         self.layout.deinit();
         self.allocator.destroy(self.layout);
     }
@@ -1564,26 +1185,21 @@ pub const Window = struct {
         self.current_phase = next;
     }
 
-    /// PR 6 — read-only accessor for diagnostics / tests.
+    /// Read-only accessor for diagnostics / tests.
     pub fn drawPhase(self: *const Self) DrawPhase {
         return self.current_phase;
     }
 
-    /// PR 6 / 7b.4 — typed accessor for the keymap global.
-    /// Pre-7b.4 the slot lived on `Window.globals`; post-7b.4 it
-    /// lives on `App.globals` and this is a forwarder. The
-    /// forwarder is preserved so existing call sites
-    /// (`window.keymap().bind(...)` / `window.keymap().match(...)`)
-    /// keep working without churn — a follow-up cleanup may
-    /// retire it once enough callers route through `*App`
-    /// directly. Panics if the parent `App` was never `init*`'d
-    /// (a framework bug, not a runtime fallback).
+    /// Typed accessor for the keymap global, which lives on `App.globals`;
+    /// this forwards to `self.app.keymap()` so call sites
+    /// (`window.keymap().bind(...)`) don't reach through `*App` themselves.
+    /// Panics if the parent `App` was never `init*`'d (a framework bug).
     pub fn keymap(self: *Self) *Keymap {
         return self.app.keymap();
     }
 
-    /// PR 6 — typed accessor for the debugger global. Same panic
-    /// contract as `keymap()`.
+    /// Typed accessor for the debugger global. Same panic contract as
+    /// `keymap()`.
     pub fn debugger(self: *Self) *debugger_mod.Debugger {
         return self.globals.get(debugger_mod.Debugger) orelse {
             std.debug.panic("Window.debugger(): no Debugger registered in globals (init* did not run?)", .{});
@@ -1592,57 +1208,38 @@ pub const Window = struct {
 
     /// Call at the start of each frame before building UI
     ///
-    /// Per-tick app-scoped work (image-loader drain, entity-
-    /// observation clear) is NOT done here — see PR 7c.2. The
-    /// runtime frame driver (`runtime/frame.zig::renderFrameImpl`)
-    /// calls `self.app.beginFrame()` exactly once per tick before
-    /// invoking this method, so by the time control reaches here
-    /// the loader has already drained into the atlas and stale
-    /// frame observations from the previous tick have been
-    /// cleared. Pre-7c.2 those calls lived inline in this
-    /// function, which made multi-window flows redundant
-    /// (N windows borrowing one `App` ran the begin pair N times
-    /// per tick) and worse, broke `entities.beginFrame`'s
-    /// non-idempotent contract on the second call onwards.
+    /// Per-tick app-scoped work (image-loader drain, entity-observation
+    /// clear) is NOT done here: the runtime frame driver
+    /// (`runtime/frame.zig::renderFrameImpl`) calls `self.app.beginFrame()`
+    /// exactly once per tick before this method, so the loader has already
+    /// drained into the atlas and stale observations are cleared. Doing it
+    /// per-window would be redundant across N windows and would break
+    /// `entities.beginFrame`'s non-idempotent contract.
     pub fn beginFrame(self: *Self) void {
-        // PR 6 — first thing the frame does: advance into prepaint.
-        // `assertAdvance` checks the previous phase was `.none`, so
-        // back-to-back `beginFrame` calls without an intervening
-        // `finalizeFrame` fail loudly here rather than corrupting
-        // the next frame's state.
+        // First thing the frame does: advance into prepaint. `assertAdvance`
+        // checks the previous phase was `.none`, so back-to-back
+        // `beginFrame` calls without an intervening `finalizeFrame` fail
+        // loudly here rather than corrupting the next frame's state.
         self.advancePhase(.prepaint);
 
         // Start profiler frame timing
         self.debugger().beginFrame(self.io);
 
         self.frame_count += 1;
-        // PR 8.4c — was `self.widgets.beginFrame()` pre-retirement.
-        // `change_tracker` carries no per-frame state to reset (the
-        // diff is keyed by call-site comptime hash, not by frame).
+        // `change_tracker` carries no per-frame state to reset (the diff is
+        // keyed by call-site comptime hash, not by frame).
         self.animations.beginFrame();
         self.focus.beginFrame();
         self.resources.image_atlas.beginFrame();
 
-        // PR 7c.2 — `self.app.beginFrame()` was hoisted out of
-        // this function up to `runtime/frame.zig::renderFrameImpl`,
-        // which calls it exactly once per tick before driving any
-        // window's `Window.beginFrame`. This is the structural
-        // fix the 7c.1 comment block flagged: with N windows
-        // borrowing one `App`, running the app-scoped begin pair
-        // through every per-window forwarder discarded
-        // earlier-this-tick frame observations on the second
-        // call onwards. Lifting the call to the runtime layer
-        // removes the redundancy and the correctness gap in one
-        // step. The post-PR ordering invariant the runtime
-        // driver upholds is: `App.beginFrame` runs after every
-        // `Window`'s atlas has been reset for the tick (so
-        // freshly-decoded pixels land in the post-reset atlas)
-        // and before any window's render observes entities (so
-        // the clear of last-tick observations cannot race with
-        // this-tick observations). Currently only one window
-        // renders per tick, so the constraint is trivially
-        // satisfied; a future tick-driver landing in 7c.3+ will
-        // preserve it across N windows.
+        // `self.app.beginFrame()` is driven once per tick by
+        // `runtime/frame.zig::renderFrameImpl`, not here: running the
+        // app-scoped begin pair through every per-window forwarder would
+        // discard earlier-this-tick frame observations. The driver upholds
+        // the ordering invariant that `App.beginFrame` runs after every
+        // window's atlas reset (so freshly-decoded pixels land post-reset)
+        // and before any window observes entities (so the clear of last-tick
+        // observations cannot race with this-tick observations).
 
         // Update cached window dimensions
         if (self.platform_window) |w| {
@@ -1654,15 +1251,11 @@ pub const Window = struct {
         // Sync scale factor to text system for correct glyph rasterization
         // self.resources.text_system.setScaleFactor(self.scale_factor);
 
-        // PR 7c.3c — the build target is `next_frame.scene`. The
-        // `mem.swap` at the end of `runtime/frame.zig::renderFrameImpl`
-        // already cleared the slot post-swap (the now-stale
-        // buffer that just rotated out of `rendered_frame`), so
-        // this clear is redundant on every frame after the first;
-        // keeping it covers frame 0 (no prior swap to recycle
-        // the buffer) and stays as a defensive double-clear so a
-        // future caller of `beginFrame` outside `renderFrameImpl`
-        // doesn't pick up stale primitives.
+        // The build target is `next_frame.scene`. The end-of-frame
+        // `mem.swap` already cleared this slot post-swap, so the clear is
+        // redundant after the first frame; it covers frame 0 (no prior swap)
+        // and defends a caller of `beginFrame` outside `renderFrameImpl`
+        // against stale primitives.
         self.next_frame.scene.clear();
 
         // Connect render stats to scene for profiler tracking
@@ -1692,28 +1285,19 @@ pub const Window = struct {
     /// Call at the end of each frame after building UI
     /// Returns the render commands for the frame
     ///
-    /// Per-tick app-scoped finalisation is NOT done here — see
-    /// PR 7c.2. The runtime frame driver
-    /// (`runtime/frame.zig::renderFrameImpl`) calls
-    /// `self.app.endFrame()` exactly once per tick after every
-    /// window's `Window.endFrame` has returned. Pre-7c.2 the
-    /// call lived inline here for symmetry with the (now
-    /// hoisted) `App.beginFrame`; lifting both halves keeps the
-    /// pair together at the layer the work belongs to.
+    /// Per-tick app-scoped finalisation is NOT done here: the runtime frame
+    /// driver (`runtime/frame.zig::renderFrameImpl`) calls
+    /// `self.app.endFrame()` exactly once per tick after every window's
+    /// `Window.endFrame` has returned, keeping the begin/end pair together
+    /// at the layer the work belongs to.
     pub fn endFrame(self: *Self) ![]const RenderCommand {
-        // PR 8.4c — was `self.widgets.endFrame()` pre-retirement.
         self.animations.endFrame();
         self.focus.endFrame();
 
-        // PR 7c.2 — `self.app.endFrame()` was hoisted out of
-        // this function up to `runtime/frame.zig::renderFrameImpl`,
-        // mirroring the `beginFrame` lift. `App.endFrame` is
-        // currently a no-op (`EntityMap.endFrame` itself is a
-        // no-op), so the visible behaviour is unchanged; the
-        // motivation is layering, not behaviour. Future
-        // batching optimisations the `App.endFrame` hook is
-        // reserved for now have a single per-tick driver to
-        // hang off rather than firing once per window per tick.
+        // `self.app.endFrame()` is driven once per tick by
+        // `runtime/frame.zig::renderFrameImpl`, mirroring the `beginFrame`
+        // lift. It is currently a no-op; the per-tick driver gives future
+        // batching a single hook rather than one firing per window.
 
         // Request another frame if animations are running
         if (self.hasActiveAnimations()) {
@@ -1729,11 +1313,9 @@ pub const Window = struct {
         // (zero cost when disabled — the subsystem early-outs).
         self.a11y.endFrame(self.layout);
 
-        // PR 6 — layout has run; we are now in the paint phase. The
-        // caller (`runtime/frame.zig`) will draw the returned
-        // commands into the scene under this phase. Advancing here
-        // (rather than in the caller) keeps the phase machine in
-        // one place.
+        // Layout has run; we are now in the paint phase. The caller draws
+        // the returned commands into the scene under this phase. Advancing
+        // here keeps the phase machine in one place.
         self.advancePhase(.paint);
 
         return commands;
@@ -1741,12 +1323,10 @@ pub const Window = struct {
 
     /// Finalize frame timing (call after all rendering is complete)
     pub fn finalizeFrame(self: *Self) void {
-        // PR 6 — paint is done; walk through `.focus` (post-paint
-        // focus / a11y finalisation surface — wired up in PR 7) and
-        // back to `.none`. We advance through `.focus` even though
-        // no work is currently scheduled there because
-        // `assertAdvance` requires monotone progression: `paint →
-        // none` is not a legal direct edge.
+        // Paint is done; walk through `.focus` (the post-paint focus / a11y
+        // finalisation surface) back to `.none`. We advance through `.focus`
+        // even with no work scheduled there because `assertAdvance` requires
+        // monotone progression: `paint → none` is not a legal direct edge.
         self.advancePhase(.focus);
         self.debugger().endFrame(self.io, &render_stats.frame_stats);
         self.advancePhase(.none);
@@ -1758,25 +1338,18 @@ pub const Window = struct {
     }
 
     // =========================================================================
-    // Hover State — forwarders to `hover` (PR 3 extraction, see `hover.zig`)
+    // Hover State — forwarders to `hover` (see `hover.zig`)
     // =========================================================================
 
     /// Update hover state based on mouse position.
     /// Call this on mouse_moved events. Returns true if hover state
     /// changed (requires re-render).
     ///
-    /// PR 7c.3c+7c.3d — reads through `rendered_frame.dispatch`
-    /// (the previously-built tree, alive across the input gap
-    /// between frames). Input events handled in `runtime/input.zig`
-    /// arrive after frame N's swap and before frame N+1's build,
-    /// so the dispatch tree the user is currently *seeing* lives
-    /// in `rendered_frame`, with bounds already synced from the
-    /// layout pass that built it. Pre-7c.3c (single buffer) this
-    /// read through `frame.dispatch` and relied on an end-of-build
-    /// `refreshHover()` re-run to correct the resulting one-frame
-    /// lag; PR 7c.3d retired that re-run together with the
-    /// `Window.refreshHover` / `HoverState.refresh` /
-    /// `HoverState.last_mouse_*` cache fields it depended on.
+    /// Reads through `rendered_frame.dispatch` (the previously-built tree,
+    /// alive across the input gap between frames). Input events arrive after
+    /// frame N's swap and before frame N+1's build, so the dispatch tree the
+    /// user is currently *seeing* lives in `rendered_frame`, with bounds
+    /// already synced from the layout pass that built it.
     pub fn updateHover(self: *Self, x: f32, y: f32) bool {
         return self.hover.update(self.rendered_frame.dispatch, x, y);
     }
@@ -1808,10 +1381,9 @@ pub const Window = struct {
 
     /// Open a layout element (container).
     ///
-    /// PR 6 — must be called in the `.prepaint` phase: layout is
-    /// being declared while the user's `render_fn` is running.
-    /// Calling this after `endFrame` (which advances to `.paint`)
-    /// would silently corrupt the next frame's tree.
+    /// Must be called in the `.prepaint` phase: layout is declared while the
+    /// user's `render_fn` runs. Calling this after `endFrame` (which
+    /// advances to `.paint`) would silently corrupt the next frame's tree.
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {
         draw_phase_mod.assertPhase(self.current_phase, .prepaint);
         try self.layout.openElement(decl);
@@ -1819,10 +1391,9 @@ pub const Window = struct {
 
     /// Close the current layout element.
     ///
-    /// PR 6 — same `.prepaint` invariant as `openElement`. Pairing
-    /// the assertion at both ends of the open/close bracket
-    /// (CLAUDE.md §3) catches a stray `closeElement` outside the
-    /// user render, which would unbalance the layout stack.
+    /// Same `.prepaint` invariant as `openElement`. Pairing the assertion at
+    /// both ends of the open/close bracket catches a stray `closeElement`
+    /// outside the user render, which would unbalance the layout stack.
     pub fn closeElement(self: *Self) void {
         draw_phase_mod.assertPhase(self.current_phase, .prepaint);
         self.layout.closeElement();
@@ -1830,49 +1401,33 @@ pub const Window = struct {
 
     /// Add a text element.
     ///
-    /// PR 6 — `.prepaint` only: text declarations are part of the
-    /// element tree built during the user render.
+    /// `.prepaint` only: text declarations are part of the element tree
+    /// built during the user render.
     pub fn text(self: *Self, content: []const u8, config: TextConfig) !void {
         draw_phase_mod.assertPhase(self.current_phase, .prepaint);
         try self.layout.text(content, config);
     }
 
     // =========================================================================
-    // Widget Access — moved to `window.element_states.get(T, id)`
+    // Widget Access — via `window.element_states.get(T, id)`
     // =========================================================================
     //
-    // PR 4 (`docs/cleanup-implementation-plan.md`): the per-widget-type
-    // forwarders (`textInput` / `textArea` / `codeEditor` / their
-    // `*OrPanic` siblings, `getFocused*`, and `focusText*` /
-    // `focusCodeEditor`) used to live here, each one importing the
-    // concrete widget state type and so dragging the
-    // `context → widgets` backward edge into `Window`. They are deleted
-    // outright — PR 8.4b further retires the `widgets.textInput` /
-    // `widgets.textArea` / `widgets.codeEditor` proxy accessors that
-    // PR 4 callers were pointed at, and PR 8.4c retires the
-    // `widgets:` field they hung off entirely. Callers in `runtime/`,
-    // `cx.zig`, and user code now reach the engine state through
-    // `window.element_states.get(EngineType, layout_id.id)`, and
-    // trigger focus via the generic `window.focusWidget(id)` below
-    // (which routes through the `Focusable` vtable on `FocusManager`
-    // — no widget-type switch).
-    //
-    // Adding a new focusable widget type now touches only `widgets/`:
-    // the widget exposes `pub fn focusable(self) Focusable` and the
-    // builder registers that vtable on its `FocusHandle`. `Window`
-    // doesn't need to learn about the new type.
+    // Callers reach engine state through
+    // `window.element_states.get(EngineType, layout_id.id)` and trigger
+    // focus via the generic `window.focusWidget(id)` below (which routes
+    // through the `Focusable` vtable on `FocusManager` — no widget-type
+    // switch). Adding a focusable widget touches only `widgets/`: the widget
+    // exposes `pub fn focusable(self) Focusable` and the builder registers
+    // that vtable on its `FocusHandle`; `Window` doesn't learn the type.
 
     /// Focus a widget by string ID. Generic over widget type — the
-    /// `FocusManager` uses the `Focusable` vtable registered on the
-    /// matching `FocusHandle` to drive `blur()` on the previously
-    /// focused widget and `focus()` on the new one. Replaces the old
-    /// per-type `focusTextInput` / `focusTextArea` / `focusCodeEditor`
-    /// (and the `focusWidgetById(comptime T, id)` switch).
+    /// `FocusManager` uses the `Focusable` vtable registered on the matching
+    /// `FocusHandle` to drive `blur()` on the previously focused widget and
+    /// `focus()` on the new one.
     pub fn focusWidget(self: *Self, id: []const u8) void {
         // Invoke any registered blur handler for the currently-focused
-        // widget before the trait flips its `focused` flag — keeps the
-        // existing on-blur semantics that `focusTextInput` &c. used to
-        // provide via `syncWidgetFocus`.
+        // widget before the trait flips its `focused` flag, preserving
+        // on-blur semantics.
         self.invokeBlurHandlerForFocusedWidget();
         self.focus.focusWidget(id);
         // Reset the transition latch so subsequent focus changes within
@@ -1905,8 +1460,7 @@ pub const Window = struct {
     }
 
     /// Focus a specific element by ID. Routes through the `Focusable`
-    /// trait on the matching `FocusHandle` — see `focusWidget` for the
-    /// rationale and the PR 4 cleanup direction.
+    /// trait on the matching `FocusHandle` — see `focusWidget`.
     pub fn focusElement(self: *Self, id: []const u8) void {
         self.invokeBlurHandlerForFocusedWidget();
         self.focus.focusByName(id);
@@ -1934,7 +1488,7 @@ pub const Window = struct {
 
     /// Clear all focus. The `FocusManager` blurs the focused widget
     /// (if any) through its `Focusable` vtable — no walk over per-type
-    /// widget maps required (PR 4).
+    /// widget maps required.
     pub fn blurAll(self: *Self) void {
         self.invokeBlurHandlerForFocusedWidget();
         self.focus.blur();
@@ -1979,11 +1533,9 @@ pub const Window = struct {
     /// `blurAll`) after a complete transition, allowing multiple focus
     /// changes per frame.
     ///
-    /// PR 4: previously this walked every per-type widget map in
-    /// `WidgetStore` to find the focused widget — that walk is gone now
-    /// that `FocusManager` knows the focused element's `FocusId`
-    /// directly. We just ask the registry for `getHandler(id)` against
-    /// the focus manager's tracked `string_id` and dispatch.
+    /// We ask the registry for `getHandler(id)` against the focus manager's
+    /// tracked `string_id` and dispatch — `FocusManager` knows the focused
+    /// element's `FocusId` directly.
     fn invokeBlurHandlerForFocusedWidget(self: *Self) void {
         // Guard against double invocation within a single focus transition.
         if (!self.blur_handlers.beginTransition()) return;
@@ -2005,38 +1557,30 @@ pub const Window = struct {
     // Entity Operations
     // =========================================================================
 
-    /// Create a new entity.
-    ///
-    /// PR 7b.3 — forwards to `self.app.entities`. Pre-7b.3 the
-    /// map lived as a direct field on `Window`; the lift to
-    /// `App` is transparent to this forwarder's call sites.
+    /// Create a new entity. Forwards to the shared `self.app.entities`.
     pub fn createEntity(self: *Self, comptime T: type, value: T) !entity_mod.Entity(T) {
         return self.app.entities.new(T, value);
     }
 
-    /// Read an entity's data.
-    /// PR 7b.3 — forwards to `self.app.entities`.
+    /// Read an entity's data. Forwards to `self.app.entities`.
     pub fn readEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*const T {
         return self.app.entities.read(T, entity);
     }
 
-    /// Get mutable access to an entity.
-    /// PR 7b.3 — forwards to `self.app.entities`.
+    /// Get mutable access to an entity. Forwards to `self.app.entities`.
     pub fn writeEntity(self: *Self, comptime T: type, entity: entity_mod.Entity(T)) ?*T {
         return self.app.entities.write(T, entity);
     }
 
-    /// Process entity notifications (called during frame).
-    /// PR 7b.3 — forwards to `self.app.entities`.
+    /// Process entity notifications (called during frame). Forwards to
+    /// `self.app.entities`.
     pub fn processEntityNotifications(self: *Self) bool {
         return self.app.entities.processNotifications();
     }
 
-    /// Get the entity map. PR 7b.3 — returns the shared
-    /// `App.entities` borrowed via `self.app`. Pre-7b.3 this
-    /// returned a per-window map; post-7b.3 every window
-    /// borrowing the same `*App` returns the same pointer,
-    /// which is the property cross-window observation needs.
+    /// Get the entity map: the shared `App.entities` borrowed via
+    /// `self.app`. Every window borrowing the same `*App` returns the same
+    /// pointer, which is the property cross-window observation needs.
     pub fn getEntities(self: *Self) *EntityMap {
         return &self.app.entities;
     }
@@ -2177,11 +1721,10 @@ pub const Window = struct {
 
     /// Finish the scene after rendering.
     ///
-    /// PR 7c.3c — finalises the build target, which is
-    /// `next_frame.scene`. Called from
-    /// `runtime/frame.zig::renderFrameImpl` *before* the
-    /// end-of-frame `mem.swap` rotates the just-built scene
-    /// into the `rendered_frame` slot for GPU presentation.
+    /// Finalises the build target (`next_frame.scene`). Called from
+    /// `runtime/frame.zig::renderFrameImpl` *before* the end-of-frame
+    /// `mem.swap` rotates the just-built scene into the `rendered_frame`
+    /// slot for GPU presentation.
     pub fn finishScene(self: *Self) void {
         self.next_frame.scene.finish();
     }
@@ -2190,14 +1733,9 @@ pub const Window = struct {
     // Resource Access
     // =========================================================================
 
-    /// PR 7c.3c — returns the build-target `Scene` (the slot
-    /// every render-pipeline call site writes into during the
-    /// current tick). Pre-swap, this is `next_frame.scene`;
-    /// post-swap (the next tick's perspective), the same heap
-    /// allocation has rotated into `rendered_frame.scene` and
-    /// the slot returned here points at the recycled buffer
-    /// that's about to receive the next build. Callers that
-    /// need the *currently-displayed* scene (e.g. read-back for
+    /// Returns the build-target `Scene` (`next_frame.scene`), the slot every
+    /// render-pipeline call site writes into during the current tick.
+    /// Callers that need the *currently-displayed* scene (e.g. read-back for
     /// a screenshot, debug inspection) should reach through
     /// `window.rendered_frame.scene` directly.
     pub fn getScene(self: *Self) *Scene {
@@ -2212,9 +1750,8 @@ pub const Window = struct {
         return self.layout;
     }
 
-    /// Get the OS-level window handle. Renamed from `getWindow` in
-    /// PR 7b.1b to disambiguate from the framework-level `Window`
-    /// struct that this method now lives on.
+    /// Get the OS-level window handle. Named `getPlatformWindow` to
+    /// disambiguate from the framework-level `Window` struct.
     pub fn getPlatformWindow(self: *Self) ?*PlatformWindow {
         return self.platform_window;
     }
@@ -2230,7 +1767,7 @@ pub const Window = struct {
     }
 
     // =========================================================================
-    // Accessibility — forwarders to `a11y` (PR 3 extraction, see `a11y_system.zig`)
+    // Accessibility — forwarders to `a11y` (see `a11y_system.zig`)
     // =========================================================================
 
     /// Check if accessibility is currently active (screen reader detected)
@@ -2300,15 +1837,12 @@ fn measureTextCallback(
 // Tests
 // =============================================================================
 //
-// These tests cover the deferred-command queue, which stays on `Window`.
-// They construct a minimal `Window` value via field-by-field init, leaving
-// every resource pointer at `undefined` — the deferred-command path
-// reads only `deferred_commands`, `deferred_count`, `root_state_*`,
-// `needs_render`, and `window`, so the test exercise the path without
-// standing up a full UI stack.
-//
-// Hover / blur / cancel / a11y subsystems have their own unit tests in
-// the respective modules; this file no longer needs to test them.
+// These tests cover the deferred-command queue. They construct a minimal
+// `Window` via field-by-field init, leaving every resource pointer at
+// `undefined` — the deferred-command path reads only `deferred_commands`,
+// `deferred_count`, `root_state_*`, `needs_render`, and `platform_window`,
+// so the path is exercised without standing up a full UI stack. Hover /
+// blur / cancel / a11y subsystems are unit-tested in their own modules.
 
 const testing = std.testing;
 
@@ -2320,41 +1854,25 @@ fn testWindow() Window {
         .allocator = testing.allocator,
         .io = undefined,
         .layout = undefined,
-        // PR 7c.3a / 7c.3c — the `next_frame: Frame = undefined`
-        // and `rendered_frame: Frame = undefined` defaults keep
-        // this fixture compiling without explicit init; the
-        // deferred-command tests this is built for never reach
-        // through either Frame's `scene` / `dispatch`. Pre-7c.3a
-        // the fixture set `scene` / `dispatch` alias fields
-        // explicitly; 7c.3b retired those, and 7c.3c added the
-        // second `Frame` slot for the double buffer — neither
-        // change touches this stub because the deferred-command
-        // path doesn't render.
+        // The `next_frame` / `rendered_frame` defaults keep this fixture
+        // compiling; the deferred-command path never reaches through either
+        // Frame's `scene` / `dispatch`.
         //
-        // PR 8.4c — `widgets: WidgetStore = undefined` retired
-        // alongside the field. `animations` is the replacement
-        // field (lives on `AnimationStore`); the deferred-command
-        // path doesn't reach into it either. `change_tracker`
-        // carries an in-struct default and so doesn't need an
-        // explicit literal here.
+        // `animations` (on `AnimationStore`) and `change_tracker` (with an
+        // in-struct default) are likewise unused by this path; `animations`
+        // is left `undefined` and `change_tracker` takes its default.
         .animations = undefined,
         .focus = undefined,
 
-        // PR 7b.3 — `entities` lifted onto `App`. The deferred-
-        // command tests this fixture is built for never reach
-        // through `self.app`, so `undefined` is safe; any test
-        // that calls into entity APIs would need to wire a
-        // real `*App` (see `App.init` in `app.zig`).
+        // `entities` live on `App`; this path never reaches through
+        // `self.app`, so `undefined` is safe. A test calling entity APIs
+        // would need to wire a real `*App` (see `App.init` in `app.zig`).
         .app = undefined,
         .platform_window = null,
         .hover = HoverState.init(),
         .blur_handlers = BlurHandlerRegistry.init(),
         .cancel_registry = CancelRegistry.init(),
         .a11y = undefined,
-        // PR 7b.5 — `image_loader` retired from `Window`'s
-        // field list; lives on `App` now. The deferred-command
-        // tests this fixture is built for never reach the
-        // loader, so the field's removal is invisible to them.
         .deferred_count = 0,
         .deferred_commands = undefined,
         .needs_render = false,
@@ -2464,7 +1982,7 @@ test "hasDeferredCommands returns correct state" {
 }
 
 // =============================================================================
-// PR 6 — DrawPhase ladder tests
+// DrawPhase ladder tests
 // =============================================================================
 //
 // These tests do not exercise the full frame lifecycle (which requires a

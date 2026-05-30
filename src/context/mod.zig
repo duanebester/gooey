@@ -3,17 +3,13 @@
 //! Application context, state management, and event dispatch.
 //!
 //! - `Window` - Unified UI context (layout, rendering, widgets, hit testing)
+//! - `App` - Application-lifetime entity storage shared across windows
 //! - `FocusManager` - Focus management and keyboard navigation
 //! - `DispatchTree` - Event routing through element hierarchy
 //! - `Entity` / `EntityMap` - Reactive entity system for component state
 //! - `HandlerRef` - Type-erased callback storage for UI events
 //! - `ElementStates` - Unified keyed pool for per-element retained state
 //! - `ChangeTracker` - Per-frame value-diffing storage (backs `cx.changed`)
-//!
-//! PR 8.4c — the `WidgetStore` namespace retired. Per-widget retained
-//! state lives on `ElementStates` (PR 8.1–8.4b); the four animation
-//! pools live on `animation.AnimationStore` (PR 8.4c); `ChangeTracker`
-//! is a peer field on `Window` directly.
 
 const std = @import("std");
 
@@ -21,14 +17,8 @@ const std = @import("std");
 // Window Context (framework-level wrapper, per-window)
 // =============================================================================
 //
-// PR 7b.1b — `Gooey` (the framework wrapper struct) was renamed to
-// `Window` and the file `gooey.zig` was renamed to `window.zig`. The
-// OS-level handle that this wrapper points at is `PlatformWindow`
-// (renamed in PR 7b.1a from `platform.Window`). The two used to share
-// the name `Window` only by accident of nobody having to talk about
-// both at once; PR 7b makes that contradiction explicit and resolves
-// it. See `docs/cleanup-implementation-plan.md` PR 7b and
-// `architectural-cleanup-plan.md` §10 for the GPUI mapping.
+// `Window` is the framework wrapper struct. The OS-level handle it
+// points at is `PlatformWindow` — the two are distinct types.
 
 pub const window = @import("window.zig");
 
@@ -36,32 +26,26 @@ pub const Window = window.Window;
 pub const FontConfig = window.FontConfig;
 
 // =============================================================================
-// PR 7a — App-scope shared resources
+// App-scope shared resources
 // =============================================================================
 //
 // `AppResources` bundles the three "expensive to duplicate per window"
 // subsystems (`TextSystem`, `SvgAtlas`, `ImageAtlas`) into one struct
-// with a single `owned: bool` discriminator, retiring the per-field
-// `_owned` flag triplet on `Window` (formerly `Gooey`). See
-// `docs/cleanup-implementation-plan.md` PR 7a.
+// with a single `owned: bool` discriminator.
 
 pub const app_resources = @import("app_resources.zig");
 pub const AppResources = app_resources.AppResources;
 
 // =============================================================================
-// PR 7c.3a — Per-window per-frame rendering bundle
+// Per-window per-frame rendering bundle
 // =============================================================================
 //
 // `Frame` bundles the two "rebuilt every frame, owned by one Window"
-// rendering subsystems (`Scene`, `DispatchTree`) into one struct with
-// a single `owned: bool` discriminator. Same shape as `AppResources`
-// — the symmetry is deliberate, since `Window` will end up holding
-// one `AppResources` (app-lifetime shared) and one `Frame` (per-window
-// per-tick) as its two ownership-bundle fields. PR 7c.3c introduces
-// the `rendered_frame` / `next_frame` double buffer; the `borrowed`
-// constructor on `Frame` exists today for that landing's
-// transient-view shape. See `docs/cleanup-implementation-plan.md`
-// PR 7c.3a and `architectural-cleanup-plan.md` §11.
+// rendering subsystems (`Scene`, `DispatchTree`) into one struct with a
+// single `owned: bool` discriminator. `Window` holds one `AppResources`
+// (app-lifetime shared) and one `Frame` (per-window per-tick); the
+// `borrowed` constructor backs the `rendered_frame` / `next_frame`
+// double buffer.
 
 pub const frame = @import("frame.zig");
 pub const Frame = frame.Frame;
@@ -79,12 +63,9 @@ pub const FocusEvent = focus.FocusEvent;
 pub const FocusEventType = focus.FocusEventType;
 pub const FocusCallback = focus.FocusCallback;
 
-// PR 4 — `Focusable` vtable. Lets `FocusManager` drive a widget's
-// `focus()` / `blur()` without the focus manager (which lives in
-// `context/`) having to import widget types. Each focusable widget
-// exposes `pub fn focusable(self) Focusable` and registers the trait
-// alongside its `FocusHandle` — see `docs/cleanup-implementation-plan.md`
-// PR 4 and `docs/architectural-cleanup-plan.md` §4.
+// `Focusable` vtable. Lets `FocusManager` drive a widget's `focus()` /
+// `blur()` without importing widget types — each focusable widget
+// exposes `pub fn focusable(self) Focusable`.
 pub const Focusable = focus.Focusable;
 
 // =============================================================================
@@ -107,7 +88,6 @@ pub const KeyEvent = dispatch.KeyEvent;
 // Listener types
 pub const MouseListener = dispatch.MouseListener;
 pub const ClickListener = dispatch.ClickListener;
-pub const ClickListenerWithContext = dispatch.ClickListenerWithContext;
 pub const ClickListenerHandler = dispatch.ClickListenerHandler;
 pub const KeyListener = dispatch.KeyListener;
 pub const SimpleKeyListener = dispatch.SimpleKeyListener;
@@ -120,13 +100,12 @@ pub const ActionTypeId = dispatch.ActionTypeId;
 pub const actionTypeId = dispatch.actionTypeId;
 
 // =============================================================================
-// PR 3 — context/ subsystem extractions
+// Peer subsystems (hover, blur handlers, cancel registry, a11y)
 // =============================================================================
 //
-// These four subsystems used to live as fields and methods directly on
-// `Window` (formerly `Gooey`). They are now peer modules. Re-exported
-// here so consumers can `@import("context/mod.zig")` and reach the
-// types via the same path as the rest of the context API.
+// These live as fields on `Window` and are re-exported here so
+// consumers reach the types via the same `context/mod.zig` path as the
+// rest of the context API.
 
 pub const hover = @import("hover.zig");
 pub const HoverState = hover.HoverState;
@@ -143,30 +122,21 @@ pub const MAX_CANCEL_GROUPS = cancel_registry.MAX_CANCEL_GROUPS;
 pub const a11y_system = @import("a11y_system.zig");
 pub const A11ySystem = a11y_system.A11ySystem;
 
-// Generic fixed-capacity slot map (cleanup item #8). Backs both
-// `BlurHandlerRegistry` and `CancelRegistry` in PR 3, and will back
-// `element_states` in PR 8.
+// Generic fixed-capacity slot map backing `BlurHandlerRegistry`,
+// `CancelRegistry`, and `ElementStates`.
 pub const subscriber_set = @import("subscriber_set.zig");
 pub const SubscriberSet = subscriber_set.SubscriberSet;
 pub const SubscriberSetOptions = subscriber_set.Options;
 pub const SubscriberInsertion = subscriber_set.Insertion;
 
 // =============================================================================
-// PR 8.1 — Unified element state pool
+// Unified element state pool
 // =============================================================================
 //
-// `ElementStates` is the keyed pool that PR 8 uses to collapse the
-// per-type widget maps on `WidgetStore` (`text_inputs`, `text_areas`,
-// `code_editors`, `scroll_containers`, `select_states`) into a single
-// `(id_hash, type_id) -> *S` table. Adding a new stateful widget
-// becomes a no-op in framework code: the widget calls
-// `cx.with_element_state(id, …)` and the pool routes the lookup to
-// the right slot without any `WidgetStore` field, getter, or
-// lifecycle hook needing to be edited.
-//
-// PR 8.1 ships the container in isolation. Subsequent PR 8.x slices
-// peel widgets off `WidgetStore` onto this generic. See
-// `docs/cleanup-implementation-plan.md` PR 8.
+// `ElementStates` is the keyed `(id_hash, type_id) -> *S` pool for
+// per-element retained widget state. A new stateful widget needs no
+// framework change: it calls `cx.withElementState(id, …)` and the pool
+// routes the lookup to the right slot.
 
 pub const element_states = @import("element_states.zig");
 pub const ElementStates = element_states.ElementStates;
@@ -176,21 +146,16 @@ pub const ElementStateTypeId = element_states.TypeId;
 pub const elementStateTypeId = element_states.typeId;
 
 // =============================================================================
-// PR 6 — DrawPhase + Globals
+// DrawPhase + Globals
 // =============================================================================
 //
 // `DrawPhase` tags the per-frame lifecycle so phase-restricted methods
 // can assert their invariants at entry. `Globals` is a type-keyed
-// singleton store for cross-cutting state (theme, keymap, debugger)
-// that previously lived as direct fields on `Window` (formerly `Gooey`).
-//
-// See `docs/cleanup-implementation-plan.md` PR 6.
+// singleton store for cross-cutting state (theme, keymap, debugger).
 
 pub const draw_phase = @import("draw_phase.zig");
 pub const DrawPhase = draw_phase.DrawPhase;
 pub const assertPhase = draw_phase.assertPhase;
-pub const assertPhaseOneOf = draw_phase.assertPhaseOneOf;
-pub const assertInFrame = draw_phase.assertInFrame;
 pub const assertAdvance = draw_phase.assertAdvance;
 
 pub const global = @import("global.zig");
@@ -225,14 +190,11 @@ pub const isView = entity.isView;
 pub const typeId = entity.typeId;
 
 // =============================================================================
-// PR 7b.3 — App (application-lifetime, shared across windows)
+// App (application-lifetime, shared across windows)
 // =============================================================================
 //
 // `App` lifts entity storage off `Window` so models can be shared
-// across windows (cross-window observation). Subsequent 7b slices add
-// `keymap` / `globals` / `image_loader` here per the GPUI mapping in
-// `architectural-cleanup-plan.md` §10. See `app.zig` and
-// `docs/cleanup-implementation-plan.md` PR 7b.3.
+// across windows (cross-window observation).
 
 pub const app = @import("app.zig");
 pub const App = app.App;
@@ -244,36 +206,18 @@ pub const App = app.App;
 pub const handler = @import("handler.zig");
 
 pub const HandlerRef = handler.HandlerRef;
-// PR 9 Task 2.5 — promoted `OnSelectHandler` to a sibling re-export
-// so `root.zig`'s `pub const OnSelectHandler = context.handler.OnSelectHandler`
-// alias can collapse to the shorter `context.OnSelectHandler` path that
-// matches every other context-namespaced type.
 pub const OnSelectHandler = handler.OnSelectHandler;
 pub const packArg = handler.packArg;
 pub const unpackArg = handler.unpackArg;
 
-// =============================================================================
-// Retained-state storage (PR 8.4c retired `WidgetStore`)
-// =============================================================================
-//
-// Pre-PR-8.4c this section re-exported `widget_store` /
-// `WidgetStore` — the historical catch-all retained-storage namespace.
-// PR 8.1–8.4b lifted every per-widget map onto `ElementStates`; PR
-// 8.4c lifted the residual four animation pools onto
-// `animation/store.zig::AnimationStore` and promoted `ChangeTracker`
-// to a direct `Window` field. There is no replacement umbrella type
-// to re-export here — callers reach the surviving subsystems
-// directly:
-//
+// Retained-state storage lives on the surviving subsystems directly:
 //   - per-element state → `window.element_states.*`
-//   - animation pools → `window.animations.*`
-//     (or, more commonly, `cx.animations.<verb>(...)`)
-//   - value-change diffing → `window.change_tracker.*`
-//     (or `cx.changed(key, value)` at the call site)
+//   - animation pools → `window.animations.*` (or `cx.animations.*`)
+//   - value-change diffing → `window.change_tracker.*` (or `cx.changed`)
 //
-// `change_tracker.zig` is still imported by `cx.zig`'s `changed`
-// helper for its free `hashValue` function; it is deliberately not
-// re-exported as part of the public `context` namespace.
+// `change_tracker.zig` is imported by `cx.zig`'s `changed` helper for
+// its free `hashValue` function; it is deliberately not re-exported as
+// part of the public `context` namespace.
 
 // =============================================================================
 // Tests
@@ -281,9 +225,8 @@ pub const unpackArg = handler.unpackArg;
 
 test {
     std.testing.refAllDecls(@This());
-    // PR 9 Task 5 — compile-time `_owned: bool` audit. Lives next to
-    // `Window` so it picks up reaches into sibling sub-structs without
-    // an extra import hop from `root.zig`. The audit's allow-list +
-    // rationale are documented in the audit file's header.
+    // Compile-time `_owned: bool` audit — lives next to `Window` so it
+    // reaches sibling sub-structs without an extra import hop. The
+    // allow-list and rationale are in the audit file's header.
     std.testing.refAllDecls(@import("owned_flag_audit.zig"));
 }

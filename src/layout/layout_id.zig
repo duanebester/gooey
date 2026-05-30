@@ -58,17 +58,6 @@ pub const LayoutId = struct {
         };
     }
 
-    /// Create child ID relative to a parent
-    pub fn child(parent_id: u32, str: []const u8) Self {
-        const hash = hashString(str, parent_id);
-        return .{
-            .id = hash,
-            .base_id = hash,
-            .offset = 0,
-            .string_id = str,
-        };
-    }
-
     /// Create child ID with index
     pub fn childIndexed(parent_id: u32, str: []const u8, index: u32) Self {
         const base = hashString(str, parent_id);

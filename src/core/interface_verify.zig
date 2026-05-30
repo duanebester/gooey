@@ -159,22 +159,14 @@ pub fn verifyFileDialogInterface(comptime T: type) void {
 /// register a `context.focus.Focusable` vtable with the `FocusManager`.
 ///
 /// Required instance methods:
-///   - `focus(*Self) void`        — set the widget's focused flag
-///   - `blur(*Self) void`         — clear the focused flag and any IME state
-///   - `isFocused(...) bool`      — read the focused flag
+///   - `focus(*Self) void`          — set the widget's focused flag
+///   - `blur(*Self) void`           — clear the focused flag and IME state
+///   - `isFocused(...) bool`        — read the focused flag
 ///   - `focusable(*Self) Focusable` — bundle pointer + vtable for the trait
 ///
-/// PR 4 in `docs/cleanup-implementation-plan.md` introduces this trait so
-/// `context/gooey.zig` no longer has to import `TextInput` / `TextArea` /
-/// `CodeEditorState` directly. This verifier is the compile-time pin that
-/// catches a widget dropping one of the four required methods — without it,
-/// the failure mode is a runtime no-op (the builder skips `withWidget` and
-/// the focus manager silently can't drive the widget).
-///
-/// Per CLAUDE.md §3, the trait shape is asserted at the type boundary, not
-/// inferred from a successful call later. Instantiate with each widget at
-/// `comptime` from `widgets/mod.zig` so a missing method fails the build,
-/// not the next focus event.
+/// The compile-time pin (per CLAUDE.md §3): instantiate from `widgets/mod.zig`
+/// so a widget dropping a method fails the build rather than becoming a silent
+/// runtime no-op. See PR 4 in `docs/cleanup-implementation-plan.md`.
 pub fn verifyFocusableInterface(comptime T: type) void {
     comptime {
         assertHasDecl(T, "focus", "Focusable");
@@ -197,11 +189,6 @@ fn assertHasDecl(comptime T: type, comptime name: []const u8, comptime interface
     }
 }
 
-/// Check if a type has a specific declaration (for optional features)
-pub fn hasDecl(comptime T: type, comptime name: []const u8) bool {
-    return @hasDecl(T, name);
-}
-
 // =============================================================================
 // Tests
 // =============================================================================
@@ -209,7 +196,6 @@ pub fn hasDecl(comptime T: type, comptime name: []const u8) bool {
 test "interface verification helpers compile" {
     // These are comptime-only, just verify the module compiles
     _ = assertHasDecl;
-    _ = hasDecl;
 }
 
 test "verifyRendererInterface with mock" {

@@ -1,20 +1,18 @@
 //! Layout position pass — Phase 3 of the layout pipeline.
 //!
-//! Split out from `engine.zig` per
-//! [docs/cleanup-implementation-plan.md PR 10](../../docs/cleanup-implementation-plan.md#pr-10--layout-engine-split--fuzz-targets).
 //! Reads sized elements from the sizing pass and writes
 //! `LayoutElement.computed.{bounding_box,content_box}`.
 //!
-//! Two sub-phases live here:
+//! Two sub-phases:
 //!   1. `computePositions` walks the main tree top-down, threading scroll
 //!      offsets and child-alignment / main-axis-distribution rules through
 //!      `positionChildren`.
 //!   2. `computeFloatingPositions` re-enters the sizing pass for each
-//!      floating subtree (sizes can shift once we know the parent bbox),
-//!      then positions the floating root and recurses into its children.
+//!      floating subtree (sizes can shift once the parent bbox is known),
+//!      then positions the floating root and its children.
 //!
-//! Floating elements never affect parent sizing — that invariant is enforced
-//! by the sizing pass; this file relies on it when computing constraints.
+//! Floating elements never affect parent sizing (enforced by the sizing
+//! pass); this file relies on that invariant when computing constraints.
 
 const std = @import("std");
 
@@ -39,9 +37,8 @@ const MAX_FLOATING_ROOTS = engine_mod.MAX_FLOATING_ROOTS;
 /// Set this element's `bounding_box` and `content_box`, then position its
 /// children inside the content box (honoring scroll offset if present).
 pub fn computePositions(engine: *LayoutEngine, index: u32, parent_x: f32, parent_y: f32, depth: u32) void {
-    // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
     std.debug.assert(index < engine.elements.len()); // Valid element index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
+    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
 
     const elem = engine.elements.get(index);
     const layout = elem.config.layout;
@@ -85,9 +82,8 @@ pub fn positionChildren(
     scroll_offset: ?ScrollOffset,
     depth: u32,
 ) void {
-    // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
     std.debug.assert(first_child < engine.elements.len()); // Valid child index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
+    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
 
     const is_horizontal = layout.layout_direction.isHorizontal();
 
@@ -254,12 +250,10 @@ fn crossAxisOffset(
 // Phase 3b: Position floating elements
 // ============================================================================
 
-/// Position each floating element (Phase 2.2: reduced from 4 passes to 2
-/// per element). Re-enters the sizing pass for the floating subtree so
-/// nested layouts see the parent's bbox as their constraint, then assigns
-/// concrete coordinates.
+/// Position each floating element in two passes per element. Re-enters the
+/// sizing pass for the floating subtree so nested layouts see the parent's
+/// bbox as their constraint, then assigns concrete coordinates.
 pub fn computeFloatingPositions(engine: *LayoutEngine) !void {
-    // Assertions per CLAUDE.md
     std.debug.assert(engine.floating_roots.len <= MAX_FLOATING_ROOTS);
 
     for (engine.floating_roots.slice()) |float_idx| {
@@ -268,7 +262,7 @@ pub fn computeFloatingPositions(engine: *LayoutEngine) !void {
 
         const parent_bbox = resolveFloatingParentBbox(engine, elem, floating);
 
-        // Phase 3.5: expand uses parent dimensions as constraints.
+        // expand uses parent dimensions as constraints.
         const constraint_width = if (floating.expand.width) parent_bbox.width else engine.viewport_width;
         const constraint_height = if (floating.expand.height) parent_bbox.height else engine.viewport_height;
 
@@ -302,16 +296,14 @@ fn resolveFloatingParentBbox(
     if (floating.attach_to_parent) {
         if (elem.parent_index) |pi| bbox = engine.elements.getConst(pi).computed.bounding_box;
     } else if (elem.computed.resolved_floating_parent) |pi| {
-        // Phase 2.3: cached parent index instead of HashMap lookup
+        // cached parent index instead of HashMap lookup
         bbox = engine.elements.getConst(pi).computed.bounding_box;
     }
 
     return bbox;
 }
 
-/// Phase 2.2 helper: compute sizes for floating element with text wrapping
-/// integrated. Combines what was previously 4 separate passes into 2
-/// internal operations.
+/// Compute sizes for a floating element with text wrapping integrated.
 pub fn computeFloatingSizesWithText(
     engine: *LayoutEngine,
     index: u32,
@@ -372,8 +364,8 @@ pub fn computeFloatingSizesWithText(
     }
 }
 
-/// Phase 2.2 helper: position a floating element and its children. Clamps
-/// to the viewport so floating elements don't render off-screen.
+/// Position a floating element and its children, clamping to the viewport
+/// so floating elements don't render off-screen.
 fn positionFloatingElement(
     engine: *LayoutEngine,
     float_idx: u32,

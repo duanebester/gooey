@@ -6,7 +6,7 @@
 const std = @import("std");
 
 // ============================================================================
-// Shared Types (Phase 3.4)
+// Shared Types
 // ============================================================================
 
 /// Shared 2D offset type for scroll offsets, floating offsets, etc.
@@ -27,7 +27,7 @@ pub const Offset2D = struct {
 // Sizing Types
 // ============================================================================
 
-/// Percent sizing with min/max constraints (Phase 1 addition)
+/// Percent sizing with min/max constraints
 pub const PercentSizing = struct {
     value: f32,
     min: f32 = 0,

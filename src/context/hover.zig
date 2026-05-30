@@ -1,66 +1,22 @@
-//! `HoverState` — fixed-capacity hover tracker extracted from `Gooey`.
+//! `HoverState` — fixed-capacity hover tracker.
 //!
-//! Rationale (cleanup item #1, plan §7b in
-//! `docs/architectural-cleanup-plan.md`): six fields and six methods
-//! on `Gooey` form a textbook subsystem. Keeping them tangled inside
-//! the god struct makes hover behavior hard to reason about in
-//! isolation and inflates `gooey.zig`'s line count past the 1,200-line
-//! target. Pulling them out here is a pure mechanical lift — no
-//! behavior change, no API change at the `Gooey` level (the public
-//! methods stay as one-line forwarders).
+//! Tracks the topmost element under the cursor (`hovered_layout_id`,
+//! `null` when over nothing hit-testable), its cached parent chain
+//! (`hovered_ancestors`, read by `isHoveredOrDescendant`), and a
+//! one-frame `hover_changed` latch the runtime reads to decide whether
+//! to re-render. The ancestor cache is filled during `update` while
+//! the dispatch tree is still valid, so it stays queryable between
+//! frames without re-walking the tree.
 //!
-//! ## What lives here
+//! `update` takes a `*const DispatchTree` rather than a back-pointer so
+//! the sole data dependency is explicit at the call site. The double-
+//! buffered `Frame` guarantees that tree already has bounds synced, so
+//! no post-build hit-test re-run is needed.
 //!
-//! - `hovered_layout_id`: the topmost element under the cursor at the
-//!   end of the last `update`. `null` when the cursor is outside any
-//!   hit-testable element.
-//! - `hovered_ancestors` (cap `MAX_HOVERED_ANCESTORS`): cached parent
-//!   chain of the hovered element, populated during `update` and read
-//!   by `isHoveredOrDescendant`. The cache is filled while the
-//!   dispatch tree handed to `update` is still valid for the
-//!   just-processed hit, so the chain remains queryable between
-//!   frames without re-walking the tree.
-//! - `hover_changed`: latch that's true for one frame whenever the
-//!   hovered element changes. Cleared at the start of every frame by
-//!   `beginFrame`. Kept so the runtime can decide whether a re-render
-//!   is warranted without a separate side channel.
-//!
-//! ## Decoupling from `Window`
-//!
-//! `update` takes a `*const DispatchTree` rather than a `*Window`
-//! back-pointer. The dispatch tree is the only `Window` field this
-//! subsystem reads, and threading it as a parameter makes the data
-//! dependency obvious at every call site. Per `CLAUDE.md` §6 (explicit
-//! control flow): leaf functions stay pure, control flow stays in the
-//! parent (`Window.updateHover` is a one-liner that hands the tree to
-//! the leaf).
-//!
-//! ## History — `refresh` retirement (PR 7c.3d)
-//!
-//! Pre-7c.3d this module also exposed a `refresh(tree)` method paired
-//! with `last_mouse_x` / `last_mouse_y` cache fields, called from the
-//! end-of-build pass in `runtime/frame.zig::renderFrameImpl` to re-run
-//! hit testing after bounds sync. It existed to paper over a
-//! single-buffer hazard: input handlers earlier in the same tick had
-//! hit-tested against the in-progress dispatch tree before bounds
-//! were synced, so the post-build re-run corrected the resulting
-//! one-frame lag.
-//!
-//! The 7c.3c `Frame` double buffer made that correction structurally
-//! unnecessary — input always hit-tests against
-//! `rendered_frame.dispatch` (the previously-built tree, with bounds
-//! already synced and rotated in by the end-of-frame `mem.swap`),
-//! never against an in-progress build. PR 7c.3d retired `refresh`,
-//! `last_mouse_x`, and `last_mouse_y` accordingly. The fields and
-//! method are not coming back; the doc-block here records the why so
-//! a future reader doesn't reintroduce the cache.
-//!
-//! ## Invariants
-//!
+//! Invariants:
 //! - `hovered_ancestor_count <= MAX_HOVERED_ANCESTORS`.
-//! - When `hovered_layout_id == null`, `hovered_ancestor_count == 0`.
-//!   The reverse does not hold — a hovered element may have zero
-//!   ancestors (it's the root).
+//! - `hovered_layout_id == null` implies `hovered_ancestor_count == 0`
+//!   (the reverse need not hold — a hovered root has zero ancestors).
 
 const std = @import("std");
 
@@ -71,19 +27,14 @@ const layout_mod = @import("../layout/layout.zig");
 const LayoutId = layout_mod.LayoutId;
 
 // =============================================================================
-// Capacity caps (per `CLAUDE.md` §4 — every loop and queue gets a hard cap)
+// Capacity caps
 // =============================================================================
 
-/// Hard cap on the cached ancestor chain.
-///
-/// 32 levels of nesting is comfortably above what any real UI hits —
-/// `MAX_NESTED_COMPONENTS` in `CLAUDE.md` example tables sits at 64,
-/// but the hovered chain is the depth of one hit path, not the entire
-/// component tree. 32 covers e.g. a deeply-nested form inside a
-/// scrolling list inside a tabbed pane inside a dialog without
-/// truncation. Truncation just means `isHoveredOrDescendant` returns
-/// false for ancestors beyond the cap — a graceful degradation, not a
-/// crash.
+/// Hard cap on the cached ancestor chain. The hovered chain is the
+/// depth of one hit path, not the whole component tree, so 32 covers
+/// realistic nesting. Truncation past the cap just makes
+/// `isHoveredOrDescendant` return false for deeper ancestors —
+/// graceful degradation, not a crash.
 pub const MAX_HOVERED_ANCESTORS: u32 = 32;
 
 // =============================================================================
@@ -97,10 +48,9 @@ pub const HoverState = struct {
     hovered_layout_id: ?u32 = null,
 
     /// Cached ancestor chain of `hovered_layout_id`, populated during
-    /// `update` and read by `isHoveredOrDescendant`. Filled while the
-    /// dispatch tree handed to `update` is still valid for the
-    /// just-processed hit; subsequent reads via `isHoveredOrDescendant`
-    /// / `ancestors` query the cache, not the tree.
+    /// `update` and read by `isHoveredOrDescendant` / `ancestors`.
+    /// Filled while the dispatch tree is still valid; later reads query
+    /// the cache, not the tree.
     hovered_ancestors: [MAX_HOVERED_ANCESTORS]u32 = [_]u32{0} ** MAX_HOVERED_ANCESTORS,
 
     /// Number of valid entries in `hovered_ancestors`. Always
@@ -119,19 +69,17 @@ pub const HoverState = struct {
     // Lifecycle
     // -------------------------------------------------------------------------
 
-    /// Empty hover state — nothing hovered, cursor at origin, no
-    /// pending change. Cheap; the struct is small enough to return by
-    /// value without WASM stack concerns.
+    /// Empty hover state. Small enough to return by value without WASM
+    /// stack concerns.
     pub fn init() Self {
         return .{};
     }
 
-    /// In-place reset to the empty state. Use this from a parent
-    /// struct's `initInPlace` path (per `CLAUDE.md` §13) where any
-    /// stack temp would compound with the parent's frame budget.
+    /// In-place reset to the empty state, for embedding in a parent
+    /// struct's `initInPlace` path where a stack temp would compound
+    /// with the parent's frame budget.
     pub fn initInPlace(self: *Self) void {
-        // Field-by-field — no struct literal, no stack temp. Mirrors
-        // the convention used by `Tree.initInPlace` in the a11y module.
+        // Field-by-field — no struct literal, no stack temp.
         self.hovered_layout_id = null;
         @memset(&self.hovered_ancestors, 0);
         self.hovered_ancestor_count = 0;
@@ -150,7 +98,7 @@ pub const HoverState = struct {
     }
 
     // -------------------------------------------------------------------------
-    // Update / refresh
+    // Update
     // -------------------------------------------------------------------------
 
     /// Recompute hover from cursor `(x, y)` against the current
@@ -163,15 +111,6 @@ pub const HoverState = struct {
     ///   - `hovered_ancestors` is rebuilt by walking parent links from
     ///     the hit node, capped at `MAX_HOVERED_ANCESTORS`.
     ///   - `hover_changed` is latched to `true` if the id changed.
-    ///
-    /// PR 7c.3d — `tree` is expected to be `rendered_frame.dispatch`
-    /// at every call site (input handlers between frames; the only
-    /// caller is `Window.updateHover`). The double-buffer
-    /// (`Frame` rendered/next pair, PR 7c.3c) guarantees that tree
-    /// has bounds already synced from the layout pass that built it,
-    /// so no post-build re-run is needed — the previous `refresh`
-    /// hack and its `last_mouse_*` cache fields were retired with
-    /// this slice. See the module-level history block for context.
     pub fn update(self: *Self, tree: *const DispatchTree, x: f32, y: f32) bool {
         // Coordinates must be finite. The platform layer is the
         // source of truth here; an assertion catches a regression at
@@ -204,11 +143,9 @@ pub const HoverState = struct {
     }
 
     /// Apply a hit-test result: set `hovered_layout_id` from the node
-    /// and walk parents to fill `hovered_ancestors`.
-    ///
-    /// Pure leaf — no control flow other than the bounded walk. Per
-    /// `CLAUDE.md` §5 (70-line limit + push-ifs-up), the parent
-    /// `update` keeps the hit-vs-miss branching and we keep the loop.
+    /// and walk parents to fill `hovered_ancestors`. Pure leaf — the
+    /// parent `update` keeps the hit-vs-miss branching; this owns only
+    /// the bounded walk.
     fn applyHit(
         self: *Self,
         tree: *const DispatchTree,

@@ -1,24 +1,15 @@
-//! Entity System - GPUI-style reference-counted shared state
+//! Entity System — reference-counted shared state.
 //!
-//! Entities are the core abstraction for shared mutable state in Window.
-//! An Entity(T) is a lightweight handle (just an ID) that references data
-//! stored in the EntityMap. This enables:
-//!
-//! - Multiple views observing the same data
-//! - Automatic re-rendering when data changes
-//! - Clean separation between "what data exists" and "who's looking at it"
-//!
-//! ## Key Insight from GPUI
-//!
-//! A "View" is just an Entity(T) where T implements a `render()` method.
-//! There's no separate View type - it's all entities.
+//! An `Entity(T)` is a lightweight handle (just an ID) referencing data
+//! stored in the `EntityMap`. This enables multiple views to observe the
+//! same data, automatic re-render on change, and a clean split between
+//! "what data exists" and "who's looking at it". A "View" is simply an
+//! `Entity(T)` whose `T` has a `render()` method — there is no separate
+//! View type.
 //!
 //! ## Usage
 //!
 //! ```zig
-//! // A "View" is just an Entity(T) where T implements a render() method.
-//! // cx.update() returns a HandlerRef that, when invoked, calls the
-//! // method and marks the entity dirty automatically.
 //! const Counter = struct {
 //!     count: i32 = 0,
 //!
@@ -227,11 +218,11 @@ pub const EntityMap = struct {
             }
             slot.deinit_fn(slot.ptr, self.allocator);
             slot.observers.deinit(self.allocator);
-            slot.observing.deinit(self.allocator); // NEW
+            slot.observing.deinit(self.allocator);
         }
         self.slots.deinit(self.allocator);
         self.pending_notifications.deinit(self.allocator);
-        self.frame_observations.deinit(self.allocator); // NEW
+        self.frame_observations.deinit(self.allocator);
     }
 
     /// Create a new entity with the given initial value
@@ -603,14 +594,6 @@ pub fn EntityContext(comptime T: type) type {
             };
         }
 
-        /// Create a handler from a pure entity method that takes an argument.
-        ///
-        /// **Note:** For EntityContext, we need to pack both the entity_id AND the arg.
-        /// Since entity_id uses the HandlerRef's entity_id field, we store the arg
-        /// using a thread-local approach (limited to one arg value per method type).
-        ///
-        /// For most cases, prefer using the existing `handler()` method or restructure
-        /// to avoid needing both entity_id and an argument.
         /// Create a handler from a pure entity method that takes an argument.
         ///
         /// Packs entity_id (lower 32 bits) and arg (upper 32 bits) into

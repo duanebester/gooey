@@ -1,20 +1,16 @@
 //! Layout sizing pass — Phases 1 and 2 of the layout pipeline.
 //!
-//! Split out from `engine.zig` per
-//! [docs/cleanup-implementation-plan.md PR 10](../../docs/cleanup-implementation-plan.md#pr-10--layout-engine-split--fuzz-targets).
-//! All functions in this file take a `*LayoutEngine` as the first argument
-//! and mutate `LayoutElement.computed.{min_,sized_}{width,height}` in place.
-//! They never touch positions or render commands — those belong to
-//! `position_pass.zig` and `scroll_pass.zig` respectively.
+//! Every function takes a `*LayoutEngine` and mutates
+//! `LayoutElement.computed.{min_,sized_}{width,height}` in place; positions
+//! and render commands belong to `position_pass.zig` / `scroll_pass.zig`.
 //!
-//! Phase ordering inside this file:
-//!   1. `computeMinSizes`  — bottom-up content minimums
-//!   2. `computeFinalSizes` — top-down concrete sizes with `distributeSpace` family
-//!   3. `computeTextWrapping` — wraps text once container widths are known,
-//!      propagates fit-content parent height changes
+//! Phase order:
+//!   1. `computeMinSizes`     — bottom-up content minimums.
+//!   2. `computeFinalSizes`   — top-down concrete sizes (`distributeSpace`).
+//!   3. `computeTextWrapping` — wraps text once container widths are known.
 //!
-//! Everything not consumed externally is `pub` only because the orchestrator
-//! and `position_pass.computeFloatingSizesWithText` re-enter the pipeline
+//! Helpers are `pub` because the orchestrator and
+//! `position_pass.computeFloatingSizesWithText` re-enter the pipeline
 //! mid-frame for floating subtrees.
 
 const std = @import("std");
@@ -44,9 +40,8 @@ const UNCONSTRAINED_MAX = engine_mod.UNCONSTRAINED_MAX;
 /// axis (respecting scroll-direction opt-outs), then add gaps + padding + the
 /// element's own sizing-axis constraints. Writes into `computed.min_*`.
 pub fn computeMinSizes(engine: *LayoutEngine, index: u32, depth: u32) void {
-    // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
     std.debug.assert(index < engine.elements.len()); // Valid element index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
+    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
 
     const elem = engine.elements.get(index);
     const layout = elem.config.layout;
@@ -153,9 +148,8 @@ pub fn computeFinalSizes(
     available_height: f32,
     depth: u32,
 ) void {
-    // Assertions per CLAUDE.md: minimum 2 per function, put a limit on everything
     std.debug.assert(index < engine.elements.len()); // Valid element index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
+    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
     std.debug.assert(available_width >= 0 or available_width == std.math.floatMax(f32)); // Valid width
 
     const elem = engine.elements.get(index);
@@ -206,9 +200,8 @@ pub fn distributeSpace(
     height: f32,
     depth: u32,
 ) void {
-    // Assertions per CLAUDE.md
     std.debug.assert(width >= 0 or width == std.math.floatMax(f32));
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit per CLAUDE.md
+    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
 
     const is_horizontal = layout.layout_direction.isHorizontal();
     const gap: f32 = @floatFromInt(layout.child_gap);
@@ -316,7 +309,6 @@ fn tryUniformGrowFastPath(
     gap: f32,
     depth: u32,
 ) bool {
-    // Assertions per CLAUDE.md: minimum 2 per function
     std.debug.assert(first_child < engine.elements.len()); // Valid child index
     std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
 
@@ -364,7 +356,6 @@ fn speculativeUniformAssign(
     per_child: f32,
     cross_size: f32,
 ) SpeculativeResult {
-    // Assertions per CLAUDE.md: minimum 2 per function
     std.debug.assert(first_child < engine.elements.len());
     std.debug.assert(per_child >= 0);
 
@@ -408,7 +399,6 @@ fn speculativeUniformAssign(
 /// Fast-path eligibility check: both axes are unbounded `grow` and no
 /// aspect ratio is in play. Anything else routes to the slow path.
 fn isUnconstrainedGrow(child: *const LayoutElement, is_horizontal: bool) bool {
-    // Assertions per CLAUDE.md: minimum 2 per function
     std.debug.assert(child.config.layout.aspect_ratio == null or child.config.layout.aspect_ratio.? > 0);
     std.debug.assert(UNCONSTRAINED_MAX > 0);
 
@@ -437,7 +427,6 @@ fn reassignUniformSizes(
     per_child: f32,
     cross_size: f32,
 ) void {
-    // Assertions per CLAUDE.md: minimum 2 per function
     std.debug.assert(first_child < engine.elements.len());
     std.debug.assert(per_child >= 0);
 
@@ -464,7 +453,6 @@ fn distributeToGrandchildren(
     is_horizontal: bool,
     depth: u32,
 ) void {
-    // Assertions per CLAUDE.md: minimum 2 per function
     std.debug.assert(first_child < engine.elements.len());
     std.debug.assert(depth < MAX_RECURSION_DEPTH);
 
@@ -743,7 +731,7 @@ pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
 }
 
 // ============================================================================
-// Text wrapping — Phase 2.1 two-pass algorithm
+// Text wrapping — two-pass algorithm
 // ============================================================================
 
 /// Output of `wrapText` — owned by the per-frame arena.
@@ -765,13 +753,12 @@ pub fn wrapText(
     config: TextConfig,
     max_width: f32,
 ) !WrapResult {
-    // Assertions per CLAUDE.md: minimum 2 per function
     std.debug.assert(max_width >= 0 or config.wrap_mode == .none);
     std.debug.assert(text_str.len <= std.math.maxInt(u32)); // Ensure offsets fit in u32
 
-    // Short-circuit on no-op inputs. Empty text was caught by the PR 10
-    // fuzzer — `findWordBoundaries` documents `text_str.len > 0` as a
-    // precondition, so the gate must live here at the public boundary.
+    // Short-circuit on no-op inputs. `findWordBoundaries` requires
+    // `text_str.len > 0`, so the empty-text gate must live here at the
+    // public boundary.
     if (config.wrap_mode == .none or max_width <= 0 or text_str.len == 0) {
         return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
     }
@@ -785,12 +772,11 @@ pub fn wrapText(
     _ = findWordBoundaries(text_str, measure_fn, config, engine.measure_text_user_data, &words);
 
     // Pass 2: Accumulate words onto lines; capture residual so the final
-    // line carries the same `line_width` the pre-split function emitted.
+    // line carries the right `line_width`.
     var lines: FixedCapacityArray(types.WrappedLine, MAX_LINES_PER_TEXT) = .{};
     var residual: LineResidual = .{};
     const max_line_width = accumulateWordsIntoLines(words.slice(), config.wrap_mode, max_width, &lines, &residual);
 
-    // Emit final line (matches original tail-emit semantics, width included).
     const final_max = finalizeLastLine(text_str, residual, &lines);
 
     // Copy to arena for return (arena memory persists until frame end).
@@ -805,10 +791,9 @@ pub fn wrapText(
     };
 }
 
-/// Carryover state from the accumulator into `finalizeLastLine` — keeps
-/// the byte offset where the in-progress line started and the width that
-/// has been accumulated so far (sans trailing whitespace). Equivalent to
-/// the two locals that lived inside the pre-split `wrapText` body.
+/// Carryover from the accumulator into `finalizeLastLine`: the byte offset
+/// where the in-progress line started and its accumulated width (sans
+/// trailing whitespace).
 const LineResidual = struct {
     line_start: u32 = 0,
     line_width: f32 = 0,
@@ -889,9 +874,8 @@ fn accumulateWordsIntoLines(
 }
 
 /// Emit the trailing line if any content remains past the accumulator's
-/// last line break. Returns the width contribution so `wrapText` can fold
-/// it into `max_line_width`. Matches the pre-split function's behavior of
-/// stashing the accumulator's final `line_width` on the trailing line.
+/// last line break, stashing its `line_width`. Returns the width
+/// contribution so `wrapText` can fold it into `max_line_width`.
 fn finalizeLastLine(
     text_str: []const u8,
     residual: LineResidual,
@@ -913,7 +897,7 @@ fn finalizeLastLine(
 }
 
 // ============================================================================
-// Word-boundary scanning (Phase 2.1 helper)
+// Word-boundary scanning
 // ============================================================================
 
 /// Scanner state for `findWordBoundaries`. Split out so the inner loop can

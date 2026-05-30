@@ -131,6 +131,24 @@ Position children within the container:
 .child_alignment = .{ .x = .center, .y = .top } // custom
 ```
 
+### Main Axis Distribution
+
+When children don't fill the container, `main_axis_distribution` controls how the
+extra space along the layout direction is distributed:
+
+| Value           | Description                                           |
+| --------------- | ----------------------------------------------------- |
+| `start`         | Children packed at the start (default)                |
+| `center`        | Children packed in the center                         |
+| `end`           | Children packed at the end                            |
+| `space_between` | Equal space between children, no space at the edges   |
+| `space_around`  | Equal space around children (half space at the edges) |
+| `space_evenly`  | Equal space between and around children               |
+
+```zig
+.main_axis_distribution = .space_between
+```
+
 ### Padding & Gaps
 
 ```zig
@@ -276,24 +294,28 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
 ### LayoutEngine
 
-| Method                            | Description                                       |
-| --------------------------------- | ------------------------------------------------- |
-| `init(allocator)`                 | Create a new layout engine                        |
-| `deinit()`                        | Free resources                                    |
-| `setMeasureTextFn(fn, user_data)` | Set text measurement callback                     |
-| `beginFrame(width, height)`       | Start a new frame                                 |
-| `openElement(decl)`               | Open a container element                          |
-| `closeElement()`                  | Close the current element                         |
-| `text(content, config)`           | Add a text leaf element                           |
-| `svg(id, width, height, data)`    | Add an SVG leaf element                           |
-| `image(id, width, height, data)`  | Add an image leaf element                         |
-| `endFrame()`                      | Compute layout, return render commands            |
-| `getBoundingBox(id: u32)`         | Get computed bounding box for an element          |
-| `getContentBox(id: u32)`          | Get computed content box (inside padding)         |
-| `getZIndex(id: u32)`              | Get z-index for an element (cached during render) |
+| Method                             | Description                                       |
+| ---------------------------------- | ------------------------------------------------- |
+| `init(allocator)`                  | Create a new layout engine                        |
+| `deinit()`                         | Free resources                                    |
+| `setMeasureTextFn(fn, user_data)`  | Set text measurement callback                     |
+| `beginFrame(width, height)`        | Start a new frame                                 |
+| `openElement(decl)`                | Open a container element                          |
+| `closeElement()`                   | Close the current element                         |
+| `text(content, config)`            | Add a text leaf element                           |
+| `svg(id, width, height, data)`     | Add an SVG leaf element                           |
+| `image(id, width?, height?, data)` | Add an image leaf element (see note below)        |
+| `endFrame()`                       | Compute layout, return render commands            |
+| `getBoundingBox(id: u32)`          | Get computed bounding box for an element          |
+| `getContentBox(id: u32)`           | Get computed content box (inside padding)         |
+| `getZIndex(id: u32)`               | Get z-index for an element (cached during render) |
 
 > **Note:** `getBoundingBox`, `getContentBox`, and `getZIndex` take a raw `u32` ID hash,
 > not a `LayoutId`. Extract it with `.id`: `engine.getBoundingBox(LayoutId.init("foo").id)`.
+
+> **Note:** `image` takes optional `?f32` width and height. When a dimension is
+> `null`, that axis uses `grow()` instead of a fixed size. `svg` width/height are
+> required (non-optional).
 
 ### ElementDeclaration
 
@@ -357,7 +379,7 @@ of `font_size` (e.g., 120 = 1.2×), not a float multiplier.
 try engine.text("Hello, World!", .{
     .color = Color.black,
     .font_id = 0,              // u16, default 0
-    .font_size = 16,           // u16 in pixels, default 14
+    .font_size = 16,           // u16 in pixels, default 16
     .line_height = 120,        // u16 percentage of font_size (120 = 1.2×), default 120
     .letter_spacing = 0,       // i16, default 0
     .wrap_mode = .words,       // .none (default), .words, .newlines
@@ -379,14 +401,15 @@ const zero = Offset2D.zero();
 
 The layout engine uses fixed-capacity collections (no allocation during frames):
 
-| Constant                 | Value | Description                         |
-| ------------------------ | ----- | ----------------------------------- |
-| `MAX_ELEMENTS_PER_FRAME` | 16384 | Maximum elements in a single frame  |
-| `MAX_OPEN_DEPTH`         | 64    | Maximum nesting depth               |
-| `MAX_FLOATING_ROOTS`     | 256   | Maximum floating elements per frame |
-| `MAX_TRACKED_IDS`        | 4096  | Maximum elements with IDs           |
-| `MAX_LINES_PER_TEXT`     | 1024  | Maximum wrapped lines per text      |
-| `MAX_WORDS_PER_TEXT`     | 2048  | Maximum words for text wrapping     |
+| Constant                 | Value | Description                           |
+| ------------------------ | ----- | ------------------------------------- |
+| `MAX_ELEMENTS_PER_FRAME` | 16384 | Maximum elements in a single frame    |
+| `MAX_OPEN_DEPTH`         | 64    | Maximum nesting depth                 |
+| `MAX_FLOATING_ROOTS`     | 256   | Maximum floating elements per frame   |
+| `MAX_TRACKED_IDS`        | 4096  | Maximum elements with IDs             |
+| `MAX_LINES_PER_TEXT`     | 1024  | Maximum wrapped lines per text        |
+| `MAX_WORDS_PER_TEXT`     | 2048  | Maximum words for text wrapping       |
+| `MAX_RECURSION_DEPTH`    | 48    | Maximum traversal depth during passes |
 
 ## Notes
 
