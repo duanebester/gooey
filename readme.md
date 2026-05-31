@@ -18,7 +18,7 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 
 ## Features
 
-- **GPU Rendering** - Metal (macOS), Vulkan (Linux), WebGPU (WASM) with MSAA anti-aliasing
+- **GPU Rendering** - Metal (macOS), Vulkan (Linux) with MSAA anti-aliasing (WebGPU/WASM is blocked upstream on Zig 0.16 — see [WASM](#wasm))
 - **Declarative UI** - Component-based layout with `ui.*` primitives and flexbox-style system
 - **Cx/UI Separation** - `Cx` for state, handlers, and focus; `ui.*` for layout primitives
 - **Pure State Pattern** - Testable state methods with automatic re-rendering
@@ -39,7 +39,7 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 
 ## Quick Start
 
-**Requirements:** Zig 0.15.2+
+**Requirements:** Zig 0.16.0+
 
 **macOS:** macOS 12.0+
 
@@ -462,39 +462,76 @@ fn confirmDelete(self: *State, g: *Gooey, index: u32) void {
 
 The deferred command queue holds up to 32 commands and is flushed after each event cycle.
 
-### Thread Dispatch
+### Background Work (`Io.Queue` / `Io.Group`)
 
-Use the dispatch API on `Cx` to run work on background threads or schedule callbacks on the main thread. This is useful for network requests, file I/O, or any expensive computation you want off the UI thread.
+Run expensive work — network requests, file I/O, heavy computation — off the UI thread using Zig 0.16's `std.Io`. The framework owns no executor of its own: background tasks are spawned with `cx.io().async(...)`, hand their results back through a bounded `std.Io.Queue(T)`, and the render loop drains that queue each frame. Background tasks **never touch UI state directly** — they only push typed results — so there are no locks on your state.
+
+This is the same pattern `src/image/loader.zig` uses for async image URL fetches.
 
 ```zig
-const Ctx = struct { app: *AppState };
+// A typed result the background task hands back to the render loop.
+const Fetch = union(enum) {
+    ok: []const u8,
+    failed,
+};
 
-// Dispatch work to a background thread
-try cx.dispatchBackground(Ctx, .{ .app = self }, struct {
-    fn handler(ctx: *Ctx) void {
-        // Do expensive work off the main thread
-        const result = ctx.app.fetchData();
-        ctx.app.pending_result = result;
+const State = struct {
+    // Fixed-capacity, statically-backed channel — no allocation after init.
+    result_buffer: [16]Fetch = undefined,
+    result_queue: std.Io.Queue(Fetch) = undefined,
 
-        // Dispatch back to the main thread to apply results
-        const g = ctx.app.gooey_ptr orelse return;
-        g.dispatchOnMainThread(Ctx, .{ .app = ctx.app }, struct {
-            fn apply(inner: *Ctx) void {
-                inner.app.applyPendingResult();
-            }
-        }.apply) catch {};
+    // Owns the in-flight task(s) so they can be cancelled together.
+    fetch_group: std.Io.Group = .init,
+
+    response: []const u8 = "",
+
+    // Kick off background work from a handler — runs off the UI thread.
+    pub fn startFetch(self: *State, cx: *Cx) void {
+        const url = "https://api.example.com/data";
+        self.result_queue = .init(&self.result_buffer);
+
+        // `io` is passed twice: once to drive `async`, and again inside the
+        // args tuple so the task body can push into the queue.
+        self.fetch_group.async(cx.io(), fetchData, .{ cx.io(), url, &self.result_queue });
+
+        // Auto-cancel on window close so a late task can't write into freed state.
+        cx.registerCancelGroup(&self.fetch_group);
     }
-}.handler);
+};
+
+// Background task — never touches UI state, only pushes a typed result.
+fn fetchData(io: std.Io, url: []const u8, queue: *std.Io.Queue(Fetch)) void {
+    const body = httpGet(io, url) catch {
+        queue.putOneUncancelable(io, .failed) catch {};
+        return;
+    };
+    queue.putOneUncancelable(io, .{ .ok = body }) catch {};
+}
+
+fn render(cx: *Cx) void {
+    const s = cx.state(State);
+
+    // Non-blocking drain — safe to call every frame from `render`.
+    var buffer: [16]Fetch = undefined;
+    for (cx.drainQueue(Fetch, &s.result_queue, &buffer)) |result| switch (result) {
+        .ok => |body| s.response = body,
+        .failed => {},
+    }
+
+    // ... build UI from s.response ...
+}
 ```
 
-Available methods on `Cx`:
+**Key pieces:**
 
-- **`cx.dispatchBackground(Ctx, context, callback)`** — Run a callback on a background thread. The context is copied and heap-allocated, so stack values are safe.
-- **`cx.dispatchOnMainThread(Ctx, context, callback)`** — Run a callback on the main thread. Safe to call from any thread.
-- **`cx.dispatchAfter(delay_ns, Ctx, context, callback)`** — Run a callback on the main thread after a delay (in nanoseconds).
-- **`cx.isMainThread()`** — Check if the current thread is the main/UI thread.
+- **`cx.io()`** — the `std.Io` instance threaded through the framework from `main()`. Pass it to `async`, queue, and timing calls.
+- **`cx.io().async(fn, .{args})`** (or **`group.async(io, fn, .{args})`**) — spawn background work. Pass `io` inside the args tuple too if the task needs to push into a queue.
+- **`std.Io.Queue(T)`** — bounded, lock-free, statically-backed channel. Tasks push with `putOneUncancelable(io, value)`; capacity is fixed at init (no allocation afterward).
+- **`cx.drainQueue(T, &queue, &buffer)`** — non-blocking drain into your buffer; returns an empty slice when nothing is ready, so it's safe to call every frame.
+- **`std.Io.Group`** — owns one or more in-flight tasks so they can be cancelled together.
+- **`cx.registerCancelGroup(&group)`** — auto-cancel a group on window close (pair with `cx.unregisterCancelGroup` if the work finishes normally). For per-entity lifecycles, use `cx.entities.attachCancel(id, &group)` to cancel when the entity is removed.
 
-> **Note:** These methods return `error.NotSupported` on WASM (single-threaded) and `error.NotInitialized` if the dispatcher hasn't been set up. Workers that need to dispatch back to the main thread still need a stashed `*Gooey` pointer, since `Cx` is only available during rendering.
+> **Note:** This rides on Zig 0.16's `std.Io`, so the threaded backend is unavailable on WASM (single-threaded) — see [WASM](#wasm). The earlier `cx.dispatchBackground` / `dispatchOnMainThread` / `dispatchAfter` APIs were removed in the `std.Io` migration; the `Io.Queue` + `Io.Group` pattern above replaces them. See [`docs/zig-0.16-io-migration.md`](docs/zig-0.16-io-migration.md).
 
 ## Fonts
 
@@ -1600,28 +1637,35 @@ On native, `gooey.log` delegates to `std.log.scoped()`. On WASM, it writes direc
 
 ## WASM
 
+> **⚠️ Temporarily deferred on Zig 0.16.0 (upstream `Io.Threaded`).**
+> `std.Io.Threaded` does not compile for `wasm32-freestanding` on Zig 0.16.0 —
+> its comptime body eagerly references `posix.system.getrandom` and
+> `posix.IOV_MAX`, which resolve to `void`/absent on that target. This is an
+> upstream issue, not a Gooey one. The `zig build wasm*` steps have been removed
+> from `build.zig` (the commands no longer exist), while the web code paths
+> (`src/platform/web/`, `WebApp` in `app.zig`, and `src/examples/*_wasm.zig`) are
+> deliberately left in place to resume compiling once upstream gates those
+> references. Tracking: [`docs/zig-0.16-io-migration.md`](docs/zig-0.16-io-migration.md).
+
+Once the upstream fix lands, the WASM build steps will be restored. The commands
+below are the intended interface — **currently inactive**:
+
 ```bash
-# Build WASM examples
-zig build wasm                 # showcase
-zig build wasm-counter
-zig build wasm-dynamic-counters
-zig build wasm-pomodoro
-zig build wasm-spaceship
-zig build wasm-layout
-zig build wasm-select
-zig build wasm-tooltip
-zig build wasm-modal
-zig build wasm-images
-zig build wasm-file-dialog
+# (currently disabled — see the note above)
+# zig build wasm                 # showcase
+# zig build wasm-counter
+# zig build wasm-dynamic-counters
+# zig build wasm-pomodoro
+# zig build wasm-spaceship
+# zig build wasm-layout
+# zig build wasm-select
+# zig build wasm-tooltip
+# zig build wasm-modal
+# zig build wasm-images
+# zig build wasm-file-dialog
 
 # Run with a local server
-python3 -m http.server 8080 -d zig-out/web
-python3 -m http.server 8080 -d zig-out/web/counter
-python3 -m http.server 8080 -d zig-out/web/dynamic
-python3 -m http.server 8080 -d zig-out/web/pomodoro
-python3 -m http.server 8080 -d zig-out/web/select
-python3 -m http.server 8080 -d zig-out/web/tooltip
-python3 -m http.server 8080 -d zig-out/web/modal
+# python3 -m http.server 8080 -d zig-out/web
 ```
 
 ## Hot Reloading (macOS)
