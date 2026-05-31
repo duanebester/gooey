@@ -1,124 +1,52 @@
 //! App — application-lifetime state shared across windows.
 //!
-//! ## Why this exists
+//! Holds the state whose lifetime is naturally app-scoped rather than
+//! per-window:
 //!
-//! Per `docs/cleanup-implementation-plan.md` PR 7b.3, the entity map
-//! moves off `Window` and onto `App`. Before that slice, every
-//! per-window `Window` carried its own `entities: EntityMap`, which
-//! meant:
-//!
-//!   - **No cross-window entity sharing.** A `Counter` entity created
-//!     in window A could not be observed by a view in window B —
-//!     each window's `EntityMap` was a separate islands of state.
-//!     This contradicted GPUI's design (§10 in
-//!     `architectural-cleanup-plan.md`), where `entities` lives on
-//!     `App` exactly so models can be shared across windows.
-//!   - **Lifetime confusion.** Entities outliving any single window
-//!     (e.g. an in-flight async task that survives a window close
-//!     and writes to a model on close completion) had no
-//!     well-defined owner — the `Window`'s `EntityMap` would already
-//!     be torn down.
-//!
-//! PR 7b.4 extends the same reasoning to `Keymap` and `*const Theme`:
-//! both are app-scoped per the GPUI mapping in §10. Pre-7b.4 every
-//! `Window.globals` held its own `Keymap` and (via `Builder.setTheme`)
-//! its own `*const Theme` slot. Lifting them to `App.globals` lets
-//! every window in the same app share one keymap (the keystroke
-//! contract is the same regardless of which window is focused) and
-//! one active theme (a tab swap in window A immediately repaints
-//! window B with the new colors). `Debugger` deliberately stays on
-//! `Window.globals` because its overlay quads, frame timing, and
-//! selected layout id are all bound to a single scene — sharing one
-//! debugger across windows would mix metrics from two unrelated
-//! frames.
-//!
-//! After this extraction:
-//!
-//!   - **Single-window**: `runtime/window_context.zig` owns one
-//!     heap-allocated `App` and hands `*App` to its `Window`. The
-//!     `App` carries the `EntityMap` and the `Keymap` slot in
-//!     `globals`; the `Window` keeps a per-window `Debugger`.
-//!   - **Multi-window**: `runtime/multi_window_app.zig::App` embeds
-//!     a `context.App` and hands `*context.App` to every window.
-//!     All windows share the same `EntityMap`, the same `Keymap`,
-//!     and the same `*const Theme` slot — but each has its own
-//!     `Debugger`.
-//!
-//! See [`architectural-cleanup-plan.md` §10 GPUI mapping](../../docs/architectural-cleanup-plan.md#10-the-app--window--contextt-split)
-//! for the broader sketch this lands as one slice.
-//!
-//! ## What's NOT here yet
-//!
-//! - `AppResources` (already at app scope post-7b.2 in
-//!   `multi_window_app.zig`; the single-window flow embeds it on
-//!   `Window.resources` until the runner builds a real `App` in a
-//!   later 7b slice).
+//!   - `entities` — entity storage. Living on `App` (not `Window`) lets a
+//!     model created in one window be observed by a view in another, and
+//!     gives entities a well-defined owner that outlives any single window
+//!     (e.g. an in-flight async task that survives a window close).
+//!   - `globals` — type-keyed singleton store owning the app-wide `Keymap`
+//!     and the `*const Theme` slot, so one keymap and one active theme are
+//!     shared across every window. (`Debugger` stays per-window on
+//!     `Window.globals` — its overlay quads and frame timing are bound to a
+//!     single scene.)
+//!   - `image_loader` — async URL fetch + decode + atlas cache. App-scoped
+//!     so two windows requesting the same URL share one in-flight fetch,
+//!     one pending set, and one failed set.
 //!
 //! ## Late-bound `image_loader`
 //!
-//! PR 7b.5 lifted `image_loader` off `Window` onto `App`. The
-//! loader needs an `*ImageAtlas` at init time — but the atlas
-//! lives on `AppResources`, which is constructed *after*
-//! `App.init` in the single-window flow (`Window.initOwned`
-//! creates the resources), and *before* `App.init` in the
-//! multi-window flow (`multi_window_app::App.init` creates the
-//! shared `AppResources` and *then* the embedded `context.App`).
-//! Rather than thread `*ImageAtlas` through `App.init`'s
-//! signature (which would force `multi_window_app` to reorder
-//! `resources` / `context_app` field init and force the
-//! single-window runner to construct a `Window` before the
-//! `App` it borrows), `App` exposes a two-phase init:
+//! The loader needs an `*ImageAtlas` at init time, but the atlas lives on
+//! `AppResources`, which is constructed at a different point relative to
+//! `App.init` in the single- vs. multi-window flows. Rather than thread
+//! `*ImageAtlas` through `App.init`, the loader uses two-phase init:
 //!
-//!   1. `App.init` / `App.initInPlace` allocates the entity map,
-//!      registers the `Keymap` global, and leaves `image_loader`
-//!      undefined (`image_loader_bound = false`).
-//!   2. `App.bindImageLoader(*ImageAtlas)` runs `initInPlace` on
-//!      the loader at the `App`'s final heap address (no
-//!      `fixupQueue` dance — `App` is already heap-allocated by
-//!      every framework caller). Asserts single-bind.
-//!
-//! Bind sites:
-//!
-//!   - **Single-window** (native + WASM): the runner / WASM
-//!     bootstrap creates the `Window` first (which creates the
-//!     owning `AppResources`), then calls
-//!     `app.bindImageLoader(window.resources.image_atlas)`. See
-//!     `runtime/window_context.zig::WindowContext.init` and
-//!     `app.zig::WebApp.initImpl`.
-//!   - **Multi-window**: `multi_window_app::App.init` constructs
-//!     the shared `AppResources` and the embedded `context.App`
-//!     in that order, then calls
-//!     `context_app.bindImageLoader(resources.image_atlas)` once.
-//!     Subsequent windows opened via
-//!     `WindowContext.initWithSharedResources` do *not* re-bind
-//!     — the loader is already wired against the shared atlas
-//!     that every window's borrowed `AppResources` points at.
+//!   1. `App.init` / `App.initInPlace` allocates the entity map, registers
+//!      the `Keymap` global, and leaves `image_loader` undefined
+//!      (`image_loader_bound = false`).
+//!   2. `App.bindImageLoader(*ImageAtlas)` runs `initInPlace` on the loader
+//!      at the `App`'s final heap address (asserts single-bind). The
+//!      framework caller that has the atlas calls this once before the
+//!      first frame; in multi-window flows later windows hit the
+//!      same-atlas short-circuit.
 //!
 //! ## Lifetime
 //!
-//! Allocated and owned in two shapes only:
+//! Two shapes:
 //!
-//!   1. **Heap-allocated by `runtime/runner.zig`** —
-//!      single-window. The runner owns the `App` and tears it down
-//!      after the `WindowContext` (so any entity-cleanup cancel
-//!      groups have a live `EntityMap` to walk). On WASM the same
-//!      role is played by `app.zig::WebApp`'s `g_app` global.
-//!   2. **Embedded by-value inside `runtime/multi_window_app.zig::App`** —
-//!      multi-window. The outer `App` owns the inner `context.App`
-//!      directly; `App.deinit` calls `context_app.deinit()` after
-//!      the last window has closed.
+//!   1. Heap-allocated by `runtime/runner.zig` (single-window; `WebApp`'s
+//!      `g_app` global on WASM). The runner owns the `App` and tears it
+//!      down after the `WindowContext`, so entity cancel groups have a live
+//!      `EntityMap` to walk.
+//!   2. Embedded by value inside `runtime/multi_window_app.zig::App`
+//!      (multi-window); `App.deinit` runs after the last window closes.
 //!
-//! The struct itself is moderately sized after PR 7b.5 — the
-//! embedded `ImageLoader` is the largest contributor:
-//! `result_buffer` is `MAX_IMAGE_LOAD_RESULTS` (32) entries
-//! × `@sizeOf(ImageLoadResult)` (~32 B per slot, union with
-//! pointers) ≈ 1 KB; `pending_hashes` is 64 × 8 B = 512 B;
-//! `failed_hashes` is 128 × 8 B = 1 KB. Plus `EntityMap`
-//! (~few KB) and `Globals` (32 × ~64 B ≈ 2 KB). Total well
-//! under the 50 KB heap-vs-stack threshold from CLAUDE.md §14
-//! — `runtime/runner.zig` and `app.zig::WebApp` still use
-//! `allocator.create(App)` + `initInPlace` for consistency
-//! with the larger `Window`, not because the size demands it.
+//! `App` is always heap-allocated (or embedded in a heap-allocated
+//! parent), which is why `bindImageLoader` can `initInPlace` the loader's
+//! embedded `Io.Queue` (whose pointer must reference a stable address)
+//! without a fixup dance.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -126,58 +54,38 @@ const Allocator = std.mem.Allocator;
 const entity_mod = @import("entity.zig");
 const EntityMap = entity_mod.EntityMap;
 
-// PR 7b.4 — `Globals` is the type-keyed singleton store introduced
-// in PR 6 (see `global.zig`). It moves the bulk of cross-cutting
-// state — `Keymap`, `*const Theme` — off `Window`'s direct field
-// list and onto `App`'s. `Debugger` deliberately stays on
-// `Window.globals` (per-window concern; see file header).
+// `Globals` is the type-keyed singleton store (see `global.zig`); on
+// `App` it owns `Keymap` and the `*const Theme` slot. `Debugger` stays
+// per-window on `Window.globals`.
 const global_mod = @import("global.zig");
 const Globals = global_mod.Globals;
 
-// PR 7b.4 — `Keymap` is registered as an owned global on `App`.
-// One keymap per app, shared across every window — the action
-// dispatch contract (`cmd-z` means Undo no matter which window
-// is focused) is naturally app-scoped. `Keymap` exposes
-// `pub fn deinit(*Keymap)` which `Globals.deinit` discovers via
-// `hasDeinit` and invokes through the owned-deinit thunk.
+// `Keymap` is registered as an owned global on `App` — one keymap per
+// app, since the action dispatch contract (`cmd-z` means Undo no matter
+// which window is focused) is app-scoped.
 const action_mod = @import("../input/actions.zig");
 const Keymap = action_mod.Keymap;
 
-// PR 7b.5 — `ImageLoader` and `ImageAtlas` from the image
-// subsystem. `ImageLoader` is the URL-fetch + decode +
-// atlas-cache machine extracted in PR 1; pre-7b.5 it lived as
-// a per-window field on `Window`, which made cross-window
-// dedup structurally impossible (window A and window B
-// requesting the same URL would each launch a fetch, double
-// the bandwidth, and cache twice into the shared atlas).
-// Lifting onto `App` means one pending set, one failed set,
-// one fetch group covering all windows. The loader's atlas
-// pointer is bound late (see file header).
+// `ImageLoader` (URL fetch + decode + atlas cache) and `ImageAtlas`.
+// On `App` the loader has one pending set, one failed set, and one
+// fetch group across all windows, so two windows requesting the same
+// URL share one fetch. Its atlas pointer is bound late (see file header).
 const image_mod = @import("../image/mod.zig");
 const ImageLoader = image_mod.ImageLoader;
 const ImageAtlas = image_mod.ImageAtlas;
 
 /// Application-lifetime state shared across all windows.
 ///
-/// Currently holds:
-///
-///   - `entities` — entity storage for GPUI-style state management
-///     (lifted off `Window` in PR 7b.3).
-///   - `globals` — type-keyed singleton store. Owns `Keymap`
-///     (registered by `init` / `initInPlace`) and the `*const Theme`
-///     slot (populated lazily by `Builder.setTheme`). Future slots
-///     for app-scoped settings / telemetry land here too.
-///
-///   - `image_loader` — async URL fetch + decode + atlas-cache
-///     subsystem, lifted off `Window` in PR 7b.5. Late-bound
-///     against the shared `*ImageAtlas` via `bindImageLoader`
+///   - `entities` — entity storage for shared state management.
+///   - `globals` — type-keyed singleton store. Owns `Keymap` (registered
+///     by `init` / `initInPlace`) and the `*const Theme` slot (populated
+///     lazily by `Builder.setTheme`).
+///   - `image_loader` — async URL fetch + decode + atlas-cache subsystem.
+///     Late-bound against the shared `*ImageAtlas` via `bindImageLoader`
 ///     (see file header for the two-phase init rationale).
 ///
-/// The struct grows additively — every field added here is one
-/// that was previously per-window and whose lifetime is naturally
-/// app-scoped. Per-window state (`Debugger`, `focus`, `hover`,
-/// `widgets`, `dispatch`, `scene`, `layout`, ...) stays on
-/// `Window` per the GPUI split in §10.
+/// Per-window state (`Debugger`, `focus`, `hover`, `widgets`, `dispatch`,
+/// `scene`, `layout`, ...) stays on `Window`.
 pub const App = struct {
     allocator: Allocator,
 
@@ -189,73 +97,49 @@ pub const App = struct {
     /// caller's responsibility, not ours.
     io: std.Io,
 
-    /// Entity storage for GPUI-style state management.
+    /// Entity storage for shared state management.
     ///
-    /// Pre-7b.3 this was `Window.entities`. The lift to `App`
-    /// makes cross-window observation possible: a model entity
-    /// created in window A can be observed by a view entity in
-    /// window B because both windows borrow the same `*App` and
-    /// reach the same map. Frame observations are still cleared
-    /// per-frame (`beginFrame` / `endFrame` on `EntityMap`) — the
-    /// observer relationship survives across frames, but the
-    /// per-frame "this view read that model this frame" set
-    /// resets. With multiple windows sharing the map, the per-
-    /// frame begin/end pair is driven by every window's
-    /// `Window.beginFrame` / `endFrame`; the operation is
-    /// idempotent (clearing an already-empty `frame_observations`
-    /// is a no-op), so duplicate calls across N windows produce
-    /// no visible artefact beyond the redundant work — acceptable
-    /// for the small N our `MAX_WINDOWS` cap allows.
+    /// Living on `App` makes cross-window observation possible: a model
+    /// created in window A can be observed by a view in window B because
+    /// both borrow the same `*App` and reach the same map. Frame
+    /// observations are cleared per-frame (`beginFrame` / `endFrame`) —
+    /// the observer relationship survives across frames, but the per-frame
+    /// "this view read that model this frame" set resets. The begin/end
+    /// pair is idempotent (clearing an empty `frame_observations` is a
+    /// no-op), so the redundant calls from N windows sharing the map are
+    /// harmless.
     entities: EntityMap,
 
-    /// Type-keyed singleton store (PR 6 — see `global.zig`). PR 7b.4
-    /// lifts `Keymap` registration off `Window.globals` onto this
-    /// field; the `*const Theme` slot is populated lazily by
-    /// `Builder.setTheme` (see `ui/builder.zig`). `Debugger` stays
-    /// on `Window.globals` because every window has its own.
+    /// Type-keyed singleton store (see `global.zig`). Owns the `Keymap`
+    /// (registered post-init via `setOwned`) and the `*const Theme` slot
+    /// (populated lazily by `Builder.setTheme`). `Debugger` stays on
+    /// `Window.globals` because every window has its own.
     ///
-    /// Default-constructed (`entries = @splat(Entry.empty)`);
-    /// populated post-init by `init` / `initInPlace` via `setOwned`.
-    /// Torn down in `App.deinit` via `globals.deinit(allocator)` —
-    /// the thunk built at `setOwned` time picks the right shape
-    /// per type (`fn(*T) void` vs. `fn(*T, Allocator) void`), so
-    /// `Keymap.deinit(*Keymap)` is invoked correctly without the
-    /// caller having to know the registry's internals.
+    /// Torn down in `App.deinit` via `globals.deinit(allocator)` — the
+    /// thunk built at `setOwned` time picks the right deinit shape per
+    /// type, so `Keymap.deinit` is invoked correctly without the caller
+    /// knowing the registry's internals.
     globals: Globals = .{},
 
-    /// PR 7b.5 — async image-load subsystem (URL fetch + decode
-    /// + atlas cache). Pre-7b.5 every `Window` carried its own
-    /// `ImageLoader`; the lift here makes the pending set, the
-    /// failed set, and the fetch group app-scoped, so two
-    /// windows requesting the same URL share one in-flight
-    /// fetch.
+    /// Async image-load subsystem (URL fetch + decode + atlas cache).
+    /// App-scoped so two windows requesting the same URL share one
+    /// in-flight fetch, pending set, and failed set.
     ///
-    /// Initialised in two phases — see file header. `init` /
-    /// `initInPlace` leave this field undefined and
-    /// `image_loader_bound = false`; the framework caller that
-    /// has the `*ImageAtlas` available calls `bindImageLoader`
-    /// exactly once before the first frame.
+    /// Initialised in two phases — see file header. `init` / `initInPlace`
+    /// leave this field undefined and `image_loader_bound = false`; the
+    /// framework caller that has the `*ImageAtlas` calls `bindImageLoader`
+    /// once before the first frame.
     ///
-    /// `ImageLoader.initInPlace` writes the embedded
-    /// `Io.Queue`'s pointer to `&self.result_buffer`, so the
-    /// loader must be initialised at its final heap address.
-    /// `App` is always heap-allocated (or embedded by-value
-    /// inside a heap-allocated parent) by every framework
-    /// caller, so we can `initInPlace` directly without a
-    /// `fixupQueue` dance like the pre-7b.5 `Window.initOwned`
-    /// path needed.
+    /// `ImageLoader.initInPlace` writes the embedded `Io.Queue`'s pointer
+    /// to `&self.result_buffer`, so the loader must be initialised at its
+    /// final heap address. `App` is always heap-allocated, so
+    /// `bindImageLoader` can `initInPlace` directly without a fixup dance.
     image_loader: ImageLoader = undefined,
 
-    /// PR 7b.5 — `true` iff `bindImageLoader` has been called.
-    /// Guards `App.deinit` against tearing down an undefined
-    /// `image_loader` field on an unbound `App` (test fixtures
-    /// in this file construct `App` instances that never bind
-    /// against a real atlas), and guards `bindImageLoader`
-    /// against a double-bind (a framework-internal bug, not a
-    /// runtime fallback). Pair-asserted in
-    /// `runtime/render.zig::ensureNativeUrlLoading` so a
-    /// missing-bind reaches the developer at the call site
-    /// instead of corrupting the loader's queue invariants.
+    /// `true` iff `bindImageLoader` has been called. Guards `App.deinit`
+    /// against tearing down an undefined `image_loader` on an unbound
+    /// `App` (test fixtures never bind a real atlas), and guards
+    /// `bindImageLoader` against a double-bind.
     image_loader_bound: bool = false,
 
     const Self = @This();
@@ -264,34 +148,20 @@ pub const App = struct {
     // Lifecycle
     // =========================================================================
 
-    /// Construct an `App` by value. Suitable when the caller
-    /// embeds the result in a parent struct (`multi_window_app.zig`
-    /// uses this — `App.resources` is already there too, sharing
-    /// the same lifetime).
+    /// Construct an `App` by value. Suitable when the caller embeds the
+    /// result in a parent struct (`multi_window_app.zig` does this).
     ///
-    /// The `EntityMap` is initialised against `allocator` and `io`;
-    /// see `entity.zig` for its own contract (cancel groups need
-    /// a live `io` to be cancelled on entity removal — null `io`
-    /// is supported for tests, but every framework code path
-    /// should pass a real one).
-    ///
-    /// PR 7b.4 — also registers an owned `Keymap` in `globals`.
-    /// `setOwned` heap-allocates a `*Keymap` via `allocator`; the
-    /// resulting pointer survives the by-value copy (`globals` is
-    /// a fixed-capacity array of small entries that hold pointers
-    /// to stable heap addresses, so the copy duplicates the
-    /// pointer slot without invalidating the pointee). The error
-    /// path returns through `errdefer` — `entities.deinit` runs
-    /// before `globals.deinit` for symmetry with the success-path
-    /// `App.deinit` ordering, even though neither holds pointers
-    /// into the other today.
+    /// The `EntityMap` is initialised against `allocator` and `io` (cancel
+    /// groups need a live `io` to be cancelled on entity removal — null
+    /// `io` is supported for tests only). Also registers an owned `Keymap`
+    /// in `globals`: `setOwned` heap-allocates a `*Keymap`, and that
+    /// pointer survives the by-value return because `globals` holds
+    /// pointers to stable heap addresses, not the pointees themselves.
     pub fn init(allocator: Allocator, io: std.Io) !Self {
-        // Pair the input assertion with the post-init one below
-        // (CLAUDE.md §3 — "Pair assertions"). The `allocator`
-        // address-of check catches the rare bug where the caller
-        // passed a stack-temp allocator value type that has been
-        // garbage-collected; `EntityMap.init` would happily store
-        // the dangling vtable and explode at the first `alloc`.
+        // The `allocator` address-of check catches the rare bug where the
+        // caller passed a stack-temp allocator that has gone out of scope;
+        // `EntityMap.init` would store the dangling vtable and explode at
+        // the first `alloc`.
         std.debug.assert(@intFromPtr(&allocator) != 0);
 
         var result = Self{
@@ -302,82 +172,55 @@ pub const App = struct {
         };
         errdefer result.entities.deinit();
 
-        // PR 7b.4 — register the app-wide `Keymap`. `Keymap.init`
-        // is infallible; `setOwned` may fail with `OutOfMemory` if
-        // the global registry is full, but `MAX_GLOBALS = 32` and
-        // we are the first writer, so the only realistic failure
-        // here is the heap allocation for the owned `*Keymap`
-        // itself. The `errdefer` chain unwinds the `EntityMap`
-        // above; the `Keymap` allocation has not happened yet on
-        // the failure path so there is nothing further to free.
+        // Register the app-wide `Keymap`. `setOwned` can fail only on the
+        // heap allocation for the owned `*Keymap` (the registry has room).
+        // The `errdefer` above unwinds the `EntityMap`; the `Keymap`
+        // allocation hasn't happened on the failure path, so nothing
+        // further to free.
         try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
         errdefer result.globals.deinit(allocator);
 
-        // Pair-assert: the result is ready for `entities.new` /
-        // `read` / `write`, and the registry has the Keymap slot
-        // populated. `EntityMap.init` is `pub fn init(...) Self`
-        // (no errors), so reaching this line means the map is
-        // populated; the assertions document the post-conditions.
+        // Pair-assert post-conditions: the map is ready for `entities.new`
+        // / `read` / `write` and the Keymap slot is populated.
         std.debug.assert(result.entities.next_id == 1);
         std.debug.assert(result.globals.has(Keymap));
 
-        // PR 7b.5 — `image_loader` is intentionally left
-        // undefined here. The caller binds it via
-        // `bindImageLoader(*ImageAtlas)` after the parent has
-        // constructed an `AppResources`. Until then,
-        // `image_loader_bound = false` (the struct's default)
-        // ensures `deinit` skips the loader and prevents a
-        // double-bind from `bindImageLoader` itself.
+        // `image_loader` is intentionally left undefined; the caller binds
+        // it via `bindImageLoader` after `AppResources` exists. Until then
+        // `image_loader_bound = false` keeps `deinit` from touching it.
         std.debug.assert(!result.image_loader_bound);
 
         return result;
     }
 
-    /// In-place init for callers that need to avoid a stack
-    /// temp. Used by `runtime/runner.zig` on the heap-allocated
-    /// single-window path so the runner doesn't accumulate a
-    /// `context.App`-shaped stack frame (CLAUDE.md §14, even though
-    /// the current footprint is well under the 50KB threshold —
-    /// the rule is "be consistent": every `init*Ptr` writes
-    /// field-by-field).
+    /// In-place init for callers that need to avoid a stack temp.
+    /// Marked `noinline` so ReleaseSmall doesn't fold the stack frame
+    /// back into the caller (WASM stack budget — CLAUDE.md §14).
     ///
-    /// `self` must point at uninitialised memory; the function
-    /// writes every field. Marked `noinline` per CLAUDE.md §14 so
-    /// ReleaseSmall doesn't combine the stack frame back into the
-    /// caller. PR 7b.4 — signature changed from `void` to `!void`
-    /// because `globals.setOwned(Keymap, ...)` can fail with
-    /// `OutOfMemory` (the heap-alloc for the owned `*Keymap`).
+    /// `self` must point at uninitialised memory; the function writes
+    /// every field. Returns `!void` because `globals.setOwned(Keymap, ...)`
+    /// can fail with `OutOfMemory`.
     pub noinline fn initInPlace(self: *Self, allocator: Allocator, io: std.Io) !void {
         std.debug.assert(@intFromPtr(self) != 0);
         std.debug.assert(@intFromPtr(&allocator) != 0);
 
-        // Field-by-field — no struct literal — to avoid a stack
-        // temp (CLAUDE.md §14). Same idiom as
-        // `Window.initOwnedPtr` and `AppResources.initOwnedInPlace`.
+        // Field-by-field — no struct literal — to avoid a stack temp
+        // (CLAUDE.md §14 WASM stack budget).
         self.allocator = allocator;
         self.io = io;
         self.entities = EntityMap.init(allocator, io);
         errdefer self.entities.deinit();
 
-        // PR 7b.4 — `globals` starts default-constructed (every
-        // entry in the fixed-capacity array marked `empty`); the
-        // assignment below makes that explicit since `self` was
-        // raw memory before this call (caller did `allocator.create`
-        // without zeroing).
+        // `self` was raw memory (caller did `allocator.create` without
+        // zeroing), so explicitly default-construct `globals`.
         self.globals = .{};
 
-        // PR 7b.4 — register the app-wide `Keymap`. See `init` for
-        // the full rationale; the only difference here is the
-        // `errdefer` order — `entities.deinit` runs first because
-        // it was assigned first.
+        // Register the app-wide `Keymap` (see `init` for rationale).
         try self.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
         errdefer self.globals.deinit(allocator);
 
-        // PR 7b.5 — `self` was raw memory before this call
-        // (caller did `allocator.create` without zeroing); the
-        // explicit `false` here makes the unbound state
-        // explicit. `image_loader` itself stays undefined
-        // until `bindImageLoader` runs.
+        // `self` was raw memory; the explicit `false` marks the unbound
+        // state. `image_loader` stays undefined until `bindImageLoader`.
         self.image_loader_bound = false;
 
         std.debug.assert(self.entities.next_id == 1);
@@ -385,156 +228,85 @@ pub const App = struct {
         std.debug.assert(!self.image_loader_bound);
     }
 
-    /// PR 7b.5 — bind the image loader against the shared
-    /// `*ImageAtlas`. Idempotent on same-atlas re-binds: the
-    /// first call runs `ImageLoader.initInPlace` at the loader's
-    /// final `App` heap address, subsequent calls with the same
-    /// atlas pointer are no-ops, and a call with a different
-    /// atlas pointer trips the pair-assertion (a framework bug
-    /// — every window in an `App`'s lifetime borrows the same
-    /// shared `ImageAtlas`, so a different pointer means the
-    /// caller has confused itself about which `App` it is
-    /// binding).
+    /// Bind the image loader against the shared `*ImageAtlas`. Idempotent
+    /// on same-atlas re-binds: the first call runs `ImageLoader.initInPlace`
+    /// at the loader's final `App` heap address; later calls with the same
+    /// pointer are no-ops; a different pointer trips the pair-assertion (a
+    /// framework bug — every window in an `App` borrows the same atlas).
     ///
-    /// Idempotency is required because both
-    /// `WindowContext.init` (single-window) and
-    /// `WindowContext.initWithSharedResources` (multi-window)
-    /// call this from each window they construct. The first
-    /// window in either flow performs the actual bind; every
-    /// subsequent window in the same `App` (multi-window only)
-    /// hits the same-atlas short-circuit. This avoids needing
-    /// a separate "bind-if-unbound" entry point and keeps the
-    /// `App.init → bindImageLoader` ordering consistent with
-    /// every other late-bound subsystem the framework will add
-    /// in future PRs.
+    /// Idempotency is required because both `WindowContext.init` and
+    /// `WindowContext.initWithSharedResources` call this for every window
+    /// they construct; the first window binds, later windows short-circuit.
     ///
-    /// `image_atlas` must point at a stable heap address — the
-    /// loader stores the pointer and dereferences it on every
-    /// `drain` call. The single-window flow passes
-    /// `window.resources.image_atlas` (lives on `Window` for
-    /// the duration); the multi-window flow passes
-    /// `multi_window_app::App.resources.image_atlas` (lives on
-    /// the outer `App` for the duration). Both are stable
-    /// heap addresses for the entire `App` lifetime.
+    /// `image_atlas` must point at a stable heap address — the loader
+    /// stores it and dereferences it on every `drain`. Both flows pass an
+    /// atlas that lives for the whole `App` lifetime.
     pub fn bindImageLoader(self: *Self, image_atlas: *ImageAtlas) void {
         std.debug.assert(@intFromPtr(self) != 0);
         std.debug.assert(@intFromPtr(image_atlas) != 0);
 
-        // Idempotent same-atlas short-circuit. The single-window
-        // flow's only window calls this once and falls through to
-        // the bind branch. The multi-window flow's first window
-        // calls this and falls through; the second-and-later
-        // windows hit this short-circuit because every window in
-        // an `App` lifetime borrows the same shared
-        // `AppResources.image_atlas`. A different atlas pointer
-        // here would mean either (a) the caller mixed up `App`
-        // instances, or (b) the parent rebuilt `AppResources`
-        // mid-lifetime — both framework bugs, hence the panic
-        // rather than a silent re-bind that would orphan in-
-        // flight fetches against the previous atlas.
+        // Idempotent same-atlas short-circuit. A different atlas pointer
+        // here is a framework bug (mixed-up `App` instances, or a rebuilt
+        // `AppResources`), so assert rather than silently re-bind and
+        // orphan in-flight fetches against the previous atlas.
         if (self.image_loader_bound) {
             std.debug.assert(self.image_loader.image_atlas == image_atlas);
             return;
         }
 
-        // `App` is always heap-allocated (or embedded inside a
-        // heap-allocated parent) by every framework caller, so
-        // `&self.image_loader` is already at its final
-        // address — no by-value copy will follow this call,
-        // and the embedded `Io.Queue`'s pointer to
-        // `&self.image_loader.result_buffer` cannot dangle.
+        // `App` is always heap-allocated, so `&self.image_loader` is at
+        // its final address — the embedded `Io.Queue`'s pointer into
+        // `result_buffer` cannot dangle.
         self.image_loader.initInPlace(self.io, self.allocator, image_atlas);
         self.image_loader_bound = true;
 
-        // Pair-assert: the loader is now ready for
-        // `enqueueIfRoom` / `drain` calls. Pending / failed
-        // sets start empty (the `initInPlace` body zeroes
-        // them); asserting one of those invariants here
-        // documents the post-condition for the next reader.
+        // Pair-assert post-conditions: the loader is ready for
+        // `enqueueIfRoom` / `drain`, with empty pending / failed sets.
         std.debug.assert(self.image_loader_bound);
         std.debug.assert(self.image_loader.pending_count == 0);
         std.debug.assert(self.image_loader.failed_count == 0);
     }
 
-    /// Tear down the entity map, the image loader, and any
-    /// state the `App` owns.
+    /// Tear down the entity map, the image loader, and any state the
+    /// `App` owns.
     ///
     /// Order matters:
     ///
-    ///   1. `image_loader.deinit` — runs **first** so
-    ///      background fetch tasks see queue closure on their
-    ///      next put attempt and cancel-group cancellation on
-    ///      their next cancel-point check. Tearing the loader
-    ///      down before the atlas (which lives on
-    ///      `AppResources`, owned upstream) means in-flight
-    ///      fetches unwind against a still-live atlas — the
-    ///      cancel path inside a fetch task may complete a
-    ///      partial atlas write before observing cancellation,
-    ///      and that write must land on memory that has not
-    ///      yet been freed. The atlas being upstream-owned
-    ///      means `App.deinit` does not control its lifetime;
-    ///      the upstream owner (`runtime/runner.zig`'s defer
-    ///      chain in single-window mode, or
-    ///      `multi_window_app::App.deinit` in multi-window
-    ///      mode) is responsible for tearing the atlas down
-    ///      *after* `App.deinit` returns.
-    ///   2. `entities.deinit` — runs after the loader because
-    ///      entity-attached cancel groups may walk the loader's
-    ///      pending set during cleanup (forward-looking; today
-    ///      no entity cancel group reaches into the loader,
-    ///      but the structural ordering keeps that direction
-    ///      safe).
-    ///   3. `globals.deinit` — runs last because no
-    ///      entity-attached cancel group today reaches into a
-    ///      global, but the reverse direction (a global's
-    ///      `deinit` walking the entity map) is not yet
-    ///      audited. Keeping `entities` torn down first means
-    ///      any pending cancel walks see a live `Globals`
-    ///      instead of a zeroed one.
+    ///   1. `image_loader.deinit` — first, so background fetch tasks see
+    ///      queue closure and cancellation. In-flight fetches must unwind
+    ///      against a still-live atlas (a cancelling task may complete a
+    ///      partial atlas write before observing cancellation). The atlas
+    ///      is owned upstream and torn down *after* `App.deinit` returns.
+    ///   2. `entities.deinit` — after the loader, so entity-attached cancel
+    ///      groups can still walk the loader's pending set (forward-looking;
+    ///      no group reaches into the loader today).
+    ///   3. `globals.deinit` — last, so any pending cancel walks see a live
+    ///      `Globals` rather than a zeroed one.
     ///
-    /// PR 7b.5 — the loader teardown is guarded by
-    /// `image_loader_bound`. Test fixtures in this file
-    /// construct `App` instances that never bind a loader; an
-    /// unconditional `image_loader.deinit()` call would walk
-    /// undefined memory and trip the queue's internal asserts.
-    /// Production framework code paths always bind exactly
-    /// once via `bindImageLoader`, so the guard is moot in
-    /// production but essential for testability.
+    /// The loader teardown is guarded by `image_loader_bound` (test
+    /// fixtures never bind; an unconditional call would walk undefined
+    /// memory).
     ///
-    /// Idempotency: neither `EntityMap.deinit` nor `Globals.deinit`
-    /// is fully idempotent — a second call would walk freed slots
-    /// — so this `deinit` inherits that contract. Callers that
-    /// need a use-after-free trap should `undefined`-out the
-    /// pointer after calling.
+    /// Not idempotent — a second call walks freed slots. Callers wanting a
+    /// use-after-free trap should `undefined`-out the pointer afterward.
     pub fn deinit(self: *Self) void {
         std.debug.assert(@intFromPtr(self) != 0);
 
-        // PR 7b.5 — tear the loader down first. `deinit`
-        // closes the result queue (background tasks see
-        // closure on next put) and cancels the fetch group
-        // (in-flight tasks unwind cleanly). Blocking is
-        // acceptable here — we are shutting down. The guard
-        // skips this when no `bindImageLoader` call ever ran
-        // (test fixtures only); production framework code
-        // always binds before the first frame.
+        // Tear the loader down first: `deinit` closes the result queue and
+        // cancels the fetch group so in-flight tasks unwind cleanly. The
+        // guard skips this when no `bindImageLoader` ran (test fixtures).
         if (self.image_loader_bound) {
             self.image_loader.deinit();
             self.image_loader_bound = false;
         }
 
-        // `EntityMap.deinit` cancels any attached async groups
-        // before freeing entity data — see `entity.zig`. The
-        // `io` captured here is the one those groups will be
-        // cancelled against; it must still be valid at this
-        // point, which is the caller's responsibility (drop
-        // the `App` before tearing down the IO runtime).
+        // `EntityMap.deinit` cancels any attached async groups before
+        // freeing entity data (see `entity.zig`), using the captured `io`
+        // — which the caller must keep valid until after `App.deinit`.
         self.entities.deinit();
 
-        // PR 7b.4 — tear down owned globals (`Keymap` today;
-        // future settings / telemetry slots when they land). The
-        // thunk built at `setOwned` time invokes the right
-        // `deinit` shape per type, so callers don't have to
-        // know the registry's internals.
+        // Tear down owned globals (`Keymap` today). The thunk built at
+        // `setOwned` time invokes the right `deinit` shape per type.
         self.globals.deinit(self.allocator);
     }
 
@@ -542,14 +314,9 @@ pub const App = struct {
     // Accessors
     // =========================================================================
 
-    /// PR 7b.4 — typed accessor for the app-wide keymap. Mirrors
-    /// the pre-7b.4 `Window.keymap()` accessor in shape; the lift
-    /// is transparent to call sites that go through the
-    /// `Window.keymap()` forwarder. Direct callers (rare —
-    /// `Cx.keymap()` may eventually land) get the same panic
-    /// contract: a missing slot is a framework bug, not a
-    /// runtime fallback, because every `init*` path on `App`
-    /// registers one.
+    /// Typed accessor for the app-wide keymap. A missing slot is a
+    /// framework bug (every `init*` path registers one), hence the panic
+    /// rather than a runtime fallback.
     pub fn keymap(self: *Self) *Keymap {
         return self.globals.get(Keymap) orelse {
             std.debug.panic("App.keymap(): no Keymap registered in globals (init* did not run?)", .{});
@@ -560,97 +327,42 @@ pub const App = struct {
     // Per-frame hooks
     // =========================================================================
     //
-    // PR 7c.1 introduced the API surface; PR 7c.2 relocated the
-    // call site. The full sequence:
-    //
-    //   - PR 7b.3 / 7b.5 lifted `entities` and `image_loader`
-    //     onto `App`, but the per-tick begin/end pair still ran
-    //     inline in `Window.beginFrame` / `endFrame`, reaching
-    //     through `self.app.*`. With N windows borrowing one
-    //     `App` that was N calls per tick — redundant for
-    //     `image_loader.drain` (idempotent) and *broken* for
-    //     `entities.beginFrame` (a window-A-render-then-
-    //     window-B-begin sequence discarded window-A's earlier-
-    //     this-tick frame observations).
-    //   - PR 7c.1 introduced `App.beginFrame` / `App.endFrame`
-    //     as the layer-correct home for the work and routed
-    //     `Window.beginFrame` / `endFrame` through them. Pure
-    //     API-surface lift; behaviour unchanged.
-    //   - PR 7c.2 hoisted the call site out of `Window` up to
-    //     `runtime/frame.zig::renderFrameImpl` so the runtime
-    //     layer (the per-window render callback) drives the
-    //     pair directly. Today `renderFrameImpl` still fires
-    //     once per window per tick — the platform layer
-    //     dispatches each window's render callback
-    //     independently, so the per-window-per-tick redundancy
-    //     survives 7c.2 unchanged for multi-window flows. The
-    //     remaining fix (a centralised "all windows, this tick"
-    //     driver) lands in 7c.3+.
-    //
-    // The methods are deliberately thin — `beginFrame` drains
-    // image-load results then clears stale entity observations;
-    // `endFrame` is a forward-looking hook for batching that
-    // future PRs can hang work off without churning every
-    // call site again.
+    // Called by `runtime/frame.zig::renderFrameImpl` once per render
+    // callback. `beginFrame` drains image-load results then clears stale
+    // entity observations; `endFrame` is a thin hook reserved for future
+    // batching. `renderFrameImpl` fires once per window per tick, so
+    // multi-window flows currently call these once per window.
 
-    /// Per-tick app-scoped work — called by
-    /// `runtime/frame.zig::renderFrameImpl` once per render
-    /// callback, after `window.beginFrame()` has reset the
-    /// per-window atlas counter and before the user's
-    /// `render_fn` runs.
+    /// Per-tick app-scoped work. Drains async image-load results into the
+    /// shared atlas (idempotent: a second call this tick gets 0 results),
+    /// then clears stale entity observations from the previous tick.
     ///
-    /// Drains async image-load results into the shared atlas
-    /// (idempotent: a second call this tick gets 0 results
-    /// because the queue was emptied by the first), then clears
-    /// stale entity observations from the previous tick (NOT
-    /// idempotent within a tick — every observation made by a
-    /// window's render this tick must happen *after* this call).
+    /// Order matters: the drain must run before any `Window` reads the
+    /// atlas this tick (so freshly-decoded pixels are visible), and the
+    /// observation clear must run before any `cx.entities.read(...)` this
+    /// tick (so last tick's observations don't leak forward).
     ///
-    /// Order matters: the loader drain must run before any
-    /// `Window` reads the atlas this tick (so freshly-decoded
-    /// pixels are visible to the first window that renders),
-    /// and the entity-observation clear must run before any
-    /// `cx.entities.read(...)` this tick (so observations made
-    /// last tick don't leak forward).
-    ///
-    /// `image_loader_bound = false` means no `bindImageLoader`
-    /// has run yet (test fixtures only — production framework
-    /// code paths always bind before the first frame). Skip
-    /// the drain in that case rather than walking undefined
-    /// memory.
+    /// The drain is skipped when `image_loader_bound = false` (test
+    /// fixtures only) rather than walking undefined memory.
     pub fn beginFrame(self: *Self) void {
         std.debug.assert(@intFromPtr(self) != 0);
 
-        // PR 7b.5 — drain async image-load results. Guarded by
-        // `image_loader_bound` so test fixtures that construct
-        // an `App` without binding can still call this hook
-        // without tripping the loader's internal asserts.
+        // Drain async image-load results. Guarded by `image_loader_bound`
+        // so unbound test fixtures can call this hook safely.
         if (self.image_loader_bound) {
             self.image_loader.drain();
         }
 
-        // PR 7b.3 — clear stale entity observations from the
-        // previous tick. Idempotent across consecutive ticks (a
-        // second call same tick re-clears an already-empty
-        // list). Post-7c.2 the caller is `renderFrameImpl` in
-        // `runtime/frame.zig`, which fires per render callback;
-        // single-window flows hit this exactly once per tick,
-        // multi-window flows still hit it once per window until
-        // the centralised tick driver lands in 7c.3+.
+        // Clear stale entity observations from the previous tick.
+        // Idempotent, so the redundant per-window calls in multi-window
+        // flows are harmless.
         self.entities.beginFrame();
     }
 
-    /// Per-tick app-scoped finalisation — called by
-    /// `runtime/frame.zig::renderFrameImpl` once per render
-    /// callback, after `window.endFrame()` has returned the
-    /// frame's render commands.
-    ///
-    /// Currently a no-op hook. `EntityMap.endFrame` is itself a
-    /// no-op (frame observations are registered eagerly via
-    /// `observe()`); the call stays here for symmetry with
-    /// `beginFrame` and so future batching optimisations
-    /// `EntityMap.endFrame` is reserved for don't silently
-    /// skip the app.
+    /// Per-tick app-scoped finalisation. Currently a thin pass-through:
+    /// `EntityMap.endFrame` is itself a no-op (observations are registered
+    /// eagerly via `observe()`); the call stays for symmetry with
+    /// `beginFrame` and as a hook for future batching.
     pub fn endFrame(self: *Self) void {
         std.debug.assert(@intFromPtr(self) != 0);
         self.entities.endFrame();
@@ -669,7 +381,7 @@ test "App: init and deinit cleanly" {
 
     // Fresh app should have an empty entity map.
     try testing.expectEqual(@as(usize, 0), app.entities.count());
-    // PR 7b.4 — and a populated `Keymap` slot.
+    // And a populated `Keymap` slot.
     try testing.expect(app.globals.has(Keymap));
 }
 
@@ -696,9 +408,8 @@ test "App: entity creation and access through the shared map" {
 }
 
 test "App: entities survive across simulated windows" {
-    // Two `*App` borrows from the same backing struct should see
-    // the same entities — this is the cross-window sharing
-    // property the 7b.3 lift unlocks.
+    // Two `*App` borrows from the same backing struct see the same
+    // entities — the cross-window sharing property.
     var app = try App.init(testing.allocator, undefined);
     defer app.deinit();
 
@@ -715,9 +426,8 @@ test "App: entities survive across simulated windows" {
 }
 
 test "App: keymap accessor returns the registered Keymap" {
-    // PR 7b.4 — bind a keystroke through the accessor; reading
-    // it back via the same accessor should see the binding,
-    // proving the slot survives across two `keymap()` calls.
+    // Bind a keystroke through the accessor; reading it back via the same
+    // accessor sees the binding, proving the slot survives across calls.
     var app = try App.init(testing.allocator, undefined);
     defer app.deinit();
 
@@ -729,8 +439,7 @@ test "App: keymap accessor returns the registered Keymap" {
 }
 
 test "App: keymap is shared across simulated windows" {
-    // PR 7b.4 — the cross-window sharing property the keymap
-    // lift unlocks: a binding registered through "window A"'s
+    // Cross-window sharing: a binding registered through "window A"'s
     // borrow of `App` is visible through "window B"'s borrow.
     var app = try App.init(testing.allocator, undefined);
     defer app.deinit();
@@ -746,11 +455,9 @@ test "App: keymap is shared across simulated windows" {
 }
 
 test "App: image_loader starts unbound; deinit skips it" {
-    // PR 7b.5 — fresh `App` reports `image_loader_bound = false`
-    // and tears down cleanly without a `bindImageLoader` call.
-    // This is the exact pattern test fixtures rely on; a
-    // regression here would force every test to construct a
-    // real `ImageAtlas`.
+    // A fresh `App` reports `image_loader_bound = false` and tears down
+    // cleanly without a `bindImageLoader` call — the pattern test fixtures
+    // rely on.
     var app = try App.init(testing.allocator, undefined);
     defer app.deinit();
 
@@ -758,10 +465,9 @@ test "App: image_loader starts unbound; deinit skips it" {
 }
 
 test "App: bindImageLoader wires the loader against the atlas" {
-    // PR 7b.5 — exercise the full bind path: real allocator,
-    // real (single-threaded) IO, real `ImageAtlas`. After
-    // `bindImageLoader` the pending and failed sets are
-    // populated (empty), and `image_loader_bound` flips true.
+    // Exercise the full bind path with a real allocator, IO, and
+    // `ImageAtlas`. After `bindImageLoader` the pending / failed sets are
+    // empty and `image_loader_bound` flips true.
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var app = try App.init(testing.allocator, io);
@@ -777,12 +483,9 @@ test "App: bindImageLoader wires the loader against the atlas" {
 }
 
 test "App: image_loader is shared across simulated windows" {
-    // PR 7b.5 — the cross-window sharing property the loader
-    // lift unlocks. A URL recorded as "pending" through one
-    // borrow of `App` is visible as "pending" through a
-    // second borrow. This is the exact property that
-    // structurally eliminates duplicate fetches when two
-    // windows render the same URL in the same frame.
+    // Cross-window sharing: a URL recorded as "pending" through one borrow
+    // of `App` is visible as "pending" through a second borrow — this
+    // eliminates duplicate fetches when two windows request the same URL.
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var app = try App.init(testing.allocator, io);
@@ -815,12 +518,10 @@ test "App: image_loader is shared across simulated windows" {
 }
 
 test "App: beginFrame clears stale entity observations" {
-    // PR 7c.1 — `App.beginFrame` must clear frame observations
-    // made during the previous tick, just like the pre-7c.1
-    // `Window.beginFrame` did inline. The test simulates one
-    // tick: an observer reads a target (which calls `observe`
-    // and registers a frame observation), then `beginFrame`
-    // runs at the start of the next tick and clears the slot.
+    // `App.beginFrame` must clear frame observations made during the
+    // previous tick. The test simulates one tick: an observer reads a
+    // target (registering a frame observation), then `beginFrame` runs at
+    // the start of the next tick and clears the slot.
     var app = try App.init(testing.allocator, undefined);
     defer app.deinit();
 
@@ -843,12 +544,10 @@ test "App: beginFrame clears stale entity observations" {
 }
 
 test "App: beginFrame is a no-op when image_loader is unbound" {
-    // PR 7c.1 — `beginFrame` must be safe to call on test-fixture
-    // `App` instances that never bound an `ImageLoader`. The
-    // guard inside `beginFrame` skips the loader drain when
-    // `image_loader_bound = false`; without that guard the call
-    // would walk undefined memory and trip the loader's internal
-    // queue asserts.
+    // `beginFrame` must be safe on `App` instances that never bound an
+    // `ImageLoader`. The guard skips the loader drain when
+    // `image_loader_bound = false`; without it the call would walk
+    // undefined memory.
     var app = try App.init(testing.allocator, undefined);
     defer app.deinit();
 
@@ -862,13 +561,10 @@ test "App: beginFrame is a no-op when image_loader is unbound" {
 }
 
 test "App: beginFrame drains image_loader when bound" {
-    // PR 7c.1 — `beginFrame` must drain the image loader's
-    // result queue, just like the pre-7c.1 `Window.beginFrame`
-    // did inline. With no in-flight fetches the drain is a
-    // 0-result no-op; the test pins that the call reaches
-    // through to the loader (instead of silently skipping when
-    // `image_loader_bound` is true) by exercising the bound
-    // path with a real `ImageAtlas`.
+    // `beginFrame` must drain the image loader's result queue. With no
+    // in-flight fetches the drain is a 0-result no-op; the test pins that
+    // the call reaches through to the loader (bound path, real
+    // `ImageAtlas`).
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var app = try App.init(testing.allocator, io);

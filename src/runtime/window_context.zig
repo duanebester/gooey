@@ -19,9 +19,7 @@ const builtin = @import("builtin");
 
 // Platform
 const platform = @import("../platform/mod.zig");
-// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the framework-level wrapper
-// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+// `PlatformWindow` is the OS-level handle; `Window` is the framework wrapper.
 const PlatformWindow = platform.PlatformWindow;
 const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .macos;
 
@@ -29,12 +27,10 @@ const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .m
 const window_mod = @import("../context/window.zig");
 const Window = window_mod.Window;
 const FontConfig = window_mod.FontConfig;
-// PR 7b.3 — `App` owns application-lifetime state shared across
-// windows. The single-window flow heap-allocates one `App` here in
-// `WindowContext.init`; the multi-window flow embeds a `context.App`
-// inside `multi_window_app.zig::App` and hands `*App` to every
-// window. Either way `WindowContext` writes the borrowed pointer
-// onto `window.app` after the `Window` is constructed, so the field
+// `App` owns application-lifetime state shared across windows. Single-window
+// heap-allocates one in the runner; multi-window embeds one in
+// `multi_window_app.zig::App`. Either way `WindowContext` borrows `*App` and
+// writes it onto `window.app` after the `Window` is constructed, so the field
 // is non-`undefined` before any frame runs.
 const app_mod = @import("../context/app.zig");
 const App = app_mod.App;
@@ -78,12 +74,8 @@ const image_mod = @import("../image/mod.zig");
 const MetalRenderer = if (is_mac) @import("../platform/macos/metal/metal.zig").Renderer else void;
 const ImageAtlas = image_mod.ImageAtlas;
 
-// PR 7b.6 — `initWithSharedResources` collapsed to take a single
-// `*const AppResources` parameter instead of three separate
-// `*TextSystem` / `*SvgAtlas` / `*ImageAtlas` pointers. The
-// pointee bundle is owned upstream (typically by `App` in
-// `multi_window_app.zig`) and lent borrowed-shape into every
-// per-window `Window`.
+// Shared rendering resources (text system + atlases), owned upstream
+// (typically by `App`) and lent borrowed-shape into every per-window `Window`.
 const app_resources_mod = @import("../context/app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
@@ -100,15 +92,11 @@ pub fn WindowContext(comptime State: type) type {
         /// Framework window wrapper (owned, manages layout/scene/widgets)
         window: *Window,
 
-        /// PR 7b.3 — borrowed `*App`. Single-window: owned by the
-        /// runner (`runtime/runner.zig`), heap-allocated once
-        /// per app. Multi-window: owned by-value inside
-        /// `multi_window_app.zig::App`. `WindowContext.deinit`
-        /// deliberately does not touch this pointer — the
-        /// upstream owner tears the `App` down after every
-        /// window's `WindowContext.deinit` has run, so cancel
-        /// groups attached to entities have a live `EntityMap`
-        /// to walk during entity removal.
+        /// Borrowed `*App` (owned by the runner single-window, or by
+        /// `multi_window_app.zig::App` multi-window). `deinit` deliberately
+        /// does not touch it: the upstream owner tears the `App` down after
+        /// every window's `deinit`, so entity cancel-groups still have a live
+        /// `EntityMap` to walk during removal.
         app: *App,
 
         /// UI Builder instance
@@ -144,12 +132,8 @@ pub fn WindowContext(comptime State: type) type {
         /// Initialize a WindowContext for a window.
         /// Allocates Window and Builder on the heap.
         ///
-        /// PR 7b.3 — `app` is borrowed from the caller (the
-        /// single-window runner heap-allocates one `App` per
-        /// process and hands `*App` here). `WindowContext` does
-        /// not own the `App` — `deinit` does not free it. The
-        /// caller must outlive every window borrowing the
-        /// pointer.
+        /// `app` is borrowed from the caller, which must outlive every window
+        /// borrowing the pointer; `deinit` does not free it.
         pub fn init(
             allocator: std.mem.Allocator,
             platform_window: *PlatformWindow,
@@ -169,58 +153,25 @@ pub fn WindowContext(comptime State: type) type {
             errdefer allocator.destroy(self);
 
             // Initialize Window with owned resources (single-window mode).
-            // PR 7b.1b — the framework wrapper local was renamed
-            // `gooey -> window` to match the struct rename. The OS-level
-            // handle that this function takes as input is now
-            // `platform_window` to keep the two unambiguous in the same
-            // scope.
             const window = try allocator.create(Window);
             errdefer allocator.destroy(window);
             window.* = try Window.initOwned(allocator, platform_window, font_config, io);
-            // PR 7b.3 — wire the borrowed `*App` onto the freshly-
-            // initialised `Window`. `Window.initOwned` left
-            // `window.app` at its `undefined` default; this assignment
-            // is the latest moment that's safe (any earlier and the
-            // by-value copy from the `Window.initOwned` stack temp
-            // would not have happened yet). Every code path that
-            // reaches `window.app.*` runs after this point.
+            // Wire the borrowed `*App` onto the freshly-initialised `Window`
+            // (`initOwned` left `window.app` undefined). This is the latest
+            // safe point; every path that reaches `window.app.*` runs after it.
             window.app = app;
             errdefer window.deinit();
 
-            // PR 7b.5 — bind the app-scoped `ImageLoader` against
-            // the window's owning `image_atlas`. `Window.initOwned`
-            // creates the owning `AppResources` (and therefore the
-            // backing `ImageAtlas`) on the single-window path, so
-            // this is the first moment a stable `*ImageAtlas` is
-            // available to hand to the loader. Single-bind is
-            // asserted inside `bindImageLoader`; the pre-7b.5
-            // `window.fixupImageLoadQueue` call retired alongside
-            // the `Window.image_loader` field — the loader now
-            // runs `initInPlace` directly at its `App` heap
-            // address, so no by-value-copy queue dangle is
-            // possible on this path. See `context/app.zig` file
-            // header for the two-phase init rationale.
+            // Bind the app-scoped `ImageLoader` against the window's owning
+            // `image_atlas` — the first moment a stable `*ImageAtlas` exists
+            // on the single-window path. Single-bind is asserted inside
+            // `bindImageLoader`.
             app.bindImageLoader(window.resources.image_atlas);
 
-            // Initialize UI Builder.
-            //
-            // PR 7c.3c — the Builder writes scene primitives and
-            // dispatch nodes into the *build target*, which is
-            // `window.next_frame.*`. Builder caches the
-            // `*Scene` / `*DispatchTree` pointers in its own
-            // fields, so the `mem.swap` at the end of
-            // `runtime/frame.zig::renderFrameImpl` would leave
-            // those cached pointers identifying the now-rendered
-            // buffer instead of the live build target. The fix
-            // lives in `renderFrameImpl`'s per-tick builder reset
-            // block: alongside `id_counter = 0` and the pending
-            // queue clears, the reset writes
-            // `builder.scene = window.next_frame.scene` and
-            // `builder.dispatch = window.next_frame.dispatch` so
-            // Builder always tracks the current `next_frame.*`
-            // pair across the swap. The init-time pointers below
-            // are the frame-0 values; every subsequent tick
-            // overwrites them from the post-swap `next_frame.*`.
+            // Initialize UI Builder against the `next_frame.*` build target.
+            // The per-tick reset in `renderFrameImpl` re-fetches `scene` and
+            // `dispatch` from `window.next_frame.*` so the cached pointers
+            // track every end-of-frame swap; the values below are just frame-0.
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
@@ -260,16 +211,8 @@ pub fn WindowContext(comptime State: type) type {
         }
 
         /// Initialize a WindowContext with shared resources (multi-window mode).
-        /// The shared resources are owned by the App, not this context.
-        ///
-        /// PR 7b.6 — collapsed signature: takes a single
-        /// `*const AppResources` borrowed view from the parent
-        /// (`multi_window_app.zig::App`'s own owning `AppResources`).
-        /// Replaces the pre-7b.6 triplet of separate
-        /// `shared_text_system` / `shared_svg_atlas` /
-        /// `shared_image_atlas` pointers; the bundle was already
-        /// the unit of ownership in `App`, the pre-7b.6 signature
-        /// just unbundled it three times across the call chain.
+        /// The shared resources are owned by the App (borrowed view), not this
+        /// context.
         pub fn initWithSharedResources(
             allocator: std.mem.Allocator,
             platform_window: *PlatformWindow,
@@ -293,9 +236,6 @@ pub fn WindowContext(comptime State: type) type {
             errdefer allocator.destroy(self);
 
             // Initialize Window with shared resources (multi-window mode).
-            // PR 7b.1b — same naming convention as `init` above:
-            // `window` is the framework wrapper, `platform_window` is
-            // the OS-level handle.
             const window = try allocator.create(Window);
             errdefer allocator.destroy(window);
             window.* = try Window.initWithSharedResources(
@@ -304,45 +244,21 @@ pub fn WindowContext(comptime State: type) type {
                 shared_resources,
                 io,
             );
-            // PR 7b.3 — wire the borrowed `*App` from the upstream
-            // `multi_window_app.zig::App`. Every window in a
-            // multi-window app receives a pointer to the SAME
-            // `context.App` (embedded by-value inside the parent),
-            // which is exactly what enables cross-window entity
-            // observation.
+            // Every window in a multi-window app borrows a pointer to the SAME
+            // `context.App` (embedded by-value inside the parent), which is
+            // what enables cross-window entity observation.
             window.app = app;
             errdefer window.deinit();
 
-            // PR 7b.5 — bind the app-scoped `ImageLoader` against
-            // the shared `image_atlas`. `App.bindImageLoader` is
-            // idempotent on same-atlas re-binds: the first window
-            // opened in this `App` runs `initInPlace` on the
-            // loader at its final heap address; every subsequent
-            // window hits the same-atlas short-circuit because
-            // every borrowed `AppResources` in this `App`'s
-            // lifetime points at the same upstream-owned
-            // `ImageAtlas`. Reaching through `shared_resources`
-            // (rather than `window.resources`) is a stylistic
-            // choice — both refer to the same heap address — but
-            // it makes the lifetime story explicit at the call
-            // site: the atlas is owned upstream, this window
-            // borrows. The pre-7b.5 `window.fixupImageLoadQueue`
-            // call retired alongside the `Window.image_loader`
-            // field; see the matching comment block in `init`
-            // and the `context/app.zig` file header.
+            // Bind the app-scoped `ImageLoader` against the shared `image_atlas`.
+            // `bindImageLoader` is idempotent on same-atlas re-binds, so only
+            // the first window in this `App` actually initializes the loader.
+            // Reaching through `shared_resources` (same address as
+            // `window.resources`) makes the upstream-owned lifetime explicit.
             app.bindImageLoader(shared_resources.image_atlas);
 
-            // Initialize UI Builder.
-            //
-            // PR 7c.3c — same `next_frame.*` build-target wiring as
-            // the single-window `init` above. The per-tick
-            // builder reset in `renderFrameImpl` re-fetches both
-            // `scene` and `dispatch` from `window.next_frame.*`
-            // so the cached pointers track every `mem.swap`; see
-            // the matching comment block on the single-window
-            // `init` and the reset block in
-            // `runtime/frame.zig::renderFrameImpl` for the
-            // rationale.
+            // Initialize UI Builder against the `next_frame.*` build target;
+            // same wiring as the single-window `init` above.
             const builder = try allocator.create(Builder);
             errdefer allocator.destroy(builder);
             builder.* = Builder.init(
@@ -489,28 +405,10 @@ pub fn WindowContext(comptime State: type) type {
             window.setResizeCallback(Self.onResize);
             window.setPostInputCallback(Self.onPostInput);
 
-            // Set atlases and scene.
-            //
-            // PR 7c.3c — the platform window's scene pointer must
-            // track `window.rendered_frame.scene` (the GPU-side
-            // "currently displayed" buffer), not
-            // `window.next_frame.scene` (the build target). The
-            // `mem.swap` at the end of
-            // `runtime/frame.zig::renderFrameImpl` rotates the
-            // just-built scene into `rendered_frame.scene`, so
-            // the platform layer needs to follow that rotation:
-            // alongside the swap, `renderFrameImpl` calls
-            // `platform_window.setScene(window.rendered_frame.scene)`
-            // to point the GPU side at the new physical Scene
-            // allocation. The initial `setScene` below is the
-            // frame-0 setup — before any tick has run,
-            // `rendered_frame.scene` is the still-empty backing
-            // allocation that swap will rotate into the build
-            // target on tick 0; the renderFrameImpl-side update
-            // takes over from tick 1 onwards. (Pre-7c.3c, with a
-            // single buffer, the platform pointer never needed
-            // updating because there was only one Scene slot to
-            // track.)
+            // Set atlases and scene. The platform scene pointer must track
+            // `rendered_frame.scene` (the GPU-side displayed buffer), not the
+            // `next_frame.scene` build target. `renderFrameImpl` re-points it
+            // after every swap; the `setScene` below is just the frame-0 setup.
             window.setTextAtlas(self.window.resources.text_system.getAtlas());
             window.setSvgAtlas(self.window.resources.svg_atlas.*.getAtlas());
             window.setImageAtlas(self.window.resources.image_atlas.*.getAtlas());

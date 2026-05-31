@@ -165,7 +165,7 @@ pub const RenderCommandList = struct {
             .commands = .empty,
             .next_order = 0,
         };
-        // Pre-allocate per CLAUDE.md: static memory allocation at startup
+        // Pre-allocate at startup to avoid per-frame allocation
         list.commands.ensureTotalCapacity(allocator, INITIAL_CAPACITY) catch {};
         return list;
     }

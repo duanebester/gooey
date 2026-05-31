@@ -15,9 +15,7 @@ const ui_mod = @import("../ui/mod.zig");
 const render_cmd = @import("render.zig");
 const canvas_mod = @import("../ui/canvas.zig");
 const scene_mod = @import("../scene/mod.zig");
-// PR 7c.3c — the end-of-frame `mem.swap` below references the
-// `Frame` type by name; hoisted to the imports block to keep
-// the swap call site readable.
+// `Frame` is referenced by name in the end-of-frame `mem.swap` below.
 const frame_mod = @import("../context/frame.zig");
 const Frame = frame_mod.Frame;
 
@@ -25,20 +23,15 @@ const Window = window_mod.Window;
 const Cx = cx_mod.Cx;
 const Builder = ui_mod.Builder;
 
-// PR 8.4 — `ScrollContainer` lookup for in-line scrollbar rendering
-// goes through `window.element_states` post-PR-8.4. Same import
-// shape as `runtime/input.zig`.
+// Widget-state lookups (scrollbars and the post-layout text-widget render
+// passes) go through `window.element_states`, keyed by `LayoutId.id` hash.
+// Read-only `get` is correct: the slot was seeded earlier this frame by the
+// matching builder call, so a `null` return means that seed failed (capacity
+// exhaustion or OOM), in which case skipping this frame's render is the right
+// fail-safe.
 const scroll_container_mod = @import("../widgets/scroll_container.zig");
 const ScrollContainer = scroll_container_mod.ScrollContainer;
 
-// PR 8.4b — `TextInputState` / `TextAreaState` / `CodeEditorState`
-// lookups for the post-layout render passes go through
-// `window.element_states` post-PR-8.4b. Read-only `get` is the right
-// shape because `Builder.renderInput` / `renderTextArea` /
-// `renderCodeEditor` already seeded the slot earlier this frame; a
-// `null` return here means the seed itself failed (capacity
-// exhaustion or OOM at builder time), in which case skipping the
-// post-layout render for this frame is the right fail-safe.
 const text_input_state_mod = @import("../widgets/text_input_state.zig");
 const TextInputState = text_input_state_mod.TextInputState;
 const text_area_state_mod = @import("../widgets/text_area_state.zig");
@@ -65,18 +58,10 @@ pub fn renderFrameCxRuntime(cx: *Cx, render_fn: *const fn (*Cx) void) !void {
 /// Internal implementation shared by comptime and runtime variants
 fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Cache pointers at function start (avoids repeated method calls).
-    //
-    // PR 7c.2 — `app` is now driven directly from this layer. The
-    // app-scoped per-tick begin/end pair (see `App.beginFrame` /
-    // `App.endFrame`) used to be reached through `Window.beginFrame`
-    // / `Window.endFrame`; pre-7c.2 a multi-window flow with N
-    // windows borrowing one `App` ran the begin pair N times per
-    // tick, which was redundant for `image_loader.drain`
-    // (idempotent) and *broken* for `entities.beginFrame`
-    // (window-A-render-then-window-B-begin discarded window-A's
-    // earlier-this-tick frame observations). Caching the pointer
-    // here makes the once-per-tick invariant visible at the layer
-    // that owns it.
+    // The app-scoped per-tick begin/end pair is driven from this layer, not
+    // through `Window`, so it runs exactly once per tick even when N windows
+    // share one `App` (running it per-window would discard each window's
+    // earlier-this-tick entity observations).
     const window = cx.window();
     const app = window.app;
     const builder = cx.builder();
@@ -90,53 +75,21 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
         }
     }
 
-    // PR 7c.3d — the start-of-frame `next_frame.dispatch.reset()`
-    // call that lived here pre-7c.3d was retired alongside
-    // `refreshHover` (win (4) of the 7c.3c plan, cashed in this
-    // slice). The end-of-frame `mem.swap` below leaves
-    // `next_frame.dispatch` reset every tick after the first via
-    // the post-swap recycle step; tick 0 starts with a fresh tree
-    // from `Frame.initOwned`'s `DispatchTree.init`. Both paths give
-    // us an empty dispatch tree at this point in the function, so
-    // the explicit reset was redundant on every tick.
-
-    // PR 7c.3c — sync builder's cached `scene` / `dispatch`
-    // pointers to the post-swap `next_frame.*` pair.
-    //
-    // Builder caches the two pointers it was handed at
-    // `Builder.init` time; the previous tick's `mem.swap` rotated
-    // those allocations into `rendered_frame`, leaving builder's
-    // cached pointers identifying the GPU-side display buffer
-    // instead of the live build target. Refreshing both fields
-    // here — alongside the per-tick `id_counter` / pending-queue
-    // resets below — keeps the cached pointers tracking
-    // `next_frame.*` across every swap.
+    // Sync builder's cached `scene` / `dispatch` pointers to the current
+    // `next_frame.*` build target. Builder caches the pointers it was handed
+    // at init time, but the previous tick's end-of-frame `mem.swap` rotated
+    // those allocations into `rendered_frame`. Refreshing here keeps the
+    // cached pointers tracking the live build target across every swap.
     builder.scene = window.next_frame.scene;
     builder.dispatch = window.next_frame.dispatch;
 
     window.beginFrame();
 
-    // PR 7c.2 — app-scoped per-tick hook. Hoisted out of
-    // `Window.beginFrame` so it runs at the runtime layer, not
-    // through every per-window forwarder. Drains async image-load
-    // results into the shared atlas (idempotent — a second call
-    // gets 0 results) and clears stale entity observations from
-    // the previous tick (NOT idempotent within a tick).
-    //
-    // Order constraints the call site must preserve:
-    //   1. After `window.beginFrame()` so the per-window
-    //      `image_atlas.beginFrame()` has already incremented the
-    //      frame counter; freshly-decoded pixels then land in the
-    //      post-reset atlas.
-    //   2. Before `render_fn(cx)` so observations made by widget
-    //      renders this tick are not discarded by the entity-
-    //      observation clear.
-    //
-    // Today's call shape (single window per tick) trivially
-    // satisfies both. A future tick-driver in PR 7c.3+ that drives
-    // N windows per tick must still call `app.beginFrame()` once
-    // per tick *between* every window's `image_atlas.beginFrame`
-    // and any window's render — not once per window.
+    // App-scoped per-tick hook: drains async image-load results into the
+    // shared atlas and clears stale entity observations from the previous
+    // tick. Must run after `window.beginFrame()` (so the atlas frame counter
+    // has advanced) and before `render_fn(cx)` (so this tick's observations
+    // survive the clear). Call once per tick, never once per window.
     app.beginFrame();
 
     // Clear blur handlers from previous frame
@@ -171,44 +124,23 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // End frame and get render commands
     const commands = try window.endFrame();
 
-    // PR 7c.2 — symmetric app-scoped per-tick finalisation,
-    // hoisted out of `Window.endFrame`. Currently a no-op
-    // (`EntityMap.endFrame` is itself a no-op), so the visible
-    // behaviour is unchanged; the motivation is layering. Future
-    // batching optimisations the `App.endFrame` hook is reserved
-    // for now have a single per-tick driver to hang off rather
-    // than firing once per window per tick.
-    //
-    // Position: must follow `window.endFrame()` so any per-window
-    // finalisation (a11y bounds sync, layout commit) has already
-    // run. A future tick-driver running N windows per tick must
-    // call this exactly once *after* every window's `endFrame`
-    // returns.
+    // Symmetric app-scoped per-tick finalisation (currently a no-op; reserved
+    // for future batching). Must run once per tick after every window's
+    // `endFrame` has completed its per-window finalisation.
     app.endFrame();
 
     // Assert render command count is within limits
     std.debug.assert(commands.len <= MAX_RENDER_COMMANDS);
 
-    // Sync bounds and z_index from layout to dispatch tree
-    // (previously untracked — now measured as "dispatch sync")
+    // Sync bounds and z_index from layout into the just-built
+    // `next_frame.dispatch` (pre-swap). The end-of-frame swap rotates this
+    // synced tree into `rendered_frame.dispatch`, which is what input
+    // handlers hit-test against between frames (see `Window.updateHover` and
+    // the dispatch call sites in `runtime/input.zig`). The double buffer is
+    // why no post-loop hover re-run is needed: input never hit-tests against
+    // the in-progress build target.
     window.debugger().beginDispatchSync(window.io);
 
-    // PR 7c.3c — the bounds sync runs against the just-built
-    // `next_frame.dispatch` (pre-swap). The end-of-frame swap below
-    // rotates the synced tree into `rendered_frame.dispatch`, where
-    // input handlers between frames will hit-test against it via
-    // `window.updateHover` / the dispatch-tree call sites in
-    // `runtime/input.zig`.
-    //
-    // PR 7c.3d — by the time the next mouse move arrives, the
-    // end-of-frame `mem.swap` will have rotated this just-synced
-    // tree into `rendered_frame.dispatch`, which is exactly what
-    // `Window.updateHover` reads. Pre-7c.3d we ran `refreshHover`
-    // immediately after this loop to re-run hit testing against
-    // the (single-buffer) tree because input handlers earlier in
-    // the same tick had hit-tested against stale bounds; the
-    // double buffer makes that re-run unnecessary because input
-    // never hit-tests against the in-progress build target.
     for (window.next_frame.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
             node.bounds = window.layout.getBoundingBox(layout_id);
@@ -221,12 +153,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     window.debugger().endDispatchSync(window.io);
 
-    // PR 7c.3c — clear the build-target scene before the
-    // command-replay pass below populates it. `Window.beginFrame`
-    // already cleared `next_frame.scene` early in this function;
-    // this second clear is the historical pre-7c.3a redundant
-    // clear that 7c.3c preserves verbatim (the slice's job is
-    // the swap and rename, not pruning the redundant clears).
+    // Clear the build-target scene before the command-replay pass populates it.
     window.next_frame.scene.clear();
 
     // Reset SVG atlas per-frame rasterization budget so that expensive
@@ -237,21 +164,13 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Start render timing for profiler
     window.debugger().beginRender(window.io);
 
-    // Render all commands (includes SVGs and images inline for correct z-ordering)
-    // Scrollbars are rendered inline when their scissor_end is encountered
-    // Canvas draw orders are reserved during this pass for correct z-ordering
-    //
-    // PR 11b.3b — canvas + scroll are *deliberately* not folded into the
-    // unified text-widget queue (PR 11b.3a). That queue is a pure
-    // post-layout pass: walk records, look up bounds, paint. Canvas and
-    // scroll are not post-layout — they are coupled to *this* command-replay
-    // loop for z-ordering: `pending_canvas` must reserve its draw-order block
-    // (and capture the live clip) at the exact moment `cmd.id` is replayed,
-    // and `pending_scrolls` must paint its scrollbars at the matching
-    // `scissor_end` so they land after scroll content but before siblings.
-    // Moving either into a post-layout queue would reintroduce the
-    // z-ordering they exist to get right — strictly more complex than the
-    // inline coupling here. They stay as documented inline exceptions.
+    // Render all commands inline (SVGs, images, scrollbars at their
+    // `scissor_end`) so z-ordering is correct. Canvas and scroll are
+    // deliberately coupled to this command-replay loop rather than the
+    // post-layout text-widget queue: canvas must reserve its draw-order block
+    // (and capture the live clip) at the moment `cmd.id` is replayed, and
+    // scrollbars must paint at the matching `scissor_end` to land after
+    // scroll content but before siblings.
     try renderCommands(window, @constCast(builder), commands);
 
     // Register blur handlers from pending items
@@ -285,52 +204,31 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     window.finalizeFrame();
 
     // =========================================================================
-    // PR 7c.3c — frame-boundary `mem.swap` for the double buffer.
+    // Frame-boundary `mem.swap` for the double buffer.
     // =========================================================================
     //
-    // At this point the build pass has finished writing into
-    // `window.next_frame.{scene,dispatch}` (just-built tree, with
-    // bounds synced and scene primitives committed). Swap it into
+    // The build pass has finished writing the just-built tree (bounds synced,
+    // scene primitives committed) into `window.next_frame.*`. Swap it into
     // `window.rendered_frame` so:
+    //   1. The GPU side picks up the just-built scene on the next render
+    //      (the platform scene pointer is updated below to follow it).
+    //   2. Input events between ticks hit-test against `rendered_frame.dispatch`
+    //      — the tree the user is currently seeing.
     //
-    //   1. The GPU side picks up the just-built scene on the next
-    //      `renderScene` (we update the platform window's scene
-    //      pointer below to point at `rendered_frame.scene`,
-    //      which post-swap is the same heap allocation we just
-    //      finished writing into).
-    //   2. Input events arriving between this tick and the next
-    //      hit-test against `rendered_frame.dispatch` — the
-    //      tree the user is currently *seeing*. See
-    //      `Window.updateHover` and the dispatch-tree call sites
-    //      in `runtime/input.zig` for the read side.
-    //
-    // The pre-swap `next_frame` (the previous tick's already-
-    // displayed tree) becomes the recycled buffer post-swap; we
-    // clear its scene + reset its dispatch so the next tick's
-    // build into `next_frame.*` starts from an empty state. This
-    // is the "recycle the older buffer" half of the swap pattern
-    // sketched in `architectural-cleanup-plan.md` §11.
-    //
-    // Both halves of the swap retain `owned = true` — `mem.swap`
-    // is a physical struct exchange between two owning slots, not
-    // a hand-off through `Frame.borrowed`. `Window.deinit`
-    // continues to free both pointee pairs regardless of how many
-    // swaps have happened.
+    // The pre-swap `next_frame` (previous tick's displayed tree) becomes the
+    // recycled buffer; clear its scene and reset its dispatch so the next
+    // tick builds from an empty state. Both halves stay `owned = true` — this
+    // is a physical struct exchange between two owning slots, and
+    // `Window.deinit` frees both pointee pairs regardless of swap count.
     std.mem.swap(Frame, &window.rendered_frame, &window.next_frame);
     window.next_frame.scene.clear();
     window.next_frame.dispatch.reset();
 
-    // PR 7c.3c — update the platform window's scene pointer to
-    // track the post-swap `rendered_frame.scene` (the just-built
-    // tree, now the GPU-side display buffer). Pre-7c.3c the
-    // platform pointer was set once at `WindowContext.setupWindow`
-    // because there was only one Scene slot per window; with the
-    // double buffer, the physical Scene allocation rotated into
-    // the display side every tick, so the platform pointer must
-    // follow the rotation. Web's renderer reads
-    // `window.rendered_frame.scene` directly each tick and doesn't
-    // need this update; the `getPlatformWindow` accessor returns
-    // null on the web target, so the `if let` below short-circuits.
+    // Point the platform window's scene at the post-swap `rendered_frame.scene`
+    // (the just-built tree, now the GPU-side display buffer); the physical
+    // Scene allocation rotates every tick, so the platform pointer must follow.
+    // Web reads `rendered_frame.scene` directly and returns null here, so the
+    // branch short-circuits.
     if (window.getPlatformWindow()) |pw| {
         pw.setScene(window.rendered_frame.scene);
     }
@@ -383,11 +281,6 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
         // This ensures scrollbars appear after scroll content but before sibling elements
         if (cmd.command_type == .scissor_end) {
             if (builder.findPendingScrollByLayoutId(cmd.id)) |pending| {
-                // PR 8.4 — read-only `get` against the keyed pool. The
-                // slot was seeded earlier this frame by `Builder.scroll`,
-                // so a missing entry here means capacity exhaustion at
-                // scroll-time — in which case skipping the scrollbar
-                // for this frame is the right fail-safe.
                 if (window.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id))) |scroll_widget| {
                     try scroll_widget.renderScrollbars(window.next_frame.scene);
                 }
@@ -409,18 +302,11 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
     }
 }
 
-/// Render every pending text widget in one tree-ordered pass.
-///
-/// PR 11b.3a — the three structurally-identical post-layout passes
-/// (`renderTextInputs` / `renderTextAreas` / `renderCodeEditors`)
-/// collapse into this single walk over `pending_text_widgets`, the
-/// unified control queue. Each `{ kind, index }` record selects the
-/// matching typed data-plane pool; a comptime `switch (kind)` picks the
-/// per-kind render helper — no runtime trait objects, no by-value
-/// per-element state (CLAUDE.md §6, §14). Control flow (the switch)
-/// stays in this parent; the meaty per-kind work lives in the leaf
-/// helpers (CLAUDE.md §5). Tree-order replay is strictly more correct
-/// than the old grouped order when widgets of different kinds overlap.
+/// Render every pending text widget in one tree-ordered pass over the unified
+/// control queue. Each `{ kind, index }` record selects the matching typed
+/// pool; a comptime `switch (kind)` picks the per-kind render helper (no
+/// runtime trait objects). Tree-order replay is correct when widgets of
+/// different kinds overlap.
 fn renderTextWidgets(window: *Window, builder: *const Builder) !void {
     for (builder.pending_text_widgets.items) |entry| {
         switch (entry.kind) {
@@ -546,24 +432,11 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) 
     try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
 }
 
-/// Update IME cursor position for focused text widget.
-///
-/// PR 7b.1b — needs a clean separation between the framework `Window`
-/// (where `widgets.*` lives) and the OS-level `PlatformWindow` (where
-/// `setImeCursorRect` lives). Pre-rename, the original `gooey` param
-/// and the local platform handle were named `gooey` and `window`
-/// respectively; after the framework wrapper rename to `Window`, the
-/// platform handle local moves to `platform_window` to avoid shadowing
-/// the param.
+/// Update IME cursor position for the focused text widget. Priority is
+/// input > area > editor; at most one is focused at a time and the IME only
+/// needs one rect.
 fn updateImeCursorPosition(window: *Window, builder: *const Builder) void {
     const platform_window = window.getPlatformWindow() orelse return;
-    // PR 8.4b — the per-type focused-widget walk (`getFocusedText*`)
-    // retired alongside the StringHashMap maps. The replacement
-    // walks the matching `pending_*` lists, hits the pool by
-    // layout-id hash, and returns the first `isFocused()` match —
-    // same priority order as pre-PR-8.4b (input > area > editor)
-    // because at most one of them is focused at a time and the IME
-    // only needs one rect.
     const input_mod = @import("input.zig");
     if (input_mod.focusedTextInput(window, builder)) |input| {
         const rect = input.cursor_rect;

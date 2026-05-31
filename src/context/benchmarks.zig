@@ -1,6 +1,6 @@
 //! Context Module Benchmarks
 //!
-//! Benchmark suite for dispatch tree, entity map, and widget store hot paths.
+//! Benchmark suite for dispatch tree and entity map hot paths.
 //! Measures the performance-critical operations that run every frame.
 //!
 //! Run as executable: zig build bench-context

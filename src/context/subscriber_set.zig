@@ -1,49 +1,19 @@
 //! `SubscriberSet(Key, Callback, cap)` — generic fixed-capacity slot map for
 //! "register N callbacks keyed by K, iterate them, swap-remove on cleanup."
 //!
-//! Rationale (cleanup item #8 in `docs/architectural-cleanup-plan.md`):
+//! Backing is `[cap]?Entry` with a dense-prefix invariant: `entries[0..count)`
+//! is fully populated and swap-remove keeps it dense, so iteration cost is
+//! O(count), not O(cap). No allocations.
 //!
-//! Five distinct ad-hoc registries on `Window` (formerly `Gooey`) all share the same shape:
+//! Capacity is fixed at comptime by the consumer; insert past it returns
+//! `Insertion.dropped` so the caller surfaces the limit (warn or assert,
+//! depending on the registry's criticality).
 //!
-//!   - `blur_handlers: [64]?BlurHandlerEntry`     (FocusId → BlurCallback)
-//!   - `cancel_groups: [64]*Io.Group`              (() → *Io.Group)
-//!   - `pending_image_hashes: [64]u64`             (folded into AssetCache PR1)
-//!   - `failed_image_hashes:  [128]u64`            (folded into AssetCache PR1)
-//!   - `deferred_commands:   [32]DeferredCommand`  (kept on Window for now)
+//! Key equality goes through a comptime function pointer rather than baking
+//! in `std.meta.eql`: pointer keys want pointer-equality, `[]const u8` IDs
+//! want `std.mem.eql`. See `Options.keysEqual`.
 //!
-//! Rather than copy-paste the same swap-remove / iterate / capacity-cap
-//! logic into each, this generic owns the slot-map invariants once and
-//! every consumer composes it.
-//!
-//! ## Design choices
-//!
-//! - **Fixed capacity at comptime.** Per `CLAUDE.md` §2 and §4: every
-//!   subsystem has a hard cap, declared by the consumer at instantiation.
-//!   Insert past capacity returns `Insertion.dropped` so the caller can
-//!   surface the limit violation (warn-and-drop or assert, depending on
-//!   the criticality of the registry).
-//!
-//! - **Keys are comptime-generic.** Callers pick the key (`FocusId`, the
-//!   trivial `void` for "tag-less" sets like cancel groups, an interned
-//!   string ID, etc). Equality goes through a comptime function pointer
-//!   so we don't bake `std.meta.eql` semantics into hot loops — `Group`
-//!   pointers want pointer-equality, `[]const u8` IDs want
-//!   `std.mem.eql`, and so on. See `Options.keysEqual`.
-//!
-//! - **No allocations.** Backing is `[cap]?Entry`. Swap-remove keeps the
-//!   used prefix dense, so iteration cost is O(used), not O(cap).
-//!
-//! - **No RAII handle yet.** GPUI uses RAII `Subscription` to remove on
-//!   drop; that's a follow-up (cleanup item #8 calls it out). For now,
-//!   removal is explicit (`removeWhere`) — matches the existing
-//!   call-site shape of `BlurHandlerRegistry` / `CancelRegistry` and
-//!   keeps PR 3 a pure refactor.
-//!
-//! - **Two consumers in PR 3** (`BlurHandlerRegistry`, `CancelRegistry`)
-//!   to validate the generic shape on real callers, per the PR 3
-//!   "Definition of done" in `docs/cleanup-implementation-plan.md`.
-//!   PR 8 (`element_states`) leans on the same generic for its
-//!   listener storage.
+//! Removal is explicit (`removeWhere` / `remove`); there is no RAII handle.
 
 const std = @import("std");
 
@@ -53,11 +23,8 @@ const std = @import("std");
 
 /// Configuration for a `SubscriberSet` instantiation.
 ///
-/// Per `CLAUDE.md` §9 (named arguments via `options: struct`): a single
-/// comptime struct so adding future knobs (RAII handles, retain-on-iter
-/// semantics) does not break call sites. The two `u64`s in the original
-/// design — `Key` and `cap` — are pulled into `Options` for the same
-/// reason: a function taking two integers must use an options struct.
+/// A single comptime struct so future knobs don't break call sites, and so
+/// the `Key`/`capacity` pair can't be passed in the wrong order.
 pub fn Options(comptime Key: type, comptime Callback: type) type {
     return struct {
         /// Hard capacity. Insert past this returns `.dropped`.
@@ -79,8 +46,7 @@ pub fn Options(comptime Key: type, comptime Callback: type) type {
         keysEqual: *const fn (Key, Key) bool = defaultKeysEqual(Key),
 
         // Type info threaded through so `SubscriberSet` doesn't need to
-        // re-derive them from `Options`. Comptime-only — zero runtime
-        // cost.
+        // re-derive them from `Options`. Comptime-only, zero runtime cost.
         const KeyType = Key;
         const CallbackType = Callback;
     };
@@ -144,11 +110,9 @@ pub fn SubscriberSet(
         pub const CAPACITY: u32 = options.capacity;
 
         // Re-export the module-level `Insertion` enum so callers can
-        // refer to outcomes via `MySet.Insertion.inserted` instead of
-        // reaching into the parent module — keeps the consumer's
-        // import surface narrow. Aliased through `ModuleInsertion`
-        // (private to the module) so the generic body can return
-        // `ModuleInsertion` without colliding with this `pub const`.
+        // refer to outcomes via `MySet.Insertion.inserted`. Aliased
+        // through `ModuleInsertion` so the generic body can return it
+        // without colliding with this `pub const`.
         pub const Insertion = ModuleInsertion;
 
         /// One slot. Optional so `clear` can null-stomp without caring
@@ -398,9 +362,8 @@ pub fn SubscriberSet(
 // Tests
 // =============================================================================
 //
-// Goal: lock down the slot-map invariants so the two PR 3 consumers
-// (`BlurHandlerRegistry`, `CancelRegistry`) and the future PR 8 consumer
-// (`element_states`) can rely on them without reading the body.
+// Goal: lock down the slot-map invariants so consumers can rely on them
+// without reading the body.
 //
 // Methodology: exercise each public method on a small `u32`-keyed set
 // and verify the dense-prefix invariant after every mutation.
@@ -566,8 +529,7 @@ test "SubscriberSet: getCallback returns null for absent key" {
 }
 
 // -------------------------------------------------------------------------
-// Custom-equality test — locks in the contract for `[]const u8` IDs,
-// which is the shape `BlurHandlerRegistry` will use in PR 3.
+// Custom-equality test — locks in the contract for `[]const u8` IDs.
 // -------------------------------------------------------------------------
 
 const StringSet = SubscriberSet([]const u8, u32, .{

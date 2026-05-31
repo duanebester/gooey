@@ -1,29 +1,16 @@
-//! PR 9 Task 5 \u2014 compile-time audit pinning the `_owned: bool` flag
-//! retirement.
+//! Compile-time audit pinning the `_owned: bool` flag invariant.
 //!
-//! Pre-PR-7 (and through several 7a/7b/7c slices) Gooey carried
-//! per-resource ownership flags directly on the framework wrappers \u2014
-//! `text_owned: bool`, `svg_owned: bool`, `image_owned: bool` triplets
-//! on `Window`, `scene_owned`/`dispatch_owned` peers on a transient,
-//! and so on. The cleanup plan consolidated those flags into two
-//! deliberate ownership *discriminators*:
+//! Resource ownership is expressed by exactly two deliberate
+//! discriminators — `AppResources.owned` (bundled vs borrowed rendering
+//! resources) and `Frame.owned` (owned vs borrowed per-frame
+//! transients) — plus two per-entry cache markers (`DecodedImage.owned`,
+//! `ShapedRun.owned`) which are data-plane flags, not lifecycle flags.
+//! No other `_owned: bool` field should live on `Window` or any type
+//! composed onto it.
 //!
-//!   * `AppResources.owned` (PR 7a) \u2014 picks between "I built the
-//!     bundled text/svg/image resources, free them at deinit" and
-//!     "the multi-window app handed me a borrowed bundle".
-//!   * `Frame.owned` (PR 7c.3a) \u2014 same shape for the per-frame
-//!     transients.
-//!
-//! Beyond those two, per-entry cache markers (`DecodedImage.owned`,
-//! `ShapedRun.owned`) survive as *data-plane* flags, not lifecycle
-//! flags. Everything else \u2014 every `_owned: bool` field that ever lived
-//! on `Window` itself or one of its sub-structs \u2014 should stay gone.
-//!
-//! This file's compile-time tests pin that invariant. If any future
-//! refactor re-adds a `_owned`-suffixed field to `Window` (or to a
-//! type composed onto `Window`), one of the tests below will fail at
-//! compile time with a precise compileError. The allow-list lives in
-//! `is_allow_listed_field` below.
+//! The compile-time tests below pin that: re-adding an `_owned`-suffixed
+//! field to one of the audited types fails the build with a precise
+//! `@compileError`. The allow-list lives in `isAllowListedField`.
 
 const std = @import("std");
 
@@ -32,18 +19,14 @@ const AppResources = @import("app_resources.zig").AppResources;
 const Frame = @import("frame.zig").Frame;
 
 /// Returns true if a `name: bool` field is allowed to live on a type
-/// even though its name matches the audit pattern. The list mirrors
-/// the PR 9 Task 5 carve-outs documented in
-/// `docs/cleanup-implementation-plan.md`.
-///
-/// We compare on `(TypeName, FieldName)` pairs so a future field with
-/// the same name on an unrelated type still trips the audit.
+/// even though its name matches the audit pattern. We compare on
+/// `(TypeName, FieldName)` pairs so a future field with the same name
+/// on an unrelated type still trips the audit.
 fn isAllowListedField(comptime TypeName: []const u8, comptime FieldName: []const u8) bool {
-    // PR 7a \u2014 `AppResources.owned` is the deliberate ownership
-    // discriminator between bundled and borrowed rendering resources.
+    // Deliberate ownership discriminator between bundled and borrowed
+    // rendering resources.
     if (std.mem.eql(u8, TypeName, "AppResources") and std.mem.eql(u8, FieldName, "owned")) return true;
-    // PR 7c.3a \u2014 `Frame.owned` discriminates owned vs borrowed
-    // per-window per-frame transients.
+    // Discriminates owned vs borrowed per-window per-frame transients.
     if (std.mem.eql(u8, TypeName, "Frame") and std.mem.eql(u8, FieldName, "owned")) return true;
     // `DecodedImage.owned` \u2014 per-entry cache marker on the WASM image
     // loader: "free this slice on deinit?".
@@ -91,11 +74,10 @@ fn shortTypeName(comptime full: []const u8) []const u8 {
 // Tests
 // =============================================================================
 //
-// Each test names one concrete type. If the test fails, the
-// compileError message inside `assertNoOwnedFlag` points the reader at
-// the exact field. We deliberately enumerate types here rather than
-// reach for `refAllDecls`-based recursion \u2014 the loud, specific failure
-// message is more valuable than the convenience.
+// Each test names one concrete type so a failure's compileError points
+// at the exact regressing field. Enumerated rather than walked via
+// `refAllDecls` recursion: the loud, specific failure message is worth
+// more than the convenience.
 
 test "no `_owned` flag on Window" {
     comptime assertNoOwnedFlag(Window);

@@ -49,16 +49,15 @@ pub const RenderCommandType = render_commands.RenderCommandType;
 pub const RenderCommandList = render_commands.RenderCommandList;
 pub const RenderData = render_commands.RenderData;
 
-// NOTE: colorToHsla and renderCommandsToScene have been moved to
-// core/render_bridge.zig to decouple layout from scene rendering
+// colorToHsla and renderCommandsToScene live in core/render_bridge.zig,
+// keeping layout decoupled from scene rendering.
 
 pub const LayoutEngine = engine.LayoutEngine;
 pub const MeasureTextFn = engine.MeasureTextFn;
 
-// Anchor for test discovery: refAllDecls walks every `pub const`
-// above (which is how the per-pass test bodies and the engine tests
-// are reached at `zig build test`). The dedicated test files live
-// next to their production code so the per-pass write scope holds.
+// Anchor for test discovery: refAllDecls walks the `pub const`s above,
+// reaching the per-pass test bodies; the engine test files are imported
+// explicitly below.
 test {
     std.testing.refAllDecls(@This());
     _ = @import("engine_tests.zig");

@@ -189,17 +189,6 @@ pub fn expandStroke(
     return result;
 }
 
-/// Expand stroke with default miter limit
-pub fn expandStrokeSimple(
-    points: []const Vec2,
-    width: f32,
-    cap: LineCap,
-    join: LineJoin,
-    closed: bool,
-) StrokeError!ExpandedStroke {
-    return expandStroke(points, width, cap, join, 4.0, closed);
-}
-
 /// Expand stroke directly to triangles (bypasses ear-clipper)
 /// This is more reliable for closed paths which create concave ring polygons.
 pub fn expandStrokeToTriangles(

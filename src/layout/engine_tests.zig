@@ -1,11 +1,7 @@
-//! Tests for the layout engine (PR 10 split — kept separate from
-//! `engine.zig` so that file stays under the 1,500-line ceiling).
+//! Tests for the layout engine, kept separate from `engine.zig`.
 //!
-//! These exercise the engine via its public API and a small number of
-//! private fields (`open_element_stack`, `floating_roots`, `id_to_index`,
-//! `elements`) — those reads are allowed because Zig struct fields are
-//! accessible across files when the struct's containing module is `pub`.
-//!
+//! These exercise the engine via its public API plus a few private fields
+//! (`open_element_stack`, `floating_roots`, `id_to_index`, `elements`).
 //! Word-boundary unit tests reach into `sizing_pass.findWordBoundaries`
 //! directly; everything else routes through `LayoutEngine`'s methods.
 

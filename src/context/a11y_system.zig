@@ -1,53 +1,32 @@
 //! `A11ySystem` — accessibility tree, platform bridge, and screen-reader
-//! poll counter, extracted from `Gooey`.
+//! poll counter.
 //!
-//! Rationale (cleanup item #1, plan §7c in
-//! `docs/architectural-cleanup-plan.md`): five fields and five methods
-//! on `Gooey` form a self-contained accessibility subsystem. Beyond
-//! the line-count win, the init-in-place dance for `a11y.Tree` (~350KB)
-//! is non-trivial and the WASM stack tricks belong with the subsystem
-//! that needs them, not in the parent struct's init path.
-//!
-//! ## What lives here
-//!
-//! - `tree`: the per-frame `a11y.Tree` that widgets push elements
-//!   into. Rebuilt every frame, ~zero alloc after init. ~350KB struct
-//!   on a typical platform — the dominant size on this subsystem and
-//!   the reason `initInPlace` is `noinline` (per `CLAUDE.md` §14).
-//! - `platform_bridge`: storage for the active platform's bridge
-//!   (`MacBridge` on macOS, `WebBridge` on freestanding, etc.). Lives
-//!   here as a tagged union so the framework can hand out a uniform
-//!   `Bridge` interface regardless of platform.
-//! - `bridge`: the `Bridge` vtable handle that `tree` syncs to at the
-//!   end of every frame, points into `platform_bridge`. Borrowed
-//!   reference, lifetime tied to `platform_bridge`.
+//! - `tree`: per-frame `a11y.Tree` widgets push elements into; rebuilt
+//!   every frame, ~zero alloc after init. ~350KB — the dominant size
+//!   here and the reason `initInPlace` is `noinline`.
+//! - `platform_bridge`: tagged-union storage for the active platform's
+//!   bridge, so the framework hands out a uniform `Bridge` regardless
+//!   of platform.
+//! - `bridge`: `Bridge` vtable handle into `platform_bridge` that
+//!   `tree` syncs to each frame end. Borrowed; lifetime tied to
+//!   `platform_bridge`.
 //! - `enabled`: cached "is a screen reader running?" flag, refreshed
-//!   periodically (every `SCREEN_READER_CHECK_INTERVAL` frames). Hot
-//!   path code (`Builder.accessible`, `cx.announce`, …) reads this
-//!   to early-out when accessibility is off — zero cost in the common
-//!   case.
+//!   every `SCREEN_READER_CHECK_INTERVAL` frames. Hot-path code reads
+//!   it to early-out when accessibility is off.
 //! - `check_counter`: frame counter driving the periodic refresh.
 //!
-//! ## Decoupling from `Gooey`
+//! The system takes no back-pointer: frame hooks receive the handles
+//! they need (`initInPlace` the platform window/view, `endFrame` a
+//! `*const LayoutEngine`) so data dependencies are visible at the call
+//! site.
 //!
-//! The system doesn't take a `*Gooey` back-pointer. `tick` (frame
-//! boundary update) takes the platform-window handles it needs and
-//! computes everything else internally. `endFrame` takes a
-//! `*const LayoutEngine` for the bounds-sync step — same shape as
-//! `HoverState.update` (§7b). Per `CLAUDE.md` §6: data dependencies
-//! are visible at the call site, not hidden in a god-pointer.
-//!
-//! ## Invariants
-//!
-//! - `bridge.ptr` always points into `platform_bridge` — the bridge
-//!   is initialised in lockstep with the union and never replaced
-//!   after init.
+//! Invariants:
+//! - `bridge.ptr` always points into `platform_bridge` — initialised
+//!   in lockstep with the union and never replaced after init.
 //! - `check_counter < SCREEN_READER_CHECK_INTERVAL` after every
-//!   `beginFrame`. The counter ticks on every frame and resets on
-//!   the periodic check.
-//! - `enabled == true` implies the active bridge believes a screen
-//!   reader is running OR the caller force-enabled via `forceEnable`.
-//!   No other path sets `enabled = true`.
+//!   `beginFrame`.
+//! - `enabled == true` only via the periodic poll finding a screen
+//!   reader or an explicit `forceEnable`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -62,32 +41,30 @@ const LayoutEngine = layout_mod.LayoutEngine;
 // =============================================================================
 
 pub const A11ySystem = struct {
-    /// Per-frame accessibility tree. Built up via `pushElement` /
-    /// `popElement` during render, drained to the platform bridge by
-    /// `endFrame`. ~350KB; the struct's stack-budget burden.
+    /// Per-frame accessibility tree. Built up during render, drained
+    /// to the platform bridge by `endFrame`. ~350KB; the struct's
+    /// stack-budget burden.
     tree: a11y.Tree,
 
-    /// Storage for the active platform bridge. Tagged union so we can
-    /// keep size predictable across platforms — only the active
-    /// variant has any meaningful payload, the rest are `void`.
+    /// Tagged-union storage for the active platform bridge — only the
+    /// active variant has a meaningful payload, keeping size
+    /// predictable across platforms.
     platform_bridge: a11y.PlatformBridge,
 
-    /// Vtable handle into `platform_bridge`. The dispatcher used by
-    /// `tree.endFrame` to push dirty elements / removals /
-    /// announcements to the OS-level accessibility runtime.
+    /// Vtable handle into `platform_bridge`, used by `tree.endFrame` to
+    /// push dirty elements / removals / announcements to the OS
+    /// accessibility runtime.
     bridge: a11y.Bridge,
 
-    /// Cached "screen reader is running" flag. Refreshed every
-    /// `SCREEN_READER_CHECK_INTERVAL` frames by `beginFrame`. Hot path
-    /// code reads this to early-out when accessibility is off; the
-    /// invariant is that an early-out path must be a no-op when this
-    /// flag is `false`.
+    /// Cached "screen reader is running" flag, refreshed every
+    /// `SCREEN_READER_CHECK_INTERVAL` frames by `beginFrame`. Hot-path
+    /// code early-outs when this is `false`, so every such path must be
+    /// a no-op in that case.
     enabled: bool = false,
 
-    /// Frame counter for the periodic poll. Cheaper than calling into
-    /// the OS every frame for "is VoiceOver running?" — at 60Hz with
-    /// `SCREEN_READER_CHECK_INTERVAL = 60`, we poll once per second
-    /// rather than 60 times per second.
+    /// Frame counter for the periodic poll. At 60Hz with
+    /// `SCREEN_READER_CHECK_INTERVAL = 60` we poll once per second
+    /// rather than calling into the OS every frame.
     check_counter: u32 = 0,
 
     const Self = @This();
@@ -96,13 +73,11 @@ pub const A11ySystem = struct {
     // Lifecycle
     // -------------------------------------------------------------------------
 
-    /// Initialize the accessibility subsystem in place at the
-    /// system's final heap address.
+    /// Initialize the accessibility subsystem in place at the system's
+    /// final heap address.
     ///
-    /// Marked `noinline` to keep the WASM caller's stack frame
-    /// bounded (per `CLAUDE.md` §14). Inlining lets the compiler
-    /// combine the ~350KB `Tree` field of every `A11ySystem` into one
-    /// giant frame; with `noinline`, only the immediately-enclosing
+    /// Marked `noinline` so the compiler can't fold the ~350KB `Tree`
+    /// field into the caller's WASM stack frame; only the enclosing
     /// init path pays the cost.
     ///
     /// `window` and `view` are the platform-native handles the bridge
@@ -113,32 +88,25 @@ pub const A11ySystem = struct {
         window: anytype,
         view: anytype,
     ) void {
-        // Field-by-field — no struct literal, no stack temp. Mirrors
-        // the convention used by `ImageLoader.initInPlace` and the
-        // pre-extraction code in `Gooey.initOwnedPtr`.
+        // Field-by-field — no struct literal, no stack temp.
 
-        // Tree: in-place to dodge the ~350KB struct-literal stack
-        // temp. The leaf `Tree.initInPlace` is itself `noinline`.
+        // Tree in-place to dodge the ~350KB struct-literal stack temp.
+        // The leaf `Tree.initInPlace` is itself `noinline`.
         self.tree.initInPlace();
 
         // Scalars first — cheap, sets the invariant.
         self.enabled = false;
         self.check_counter = 0;
 
-        // Platform bridge wiring: `createPlatformBridge` is `noinline`
-        // and writes the union variant + returns the dispatcher
-        // handle. It must run after the union storage is at its final
-        // address; that's true here because `self` is already at its
-        // final heap address (`A11ySystem` is initialised in place by
-        // its parent).
+        // `createPlatformBridge` writes the union variant and returns
+        // the dispatcher handle. It must run after the union storage is
+        // at its final address, which holds because `self` is already
+        // initialised in place by its parent.
         self.platform_bridge = undefined;
         self.bridge = a11y.createPlatformBridge(&self.platform_bridge, window, view);
 
-        // Pair-assertion on the write boundary (per `CLAUDE.md` §3):
-        // the bridge dispatcher must point into our own storage. A
-        // ptr-equality check would be heavyweight; the
-        // intFromPtr-non-zero check is enough to catch a missed
-        // assignment.
+        // Write-boundary assertion: the dispatcher must point into our
+        // own storage. Non-zero is enough to catch a missed assignment.
         std.debug.assert(@intFromPtr(self.bridge.ptr) != 0);
     }
 
@@ -155,16 +123,12 @@ pub const A11ySystem = struct {
 
     /// Frame-start hook. Periodically polls the bridge for
     /// screen-reader status and, if enabled, prepares the tree for a
-    /// fresh build.
-    ///
-    /// Cheap on the common path — when accessibility is off, the only
-    /// cost is the counter increment and the modulo-style compare.
-    /// Per `CLAUDE.md` §11: state the invariant positively (counter
-    /// reaches the threshold), then act.
+    /// fresh build. Cheap on the common path — when accessibility is
+    /// off, the only cost is the counter increment and compare.
     pub fn beginFrame(self: *Self) void {
-        // Pair-assertion: the counter must always be in the "not yet
-        // due" range at frame start. If it ever exceeds the interval,
-        // a previous frame skipped the reset.
+        // The counter must be in the "not yet due" range at frame
+        // start; exceeding the interval means a prior frame skipped
+        // the reset.
         std.debug.assert(self.check_counter < a11y.constants.SCREEN_READER_CHECK_INTERVAL);
 
         self.check_counter += 1;
@@ -173,35 +137,29 @@ pub const A11ySystem = struct {
             self.enabled = self.bridge.isActive();
         }
 
-        // Begin the tree only when accessibility is on — zero cost
-        // when it's off. The tree itself short-circuits on the cold
-        // path, but we'd still pay the call overhead.
+        // Begin the tree only when accessibility is on — skips the
+        // call overhead on the cold path.
         if (self.enabled) {
             self.tree.beginFrame();
         }
     }
 
     /// Frame-end hook. Finalizes the tree, syncs bounds from the
-    /// layout engine, and pushes dirty elements / announcements to
-    /// the platform bridge.
-    ///
-    /// Zero cost when `enabled` is false — the entire body is gated
-    /// behind the early-out. This is the contract that hot-path
-    /// callers (`Builder.accessible`, `cx.announce`) rely on.
+    /// layout engine, and pushes dirty elements / announcements to the
+    /// platform bridge. Zero cost when `enabled` is false — the entire
+    /// body is gated behind the early-out.
     pub fn endFrame(self: *Self, layout: *const LayoutEngine) void {
         if (!self.enabled) return;
 
         self.tree.endFrame();
 
-        // Bounds sync runs on the just-built element list — a one-
-        // time pass over the tree, O(elements). It must happen after
-        // `endFrame` (the tree finalizes its element_count there) and
-        // before `syncFrame` (the bridge reads bounds when pushing to
+        // Bounds sync runs on the just-built element list. It must
+        // happen after `endFrame` (which finalizes `element_count`)
+        // and before `syncFrame` (which reads bounds when pushing to
         // the platform).
         self.tree.syncBounds(layout);
 
-        // Push everything to the platform — dirty elements, removals,
-        // announcements, focus.
+        // Push dirty elements, removals, announcements, and focus.
         self.bridge.syncFrame(&self.tree);
     }
 
@@ -237,7 +195,7 @@ pub const A11ySystem = struct {
     }
 
     /// Queue a screen-reader announcement. No-op when accessibility
-    /// is off — same shape as the pre-extraction `Gooey.announce`.
+    /// is off.
     pub fn announce(self: *Self, message: []const u8, priority: a11y.Live) void {
         if (!self.enabled) return;
         self.tree.announce(message, priority);

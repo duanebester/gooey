@@ -1,7 +1,6 @@
 //! Tests for engine internal data structures and low-level helpers.
 //!
-//! Split out of `engine_tests.zig` in PR 10 to keep both files under the
-//! 1,500-line ceiling. Covers:
+//! Covers:
 //!   - `SourceLoc` source-location capture
 //!   - `FixedCapacityArray` fixed-capacity collection
 //!   - `open_element_stack` / `floating_roots` fixed-capacity invariants
@@ -81,20 +80,8 @@ test "SourceLoc.getBasename extracts filename" {
 
     const basename = loc.getBasename();
     try std.testing.expect(basename != null);
-    // Should be the test file itself — the test moved with the tests in
-    // PR 10's split, so this checks the new filename rather than a stale
-    // hard-coded literal that would silently miss future filename changes.
+    // The basename should be this test file itself.
     try std.testing.expectEqualStrings("engine_internal_tests.zig", basename.?);
-}
-
-test "SourceLoc.getFnName returns function name" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    const fn_name = loc.getFnName();
-    try std.testing.expect(fn_name != null);
-    // Function name should contain "test" since this is a test block
-    try std.testing.expect(std.mem.indexOf(u8, fn_name.?, "test") != null);
 }
 
 test "SourceLoc stored in ElementDeclaration" {

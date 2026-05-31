@@ -39,9 +39,7 @@ const Allocator = std.mem.Allocator;
 // Platform
 const platform = @import("../platform/mod.zig");
 const Platform = platform.Platform;
-// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the framework-level wrapper
-// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+// `PlatformWindow` is the OS-level handle; `Window` is the framework wrapper.
 const PlatformWindow = platform.PlatformWindow;
 const WindowId = platform.WindowId;
 const WindowRegistry = platform.WindowRegistry;
@@ -52,36 +50,17 @@ const geometry = @import("../core/geometry.zig");
 const Color = geometry.Color;
 const shader_mod = @import("../core/shader.zig");
 
-// PR 7b.6 — `TextSystem` / `SvgAtlas` / `ImageAtlas` type-alias
-// imports retired alongside the call-site collapse to
-// `&self.resources` in `createWindowContext`. Every reference left
-// in this file (`self.resources.text_system.setScaleFactor`,
-// `self.resources.svg_atlas.getAtlas`, …) is value-level — the
-// types are reached through `AppResources` now, never named
-// directly. The `text_mod` / `svg_mod` / `image_mod` imports were
-// only ever used to surface those three aliases, so they go too.
-
-// PR 7b.2 — bundle the three "expensive to duplicate per window"
-// resources (text system + svg atlas + image atlas) into a single
-// `AppResources` field. Replaces the three separate `*T` fields plus
-// their parallel allocate/init/deinit blocks. Mirrors the same shape
-// the single-window `Window.init*` paths adopted in PR 7a, so both
-// ownership shapes (single-window owns by-value, multi-window owns
-// once on `App` and hands borrowed views to each `Window`) now route
-// through the same struct. See `src/context/app_resources.zig` and
-// `docs/cleanup-implementation-plan.md` PR 7b.
+// Bundle the three "expensive to duplicate per window" resources (text system
+// + svg atlas + image atlas) into a single `AppResources` field, owned once on
+// `App` and lent as borrowed views to each `Window`. The types are reached
+// through `AppResources`, never named directly here.
 const app_resources_mod = @import("../context/app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
-// PR 7b.3 — `context.App` owns application-lifetime state shared
-// across windows. Currently holds `entities` (lifted off `Window`
-// in 7b.3); subsequent 7b slices add `keymap` / `globals` /
-// `image_loader` here per the GPUI mapping in
-// `architectural-cleanup-plan.md` §10. Embedded by-value below
-// (`context_app: ContextApp`) so every `Window` opened by this
-// app borrows `&self.context_app` and reaches the same
-// `EntityMap` — that's the property cross-window observation
-// needs. See `docs/cleanup-implementation-plan.md` PR 7b.3.
+// `context.App` owns application-lifetime state shared across windows
+// (entities, keymap, globals, image loader). Embedded by-value below so every
+// `Window` borrows `&self.context_app` and reaches the same `EntityMap` — the
+// property cross-window observation needs.
 const context_app_mod = @import("../context/app.zig");
 const ContextApp = context_app_mod.App;
 
@@ -133,25 +112,15 @@ pub const App = struct {
     // Shared Resources (expensive to duplicate per window)
     // =========================================================================
 
-    /// PR 7b.2 — bundled shared rendering resources owned at app
-    /// scope. `App.init` constructs an owning `AppResources` here;
-    /// every per-window `Window` embeds a borrowed view over the
-    /// same three pointees (`text_system` / `svg_atlas` /
-    /// `image_atlas`). `AppResources.deinit` tears them down once,
-    /// in `App.deinit`, after the last window has closed. Replaces
-    /// the previous `text_system: *T` / `svg_atlas: *T` /
-    /// `image_atlas: *T` triplet that duplicated the alloc/init/
-    /// deinit logic three times.
+    /// Shared rendering resources owned at app scope. Every per-window `Window`
+    /// embeds a borrowed view over the same pointees; `AppResources.deinit`
+    /// tears them down once, in `App.deinit`, after the last window closes.
     resources: AppResources,
 
-    /// PR 7b.3 — application-lifetime state shared across windows.
-    /// Currently owns `entities` (the `EntityMap` used to live on
-    /// each per-window `Window`; lifting it here makes models
-    /// observable across windows). Subsequent 7b slices add
-    /// `keymap` / `globals` / `image_loader`. Embedded by-value:
-    /// the outer `App` is heap-allocated by the caller and
-    /// `&self.context_app` outlives every `Window` opened from
-    /// this app.
+    /// Application-lifetime state shared across windows (entities, keymap,
+    /// globals, image loader). Embedded by-value: `&self.context_app` outlives
+    /// every `Window` opened from this app, making models observable across
+    /// windows.
     context_app: ContextApp,
 
     /// IO interface for async work. Threaded through to all windows.
@@ -193,13 +162,9 @@ pub const App = struct {
             try plat.setupListeners();
         }
 
-        // PR 7b.2 — bundle text + SVG + image atlas creation into one
-        // `AppResources.initOwned` call. Replaces the three parallel
-        // `allocator.create` + init + errdefer blocks plus the inline
-        // font-load step. Scale is `1.0` here (matching the
-        // pre-extraction default); the first window's scale factor is
-        // installed on this `AppResources` later in `openWindow` once a
-        // platform window exists to read `scale_factor` from.
+        // Create text + SVG + image atlases in one call. Scale is `1.0` here;
+        // the first window's scale factor is installed later in `openWindow`
+        // once a platform window exists to read `scale_factor` from.
         var resources = try AppResources.initOwned(
             allocator,
             io,
@@ -217,34 +182,18 @@ pub const App = struct {
             .platform = plat,
             .registry = WindowRegistry.init(allocator),
             .resources = resources,
-            // PR 7b.3 — initialise the embedded `context.App`
-            // with the same `allocator` + `io` the rest of the
-            // multi-window app uses. `ContextApp.init` is
-            // infallible (no `try`) — `EntityMap.init` never
-            // returns errors. The `EntityMap` inside is empty
-            // until the first `cx.entities.create(...)` call.
-            // PR 7b.4 — `ContextApp.init` now returns `!Self`
-            // (was `Self`) because it registers an owned `Keymap`
-            // in `app.globals` via `Globals.setOwned`, which can
-            // fail with `OutOfMemory`. The surrounding `errdefer
-            // resources.deinit()` above unwinds the by-value
-            // resources copy on failure; the `EntityMap` /
-            // `Keymap` allocations that `ContextApp.init` would
-            // have made are torn down inside its own `errdefer`
-            // chain before this expression unwinds.
+            // `ContextApp.init` may fail with `OutOfMemory` (it registers an
+            // owned `Keymap` in `app.globals`); the `errdefer resources.deinit()`
+            // above unwinds the by-value resources copy, and `ContextApp.init`
+            // tears down its own allocations on its error path.
             .context_app = try ContextApp.init(allocator, io),
             .initialized = true,
         };
 
-        // PR 7b.2 — `resources.owned` is true on the local `resources`
-        // returned from `initOwned`. The by-value copy into `self`
-        // duplicates the flag; without disarming the local, an
-        // unwinding `errdefer` in this function would tear the heap
-        // pointees down out from under the successfully-copied
-        // `self.resources`. Same idiom as `Window.initOwned` after
-        // PR 7a — see `src/context/window.zig` for the pre-existing
-        // precedent. The copied `self.resources.owned` retains the
-        // `true` value, which is what the caller needs.
+        // Disarm the local `resources.owned` flag: the by-value copy into
+        // `self` keeps `owned = true`, so an unwinding `errdefer` here must not
+        // also free the pointees out from under `self.resources`. (Same idiom
+        // as `Window.initOwned`.)
         resources.owned = false;
 
         // Pair-assert: post-init pointers must be non-null.
@@ -270,22 +219,13 @@ pub const App = struct {
         // `Window.deinit` can still walk a freed `EntityMap`.
         self.closeAllWindows();
 
-        // PR 7b.3 — tear the shared `EntityMap` down before the
-        // shared atlases. Order rationale: `EntityMap.deinit`
-        // cancels any attached async groups, which may hold
-        // pointers into the image atlas's pixel buffers
-        // (entity-attached fetches today, but also any future
-        // pipeline that lands an `ImageLoader` on `App`). Doing
-        // entity teardown first means those tasks unwind against
-        // a still-live atlas; the reverse order would risk
-        // use-after-free in cancellation paths.
+        // Tear the shared `EntityMap` down before the atlases: `EntityMap.deinit`
+        // cancels attached async groups that may hold pointers into the image
+        // atlas's pixel buffers, so those tasks must unwind against a still-live
+        // atlas to avoid use-after-free.
         self.context_app.deinit();
 
-        // PR 7b.2 — single teardown call covers text_system +
-        // svg_atlas + image_atlas. `AppResources.deinit` frees the
-        // three subsystems in image → svg → text order (matching
-        // the pre-extraction sequence). Replaces three flag-guarded
-        // free blocks at this point in the function.
+        // Frees text_system + svg_atlas + image_atlas in one call.
         self.resources.deinit();
 
         // Clean up registry
@@ -341,13 +281,8 @@ pub const App = struct {
         });
         errdefer window.deinit();
 
-        // Update text system scale factor on first window
-        // (Text system is initialized with 1.0 before any windows exist)
-        //
-        // PR 7b.2 — reach through `self.resources` for the three
-        // subsystems instead of the retired top-level pointer fields.
-        // The pointees are unchanged — same heap addresses, same
-        // setScaleFactor semantics — only the access path moves.
+        // Update scale factor on the first window (resources are initialized
+        // with 1.0 before any windows exist).
         if (self.registry.count() == 0) {
             const scale: f32 = @floatCast(window.scale_factor);
             self.resources.text_system.setScaleFactor(scale);
@@ -532,23 +467,11 @@ pub const App = struct {
 
         const WinCtx = WindowContext(State);
 
-        // Use shared resources mode - all windows share the same text system and atlases
-        // This fixes font glitching where layout used one atlas but rendering used another
-        // PR 7b.6 — pass `&self.resources` as a single
-        // `*const AppResources` borrowed view. Replaces the pre-7b.6
-        // call site that unbundled `self.resources.*` into three
-        // separate pointer arguments — same heap addresses, but the
-        // bundle stays bundled across the `App → WindowContext →
-        // Window` call chain. Down-tree, `Window.initWithSharedResources`
-        // wraps it in `AppResources.borrowed(...)` so each window's
-        // own `resources` field is `owned = false` and `Window.deinit`
-        // is a no-op for the shared atlases.
-        // PR 7b.3 — pass `&self.context_app` so the new
-        // `Window` borrows the same `EntityMap` every other
-        // window in this app borrows. Pre-7b.3 the per-window
-        // map was constructed inside `Window.initWithSharedResources`
-        // and the cross-window observation property was
-        // structurally impossible.
+        // Shared-resources mode: all windows share one text system and atlas
+        // set, fixing font glitching where layout and rendering used different
+        // atlases. `&self.resources` is lent as a borrowed view (each window's
+        // own `resources` is `owned = false`), and `&self.context_app` lets
+        // every window borrow the same `EntityMap` for cross-window observation.
         const ctx = try WinCtx.initWithSharedResources(
             self.allocator,
             window,
@@ -587,7 +510,7 @@ pub const App = struct {
 /// Options for opening a new window via App.openWindow().
 pub const AppWindowOptions = struct {
     /// Window title
-    title: []const u8 = "Window Window",
+    title: []const u8 = "Window",
 
     /// Initial window width (logical pixels)
     width: f64 = DEFAULT_WIDTH,

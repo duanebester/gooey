@@ -1,7 +1,6 @@
 //! Focus & Keyboard Navigation System
 //!
-//! Inspired by GPUI's FocusHandle and Ghostty's surface focus tracking.
-//! Provides a unified focus management system for all focusable elements.
+//! Unified focus management for all focusable elements.
 //!
 //! ## Key Concepts
 //!
@@ -80,16 +79,8 @@ pub const FocusId = struct {
 /// Trait/vtable that lets `FocusManager` drive focus on a widget without
 /// importing the widget type. Each focusable widget exposes a
 /// `pub fn focusable(self: *T) Focusable` that bundles its instance pointer
-/// with a comptime-generated vtable; the widget then registers this trait
-/// alongside its `FocusHandle` during render. This breaks the
-/// `context → widgets` import edge that previously forced
-/// `Gooey.focusWidgetById(comptime T, id)` to switch on `TextInput` /
-/// `TextArea` / `CodeEditorState` directly. Adding a new focusable widget
-/// type now touches only `widgets/`.
-///
-/// See PR 4 in `docs/cleanup-implementation-plan.md` and the cleanup
-/// direction for backward dependencies in
-/// `docs/architectural-cleanup-plan.md` §4.
+/// with a comptime-generated vtable, then registers this trait alongside
+/// its `FocusHandle` during render.
 ///
 /// The vtable carries pointer-equality identity: two `Focusable`s are the
 /// same widget iff their `ptr` fields are equal. The framework relies on
@@ -112,11 +103,9 @@ pub const Focusable = struct {
         blur: *const fn (ptr: *anyopaque) void,
         /// Read the widget's focused flag. Takes `*anyopaque` (not
         /// `*const`) because some widget types declare
-        /// `pub fn isFocused(self: *Self) bool` rather than
-        /// `*const Self` — `CodeEditorState` delegates to its
-        /// embedded `TextArea` and so cannot promise const access.
-        /// The vtable thunk does not mutate, but the type system
-        /// can't see through the delegation.
+        /// `isFocused(self: *Self)` rather than `*const Self` (e.g.
+        /// `CodeEditorState` delegates to its embedded `TextArea` and
+        /// cannot promise const access). The thunk does not mutate.
         is_focused: *const fn (ptr: *anyopaque) bool,
     };
 
@@ -148,13 +137,10 @@ pub const Focusable = struct {
     /// instance methods `focus(*T) void`, `blur(*T) void`, and
     /// `isFocused(*const T) bool`. The vtable is constructed at comptime
     /// and lives in static storage — one vtable per widget type, shared
-    /// across all instances. This is the canonical way for a widget's
-    /// own `pub fn focusable(self: *T) Focusable` method to fill in the
-    /// trait without hand-rolling thunks at every call site.
+    /// across all instances.
     ///
-    /// Per CLAUDE.md §3, the trait shape is asserted on construction:
-    /// every widget type must expose exactly the three methods above.
-    /// A typo or missing method fails compile, not at runtime.
+    /// The trait shape is asserted at comptime: a missing or mistyped
+    /// method fails compile, not at runtime.
     pub fn fromInstance(comptime T: type, instance: *T) Focusable {
         // Trait shape — fail compile if a widget drops a required method.
         comptime {
@@ -194,7 +180,6 @@ pub const Focusable = struct {
 // =============================================================================
 
 /// Reference to a focusable element with tab ordering configuration.
-/// Similar to GPUI's FocusHandle.
 pub const FocusHandle = struct {
     /// The element's focus identifier
     id: FocusId,
@@ -210,13 +195,11 @@ pub const FocusHandle = struct {
     string_id: []const u8,
 
     /// Optional widget vtable. Set by widget primitives during render so
-    /// `FocusManager.focusByName` / `cycleFocus` / `blurAll` can drive
-    /// the underlying widget's `focus()` / `blur()` without the focus
-    /// manager (which lives in `context/`) ever importing widget types.
-    /// `null` when the focusable is registered without an associated
-    /// widget instance — e.g. plain elements that participate in tab
-    /// order but have no per-instance focused-flag of their own (PR 4
-    /// in `docs/cleanup-implementation-plan.md`).
+    /// the focus manager can drive the underlying widget's `focus()` /
+    /// `blur()` without importing widget types. `null` when the focusable
+    /// is registered without an associated widget instance — e.g. plain
+    /// elements that participate in tab order but have no per-instance
+    /// focused-flag of their own.
     widget: ?Focusable = null,
 
     const Self = @This();
@@ -290,7 +273,6 @@ pub const FocusCallback = *const fn (event: FocusEvent, user_data: ?*anyopaque) 
 // =============================================================================
 
 /// Manages focus state and tab navigation for all focusable elements.
-/// Add to your Gooey struct and integrate with input handling.
 pub const FocusManager = struct {
     allocator: std.mem.Allocator,
 
@@ -310,8 +292,7 @@ pub const FocusManager = struct {
     /// drive the widget's `blur()` even if the handle has fallen out of
     /// `focus_order` (which is rebuilt each frame). Widget pointers are
     /// stable across frames because `WidgetStore` heap-allocates each
-    /// instance once and hands out pointers — see PR 4 in
-    /// `docs/cleanup-implementation-plan.md`.
+    /// instance once and hands out pointers.
     focused_widget: ?Focusable = null,
 
     /// Whether window/app has keyboard focus
@@ -399,9 +380,8 @@ pub const FocusManager = struct {
 
     /// Focus a specific element by ID. Drives the widget's `focus()` /
     /// `blur()` through the `Focusable` trait when the registered handle
-    /// carries one — so the focus manager never needs to know whether
-    /// the underlying widget is a `TextInput`, `TextArea`, or
-    /// `CodeEditorState` (PR 4 — break the `context → widgets` edge).
+    /// carries one — so the focus manager never needs to know the
+    /// underlying widget type.
     pub fn focus(self: *Self, id: FocusId) void {
         if (!id.isValid()) return;
 
@@ -431,8 +411,7 @@ pub const FocusManager = struct {
         self.focus_index = new_index;
         self.focused_widget = new_widget;
 
-        // Drive widget vtable: blur the old, then focus the new. Order
-        // matches the previous `widgets.blurAll(); widget.focus()` flow
+        // Drive widget vtable: blur the old, then focus the new
         // (cleared first, then set) so any widget that observes
         // `isFocused()` of its peers sees a single-focused-at-a-time
         // invariant during the transition.
@@ -466,23 +445,16 @@ pub const FocusManager = struct {
         self.focus(FocusId.init(id));
     }
 
-    /// Focus a widget by its string ID. Convenience wrapper that exists
-    /// to give callers a method named after their intent (`focusWidget`)
-    /// rather than the lower-level `focusByName`. Per PR 4 in
-    /// `docs/cleanup-implementation-plan.md`, this is the API replacing
-    /// the old per-widget-type switch (`focusWidgetById(comptime T, id)`)
-    /// in `Gooey`. The underlying mechanics are identical to
-    /// `focusByName`: look up the handle in `focus_order`, drive the
-    /// trait's `blur()` / `focus()`, update manager state.
+    /// Focus a widget by its string ID. Convenience wrapper named after
+    /// caller intent; mechanically identical to `focusByName`.
     pub fn focusWidget(self: *Self, id: []const u8) void {
         self.focusByName(id);
     }
 
     /// Clear focus (blur everything). Drives the previously-focused
     /// widget's `blur()` through the trait, then clears manager state.
-    /// Per PR 4, this replaces the prior `widgets.blurAll()` walk over
-    /// every per-type widget map: the focus manager already knows which
-    /// instance is focused — only that one needs blurring.
+    /// Only the currently-focused instance needs blurring — the manager
+    /// already knows which one it is.
     pub fn blur(self: *Self) void {
         const old_widget = self.focused_widget;
         if (self.focused) |old| {
@@ -779,12 +751,11 @@ test "FocusManager window focus" {
     try std.testing.expect(fm.isFocusedByName("input1"));
 }
 
-// PR 4 — `Focusable` vtable.
+// `Focusable` vtable tests.
 //
 // These tests pin the trait shape on a fake widget so the vtable
-// machinery is exercised without dragging the real `TextInput` /
-// `TextArea` / `CodeEditorState` types (and their atlases / IO / clip
-// state) into a context-layer test.
+// machinery is exercised without dragging real widget types (and their
+// atlases / IO / clip state) into a context-layer test.
 
 test "Focusable vtable drives focus/blur on a widget" {
     // Minimal widget that implements the trait shape verified by

@@ -37,10 +37,6 @@ const wasm_imports = if (is_wasm) @import("../platform/web/imports.zig") else st
     pub fn err(comptime _: []const u8, _: anytype) void {}
     pub fn log(comptime _: []const u8, _: anytype) void {}
 };
-// PR 9 Task 2.5 — was a private `wasm_loader` conditional-stub here;
-// consolidated into `platform.web.image_loader` so the public alias in
-// `root.zig` and this private alias here resolve to the same module on
-// WASM and to the same no-op stub on native.
 const platform = @import("../platform/mod.zig");
 const wasm_loader = platform.web.image_loader;
 
@@ -89,21 +85,6 @@ pub fn initWasmImageLoader(allocator: std.mem.Allocator) void {
 
     // Assert initialization completed successfully
     std.debug.assert(g_wasm_loader_initialized);
-}
-
-/// Deinitialize WASM image loader (for graceful shutdown)
-pub fn deinitWasmImageLoader() void {
-    if (!g_wasm_loader_initialized) return;
-
-    // Clear all pending loads
-    g_pending_loads.deinit();
-    g_window_ctx = null;
-    g_allocator = null;
-    g_wasm_loader_initialized = false;
-
-    // Assert cleanup completed
-    std.debug.assert(!g_wasm_loader_initialized);
-    std.debug.assert(g_window_ctx == null);
 }
 
 // =============================================================================
@@ -325,17 +306,13 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
             scale_factor,
         );
 
-    // On WASM, route all async loading — both relative paths and URLs —
-    // through the browser's fetch + createImageBitmap pipeline. URLs used to
-    // require user-side boilerplate (see the archived images_wasm.zig
-    // pattern: hand-written per-index callbacks, a pending-request table,
-    // manual atlas caching). `ensureWasmImageLoading` already dispatches to
-    // `loadFromUrlAsync` vs `loadFromMemoryAsync` based on the source shape,
-    // so renderImage just needs to call it unconditionally on WASM.
+    // On WASM, route all async loading (relative paths and URLs) through the
+    // browser's fetch + createImageBitmap pipeline. `ensureWasmImageLoading`
+    // dispatches to the right loader based on the source shape.
     if (is_wasm) {
-        // Guard absurdly long URLs before we hit the MAX_SOURCE_PATH_LEN
-        // assert inside ensureWasmImageLoading. Matches the silent-drop
-        // behaviour of ensureNativeUrlLoading for parity across platforms.
+        // Guard absurdly long URLs before the MAX_SOURCE_PATH_LEN assert
+        // inside ensureWasmImageLoading (matches ensureNativeUrlLoading's
+        // silent-drop behaviour for cross-platform parity).
         if (is_url and img_data.source.len > image_mod.loader.MAX_URL_LENGTH) {
             try renderImagePlaceholder(window_ctx, cmd);
             return;
@@ -361,31 +338,21 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
         }
     }
 
-    // Check cache or load synchronously.
-    //
-    // Atlas-eviction re-fetch (Task 4.5b): if the LRU atlas previously held
-    // this URL's pixels but evicted them to make room, we land here on a cache
-    // miss. The URL is not in `ImageLoader.failed_hashes` (only outright fetch
-    // failures go there), so `ensureNativeUrlLoading` will kick off a fresh
-    // fetch — the correct behavior. The only visible effect to the user is a
-    // brief placeholder flash while the refetch completes.
+    // Check cache or load synchronously. On an atlas-eviction miss (LRU
+    // evicted this URL's pixels), the URL is not in the loader's failed set,
+    // so `ensureNativeUrlLoading` kicks off a fresh fetch; the only visible
+    // effect is a brief placeholder flash while it completes.
     const cached = window_ctx.resources.image_atlas.*.get(key) orelse blk: {
         if (is_url) {
-            // Known-failed URLs show an error placeholder rather than a loading
-            // placeholder — otherwise the user sees a perpetual "loading" state
-            // for a URL that will never succeed. A URL reaches the failed set
-            // only after `MAX_FETCH_ATTEMPTS` transient failures or a single
-            // permanent error — see `loadFromUrl` for the retry policy.
+            // Known-failed URLs show an error placeholder rather than a
+            // perpetual "loading" state. A URL reaches the failed set only
+            // after the loader's retry policy is exhausted.
             if (!is_wasm and window_ctx.isImageLoadFailed(key.source_hash)) {
                 try renderImageError(window_ctx, cmd);
                 return;
             }
-            // Kick off background fetch if not already in flight (native only).
-            // WASM URL fetches are handled in the `is_wasm` block above and
-            // never reach this branch in steady state; the `is_wasm` guard
-            // here is only a safety net for a second-lookup race where the
-            // first-block cache check reported `.cached` but the atlas entry
-            // is gone by the time we re-check below.
+            // Kick off background fetch if not already in flight (native only;
+            // WASM URL fetches are handled in the `is_wasm` block above).
             if (!is_wasm) ensureNativeUrlLoading(window_ctx, img_data.source, key);
             try renderImagePlaceholder(window_ctx, cmd);
             return;
@@ -492,8 +459,7 @@ const SnappedPosition = struct {
     y: f32,
 };
 
-/// Check if an image source is a URL (http:// or https://)
-/// This is called at render time - consider moving to layout phase for better performance
+/// Check if an image source is a URL (http:// or https://).
 inline fn isUrlSource(source: []const u8) bool {
     return std.mem.startsWith(u8, source, "http://") or
         std.mem.startsWith(u8, source, "https://");
@@ -514,24 +480,12 @@ fn ensureNativeUrlLoading(window_ctx: *Window, source: []const u8, key: image_mo
     // (`url.len <= MAX_URL_LENGTH`) cannot trip from a render-path caller.
     if (source.len > image_mod.loader.MAX_URL_LENGTH) return;
 
-    // Delegate to the extracted ImageLoader subsystem (PR 1). All the
-    // de-dup / failed-set / capacity / spawn logic lives there now —
-    // the render path just hands off the URL and key.
-    //
-    // Return value (`true` if a fetch was actually launched) is ignored:
-    // the next frame's drain will surface the result either way, and the
-    // render path has no use for the launch signal.
-    //
-    // PR 7b.5 — the loader lives on `App` now. Reaching through
-    // `window_ctx.app.image_loader` (instead of the pre-7b.5
-    // `window_ctx.image_loader`) means two windows requesting
-    // the same URL in the same frame share one in-flight fetch:
-    // the second window's `enqueueIfRoom` call short-circuits on
-    // the app-scoped pending set without spawning a duplicate
-    // background task. The pair-assert on `image_loader_bound`
-    // surfaces a missing `App.bindImageLoader` call here, at the
-    // first place the loader's queue is touched, instead of
-    // letting it corrupt later state.
+    // Delegate to the app-scoped ImageLoader; it owns the de-dup, failed-set,
+    // capacity, and spawn logic. The launch-signal return value is ignored
+    // because the next frame's drain surfaces the result either way. Because
+    // the loader lives on `App`, two windows requesting the same URL in one
+    // frame share a single in-flight fetch. The assert surfaces a missing
+    // `App.bindImageLoader` at the first place the queue is touched.
     std.debug.assert(window_ctx.app.image_loader_bound);
     _ = window_ctx.app.image_loader.enqueueIfRoom(source, key);
 }
@@ -607,13 +561,8 @@ fn renderImageError(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
 }
 
 /// Maximum source length (per CLAUDE.md: put a limit on everything).
-///
-/// Matches `image_mod.loader.MAX_URL_LENGTH` so that the native and WASM
-/// paths agree on the upper bound — `renderImage` now routes URLs through
-/// `ensureWasmImageLoading` on WASM (Task 4.6), and a tighter limit here
-/// would trip the length assert for URLs the native path accepts.
-/// `MAX_URL_LENGTH` is declared `u32`; widen to `usize` for comparison
-/// against `source.len`.
+/// Matches `image_mod.loader.MAX_URL_LENGTH` so the native and WASM paths
+/// agree on the upper bound; widened to `usize` for comparison with `source.len`.
 const MAX_SOURCE_PATH_LEN: usize = @as(usize, image_mod.loader.MAX_URL_LENGTH);
 
 /// Ensure an image is loading on WASM (starts load if not already in progress)

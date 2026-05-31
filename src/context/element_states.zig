@@ -1,87 +1,29 @@
 //! `ElementStates` — fixed-capacity, generically-typed element state pool.
 //!
-//! Rationale (cleanup item #11 in `docs/architectural-cleanup-plan.md`,
-//! PR 8 in `docs/cleanup-implementation-plan.md`): every stateful widget
-//! today gets its own per-type map on `WidgetStore` —
-//! `text_inputs`, `text_areas`, `code_editors`, `scroll_containers`,
-//! `select_states`, plus follow-on candidates for `uniform_list` /
-//! `data_table` / `tree_list`. Adding a new stateful widget requires
-//! framework edits: a new field, a new `init`/`deinit` line, a new
-//! getter, a new lifecycle hook in `beginFrame`. That coupling violates
-//! the "user-extensible widget" promise of the framework — only
-//! framework authors can add stateful widgets, not consumers.
+//! One map keyed by `(element_id_hash, type_id)`, so any element can attach
+//! any state type without framework changes. Both axes matter: the same id
+//! with different state types, and the same type under different ids, live
+//! in separate slots.
 //!
-//! The GPUI answer
-//! ([§19](../../docs/architectural-cleanup-plan.md#19-with_element_stateglobal_id-fnstate---r-state))
-//! is one map keyed by `(GlobalElementId, TypeId)`. Any element can attach
-//! any state type without framework changes. We adopt that shape, but with
-//! Gooey's static-allocation discipline:
+//! Each entry stores a heap-allocated `*S` payload plus a type-erased
+//! `deinit_fn` thunk, so arbitrary `S`s tear down through one
+//! `ElementStates.deinit` call — no per-type cleanup paths in the framework
+//! body.
 //!
-//!   - One fixed-capacity slot table (`MAX_ELEMENT_STATES = 4096`),
-//!     declared at the top of the file as a hard cap. Insert past
-//!     capacity returns an error so the caller surfaces the limit
-//!     violation explicitly (CLAUDE.md §4 — every limit must be visible).
+//! `withElementState(S, id_hash, default)` is the primary entry point: on
+//! miss it heap-allocates a fresh `S` from `default()` and caches it; on hit
+//! it returns the cached pointer. Either way the caller gets a `*S` to
+//! read/write directly. `default` is a comptime function pointer so a miss
+//! costs one allocation plus one `default()` call, no indirect dispatch.
 //!
-//!   - Each entry stores a heap-allocated `*S` payload. The `(id_hash,
-//!     type_id)` composite key plus a type-erased `deinit_fn` thunk lets
-//!     us tear down arbitrary `S`s through one `ElementStates.deinit`
-//!     call — no per-type cleanup paths leaking into the framework body.
-//!
-//!   - `withElementState(S, id_hash, default)` is the only mutating
-//!     entry point we expose. On miss it heap-allocates a fresh `S` from
-//!     `default()` and caches it; on hit it returns the cached pointer.
-//!     Either way the caller gets `*S` and can read/write through it
-//!     directly. `default` is a comptime function pointer so the
-//!     fast-path miss costs one allocation plus one `S.init`.
-//!
-//! ## What this PR ships
-//!
-//! PR 8.1 introduces the container in isolation — no widget-side
-//! migration yet. The shape is exercised through the test suite at the
-//! bottom of this file. Subsequent PR 8.x slices peel widgets off
-//! `WidgetStore` one at a time onto this generic, with `select_states`
-//! (smallest, u32-keyed) as the natural first consumer to validate the
-//! call-site shape, then `text_input` / `text_area` / `code_editor` /
-//! `scroll_container` in turn. PR 8 closes when the per-type maps on
-//! `WidgetStore` are all gone.
-//!
-//! ## Storage layout
-//!
-//! Backing is `[cap]?Entry` with a dense-prefix invariant — the same
-//! shape as `SubscriberSet` and `Globals`, for the same reasons:
-//! linear scan over `[0..count)` is cache-friendly at this size, and
-//! swap-remove keeps iteration cost tied to populated slots. Total
-//! footprint at `cap = 4096`:
-//!
-//!   - `Entry` is 32 bytes on a 64-bit target (composite key 16 B + ptr
-//!     8 B + deinit_fn 8 B; compiler tightens optional tag into the
-//!     pointer's null bit).
-//!   - `4096 * 32 B = 128 KiB`.
-//!
-//! 128 KiB is too large to embed inline on the WASM stack budget
-//! (CLAUDE.md §14). Callers heap-allocate `ElementStates` and use
-//! `initInPlace`. The static-allocation policy is preserved: the heap
-//! allocation is once, at framework init.
-//!
-//! ## Out of scope for PR 8.1
-//!
-//! - **Frame-driven eviction.** GPUI's `with_element_state` falls back
-//!   to the previous frame's map if the current frame hasn't touched
-//!   the element yet — `mem::swap` between `rendered_frame.element_states`
-//!   and `next_frame.element_states` discards entries that weren't
-//!   accessed for two consecutive frames. We don't need that yet:
-//!   today's `WidgetStore` keeps state forever (no GC), so adopting
-//!   the same "explicit `remove` on widget unmount" semantics is a
-//!   pure refactor. Frame-driven eviction lands in a later PR alongside
-//!   the rest of the GPUI `Frame` double-buffer adoption (PR 7c.3+).
-//!
-//! - **`with_element_state` taking a state-mutating closure.** GPUI's
-//!   API consumes the state, runs `f(Option<S>, &mut Cx) -> (R, S)`,
-//!   and writes back. That's natural in Rust but awkward in Zig
-//!   without `comptime` capture; our shape returns a `*S` directly and
-//!   leaves mutation to the caller. The semantics are equivalent — we
-//!   trade a closure boundary for a borrow boundary, and Gooey's
-//!   single-threaded frame loop makes the borrow safe.
+//! Backing is `[cap]?Entry` with a dense-prefix invariant — same shape as
+//! `SubscriberSet` and `Globals`: linear scan over `[0..count)` is
+//! cache-friendly at this size, and swap-remove keeps iteration tied to
+//! populated slots. `Entry` is 32 bytes (key 16 B + ptr 8 B + deinit_fn
+//! 8 B), so `cap = 4096` is 128 KiB — too large for the WASM stack, so
+//! callers heap-allocate `ElementStates` once at init and use `initInPlace`.
+//! Insert past capacity returns `error.ElementStatesAtCapacity` so the limit
+//! is visible at the call site.
 
 const std = @import("std");
 
@@ -91,15 +33,12 @@ const std = @import("std");
 
 /// Hard cap on simultaneously-stored element states.
 ///
-/// Sketch the math (per CLAUDE.md §7 — back-of-envelope before
-/// implementing): `Entry` is 32 bytes; `4096 * 32 = 128 KiB`. That's
-/// too large for the WASM stack so callers heap-allocate the
-/// containing `ElementStates`. 4096 distinct stateful elements per
-/// window is well above any realistic UI density (a long virtual list
-/// of 4096 rows where every row is a stateful widget would be the
-/// ceiling). Past the cap, `withElementState` returns
-/// `error.ElementStatesAtCapacity` so the limit violation is visible
-/// at the call site — not silently truncated.
+/// `Entry` is 32 bytes, so `4096 * 32 = 128 KiB` — too large for the WASM
+/// stack, hence callers heap-allocate `ElementStates`. 4096 distinct
+/// stateful elements per window is well above any realistic UI density
+/// (a 4096-row virtual list of stateful widgets would be the ceiling).
+/// Past the cap, `withElementState` returns `error.ElementStatesAtCapacity`
+/// so the limit is visible at the call site, not silently truncated.
 pub const MAX_ELEMENT_STATES: u32 = 4096;
 
 // =============================================================================
@@ -107,8 +46,7 @@ pub const MAX_ELEMENT_STATES: u32 = 4096;
 // =============================================================================
 
 /// Comptime-stable type identifier. Same shape and value space as
-/// `entity.typeId` and `global.typeId` so future consolidation onto a
-/// single `core/type_id.zig` is a mechanical rename.
+/// `entity.typeId` and `global.typeId`.
 ///
 /// The pointer to `@typeName(T)` is interned by the compiler and
 /// stable for the lifetime of the program. Casting it to `u64` gives
@@ -127,16 +65,13 @@ pub fn typeId(comptime T: type) TypeId {
 // Composite key
 // =============================================================================
 
-/// `(element_id_hash, type_id)` — uniquely identifies a piece of
-/// element state. Two elements with the same `id` but different state
-/// types live in separate slots; two elements with the same state
-/// type but different `id`s also live in separate slots. The product
-/// of those two axes is what makes the per-type-maps on `WidgetStore`
-/// redundant: one keyed pool encodes both axes.
+/// `(element_id_hash, type_id)` — uniquely identifies a piece of element
+/// state. Same `id` with different state types, and same type under
+/// different ids, live in separate slots; the pool encodes both axes.
 ///
-/// `element_id_hash` is the `u64` returned by `ElementId.hash()` —
-/// callers hash at the boundary, the pool itself never sees raw
-/// `[]const u8` IDs and never owns key memory.
+/// `element_id_hash` is the `u64` returned by `ElementId.hash()` — callers
+/// hash at the boundary, the pool never sees raw `[]const u8` IDs and never
+/// owns key memory.
 pub const Key = struct {
     element_id_hash: u64,
     type_id: TypeId,
@@ -170,9 +105,8 @@ const Entry = struct {
 
 /// Generic element-state pool. One per `Window`.
 ///
-/// The capacity-cap and slot-map invariants intentionally mirror
-/// `SubscriberSet` and `Globals` — the discipline is uniform across
-/// every keyed pool in the framework (CLAUDE.md §1, §4).
+/// The capacity-cap and slot-map invariants mirror `SubscriberSet` and
+/// `Globals` — the discipline is uniform across every keyed pool.
 pub const ElementStates = struct {
     /// Allocator used to heap-allocate stored payloads. Borrowed for
     /// the lifetime of `ElementStates`. The pool itself does not
@@ -214,7 +148,7 @@ pub const ElementStates = struct {
     /// In-place initialization for pools embedded in a large parent
     /// struct. Field-by-field — no struct literal, no stack temp.
     /// `noinline` so ReleaseSmall does not combine the parent's
-    /// frame with ours and blow the WASM stack budget (CLAUDE.md §14).
+    /// frame with ours and blow the WASM stack budget.
     pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator) void {
         self.allocator = allocator;
         // Bulk null-stomp the optional tag bytes. The compiler lowers
@@ -227,9 +161,9 @@ pub const ElementStates = struct {
         }
         self.count = 0;
 
-        // Pair-assert (CLAUDE.md §3): the just-initialised pool must
-        // read back as empty. Catches a future refactor that forgets
-        // to zero `count` or skips the `null` stomp.
+        // Pair-assert: the just-initialised pool must read back as empty.
+        // Catches a refactor that forgets to zero `count` or skips the
+        // `null` stomp.
         std.debug.assert(self.count == 0);
         std.debug.assert(self.entries[0] == null);
     }
@@ -318,8 +252,8 @@ pub const ElementStates = struct {
     ) !*S {
         const key: Key = .{ .element_id_hash = id_hash, .type_id = typeId(S) };
 
-        // Pair-assertion (CLAUDE.md §3) on the read boundary: the
-        // table invariants must hold before we touch it.
+        // Pair-assert on the read boundary: the table invariants must
+        // hold before we touch it.
         std.debug.assert(self.count <= MAX_ELEMENT_STATES);
 
         if (self.findIndex(key)) |idx| {
@@ -346,9 +280,9 @@ pub const ElementStates = struct {
         };
         self.count = idx + 1;
 
-        // Pair-assert on the write boundary: the slot we just wrote
-        // must read back. Catches a future refactor that bumps
-        // `count` before the write, or writes to the wrong index.
+        // Pair-assert on the write boundary: the slot we just wrote must
+        // read back. Catches a refactor that bumps `count` before the
+        // write, or writes to the wrong index.
         std.debug.assert(self.entries[idx] != null);
         std.debug.assert(self.entries[idx].?.key.eql(key));
 
@@ -396,27 +330,18 @@ pub const ElementStates = struct {
     }
 
     /// Look up the state of type `S` for `id_hash`, inserting a
-    /// caller-provided initial value on miss. The runtime-init twin
-    /// of `withElementState` (which requires a comptime `default`
-    /// factory and so cannot capture the allocator / geometry that
-    /// stateful widgets need at construction).
+    /// caller-provided initial value on miss. The runtime-init twin of
+    /// `withElementState`, whose comptime `default` factory can't capture
+    /// the allocator / geometry stateful widgets need at construction.
     ///
-    /// On hit: returns the cached pointer, `initial` is **not**
-    /// consumed — the caller is responsible for tearing down any
-    /// resources `initial` holds if it picked up an allocator before
-    /// the call. On miss: heap-allocates a `*S`, copies `initial` in,
-    /// and caches under `(id_hash, typeId(S))`.
+    /// On hit: returns the cached pointer, `initial` is **not** consumed —
+    /// the caller tears down any resources `initial` holds. On miss:
+    /// heap-allocates a `*S`, copies `initial` in, and caches under
+    /// `(id_hash, typeId(S))`.
     ///
-    /// Why this shape: stateful widgets like `ScrollContainer`,
-    /// `TextInputState`, `TextAreaState`, `CodeEditorState` all carry
-    /// runtime-only init data (allocator, bounds, debug id slice).
-    /// The comptime `withElementState` API can't capture those, so
-    /// callers fall through to this runtime variant. Forcing every
-    /// caller into a manual `if (get) ... else insert(...)` dance
-    /// would re-litigate the lookup boundary at every site (and risk
-    /// a missed branch silently double-allocating). Bundling the
-    /// upsert here keeps the get-or-create discipline in one place
-    /// alongside the rest of the slot-map invariants.
+    /// Bundling the upsert here (rather than making each caller write
+    /// `if (get) ... else insert(...)`) keeps the get-or-create discipline
+    /// in one place and avoids a missed branch silently double-allocating.
     ///
     /// On capacity exhaustion: returns `error.ElementStatesAtCapacity`.
     /// On allocator failure: returns `error.OutOfMemory`.
@@ -428,7 +353,7 @@ pub const ElementStates = struct {
     ) !*S {
         const key: Key = .{ .element_id_hash = id_hash, .type_id = typeId(S) };
 
-        // Pair-assert (CLAUDE.md §3) on the read boundary.
+        // Pair-assert on the read boundary.
         std.debug.assert(self.count <= MAX_ELEMENT_STATES);
 
         if (self.findIndex(key)) |idx| {
@@ -452,9 +377,9 @@ pub const ElementStates = struct {
         };
         self.count = idx + 1;
 
-        // Pair-assert on the write boundary: the slot we just wrote
-        // must read back. Catches a future refactor that bumps
-        // `count` before the write, or writes to the wrong index.
+        // Pair-assert on the write boundary: the slot we just wrote must
+        // read back. Catches a refactor that bumps `count` before the
+        // write, or writes to the wrong index.
         std.debug.assert(self.entries[idx] != null);
         std.debug.assert(self.entries[idx].?.key.eql(key));
 
@@ -475,13 +400,12 @@ pub const ElementStates = struct {
     // Internals
     // -------------------------------------------------------------------------
 
-    /// Linear scan over the dense prefix. O(count). The naive scan
-    /// matches `Globals` and `SubscriberSet`; at this size the
-    /// branch-predictor friendliness of the linear walk beats a hash
-    /// map's pointer-chasing for the small-N case (most elements
-    /// touch < 64 distinct states). If a profile shows otherwise we
-    /// can swap in an `AutoHashMap` keyed by `Key.hash()` without
-    /// changing the public surface.
+    /// Linear scan over the dense prefix. O(count). At this size the
+    /// branch-predictor friendliness of the linear walk beats a hash map's
+    /// pointer-chasing for the small-N case (most elements touch < 64
+    /// distinct states). If a profile shows otherwise, swap findIndex for
+    /// an `AutoHashMap` keyed by `Key.hash()` without changing the public
+    /// surface.
     fn findIndex(self: *const Self, key: Key) ?u32 {
         std.debug.assert(self.count <= MAX_ELEMENT_STATES);
         var i: u32 = 0;

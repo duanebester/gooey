@@ -28,20 +28,13 @@ const InputEvent = input_mod.InputEvent;
 const DispatchNodeId = dispatch_mod.DispatchNodeId;
 const Builder = ui_mod.Builder;
 
-// PR 8.4 — `ScrollContainer` lookups now go through
-// `window.element_states` (keyed by `LayoutId.id` u32 hash) rather
-// than the retired `WidgetStore.scrollContainer` accessor. Same
-// import shape as PR 8.2's `Select` migration: input handlers reach
-// the engine type directly through the pool.
+// Widget-state lookups go through `window.element_states`, keyed by
+// `LayoutId.id` hash. Input dispatch hits the pool by `pending_*.layout_id.id`
+// (area/editor scroll routing) and via the `focusedText*` helpers below (the
+// focused-widget fan-out).
 const scroll_container_mod = @import("../widgets/scroll_container.zig");
 const ScrollContainer = scroll_container_mod.ScrollContainer;
 
-// PR 8.4b — `TextInputState` / `TextAreaState` / `CodeEditorState`
-// lookups also go through `window.element_states` post-PR-8.4b.
-// Input dispatch (key down, text input, composition, scroll, click,
-// drag) hits the pool by `pending_*.layout_id.id` for area/editor
-// scroll routing and through the `focusedText*` helpers below for
-// the focused-widget fan-out.
 const text_input_state_mod = @import("../widgets/text_input_state.zig");
 const TextInputState = text_input_state_mod.TextInputState;
 const text_area_state_mod = @import("../widgets/text_area_state.zig");
@@ -50,32 +43,16 @@ const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
 const CodeEditorState = code_editor_state_mod.CodeEditorState;
 
 // =============================================================================
-// Focused-widget dispatch helpers (PR 8.4b)
+// Focused-widget dispatch helpers
 // =============================================================================
 //
-// Pre-PR-8.4b the framework reached for the focused text widget
-// through three per-type accessors on `WidgetStore`
-// (`getFocusedTextInput` / `getFocusedTextArea` /
-// `getFocusedCodeEditor`), each walking its own StringHashMap and
-// calling `isFocused()` on every entry. The maps retired in PR 8.4b
-// alongside their accessors; the replacement walk lives here.
-//
-// The replacement walks the matching `Builder.pending_*` list
-// (which `Builder.render*` rebuilt this frame), hits the pool by
-// `layout_id.id`, and returns the first `isFocused()` match. The
-// pending list is bounded (`MAX_PENDING_INPUTS = 256`,
-// `MAX_PENDING_TEXT_AREAS = 64`, `MAX_PENDING_CODE_EDITORS = 32`)
-// per CLAUDE.md §4's hard-cap rule, so the walk has a known upper
-// bound — same shape the pre-PR-8.4b StringHashMap walk had,
-// without the dynamically-grown map.
-//
-// `pub` so `runtime/frame.zig::updateImeCursorPosition` can reach
-// these without re-implementing the walk; the rest of `input.zig`
-// uses them as plain helpers.
+// Each helper walks the matching `Builder.pending_*` list (rebuilt this
+// frame), queries the pool by `layout_id.id`, and returns the first
+// `isFocused()` match. The pending lists are bounded (CLAUDE.md §4), so each
+// walk has a known upper bound. `pub` so `runtime/frame.zig` can reuse them.
 
-/// Find the focused `TextInputState` among the widgets that
-/// rendered this frame, or `null` if none is focused. Walks
-/// `builder.pending_inputs` and queries the pool by layout-id hash.
+/// Find the focused `TextInputState` among the widgets that rendered this
+/// frame, or `null` if none is focused.
 pub fn focusedTextInput(window: *Window, builder: *const Builder) ?*TextInputState {
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     for (builder.pending_inputs.items) |pending| {
@@ -85,8 +62,7 @@ pub fn focusedTextInput(window: *Window, builder: *const Builder) ?*TextInputSta
     return null;
 }
 
-/// Find the focused `TextAreaState` among the widgets that rendered
-/// this frame. See `focusedTextInput` for the rationale.
+/// Find the focused `TextAreaState` among the widgets that rendered this frame.
 pub fn focusedTextArea(window: *Window, builder: *const Builder) ?*TextAreaState {
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
     for (builder.pending_text_areas.items) |pending| {
@@ -96,8 +72,7 @@ pub fn focusedTextArea(window: *Window, builder: *const Builder) ?*TextAreaState
     return null;
 }
 
-/// Find the focused `CodeEditorState` among the widgets that
-/// rendered this frame. See `focusedTextInput` for the rationale.
+/// Find the focused `CodeEditorState` among the widgets that rendered this frame.
 pub fn focusedCodeEditor(window: *Window, builder: *const Builder) ?*CodeEditorState {
     std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
     for (builder.pending_code_editors.items) |pending| {
@@ -146,8 +121,6 @@ pub fn handleInputCx(
         },
         .touch_down => |touch_ev| {
             // Touch is handled by synthesizing the equivalent mouse event.
-            // Post-cleanup the per-window handle is `window` (was `gooey`
-            // in the pre-App/Window-split code this PR was authored against).
             const synthetic = input_mod.MouseEvent{
                 .position = touch_ev.position,
                 .button = .left,
@@ -622,9 +595,6 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     }
 
     // Escape to blur focused text widgets (TextInput, TextArea, CodeEditor).
-    // PR 8.4b — routed through the new `focusedText*` helpers above
-    // (was three per-type forwarders against the retired
-    // `WidgetStore` maps pre-PR-8.4b).
     if (k.key == .escape) {
         const builder = cx.builder();
         const has_focused_widget = focusedTextInput(window, builder) != null or
@@ -645,11 +615,8 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     }
 
     // Tab navigation - but let CodeEditor handle Tab for indentation.
-    // PR 8.4b — the focused-widget lookups now go through the
-    // `focusedText*` helpers above (was per-type `getFocused*`
-    // accessors on the retired `WidgetStore` maps pre-PR-8.4b). The
-    // `builder` borrow is shared across the four arms below so each
-    // pending-list walk is paid for at most once per key event.
+    // The `builder` borrow is shared across the arms below so each pending-list
+    // walk is paid for at most once per key event.
     const builder = cx.builder();
     if (k.key == .tab) {
         // CodeEditor intercepts Tab for indentation (not focus navigation)
@@ -742,10 +709,6 @@ fn handleFocusedKeyAction(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool 
 }
 
 /// Handle text input events (character insertion).
-///
-/// PR 8.4b — focused-widget lookups now go through the
-/// `focusedText*` helpers above. The `builder` borrow is shared
-/// across the three arms.
 fn handleTextInputEvent(cx: *Cx, window: *Window, text: []const u8) bool {
     const builder = cx.builder();
     if (focusedTextInput(window, builder)) |input| {
@@ -770,10 +733,6 @@ fn handleTextInputEvent(cx: *Cx, window: *Window, text: []const u8) bool {
 }
 
 /// Handle IME composition events.
-///
-/// PR 8.4b — focused-widget lookups now go through the
-/// `focusedText*` helpers above. The `builder` borrow is shared
-/// across the three arms.
 fn handleCompositionEvent(cx: *Cx, window: *Window, text: []const u8) bool {
     const builder = cx.builder();
     if (focusedTextInput(window, builder)) |input| {
@@ -799,10 +758,6 @@ fn handleCompositionEvent(cx: *Cx, window: *Window, text: []const u8) bool {
 // =============================================================================
 
 /// Sync TextInput content back to bound variables (Cx version).
-///
-/// PR 8.4b — reaches the engine type through
-/// `Window.element_states` keyed by the `pending_*` layout-id hash
-/// (was `widgets.textInput` against the retired StringHashMap).
 pub fn syncBoundVariablesCx(cx: *Cx) void {
     const builder = cx.builder();
     const window = cx.window();
@@ -816,8 +771,7 @@ pub fn syncBoundVariablesCx(cx: *Cx) void {
     }
 }
 
-/// Sync TextArea content back to bound variables (Cx version). See
-/// `syncBoundVariablesCx` for the post-PR-8.4b lookup rationale.
+/// Sync TextArea content back to bound variables (Cx version).
 pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
     const builder = cx.builder();
     const window = cx.window();
@@ -832,7 +786,6 @@ pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
 }
 
 /// Sync CodeEditor content back to bound variables (Cx version).
-/// See `syncBoundVariablesCx` for the post-PR-8.4b lookup rationale.
 pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
     const builder = cx.builder();
     const window = cx.window();
