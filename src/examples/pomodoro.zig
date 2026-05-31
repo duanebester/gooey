@@ -244,10 +244,8 @@ const AppState = struct {
 
         // PR 8.4b — `g.widgets.textInput` retired alongside the
         // StringHashMap-keyed `text_inputs` map; reach the engine
-        // state through `Window.element_states` keyed by
-        // `LayoutId.id`.
-        const input_hash: u64 = @as(u64, gooey.layout.LayoutId.fromString("task-input").id);
-        if (g.element_states.get(gooey.widgets.TextInputState, input_hash)) |input| {
+        // state through the string-keyed `Window.widgetState` accessor.
+        if (g.widgetState(gooey.widgets.TextInputState, "task-input")) |input| {
             input.clear();
         }
         self.input_text = "";

@@ -174,8 +174,7 @@ const AppState = struct {
     pub fn addTodo(self: *AppState, g: *gooey.Window) void {
         self.pushTodo(self.draft);
         self.draft = "";
-        const id_hash: u64 = gooey.layout.LayoutId.fromString(draft_input_id).id;
-        if (g.element_states.get(gooey.widgets.TextInputState, id_hash)) |input| {
+        if (g.widgetState(gooey.widgets.TextInputState, draft_input_id)) |input| {
             input.clear();
         }
     }

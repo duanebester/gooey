@@ -144,13 +144,12 @@ const AppState = struct {
 
     /// Add the current draft, then clear the input. The binding only flows
     /// widget -> state, so zeroing `self.draft` is not enough; we reach the
-    /// retained `TextInputState` by its layout-id hash and clear its buffer.
+    /// retained `TextInputState` by its string id and clear its buffer.
     pub fn addTodo(self: *AppState, g: *gooey.Window) void {
         self.pushTodo(self.draft);
         self.draft = "";
 
-        const id_hash: u64 = gooey.layout.LayoutId.fromString(draft_input_id).id;
-        if (g.element_states.get(gooey.widgets.TextInputState, id_hash)) |input| {
+        if (g.widgetState(gooey.widgets.TextInputState, draft_input_id)) |input| {
             input.clear();
         }
     }
