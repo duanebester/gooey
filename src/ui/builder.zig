@@ -58,26 +58,12 @@ const primitives = @import("primitives.zig");
 const theme_mod = @import("theme.zig");
 pub const Theme = theme_mod.Theme;
 
-// PR 8.4 — `ScrollContainer` storage moved off
-// `WidgetStore.scroll_containers` onto `Window.element_states`. The
-// builder is the create-on-touch site for scroll regions, so it
-// reaches into the pool directly here. Same import shape as `cx.zig`
-// uses for `SelectState` post-PR 8.2.
+// The builder is the create-on-touch site for scroll regions and text
+// widgets: it seeds each entry in `Window.element_states` on first render,
+// and the rest of the framework reads it back keyed by `layout_id.id`.
 const scroll_container_mod = @import("../widgets/scroll_container.zig");
 const ScrollContainer = scroll_container_mod.ScrollContainer;
 
-// PR 8.4b — `TextInputState` / `TextAreaState` / `CodeEditorState`
-// storage moved off the per-type `WidgetStore` StringHashMaps onto
-// `Window.element_states`. `Builder.renderInput` / `renderTextArea`
-// / `renderCodeEditor` are the create-on-touch sites: each seeds
-// the pool entry on first render via `getOrInsert(EngineType,
-// layout_id.id, EngineType.init(allocator, default_bounds))` and
-// the rest of the framework (frame renderer, input handlers, focus
-// register) reads through `get` keyed by `layout_id.id`. Same
-// migration shape as `ScrollContainer` (PR 8.4a). The two `Bounds`
-// aliases land here so the seeded `init(...)` calls don't reach
-// into the engine modules for the type — the builder owns the
-// default-bounds policy.
 const text_input_state_mod = @import("../widgets/text_input_state.zig");
 const TextInputState = text_input_state_mod.TextInputState;
 const TextInputBounds = text_input_state_mod.Bounds;
@@ -88,74 +74,39 @@ const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
 const CodeEditorState = code_editor_state_mod.CodeEditorState;
 const CodeEditorBounds = code_editor_state_mod.Bounds;
 
-/// Default bounds used to seed a freshly-allocated text widget pool
-/// slot. `Builder.renderInput` / `renderTextArea` / `renderCodeEditor`
-/// pass these to `EngineType.init(...)` on the miss path; the actual
-/// per-frame bounds are recomputed and written by
-/// `runtime/frame.zig::renderTextInputs` / `renderTextAreas` /
-/// `renderCodeEditors` once layout has run, so the seed values are
-/// only observed by code that touches the widget before its first
-/// post-layout render (none today, but the assertions in the
-/// engines' `init` paths require sane geometry, e.g.
-/// `CodeEditorState.init` asserts `bounds.width > 0`).
+/// Default bounds used to seed a freshly-allocated text widget pool slot.
+/// The real per-frame bounds are recomputed after layout by
+/// `runtime/frame.zig`; these seeds only need sane geometry to satisfy the
+/// engines' `init` assertions (e.g. `CodeEditorState.init` asserts width > 0).
 const DEFAULT_TEXT_INPUT_BOUNDS: TextInputBounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 };
 const DEFAULT_TEXT_AREA_BOUNDS: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 };
 const DEFAULT_CODE_EDITOR_BOUNDS: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 };
 
-pub const Color = styles.Color;
-pub const ShadowConfig = styles.ShadowConfig;
-pub const AttachPoint = styles.AttachPoint;
-pub const ObjectFit = styles.ObjectFit;
-pub const Floating = styles.Floating;
-pub const Box = styles.Box;
-pub const TextStyle = styles.TextStyle;
-pub const InputStyle = styles.InputStyle;
-pub const TextAreaStyle = styles.TextAreaStyle;
-pub const CodeEditorStyle = styles.CodeEditorStyle;
-pub const StackStyle = styles.StackStyle;
-pub const CenterStyle = styles.CenterStyle;
-pub const ScrollStyle = styles.ScrollStyle;
-pub const UniformListStyle = styles.UniformListStyle;
-pub const VirtualListStyle = styles.VirtualListStyle;
-pub const DataTableStyle = styles.DataTableStyle;
-pub const ButtonStyle = styles.ButtonStyle;
+// Type aliases used internally as the builder's style/primitive vocabulary.
+// The public `gooey.ui.*` surface re-exports these directly from
+// `styles`/`primitives`, so these are not part of the public API.
+const Color = styles.Color;
+const Box = styles.Box;
+const InputStyle = styles.InputStyle;
+const TextAreaStyle = styles.TextAreaStyle;
+const CodeEditorStyle = styles.CodeEditorStyle;
+const StackStyle = styles.StackStyle;
+const CenterStyle = styles.CenterStyle;
+const ScrollStyle = styles.ScrollStyle;
 
-pub const PrimitiveType = primitives.PrimitiveType;
-pub const Text = primitives.Text;
-pub const Input = primitives.Input;
-pub const TextAreaPrimitive = primitives.TextAreaPrimitive;
-pub const CodeEditorPrimitive = primitives.CodeEditorPrimitive;
-pub const Spacer = primitives.Spacer;
-pub const Button = primitives.Button;
-pub const ButtonHandler = primitives.ButtonHandler;
-pub const Empty = primitives.Empty;
-pub const SvgPrimitive = primitives.SvgPrimitive;
-pub const ImagePrimitive = primitives.ImagePrimitive;
-pub const KeyContextPrimitive = primitives.KeyContextPrimitive;
-pub const ActionHandlerPrimitive = primitives.ActionHandlerPrimitive;
-pub const ActionHandlerRefPrimitive = primitives.ActionHandlerRefPrimitive;
-
-// Primitive functions
-pub const text = primitives.text;
-pub const textFmt = primitives.textFmt;
-pub const input = primitives.input;
-pub const textArea = primitives.textArea;
-pub const codeEditor = primitives.codeEditor;
-pub const spacer = primitives.spacer;
-pub const spacerMin = primitives.spacerMin;
-pub const svg = primitives.svg;
-pub const svgIcon = primitives.svgIcon;
-pub const empty = primitives.empty;
-pub const keyContext = primitives.keyContext;
-pub const onAction = primitives.onAction;
-pub const onActionHandler = primitives.onActionHandler;
-pub const when = primitives.when;
-
-// Container element functions (Phase 1: cx/ui separation)
-// These return element structs for use with cx.render()
-pub const box_element = primitives.box;
-pub const hstack_element = primitives.hstack;
-pub const vstack_element = primitives.vstack;
+const PrimitiveType = primitives.PrimitiveType;
+const Text = primitives.Text;
+const Input = primitives.Input;
+const TextAreaPrimitive = primitives.TextAreaPrimitive;
+const CodeEditorPrimitive = primitives.CodeEditorPrimitive;
+const Spacer = primitives.Spacer;
+const Button = primitives.Button;
+const ButtonHandler = primitives.ButtonHandler;
+const SvgPrimitive = primitives.SvgPrimitive;
+const ImagePrimitive = primitives.ImagePrimitive;
+const KeyContextPrimitive = primitives.KeyContextPrimitive;
+const ActionHandlerPrimitive = primitives.ActionHandlerPrimitive;
+const ActionHandlerRefPrimitive = primitives.ActionHandlerRefPrimitive;
 
 // Accessibility config
 pub const AccessibleConfig = struct {
@@ -209,21 +160,17 @@ pub const Builder = struct {
     pub const MAX_PENDING_CODE_EDITORS = 32;
     pub const MAX_PENDING_SCROLLS = 64;
     pub const MAX_PENDING_CANVAS = canvas_mod.MAX_PENDING_CANVAS;
-    // PR 11b.3a — the unified text-widget control queue holds one
-    // `{ kind, index }` record per text widget, across all three
-    // kinds, so its cap is the sum of the three data-plane pools.
+    // One control-queue record per text widget across all three kinds, so the
+    // cap is the sum of the three data-plane pools.
     pub const MAX_PENDING_TEXT_WIDGETS =
         MAX_PENDING_INPUTS + MAX_PENDING_TEXT_AREAS + MAX_PENDING_CODE_EDITORS;
-    // PR 11b.2a — a single parent cannot hold more auto-id'd children than
-    // the layout engine's per-frame element cap, so the sibling index used
-    // to derive a parent-scoped auto id is bounded by it. Asserted in
-    // `generateId` so a runaway loop fails fast rather than silently
-    // wrapping the `u32` counter.
+    // A parent can't hold more auto-id'd children than the layout engine's
+    // per-frame element cap. Asserted in `generateId` to fail fast rather than
+    // silently wrap the `u32` counter.
     pub const MAX_AUTO_SIBLINGS = layout_mod.engine.MAX_ELEMENTS_PER_FRAME;
 
-    // PR 11b.2a — fixed seed string mixed into every auto id's hash so the
-    // auto-id hash domain can't collapse onto a parent's own layout id (which
-    // is `hashString(parent_string, grandparent_id)` — a different seed path).
+    // Fixed seed mixed into every auto id's hash so the auto-id domain can't
+    // collapse onto a parent's own layout id (a different seed path).
     const AUTO_ID_SEED = "\x00auto";
 
     allocator: std.mem.Allocator,
@@ -243,37 +190,19 @@ pub const Builder = struct {
     /// Cx pointer for new-style components (set by runCx)
     cx_ptr: ?*anyopaque = null,
 
-    // PR 6 / 7b.4 — theme storage lives on `App.globals` keyed by
-    // `*const Theme`. The Builder does not cache a `*const Theme`;
-    // `setTheme` writes through the type-keyed registry on the
-    // parent `Window`'s borrowed `*App` and `theme()` reads back
-    // from the same slot. Rationale: pre-7b.4 the theme slot was
-    // per-window — a tab swap in window A would not repaint window
-    // B. Lifting the slot to `App.globals` makes the active theme
-    // a true app-scoped value (one swap, every window sees the
-    // new colors) and matches the GPUI mapping in §10. Collapses
-    // two parallel stores (Builder.theme_ptr + the per-window
-    // Globals slot the original PR 6 sketch called for) into one
-    // app-scoped slot. See `docs/cleanup-implementation-plan.md`
-    // PR 6 / 7b.4.
+    // Theme storage lives on `App.globals` keyed by `*const Theme` (not cached
+    // here), so a single `setTheme` is app-scoped and repaints every window.
 
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
     pending_code_editors: std.ArrayList(PendingCodeEditor),
 
-    /// PR 11b.3a — unified control-plane queue for the post-layout
-    /// text-widget render pass. The three pools above are the data
-    /// plane (right-sized, typed); this queue records one tiny
-    /// `{ kind, index }` per widget in tree order so the render pass
-    /// can replay all three kinds interleaved in the order they were
-    /// built. Tree-order replay is strictly more correct than the
-    /// old grouped (inputs, then areas, then editors) order when
-    /// widgets of different kinds overlap. A `{ kind, index }` record
-    /// (rather than a tagged union over the style structs) keeps each
-    /// slot at 8 bytes instead of sizing every slot to the largest
-    /// variant (`CodeEditorStyle`) — control plane / data plane split,
-    /// CLAUDE.md §8.
+    /// Control-plane queue for the post-layout text-widget render pass. Records
+    /// one `{ kind, index }` per widget in tree order so all three kinds replay
+    /// interleaved in build order (correct when different kinds overlap). The
+    /// heavy state stays in the typed data-plane pools above; each slot is 8
+    /// bytes rather than sized to the largest style variant.
     pending_text_widgets: std.ArrayList(PendingTextWidget),
     pending_scrolls: std.ArrayListUnmanaged(PendingScroll),
     pending_canvas: std.ArrayListUnmanaged(canvas_mod.PendingCanvas),
@@ -281,25 +210,15 @@ pub const Builder = struct {
     /// Hashmap for O(1) scroll lookup by layout_id (avoids O(n) scan per scissor_end)
     pending_scrolls_by_layout_id: std.AutoHashMapUnmanaged(u32, usize),
 
-    /// Currently dragged scroll container ID (avoids O(n) scan per
-    /// mouse drag event). PR 8.4 — storage moved off
-    /// `WidgetStore.scroll_containers` (string-keyed) onto
-    /// `Window.element_states` (layout-id-hash-keyed), so the cached
-    /// drag id is now the u32 hash. Avoids re-hashing the string at
-    /// every drag event and — critically — sidesteps the lifetime
-    /// hazard of holding a borrowed `[]const u8` across the
-    /// frame-render boundary that used to free the duped key.
+    /// Currently dragged scroll container ID, as the layout-id u32 hash.
+    /// Avoids an O(n) scan (and a string re-hash) per mouse drag event.
     active_scroll_drag_id: ?u32 = null,
 
-    /// PR 11b.3a — the kind discriminant for the unified text-widget
-    /// control queue. Mirrors the three typed data-plane pools; the
-    /// render pass switches on it at comptime (no runtime trait
-    /// objects) to pick the matching pool and per-kind render path.
+    /// Kind discriminant for the text-widget control queue; the render pass
+    /// switches on it at comptime to pick the matching data-plane pool.
     pub const TextWidgetKind = enum { input, text_area, code_editor };
 
-    /// PR 11b.3a — one control-plane record: which pool, and which
-    /// slot within it. 8 bytes; the heavy per-widget state stays in
-    /// the typed pools.
+    /// One control-plane record: which pool, and which slot within it.
     pub const PendingTextWidget = struct {
         kind: TextWidgetKind,
         index: u32,
@@ -377,12 +296,9 @@ pub const Builder = struct {
     // Text-widget control queue (PR 11b.3a)
     // =========================================================================
 
-    /// Record a `{ kind, index }` control-plane entry pointing at the
-    /// slot a `renderInput` / `renderTextArea` / `renderCodeEditor`
-    /// just appended to its typed data-plane pool. Callers must invoke
-    /// this only after confirming the data-plane append landed, so the
-    /// recorded index always resolves to a live slot during the
-    /// post-layout render pass.
+    /// Record a `{ kind, index }` entry pointing at the slot a render*
+    /// just appended to its data-plane pool. Call only after the append
+    /// landed, so the index always resolves to a live slot later.
     fn enqueuePendingTextWidget(self: *Self, kind: TextWidgetKind, index: usize) void {
         std.debug.assert(index <= std.math.maxInt(u32));
         std.debug.assert(self.pending_text_widgets.items.len < MAX_PENDING_TEXT_WIDGETS);
@@ -428,24 +344,10 @@ pub const Builder = struct {
     // Theme Access
     // =========================================================================
 
-    /// Set the theme for this builder and all child components.
-    /// Called at the start of render to establish theme context.
-    ///
-    /// PR 6 / 7b.4: writes through to `app.globals` keyed by
-    /// `Theme`. `replaceBorrowedConst` registers a fresh slot on
-    /// the first call and rebinds the pointer on subsequent calls
-    /// without growing the table — same behaviour the old
-    /// `theme_ptr` assignment had, just routed through the
-    /// type-keyed store on the parent `App`. Pre-7b.4 the slot
-    /// lived on `Window.globals`, which made cross-window theme
-    /// sharing structurally impossible; lifting to `App.globals`
-    /// is what makes a single `cx.setTheme(&Theme.dark)` repaint
-    /// every window in a multi-window app.
-    ///
-    /// Asserts `self.window` is wired. Every code path that builds
-    /// a frame (`Cx.setTheme`, the runtime drivers) goes through
-    /// a `Window`-attached builder; a null parent here is a
-    /// framework bug, not a runtime fallback.
+    /// Set the active theme. Writes through to `app.globals` (keyed by `Theme`)
+    /// so the change is app-scoped and every window repaints. Panics if the
+    /// builder has no parent `Window` — every frame-building path wires one, so
+    /// a null parent is a framework bug, not a runtime fallback.
     pub fn setTheme(self: *Self, t: *const Theme) void {
         const g = self.window orelse {
             std.debug.panic(
@@ -456,43 +358,16 @@ pub const Builder = struct {
         g.app.globals.replaceBorrowedConst(Theme, t);
     }
 
-    /// Get the current theme, falling back to light theme if none set.
-    /// Components use this to resolve null color fields.
-    ///
-    /// PR 6 / 7b.4: reads from `app.globals`. The `*const Theme`
-    /// slot may be empty (no `setTheme` yet this frame, or the
-    /// builder was stood up bare for a unit test that bypassed
-    /// the `App` wiring) — fall back to `&Theme.light` in that
-    /// case so the component path stays branch-free. Pre-7b.4
-    /// the slot was read from `window.globals`; the lift to
-    /// `app.globals` is transparent to call sites because every
-    /// `Window` that has a parent `App` wired (every framework
-    /// init path) reaches the same slot.
+    /// Get the current theme, falling back to `Theme.light` if none is set
+    /// (no `setTheme` yet, or a bare builder in a unit test). Components use
+    /// this to resolve null color fields.
     pub fn theme(self: *Self) *const Theme {
         const g = self.window orelse return &Theme.light;
         return g.app.globals.getConst(Theme) orelse &Theme.light;
     }
 
     /// Get the typed context from within a component's render method.
-    ///
-    /// Returns null if no context is set or if the type doesn't match.
-    ///
-    /// ## Example
-    ///
-    /// ```zig
-    /// const CounterRow = struct {
-    ///     pub fn render(_: @This(), b: *ui.Builder) void {
-    ///         const cx = b.getContext(gooey.Context(AppState)) orelse return;
-    ///         const s = cx.state();
-    ///
-    ///         b.hstack(.{ .gap = 12 }, .{
-    ///             ui.buttonHandler("-", cx.handler(AppState.decrement)),
-    ///             ui.textFmt("Count: {}", .{s.count}, .{}),
-    ///             ui.buttonHandler("+", cx.handler(AppState.increment)),
-    ///         });
-    ///     }
-    /// };
-    /// ```
+    /// Returns null if no context is set or the type doesn't match.
     pub fn getContext(self: *Self, comptime ContextType: type) ?*ContextType {
         if (self.context_ptr) |ptr| {
             if (self.context_type_id == contextTypeId(ContextType)) {
@@ -502,27 +377,9 @@ pub const Builder = struct {
         return null;
     }
 
-    /// Get an EntityContext for an entity from within a component's render method.
-    ///
-    /// This is a convenience that combines `b.window` access with entity context creation,
-    /// eliminating the need for global Window references in entity-based components.
-    ///
-    /// ## Example
-    ///
-    /// ```zig
-    /// const CounterButtons = struct {
-    ///     counter: gooey.Entity(Counter),
-    ///
-    ///     pub fn render(self: @This(), b: *ui.Builder) void {
-    ///         var cx = b.entityContext(Counter, self.counter) orelse return;
-    ///
-    ///         b.hstack(.{ .gap = 8 }, .{
-    ///             ui.buttonHandler("-", cx.handler(Counter.decrement)),
-    ///             ui.buttonHandler("+", cx.handler(Counter.increment)),
-    ///         });
-    ///     }
-    /// };
-    /// ```
+    /// Get an `EntityContext` for an entity from within a render method.
+    /// Combines `b.window` access with entity-context creation so entity-based
+    /// components don't need a global Window reference. Null if no Window.
     pub fn entityContext(
         self: *Self,
         comptime T: type,
@@ -990,15 +847,8 @@ pub const Builder = struct {
         }, children);
     }
 
-    // =========================================================================
-    // Component Integration
-    // =========================================================================
-    //
-    // `Builder.with` was removed in PR 11b.1. It passed `*Builder` to a
-    // component's `render`, but components now author against `*Cx`, so
-    // the only correct entry point is `Cx.with` (which routes through the
-    // `*Cx`-aware dispatch). All former `b.with(...)` call sites migrated
-    // to `cx.with(...)`.
+    // Note: there is no `Builder.with` — components author against `*Cx`, so
+    // component integration routes through `Cx.with`.
 
     // =========================================================================
     // Conditionals
@@ -1040,13 +890,9 @@ pub const Builder = struct {
         _ = self.dispatch.pushNode();
         self.dispatch.setLayoutId(layout_id.id);
 
-        // Get scroll offset from retained widget. PR 8.4 — storage
-        // lifted off `WidgetStore.scroll_containers` onto
-        // `Window.element_states`; the layout-id hash is the pool
-        // key. The miss path here also seeds the pool entry so that
-        // the subsequent `registerPendingScrollRegions` walk can
-        // assume the slot exists, mirroring the pre-PR-8.4
-        // create-on-touch shape `widgets.scrollContainer(id)` had.
+        // Get scroll offset from the retained widget in `element_states`
+        // (keyed by the layout-id hash). The miss path seeds the pool entry so
+        // the later `registerPendingScrollRegions` walk can assume it exists.
         var scroll_offset_x: f32 = 0;
         var scroll_offset_y: f32 = 0;
         if (self.window) |g| {
@@ -1172,8 +1018,7 @@ pub const Builder = struct {
         self.dispatch.popNode();
     }
 
-    /// Find a pending scroll by its layout ID (for rendering scrollbars inline with commands)
-    /// O(1) lookup for pending scroll by layout_id (uses hashmap)
+    /// O(1) lookup for a pending scroll by layout_id (for rendering scrollbars).
     pub fn findPendingScrollByLayoutId(self: *const Self, layout_id_value: u32) ?*const PendingScroll {
         if (self.pending_scrolls_by_layout_id.get(layout_id_value)) |index| {
             if (index < self.pending_scrolls.items.len) {
@@ -1183,33 +1028,20 @@ pub const Builder = struct {
         return null;
     }
 
-    /// Track which scroll container is being dragged (for O(1) drag
-    /// event handling). The `id` is the `LayoutId.id` u32 hash that
-    /// keys the `Window.element_states` slot post-PR 8.4.
+    /// Track which scroll container is being dragged (u32 layout-id hash),
+    /// for O(1) drag-event handling.
     pub fn setActiveScrollDrag(self: *Self, id: ?u32) void {
         self.active_scroll_drag_id = id;
     }
 
-    /// Get the currently dragged scroll container ID (u32 layout-id
-    /// hash that keys `Window.element_states`).
+    /// Get the currently dragged scroll container ID (u32 layout-id hash).
     pub fn getActiveScrollDrag(self: *const Self) ?u32 {
         return self.active_scroll_drag_id;
     }
 
-    // =========================================================================
-    // List rendering helpers (moved per PR 4)
-    // =========================================================================
-    //
-    // The Uniform List, Virtual List, and Data Table builder helpers have
-    // been moved into their respective widget files
-    // (`src/widgets/uniform_list.zig`, `src/widgets/virtual_list.zig`,
-    // `src/widgets/data_table.zig`) per PR 4 of
-    // `docs/cleanup-implementation-plan.md` to break the `ui → widgets`
-    // backward edge. They take `*Builder` as their first argument and
-    // append to `b.pending_scrolls` directly. See those files for the
-    // moved helpers (`computeLayout`, `openElements`, `renderSpacer`,
-    // `registerScroll`, `syncScroll`, plus `renderHeaderCx` /
-    // `renderRowCx` for data tables).
+    // The Uniform List, Virtual List, and Data Table builder helpers live in
+    // their respective `src/widgets/*.zig` files (to avoid a `ui → widgets`
+    // edge). They take `*Builder` and append to `b.pending_scrolls` directly.
 
     /// Register scroll container regions and update state
     pub fn registerPendingScrollRegions(self: *Self) void {
@@ -1224,12 +1056,9 @@ pub const Builder = struct {
                 const ct = content_bounds.?;
 
                 if (self.window) |g| {
-                    // PR 8.4 — the slot was seeded by `Builder.scroll`
-                    // earlier in the frame, so a read-only `get` is
-                    // sufficient here. If the slot is missing (only
-                    // possible under capacity exhaustion at scroll-time),
-                    // skip the bounds update for this frame; the
-                    // `pending_scrolls` queue will retry next render.
+                    // The slot was seeded by `Builder.scroll` earlier this
+                    // frame, so a read-only `get` suffices; a miss (only under
+                    // capacity exhaustion) just skips this frame's update.
                     if (g.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id))) |sc| {
                         // Update bounds (full bounding box for hit testing)
                         sc.bounds = .{
@@ -1317,19 +1146,14 @@ pub const Builder = struct {
                 .action_handler_ref => self.renderActionHandlerRef(child),
                 .svg => self.renderSvg(child),
                 .image => self.renderImage(child),
-                .empty => {}, // Do nothing
-                // Container elements (Phase 1: cx/ui separation)
-                // These have render() methods, so they'll be handled by the component check below
-                // But we handle them explicitly here for clarity and to avoid the component path
+                .empty => {},
+                // Container elements carry their own render() method.
                 .box_element, .hstack, .vstack, .scroll => child.render(self),
             }
             return;
         }
 
-        // Check for components (structs with a `render` method). Since
-        // PR 11b.1 there is exactly one component signature:
-        // `render(self, *Cx)`. The old `render(self, *Builder)` branch is
-        // gone, so authors have a single way to write a component.
+        // Components are structs with a `render(self, *Cx)` method.
         if (@hasDecl(T, "render")) {
             const render_fn = @field(T, "render");
             const fn_info = @typeInfo(@TypeOf(render_fn)).@"fn";
@@ -1338,13 +1162,8 @@ pub const Builder = struct {
                 const CxType = fn_info.params[1].type orelse
                     @compileError("component `render` must take a typed `*Cx` second parameter");
 
-                // The builder always has a bound `cx_ptr` while rendering
-                // — it is wired at construction in `app.zig` and
-                // `runtime/window_context.zig`. A null here means a
-                // component is being processed outside a real frame,
-                // which is a programming error, not a recoverable state
-                // (CLAUDE.md §11, §17: assert the invariant, never
-                // silently drop the element).
+                // `cx_ptr` is always wired while rendering a real frame; a null
+                // here means a component is processed outside a frame — a bug.
                 const cx_raw = self.cx_ptr orelse unreachable;
                 const cx: CxType = @ptrCast(@alignCast(cx_raw));
                 child.render(cx);
@@ -1399,13 +1218,9 @@ pub const Builder = struct {
             self.dispatch.setFocusable(focus_id);
         }
 
-        // PR 8.4b — seed the pool slot on first render and grab
-        // the borrow once for the focus check + focus-register step
-        // below. Same create-on-touch shape `Builder.scroll` uses
-        // for `ScrollContainer` (PR 8.4a). On capacity exhaustion or
-        // OOM the pool returns null; we collapse that to a disabled
-        // focus check (matches the pre-PR-8.4b `g.widgets.textInput`
-        // null-return semantics) and skip the vtable wire-up below.
+        // Seed the pool slot on first render and reuse the borrow for the
+        // focus check and focus-register step below. On capacity exhaustion or
+        // OOM the pool returns null, which collapses to "not focusable".
         const ti_or_null: ?*TextInputState = if (self.window) |g|
             g.element_states.getOrInsert(
                 TextInputState,
@@ -1472,24 +1287,16 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = inp.style.on_blur_handler,
         }) catch {};
-        // Mirror into the unified control queue only when the data-plane
-        // append landed, so tree-order replay never indexes a slot that
-        // failed to allocate (PR 11b.3a).
+        // Mirror into the control queue only on a successful data-plane append,
+        // so tree-order replay never indexes a slot that failed to allocate.
         if (self.pending_inputs.items.len > input_index) {
             self.enqueuePendingTextWidget(.input, input_index);
         }
 
-        // Register focus with FocusManager (only if not disabled).
-        // PR 4: also attach the widget's `Focusable` vtable so the
-        // focus manager can drive `focus()` / `blur()` on the
-        // underlying `TextInput` without `context/` having to import
-        // the widget type. PR 8.4b — the widget pointer is stable
-        // across frames because `Window.element_states` heap-
-        // allocates each pool entry once per `(EngineType, id_hash)`
-        // and never moves it (slots are swap-removed on `.remove`,
-        // not relocated on insert). We reuse the borrow grabbed
-        // earlier so the focus check and focus-register step share a
-        // single pool lookup.
+        // Register focus, attaching the widget's `Focusable` vtable so the
+        // focus manager can drive `focus()` / `blur()` without importing the
+        // widget type. The pool pointer is stable across frames (entries are
+        // heap-allocated once and never relocated).
         if (!inp.style.disabled) {
             if (self.window) |g| {
                 var handle = FocusHandle.init(inp.id)
@@ -1516,8 +1323,7 @@ pub const Builder = struct {
         const focus_id = FocusId.init(ta.id);
         self.dispatch.setFocusable(focus_id);
 
-        // PR 8.4b — seed the pool slot on first render. See
-        // `renderInput` above for the full rationale.
+        // Seed the pool slot on first render (see `renderInput`).
         const ta_state_or_null: ?*TextAreaState = if (self.window) |g|
             g.element_states.getOrInsert(
                 TextAreaState,
@@ -1582,18 +1388,13 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = ta.style.on_blur_handler,
         }) catch {};
-        // Mirror into the unified control queue only on a successful
-        // data-plane append (PR 11b.3a).
+        // Mirror into the control queue only on a successful data-plane append.
         if (self.pending_text_areas.items.len > text_area_index) {
             self.enqueuePendingTextWidget(.text_area, text_area_index);
         }
 
-        // Register focus with FocusManager. PR 4: attach the widget's
-        // `Focusable` vtable so the focus manager can drive the
-        // `TextArea`'s `focus()` / `blur()` through the trait without
-        // importing the widget type into `context/`. PR 8.4b — reuse
-        // the borrow grabbed above so the focus check and the
-        // focus-register step share a single pool lookup.
+        // Register focus, attaching the widget's `Focusable` vtable (see
+        // `renderInput`).
         if (self.window) |g| {
             var handle = FocusHandle.init(ta.id)
                 .tabIndex(ta.style.tab_index)
@@ -1621,8 +1422,7 @@ pub const Builder = struct {
         const focus_id = FocusId.init(ce.id);
         self.dispatch.setFocusable(focus_id);
 
-        // PR 8.4b — seed the pool slot on first render. See
-        // `renderInput` above for the full rationale.
+        // Seed the pool slot on first render (see `renderInput`).
         const ce_state_or_null: ?*CodeEditorState = if (self.window) |g|
             g.element_states.getOrInsert(
                 CodeEditorState,
@@ -1686,18 +1486,13 @@ pub const Builder = struct {
             .inner_height = inner_height,
             .on_blur_handler = ce.style.on_blur_handler,
         }) catch {};
-        // Mirror into the unified control queue only on a successful
-        // data-plane append (PR 11b.3a).
+        // Mirror into the control queue only on a successful data-plane append.
         if (self.pending_code_editors.items.len > code_editor_index) {
             self.enqueuePendingTextWidget(.code_editor, code_editor_index);
         }
 
-        // Register focus with FocusManager. PR 4: attach the widget's
-        // `Focusable` vtable — same pattern as `renderInput` /
-        // `renderTextArea` above. The vtable lives in static storage,
-        // shared by all `CodeEditorState` instances. PR 8.4b — reuse
-        // the borrow grabbed above so the focus check and the
-        // focus-register step share a single pool lookup.
+        // Register focus, attaching the widget's `Focusable` vtable (see
+        // `renderInput`).
         if (self.window) |g| {
             var handle = FocusHandle.init(ce.id)
                 .tabIndex(ce.style.tab_index)
@@ -1852,12 +1647,10 @@ pub const Builder = struct {
     }
 
     fn renderSvg(self: *Self, prim: SvgPrimitive) void {
-        // Generate a unique layout ID for this SVG instance
         const layout_id = self.generateId();
 
-        // Use layout engine's svg method - this creates the element AND
-        // ensures the SVG command is emitted inline with other primitives
-        // for correct z-ordering
+        // The layout engine's svg method emits the command inline with other
+        // primitives for correct z-ordering.
         self.layout.svg(layout_id, prim.width, prim.height, .{
             .path = prim.path,
             .color = prim.color,
@@ -1869,10 +1662,8 @@ pub const Builder = struct {
     }
 
     fn renderImage(self: *Self, prim: ImagePrimitive) void {
-        // Generate a unique layout ID for this image instance
         const layout_id = self.generateId();
 
-        // Convert fit enum to u8
         const fit_u8: u8 = switch (prim.fit) {
             .contain => 0,
             .cover => 1,
@@ -1881,15 +1672,10 @@ pub const Builder = struct {
             .scale_down => 4,
         };
 
-        // Convert corner radius to layout type if present
-        const corner_rad: ?CornerRadius = if (prim.corner_radius) |cr|
-            cr
-        else
-            null;
+        const corner_rad: ?CornerRadius = if (prim.corner_radius) |cr| cr else null;
 
-        // Use layout engine's image method - this creates the element AND
-        // ensures the image command is emitted inline with other primitives
-        // for correct z-ordering
+        // The layout engine's image method emits the command inline with other
+        // primitives for correct z-ordering.
         self.layout.image(layout_id, prim.width, prim.height, .{
             .source = prim.source,
             .width = prim.width,
@@ -1925,27 +1711,14 @@ pub const Builder = struct {
     // Internal: ID Generation
     // =========================================================================
 
-    /// Generate a stable, parent-scoped layout id for an element the author
-    /// did not name explicitly (PR 11b.2a).
-    ///
-    /// The old implementation was a flat per-frame counter
-    /// (`LayoutId.fromInt(++id_counter)`). That had two footguns: (1) it was
-    /// global, so inserting or removing *any* element shifted the auto-id of
-    /// *every* later element on reflow, so hover / focus / animation state
-    /// jumped to the wrong element; and (2) components that fell back to a
-    /// content string (e.g. a `Button` deriving `id = self.label`) collided
-    /// when two same-content siblings existed.
-    ///
-    /// The new id is `hash(parent_layout_id, sibling_index)` via
-    /// `LayoutId.childIndexed`. The parent is the currently-open element,
-    /// already on the dispatch stack at this point (this runs *before* the
-    /// new element pushes its own node), so reading it is free. The sibling
-    /// index is the parent dispatch node's `auto_child_counter`, which counts
-    /// only `generateId` calls under that parent. Two consequences:
-    ///   - Reflow in a *sibling* subtree no longer perturbs these ids (the
-    ///     blast radius of an insert/remove is now one parent's children).
-    ///   - Explicit-id siblings don't bump the counter, so adding a named
-    ///     element next to auto-id'd ones leaves their indices untouched.
+    /// Generate a stable, parent-scoped layout id for an unnamed element:
+    /// `hash(parent_layout_id, sibling_index)` via `LayoutId.childIndexed`.
+    /// Unlike a flat per-frame counter, this keeps an element's id stable when
+    /// a *sibling* subtree reflows (so hover/focus/animation state stays
+    /// pinned), and same-content siblings (e.g. two `Button`s sharing a label)
+    /// still get distinct ids. The parent is the open dispatch node (this runs
+    /// before the new element pushes its own), and the sibling index is the
+    /// parent's `auto_child_counter`, bumped only by `generateId`.
     pub fn generateId(self: *Self) LayoutId {
         // The seed must stay non-empty or the auto-id hash domain collapses
         // onto the parent id; this is a critical, surprising invariant.
@@ -1972,7 +1745,7 @@ pub const Builder = struct {
     }
 };
 
-// PR 11b.2a — hierarchical auto-id tests.
+// Hierarchical auto-id tests.
 //
 // Goal: prove the three properties the parent-scoped scheme buys us, using a
 // `Builder` driven over a real `DispatchTree` (the only collaborator

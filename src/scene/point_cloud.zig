@@ -1,34 +1,10 @@
-//! PointCloud - Instanced circle/marker rendering for charts
+//! PointCloud - instanced circle/marker rendering for charts.
 //!
-//! Designed for data visualization where thousands of points (scatter plots,
-//! markers) need to be rendered efficiently. Uses GPU instancing: upload N
-//! center positions, render N circles with a single draw call.
-//!
-//! Unlike drawing circles individually with Path (~67KB per circle), PointCloud
-//! is lightweight: positions are allocated from the scene's frame allocator,
-//! not the stack, and no tessellation is required - circles are rendered using
-//! SDF (signed distance field) in the fragment shader.
-//!
-//! ## Usage
-//! ```
-//! // Allocate positions from scene allocator
-//! const positions = try scene.allocator.alloc(Point, data.len);
-//! for (data, 0..) |d, i| {
-//!     positions[i] = .{ .x = scale_x(d.x), .y = scale_y(d.y) };
-//! }
-//!
-//! // Single draw call for all points
-//! try scene.insertPointCloud(.{
-//!     .positions = positions,
-//!     .count = @intCast(data.len),
-//!     .radius = 4.0,
-//!     .color = Hsla.blue,
-//! });
-//! ```
-//!
-//! ## Performance vs Path
-//! - Path: 67KB stack allocation + O(n²) tessellation per circle
-//! - PointCloud: Zero stack overhead, GPU instanced SDF circles
+//! Renders thousands of uniform circles (scatter plots, markers) in a single
+//! instanced draw call: upload N center positions, the fragment shader draws
+//! each as an SDF circle. Unlike per-circle Path (~67KB stack each), positions
+//! come from the scene frame allocator with zero stack overhead and no
+//! tessellation. All points share one radius and color.
 
 const std = @import("std");
 const scene = @import("scene.zig");
@@ -47,30 +23,25 @@ pub const MAX_POINT_RADIUS: f32 = 1000.0;
 // PointCloud - GPU-compatible instance data
 // =============================================================================
 
-/// GPU-ready instance data for point cloud rendering.
-/// Layout aligned for Metal/WebGPU compatibility.
-///
-/// All points share uniform radius and color. For per-point attributes
-/// (bubble charts, heatmaps), extensions would be needed.
+/// GPU-ready instance data for point cloud rendering (Metal/WebGPU layout).
+/// Per-point attributes (bubble charts, heatmaps) would need extensions; for
+/// per-point colors use ColoredPointCloud.
 pub const PointCloud = extern struct {
-    // Draw order for z-index interleaving (8 bytes with padding)
     order: scene.DrawOrder = 0,
     _pad0: u32 = 0,
 
-    // Position buffer info - stored as u64 for pointer, plus count (16 bytes)
-    // Note: For GPU upload, renderer will copy positions to vertex buffer
-    positions_ptr: u64 = 0, // Pointer stored as u64 for extern struct compatibility
+    // Pointer stored as u64 for extern-struct compatibility; the renderer copies
+    // positions into a vertex buffer at upload.
+    positions_ptr: u64 = 0,
     count: u32 = 0,
     _pad1: u32 = 0,
 
-    // Point radius in pixels (8 bytes with padding)
     radius: f32 = 4.0,
     _pad2: u32 = 0,
 
-    // Point color - must be at 16-byte aligned offset for Metal float4 (16 bytes)
+    // color must sit at a 16-byte aligned offset for Metal float4.
     color: scene.Hsla = scene.Hsla.black,
 
-    // Clip bounds (16 bytes)
     clip_x: f32 = 0,
     clip_y: f32 = 0,
     clip_width: f32 = 99999,
@@ -85,8 +56,7 @@ pub const PointCloud = extern struct {
         radius: f32,
         color: scene.Hsla,
     ) Self {
-        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
-        std.debug.assert(positions.len >= 1); // Need at least 1 point
+        std.debug.assert(positions.len >= 1);
         std.debug.assert(positions.len <= MAX_POINTS_PER_CLOUD);
         std.debug.assert(radius > 0 and radius <= MAX_POINT_RADIUS);
         std.debug.assert(!std.math.isNan(radius));
@@ -146,20 +116,12 @@ pub const PointCloud = extern struct {
         return inst;
     }
 
-    /// Validate point cloud invariants (call before rendering)
-    /// Per CLAUDE.md: assert the negative space too
+    /// Validate invariants before rendering (asserts the negative space too).
     pub fn validate(self: *const Self) void {
-        // Valid state assertions
-        std.debug.assert(self.count >= 1); // Need at least 1 point
+        std.debug.assert(self.count >= 1);
         std.debug.assert(self.count <= MAX_POINTS_PER_CLOUD);
         std.debug.assert(self.radius > 0 and self.radius <= MAX_POINT_RADIUS);
-
-        // Pointer validity (if we have points, pointer must be non-null)
-        if (self.count > 0) {
-            std.debug.assert(self.positions_ptr != 0);
-        }
-
-        // Clip bounds sanity
+        if (self.count > 0) std.debug.assert(self.positions_ptr != 0);
         std.debug.assert(self.clip_width >= 0 and self.clip_height >= 0);
     }
 

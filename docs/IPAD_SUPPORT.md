@@ -59,7 +59,6 @@ src/
 │   ├── cache.zig           # Glyph cache — uses FontFace interface
 │   ├── types.zig           # Metrics, ShapedGlyph, ShapedRun — pure types
 │   ├── font_face.zig       # FontFace trait — interface definition
-│   ├── shaper.zig          # Shaper interface + simple shaper
 │   ├── render.zig          # renderText utility
 │   └── text_system.zig     # High-level API (selects backend at comptime)
 │

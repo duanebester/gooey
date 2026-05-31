@@ -11,7 +11,6 @@
 //! The text system is designed with platform abstraction in mind:
 //! - `types.zig` - Platform-agnostic data types
 //! - `font_face.zig` - FontFace interface (trait)
-//! - `shaper.zig` - Shaper interface for platform backends
 //! - `atlas.zig` - Platform-agnostic texture atlas
 //! - `cache.zig` - Glyph cache using FontFace interface
 //! - `text_system.zig` - High-level unified API

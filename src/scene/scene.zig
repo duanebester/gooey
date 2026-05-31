@@ -1,25 +1,13 @@
-//! Scene graph for collecting primitives before rendering
-//! Similar to GPUI's scene.rs - collects all draw commands for a frame
+//! Scene graph: collects all draw primitives for a frame, then handles
+//! z-ordering and clipping (à la GPUI's scene.rs).
 //!
-//! GPU Type Alignment Notes:
-//! ========================
-//! The primitive types (Point, Size, Bounds, Corners, Edges) are `extern struct`
-//! types designed for direct upload to Metal GPU buffers. They have specific
-//! memory layouts that match Metal shader expectations.
+//! The GPU geometry types (Point, Size, Bounds, Corners, Edges) are `extern
+//! struct`s defined in geometry.zig as Gpu* and re-exported here; their memory
+//! layout matches Metal shader expectations for direct buffer upload. Prefer
+//! importing them from geometry.zig in new code.
 //!
-//! These types are defined in geometry.zig as Gpu* types and re-exported here
-//! for backward compatibility. For new code, prefer importing from geometry.zig.
-//!
-//! Rendering Primitives:
-//! ====================
-//! - Hsla: Color in HSLA format (GPU-optimized for shaders)
-//! - Quad: Rectangle primitive with background, border, corners
-//! - Shadow: Drop shadow with blur, offset, color
-//! - GlyphInstance: Single glyph for text rendering
-//!
-//! Scene:
-//! =====
-//! Collects all primitives for a frame, handles z-ordering and clipping.
+//! Primitives: Hsla (color), Quad, Shadow, GlyphInstance, plus the instance
+//! types (Svg, Image, Path, Polyline, point clouds) pulled in below.
 
 const std = @import("std");
 const geometry = @import("../core/geometry.zig");
@@ -88,19 +76,11 @@ pub const MAX_SORT_KEYS: u32 = blk: {
 // GPU Geometry Types (re-exported from geometry.zig)
 // ============================================================================
 
-/// 2D point for GPU - extern struct for Metal buffer compatibility
+// All extern structs, GPU-buffer-compatible (see geometry.zig).
 pub const Point = geometry.GpuPoint;
-
-/// 2D size for GPU - extern struct for Metal buffer compatibility
 pub const Size = geometry.GpuSize;
-
-/// Bounds (origin + size) for GPU - extern struct for Metal buffer compatibility
 pub const Bounds = geometry.GpuBounds;
-
-/// Corner radii for rounded rectangles - extern struct for Metal buffer compatibility
 pub const Corners = geometry.GpuCorners;
-
-/// Edge widths (for borders) - extern struct for Metal buffer compatibility
 pub const Edges = geometry.GpuEdges;
 
 // ============================================================================
@@ -243,7 +223,6 @@ pub const Quad = extern struct {
     border_widths: Edges = Edges.zero,
 
     pub fn filled(x: f32, y: f32, width: f32, height: f32, color: Hsla) Quad {
-        // Assert valid bounds: dimensions must be non-negative
         std.debug.assert(width >= 0);
         std.debug.assert(height >= 0);
         return .{
@@ -256,7 +235,6 @@ pub const Quad = extern struct {
     }
 
     pub fn rounded(x: f32, y: f32, width: f32, height: f32, color: Hsla, radius: f32) Quad {
-        // Assert valid bounds: dimensions and radius must be non-negative
         std.debug.assert(width >= 0);
         std.debug.assert(height >= 0);
         std.debug.assert(radius >= 0);
@@ -271,7 +249,6 @@ pub const Quad = extern struct {
     }
 
     pub fn withBorder(self: Quad, color: Hsla, width: f32) Quad {
-        // Assert valid border width
         std.debug.assert(width >= 0);
         var q = self;
         q.border_color = color;
@@ -348,7 +325,6 @@ pub const Shadow = extern struct {
     // Total: 80 bytes
 
     pub fn drop(x: f32, y: f32, width: f32, height: f32, blur: f32) Shadow {
-        // Assert valid bounds: dimensions and blur must be non-negative
         std.debug.assert(width >= 0);
         std.debug.assert(height >= 0);
         std.debug.assert(blur >= 0);
@@ -364,7 +340,6 @@ pub const Shadow = extern struct {
     }
 
     pub fn forQuad(quad: Quad, blur: f32) Shadow {
-        // Assert valid blur radius
         std.debug.assert(blur >= 0);
         return .{
             .content_origin_x = quad.bounds_origin_x,
@@ -392,7 +367,6 @@ pub const Shadow = extern struct {
     }
 
     pub fn withCornerRadius(self: Shadow, radius: f32) Shadow {
-        // Assert valid corner radius
         std.debug.assert(radius >= 0);
         var s = self;
         s.corner_radii = Corners.all(radius);
@@ -468,10 +442,9 @@ pub const GlyphInstance = extern struct {
         uv_bottom: f32,
         color: Hsla,
     ) GlyphInstance {
-        // Assert valid size: dimensions must be non-negative
         std.debug.assert(width >= 0);
         std.debug.assert(height >= 0);
-        // Assert valid UV coordinates: must be in normalized range [0, 1]
+        // UV coordinates must be in the normalized [0, 1] atlas range.
         std.debug.assert(uv_left >= 0 and uv_left <= 1);
         std.debug.assert(uv_top >= 0 and uv_top <= 1);
         std.debug.assert(uv_right >= 0 and uv_right <= 1);
@@ -860,15 +833,6 @@ pub const Scene = struct {
     // Draw Order Management
     // ========================================================================
 
-    /// Reserve a draw order for later use (e.g., for deferred SVG/image rendering).
-    /// This allows primitives to maintain correct z-ordering even when their
-    /// actual insertion is deferred until after layout computation.
-    pub fn reserveOrder(self: *Self) DrawOrder {
-        const order = self.next_order;
-        self.next_order += 1;
-        return order;
-    }
-
     /// Reserve a block of draw orders for canvas rendering.
     /// Returns the base order; the canvas should use orders [base, base+count).
     /// This allows canvas primitives to maintain correct z-ordering with UI elements.
@@ -901,17 +865,6 @@ pub const Scene = struct {
         try self.svg_instances.append(self.allocator, inst);
     }
 
-    /// Insert an SVG instance with a pre-reserved draw order and saved clip bounds.
-    /// Use this when the draw order was reserved earlier via reserveOrder().
-    /// The clip bounds should be captured at the same time as the draw order.
-    pub fn insertSvgWithOrder(self: *Self, instance: SvgInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.svg_instances.items.len < MAX_SVGS_PER_FRAME);
-        var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
-        inst.order = order;
-        self.needs_sort_svgs = true; // Out-of-order insert requires sorting
-        try self.svg_instances.append(self.allocator, inst);
-    }
-
     pub fn svgCount(self: *const Self) usize {
         return self.svg_instances.items.len;
     }
@@ -940,17 +893,6 @@ pub const Scene = struct {
         var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.images.append(self.allocator, inst);
-    }
-
-    /// Insert an image instance with a pre-reserved draw order and saved clip bounds.
-    /// Use this when the draw order was reserved earlier via reserveOrder().
-    /// The clip bounds should be captured at the same time as the draw order.
-    pub fn insertImageWithOrder(self: *Self, instance: ImageInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.images.items.len < MAX_IMAGES_PER_FRAME);
-        var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
-        inst.order = order;
-        self.needs_sort_images = true; // Out-of-order insert requires sorting
         try self.images.append(self.allocator, inst);
     }
 
@@ -1553,12 +1495,6 @@ pub const Scene = struct {
         if (self.stats) |s| s.recordQuads(1);
     }
 
-    /// Insert a quad with its shadow in one call
-    pub fn insertQuadWithShadow(self: *Self, quad: Quad, blur_radius: f32) !void {
-        try self.insertShadow(Shadow.forQuad(quad, blur_radius));
-        try self.insertQuad(quad);
-    }
-
     /// Check if there's an active clip (clip stack is not empty)
     pub fn hasActiveClip(self: *const Self) bool {
         return self.clip_stack.items.len > 0;
@@ -1641,10 +1577,10 @@ pub const Scene = struct {
     /// inserts. Each array is ordered by an indirect key sort that moves the fat
     /// payload structs at most once (see the "Draw-order sort" section above).
     pub fn finish(self: *Self) void {
-        // Only sort arrays that had out-of-order inserts. `needs_sort_shadows`
-        // has no public setter today (there is no `insertShadowWithOrder`), but
-        // routing shadows through the same path keeps the nine types symmetric
-        // and correct the moment such an API is added.
+        // Only sort arrays that had out-of-order inserts. The shadow, svg, and
+        // image flags have no public setter today (no ordered-insert API for
+        // those types), but routing them through the same path keeps the nine
+        // types symmetric and correct the moment such an API is added.
         if (self.needs_sort_shadows) self.sortByOrder(Shadow, self.shadows.items);
         if (self.needs_sort_quads) self.sortByOrder(Quad, self.quads.items);
         if (self.needs_sort_glyphs) self.sortByOrder(GlyphInstance, self.glyphs.items);
@@ -1679,26 +1615,6 @@ pub const Scene = struct {
 
     pub fn getQuads(self: *const Self) []const Quad {
         return self.quads.items;
-    }
-
-    /// Check if a point is inside a quad bounds
-    fn quadContainsPoint(quad: Quad, x: f32, y: f32) bool {
-        return x >= quad.bounds_origin_x and
-            x <= quad.bounds_origin_x + quad.bounds_size_width and
-            y >= quad.bounds_origin_y and
-            y <= quad.bounds_origin_y + quad.bounds_size_height;
-    }
-
-    /// Find quad at point, returns index (for stable reference)
-    pub fn quadIndexAtPoint(self: *const Self, x: f32, y: f32) ?usize {
-        var i = self.quads.items.len;
-        while (i > 0) {
-            i -= 1;
-            if (quadContainsPoint(self.quads.items[i], x, y)) {
-                return i;
-            }
-        }
-        return null;
     }
 
     /// Set viewport for culling. Call this before inserting primitives.

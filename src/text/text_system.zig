@@ -11,7 +11,6 @@ const builtin = @import("builtin");
 
 const types = @import("types.zig");
 const font_face_mod = @import("font_face.zig");
-const shaper_mod = @import("shaper.zig");
 const cache_mod = @import("cache.zig");
 const platform = @import("../platform/mod.zig");
 const RenderStats = @import("../debug/render_stats.zig").RenderStats;
@@ -451,15 +450,6 @@ pub const ShapedRunCache = struct {
 
         std.debug.assert(self.entry_count == 0);
     }
-
-    /// Get cache statistics for debugging
-    pub fn getStats(self: *const Self) struct { entries: u32, capacity: u32 } {
-        std.debug.assert(self.entry_count <= MAX_ENTRIES);
-        return .{
-            .entries = self.entry_count,
-            .capacity = MAX_ENTRIES,
-        };
-    }
 };
 
 // =============================================================================
@@ -639,27 +629,21 @@ pub const TextSystem = struct {
 
         std.debug.assert(face.metrics.point_size > 0);
 
-        // Build cache key using content hash
         const font_ptr = @intFromPtr(&self.current_face);
-
-        // Only use cache for reasonably sized text
         const use_cache = text.len <= ShapedRunCache.MAX_TEXT_LEN;
 
-        // Build cache key once, reuse for lookup and store
+        // Build the key once, reuse for lookup and store.
         const cache_key = if (use_cache)
             ShapedRunKey.init(text, font_ptr, face.metrics.point_size)
         else
             undefined;
 
         if (use_cache) {
-            // Lock for thread-safe cache access (multiple DisplayLink threads in multi-window)
             self.shape_cache_mutex.lockUncancelable(self.io);
             defer self.shape_cache_mutex.unlock(self.io);
 
-            // Check font hasn't changed
             self.shape_cache.checkFont(font_ptr);
 
-            // Check cache first
             if (self.shape_cache.get(cache_key)) |cached_run| {
                 if (stats) |s| s.recordShapeCacheHit();
                 // Copy glyphs to owned memory to prevent use-after-free race.
@@ -682,13 +666,8 @@ pub const TextSystem = struct {
 
         std.debug.assert(self.shaper != null);
 
-        // Time the shaping call for performance debugging (not available on WASM:
-        // we intentionally skip the JS FFI clock read on the shaping hot path —
-        // calling into `getTimestampMillis` twice per cache miss is not free,
-        // and shape-miss timing is a native-only profiling aid).
-        //
-        // The monotonic `.awake` clock is chosen so `elapsed` can never go
-        // negative due to NTP/wall-clock adjustments.
+        // Time the shaping call for stats (native only — skip the JS FFI clock
+        // read on WASM's hot path). Monotonic `.awake` keeps `elapsed` >= 0.
         const start_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
         const result = try self.shaper.?.shape(&face, text, self.allocator);
         const end_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
@@ -718,8 +697,8 @@ pub const TextSystem = struct {
     /// on the warm (cache-hit) path.  On a hit, glyphs are memcpy'd into
     /// `out_glyphs` and the returned ShapedRun has `owned = false` — no deinit
     /// needed.  On a cache miss (or if the glyph count exceeds the buffer),
-    /// falls through to `shapeTextComplex` which heap-allocates via GPA; the
-    /// returned run then has `owned = true` and the caller must deinit it.
+    /// falls through to `shapeText` which heap-allocates via GPA; the returned
+    /// run then has `owned = true` and the caller must deinit it.
     ///
     /// Typical usage with a stack buffer (zero heap alloc on warm path):
     ///
@@ -788,9 +767,8 @@ pub const TextSystem = struct {
 
     /// Simple width measurement.
     /// Zero-alloc fast path: on a shape cache hit, reads width directly from the
-    /// cache entry under the mutex — no glyph array copy, no allocator call.
-    /// This is ~200x faster than the alloc+memcpy+free path through shapeTextComplex
-    /// (benchmarked: ~25 ns vs ~5200 ns per call on warm cache).
+    /// cache entry under the mutex — no glyph array copy, no allocator call
+    /// (~200x faster than the alloc+memcpy+free path: ~25 ns vs ~5200 ns warm).
     /// On web, uses a single JS call instead of character-by-character iteration.
     pub fn measureText(self: *Self, text: []const u8) !f32 {
         if (is_wasm) {
@@ -838,25 +816,11 @@ pub const TextSystem = struct {
         }
     }
 
-    /// Measure text at a specific font size (scales from base metrics)
-    pub fn measureTextAtSize(self: *Self, text: []const u8, font_size: f32) !f32 {
-        std.debug.assert(font_size > 0);
-        std.debug.assert(font_size < 1000);
-
-        const base_width = try self.measureText(text);
-        if (self.getMetrics()) |metrics| {
-            std.debug.assert(metrics.point_size > 0);
-            const scale = font_size / metrics.point_size;
-            return base_width * scale;
-        }
-        return base_width;
-    }
-
     /// Extended text measurement with wrapping support.
     /// Zero-alloc fast path: on a shape cache hit, computes the word-wrapping
     /// measurement directly over the cached glyph slice under the mutex — no
-    /// glyph array copy, no allocator call.  Falls through to shapeTextComplex
-    /// on cache miss.
+    /// glyph array copy, no allocator call.  Falls through to `shapeText` on
+    /// cache miss.
     pub fn measureTextEx(self: *Self, text: []const u8, max_width: ?f32) !TextMeasurement {
         const face = try self.getFontFace();
         const line_height = face.metrics.line_height;
@@ -1210,24 +1174,6 @@ test "ShapedRunCache hash collision handling" {
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
         try std.testing.expect(cache.get(key) != null);
     }
-}
-
-test "measureTextAtSize scaling" {
-    // This test verifies the mathematical scaling is correct
-    // We can't easily test the full pipeline without a font, but we can test the formula
-    const testing = std.testing;
-
-    const base_width: f32 = 100.0;
-    const base_size: f32 = 16.0;
-
-    // Scale formula: base_width * (target_size / base_size)
-    const width_at_24 = base_width * (24.0 / base_size);
-    const width_at_32 = base_width * (32.0 / base_size);
-    const width_at_8 = base_width * (8.0 / base_size);
-
-    try testing.expectApproxEqAbs(@as(f32, 150.0), width_at_24, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 200.0), width_at_32, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 50.0), width_at_8, 0.001);
 }
 
 test "ShapedRunKey includes font size" {

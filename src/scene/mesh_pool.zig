@@ -1,21 +1,16 @@
-//! MeshPool - Two-tier mesh caching for optimal performance
+//! MeshPool - Two-tier mesh caching.
 //!
-//! Tier 1: Persistent meshes (icons, static shapes) - cached by hash
-//! Tier 2: Per-frame scratch (dynamic paths, animations) - reset each frame
-//!
-//! Usage patterns:
-//! - Icons/static UI: Hash the SVG path string, use getOrCreatePersistent()
-//! - Charts/animations: Use allocateFrame(), it auto-clears each frame
-//! - Canvas callback paths: Always frame-local (user rebuilds each frame anyway)
-//!
-//! NOTE: MeshPool uses heap allocation for mesh storage (~88MB total) to avoid
-//! stack overflow. Per CLAUDE.md, structs >50KB must be heap-allocated.
+//! Tier 1 holds persistent meshes (icons, static shapes) cached by hash; tier 2
+//! holds per-frame scratch (dynamic paths, animations) reset each frame. Static
+//! UI hashes its path and uses getOrCreatePersistent(); dynamic content uses
+//! allocateFrame(). Mesh storage is heap-allocated (~88MB total) to avoid stack
+//! overflow, since structs >50KB must not live on the stack.
 
 const std = @import("std");
 const PathMesh = @import("path_mesh.zig").PathMesh;
 
 // =============================================================================
-// Constants (static allocation per CLAUDE.md)
+// Constants (static allocation)
 // =============================================================================
 
 /// Maximum persistent meshes (icons, static shapes)
@@ -96,8 +91,8 @@ pub const MeshPool = struct {
 
     const Self = @This();
 
-    /// Initialize empty mesh pool with lazy allocation
-    /// Mesh arrays are allocated on first use to avoid upfront ~88MB allocation
+    /// Initialize empty mesh pool with lazy allocation.
+    /// Mesh arrays are allocated on first use to avoid an upfront ~88MB allocation.
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
@@ -148,7 +143,6 @@ pub const MeshPool = struct {
         mesh: PathMesh,
         hash: u64,
     ) MeshPoolError!MeshRef {
-        // Assertions at API boundary
         std.debug.assert(hash != 0); // 0 is reserved for empty slot
         std.debug.assert(!mesh.isEmpty());
 
@@ -290,7 +284,7 @@ pub fn hashPath(data: []const u8) u64 {
         hash *%= fnv_prime;
     }
 
-    // Ensure non-zero (0 is reserved)
+    // Ensure non-zero (0 is reserved).
     return if (hash == 0) 1 else hash;
 }
 

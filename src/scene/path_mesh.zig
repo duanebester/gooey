@@ -1,8 +1,8 @@
-//! PathMesh - Triangulated path ready for GPU rendering
+//! PathMesh - Triangulated path ready for GPU rendering.
 //!
-//! Contains vertex positions and triangle indices suitable for
-//! direct upload to vertex/index buffers. UV coordinates are
-//! normalized to bounds for gradient support.
+//! Holds vertex positions and triangle indices for direct upload to
+//! vertex/index buffers. UV coordinates are normalized to bounds so gradients
+//! map correctly across the shape.
 
 const std = @import("std");
 const scene = @import("scene.zig");
@@ -16,7 +16,7 @@ const Vec2 = vec2_mod.Vec2;
 const IndexSlice = vec2_mod.IndexSlice;
 
 // =============================================================================
-// Constants (static allocation per CLAUDE.md)
+// Constants (static allocation)
 // =============================================================================
 
 /// Maximum vertices per mesh — sourced from limits.zig (single source of truth)
@@ -28,12 +28,12 @@ pub const MAX_MESH_INDICES: u32 = limits.MAX_PATH_INDICES;
 /// This bounds the staging buffer size for baked vertices
 pub const MAX_SOLID_BATCH_VERTICES: u32 = 65536;
 
-/// Memory budget for solid vertex staging buffer (CLAUDE.md compliance)
-/// 32 bytes per SolidPathVertex × MAX_SOLID_BATCH_VERTICES = 2MB
+/// Memory budget for solid vertex staging buffer.
+/// 32 bytes per SolidPathVertex × MAX_SOLID_BATCH_VERTICES = 2MB.
 pub const MAX_SOLID_VERTEX_BYTES: usize = MAX_SOLID_BATCH_VERTICES * 32;
 
 comptime {
-    // Verify memory budget is reasonable (per CLAUDE.md static allocation rules)
+    // Keep staging within the 8MB vertex-data budget.
     const MAX_VERTEX_BUDGET_MB = 8; // 8MB max for vertex data
     std.debug.assert(MAX_SOLID_VERTEX_BYTES <= MAX_VERTEX_BUDGET_MB * 1024 * 1024);
 }
@@ -76,9 +76,8 @@ pub const PathVertex = extern struct {
 };
 
 comptime {
-    // Verify GPU-friendly size (per CLAUDE.md assertion requirement)
+    // GPU buffer layout depends on this exact size and alignment.
     std.debug.assert(@sizeOf(PathVertex) == 16);
-    // Verify alignment for GPU buffers
     std.debug.assert(@alignOf(PathVertex) == 4);
 }
 
@@ -119,7 +118,6 @@ pub const SolidPathVertex = extern struct {
         color_l: f32,
         color_a: f32,
     ) SolidPathVertex {
-        // Assertions per CLAUDE.md: validate inputs
         std.debug.assert(!std.math.isNan(v.x) and !std.math.isNan(v.y));
         std.debug.assert(!std.math.isNan(offset_x) and !std.math.isNan(offset_y));
 
@@ -138,9 +136,8 @@ pub const SolidPathVertex = extern struct {
 };
 
 comptime {
-    // Verify GPU-friendly size (per CLAUDE.md assertion requirement)
+    // GPU buffer layout depends on this exact size and alignment.
     std.debug.assert(@sizeOf(SolidPathVertex) == 32);
-    // Verify alignment for GPU buffers
     std.debug.assert(@alignOf(SolidPathVertex) == 4);
 }
 
@@ -177,7 +174,6 @@ pub const PathMesh = struct {
         points: []const Vec2,
         polygons: []const IndexSlice,
     ) PathMeshError!Self {
-        // Assertions at API boundary
         std.debug.assert(points.len > 0);
         std.debug.assert(polygons.len > 0);
 

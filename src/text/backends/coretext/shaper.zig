@@ -6,14 +6,10 @@
 const std = @import("std");
 const ct = @import("bindings.zig");
 const types = @import("../../types.zig");
-const font_face_mod = @import("../../font_face.zig");
-const shaper_mod = @import("../../shaper.zig");
 const CoreTextFace = @import("face.zig").CoreTextFace;
 
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
-const FontFace = font_face_mod.FontFace;
-const Shaper = shaper_mod.Shaper;
 
 /// CoreText-backed text shaper
 pub const CoreTextShaper = struct {
@@ -52,36 +48,6 @@ pub const CoreTextShaper = struct {
     pub fn deinit(self: *Self) void {
         self.utf16_buffer.deinit(self.allocator);
         self.* = undefined;
-    }
-
-    /// Get as the generic Shaper interface
-    /// Note: Requires a CoreTextFace, not a generic FontFace
-    pub fn asShaper(self: *Self) Shaper {
-        const gen = struct {
-            fn shapeFn(ptr: *anyopaque, face: FontFace, text: []const u8, allocator: std.mem.Allocator) anyerror!ShapedRun {
-                const shaper: *Self = @ptrCast(@alignCast(ptr));
-                // For complex shaping, we need the underlying CoreText font
-                // This cast is safe because CoreTextShaper only works with CoreTextFace
-                const ct_face: *CoreTextFace = @ptrCast(@alignCast(face.ptr));
-                return shaper.shape(ct_face, text, allocator);
-            }
-
-            fn deinitFn(ptr: *anyopaque) void {
-                const shaper: *Self = @ptrCast(@alignCast(ptr));
-                shaper.deinit();
-            }
-
-            const vtable = Shaper.VTable{
-                .shape = shapeFn,
-                .deinit = deinitFn,
-            };
-        };
-
-        return .{
-            .ptr = self,
-            .vtable = &gen.vtable,
-            .allocator = self.allocator,
-        };
     }
 
     /// Full text shaping using CoreText

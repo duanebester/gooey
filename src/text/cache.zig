@@ -320,7 +320,6 @@ pub const GlyphCache = struct {
 
         std.debug.assert(!self.entries[idx].valid);
 
-        // Store the entry.
         self.entries[idx] = .{
             .key = key,
             .glyph = glyph,
@@ -328,7 +327,6 @@ pub const GlyphCache = struct {
         };
         self.entry_count += 1;
 
-        // Insert into hash table.
         self.insertIntoHashTable(key, idx);
 
         std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
@@ -613,12 +611,9 @@ pub const GlyphCache = struct {
 
     /// Clear the cache (call when changing fonts).
     pub fn clear(self: *Self) void {
-        // Clear all entries.
         for (&self.entries) |*entry| {
             entry.valid = false;
         }
-
-        // Clear hash table.
         @memset(&self.hash_table, EMPTY_SLOT);
 
         self.entry_count = 0;
@@ -634,19 +629,6 @@ pub const GlyphCache = struct {
     /// Get the grayscale atlas for GPU upload
     pub inline fn getAtlas(self: *const Self) *const Atlas {
         return &self.grayscale_atlas;
-    }
-
-    /// Get atlas generation (for detecting changes)
-    pub inline fn getGeneration(self: *const Self) u32 {
-        return self.grayscale_atlas.generation;
-    }
-
-    /// Get cache statistics for debugging
-    pub fn getStats(self: *const Self) struct { entries: u32, capacity: u32 } {
-        return .{
-            .entries = self.entry_count,
-            .capacity = MAX_CACHED_GLYPHS,
-        };
     }
 };
 

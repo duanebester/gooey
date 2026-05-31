@@ -1,33 +1,10 @@
-//! Polyline - Efficient connected line segments for charts
+//! Polyline - efficient connected line segments for charts.
 //!
-//! Designed for data visualization where thousands of connected points
-//! need to be rendered efficiently. Uses line-strip rendering on GPU:
-//! upload N points, get N-1 line segments with a single draw call.
-//!
-//! Unlike the general-purpose Path primitive (~67KB per path), Polyline
-//! is lightweight: points are allocated from the scene's frame allocator,
-//! not the stack, and no tessellation is required.
-//!
-//! ## Usage
-//! ```
-//! // Allocate points from scene allocator
-//! const points = try scene.allocator.alloc(Point, data.len);
-//! for (data, 0..) |d, i| {
-//!     points[i] = .{ .x = scale_x(d.x), .y = scale_y(d.y) };
-//! }
-//!
-//! // Single draw call for entire line
-//! try scene.insertPolyline(.{
-//!     .points = points,
-//!     .point_count = @intCast(data.len),
-//!     .width = 2.0,
-//!     .color = Hsla.blue,
-//! });
-//! ```
-//!
-//! ## Performance vs Path
-//! - Path: 67KB stack allocation + O(n²) tessellation per primitive
-//! - Polyline: Zero stack overhead, GPU line-strip expansion
+//! Renders thousands of connected points as a GPU line strip: upload N points,
+//! get N-1 segments in a single draw call. Unlike the general-purpose Path
+//! (~67KB stack + O(n²) tessellation per primitive), points are allocated from
+//! the scene frame allocator and expanded on the GPU — zero stack overhead, no
+//! tessellation.
 
 const std = @import("std");
 const scene = @import("scene.zig");
@@ -46,31 +23,25 @@ pub const MAX_LINE_WIDTH: f32 = 1000.0;
 // Polyline - GPU-compatible instance data
 // =============================================================================
 
-/// GPU-ready instance data for polyline rendering.
-/// Layout aligned for Metal/WebGPU compatibility.
-///
-/// The polyline shader expands each segment to a quad independently.
-/// For typical chart use cases (thin lines, noisy data), this is acceptable.
-/// A join_style option could be added later if miter/bevel/round joins are needed.
+/// GPU-ready instance data for polyline rendering (Metal/WebGPU layout).
+/// The shader expands each segment to a quad independently; no miter/bevel/round
+/// joins, which is acceptable for thin chart lines over noisy data.
 pub const Polyline = extern struct {
-    // Draw order for z-index interleaving (8 bytes with padding)
     order: scene.DrawOrder = 0,
     _pad0: u32 = 0,
 
-    // Point buffer info - stored as u64 for pointer, plus count (16 bytes)
-    // Note: For GPU upload, renderer will copy points to vertex buffer
-    points_ptr: u64 = 0, // Pointer stored as u64 for extern struct compatibility
+    // Pointer stored as u64 for extern-struct compatibility; the renderer copies
+    // points into a vertex buffer at upload.
+    points_ptr: u64 = 0,
     point_count: u32 = 0,
     _pad1: u32 = 0,
 
-    // Line width in pixels (8 bytes with padding)
     width: f32 = 1.0,
     _pad2: u32 = 0,
 
-    // Line color - must be at 16-byte aligned offset for Metal float4 (16 bytes)
+    // color must sit at a 16-byte aligned offset for Metal float4.
     color: scene.Hsla = scene.Hsla.black,
 
-    // Clip bounds (16 bytes)
     clip_x: f32 = 0,
     clip_y: f32 = 0,
     clip_width: f32 = 99999,
@@ -85,8 +56,7 @@ pub const Polyline = extern struct {
         width: f32,
         color: scene.Hsla,
     ) Self {
-        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
-        std.debug.assert(points.len >= 2); // Need at least 2 points for a line
+        std.debug.assert(points.len >= 2); // a line needs at least 2 points
         std.debug.assert(points.len <= MAX_POLYLINE_POINTS);
         std.debug.assert(width > 0 and width <= MAX_LINE_WIDTH);
         std.debug.assert(!std.math.isNan(width));
@@ -146,20 +116,12 @@ pub const Polyline = extern struct {
         return inst;
     }
 
-    /// Validate polyline invariants (call before rendering)
-    /// Per CLAUDE.md: assert the negative space too
+    /// Validate invariants before rendering (asserts the negative space too).
     pub fn validate(self: *const Self) void {
-        // Valid state assertions
-        std.debug.assert(self.point_count >= 2); // Need at least 2 points for a line
+        std.debug.assert(self.point_count >= 2);
         std.debug.assert(self.point_count <= MAX_POLYLINE_POINTS);
         std.debug.assert(self.width > 0 and self.width <= MAX_LINE_WIDTH);
-
-        // Pointer validity (if we have points, pointer must be non-null)
-        if (self.point_count > 0) {
-            std.debug.assert(self.points_ptr != 0);
-        }
-
-        // Clip bounds sanity
+        if (self.point_count > 0) std.debug.assert(self.points_ptr != 0);
         std.debug.assert(self.clip_width >= 0 and self.clip_height >= 0);
     }
 

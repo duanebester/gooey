@@ -32,11 +32,9 @@ const canvas_mod = @import("canvas.zig");
 
 pub const Builder = builder_mod.Builder;
 
-// Re-export the unified component context so component files can spell
-// their render signature `*ui.Cx` without a separate import. `cx.zig`
-// already imports this module for `ui.Box` / `ui.Builder`; the reverse
-// edge here is a plain type re-export (no value, no layout dependency),
-// so it introduces no comptime import cycle (PR 11b.1).
+// Re-export the unified component context so component files can spell their
+// render signature `*ui.Cx` without a separate import. A plain type re-export,
+// so it introduces no comptime import cycle.
 pub const Cx = @import("../cx.zig").Cx;
 
 // =============================================================================
@@ -61,15 +59,14 @@ pub const maybe = primitives.maybe;
 pub const each = primitives.each;
 pub const canvas = canvas_mod.canvas;
 
-// Container element functions (Phase 1: cx/ui separation)
-// These return element structs for use with cx.render()
+// Container element functions: return element structs for use with cx.render().
 pub const box = primitives.box;
 pub const rect = primitives.rect;
 pub const hstack = primitives.hstack;
 pub const vstack = primitives.vstack;
 pub const scroll = primitives.scroll;
 
-// Tracked variants with source location (Phase 4)
+// Tracked variants carry a source location (@src()) for debugging.
 pub const boxTracked = primitives.boxTracked;
 pub const hstackTracked = primitives.hstackTracked;
 pub const vstackTracked = primitives.vstackTracked;

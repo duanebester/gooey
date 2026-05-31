@@ -63,15 +63,12 @@ pub fn text(content: []const u8, style: TextStyle) Text {
     return .{ .content = content, .style = style };
 }
 
-/// Rotating buffer pool for textFmt (allows multiple calls per frame)
-/// Thread-local storage ensures each DisplayLink thread has its own buffers,
-/// preventing race conditions in multi-window scenarios where windows render
-/// concurrently on separate threads.
+// Rotating buffer pool for textFmt (allows multiple calls per frame).
+// Thread-local so concurrently-rendering windows don't race on the buffers.
 threadlocal var fmt_buffers: [16][256]u8 = [_][256]u8{[_]u8{0} ** 256} ** 16;
 threadlocal var fmt_buffer_index: usize = 0;
 
-/// Create a formatted text element
-/// Thread-safe: uses thread-local buffers so concurrent render threads don't interfere.
+/// Create a formatted text element. Thread-safe via thread-local buffers.
 pub fn textFmt(comptime fmt: []const u8, args: anytype, style: TextStyle) Text {
     const buffer = &fmt_buffers[fmt_buffer_index];
     fmt_buffer_index = (fmt_buffer_index + 1) % fmt_buffers.len;
@@ -189,22 +186,18 @@ pub fn empty() Empty {
 // SVG Primitive
 // =============================================================================
 
-/// SVG element descriptor - renders a pre-loaded SVG mesh
+/// SVG element descriptor - renders a pre-loaded SVG mesh.
 pub const SvgPrimitive = struct {
     path: []const u8 = "",
     /// Mesh ID (from svg_mesh.meshId())
     mesh_id: u64 = 0,
-    /// Width of the SVG element
     width: f32 = 24,
-    /// Height of the SVG element
     height: f32 = 24,
-    /// Fill color
     color: Color = Color.black,
     /// Stroke color (null = no stroke)
     stroke_color: ?Color = null,
     /// Stroke width in logical pixels
     stroke_width: f32 = 1.0,
-    /// Whether to fill the path
     has_fill: bool = true,
     /// Source viewbox size (for proper scaling)
     viewbox: f32 = 24,
@@ -232,33 +225,24 @@ pub fn svgIcon(mesh_id: u64, width: f32, height: f32, color: Color, viewbox: f32
 // Image Primitive
 // =============================================================================
 
-/// Image element descriptor - renders an image from atlas
+/// Image element descriptor - renders an image from the atlas.
 pub const ImagePrimitive = struct {
     /// Image source path (file path or embedded asset)
     source: []const u8,
 
-    /// Explicit width (null = intrinsic)
+    /// Explicit size (null = intrinsic)
     width: ?f32 = null,
-    /// Explicit height (null = intrinsic)
     height: ?f32 = null,
 
-    /// Object fit mode (imported from image/atlas.zig)
     fit: ObjectFit = .contain,
-
-    /// Corner radius for rounded images
     corner_radius: ?CornerRadius = null,
-
     /// Tint color (multiplied with image)
     tint: ?Color = null,
-
     /// Grayscale effect (0-1)
     grayscale: f32 = 0,
-
     /// Opacity (0-1)
     opacity: f32 = 1,
-
-    /// Placeholder color shown while loading (WASM async loads)
-    /// If null, a default gray placeholder is shown
+    /// Placeholder color shown while loading (WASM async); null = gray default.
     placeholder_color: ?Color = null,
 
     pub const primitive_type: PrimitiveType = .image;
