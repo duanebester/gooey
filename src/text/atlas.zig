@@ -390,21 +390,6 @@ pub const Atlas = struct {
         return self.data;
     }
 
-    /// Calculate utilization percentage
-    pub fn utilization(self: *const Self) f32 {
-        var used_area: u32 = 0;
-        for (self.nodes[0..self.node_count]) |node| {
-            used_area += @as(u32, node.width) * @as(u32, node.y);
-        }
-        const total_area = self.size * self.size;
-        return @as(f32, @floatFromInt(used_area)) / @as(f32, @floatFromInt(total_area));
-    }
-
-    /// Get current skyline node count (for debugging)
-    pub fn getSkylineNodeCount(self: *const Self) u16 {
-        return self.node_count;
-    }
-
     // =========================================================================
     // Dirty region tracking — partial GPU upload support
     // =========================================================================
@@ -491,7 +476,7 @@ test "atlas skyline node limit" {
     // Should have allocated at least some regions
     try std.testing.expect(count > 0);
     // Skyline node count should be within limits
-    try std.testing.expect(atlas.getSkylineNodeCount() <= Atlas.MAX_SKYLINE_NODES);
+    try std.testing.expect(atlas.node_count <= Atlas.MAX_SKYLINE_NODES);
 }
 
 test "dirty region: no dirty after init" {

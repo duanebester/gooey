@@ -1,11 +1,9 @@
-//! Render Bridge - converts layout RenderCommands to GPU Scene primitives
+//! Render Bridge - converts layout RenderCommands to GPU Scene primitives.
 //!
-//! This module bridges the gap between the platform-agnostic layout system
-//! and the GPU-specific scene rendering. It handles all type conversions
-//! from layout types (Color, CornerRadius, etc.) to scene types (Hsla, Corners, etc.)
-//!
-//! By isolating these conversions here, the layout system remains decoupled
-//! from rendering internals.
+//! Bridges the platform-agnostic layout system and GPU-specific scene rendering
+//! by performing all type conversions from layout types (Color, CornerRadius) to
+//! scene types (Hsla, Corners). Isolating the conversions here keeps the layout
+//! system decoupled from rendering internals.
 
 const std = @import("std");
 const scene = @import("mod.zig");

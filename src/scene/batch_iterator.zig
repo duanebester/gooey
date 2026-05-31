@@ -1,25 +1,10 @@
-//! BatchIterator - Yields primitive batches in draw order
+//! BatchIterator - yields primitive batches in draw order.
 //!
-//! Merges sorted arrays of different primitive types, yielding
-//! contiguous runs of same-type primitives for efficient rendering.
-//!
-//! ## Usage
-//! ```
-//! var iter = BatchIterator.init(scene);
-//! while (iter.next()) |batch| {
-//!     switch (batch) {
-//!         .shadow => |shadows| drawShadowBatch(shadows),
-//!         .quad => |quads| drawQuadBatch(quads),
-//!         .glyph => |glyphs| drawGlyphBatch(glyphs),
-//!         .svg => |svgs| drawSvgBatch(svgs),
-//!     }
-//! }
-//! ```
-//!
-//! ## Performance
-//! - No allocations - uses slices into existing scene arrays
-//! - O(n) total work - each primitive visited once
-//! - Coalesces consecutive same-type primitives to minimize pipeline switches
+//! Merges the scene's per-type sorted primitive arrays into a single draw-order
+//! stream, yielding contiguous runs of the same primitive type. Coalescing
+//! consecutive same-type primitives minimizes GPU pipeline switches. Iteration
+//! performs zero allocations (batches are slices into the existing scene arrays)
+//! and is O(n), visiting each primitive exactly once.
 
 const std = @import("std");
 const scene_mod = @import("scene.zig");

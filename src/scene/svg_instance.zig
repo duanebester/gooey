@@ -45,10 +45,8 @@ pub const SvgInstance = extern struct {
         fill_color: scene.Hsla,
         stroke_color_arg: scene.Hsla,
     ) SvgInstance {
-        // Assert valid size: dimensions must be non-negative
         std.debug.assert(width >= 0);
         std.debug.assert(height >= 0);
-        // Assert valid UV coordinates: must be in normalized range [0, 1]
         std.debug.assert(uv_left >= 0 and uv_left <= 1);
         std.debug.assert(uv_top >= 0 and uv_top <= 1);
         std.debug.assert(uv_right >= 0 and uv_right <= 1);

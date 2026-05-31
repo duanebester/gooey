@@ -62,10 +62,8 @@ pub const ImageInstance = extern struct {
         uv_right_arg: f32,
         uv_bottom_arg: f32,
     ) ImageInstance {
-        // Assert valid size: dimensions must be non-negative
         std.debug.assert(width >= 0);
         std.debug.assert(height >= 0);
-        // Assert valid UV coordinates: must be in normalized range [0, 1]
         std.debug.assert(uv_left_arg >= 0 and uv_left_arg <= 1);
         std.debug.assert(uv_top_arg >= 0 and uv_top_arg <= 1);
         std.debug.assert(uv_right_arg >= 0 and uv_right_arg <= 1);
@@ -89,7 +87,6 @@ pub const ImageInstance = extern struct {
     }
 
     pub fn withOpacity(self: ImageInstance, alpha: f32) ImageInstance {
-        // Assert valid opacity: must be in range [0, 1]
         std.debug.assert(alpha >= 0 and alpha <= 1);
         var img = self;
         img.opacity = alpha;
@@ -97,7 +94,6 @@ pub const ImageInstance = extern struct {
     }
 
     pub fn withGrayscale(self: ImageInstance, amount: f32) ImageInstance {
-        // Assert valid grayscale: must be in range [0, 1]
         std.debug.assert(amount >= 0 and amount <= 1);
         var img = self;
         img.grayscale = amount;
@@ -105,7 +101,6 @@ pub const ImageInstance = extern struct {
     }
 
     pub fn withCornerRadius(self: ImageInstance, radius: f32) ImageInstance {
-        // Assert valid corner radius
         std.debug.assert(radius >= 0);
         var img = self;
         img.corner_tl = radius;
@@ -122,7 +117,6 @@ pub const ImageInstance = extern struct {
         br: f32,
         bl: f32,
     ) ImageInstance {
-        // Assert valid corner radii
         std.debug.assert(tl >= 0);
         std.debug.assert(tr >= 0);
         std.debug.assert(br >= 0);
@@ -154,9 +148,8 @@ pub const ImageInstance = extern struct {
     }
 };
 
-// Compile-time verification of struct layout for Metal compatibility
 comptime {
-    // Struct must be 112 bytes for proper GPU buffer alignment
+    // Struct must be 112 bytes for proper GPU buffer alignment.
     if (@sizeOf(ImageInstance) != 112) {
         @compileError(std.fmt.comptimePrint(
             "ImageInstance must be 112 bytes, got {}",

@@ -166,7 +166,6 @@ pub const DrawContext = struct {
     /// Fill a rectangle with solid color.
     /// Uses optimized quad rendering (no tessellation).
     pub fn fillRect(self: *Self, x: f32, y: f32, w: f32, h: f32, color: Color) void {
-        // Assertions at API boundary (per CLAUDE.md)
         std.debug.assert(w >= 0 and h >= 0);
         std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
 
@@ -362,21 +361,8 @@ pub const DrawContext = struct {
     // Cached Mode API (for repeated draws of same path)
     // =========================================================================
 
-    /// Cache a path for repeated drawing (avoids re-tessellation).
-    /// Returns null if tessellation fails or cache is full.
-    ///
-    /// Use this when drawing the same shape multiple times per frame:
-    /// ```zig
-    /// var bar = ctx.beginPath(0, 0);
-    /// _ = bar.lineTo(20, 0).lineTo(20, 100).lineTo(0, 100).close();
-    ///
-    /// if (ctx.cachePath(&bar)) |cached| {
-    ///     for (0..50) |i| {
-    ///         // Transform would go here (Phase 4)
-    ///         ctx.fillCached(cached, colors[i]);
-    ///     }
-    /// }
-    /// ```
+    /// Cache a path for repeated drawing (avoids re-tessellation). Returns null
+    /// if tessellation fails or the cache is full. Pair with `fillCached`.
     pub fn cachePath(self: *Self, p: *const Path) ?CachedPath {
         const tolerance = DEFAULT_TOLERANCE / self.scale;
 
@@ -625,26 +611,10 @@ pub const DrawContext = struct {
     // Polyline API (efficient chart/data visualization)
     // =========================================================================
 
-    /// Draw a polyline through multiple points (single draw call).
-    /// Points are copied to scene allocator, not stack - efficient for charts.
-    ///
-    /// This is the recommended way to draw connected line segments for
-    /// data visualization (charts, graphs) where thousands of points
-    /// need to be rendered efficiently.
-    ///
-    /// Unlike strokeLine() which creates a 67KB Path per segment, polyline()
-    /// uses a single lightweight primitive for all points.
-    ///
-    /// Example:
-    /// ```
-    /// var points: [100][2]f32 = undefined;
-    /// for (0..100) |i| {
-    ///     points[i] = .{ @floatFromInt(i) * 5, @sin(@as(f32, @floatFromInt(i)) * 0.1) * 50 + 100 };
-    /// }
-    /// ctx.polyline(&points, 2.0, Color.blue);
-    /// ```
+    /// Draw a polyline through multiple points in a single draw call — the
+    /// efficient way to render connected segments for charts/graphs. Points are
+    /// copied to the scene arena, not the stack.
     pub fn polyline(self: *Self, points: []const [2]f32, line_width: f32, color: Color) void {
-        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
         std.debug.assert(points.len >= 2); // Need at least 2 points for a line
         std.debug.assert(line_width > 0);
 
@@ -697,17 +667,9 @@ pub const DrawContext = struct {
     // Point Cloud API (instanced circles for scatter plots/markers)
     // =========================================================================
 
-    /// Draw multiple circles with the same style using instanced rendering.
-    /// Positions are copied to scene allocator, not stack.
-    /// Single draw call for all points - highly efficient for scatter plots.
-    ///
-    /// ## Example
-    /// ```
-    /// const centers = [_][2]f32{ .{50, 50}, .{100, 75}, .{150, 60} };
-    /// ctx.pointCloud(&centers, 4.0, Color.red);
-    /// ```
+    /// Draw multiple same-styled circles via instanced rendering (one draw call
+    /// for all points). Positions are copied to the scene arena, not the stack.
     pub fn pointCloud(self: *Self, centers: []const [2]f32, radius: f32, color: Color) void {
-        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
         std.debug.assert(centers.len >= 1); // Need at least 1 point
         std.debug.assert(radius > 0);
 
@@ -760,25 +722,13 @@ pub const DrawContext = struct {
     // Colored Point Cloud API (per-point colors, single draw call)
     // =========================================================================
 
-    /// Draw multiple circles where each point has its own color.
-    /// Uses GPU instancing for maximum efficiency - single draw call for all points.
-    /// Much more efficient than N fillCircle calls with different colors.
-    ///
-    /// ## Example
-    /// ```
-    /// const points = [_]struct { x: f32, y: f32, color: Color }{
-    ///     .{ .x = 50, .y = 50, .color = Color.red },
-    ///     .{ .x = 100, .y = 75, .color = Color.green },
-    ///     .{ .x = 150, .y = 60, .color = Color.blue },
-    /// };
-    /// ctx.pointCloudColored(&points, 8.0);
-    /// ```
+    /// Draw multiple circles, each with its own color, via GPU instancing (one
+    /// draw call) — far cheaper than N `fillCircle` calls.
     pub fn pointCloudColored(
         self: *Self,
         points: []const struct { x: f32, y: f32, color: Color },
         radius: f32,
     ) void {
-        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
         std.debug.assert(points.len >= 1); // Need at least 1 point
         std.debug.assert(radius > 0);
 
@@ -805,22 +755,13 @@ pub const DrawContext = struct {
         }
     }
 
-    /// Draw multiple circles with per-point colors using separate position/color arrays.
-    /// Useful when you already have positions and colors in separate arrays.
-    ///
-    /// ## Example
-    /// ```
-    /// const centers = [_][2]f32{ .{50, 50}, .{100, 75}, .{150, 60} };
-    /// const colors = [_]Color{ Color.red, Color.green, Color.blue };
-    /// ctx.pointCloudColoredArrays(&centers, &colors, 8.0);
-    /// ```
+    /// Like `pointCloudColored`, but takes parallel position and color arrays.
     pub fn pointCloudColoredArrays(
         self: *Self,
         centers: []const [2]f32,
         colors: []const Color,
         radius: f32,
     ) void {
-        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
         std.debug.assert(centers.len >= 1); // Need at least 1 point
         std.debug.assert(centers.len == colors.len); // Same count
         std.debug.assert(radius > 0);
@@ -1237,15 +1178,8 @@ pub const DrawContext = struct {
     // Text Rendering API
     // =========================================================================
 
-    /// Draw text at the given position.
-    /// Uses real text rendering when text_system is available, otherwise
-    /// falls back to placeholder rectangles (for backwards compatibility).
-    ///
-    /// Returns the width of the rendered text.
-    ///
-    /// Note: The font_size parameter is currently used for layout calculations
-    /// and fallback rendering. Actual rendered size uses the TextSystem's
-    /// loaded font size.
+    /// Draw text at (x, y) (top-left) and return its rendered width. Uses the
+    /// `text_system` when available, otherwise placeholder rectangles.
     pub fn drawText(
         self: *Self,
         text: []const u8,
@@ -1259,12 +1193,9 @@ pub const DrawContext = struct {
 
         if (text.len == 0) return 0;
 
-        // Use real text rendering if TextSystem is available
         if (self.text_system) |ts| {
-            // Calculate baseline from top-left position
-            // y is top of text, baseline is below by ascender amount
+            // y is the top of the text; the baseline sits one ascender below.
             const metrics = ts.getMetrics() orelse {
-                // Fallback if no metrics available
                 return self.drawTextFallback(text, x, y, color, font_size);
             };
 
@@ -1322,9 +1253,7 @@ pub const DrawContext = struct {
         return offset;
     }
 
-    /// Draw text vertically centered at the given y position.
-    /// The text's visual center will be aligned with y_center.
-    /// Returns the width of the rendered text.
+    /// Draw text whose visual center aligns with `y_center`; returns its width.
     pub fn drawTextVCentered(
         self: *Self,
         text: []const u8,
@@ -1346,11 +1275,8 @@ pub const DrawContext = struct {
                 return self.drawTextFallback(text, x, top_y, color, font_size);
             };
 
-            // Calculate baseline for vertical centering
-            // Visual center of text is roughly at baseline - cap_height/2
-            // Cap height is approximately ascender * 0.7 for most fonts
-            // So visual center ≈ baseline - ascender * 0.35
-            // Therefore: baseline = y_center + ascender * 0.35
+            // Visual center ≈ baseline - ascender * 0.35 (cap height ≈ ascender
+            // * 0.7), so baseline = y_center + ascender * 0.35.
             const abs_x = self.bounds.origin.x + x;
             const baseline_y = self.bounds.origin.y + y_center + metrics.ascender * 0.35;
 
@@ -1466,27 +1392,9 @@ pub fn executePendingCanvas(
 // Canvas Element
 // =============================================================================
 
-/// Canvas element for custom drawing.
-///
-/// Canvas provides a callback-based API for rendering custom vector graphics
-/// within the UI tree. Use it for charts, diagrams, custom visualizations,
-/// or any content that can't be expressed with standard UI components.
-///
-/// ## Example
-/// ```zig
-/// fn paintChart(ctx: *ui.DrawContext) void {
-///     // Draw bars
-///     for (0..10, data) |i, value| {
-///         const x = @as(f32, @floatFromInt(i)) * 25;
-///         const h = value * 2;
-///         ctx.fillRect(x, 200 - h, 20, h, ui.Color.blue);
-///     }
-/// }
-///
-/// pub fn view(b: *ui.Builder) void {
-///     ui.canvas(300, 200, paintChart).render(b);
-/// }
-/// ```
+/// Canvas element for custom drawing: a callback-based API for vector graphics
+/// (charts, diagrams, visualizations) within the UI tree. Construct via
+/// `ui.canvas(w, h, paintFn)` and `.render(b)`.
 pub const Canvas = struct {
     width: f32,
     height: f32,

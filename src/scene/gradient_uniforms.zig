@@ -15,66 +15,47 @@ const RadialGradient = gradient_mod.RadialGradient;
 const Gradient = gradient_mod.Gradient;
 const MAX_GRADIENT_STOPS = gradient_mod.MAX_GRADIENT_STOPS;
 
-// =============================================================================
 // Constants
-// =============================================================================
 
-/// Maximum stops supported in GPU uniform (must match shader)
+/// Maximum stops supported in GPU uniform (must match shader).
 pub const GPU_MAX_STOPS: u32 = 16;
 
-// =============================================================================
-// GradientUniforms - GPU-ready gradient data
-// =============================================================================
-
-/// GPU-compatible gradient uniform data.
-/// Layout matches Metal/WebGPU shader expectations.
-///
-/// Total size: 288 bytes (must be multiple of 16 for GPU alignment)
-/// - Header: 32 bytes (gradient_type, stop_count, params)
-/// - Stops: 256 bytes (16 stops × 16 bytes each)
+/// GPU-compatible gradient uniform data. Layout matches Metal/WebGPU shader
+/// expectations: a 32-byte header (type, stop count, padding, params) followed
+/// by parallel stop arrays. Total size must be a multiple of 16 for GPU
+/// float4 alignment; see the comptime assertions below.
 pub const GradientUniforms = extern struct {
-    // Header (32 bytes) -------------------------------------------------------
-
-    /// Gradient type: 0=none, 1=linear, 2=radial
+    /// Gradient type: 0=none, 1=linear, 2=radial.
     gradient_type: u32 = 0,
-    /// Number of active color stops [0, 16]
+    /// Number of active color stops [0, 16].
     stop_count: u32 = 0,
-    /// Padding for alignment
+    // Padding to keep the param block on a float4 boundary.
     _pad0: u32 = 0,
     _pad1: u32 = 0,
 
-    // Linear gradient params (or radial center for radial) - 16 bytes
-    /// Linear: start_x, start_y, end_x, end_y
-    /// Radial: center_x, center_y, radius, inner_radius
+    // Linear: start_x, start_y, end_x, end_y.
+    // Radial: center_x, center_y, radius, inner_radius.
     param0: f32 = 0, // start_x / center_x
     param1: f32 = 0, // start_y / center_y
     param2: f32 = 0, // end_x / radius
     param3: f32 = 0, // end_y / inner_radius
 
-    // Stops (256 bytes = 16 stops × 16 bytes) ---------------------------------
-    // Each stop: offset (f32) + color HSLA (4 × f32) packed as:
-    // [offset, h, s, l] and [a, 0, 0, 0] - but we pack more efficiently:
-    // [offset, h, s, l] per stop, alpha in separate array
-
-    /// Stop offsets [0, 1]
+    // Stops stored as parallel arrays (offset + HSLA components) rather than
+    // interleaved float4s, so each component array stays contiguous for the shader.
     stop_offsets: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    /// Stop colors - hue component
     stop_h: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    /// Stop colors - saturation component
     stop_s: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    /// Stop colors - lightness component
     stop_l: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    /// Stop colors - alpha component
     stop_a: [GPU_MAX_STOPS]f32 = [_]f32{1} ** GPU_MAX_STOPS,
 
     const Self = @This();
 
-    /// Create uniforms for no gradient (solid color fill)
+    /// Create uniforms for no gradient (solid color fill).
     pub fn none() Self {
         return .{};
     }
 
-    /// Create uniforms from a linear gradient
+    /// Create uniforms from a linear gradient.
     pub fn fromLinear(grad: LinearGradient) Self {
         std.debug.assert(grad.stop_count >= 2);
         std.debug.assert(grad.stop_count <= GPU_MAX_STOPS);
@@ -88,7 +69,6 @@ pub const GradientUniforms = extern struct {
             .param3 = grad.end_y,
         };
 
-        // Copy stops
         for (0..grad.stop_count) |i| {
             const stop = grad.stops[i];
             uniforms.stop_offsets[i] = stop.offset;
@@ -101,7 +81,7 @@ pub const GradientUniforms = extern struct {
         return uniforms;
     }
 
-    /// Create uniforms from a radial gradient
+    /// Create uniforms from a radial gradient.
     pub fn fromRadial(grad: RadialGradient) Self {
         std.debug.assert(grad.stop_count >= 2);
         std.debug.assert(grad.stop_count <= GPU_MAX_STOPS);
@@ -115,7 +95,6 @@ pub const GradientUniforms = extern struct {
             .param3 = grad.inner_radius,
         };
 
-        // Copy stops
         for (0..grad.stop_count) |i| {
             const stop = grad.stops[i];
             uniforms.stop_offsets[i] = stop.offset;
@@ -128,7 +107,7 @@ pub const GradientUniforms = extern struct {
         return uniforms;
     }
 
-    /// Create uniforms from a gradient union
+    /// Create uniforms from a gradient union.
     pub fn fromGradient(grad: Gradient) Self {
         return switch (grad) {
             .none => none(),
@@ -137,24 +116,22 @@ pub const GradientUniforms = extern struct {
         };
     }
 
-    /// Check if this represents a gradient (vs solid color)
+    /// Check if this represents a gradient (vs solid color).
     pub fn isGradient(self: *const Self) bool {
         return self.gradient_type != 0 and self.stop_count >= 2;
     }
 
-    /// Get as bytes for GPU upload
+    /// Get as bytes for GPU upload.
     pub fn asBytes(self: *const Self) []const u8 {
         const ptr: [*]const u8 = @ptrCast(self);
         return ptr[0..@sizeOf(Self)];
     }
 };
 
-// =============================================================================
-// Compile-time Assertions (per CLAUDE.md)
-// =============================================================================
+// Compile-time assertions
 
 comptime {
-    // Verify size is multiple of 16 for GPU alignment
+    // Size must be a multiple of 16 for GPU float4 alignment.
     if (@sizeOf(GradientUniforms) % 16 != 0) {
         @compileError(std.fmt.comptimePrint(
             "GradientUniforms size must be multiple of 16, got {}",
@@ -162,7 +139,7 @@ comptime {
         ));
     }
 
-    // Verify expected size (header 32 + 5 arrays × 64 = 352 bytes)
+    // Expected size: header 32 + 5 arrays × 64 = 352 bytes.
     if (@sizeOf(GradientUniforms) != 352) {
         @compileError(std.fmt.comptimePrint(
             "GradientUniforms must be 352 bytes, got {}",
@@ -170,7 +147,7 @@ comptime {
         ));
     }
 
-    // Verify stop arrays start at expected offsets for GPU access
+    // Stop arrays must start at offset 32 so the shader can index them correctly.
     if (@offsetOf(GradientUniforms, "stop_offsets") != 32) {
         @compileError(std.fmt.comptimePrint(
             "stop_offsets must be at offset 32, got {}",
@@ -179,9 +156,7 @@ comptime {
     }
 }
 
-// =============================================================================
 // Tests
-// =============================================================================
 
 test "GradientUniforms size" {
     try std.testing.expectEqual(@as(usize, 352), @sizeOf(GradientUniforms));

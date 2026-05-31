@@ -6,14 +6,10 @@
 const std = @import("std");
 const ft = @import("bindings.zig");
 const types = @import("../../types.zig");
-const font_face_mod = @import("../../font_face.zig");
-const shaper_mod = @import("../../shaper.zig");
 const FreeTypeFace = @import("face.zig").FreeTypeFace;
 
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
-const FontFace = font_face_mod.FontFace;
-const Shaper = shaper_mod.Shaper;
 
 /// HarfBuzz-backed text shaper
 pub const HarfBuzzShaper = struct {
@@ -34,34 +30,6 @@ pub const HarfBuzzShaper = struct {
     pub fn deinit(self: *Self) void {
         ft.hb_buffer_destroy(self.hb_buffer);
         self.* = undefined;
-    }
-
-    /// Get as the generic Shaper interface
-    pub fn asShaper(self: *Self) Shaper {
-        const gen = struct {
-            fn shapeFn(ptr: *anyopaque, face: FontFace, text: []const u8, allocator: std.mem.Allocator) anyerror!ShapedRun {
-                const shaper: *Self = @ptrCast(@alignCast(ptr));
-                // For complex shaping, we need the underlying FreeType face
-                const ft_face: *FreeTypeFace = @ptrCast(@alignCast(face.ptr));
-                return shaper.shape(ft_face, text, allocator);
-            }
-
-            fn deinitFn(ptr: *anyopaque) void {
-                const shaper: *Self = @ptrCast(@alignCast(ptr));
-                shaper.deinit();
-            }
-
-            const vtable = Shaper.VTable{
-                .shape = shapeFn,
-                .deinit = deinitFn,
-            };
-        };
-
-        return .{
-            .ptr = self,
-            .vtable = &gen.vtable,
-            .allocator = self.allocator,
-        };
     }
 
     /// Full text shaping using HarfBuzz

@@ -1,39 +1,10 @@
-//! ColoredPointCloud - Instanced circle rendering with per-point colors
+//! ColoredPointCloud - instanced circle rendering with per-point colors.
 //!
-//! Like PointCloud, but each point can have a unique color. Ideal for:
-//! - Heat maps with color-coded data points
-//! - Scatter plots with categorical coloring
-//! - Particle systems with varied colors
-//! - Canvas demos with many colored dots
-//!
-//! ## Performance
-//! Renders all points in a **single draw call** using GPU instancing.
-//! Each point is a quad with SDF circle rendering in the fragment shader.
-//! Per-point colors are passed as vertex attributes (not uniforms), enabling
-//! true single-draw-call rendering for thousands of differently-colored points.
-//!
-//! ## Usage
-//! ```
-//! // Allocate from scene allocator (not stack)
-//! const positions = try scene.allocator.alloc(Point, data.len);
-//! const colors = try scene.allocator.alloc(Hsla, data.len);
-//! for (data, 0..) |d, i| {
-//!     positions[i] = .{ .x = scale_x(d.x), .y = scale_y(d.y) };
-//!     colors[i] = color_scale(d.value);
-//! }
-//!
-//! // Single draw call for all points with different colors!
-//! try scene.insertColoredPointCloud(.{
-//!     .positions = positions,
-//!     .colors = colors,
-//!     .count = @intCast(data.len),
-//!     .radius = 4.0,
-//! });
-//! ```
-//!
-//! ## Comparison with PointCloud
-//! - PointCloud: Uniform color, slightly smaller memory footprint
-//! - ColoredPointCloud: Per-point colors, same GPU efficiency
+//! Like PointCloud, but each point carries its own color (heat maps, categorical
+//! scatter plots, particles). Colors ride as vertex attributes rather than
+//! uniforms, so thousands of differently-colored SDF circles still render in a
+//! single instanced draw call — same GPU efficiency as PointCloud, slightly
+//! larger footprint.
 
 const std = @import("std");
 const scene = @import("scene.zig");
@@ -52,8 +23,7 @@ pub const MAX_POINT_RADIUS: f32 = 1000.0;
 // ColoredPoint - Position + Color pair for convenience
 // =============================================================================
 
-/// A single colored point (position + color).
-/// Use this struct when building point arrays for ColoredPointCloud.
+/// A single colored point (position + color), for building point arrays.
 pub const ColoredPoint = extern struct {
     x: f32,
     y: f32,
@@ -64,30 +34,22 @@ pub const ColoredPoint = extern struct {
 // ColoredPointCloud - GPU-compatible instance data with per-point colors
 // =============================================================================
 
-/// GPU-ready instance data for colored point cloud rendering.
-/// Each point has its own position AND color.
-///
-/// Memory layout is designed for efficient GPU upload:
-/// - Positions and colors are separate arrays (structure-of-arrays)
-/// - Both arrays should be allocated from the scene's frame allocator
+/// GPU-ready instance data: positions and colors are kept as separate
+/// structure-of-arrays buffers (both from the scene frame allocator) for
+/// efficient GPU upload.
 pub const ColoredPointCloud = extern struct {
-    // Draw order for z-index interleaving (8 bytes with padding)
     order: scene.DrawOrder = 0,
     _pad0: u32 = 0,
 
-    // Position buffer info (16 bytes)
     positions_ptr: u64 = 0,
     count: u32 = 0,
     _pad1: u32 = 0,
 
-    // Color buffer info (8 bytes)
     colors_ptr: u64 = 0,
 
-    // Point radius in pixels (8 bytes with padding)
     radius: f32 = 4.0,
     _pad2: u32 = 0,
 
-    // Clip bounds (16 bytes)
     clip_x: f32 = 0,
     clip_y: f32 = 0,
     clip_width: f32 = 99999,
@@ -103,9 +65,8 @@ pub const ColoredPointCloud = extern struct {
         colors: []const scene.Hsla,
         radius: f32,
     ) Self {
-        // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
-        std.debug.assert(positions.len >= 1); // Need at least 1 point
-        std.debug.assert(positions.len == colors.len); // Same count
+        std.debug.assert(positions.len >= 1);
+        std.debug.assert(positions.len == colors.len);
         std.debug.assert(positions.len <= MAX_POINTS_PER_COLORED_CLOUD);
         std.debug.assert(radius > 0 and radius <= MAX_POINT_RADIUS);
         std.debug.assert(!std.math.isNan(radius));
@@ -116,29 +77,6 @@ pub const ColoredPointCloud = extern struct {
             .count = @intCast(positions.len),
             .radius = radius,
         };
-    }
-
-    /// Initialize from an array of ColoredPoint structs.
-    /// Positions and colors will be extracted to separate arrays.
-    /// The caller must provide pre-allocated output arrays.
-    pub fn initFromColoredPoints(
-        points: []const ColoredPoint,
-        out_positions: []scene.Point,
-        out_colors: []scene.Hsla,
-        radius: f32,
-    ) Self {
-        std.debug.assert(points.len >= 1);
-        std.debug.assert(points.len <= MAX_POINTS_PER_COLORED_CLOUD);
-        std.debug.assert(out_positions.len >= points.len);
-        std.debug.assert(out_colors.len >= points.len);
-
-        // Extract positions and colors (AoS to SoA conversion)
-        for (points, 0..) |p, i| {
-            out_positions[i] = .{ .x = p.x, .y = p.y };
-            out_colors[i] = p.color;
-        }
-
-        return init(out_positions[0..points.len], out_colors[0..points.len], radius);
     }
 
     /// Get positions slice from stored pointer
@@ -188,21 +126,15 @@ pub const ColoredPointCloud = extern struct {
         return inst;
     }
 
-    /// Validate point cloud invariants (call before rendering)
-    /// Per CLAUDE.md: assert the negative space too
+    /// Validate invariants before rendering (asserts the negative space too).
     pub fn validate(self: *const Self) void {
-        // Valid state assertions
-        std.debug.assert(self.count >= 1); // Need at least 1 point
+        std.debug.assert(self.count >= 1);
         std.debug.assert(self.count <= MAX_POINTS_PER_COLORED_CLOUD);
         std.debug.assert(self.radius > 0 and self.radius <= MAX_POINT_RADIUS);
-
-        // Pointer validity (if we have points, pointers must be non-null)
         if (self.count > 0) {
             std.debug.assert(self.positions_ptr != 0);
             std.debug.assert(self.colors_ptr != 0);
         }
-
-        // Clip bounds sanity
         std.debug.assert(self.clip_width >= 0 and self.clip_height >= 0);
     }
 

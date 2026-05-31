@@ -1,43 +1,21 @@
-//! Gradient - Linear and radial gradient definitions for path rendering
+//! Gradient - linear and radial gradient definitions for path rendering.
 //!
-//! Gradients are used to fill paths with smooth color transitions.
-//! Supports up to 16 color stops per gradient.
-//!
-//! ## Usage
-//! ```zig
-//! const gradient = @import("gradient.zig");
-//!
-//! // Linear gradient from red to blue
-//! var linear = gradient.LinearGradient.init(0, 0, 100, 0);
-//! linear.addStop(0.0, Hsla.red);
-//! linear.addStop(1.0, Hsla.blue);
-//!
-//! // Radial gradient from center
-//! var radial = gradient.RadialGradient.init(50, 50, 50);
-//! radial.addStop(0.0, Hsla.white);
-//! radial.addStop(1.0, Hsla.black);
-//! ```
+//! Gradients fill paths with smooth color transitions, with up to 16 color
+//! stops per gradient. `LinearGradient` and `RadialGradient` are built up via
+//! `addStop()`, and `Gradient` is a tagged union for storing either kind.
 
 const std = @import("std");
 const scene = @import("scene.zig");
 
-// =============================================================================
-// Constants (per CLAUDE.md: "put a limit on everything")
-// =============================================================================
+// Constants
 
-/// Maximum color stops per gradient
+/// Maximum color stops per gradient.
 pub const MAX_GRADIENT_STOPS: usize = 16;
-
-// =============================================================================
-// GradientStop - Single color stop in a gradient
-// =============================================================================
 
 /// A single color stop in a gradient.
 /// Offset is normalized [0, 1] where 0 = start, 1 = end.
 pub const GradientStop = struct {
-    /// Position along gradient [0, 1]
     offset: f32,
-    /// Color at this stop (HSLA)
     color: scene.Hsla,
 
     pub fn init(offset: f32, color: scene.Hsla) GradientStop {
@@ -47,38 +25,23 @@ pub const GradientStop = struct {
     }
 };
 
-// =============================================================================
-// GradientType - Discriminator for gradient uniforms
-// =============================================================================
-
-/// Type of gradient for GPU shader selection
+/// Type of gradient for GPU shader selection.
 pub const GradientType = enum(u32) {
-    /// No gradient, use solid fill color
     none = 0,
-    /// Linear gradient between two points
     linear = 1,
-    /// Radial gradient from center outward
     radial = 2,
 };
 
-// =============================================================================
-// LinearGradient - Gradient between two points
-// =============================================================================
-
 /// Linear gradient defined by start and end points.
 /// Colors interpolate along the line connecting these points.
+/// Points are in path local coordinates.
 pub const LinearGradient = struct {
-    /// Start point X (in path local coordinates)
     start_x: f32,
-    /// Start point Y (in path local coordinates)
     start_y: f32,
-    /// End point X (in path local coordinates)
     end_x: f32,
-    /// End point Y (in path local coordinates)
     end_y: f32,
-    /// Color stops (sorted by offset)
+    /// Color stops, sorted by offset.
     stops: [MAX_GRADIENT_STOPS]GradientStop,
-    /// Number of active stops
     stop_count: u32,
 
     const Self = @This();
@@ -154,7 +117,7 @@ pub const LinearGradient = struct {
         const dy = self.end_y - self.start_y;
         const len = @sqrt(dx * dx + dy * dy);
 
-        if (len < 0.0001) return .{ 1, 0 }; // Default to horizontal
+        if (len < 0.0001) return .{ 1, 0 }; // degenerate gradient defaults to horizontal
 
         return .{ dx / len, dy / len };
     }
@@ -167,24 +130,17 @@ pub const LinearGradient = struct {
     }
 };
 
-// =============================================================================
-// RadialGradient - Gradient from center outward
-// =============================================================================
-
 /// Radial gradient defined by center point and radius.
 /// Colors interpolate from center (offset=0) to edge (offset=1).
+/// Coordinates are in path local space.
 pub const RadialGradient = struct {
-    /// Center X (in path local coordinates)
     center_x: f32,
-    /// Center Y (in path local coordinates)
     center_y: f32,
-    /// Radius (in path local coordinates)
     radius: f32,
-    /// Optional: inner radius for ring gradients (0 = solid center)
+    /// Inner radius for ring gradients (0 = solid center).
     inner_radius: f32,
-    /// Color stops (sorted by offset)
+    /// Color stops, sorted by offset.
     stops: [MAX_GRADIENT_STOPS]GradientStop,
-    /// Number of active stops
     stop_count: u32,
 
     const Self = @This();
@@ -245,10 +201,6 @@ pub const RadialGradient = struct {
     }
 };
 
-// =============================================================================
-// Gradient - Tagged union for any gradient type
-// =============================================================================
-
 /// A gradient that can be either linear or radial.
 /// Use this when you need to store/pass gradients generically.
 pub const Gradient = union(GradientType) {
@@ -296,9 +248,7 @@ pub const Gradient = union(GradientType) {
     }
 };
 
-// =============================================================================
 // Tests
-// =============================================================================
 
 test "GradientStop init" {
     const stop = GradientStop.init(0.5, scene.Hsla.red);
