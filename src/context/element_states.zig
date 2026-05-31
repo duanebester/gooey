@@ -386,6 +386,72 @@ pub const ElementStates = struct {
         return slot;
     }
 
+    /// Look up the state of type `S` for `id_hash`, producing the
+    /// initial value via `make(ctx)` **only on a miss**. The lazy twin
+    /// of `getOrInsert`.
+    ///
+    /// `getOrInsert` takes `initial: S` by value, which Zig evaluates
+    /// eagerly at the call site — so a caller writing
+    /// `getOrInsert(TextInputState, id, TextInputState.init(...))`
+    /// runs `init` (and its ~512KB `EditHistory` allocation) on every
+    /// frame, then leaks it on every cache hit because `initial` is
+    /// not consumed on hit. Threading construction through a comptime
+    /// `make` factory defers it to the miss path: hits touch no
+    /// allocator and build no throwaway state, so there is nothing to
+    /// leak and no per-frame alloc/free churn.
+    ///
+    /// `ctx` carries the runtime inputs `make` needs (allocator,
+    /// geometry) that a comptime-only factory like `withElementState`'s
+    /// `default` can't capture.
+    ///
+    /// On capacity exhaustion: returns `error.ElementStatesAtCapacity`.
+    /// On allocator failure: returns `error.OutOfMemory`. In both
+    /// failure modes `make` is never called, so no resource is built
+    /// and subsequently orphaned.
+    pub fn getOrInsertWith(
+        self: *Self,
+        comptime S: type,
+        id_hash: u64,
+        ctx: anytype,
+        comptime make: fn (@TypeOf(ctx)) S,
+    ) !*S {
+        const key: Key = .{ .element_id_hash = id_hash, .type_id = typeId(S) };
+
+        // Pair-assert on the read boundary.
+        std.debug.assert(self.count <= MAX_ELEMENT_STATES);
+
+        if (self.findIndex(key)) |idx| {
+            const entry = self.entries[idx].?;
+            return @ptrCast(@alignCast(entry.ptr));
+        }
+
+        // Capacity check before `make`: a doomed insert must not
+        // construct (and then strand) a resource-owning `S`.
+        if (self.count >= MAX_ELEMENT_STATES) {
+            return error.ElementStatesAtCapacity;
+        }
+
+        const slot = try self.allocator.create(S);
+        errdefer self.allocator.destroy(slot);
+        slot.* = make(ctx);
+
+        const idx = self.count;
+        self.entries[idx] = .{
+            .key = key,
+            .ptr = @ptrCast(slot),
+            .deinit_fn = makeDeinit(S),
+        };
+        self.count = idx + 1;
+
+        // Pair-assert on the write boundary: the slot we just wrote must
+        // read back. Catches a refactor that bumps `count` before the
+        // write, or writes to the wrong index.
+        std.debug.assert(self.entries[idx] != null);
+        std.debug.assert(self.entries[idx].?.key.eql(key));
+
+        return slot;
+    }
+
     /// Remove the state of type `S` for `id_hash`. Calls the entry's
     /// `deinit_fn` and frees the payload. Returns `true` iff an entry
     /// was actually removed.
@@ -703,6 +769,73 @@ test "ElementStates: getOrInsert returns same pointer on hit and ignores `initia
     const second = try states.getOrInsert(Counter, 0xAAAA, .{ .value = 7 });
     try testing.expectEqual(@intFromPtr(first), @intFromPtr(second));
     try testing.expectEqual(@as(u32, 99), second.value);
+    try testing.expectEqual(@as(u32, 1), states.len());
+}
+
+test "ElementStates: getOrInsertWith runs make only on miss" {
+    // The lazy twin's whole point: the `make` factory fires on the
+    // seeding miss and never again. A static call counter proves the
+    // hit path skips construction entirely, and pointer identity plus
+    // a surviving mutation prove the cached payload is returned
+    // untouched (a re-run would clobber widget state every frame).
+    var states = ElementStates.init(testing.allocator);
+    defer states.deinit();
+
+    const Counter = struct { value: u32 };
+    const Factory = struct {
+        var calls: u32 = 0;
+        fn make(seed: u32) Counter {
+            calls += 1;
+            return .{ .value = seed };
+        }
+    };
+    Factory.calls = 0;
+
+    const first = try states.getOrInsertWith(Counter, 0xAAAA, @as(u32, 10), Factory.make);
+    first.value = 99;
+    try testing.expectEqual(@as(u32, 1), Factory.calls);
+
+    const second = try states.getOrInsertWith(Counter, 0xAAAA, @as(u32, 7), Factory.make);
+    try testing.expectEqual(@intFromPtr(first), @intFromPtr(second));
+    try testing.expectEqual(@as(u32, 99), second.value);
+    try testing.expectEqual(@as(u32, 1), Factory.calls);
+    try testing.expectEqual(@as(u32, 1), states.len());
+}
+
+test "ElementStates: getOrInsertWith does not build a throwaway payload on hit" {
+    // Direct regression for the builder leak: `renderInput` seeded the
+    // pool with `getOrInsert(TextInputState.init(...))`, which built
+    // (and heap-allocated a ~512KB `EditHistory` inside) a fresh state
+    // every frame and leaked it on the cache hit. `getOrInsertWith`
+    // defers construction to the miss path. An `Owned` payload whose
+    // factory allocates lets the testing allocator catch a stray
+    // on-hit build: a second, unstored buffer would be reported as a
+    // leak at test exit.
+    var states = ElementStates.init(testing.allocator);
+    defer states.deinit();
+
+    const Owned = struct {
+        buf: []u8,
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.buf);
+        }
+    };
+    const Factory = struct {
+        fn make(allocator: std.mem.Allocator) Owned {
+            // A 64-byte alloc the payload owns. If `make` wrongly runs
+            // on a hit, this buffer is stranded and the testing
+            // allocator fails the test.
+            const buf = allocator.alloc(u8, 64) catch unreachable;
+            return .{ .buf = buf };
+        }
+    };
+
+    const first = try states.getOrInsertWith(Owned, 0xFEED, testing.allocator, Factory.make);
+    const first_ptr = first.buf.ptr;
+
+    const second = try states.getOrInsertWith(Owned, 0xFEED, testing.allocator, Factory.make);
+    try testing.expectEqual(@intFromPtr(first), @intFromPtr(second));
+    try testing.expectEqual(@intFromPtr(first_ptr), @intFromPtr(second.buf.ptr));
     try testing.expectEqual(@as(u32, 1), states.len());
 }
 

@@ -584,16 +584,18 @@ pub const Cx = struct {
         // PR 8.4 — storage moved off `WidgetStore.scroll_containers`
         // onto `Window.element_states`. Hash the string id once at
         // the boundary; subsequent frames hit the cached pointer
-        // through `getOrInsert`. Failure modes (OOM /
+        // through `getOrInsertWith`, whose `make` factory runs only on
+        // the seeding miss — never on a hit. Failure modes (OOM /
         // `error.ElementStatesAtCapacity`) collapse to `null` so the
         // public surface stays optional — same shape callers had
         // pre-PR-8.4 against the `?*ScrollContainer` return.
         const hash: u64 = @as(u64, LayoutId.fromString(id).id);
         const g = self._window;
-        return g.element_states.getOrInsert(
+        return g.element_states.getOrInsertWith(
             scroll_view_mod.ScrollContainer,
             hash,
-            scroll_view_mod.ScrollContainer.init(g.allocator),
+            g.allocator,
+            scroll_view_mod.ScrollContainer.init,
         ) catch null;
     }
 

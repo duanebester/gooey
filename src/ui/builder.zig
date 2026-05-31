@@ -82,6 +82,21 @@ const DEFAULT_TEXT_INPUT_BOUNDS: TextInputBounds = .{ .x = 0, .y = 0, .width = 2
 const DEFAULT_TEXT_AREA_BOUNDS: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 };
 const DEFAULT_CODE_EDITOR_BOUNDS: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 };
 
+// Miss-path factories for `ElementStates.getOrInsertWith`. These run only
+// when a widget's pool slot is first seeded — never on a cache hit — so the
+// heap-allocating `init` calls (each owns a ~512KB `EditHistory`) no longer
+// fire every frame and leak on the discard. The bounds are the comptime
+// seed constants above; only the allocator varies, so it is the `ctx`.
+fn makeTextInputState(allocator: std.mem.Allocator) TextInputState {
+    return TextInputState.init(allocator, DEFAULT_TEXT_INPUT_BOUNDS);
+}
+fn makeTextAreaState(allocator: std.mem.Allocator) TextAreaState {
+    return TextAreaState.init(allocator, DEFAULT_TEXT_AREA_BOUNDS);
+}
+fn makeCodeEditorState(allocator: std.mem.Allocator) CodeEditorState {
+    return CodeEditorState.init(allocator, DEFAULT_CODE_EDITOR_BOUNDS);
+}
+
 // Type aliases used internally as the builder's style/primitive vocabulary.
 // The public `gooey.ui.*` surface re-exports these directly from
 // `styles`/`primitives`, so these are not part of the public API.
@@ -896,10 +911,11 @@ pub const Builder = struct {
         var scroll_offset_x: f32 = 0;
         var scroll_offset_y: f32 = 0;
         if (self.window) |g| {
-            const sc_or_null = g.element_states.getOrInsert(
+            const sc_or_null = g.element_states.getOrInsertWith(
                 ScrollContainer,
                 @as(u64, layout_id.id),
-                ScrollContainer.init(g.allocator),
+                g.allocator,
+                ScrollContainer.init,
             ) catch null;
             if (sc_or_null) |sc| {
                 scroll_offset_x = sc.state.offset_x;
@@ -1222,10 +1238,11 @@ pub const Builder = struct {
         // focus check and focus-register step below. On capacity exhaustion or
         // OOM the pool returns null, which collapses to "not focusable".
         const ti_or_null: ?*TextInputState = if (self.window) |g|
-            g.element_states.getOrInsert(
+            g.element_states.getOrInsertWith(
                 TextInputState,
                 @as(u64, layout_id.id),
-                TextInputState.init(g.allocator, DEFAULT_TEXT_INPUT_BOUNDS),
+                g.allocator,
+                makeTextInputState,
             ) catch null
         else
             null;
@@ -1325,10 +1342,11 @@ pub const Builder = struct {
 
         // Seed the pool slot on first render (see `renderInput`).
         const ta_state_or_null: ?*TextAreaState = if (self.window) |g|
-            g.element_states.getOrInsert(
+            g.element_states.getOrInsertWith(
                 TextAreaState,
                 @as(u64, layout_id.id),
-                TextAreaState.init(g.allocator, DEFAULT_TEXT_AREA_BOUNDS),
+                g.allocator,
+                makeTextAreaState,
             ) catch null
         else
             null;
@@ -1424,10 +1442,11 @@ pub const Builder = struct {
 
         // Seed the pool slot on first render (see `renderInput`).
         const ce_state_or_null: ?*CodeEditorState = if (self.window) |g|
-            g.element_states.getOrInsert(
+            g.element_states.getOrInsertWith(
                 CodeEditorState,
                 @as(u64, layout_id.id),
-                CodeEditorState.init(g.allocator, DEFAULT_CODE_EDITOR_BOUNDS),
+                g.allocator,
+                makeCodeEditorState,
             ) catch null
         else
             null;
