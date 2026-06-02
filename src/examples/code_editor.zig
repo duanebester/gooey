@@ -311,13 +311,12 @@ const AppState = struct {
         }
     }
 
-    /// Reach the `"source"` `CodeEditorState` through
-    /// `Window.element_states`. PR 8.4b — retired the
+    /// Reach the `"source"` `CodeEditorState` through the string-keyed
+    /// `Window.widgetState` accessor. PR 8.4b — retired the
     /// `g.widgets.codeEditor(id)` accessor (see
     /// `docs/cleanup-implementation-plan.md` PR 8.4b).
     fn sourceCodeEditor(g: *gooey.Window) ?*gooey.widgets.CodeEditorState {
-        const hash: u64 = @as(u64, gooey.layout.LayoutId.fromString("source").id);
-        return g.element_states.get(gooey.widgets.CodeEditorState, hash);
+        return g.widgetState(gooey.widgets.CodeEditorState, "source");
     }
 
     // =========================================================================

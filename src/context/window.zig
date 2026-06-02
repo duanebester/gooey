@@ -1420,6 +1420,27 @@ pub const Window = struct {
     // exposes `pub fn focusable(self) Focusable` and the builder registers
     // that vtable on its `FocusHandle`; `Window` doesn't learn the type.
 
+    /// Look up retained engine state of type `S` by string `id`, or `null`
+    /// if no widget with that id has mounted yet. Generic over `S` so no
+    /// concrete widget-state type leaks into `Window` (see the module note
+    /// at the top of this file): the caller names the type at the call site,
+    /// e.g. `g.widgetState(gooey.widgets.TextInputState, "draft")`.
+    ///
+    /// This is the string-keyed twin of the raw `window.element_states.get`
+    /// pool call — it folds in the `LayoutId.fromString(id).id` hashing so
+    /// `*Window`-shaped command handlers don't hand-roll it. `Cx.textField`
+    /// and friends are the typed sugar over this same path for `*Cx`
+    /// contexts; both land on the same pool lookup.
+    pub fn widgetState(self: *Self, comptime S: type, id: []const u8) ?*S {
+        std.debug.assert(id.len > 0);
+        const id_hash: u64 = @as(u64, LayoutId.fromString(id).id);
+        // A real string id never collides with `LayoutId.none` (id 0),
+        // the reserved null/invalid sentinel — mirrors the `*ById`
+        // accessors' precondition in `cx/element_states.zig`.
+        std.debug.assert(id_hash != 0);
+        return self.element_states.get(S, id_hash);
+    }
+
     /// Focus a widget by string ID. Generic over widget type — the
     /// `FocusManager` uses the `Focusable` vtable registered on the matching
     /// `FocusHandle` to drive `blur()` on the previously focused widget and

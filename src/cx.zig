@@ -569,16 +569,13 @@ pub const Cx = struct {
     // accessors stay `?*T` for the case where the widget hasn't
     // mounted yet (e.g. a callback firing before the first render).
     pub fn textField(self: *Self, id: []const u8) ?*text_field_mod.TextInputState {
-        const hash: u64 = @as(u64, LayoutId.fromString(id).id);
-        return self._window.element_states.get(text_field_mod.TextInputState, hash);
+        return self._window.widgetState(text_field_mod.TextInputState, id);
     }
     pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextAreaState {
-        const hash: u64 = @as(u64, LayoutId.fromString(id).id);
-        return self._window.element_states.get(text_area_mod.TextAreaState, hash);
+        return self._window.widgetState(text_area_mod.TextAreaState, id);
     }
     pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {
-        const hash: u64 = @as(u64, LayoutId.fromString(id).id);
-        return self._window.element_states.get(code_editor_mod.CodeEditorState, hash);
+        return self._window.widgetState(code_editor_mod.CodeEditorState, id);
     }
     pub fn scrollView(self: *Self, id: []const u8) ?*scroll_view_mod.ScrollContainer {
         // PR 8.4 — storage moved off `WidgetStore.scroll_containers`
