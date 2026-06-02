@@ -637,9 +637,17 @@ pub const Window = struct {
             return;
         }
 
-        // Acquire render mutex to safely modify size/scale while DisplayLink might be reading
+        // Acquire render mutex to safely modify size/scale while DisplayLink might be reading.
         self.render_mutex.lock();
         defer self.render_mutex.unlock();
+
+        // Mark rendering as in progress while the lock is held. The synchronous
+        // render below invokes the user's on_render callback, which calls back
+        // into setScene/setTextAtlas/etc. Those setters re-lock render_mutex
+        // unless this flag tells them the lock is already held. Without it the
+        // re-entrant lock attempt aborts an os_unfair_lock (recursive lock).
+        self.render_in_progress.store(true, .release);
+        defer self.render_in_progress.store(false, .release);
 
         self.size.width = new_width;
         self.size.height = new_height;
