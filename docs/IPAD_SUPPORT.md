@@ -124,7 +124,7 @@ const is_native_ios = target.result.os.tag == .ios;
 Add a new `if (is_native_ios)` block that:
 
 - Creates the gooey module with `root_source_file = b.path("src/root.zig")`
-- Imports `zig_objc` (same dependency — the Objective-C runtime is identical on iOS)
+- Imports the in-tree `objc` runtime wrapper (`src/platform/macos/objc/` — the Objective-C runtime is identical on iOS, so the same source is reused; no external dependency)
 - Links UIKit, Metal, QuartzCore, CoreFoundation, CoreVideo, CoreText, CoreGraphics frameworks
 - Does **not** link AppKit
 - Builds gooey as a **static library** (not executable) — the Xcode wrapper project links this (see Phase 5.4)
@@ -132,17 +132,22 @@ Add a new `if (is_native_ios)` block that:
 
 ```zig
 if (is_native_ios) {
-    const objc_dep = b.dependency("zig_objc", .{
+    // Reuse the in-tree, zero-dependency Objective-C runtime wrapper. The
+    // same source serves macOS and iOS; only the linked frameworks differ.
+    const objc_mod = b.addModule("objc", .{
+        .root_source_file = b.path("src/platform/macos/objc/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    objc_mod.linkSystemLibrary("objc", .{});
+    objc_mod.linkFramework("Foundation", .{});
 
     const mod = b.addModule("gooey", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    mod.addImport("objc", objc_dep.module("objc"));
+    mod.addImport("objc", objc_mod);
 
     // UIKit instead of AppKit
     mod.linkFramework("UIKit", .{});
@@ -537,7 +542,7 @@ Similar to `src/platform/macos/input_view.zig` which registers `GooeyMetalView` 
 ```
 New file: src/platform/ios/metal_view.zig
 
-Registers "GooeyMetalView" as a UIView subclass using zig-objc:
+Registers "GooeyMetalView" as a UIView subclass using the in-tree objc wrapper:
   - layerClass class method → returns CAMetalLayer class
   - Stores pointer to Zig Window in an ivar (same pattern as macOS input_view.zig)
   - Touch event methods (Phase 3)
@@ -644,7 +649,7 @@ In the UIView subclass registered in Phase 2.5, add ObjC method implementations:
 ```zig
 // src/platform/ios/metal_view.zig — touch event methods
 
-// Register with zig-objc:
+// Register with the in-tree objc wrapper:
 cls.addMethod("touchesBegan:withEvent:", touchesBegan);
 cls.addMethod("touchesMoved:withEvent:", touchesMoved);
 cls.addMethod("touchesEnded:withEvent:", touchesEnded);
@@ -953,7 +958,7 @@ pub const capabilities = PlatformCapabilities{
 │  GCD       │  GCD        │  eventfd      │  N/A                     │
 │  (shared!) │  (shared!)  │               │                          │
 ├────────────┴─────────────┴───────────────┴──────────────────────────┤
-│                        zig-objc (macOS + iPad)                      │
+│                  in-tree objc wrapper (macOS + iPad)                │
 │                        Objective-C Runtime                          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -1024,7 +1029,7 @@ These modules are imported directly (not copied) by the iOS backend:
 | --------------------------------------------- | ---------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Zig `aarch64-ios` target maturity             | Medium     | High   | Xcode wrapper is the **primary** strategy (not fallback): Zig builds a static lib, Xcode links it. This isolates Zig from code signing, framework linking, and binary format concerns. Test the static lib output in Phase 1. |
 | Code signing complexity                       | Low        | Medium | Handled entirely by Xcode project. Zig never touches provisioning profiles or entitlements.                                                                                                                                   |
-| `@cImport` differences for iOS headers        | Low        | Medium | CoreText/CoreGraphics headers are identical. UIKit-specific types use zig-objc runtime calls, not `@cImport`                                                                                                                  |
+| `@cImport` differences for iOS headers        | Low        | Medium | CoreText/CoreGraphics headers are identical. UIKit-specific types use the in-tree objc runtime wrapper, not `@cImport`                                                                                                                  |
 | CADisplayLink thread model edge cases         | Low        | Medium | Test on real hardware early. CADisplayLink on background thread is a documented Apple pattern                                                                                                                                 |
 | App Store review (non-standard binary)        | Low        | Medium | Xcode wrapper makes the binary indistinguishable from a standard Swift/ObjC app to reviewers. Static lib linked by Xcode looks like normal C code.                                                                            |
 | ProMotion 120Hz frame pacing                  | Low        | Low    | Same challenge as macOS ProMotion, already handled with CVDisplayLink. Use preferredFrameRateRange on CADisplayLink                                                                                                           |

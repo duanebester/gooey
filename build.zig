@@ -67,11 +67,17 @@ pub fn build(b: *std.Build) void {
     const is_native_linux = target.result.os.tag == .linux;
 
     if (is_native_macos) {
-        // Get the zig-objc dependency
-        const objc_dep = b.dependency("zig_objc", .{
+        // Local, zero-dependency Objective-C runtime wrapper (a trimmed in-tree
+        // port of the subset of mitchellh/zig-objc that Gooey used). The system
+        // `objc` library and `Foundation` framework — where these extern
+        // symbols resolve — are linked here so the module is self-contained.
+        const objc_mod = b.addModule("objc", .{
+            .root_source_file = b.path("src/platform/macos/objc/main.zig"),
             .target = target,
             .optimize = optimize,
         });
+        objc_mod.linkSystemLibrary("objc", .{});
+        objc_mod.linkFramework("Foundation", .{});
 
         // Create the gooey module
         const mod = b.addModule("gooey", .{
@@ -79,7 +85,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        mod.addImport("objc", objc_dep.module("objc"));
+        mod.addImport("objc", objc_mod);
 
         // Link macOS frameworks to the module (needed for tests too)
         mod.linkFramework("AppKit", .{});
@@ -115,7 +121,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
-                    .{ .name = "objc", .module = objc_dep.module("objc") },
+                    .{ .name = "objc", .module = objc_mod },
                 },
             }),
         });
@@ -137,45 +143,45 @@ pub fn build(b: *std.Build) void {
         // Native Mac Examples
         // =========================================================================
 
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "pomodoro", "src/examples/pomodoro.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "animation", "src/examples/animation.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "spaceship", "src/examples/spaceship.zig", true);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "glass", "src/examples/glass.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "window-features", "src/examples/window_features.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "counter", "src/examples/counter.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "todo", "src/examples/todo.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "layout", "src/examples/layout.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "select", "src/examples/select.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "dynamic-counters", "src/examples/dynamic_counters.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "actions", "src/examples/actions.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "text-debug", "src/examples/text_debug_example.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "images", "src/examples/images.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "tooltip", "src/examples/tooltip.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "modal", "src/examples/modal.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "file-dialog", "src/examples/file_dialog.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "uniform-list", "src/examples/uniform_list_example.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "virtual-list", "src/examples/virtual_list_example.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "data-table", "src/examples/data_table_example.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "tree-example", "src/examples/tree_example.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "a11y-demo", "src/examples/a11y_demo.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "accessible-form", "src/examples/accessible_form.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "form-validation", "src/examples/form_validation.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "drag-drop", "src/examples/drag_drop.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "canvas-demo", "src/examples/canvas_demo.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "lucide-demo", "src/examples/lucide_demo.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "new-api-demo", "src/examples/new_api_demo.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "code-editor", "src/examples/code_editor.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "multi-window", "src/examples/multi_window.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "ai-canvas-spike", "src/examples/ai_canvas_spike.zig", false);
-        addNativeExample(b, mod, objc_dep.module("objc"), target, optimize, "ai-canvas", "src/examples/ai_canvas.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "pomodoro", "src/examples/pomodoro.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "animation", "src/examples/animation.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "spaceship", "src/examples/spaceship.zig", true);
+        addNativeExample(b, mod, objc_mod, target, optimize, "glass", "src/examples/glass.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "window-features", "src/examples/window_features.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "counter", "src/examples/counter.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "todo", "src/examples/todo.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "layout", "src/examples/layout.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "select", "src/examples/select.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "dynamic-counters", "src/examples/dynamic_counters.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "actions", "src/examples/actions.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "text-debug", "src/examples/text_debug_example.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "images", "src/examples/images.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "tooltip", "src/examples/tooltip.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "modal", "src/examples/modal.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "file-dialog", "src/examples/file_dialog.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "uniform-list", "src/examples/uniform_list_example.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "virtual-list", "src/examples/virtual_list_example.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "data-table", "src/examples/data_table_example.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "tree-example", "src/examples/tree_example.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "a11y-demo", "src/examples/a11y_demo.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "accessible-form", "src/examples/accessible_form.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "form-validation", "src/examples/form_validation.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "drag-drop", "src/examples/drag_drop.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "canvas-demo", "src/examples/canvas_demo.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "lucide-demo", "src/examples/lucide_demo.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "new-api-demo", "src/examples/new_api_demo.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "code-editor", "src/examples/code_editor.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "multi-window", "src/examples/multi_window.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "ai-canvas-spike", "src/examples/ai_canvas_spike.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "ai-canvas", "src/examples/ai_canvas.zig", false);
 
         // =========================================================================
         // Charts Examples
         // =========================================================================
 
-        addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "charts-demo", "src/examples/charts_demo.zig");
-        addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "dashboard", "src/examples/dashboard.zig");
-        addChartsExample(b, mod, charts_mod, objc_dep.module("objc"), target, optimize, "two-line-charts", "src/examples/two_line_charts.zig");
+        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "charts-demo", "src/examples/charts_demo.zig");
+        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "dashboard", "src/examples/dashboard.zig");
+        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "two-line-charts", "src/examples/two_line_charts.zig");
 
         // =====================================================================
         // Tests
@@ -202,7 +208,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
-                    .{ .name = "objc", .module = objc_dep.module("objc") },
+                    .{ .name = "objc", .module = objc_mod },
                 },
             }),
         });

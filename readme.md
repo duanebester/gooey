@@ -36,10 +36,13 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 - **Clipboard** - Native clipboard support on all platforms
 - **IME Support** - Input method editor for international text input
 - **Accessibility** - Built-in screen reader support (VoiceOver, Orca, ARIA) with semantic roles and live regions
+- **Zero Dependencies** - No external Zig packages; builds against system frameworks/libraries only (the Objective-C runtime bindings are vendored in-tree)
 
 ## Quick Start
 
 **Requirements:** Zig 0.16.0+
+
+**Dependencies:** None. Gooey has zero external Zig package dependencies — `build.zig.zon` lists no dependencies. It links only against platform system frameworks/libraries (see platform notes below).
 
 **macOS:** macOS 12.0+
 

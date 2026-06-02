@@ -1,14 +1,9 @@
 .{
     .name = .gooey,
-    .version = "0.2.1",
+    .version = "0.2.2",
     .fingerprint = 0xfcad6172ee59f0b8,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{
-        .zig_objc = .{
-            .url = "git+https://github.com/mitchellh/zig-objc.git#c8de82ff80281215ad92900866dab7103a8efa8b",
-            .hash = "zig_objc-0.0.0-Ir_Sp9gsAQCPAJc0oF5xoWePHWP6Y6tCphDeyNUThJoi",
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",
