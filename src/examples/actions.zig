@@ -52,26 +52,26 @@ fn render(cx: *Cx) void {
 }
 
 const EditorPanel = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .background = ui.Color.rgb(0.95, 0.95, 0.95),
         }, .{
             ui.keyContext("Editor"),
             ui.onAction(Save, save),
 
             ui.input("editor", .{ .placeholder = "Type here... (cmd+s to save)" }),
-        });
+        }));
     }
 };
 
 const ButtonRow = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.hstack(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.hstack(.{
             .gap = 8,
         }, .{
             Button{ .label = "Undo (cmd+z)", .on_click = doUndo },
             Button{ .label = "Redo (cmd+shift+z)", .on_click = doRedo },
-        });
+        }));
     }
 };
 

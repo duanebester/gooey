@@ -109,11 +109,24 @@ pub const Floating = struct {
         };
     }
 
-    /// Preset for context menus (positioned at cursor, typically)
+    /// Preset for context menus (positioned at an absolute cursor point).
+    ///
+    /// Detaches from the parent so the menu is placed relative to the
+    /// viewport: with `left_top`/`left_top` anchors the final position is
+    /// simply `(offset_x, offset_y)` (the position pass clamps it on-screen).
+    /// Callers set `offset_x`/`offset_y` to the cursor coordinates. This
+    /// mirrors `modal()`, which also positions against the viewport rather
+    /// than a parent box.
+    ///
+    /// The `z_index` here is the sensible default for direct users of this
+    /// preset; `ContextMenu` re-applies its own `z_index` field on top (which
+    /// also defaults to 200), so the two stay in agreement.
     pub fn contextMenu() Floating {
         return .{
+            .attach_to_parent = false,
             .element_anchor = .left_top,
             .parent_anchor = .left_top,
+            .z_index = 200, // Above dropdowns (100), below modals (1000).
         };
     }
 

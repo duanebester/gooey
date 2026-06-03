@@ -310,11 +310,11 @@ const ItemsRenderer = struct {
 const DraggableCard = struct {
     item: *Item,
 
-    pub fn render(self: @This(), b: *ui.Builder) void {
+    pub fn render(self: @This(), cx: *Cx) void {
         const item = self.item;
 
         // Check if this item is being dragged (for opacity)
-        const is_being_dragged = if (b.window) |g| blk: {
+        const is_being_dragged = if (cx.getGooey()) |g| blk: {
             if (g.getActiveDrag()) |drag| {
                 if (drag.getValue(Item)) |dragged| {
                     break :blk dragged.id == item.id;
@@ -323,7 +323,7 @@ const DraggableCard = struct {
             break :blk false;
         } else false;
 
-        b.box(.{
+        cx.render(ui.box(.{
             .draggable = ui.Draggable.init(Item, item),
             .background = item.color,
             .corner_radius = 8,
@@ -331,7 +331,7 @@ const DraggableCard = struct {
             .opacity = if (is_being_dragged) 0.4 else 1.0,
         }, .{
             DragCardContent{ .item = item },
-        });
+        }));
     }
 };
 

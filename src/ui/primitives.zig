@@ -308,11 +308,13 @@ pub fn When(comptime ChildrenType: type) type {
         condition: bool,
         children: ChildrenType,
 
-        const Builder = @import("builder.zig").Builder;
+        // Control-flow wrappers are renderables, not primitives, so they go
+        // through `processChild`'s component path — which is `*Cx`-only.
+        const Cx = @import("../cx.zig").Cx;
 
-        pub fn render(self: @This(), b: *Builder) void {
+        pub fn render(self: @This(), cx: *Cx) void {
             if (self.condition) {
-                b.processChildren(self.children);
+                cx.render(self.children);
             }
         }
     };
@@ -328,12 +330,12 @@ pub fn Maybe(comptime OptionalType: type, comptime render_fn: anytype) type {
     return struct {
         optional: OptionalType,
 
-        const Builder = @import("builder.zig").Builder;
+        const Cx = @import("../cx.zig").Cx;
 
-        pub fn render(self: @This(), b: *Builder) void {
+        pub fn render(self: @This(), cx: *Cx) void {
             if (self.optional) |value| {
                 const result = render_fn(value);
-                b.processChildren(result);
+                cx.render(result);
             }
         }
     };
@@ -349,12 +351,12 @@ pub fn Each(comptime ItemsType: type, comptime render_fn: anytype) type {
     return struct {
         items: ItemsType,
 
-        const Builder = @import("builder.zig").Builder;
+        const Cx = @import("../cx.zig").Cx;
 
-        pub fn render(self: @This(), b: *Builder) void {
+        pub fn render(self: @This(), cx: *Cx) void {
             for (self.items, 0..) |item, index| {
                 const result = render_fn(item, index);
-                b.processChildren(result);
+                cx.render(result);
             }
         }
     };

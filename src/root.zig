@@ -285,6 +285,8 @@ test {
         _ = comp.AspectRatio;
         _ = comp.Tooltip;
         _ = comp.Modal;
+        _ = comp.ContextMenu;
+        _ = comp.MenuItem;
         _ = comp.ValidatedTextInput;
 
         // Widgets.

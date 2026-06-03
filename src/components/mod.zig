@@ -20,4 +20,6 @@ pub const Image = @import("image.zig").Image;
 pub const AspectRatio = @import("image.zig").AspectRatio;
 pub const Tooltip = @import("tooltip.zig").Tooltip;
 pub const Modal = @import("modal.zig").Modal;
+pub const ContextMenu = @import("context_menu.zig").ContextMenu;
+pub const MenuItem = @import("context_menu.zig").MenuItem;
 pub const ValidatedTextInput = @import("validated_text_input.zig").ValidatedTextInput;

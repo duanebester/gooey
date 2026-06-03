@@ -488,7 +488,7 @@ The Web bridge creates a hidden ARIA tree that screen readers can access:
 
 ```zig
 pub const MyWidget = struct {
-    id: []const u8,
+    id: ?[]const u8 = null,
     label: []const u8,
 
     // Widget state
@@ -502,11 +502,13 @@ pub const MyWidget = struct {
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
-    pub fn render(self: MyWidget, b: *ui.Builder) void {
-        const layout_id = LayoutId.fromString(self.id);
+    pub fn render(self: MyWidget, cx: *Cx) void {
+        // Resolve identity once and reuse it for both the a11y node and the
+        // box below, so they stay in sync. Null id ⇒ parent-scoped auto id.
+        const layout_id = cx.idFor(self.id);
 
         // Push accessible element
-        const a11y_pushed = b.accessible(.{
+        const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
             .role = .button,  // Choose appropriate role
             .name = self.accessible_name orelse self.label,
@@ -516,10 +518,10 @@ pub const MyWidget = struct {
                 .disabled = !self.enabled,
             },
         });
-        defer if (a11y_pushed) b.accessibleEnd();
+        defer if (a11y_pushed) cx.accessibleEnd();
 
         // Visual rendering
-        b.boxWithId(self.id, .{
+        cx.boxWithLayoutId(layout_id, .{
             .on_click_handler = if (self.enabled) self.on_click_handler else null,
             // ... styling ...
         }, .{

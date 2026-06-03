@@ -137,8 +137,8 @@ const DropdownMenu = struct {
 const MenuItem = struct {
     label: []const u8,
 
-    pub fn render(self: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
             .corner_radius = 4,
@@ -146,23 +146,23 @@ const MenuItem = struct {
             .hover_background = ui.Color.rgb(0.95, 0.95, 0.95),
         }, .{
             ui.text(self.label, .{ .size = 14, .color = ui.Color.rgb(0.2, 0.2, 0.2) }),
-        });
+        }));
     }
 };
 
 const MenuDivider = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .height = 1,
             .background = ui.Color.rgb(0.9, 0.9, 0.9),
-        }, .{});
+        }, .{}));
     }
 };
 
 const ContentArea = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .grow = true,
             .padding = .{ .all = 20 },
@@ -183,21 +183,21 @@ const ContentArea = struct {
             BulletPoint{ .text = "Not gray out other content" },
             BulletPoint{ .text = "Close when clicking outside" },
             BulletPoint{ .text = "Close with Escape key" },
-        });
+        }));
     }
 };
 
 const BulletPoint = struct {
     text: []const u8,
 
-    pub fn render(self: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 8,
         }, .{
             ui.text("•", .{ .size = 14, .color = ui.Color.rgb(0.4, 0.4, 0.4) }),
             ui.text(self.text, .{ .size = 14, .color = ui.Color.rgb(0.4, 0.4, 0.4) }),
-        });
+        }));
     }
 };
 

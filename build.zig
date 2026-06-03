@@ -158,6 +158,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_mod, target, optimize, "images", "src/examples/images.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "tooltip", "src/examples/tooltip.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "modal", "src/examples/modal.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "context-menu", "src/examples/context_menu.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "file-dialog", "src/examples/file_dialog.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "uniform-list", "src/examples/uniform_list_example.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "virtual-list", "src/examples/virtual_list_example.zig", false);
@@ -663,6 +664,7 @@ pub fn build(b: *std.Build) void {
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "select", "src/examples/select.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "tooltip", "src/examples/tooltip.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "modal", "src/examples/modal.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "context-menu", "src/examples/context_menu.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "images", "src/examples/images.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "a11y-demo", "src/examples/a11y_demo.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "accessible-form", "src/examples/accessible_form.zig");

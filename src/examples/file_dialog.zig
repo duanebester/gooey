@@ -259,7 +259,7 @@ const PathItem = struct {
     state: *const AppState,
     index: usize,
 
-    pub fn render(self: @This(), b: *gooey.ui.Builder) void {
+    pub fn render(self: @This(), cx: *Cx) void {
         if (self.index >= self.state.path_count) return;
 
         const path = self.state.getPath(self.index);
@@ -271,12 +271,12 @@ const PathItem = struct {
             break :blk path[path.len - 67 ..];
         } else path;
 
-        b.box(.{}, .{
+        cx.render(ui.box(.{}, .{
             ui.text(display, .{
                 .size = 13,
                 .color = ui.Color.rgb(0.6, 0.8, 0.6),
             }),
-        });
+        }));
     }
 };
 

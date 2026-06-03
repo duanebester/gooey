@@ -139,8 +139,8 @@ fn render(cx: *Cx) void {
 // =============================================================================
 
 const Header = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = ui.Color.white,
@@ -154,7 +154,7 @@ const Header = struct {
                 .color = ui.Color.rgb(0.5, 0.5, 0.5),
                 .wrap = .words,
             }),
-        });
+        }));
     }
 };
 
@@ -191,8 +191,8 @@ const ButtonRow = struct {
 const StatusRow = struct {
     delete_count: u32,
 
-    pub fn render(self: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 16 },
             .background = ui.Color.white,
@@ -202,7 +202,7 @@ const StatusRow = struct {
         }, .{
             ui.text("Items deleted:", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
             ui.textFmt("{d}", .{self.delete_count}, .{ .size = 14 }),
-        });
+        }));
     }
 };
 

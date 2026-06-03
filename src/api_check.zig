@@ -287,6 +287,8 @@ fn pinTier1NamespacedComponents() void {
         _ = gooey.components.AspectRatio;
         _ = gooey.components.Tooltip;
         _ = gooey.components.Modal;
+        _ = gooey.components.ContextMenu;
+        _ = gooey.components.MenuItem;
         _ = gooey.components.ValidatedTextInput;
     }
 }

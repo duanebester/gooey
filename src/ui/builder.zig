@@ -24,6 +24,11 @@ pub const HandlerRef = handler_mod.HandlerRef;
 pub const EntityId = entity_mod.EntityId;
 pub const Window = window_mod.Window;
 
+// The single component contract: a component's `render` takes `*Cx`. Pulled in
+// only to type-check and cast `cx_ptr` in `processChild`. A plain type
+// re-export (mirrors `ui/mod.zig`), so it introduces no comptime import cycle.
+const Cx = @import("../cx.zig").Cx;
+
 // Accessibility
 const a11y = @import("../accessibility/accessibility.zig");
 
@@ -1174,16 +1179,33 @@ pub const Builder = struct {
             const render_fn = @field(T, "render");
             const fn_info = @typeInfo(@TypeOf(render_fn)).@"fn";
 
-            if (fn_info.params.len >= 2) {
-                const CxType = fn_info.params[1].type orelse
-                    @compileError("component `render` must take a typed `*Cx` second parameter");
+            // A struct reaching here with a `render` decl is a UI component, so
+            // its signature must be `render(self, *Cx)`. Too few parameters
+            // used to be silently dropped — the child simply never rendered,
+            // with no diagnostic. Make it a hard compile error instead
+            // (CLAUDE.md §11: handle the negative space; §17: fail fast rather
+            // than silently no-op).
+            if (fn_info.params.len < 2) @compileError(
+                "component `" ++ @typeName(T) ++ ".render` must take `self` and a `*Cx` parameter",
+            );
 
-                // `cx_ptr` is always wired while rendering a real frame; a null
-                // here means a component is processed outside a frame — a bug.
-                const cx_raw = self.cx_ptr orelse unreachable;
-                const cx: CxType = @ptrCast(@alignCast(cx_raw));
-                child.render(cx);
-            }
+            const CxType = fn_info.params[1].type orelse
+                @compileError("component `render` must take a typed `*Cx` second parameter");
+
+            // Components author against `*Cx` and nothing else. A wrong
+            // signature (e.g. the old `*Builder`) is a compile error here
+            // rather than a blind reinterpret of `cx_ptr` that segfaults at
+            // frame time (CLAUDE.md §11: handle the negative space; §17:
+            // fail fast — don't silently mis-cast).
+            if (CxType != *Cx) @compileError(
+                "component `render` second parameter must be `*Cx`, got " ++ @typeName(CxType),
+            );
+
+            // `cx_ptr` is always wired while rendering a real frame; a null
+            // here means a component is processed outside a frame — a bug.
+            const cx_raw = self.cx_ptr orelse unreachable;
+            const cx: *Cx = @ptrCast(@alignCast(cx_raw));
+            child.render(cx);
             return;
         }
 

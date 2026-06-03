@@ -67,8 +67,8 @@ fn render(cx: *Cx) void {
 // =============================================================================
 
 const Header = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = ui.Color.white,
@@ -84,13 +84,13 @@ const Header = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.5, 0.5, 0.5),
             }),
-        });
+        }));
     }
 };
 
 const PositionDemo = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 24 },
             .background = ui.Color.white,
@@ -103,13 +103,13 @@ const PositionDemo = struct {
                 .color = ui.Color.rgb(0.2, 0.2, 0.2),
             }),
             PositionButtons{},
-        });
+        }));
     }
 };
 
 const PositionButtons = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 24,
             .alignment = .{ .main = .center },
@@ -152,13 +152,13 @@ const PositionButtons = struct {
                     .variant = .primary,
                 },
             },
-        });
+        }));
     }
 };
 
 const StyleDemo = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 24 },
             .background = ui.Color.white,
@@ -171,13 +171,13 @@ const StyleDemo = struct {
                 .color = ui.Color.rgb(0.2, 0.2, 0.2),
             }),
             StyleButtons{},
-        });
+        }));
     }
 };
 
 const StyleButtons = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 24,
             .alignment = .{ .main = .center },
@@ -227,6 +227,6 @@ const StyleButtons = struct {
                     .variant = .danger,
                 },
             },
-        });
+        }));
     }
 };

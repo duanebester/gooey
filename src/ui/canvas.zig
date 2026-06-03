@@ -36,6 +36,9 @@ const path_mod = @import("../scene/path.zig");
 const gradient_mod = @import("../scene/gradient.zig");
 const styles = @import("styles.zig");
 const builder_mod = @import("builder.zig");
+// `Canvas` is dispatched as a child through `processChild`'s component path,
+// which is `*Cx`-only; it reaches the low-level builder via `cx.builder()`.
+const Cx = @import("../cx.zig").Cx;
 
 // Text rendering imports
 const text_mod = @import("../text/mod.zig");
@@ -1406,7 +1409,9 @@ pub const Canvas = struct {
 
     /// Render the canvas into the UI tree.
     /// The paint callback will be invoked after layout is computed.
-    pub fn render(self: Self, b: *builder_mod.Builder) void {
+    pub fn render(self: Self, cx: *Cx) void {
+        const b = cx.builder();
+
         // Generate or use explicit layout ID
         const layout_id = if (self.id) |id_str|
             @import("../layout/layout.zig").LayoutId.fromString(id_str)

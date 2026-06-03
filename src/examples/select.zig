@@ -93,8 +93,8 @@ fn render(cx: *Cx) void {
 // =============================================================================
 
 const Header = struct {
-    pub fn render(_: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 20 },
             .background = ui.Color.white,
@@ -107,7 +107,7 @@ const Header = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.5, 0.5, 0.5),
             }),
-        });
+        }));
     }
 };
 
@@ -167,8 +167,8 @@ const SelectRow = struct {
     label: []const u8,
     select: Select,
 
-    pub fn render(self: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .fill_width = true,
             .direction = .row,
             .alignment = .{ .cross = .center },
@@ -176,22 +176,22 @@ const SelectRow = struct {
         }, .{
             LabelBox{ .text = self.label },
             self.select,
-        });
+        }));
     }
 };
 
 const LabelBox = struct {
     text: []const u8,
 
-    pub fn render(self: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .width = 120,
         }, .{
             ui.text(self.text, .{
                 .size = 14,
                 .color = ui.Color.rgb(0.3, 0.3, 0.3),
             }),
-        });
+        }));
     }
 };
 
@@ -228,8 +228,8 @@ const StatusLine = struct {
     label: []const u8,
     value: []const u8,
 
-    pub fn render(self: @This(), b: *ui.Builder) void {
-        b.box(.{
+    pub fn render(self: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
             .direction = .row,
             .gap = 8,
         }, .{
@@ -241,6 +241,6 @@ const StatusLine = struct {
                 .size = 14,
                 .color = ui.Color.rgb(0.2, 0.2, 0.2),
             }),
-        });
+        }));
     }
 };
