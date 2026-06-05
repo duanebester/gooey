@@ -1581,7 +1581,7 @@ test "validate: atlas set writes pixel data" {
     defer atlas.deinit();
 
     const region = (try atlas.reserve(4, 4)) orelse return error.TestUnexpectedResult;
-    const pixel_data = @splat(0xFF);
+    const pixel_data: [16]u8 = @splat(0xFF);
     atlas.set(region, &pixel_data);
 
     // set() marks dirty region and increments generation.

@@ -984,6 +984,7 @@ pub fn build(b: *std.Build) void {
             .target = valgrind_target,
             .optimize = .ReleaseSafe, // ReleaseSafe for meaningful stack traces
         });
+        valgrind_mod.addImport("vulkan_c", vulkan_c_mod);
 
         // Separate test artifact for valgrind with baseline CPU
         const valgrind_tests = b.addTest(.{
