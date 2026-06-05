@@ -141,7 +141,7 @@ pub fn SubscriberSet(
         /// Empty subscriber set. `count == 0`, all slots `null`.
         pub fn init() Self {
             return .{
-                .entries = [_]?Entry{null} ** options.capacity,
+                .entries = @splat(null),
                 .count = 0,
             };
         }

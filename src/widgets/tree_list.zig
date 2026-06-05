@@ -208,8 +208,9 @@ pub const TreeListState = struct {
     // Expansion state
     // -------------------------------------------------------------------------
 
-    /// Bitset tracking which nodes are expanded
-    expanded: std.StaticBitSet(MAX_TREE_NODES) = std.StaticBitSet(MAX_TREE_NODES).initEmpty(),
+    /// Bitset tracking which nodes are expanded.
+    // Zig 0.17 replaced StaticBitSet.initEmpty() with the .empty constant.
+    expanded: std.StaticBitSet(MAX_TREE_NODES) = std.StaticBitSet(MAX_TREE_NODES).empty,
 
     // -------------------------------------------------------------------------
     // Flattened visible entries (rebuilt on expand/collapse)
@@ -284,7 +285,7 @@ pub const TreeListState = struct {
         self.root_count = 0;
         self.entry_count = 0;
         self.selected_index = null;
-        self.expanded = std.StaticBitSet(MAX_TREE_NODES).initEmpty();
+        self.expanded = std.StaticBitSet(MAX_TREE_NODES).empty;
         self.needs_flatten = true;
         self.list_state.setItemCount(0);
 
@@ -465,7 +466,7 @@ pub const TreeListState = struct {
     pub fn collapseAll(self: *Self) void {
         std.debug.assert(self.node_count <= MAX_TREE_NODES);
 
-        self.expanded = std.StaticBitSet(MAX_TREE_NODES).initEmpty();
+        self.expanded = std.StaticBitSet(MAX_TREE_NODES).empty;
         self.needs_flatten = true;
 
         std.debug.assert(self.needs_flatten);

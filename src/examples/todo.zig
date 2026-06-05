@@ -48,7 +48,7 @@ const draft_input_id = "new-todo";
 /// One todo. The text is copied into a fixed inline buffer so the model owns
 /// its bytes outright — no allocator, no lifetime coupling to the input widget.
 const Todo = struct {
-    buf: [TEXT_CAP]u8 = [_]u8{0} ** TEXT_CAP,
+    buf: [TEXT_CAP]u8 = @splat(0),
     len: usize = 0,
     done: bool = false,
 
@@ -64,7 +64,7 @@ const Filter = enum { all, active, done };
 // =============================================================================
 
 const AppState = struct {
-    todos: [MAX_TODOS]Todo = [_]Todo{.{}} ** MAX_TODOS,
+    todos: [MAX_TODOS]Todo = @splat(.{}),
     count: usize = 0,
     /// Bound to the TextInput; the widget writes the live text back here each
     /// frame (widget -> state only — see `addTodo` for why clearing is manual).

@@ -59,7 +59,8 @@ pub const Triangulator = struct {
         return .{
             .indices = .{},
             .is_ccw = true,
-            .reflex_vertices = ReflexSet.initEmpty(),
+            // Zig 0.17 replaced bitset initEmpty() with the .empty constant.
+            .reflex_vertices = ReflexSet.empty,
         };
     }
 
@@ -67,7 +68,7 @@ pub const Triangulator = struct {
     pub fn reset(self: *Self) void {
         self.indices.len = 0;
         self.is_ccw = true;
-        self.reflex_vertices = ReflexSet.initEmpty();
+        self.reflex_vertices = ReflexSet.empty;
     }
 
     /// Triangulate a single polygon (points[polygon.start..polygon.end])
@@ -125,7 +126,7 @@ pub const Triangulator = struct {
         var prev_v: [MAX_PATH_VERTICES]u32 = undefined;
 
         // Active vertex bitset for O(1) membership checks in hasPointInsideReflex.
-        var active_set = ReflexSet.initEmpty();
+        var active_set = ReflexSet.empty;
 
         for (0..n) |i| {
             next_v[i] = if (i == n - 1) 0 else @as(u32, @intCast(i)) + 1;
@@ -134,7 +135,7 @@ pub const Triangulator = struct {
         }
 
         // Pre-compute reflex vertices (O(n)) — only these can block an ear.
-        self.reflex_vertices = ReflexSet.initEmpty();
+        self.reflex_vertices = ReflexSet.empty;
         for (0..n) |i| {
             const p0 = poly_points[prev_v[i]];
             const p1 = poly_points[i];

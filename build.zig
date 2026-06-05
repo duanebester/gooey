@@ -585,11 +585,13 @@ pub fn build(b: *std.Build) void {
         }
 
         // Create the gooey module for Linux
+        const vulkan_c_mod = addVulkanCModule(b, target, optimize);
         const mod = b.addModule("gooey", .{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
         });
+        mod.addImport("vulkan_c", vulkan_c_mod);
 
         // Link Vulkan
         mod.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
@@ -1202,4 +1204,18 @@ fn linkLinuxLibraries(step: *std.Build.Step.Compile) void {
     mod.linkSystemLibrary("png", .{});
     mod.linkSystemLibrary("dbus-1", .{});
     mod.link_libc = true;
+}
+
+fn addVulkanCModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/platform/linux/vulkan_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_c.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+    return translate_c.createModule();
 }

@@ -307,7 +307,7 @@ pub const DataTableState = struct {
     // =========================================================================
 
     /// Column definitions (fixed-size array)
-    columns: [MAX_COLUMNS]Column = [_]Column{.{}} ** MAX_COLUMNS,
+    columns: [MAX_COLUMNS]Column = @splat(.{}),
     /// Number of active columns
     column_count: u32 = 0,
     /// Current horizontal scroll offset
