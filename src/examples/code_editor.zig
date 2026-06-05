@@ -166,9 +166,9 @@ const AppState = struct {
 
     // Node data: store file paths for each node
     node_paths: [MAX_NODES][512]u8 = undefined,
-    node_path_lens: [MAX_NODES]u16 = [_]u16{0} ** MAX_NODES,
+    node_path_lens: [MAX_NODES]u16 = @splat(0),
     node_names: [MAX_NODES][128]u8 = undefined,
-    node_name_lens: [MAX_NODES]u8 = [_]u8{0} ** MAX_NODES,
+    node_name_lens: [MAX_NODES]u8 = @splat(0),
 
     const sample_code =
         \\const std = @import("std");

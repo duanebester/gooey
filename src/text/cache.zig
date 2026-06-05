@@ -188,7 +188,7 @@ pub const GlyphCache = struct {
         var self = Self{
             .allocator = allocator,
             .entries = undefined,
-            .hash_table = [_]u16{EMPTY_SLOT} ** HASH_TABLE_SIZE,
+            .hash_table = @splat(EMPTY_SLOT),
             .entry_count = 0,
             .free_chain = undefined,
             .next_free = 0,
@@ -694,7 +694,7 @@ test "GlyphKey wyhash distribution — printable ASCII × subpixel variants" {
     // At load factor 380/8192 ≈ 4.6%, birthday-paradox predicts ~2.4% collision rate.
     const testing = std.testing;
     const TABLE_SLOTS: u32 = GlyphCache.HASH_TABLE_SIZE;
-    var buckets = [_]u16{0} ** TABLE_SLOTS;
+    var buckets = @as([TABLE_SLOTS]u16, @splat(0));
 
     const font_ptr: usize = 0x7FFF_0000_1000;
     var total_keys: u32 = 0;

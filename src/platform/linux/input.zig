@@ -594,8 +594,9 @@ pub const ClickTracker = struct {
 
 /// Key repeat state tracker
 pub const KeyRepeatTracker = struct {
-    /// Currently pressed keys (bitset for common keys)
-    pressed_keys: std.StaticBitSet(256) = std.StaticBitSet(256).initEmpty(),
+    /// Currently pressed keys (bitset for common keys).
+    // Zig 0.17 replaced StaticBitSet.initEmpty() with the .empty constant.
+    pressed_keys: std.StaticBitSet(256) = std.StaticBitSet(256).empty,
 
     const Self = @This();
 
@@ -616,7 +617,7 @@ pub const KeyRepeatTracker = struct {
 
     /// Reset all key states (e.g., on focus loss)
     pub fn reset(self: *Self) void {
-        self.pressed_keys = std.StaticBitSet(256).initEmpty();
+        self.pressed_keys = std.StaticBitSet(256).empty;
     }
 };
 

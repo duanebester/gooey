@@ -65,6 +65,9 @@ const LineJoin = stroke_mod.LineJoin;
 
 const MAX_PATH_VERTICES = limits.MAX_PATH_VERTICES;
 const MAX_STROKE_INPUT = limits.MAX_STROKE_INPUT;
+const TABLE_WIDTH = 105;
+const TABLE_RULE: [TABLE_WIDTH]u8 = @splat('=');
+const TABLE_SEPARATOR: [TABLE_WIDTH]u8 = @splat('-');
 
 // =============================================================================
 // Benchmark Configuration
@@ -1101,11 +1104,11 @@ pub fn main(init: std.process.Init) !void {
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Triangulation (convex polygons, ear-clip)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchTriangulate("convex_8", buildConvex8));
     collect(&reporter, benchTriangulate("convex_32", buildConvex32));
@@ -1114,215 +1117,215 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchTriangulate("convex_256", buildConvex256));
     collect(&reporter, benchTriangulate("convex_512", buildConvex512));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Triangulation — Concave Stars
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Triangulation (concave star polygons)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchTriangulate("star_5 (10 verts)", buildStar5));
     collect(&reporter, benchTriangulate("star_10 (20 verts)", buildStar10));
     collect(&reporter, benchTriangulate("star_50 (100 verts)", buildStar50));
     collect(&reporter, benchTriangulate("star_100 (200 verts)", buildStar100));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Stroke Expansion — Open Path Scaling
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Stroke Expansion (open, butt cap, miter join)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchStrokeExpand("zigzag_4_butt_miter", buildZigzag4, .butt, .miter, false));
     collect(&reporter, benchStrokeExpand("zigzag_32_butt_miter", buildZigzag32, .butt, .miter, false));
     collect(&reporter, benchStrokeExpand("zigzag_128_butt_miter", buildZigzag128, .butt, .miter, false));
     collect(&reporter, benchStrokeExpand("zigzag_256_butt_miter", buildZigzag256, .butt, .miter, false));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Stroke Expansion — Style Comparison (32 points)
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Stroke Style Comparison (zigzag 32 points)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchStrokeExpand("zigzag_32_butt_miter", buildZigzag32, .butt, .miter, false));
     collect(&reporter, benchStrokeExpand("zigzag_32_round_round", buildZigzag32, .round, .round, false));
     collect(&reporter, benchStrokeExpand("zigzag_32_square_bevel", buildZigzag32, .square, .bevel, false));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchStrokeExpand("sine_64_butt_miter", buildSine64, .butt, .miter, false));
     collect(&reporter, benchStrokeExpand("sine_64_round_round", buildSine64, .round, .round, false));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Stroke Expansion — Closed Paths
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Stroke Expansion (closed paths)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchStrokeExpand("circle_32_closed_miter", buildCircle32, .butt, .miter, true));
     collect(&reporter, benchStrokeExpand("circle_64_closed_miter", buildCircle64, .butt, .miter, true));
     collect(&reporter, benchStrokeExpand("circle_32_closed_round", buildCircle32, .butt, .round, true));
     collect(&reporter, benchStrokeExpand("circle_64_closed_round", buildCircle64, .butt, .round, true));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Stroke To Triangles (direct GPU output)
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Stroke To Triangles (bypasses ear-clipper)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchStrokeToTriangles("zigzag_32_tri_butt_miter", buildZigzag32, .butt, .miter, false));
     collect(&reporter, benchStrokeToTriangles("zigzag_128_tri_butt_miter", buildZigzag128, .butt, .miter, false));
     collect(&reporter, benchStrokeToTriangles("circle_32_tri_closed", buildCircle32, .butt, .miter, true));
     collect(&reporter, benchStrokeToTriangles("circle_64_tri_closed", buildCircle64, .butt, .miter, true));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // FixedArray — Append/Clear Throughput
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — FixedArray Append/Clear\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchFixedArrayAppendClear("append_clear_100", 100));
     collect(&reporter, benchFixedArrayAppendClear("append_clear_1000", 1000));
     collect(&reporter, benchFixedArrayAppendClear("append_clear_4000", 4000));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // FixedArray — Removal Strategy Comparison
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — FixedArray Removal Strategies (O(1) vs O(n))\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     // O(1) removal: pop from end.
     collect(&reporter, benchFixedArrayPopCycle("pop_100", 100));
     collect(&reporter, benchFixedArrayPopCycle("pop_1000", 1000));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     // O(1) removal: swap with last element.
     collect(&reporter, benchFixedArraySwapRemove("swap_remove_100", 100));
     collect(&reporter, benchFixedArraySwapRemove("swap_remove_1000", 1000));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     // O(n) removal: shift all elements left. ns/op should grow with N.
     collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_100", 100));
     collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_500", 500));
     collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_1000", 1000));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Vec2 — Batch Normalize
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Vec2 Batch Normalize\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchVec2Normalize("normalize_100", 100));
     collect(&reporter, benchVec2Normalize("normalize_1000", 1000));
     collect(&reporter, benchVec2Normalize("normalize_4000", 4000));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Rect.contains — Batch Containment
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Rect.contains Batch Containment\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchRectContains("contains_100", 100));
     collect(&reporter, benchRectContains("contains_1000", 1000));
     collect(&reporter, benchRectContains("contains_4000", 4000));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // ElementId — Hash + Equality
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — ElementId Hash + Equality\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchElementIdHash("hash_100", 100));
     collect(&reporter, benchElementIdHash("hash_1000", 1000));
     collect(&reporter, benchElementIdHash("hash_4000", 4000));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     collect(&reporter, benchElementIdEquality("equality_100", 100));
     collect(&reporter, benchElementIdEquality("equality_1000", 1000));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Scaling Analysis — Triangulation
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Scaling Analysis (triangulate ns/op vs vertex count)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     // Ear-clipping is O(n²): ns/op should grow linearly with vertex count.
     // Reflex-set optimization reduces constant factor for convex polygons.
@@ -1334,7 +1337,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchTriangulate("scaling_convex_256", buildConvex256));
     collect(&reporter, benchTriangulate("scaling_convex_512", buildConvex512));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 
     // Stars are concave — more reflex vertices mean more work per ear test.
     collect(&reporter, benchTriangulate("scaling_star_5", buildStar5));
@@ -1342,7 +1345,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchTriangulate("scaling_star_50", buildStar50));
     collect(&reporter, benchTriangulate("scaling_star_100", buildStar100));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     std.debug.print(
         \\

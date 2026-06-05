@@ -185,7 +185,7 @@ pub fn pickPhysicalDevice(
     }
 
     std.debug.assert(device_count <= MAX_PHYSICAL_DEVICES);
-    var devices: [MAX_PHYSICAL_DEVICES]vk.PhysicalDevice = [_]vk.PhysicalDevice{null} ** MAX_PHYSICAL_DEVICES;
+    var devices: [MAX_PHYSICAL_DEVICES]vk.PhysicalDevice = @splat(null);
     var count: u32 = @min(device_count, MAX_PHYSICAL_DEVICES);
     _ = vk.vkEnumeratePhysicalDevices(instance, &count, &devices);
 

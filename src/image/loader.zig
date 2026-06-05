@@ -229,9 +229,9 @@ pub const ImageLoader = struct {
         // that through registers on every init call.
         self.result_buffer = undefined;
         self.fetch_group = .init;
-        self.pending_hashes = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS;
+        self.pending_hashes = @splat(0);
         self.pending_count = 0;
-        self.failed_hashes = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS;
+        self.failed_hashes = @splat(0);
         self.failed_count = 0;
         self.image_atlas = image_atlas;
         self.io = io;

@@ -407,7 +407,7 @@ const ImageArray = struct {
 
 fn getSwapchainImages(device: vk.Device, swapchain: vk.Swapchain) SwapchainError!ImageArray {
     var result: ImageArray = .{
-        .items = [_]vk.Image{null} ** MAX_SWAPCHAIN_IMAGES,
+        .items = @splat(null),
         .count = 0,
     };
 
@@ -430,7 +430,7 @@ fn createImageViews(
 ) SwapchainError![MAX_SWAPCHAIN_IMAGES]vk.ImageView {
     std.debug.assert(count <= MAX_SWAPCHAIN_IMAGES);
 
-    var views: [MAX_SWAPCHAIN_IMAGES]vk.ImageView = [_]vk.ImageView{null} ** MAX_SWAPCHAIN_IMAGES;
+    var views: [MAX_SWAPCHAIN_IMAGES]vk.ImageView = @splat(null);
 
     for (0..count) |i| {
         std.debug.assert(images[i] != null);

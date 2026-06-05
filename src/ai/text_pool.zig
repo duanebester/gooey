@@ -178,12 +178,12 @@ test "TextPool byte capacity returns null when full" {
     var pool = TextPool{};
 
     // Push a 512-byte string (MAX_TEXT_ENTRY_SIZE) repeatedly until buffer is full.
-    const big = "A" ** MAX_TEXT_ENTRY_SIZE;
+    const big: [MAX_TEXT_ENTRY_SIZE]u8 = @splat('A');
     const max_fits = MAX_TEXT_POOL_SIZE / MAX_TEXT_ENTRY_SIZE; // 16384 / 512 = 32
 
     var i: usize = 0;
     while (i < max_fits) : (i += 1) {
-        const result = pool.push(big);
+        const result = pool.push(&big);
         try std.testing.expect(result != null);
     }
 
@@ -248,8 +248,8 @@ test "TextPool handles max entry size exactly" {
     var pool = TextPool{};
 
     // A string of exactly MAX_TEXT_ENTRY_SIZE should succeed.
-    const max_str = "B" ** MAX_TEXT_ENTRY_SIZE;
-    const idx = pool.push(max_str);
+    const max_str: [MAX_TEXT_ENTRY_SIZE]u8 = @splat('B');
+    const idx = pool.push(&max_str);
     try std.testing.expect(idx != null);
     try std.testing.expectEqual(@as(usize, MAX_TEXT_ENTRY_SIZE), pool.get(idx.?).len);
 }

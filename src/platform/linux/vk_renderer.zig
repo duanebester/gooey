@@ -172,8 +172,8 @@ pub const VulkanRenderer = struct {
 
     // Swapchain
     swapchain: vk.Swapchain = null,
-    swapchain_images: [8]vk.Image = [_]vk.Image{null} ** 8,
-    swapchain_image_views: [8]vk.ImageView = [_]vk.ImageView{null} ** 8,
+    swapchain_images: [8]vk.Image = @splat(null),
+    swapchain_image_views: [8]vk.ImageView = @splat(null),
     swapchain_image_count: u32 = 0,
     swapchain_format: c_uint = vk.VK_FORMAT_B8G8R8A8_UNORM,
     swapchain_extent: vk.Extent2D = .{ .width = 0, .height = 0 },
@@ -189,7 +189,7 @@ pub const VulkanRenderer = struct {
 
     // Render pass & framebuffers
     render_pass: vk.RenderPass = null,
-    framebuffers: [8]vk.Framebuffer = [_]vk.Framebuffer{null} ** 8,
+    framebuffers: [8]vk.Framebuffer = @splat(null),
 
     // Pipeline layouts (2 shared — improvement #9: 4 → 2 handles)
     unified_pipeline_layout: vk.PipelineLayout = null,
@@ -212,7 +212,7 @@ pub const VulkanRenderer = struct {
 
     // Per-frame resources: buffers, descriptor sets, sync objects, command buffers.
     // Triple-buffered so CPU can write frame N+1 while GPU reads frame N.
-    frames: [FRAME_COUNT]FrameResources = [_]FrameResources{.{}} ** FRAME_COUNT,
+    frames: [FRAME_COUNT]FrameResources = @splat(.{}),
 
     // Staging buffer for texture uploads (shared across frames)
     staging_buffer: vk.Buffer = null,
