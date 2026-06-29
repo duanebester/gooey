@@ -204,3 +204,17 @@ pub const TextMeasurement = struct {
     /// Number of lines (for wrapped text)
     line_count: u32 = 1,
 };
+
+/// Options for the platform text shaper's measurement pass.
+/// A `null` field selects the shaper's natural default rather than a
+/// magic numeric sentinel, so callers do not have to encode "unset"
+/// as a zero (which would otherwise be ambiguous with a real width of
+/// zero or a degenerate font size):
+/// - `max_width == null` means measure on a single line with no
+///   wrapping, so the returned width is the full unwrapped advance.
+/// - `font_size == null` means measure at the currently loaded font's
+///   size, so the caller does not have to restate it.
+pub const MeasureTextOptions = struct {
+    max_width: ?f32 = null,
+    font_size: ?f32 = null,
+};
