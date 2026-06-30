@@ -231,6 +231,10 @@ fn pinTier1NamespacedText() void {
     comptime {
         _ = gooey.text.TextSystem;
         _ = gooey.text.FontFace;
+        // `measureText`'s value types: a downstream that stores a
+        // measurement+options pair reaches for both under `gooey.text`.
+        _ = gooey.text.TextMeasurement;
+        _ = gooey.text.MeasureTextOptions;
     }
 }
 

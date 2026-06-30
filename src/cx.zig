@@ -502,11 +502,12 @@ pub const Cx = struct {
     // =========================================================================
 
     /// Options for `measureText`. `null` fields fall back to "no
-    /// wrapping" / "current font size" respectively.
-    pub const MeasureTextOptions = struct {
-        max_width: ?f32 = null,
-        font_size: ?f32 = null,
-    };
+    /// wrapping" / "current font size" respectively. Aliased from
+    /// `gooey.text.MeasureTextOptions` so the value type a downstream
+    /// needs to *store* a measurement+options pair lives on the public
+    /// text surface alongside `TextMeasurement`, while
+    /// `Cx.MeasureTextOptions` keeps working unchanged.
+    pub const MeasureTextOptions = text_mod.MeasureTextOptions;
 
     /// Measure a text string with optional wrapping and font size.
     /// Uses the platform text shaper (CoreText / HarfBuzz / browser)

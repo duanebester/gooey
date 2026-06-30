@@ -39,6 +39,7 @@ pub const GlyphMetrics = types.GlyphMetrics;
 pub const ShapedGlyph = types.ShapedGlyph;
 pub const ShapedRun = types.ShapedRun;
 pub const TextMeasurement = types.TextMeasurement;
+pub const MeasureTextOptions = types.MeasureTextOptions;
 pub const SystemFont = types.SystemFont;
 pub const TextDecoration = types.TextDecoration;
 pub const RasterizedGlyph = types.RasterizedGlyph;
