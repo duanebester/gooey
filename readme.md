@@ -1553,7 +1553,7 @@ const QuitApp = struct {};
 const AppState = struct {
     initialized: bool = false,
 
-    fn quitApp(_: *AppState, g: *gooey.Gooey) void {
+    fn quitApp(_: *AppState, g: *gooey.Window) void {
         g.quit();
     }
 };
@@ -1563,7 +1563,7 @@ fn setupKeymap(cx: *Cx) void {
     if (s.initialized) return;
     s.initialized = true;
 
-    cx.gooey().keymap.bind(QuitApp, "cmd-q", null);
+    cx.window().keymap().bind(QuitApp, "cmd-q", null);
 }
 
 fn render(cx: *Cx) void {
@@ -1584,6 +1584,8 @@ fn render(cx: *Cx) void {
     }));
 }
 ```
+
+For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`, which quits directly from the window's `onEvent` callback via `cx.quit()`.
 
 ## More Examples
 

@@ -8,6 +8,7 @@
 //!   - [←/→] Previous/Next section
 //!   - [T] Toggle theme
 //!   - [Esc] Close modals/dropdowns
+//!   - [Cmd+Q] Quit the app
 
 const std = @import("std");
 
@@ -1729,6 +1730,13 @@ fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
 
     if (event == .key_down) {
         const key = event.key_down;
+
+        // Cmd+Q quits the app (no-op on web). Checked before unmodified
+        // keys so the cmd modifier isn't swallowed by a bare-key branch.
+        if (key.key == .q and key.modifiers.cmd) {
+            cx.quit();
+            return true;
+        }
 
         // Escape closes modals/dropdowns
         if (key.key == .escape) {
