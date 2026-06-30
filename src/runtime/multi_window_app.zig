@@ -345,9 +345,11 @@ pub const App = struct {
         if (self.registry.unregister(id)) |window_ptr| {
             const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
 
-            // Clean up window
+            // Clean up window. `PlatformWindow.deinit()` self-destroys (it ends
+            // with `allocator.destroy(self)`), which is the contract every
+            // single-window example relies on via `defer window.deinit()`.
+            // Do NOT also destroy here -- that is a double free.
             window.deinit();
-            self.allocator.destroy(window);
         }
 
         // Check if we should quit
@@ -376,12 +378,13 @@ pub const App = struct {
             }
         }
 
-        // Close each window
+        // Close each window. `PlatformWindow.deinit()` self-destroys (it ends
+        // with `allocator.destroy(self)`); destroying again here is a double
+        // free. See `closeWindowById` for the same ownership contract.
         for (ids[0..count]) |id| {
             if (self.registry.unregister(id)) |window_ptr| {
                 const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
                 window.deinit();
-                self.allocator.destroy(window);
             }
         }
     }
