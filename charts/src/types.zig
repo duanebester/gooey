@@ -22,7 +22,7 @@ const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
 pub const DataPoint = struct {
     x: f32,
     y: f32,
-    label: [MAX_LABEL_LENGTH]u8 = [_]u8{0} ** MAX_LABEL_LENGTH,
+    label: [MAX_LABEL_LENGTH]u8 = @splat(0),
     label_len: u8 = 0,
 
     pub fn init(x: f32, y: f32) DataPoint {
@@ -54,7 +54,7 @@ pub const DataPoint = struct {
 /// A data point with a categorical label and numeric value.
 /// Used for bar charts, pie charts, and other categorical data.
 pub const CategoryPoint = struct {
-    label: [MAX_LABEL_LENGTH]u8 = [_]u8{0} ** MAX_LABEL_LENGTH,
+    label: [MAX_LABEL_LENGTH]u8 = @splat(0),
     label_len: u8 = 0,
     value: f32,
     color: ?Color = null,
@@ -88,7 +88,7 @@ pub const CategoryPoint = struct {
 /// A named series of data points with a color.
 /// Used for multi-series line charts, scatter charts, etc.
 pub const Series = struct {
-    name: [MAX_LABEL_LENGTH]u8 = [_]u8{0} ** MAX_LABEL_LENGTH,
+    name: [MAX_LABEL_LENGTH]u8 = @splat(0),
     name_len: u8 = 0,
     data: [MAX_DATA_POINTS]DataPoint = undefined,
     data_len: u32 = 0,
@@ -112,7 +112,7 @@ pub const Series = struct {
         std.debug.assert(name.len <= MAX_LABEL_LENGTH);
 
         // Zero-initialize to clear any garbage (field by field, no struct literal)
-        self.name = [_]u8{0} ** MAX_LABEL_LENGTH;
+        self.name = @splat(0);
         self.name_len = 0;
         self.data = undefined;
         self.data_len = 0;
@@ -190,7 +190,7 @@ pub const Series = struct {
 /// A named series of category points with a color.
 /// Used for bar charts with multiple series (grouped/stacked bars).
 pub const CategorySeries = struct {
-    name: [MAX_LABEL_LENGTH]u8 = [_]u8{0} ** MAX_LABEL_LENGTH,
+    name: [MAX_LABEL_LENGTH]u8 = @splat(0),
     name_len: u8 = 0,
     data: [MAX_CATEGORIES]CategoryPoint = undefined,
     data_len: u32 = 0,
@@ -214,7 +214,7 @@ pub const CategorySeries = struct {
         std.debug.assert(name.len <= MAX_LABEL_LENGTH);
 
         // Field by field init (no struct literal to avoid stack temp)
-        self.name = [_]u8{0} ** MAX_LABEL_LENGTH;
+        self.name = @splat(0);
         self.name_len = 0;
         self.data = undefined;
         self.data_len = 0;

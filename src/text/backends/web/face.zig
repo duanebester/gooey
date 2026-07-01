@@ -83,8 +83,8 @@ pub const WebFontFace = struct {
             .font_name_buf = undefined,
             .font_name_len = 0,
             .metrics = undefined,
-            .advance_cache = [_]f32{0} ** 256,
-            .advance_cache_valid = [_]u8{0} ** 256,
+            .advance_cache = @splat(0),
+            .advance_cache_valid = @splat(0),
         };
 
         // Copy font name to internal buffer

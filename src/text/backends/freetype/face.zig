@@ -204,7 +204,7 @@ pub const FreeTypeFace = struct {
             .point_size = size,
             .font_path_buf = undefined,
             .font_path_len = @min(path_len, 511),
-            .advance_cache = [_]f32{ADVANCE_UNCACHED} ** ADVANCE_CACHE_SIZE,
+            .advance_cache = @splat(ADVANCE_UNCACHED),
         };
 
         // Store path for debugging

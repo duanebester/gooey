@@ -51,7 +51,7 @@ pub const HoverState = struct {
     /// `update` and read by `isHoveredOrDescendant` / `ancestors`.
     /// Filled while the dispatch tree is still valid; later reads query
     /// the cache, not the tree.
-    hovered_ancestors: [MAX_HOVERED_ANCESTORS]u32 = [_]u32{0} ** MAX_HOVERED_ANCESTORS,
+    hovered_ancestors: [MAX_HOVERED_ANCESTORS]u32 = @splat(0),
 
     /// Number of valid entries in `hovered_ancestors`. Always
     /// `<= MAX_HOVERED_ANCESTORS`.

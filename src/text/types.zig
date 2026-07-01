@@ -145,7 +145,7 @@ pub const ShapedRun = struct {
             // Release any retained fallback fonts (avoid double-release)
             // Only needed on macOS where we use CoreFoundation
             if (is_macos) {
-                var released: [MAX_FALLBACK_FONTS_PER_RUN]usize = [_]usize{0} ** MAX_FALLBACK_FONTS_PER_RUN;
+                var released: [MAX_FALLBACK_FONTS_PER_RUN]usize = @splat(0);
                 var released_count: usize = 0;
 
                 for (self.glyphs) |glyph| {
