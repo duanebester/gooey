@@ -69,8 +69,19 @@ pub const ChangeTracker = struct {
             }
         }
 
-        // New key — store and return false (no previous value to compare)
-        std.debug.assert(self.count < MAX_TRACKED_VALUES); // Would exceed capacity — too many tracked values
+        // New key — store and return false (no previous value to compare).
+        //
+        // Capacity guard is an UNCONDITIONAL runtime check, not std.debug.assert:
+        // the assert strips in ReleaseFast/ReleaseSmall (the builds users ship),
+        // and the very next line writes at index self.count into fixed [64] arrays.
+        // A stripped check would turn the 65th distinct key into an out-of-bounds
+        // write — memory corruption rather than a clean failure (rules 4, 11, 17).
+        // Fail fast: exceeding the hard cap means the caller is minting unbounded
+        // distinct cx.changed() ids, which is a programming error, not a runtime
+        // condition to degrade past. Matches entity.zig's release-safe @panic guard.
+        if (self.count >= MAX_TRACKED_VALUES) {
+            @panic("ChangeTracker capacity exceeded: too many distinct cx.changed() keys (max 64)");
+        }
         self.keys[self.count] = key_hash;
         self.value_hashes[self.count] = value_hash;
         self.count += 1;

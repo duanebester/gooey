@@ -607,7 +607,15 @@ pub fn EntityContext(comptime T: type) type {
         ) HandlerRef {
             const Arg = @TypeOf(arg);
             comptime {
-                std.debug.assert(@sizeOf(Arg) <= 4); // Arg must fit in upper 32 bits.
+                // Structural limit: the packed u64 stores entity_id in the lower
+                // 32 bits and the arg in the upper 32, so the arg must fit in 4
+                // bytes here — half of root cx.updateWith's 8-byte budget, which
+                // has the whole u64 for the arg. Use @compileError (not a comptime
+                // std.debug.assert, whose failure is a cryptic "reached unreachable
+                // code") to match the clear message root updateWith gives.
+                if (@sizeOf(Arg) > 4) {
+                    @compileError("entity updateWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 4 bytes (entity_id takes the other 4). Use a pointer or index instead.");
+                }
             }
             // Data integrity: truncation to u32 must be lossless. Runtime check
             // because std.debug.assert is stripped in ReleaseFast and silent

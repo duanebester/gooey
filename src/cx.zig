@@ -160,9 +160,16 @@ pub const Cx = struct {
     // =========================================================================
 
     /// Mutable access to the application state. The type must match
-    /// the one passed to `runCx`; the assertion enforces that.
+    /// the one passed to `runCx`; the check below enforces that.
     pub fn state(self: *Self, comptime T: type) *T {
-        std.debug.assert(self.state_type_id == typeId(T));
+        // Unconditional runtime guard, NOT std.debug.assert: the assert strips in
+        // ReleaseFast/ReleaseSmall, and the @ptrCast below would then reinterpret
+        // the state pointer as an unrelated type — silent type-confusion / memory
+        // corruption in the builds users ship (rules 2, 17). This costs one integer
+        // compare per call (~once per handler), so keeping it in release is free.
+        if (self.state_type_id != typeId(T)) {
+            @panic("cx.state(T): T does not match the app state type passed to run()/App()");
+        }
         return @ptrCast(@alignCast(self.state_ptr));
     }
 
