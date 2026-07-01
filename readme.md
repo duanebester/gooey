@@ -22,7 +22,7 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 - **Declarative UI** - Component-based layout with `ui.*` primitives and flexbox-style system
 - **Cx/UI Separation** - `Cx` for state, handlers, and focus; `ui.*` for layout primitives
 - **Pure State Pattern** - Testable state methods with automatic re-rendering
-- **Animation System** - Built-in animations with easing, `animateOn` triggers
+- **Animation System** - Built-in animations with easing, `tweenOn` triggers
 - **Entity System** - Dynamic entity creation/deletion with auto-cleanup
 - **Retained Widgets** - TextInput, TextArea, Checkbox, Scroll containers
 - **Text Rendering** - CoreText (macOS), FreeType/HarfBuzz (Linux), Canvas (WASM)
@@ -320,10 +320,10 @@ test "remaining and clearCompleted" {
 
 Gooey separates concerns between `Cx` (context) and `ui` (layout primitives):
 
-| Module | Purpose                            | Examples                                                                        |
-| ------ | ---------------------------------- | ------------------------------------------------------------------------------- |
-| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.update()`, `cx.animate()`, `cx.changed()`, `cx.render()`      |
-| `ui.*` | Layout containers and primitives   | `ui.box()`, `ui.rect()`, `ui.hstack()`, `ui.vstack()`, `ui.text()`, `ui.when()` |
+| Module | Purpose                            | Examples                                                                            |
+| ------ | ---------------------------------- | ----------------------------------------------------------------------------------- |
+| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.update()`, `cx.animations.tween()`, `cx.changed()`, `cx.render()` |
+| `ui.*` | Layout containers and primitives   | `ui.box()`, `ui.rect()`, `ui.hstack()`, `ui.vstack()`, `ui.text()`, `ui.when()`     |
 
 ```/dev/null/example.zig#L1-19
 fn render(cx: *Cx) void {
@@ -361,14 +361,14 @@ fn render(cx: *Cx) void {
 
 ## Handler Types
 
-| Method             | Signature                      | Use Case                                 |
-| ------------------ | ------------------------------ | ---------------------------------------- |
-| `cx.update()`      | `fn(*State) void`              | Pure state mutations                     |
-| `cx.updateWith()`  | `fn(*State, Arg) void`         | Mutations with argument                  |
-| `cx.command()`     | `fn(*State, *Gooey) void`      | Framework access (focus, quit, entities) |
-| `cx.commandWith()` | `fn(*State, *Gooey, Arg) void` | Framework access with argument           |
-| `cx.defer()`       | `fn(*State, *Gooey) void`      | Run after current event completes        |
-| `cx.deferWith()`   | `fn(*State, *Gooey, Arg) void` | Deferred with argument                   |
+| Method             | Signature                       | Use Case                                 |
+| ------------------ | ------------------------------- | ---------------------------------------- |
+| `cx.update()`      | `fn(*State) void`               | Pure state mutations                     |
+| `cx.updateWith()`  | `fn(*State, Arg) void`          | Mutations with argument                  |
+| `cx.command()`     | `fn(*State, *Window) void`      | Framework access (focus, quit, entities) |
+| `cx.commandWith()` | `fn(*State, *Window, Arg) void` | Framework access with argument           |
+| `cx.defer()`       | `fn(*State, *Window) void`      | Run after current event completes        |
+| `cx.deferWith()`   | `fn(*State, *Window, Arg) void` | Deferred with argument                   |
 
 > **Note:** The state type is inferred automatically from the method pointer's first parameter — no need to pass it separately.
 
@@ -432,12 +432,12 @@ Use `defer` when you need to run code **after** the current event handler comple
 
 ```zig
 // In a command handler, use g.deferCommand():
-pub fn openFolder(self: *State, g: *Gooey) void {
+pub fn openFolder(self: *State, g: *Window) void {
     _ = self;
-    g.deferCommand(State, State.openFolderDeferred);
+    g.deferCommand(State.openFolderDeferred);
 }
 
-fn openFolderDeferred(self: *State, g: *Gooey) void {
+fn openFolderDeferred(self: *State, g: *Window) void {
     _ = g;
     // Safe to open modal dialog here - we're outside event handling
     const file_dialog = gooey.file_dialog;
@@ -449,12 +449,12 @@ fn openFolderDeferred(self: *State, g: *Gooey) void {
 }
 
 // With an argument (same 8-byte limit applies):
-pub fn deleteItem(self: *State, g: *Gooey, index: u32) void {
+pub fn deleteItem(self: *State, g: *Window, index: u32) void {
     _ = self;
-    g.deferCommandWith(State, u32, index, State.confirmDelete);
+    g.deferCommandWith(index, State.confirmDelete);
 }
 
-fn confirmDelete(self: *State, g: *Gooey, index: u32) void {
+fn confirmDelete(self: *State, g: *Window, index: u32) void {
     _ = g;
     if (dialog.confirm("Delete item?")) {
         self.items.remove(index);
@@ -1293,17 +1293,17 @@ Built-in animation support with easing functions:
 
 ```zig
 // Simple animation (runs once on mount)
-const fade = cx.animate("fade-in", .{ .duration_ms = 500 });
+const fade = cx.animations.tween("fade-in", .{ .duration_ms = 500 });
 // fade.progress goes 0.0 -> 1.0
 
 // Animation that restarts when a value changes
-const pulse = cx.animateOn("counter-pulse", s.count, .{
+const pulse = cx.animations.tweenOn("counter-pulse", s.count, .{
     .duration_ms = 200,
     .easing = Easing.easeOutBack,
 });
 
 // Continuous animation
-const spin = cx.animate("spinner", .{
+const spin = cx.animations.tween("spinner", .{
     .duration_ms = 1000,
     .mode = .ping_pong,  // or .loop
 });
@@ -1311,7 +1311,7 @@ const spin = cx.animate("spinner", .{
 // Use animation values
 cx.render(ui.box(.{
     .background = Color.white.withAlpha(fade.progress),
-    .width = gooey.lerp(100.0, 150.0, pulse.progress),
+    .width = gooey.animation.lerp(100.0, 150.0, pulse.progress),
 }, .{...}));
 ```
 
@@ -1402,22 +1402,22 @@ const Counter = struct {
 };
 
 const AppState = struct {
-    counters: [10]gooey.Entity(Counter) = ...,
+    counters: [10]gooey.context.Entity(Counter) = ...,
 
     // Command method - needs Gooey access for entity operations
-    pub fn addCounter(self: *AppState, g: *gooey.Gooey) void {
+    pub fn addCounter(self: *AppState, g: *gooey.Window) void {
         const entity = g.createEntity(Counter, .{ .count = 0 }) catch return;
         self.counters[self.counter_count] = entity;
         self.counter_count += 1;
     }
 };
 
-// In render - use entityCx for entity-scoped handlers
-var entity_cx = cx.entityCx(Counter, counter_entity) orelse return;
+// In render - use cx.entities.context for entity-scoped handlers
+var entity_cx = cx.entities.context(Counter, counter_entity) orelse return;
 Button{ .label = "+", .on_click_handler = entity_cx.update(Counter.increment) }
 
 // Read entity data
-if (cx.gooey().readEntity(Counter, entity)) |data| {
+if (cx.window().readEntity(Counter, entity)) |data| {
     ui.textFmt("{d}", .{data.count}, .{});
 }
 ```
@@ -1511,7 +1511,7 @@ try gooey.runCx(AppState, &state, render, .{
 });
 
 // Change glass style at runtime
-pub fn cycleStyle(self: *AppState, g: *gooey.Gooey) void {
+pub fn cycleStyle(self: *AppState, g: *gooey.Window) void {
     g.window.setGlassStyle(.glass_clear, 0.7, 10.0);
 }
 ```
@@ -1525,9 +1525,9 @@ const Undo = struct {};
 const Save = struct {};
 
 fn setupKeymap(cx: *Cx) void {
-    const g = cx.gooey();
-    g.keymap.bind(Undo, "cmd-z", null);        // Global
-    g.keymap.bind(Save, "cmd-s", "Editor");    // Context-specific
+    const g = cx.window();
+    g.keymap().bind(Undo, "cmd-z", null);        // Global
+    g.keymap().bind(Save, "cmd-s", "Editor");    // Context-specific
 }
 
 fn render(cx: *Cx) void {
@@ -1593,7 +1593,7 @@ For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`,
 | ---------------- | -------------------------------- | ------------------------------------- |
 | Showcase         | `zig build run`                  | Full feature demo with navigation     |
 | Counter          | `zig build run-counter`          | Simple state management               |
-| Animation        | `zig build run-animation`        | Animation system with animateOn       |
+| Animation        | `zig build run-animation`        | Animation system with tweenOn         |
 | Pomodoro         | `zig build run-pomodoro`         | Timer with tasks and custom shader    |
 | Dynamic Counters | `zig build run-dynamic-counters` | Entity creation and deletion          |
 | Layout           | `zig build run-layout`           | Flexbox, shrink, text wrapping        |

@@ -23,7 +23,8 @@
 //!
 //! pub const std_options = gooey.std_options;
 //!
-//! var state = struct { count: i32 = 0 }{};
+//! const AppState = struct { count: i32 = 0 };
+//! var state: AppState = .{};
 //!
 //! pub fn main(init: std.process.Init) !void {
 //!     try gooey.run(AppState, &state, render, .{
