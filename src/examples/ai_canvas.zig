@@ -208,7 +208,7 @@ const StatusBar = struct {
         else
             wasm_canvas.commandCount();
 
-        cx.render(ui.hstack(.{ .gap = 20, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 20, .alignment = .{ .cross = .center } }, .{
             ui.text("AI Canvas", .{
                 .size = 18,
                 .color = ui.Color.hex(0xe0e0ff),

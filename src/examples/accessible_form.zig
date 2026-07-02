@@ -294,7 +294,7 @@ const A11yStatus = struct {
             defer cx.accessibleEnd();
         }
 
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ui.box(.{
                 .width = 10,
                 .height = 10,
@@ -723,7 +723,7 @@ const ErrorMessage = struct {
             defer cx.accessibleEnd();
         }
 
-        cx.render(ui.hstack(.{ .gap = 4, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
             ui.text("⚠", .{
                 .size = 12,
                 .color = ui.Color.rgb(0.9, 0.3, 0.3),

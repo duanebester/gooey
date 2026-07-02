@@ -296,7 +296,7 @@ fn renderDialog(cx: *Cx) void {
                 }),
             }),
             // New value display
-            ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
                 ui.text("New value:", .{
                     .size = 16,
                     .weight = .semibold,
@@ -343,7 +343,7 @@ fn renderDialog(cx: *Cx) void {
         ui.spacer(),
 
         // Action buttons row
-        ui.hstack(.{ .gap = 12, .alignment = .end }, .{
+        ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .end } }, .{
             Button{
                 .label = "Cancel",
                 .variant = .secondary,

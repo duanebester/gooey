@@ -227,7 +227,7 @@ const ListColumns = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.hstack(.{
             .gap = 32,
-            .alignment = .stretch,
+            .alignment = .{ .cross = .stretch },
         }, .{
             ItemList{ .side = .left, .title = "Fruits" },
             ItemList{ .side = .right, .title = "Basket" },
@@ -339,7 +339,7 @@ const DragCardContent = struct {
     item: *Item,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             // Drag handle icon (three lines)
             DragHandle{},
             // Item name

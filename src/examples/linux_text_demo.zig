@@ -170,7 +170,7 @@ const CounterSection = struct {
             }),
 
             // Control buttons
-            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
                 Button{
                     .label = "−",
                     .size = .large,
@@ -196,7 +196,7 @@ const FontSizeSection = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             ui.text("Font Size:", .{
                 .size = 14,
                 .color = ui.Color.rgb(0.6, 0.6, 0.65),
@@ -298,7 +298,7 @@ const ImageSection = struct {
             }),
 
             // Row of images at different sizes
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
@@ -330,7 +330,7 @@ const ImageSection = struct {
             }),
 
             // Row with corner radius and effects
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Image{
                         .src = "assets/ziglang_logo.png",
@@ -391,7 +391,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of navigation icons
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 Svg{ .path = Icons.menu, .size = 24, .color = ui.Color.rgb(0.9, 0.9, 0.95) },
                 Svg{ .path = Icons.arrow_back, .size = 24, .color = ui.Color.rgb(0.9, 0.9, 0.95) },
                 Svg{ .path = Icons.arrow_forward, .size = 24, .color = ui.Color.rgb(0.9, 0.9, 0.95) },
@@ -400,7 +400,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of action icons with colors
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 Svg{ .path = Icons.add, .size = 24, .color = ui.Color.rgb(0.3, 0.8, 0.3) },
                 Svg{ .path = Icons.remove, .size = 24, .color = ui.Color.rgb(0.8, 0.3, 0.3) },
                 Svg{ .path = Icons.check, .size = 24, .color = ui.Color.rgb(0.3, 0.8, 0.3) },
@@ -410,7 +410,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of status icons
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 Svg{ .path = Icons.star, .size = 24, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.star_outline, .size = 24, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.favorite, .size = 24, .color = ui.Color.rgb(1.0, 0.3, 0.4) },
@@ -420,7 +420,7 @@ const SvgIconsSection = struct {
             }),
 
             // Row of media icons
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 Svg{ .path = Icons.play, .size = 24, .color = ui.Color.rgb(0.3, 0.8, 0.5) },
                 Svg{ .path = Icons.pause, .size = 24, .color = ui.Color.rgb(0.8, 0.8, 0.85) },
                 Svg{ .path = Icons.skip_prev, .size = 24, .color = ui.Color.rgb(0.8, 0.8, 0.85) },
@@ -429,7 +429,7 @@ const SvgIconsSection = struct {
             }),
 
             // Different sizes
-            ui.hstack(.{ .gap = 20, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 20, .alignment = .{ .cross = .center } }, .{
                 Svg{ .path = Icons.star, .size = 16, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.star, .size = 24, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
                 Svg{ .path = Icons.star, .size = 32, .color = ui.Color.rgb(1.0, 0.8, 0.0) },
@@ -437,7 +437,7 @@ const SvgIconsSection = struct {
             }),
 
             // Stroked icons
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 ui.text("Stroked:", .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.55) }),
                 Svg{ .path = Icons.star_outline, .size = 24, .no_fill = true, .stroke_color = ui.Color.rgb(1.0, 0.8, 0.0), .stroke_width = 1.5 },
                 Svg{ .path = Icons.favorite, .size = 24, .no_fill = true, .stroke_color = ui.Color.rgb(1.0, 0.3, 0.4), .stroke_width = 1.5 },
