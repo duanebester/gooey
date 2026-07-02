@@ -146,7 +146,7 @@ pub const CodeEditor = struct {
     // Handlers
     // =========================================================================
 
-    on_blur_handler: ?HandlerRef = null,
+    on_blur: ?HandlerRef = null,
 
     // =========================================================================
     // Accessibility overrides
@@ -235,7 +235,7 @@ pub const CodeEditor = struct {
                 .encoding = self.encoding,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
-                .on_blur_handler = self.on_blur_handler,
+                .on_blur_handler = self.on_blur,
             }),
         });
     }

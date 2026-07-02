@@ -100,6 +100,12 @@ pub const MenuItem = struct {
     /// Handler invoked when the row is activated. Per the controlled
     /// convention this method should also set the app's open flag to false.
     /// `null` renders a non-interactive row (e.g. a section header).
+    ///
+    /// Typed `?HandlerRef` (NOT `?OnSelectHandler`): a menu item triggers one
+    /// fixed action and carries no index, unlike `select.Select.on_select`
+    /// which is `?OnSelectHandler` so it can pass the chosen option index. The
+    /// two fields deliberately share the `on_select` name but differ in type;
+    /// unifying them is a deeper design change left out of the naming pass.
     on_select: ?HandlerRef = null,
 
     /// Optional leading icon as SVG markup (e.g. one of `gooey.Lucide`),
