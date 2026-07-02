@@ -8,9 +8,9 @@
 //! Usage with Cx (recommended):
 //! ```zig
 //! cx.render(ui.box(.{ .direction = .row, .gap = 0 }, .{
-//!     Tab{ .label = "Home", .is_active = s.page == 0, .on_click_handler = cx.updateWith(@as(u8, 0), State.setPage) },
-//!     Tab{ .label = "Settings", .is_active = s.page == 1, .on_click_handler = cx.updateWith(@as(u8, 1), State.setPage) },
-//!     Tab{ .label = "About", .is_active = s.page == 2, .on_click_handler = cx.updateWith(@as(u8, 2), State.setPage) },
+//!     Tab{ .label = "Home", .is_active = s.page == 0, .on_click = cx.updateWith(@as(u8, 0), State.setPage) },
+//!     Tab{ .label = "Settings", .is_active = s.page == 1, .on_click = cx.updateWith(@as(u8, 1), State.setPage) },
+//!     Tab{ .label = "About", .is_active = s.page == 2, .on_click = cx.updateWith(@as(u8, 2), State.setPage) },
 //! }));
 //! ```
 //!
@@ -34,8 +34,10 @@ pub const Tab = struct {
     label: []const u8,
     is_active: bool,
 
-    // Click handler - use with cx.updateWith() for index-based navigation
-    on_click_handler: ?HandlerRef = null,
+    // Click handler - use with cx.updateWith() for index-based navigation.
+    // No `_handler` suffix: Tab has no stateless `on_click` variant, so the
+    // base name is free (unlike Button/Checkbox which keep both).
+    on_click: ?HandlerRef = null,
 
     // Styling (null = use theme)
     style: Style = .pills,
@@ -128,7 +130,7 @@ pub const Tab = struct {
             .border_color = if (self.style == .underline and self.is_active) active_bg else Color.transparent,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
-            .on_click_handler = self.on_click_handler,
+            .on_click_handler = self.on_click,
         }, .{
             ui.text(self.label, .{ .color = text_color, .size = font_size }),
         });
@@ -139,7 +141,7 @@ pub const Tab = struct {
         return .{
             .label = label,
             .is_active = is_active,
-            .on_click_handler = handler,
+            .on_click = handler,
             .style = style,
         };
     }

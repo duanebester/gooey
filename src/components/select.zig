@@ -37,8 +37,8 @@
 //!     .options = &.{ "Apple", "Banana", "Cherry" },
 //!     .selected = s.selected_option,
 //!     .is_open = s.select_open,
-//!     .on_toggle_handler = cx.update(State.toggleSelect),
-//!     .on_close_handler = cx.update(State.closeSelect),
+//!     .on_toggle = cx.update(State.toggleSelect),
+//!     .on_close = cx.update(State.closeSelect),
 //!     .handlers = &.{
 //!         cx.updateWith(@as(usize, 0), State.selectOption),
 //!         cx.updateWith(@as(usize, 1), State.selectOption),
@@ -168,18 +168,25 @@ pub const Select = struct {
 
     // === New API: on_select (recommended) ===
 
-    /// Index-based selection handler. When set without explicit toggle/close
-    /// handlers, the widget manages open/close state internally.
-    /// Created via `cx.onSelect(State.method)`.
+    /// Index-based selection handler, typed `?OnSelectHandler` (NOT a plain
+    /// `?HandlerRef`) because it must carry the chosen option index through to
+    /// the state method. This is a deliberate divergence from
+    /// `context_menu.MenuItem.on_select`, which is `?HandlerRef`: a menu item
+    /// activates a single fixed action and needs no index. Unifying the two
+    /// names onto one type would be a deeper design change, so the shared name
+    /// with differing types is intentional and documented on both fields.
+    /// When set without explicit toggle/close handlers, the widget manages
+    /// open/close state internally. Created via `cx.onSelect(State.method)`.
     on_select: ?OnSelectHandler = null,
 
     // === Legacy API: manual handlers ===
 
     /// Handler to toggle open/closed state (called when trigger is clicked)
-    on_toggle_handler: ?HandlerRef = null,
+    on_toggle: ?HandlerRef = null,
 
-    /// Handler to close the dropdown (called on click-outside)
-    on_close_handler: ?HandlerRef = null,
+    /// Handler to close the dropdown (called on click-outside). Shares the
+    /// name and `?HandlerRef` type of `Modal.on_close` by design.
+    on_close: ?HandlerRef = null,
 
     /// Array of handlers, one per option. Use cx.updateWith() to create these.
     handlers: ?[]const HandlerRef = null,
@@ -287,7 +294,7 @@ pub const Select = struct {
                 .text = self.getDisplayText(),
                 .is_placeholder = self.selected == null,
                 .is_open = resolved.is_open,
-                .on_click_handler = if (!self.disabled) resolved.toggle_handler else null,
+                .on_click = if (!self.disabled) resolved.toggle_handler else null,
                 .background = colors.background,
                 .hover_background = if (!self.disabled) colors.hover_bg else colors.background,
                 .border_color = colors.current_border,
@@ -304,7 +311,7 @@ pub const Select = struct {
                 .handlers = self.handlers,
                 .on_select = self.on_select,
                 .id_hash = if (self.usesInternalState()) layout_id.id else 0,
-                .on_close_handler = resolved.close_handler,
+                .on_close = resolved.close_handler,
                 .min_width = self.min_dropdown_width orelse self.width,
                 .background = colors.background,
                 .selected_background = colors.selected_bg,
@@ -323,8 +330,8 @@ pub const Select = struct {
     /// True when `on_select` is set and no legacy toggle/close/handlers are provided.
     fn usesInternalState(self: Select) bool {
         return self.on_select != null and
-            self.on_toggle_handler == null and
-            self.on_close_handler == null and
+            self.on_toggle == null and
+            self.on_close == null and
             self.handlers == null;
     }
 
@@ -333,11 +340,11 @@ pub const Select = struct {
         // Legacy path: caller manages open/close externally
         if (!self.usesInternalState()) {
             std.debug.assert(self.on_select != null or self.handlers != null or
-                self.on_toggle_handler == null);
+                self.on_toggle == null);
             return .{
                 .is_open = self.is_open,
-                .toggle_handler = self.on_toggle_handler,
-                .close_handler = self.on_close_handler,
+                .toggle_handler = self.on_toggle,
+                .close_handler = self.on_close,
             };
         }
 
@@ -422,7 +429,7 @@ const SelectTrigger = struct {
     text: []const u8,
     is_placeholder: bool,
     is_open: bool,
-    on_click_handler: ?HandlerRef,
+    on_click: ?HandlerRef,
     background: Color,
     hover_background: Color,
     border_color: Color,
@@ -449,7 +456,7 @@ const SelectTrigger = struct {
             .corner_radius = self.corner_radius,
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
-            .on_click_handler = self.on_click_handler,
+            .on_click_handler = self.on_click,
         }, .{
             // Selected text
             ui.text(self.text, .{
@@ -496,7 +503,7 @@ const SelectDropdown = struct {
     on_select: ?OnSelectHandler,
     /// LayoutId hash for internal state (0 = not using internal state)
     id_hash: u32,
-    on_close_handler: ?HandlerRef,
+    on_close: ?HandlerRef,
     min_width: ?f32,
     background: Color,
     selected_background: Color,
@@ -527,7 +534,7 @@ const SelectDropdown = struct {
                 .color = Color.rgba(0, 0, 0, 0.15),
             },
             .floating = ui.Floating.dropdown(),
-            .on_click_outside_handler = self.on_close_handler,
+            .on_click_outside_handler = self.on_close,
         }, .{
             SelectOptions{
                 .options = self.options,
@@ -574,7 +581,7 @@ const SelectOptions = struct {
             cx.with(SelectOption{
                 .label = label,
                 .is_selected = is_selected,
-                .on_click_handler = handler,
+                .on_click = handler,
                 .selected_background = self.selected_background,
                 .hover_background = self.hover_background,
                 .text_color = self.text_color,
@@ -612,7 +619,7 @@ const SelectOptions = struct {
 const SelectOption = struct {
     label: []const u8,
     is_selected: bool,
-    on_click_handler: ?HandlerRef,
+    on_click: ?HandlerRef,
     selected_background: Color,
     hover_background: Color,
     text_color: Color,
@@ -633,7 +640,7 @@ const SelectOption = struct {
             .direction = .row,
             .alignment = .{ .cross = .center },
             .gap = 8,
-            .on_click_handler = self.on_click_handler,
+            .on_click_handler = self.on_click,
         }, .{
             // Checkmark for selected item
             SelectCheckmark{

@@ -49,7 +49,7 @@ pub const TextInput = struct {
     tab_stop: bool = true,
 
     // Handlers
-    on_blur_handler: ?HandlerRef = null,
+    on_blur: ?HandlerRef = null,
 
     // Accessibility overrides
     accessible_name: ?[]const u8 = null, // Label for screen readers
@@ -109,7 +109,7 @@ pub const TextInput = struct {
                 .cursor_color = cursor_color,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
-                .on_blur_handler = self.on_blur_handler,
+                .on_blur_handler = self.on_blur,
             }),
         });
     }

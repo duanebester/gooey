@@ -1309,19 +1309,19 @@ const RadioCard = struct {
                     RadioButton{
                         .label = "Red",
                         .is_selected = s.color_choice == 0,
-                        .on_click_handler = cx.updateWith(@as(u8, 0), AppState.setColor),
+                        .on_click = cx.updateWith(@as(u8, 0), AppState.setColor),
                         .selected_color = t.danger,
                     },
                     RadioButton{
                         .label = "Green",
                         .is_selected = s.color_choice == 1,
-                        .on_click_handler = cx.updateWith(@as(u8, 1), AppState.setColor),
+                        .on_click = cx.updateWith(@as(u8, 1), AppState.setColor),
                         .selected_color = t.success,
                     },
                     RadioButton{
                         .label = "Blue",
                         .is_selected = s.color_choice == 2,
-                        .on_click_handler = cx.updateWith(@as(u8, 2), AppState.setColor),
+                        .on_click = cx.updateWith(@as(u8, 2), AppState.setColor),
                         .selected_color = t.primary,
                     },
                 }),
