@@ -451,7 +451,7 @@ const ShipName = struct {
     opacity: f32 = 1.0,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             Svg{
                 .path = SpaceIcons.ship,
                 .size = 28,
@@ -483,7 +483,7 @@ const StatusIndicator = struct {
 
         const status_alpha = 1.0 - (pulse_intensity * (1.0 - pulse.progress));
 
-        cx.render(ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
             ui.text("STATUS:", .{ .size = 12, .color = Colors.text_dim }),
             ui.text(s.alert_level.label(), .{
                 .size = 14,
@@ -514,7 +514,7 @@ const AlertBadge = struct {
                 .background = Colors.red.withAlpha(glow_alpha),
                 .corner_radius = 10,
             }, .{
-                ui.hstack(.{ .gap = 4, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{
                         .path = SpaceIcons.alert,
                         .size = 12,
@@ -634,7 +634,7 @@ const JumpDrive = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
                     .path = SpaceIcons.jump_drive,
                     .size = 14,
@@ -778,7 +778,7 @@ const SystemGauge = struct {
             .direction = .column,
         }, .{
             ui.box(.{ .direction = .row, .fill_width = true, .alignment = .{ .main = .space_between, .cross = .center } }, .{
-                ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                     Svg{
                         .path = self.icon,
                         .size = 14,
@@ -854,7 +854,7 @@ const ReactorStatus = struct {
             .gap = 8,
             .direction = .column,
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
                     .path = SpaceIcons.reactor,
                     .size = 14,
@@ -909,7 +909,7 @@ const AutopilotStatus = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             Svg{
                 .path = SpaceIcons.autopilot,
                 .size = 16,
@@ -986,7 +986,7 @@ const CoordinatesPanel = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
                     .path = SpaceIcons.coords,
                     .size = 14,
@@ -1034,7 +1034,7 @@ const VelocityDisplay = struct {
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
                     .path = SpaceIcons.velocity,
                     .size = 16,
@@ -1044,7 +1044,7 @@ const VelocityDisplay = struct {
                 },
                 ui.text("VELOCITY", .{ .size = 11, .color = Colors.text_dim }),
             }),
-            ui.hstack(.{ .gap = 4, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                 ui.textFmt("{}", .{s.velocity}, .{ .size = 24, .color = vel_color }),
                 ui.text("km/s", .{ .size = 11, .color = Colors.text_dim }),
             }),
@@ -1064,7 +1064,7 @@ const ShipControls = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
                     .path = SpaceIcons.target,
                     .size = 12,
@@ -1130,7 +1130,7 @@ const AutopilotToggle = struct {
             .alignment = .{ .cross = .center },
             .on_click_handler = cx.update(AppState.toggleAutopilot),
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
                     .path = SpaceIcons.autopilot,
                     .size = 14,
@@ -1166,7 +1166,7 @@ const ShieldsToggle = struct {
             .alignment = .{ .cross = .center },
             .on_click_handler = cx.update(AppState.toggleShields),
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
                     .path = SpaceIcons.shield,
                     .size = 14,
@@ -1289,7 +1289,7 @@ const Footer = struct {
 
 const FooterVersion = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
             Svg{
                 .path = SpaceIcons.dashboard,
                 .size = 12,
@@ -1304,7 +1304,7 @@ const FooterVersion = struct {
 
 const FooterBrand = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 6, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
             Svg{
                 .path = SpaceIcons.star,
                 .size = 12,

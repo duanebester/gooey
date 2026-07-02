@@ -543,10 +543,10 @@ test "hstack element primitive" {
 }
 
 test "vstack element primitive" {
-    const v = vstack(.{ .gap = 12, .alignment = .center }, .{});
+    const v = vstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{});
     try std.testing.expectEqual(PrimitiveType.vstack, @TypeOf(v).primitive_type);
     try std.testing.expectEqual(@as(f32, 12), v.style.gap);
-    try std.testing.expectEqual(styles.StackStyle.Alignment.center, v.style.alignment);
+    try std.testing.expectEqual(styles.Box.Alignment{ .cross = .center }, v.style.alignment);
 }
 
 test "scroll element primitive" {
@@ -636,10 +636,10 @@ test "hstackTracked with source location" {
 
 test "vstackTracked with source location" {
     const src = @src();
-    const v = vstackTracked(.{ .gap = 24, .alignment = .end }, .{}, src);
+    const v = vstackTracked(.{ .gap = 24, .alignment = .{ .cross = .end } }, .{}, src);
     try std.testing.expectEqual(PrimitiveType.vstack, @TypeOf(v).primitive_type);
     try std.testing.expectEqual(@as(f32, 24), v.style.gap);
-    try std.testing.expectEqual(styles.StackStyle.Alignment.end, v.style.alignment);
+    try std.testing.expectEqual(styles.Box.Alignment{ .cross = .end }, v.style.alignment);
     try std.testing.expectEqualStrings("primitives.zig", v.source_loc.file[v.source_loc.file.len - 14 ..]);
 }
 

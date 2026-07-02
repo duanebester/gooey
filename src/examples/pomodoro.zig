@@ -335,7 +335,7 @@ const TimerDisplay = struct {
 
 const TimerControls = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             ControlButtons{},
             ResetButton{},
         }));
@@ -393,7 +393,7 @@ const TaskInput = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             TextInput{
                 .id = "task-input",
                 .placeholder = "Add a task...",
@@ -428,7 +428,7 @@ const TaskItem = struct {
         else
             ui.Color.rgb(0.2, 0.2, 0.2);
 
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             Checkbox{
                 .id = checkbox_id,
                 .checked = data.completed,
@@ -455,7 +455,7 @@ const TaskList = struct {
             .min_height = 150,
             .min_width = 320,
         }, .{
-            ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
                 ui.text("Tasks", .{ .size = 16, .color = ui.Color.rgb(0.3, 0.3, 0.3) }),
                 ui.spacer(),
                 ClearDoneButton{},

@@ -214,7 +214,7 @@ fn render(cx: *Cx) void {
         ui.text("Todos", .{ .size = 28 }),
 
         // Input row: TextInput binds to state.draft; Add is a command.
-        ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             TextInput{ .id = draft_input_id, .placeholder = "What needs doing?", .bind = &s.draft, .fill_width = true },
             Button{ .label = "Add", .on_click_handler = cx.command(AppState.addTodo) },
         }),
@@ -233,7 +233,7 @@ fn render(cx: *Cx) void {
         TodoItems{},
 
         ui.spacer(),
-        ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             ui.textFmt("{d} left", .{s.remaining()}, .{ .size = 14 }),
             ui.spacer(),
             Button{ .label = "Clear completed", .variant = .secondary, .size = .small, .on_click_handler = cx.update(AppState.clearCompleted) },

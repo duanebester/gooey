@@ -100,7 +100,7 @@ const ControlButtons = struct {
         std.debug.assert(@TypeOf(s) == *AppState);
         std.debug.assert(@sizeOf(AppState) > 0);
 
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             Button{
                 .label = "-",
                 .size = .large,
@@ -313,7 +313,7 @@ const LoadingSpinner = struct {
         std.debug.assert(pulse.progress >= 0.0);
         std.debug.assert(pulse.progress <= 1.0);
 
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ui.text("Loading:", .{ .size = 14, .color = Color.rgb(0.5, 0.5, 0.5) }),
             SpinnerBall{ .progress = pulse.progress },
         }));
