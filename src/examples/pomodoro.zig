@@ -431,7 +431,7 @@ const TaskItem = struct {
         cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
             Checkbox{
                 .id = checkbox_id,
-                .checked = data.completed,
+                .selected = data.completed,
                 .on_click_handler = cx.commandWith(self.index, AppState.toggleTask),
                 .checked_background = ui.Color.rgb(0.3, 0.8, 0.5),
             },

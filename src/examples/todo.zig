@@ -300,7 +300,7 @@ const TodoRow = struct {
             .corner_radius = 8,
         }, .{
             Checkbox{
-                .checked = self.done,
+                .selected = self.done,
                 .on_click_handler = cx.updateWith(self.index, AppState.toggle),
             },
             ui.text(self.label, .{

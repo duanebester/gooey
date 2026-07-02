@@ -8,9 +8,9 @@
 //! Usage with Cx (recommended):
 //! ```zig
 //! cx.render(ui.box(.{ .direction = .row, .gap = 0 }, .{
-//!     Tab{ .label = "Home", .is_active = s.page == 0, .on_click = cx.updateWith(@as(u8, 0), State.setPage) },
-//!     Tab{ .label = "Settings", .is_active = s.page == 1, .on_click = cx.updateWith(@as(u8, 1), State.setPage) },
-//!     Tab{ .label = "About", .is_active = s.page == 2, .on_click = cx.updateWith(@as(u8, 2), State.setPage) },
+//!     Tab{ .label = "Home", .selected = s.page == 0, .on_click = cx.updateWith(@as(u8, 0), State.setPage) },
+//!     Tab{ .label = "Settings", .selected = s.page == 1, .on_click = cx.updateWith(@as(u8, 1), State.setPage) },
+//!     Tab{ .label = "About", .selected = s.page == 2, .on_click = cx.updateWith(@as(u8, 2), State.setPage) },
 //! }));
 //! ```
 //!
@@ -18,7 +18,7 @@
 //! ```zig
 //! TabBar{
 //!     .tabs = &.{ "Home", "Settings", "About" },
-//!     .active = s.current_tab,
+//!     .selected = s.current_tab,
 //!     .on_change = setTab,
 //! }
 //! ```
@@ -32,7 +32,7 @@ const HandlerRef = ui.HandlerRef;
 /// A single tab button. Can be used standalone or composed into a tab bar.
 pub const Tab = struct {
     label: []const u8,
-    is_active: bool,
+    selected: bool,
 
     // Click handler - use with cx.updateWith() for index-based navigation.
     // No `_handler` suffix: Tab has no stateless `on_click` variant, so the
@@ -90,17 +90,17 @@ pub const Tab = struct {
             .role = .tab,
             .name = self.accessible_name orelse self.label,
             .state = .{
-                .selected = self.is_active,
+                .selected = self.selected,
             },
             .pos_in_set = self.pos_in_set,
             .set_size = self.set_size,
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        const bg = if (self.is_active) active_bg else inactive_bg;
-        const text_color = if (self.is_active) active_text else inactive_text;
+        const bg = if (self.selected) active_bg else inactive_bg;
+        const text_color = if (self.selected) active_text else inactive_text;
 
-        const hover_bg: ?Color = if (!self.is_active)
+        const hover_bg: ?Color = if (!self.selected)
             self.hover_background orelse blendColors(inactive_bg, active_bg, 0.15)
         else
             null;
@@ -112,7 +112,7 @@ pub const Tab = struct {
         };
 
         const border_width: f32 = switch (self.style) {
-            .underline => if (self.is_active) 2 else 0,
+            .underline => if (self.selected) 2 else 0,
             else => 0,
         };
 
@@ -127,7 +127,7 @@ pub const Tab = struct {
             .hover_background = hover_bg,
             .corner_radius = style_radius,
             .border_width = .{ .all = border_width },
-            .border_color = if (self.style == .underline and self.is_active) active_bg else Color.transparent,
+            .border_color = if (self.style == .underline and self.selected) active_bg else Color.transparent,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
             .on_click_handler = self.on_click,
@@ -137,10 +137,10 @@ pub const Tab = struct {
     }
 
     /// Create a tab with common styling presets
-    pub fn styled(label: []const u8, is_active: bool, handler: ?HandlerRef, style: Style) Tab {
+    pub fn styled(label: []const u8, selected: bool, handler: ?HandlerRef, style: Style) Tab {
         return .{
             .label = label,
-            .is_active = is_active,
+            .selected = selected,
             .on_click = handler,
             .style = style,
         };
@@ -154,7 +154,9 @@ pub const TabBar = struct {
     // (PR 11b.2a). The old `"tabs"` default collided across tab bars.
     id: ?[]const u8 = null,
     tabs: []const []const u8,
-    active: usize,
+    // Optional so "no tab active" is a uniform, first-class state (null)
+    // rather than a magic sentinel index.
+    selected: ?usize = null,
 
     // Simple callback (not for use with Cx.updateWith - use Tab directly for that)
     on_change: ?*const fn (usize) void = null,
@@ -230,7 +232,7 @@ pub const TabBar = struct {
         }, .{
             TabBarItems{
                 .tabs = self.tabs,
-                .active = self.active,
+                .selected = self.selected,
                 .on_change = self.on_change,
                 .style = self.style,
                 .active_background = active_bg,
@@ -251,7 +253,7 @@ pub const TabBar = struct {
 
 const TabBarItems = struct {
     tabs: []const []const u8,
-    active: usize,
+    selected: ?usize,
     on_change: ?*const fn (usize) void,
     style: Tab.Style,
     active_background: Color,
@@ -268,10 +270,14 @@ const TabBarItems = struct {
 
     pub fn render(self: TabBarItems, cx: *ui.Cx) void {
         for (self.tabs, 0..) |label, i| {
+            // Treat null as "no tab active": only the item whose index
+            // matches the chosen index is active.
+            const item_selected = if (self.selected) |sel| i == sel else false;
+
             cx.with(TabBarItem{
                 .label = label,
                 .index = i,
-                .is_active = i == self.active,
+                .selected = item_selected,
                 .on_change = self.on_change,
                 .style = self.style,
                 .active_background = self.active_background,
@@ -294,7 +300,7 @@ const TabBarItems = struct {
 const TabBarItem = struct {
     label: []const u8,
     index: usize,
-    is_active: bool,
+    selected: bool,
     on_change: ?*const fn (usize) void,
     style: Tab.Style,
     active_background: Color,
@@ -311,10 +317,10 @@ const TabBarItem = struct {
     set_size: u16,
 
     pub fn render(self: TabBarItem, cx: *ui.Cx) void {
-        const bg = if (self.is_active) self.active_background else self.inactive_background;
-        const text_color = if (self.is_active) self.active_text_color else self.inactive_text_color;
+        const bg = if (self.selected) self.active_background else self.inactive_background;
+        const text_color = if (self.selected) self.active_text_color else self.inactive_text_color;
 
-        const hover_bg: ?Color = if (!self.is_active)
+        const hover_bg: ?Color = if (!self.selected)
             self.hover_background orelse blendColors(self.inactive_background, self.active_background, 0.15)
         else
             null;
@@ -325,12 +331,12 @@ const TabBarItem = struct {
         };
 
         const border_width: f32 = switch (self.style) {
-            .underline => if (self.is_active) 2 else 0,
+            .underline => if (self.selected) 2 else 0,
             else => 0,
         };
 
         const border_color: Color = switch (self.style) {
-            .underline => if (self.is_active) self.active_background else Color.transparent,
+            .underline => if (self.selected) self.active_background else Color.transparent,
             else => Color.transparent,
         };
 
@@ -363,7 +369,7 @@ const TabBarItem = struct {
             .role = .tab,
             .name = self.label,
             .state = .{
-                .selected = self.is_active,
+                .selected = self.selected,
             },
             .pos_in_set = self.pos_in_set,
             .set_size = self.set_size,

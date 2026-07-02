@@ -19,7 +19,7 @@ pub const Checkbox = struct {
     // box gets a stable parent-scoped auto id (PR 11b.2a). Pass an explicit
     // id only when you need to address this checkbox from outside its render.
     id: ?[]const u8 = null,
-    checked: bool,
+    selected: bool,
     label: ?[]const u8 = null,
 
     // For simple toggle callback (no bool arg, just toggles) - one or the
@@ -74,7 +74,9 @@ pub const Checkbox = struct {
             .name = self.accessible_name orelse self.label orelse self.id,
             .description = self.accessible_description,
             .state = .{
-                .checked = self.checked,
+                // The accessibility protocol names this boolean `checked`;
+                // we feed it from our unified `selected` field.
+                .checked = self.selected,
             },
         });
         defer if (a11y_pushed) cx.accessibleEnd();
@@ -88,7 +90,7 @@ pub const Checkbox = struct {
             .on_click_handler = self.on_click_handler,
         }, .{
             CheckboxBox{
-                .checked = self.checked,
+                .selected = self.selected,
                 .size = self.size,
                 .checked_background = checked_bg,
                 .unchecked_background = unchecked_bg,
@@ -106,7 +108,7 @@ pub const Checkbox = struct {
 };
 
 const CheckboxBox = struct {
-    checked: bool,
+    selected: bool,
     size: f32,
     checked_background: Color,
     unchecked_background: Color,
@@ -118,13 +120,13 @@ const CheckboxBox = struct {
         cx.box(.{
             .width = self.size,
             .height = self.size,
-            .background = if (self.checked) self.checked_background else self.unchecked_background,
+            .background = if (self.selected) self.checked_background else self.unchecked_background,
             .border_color = self.border_color,
             .border_width = .{ .all = 1 },
             .corner_radius = self.corner_radius,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
-            Checkmark{ .visible = self.checked, .color = self.checkmark_color, .size = self.size },
+            Checkmark{ .visible = self.selected, .color = self.checkmark_color, .size = self.size },
         });
     }
 };
