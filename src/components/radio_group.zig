@@ -11,12 +11,12 @@
 //!     RadioButton{
 //!         .label = "Email",
 //!         .is_selected = s.contact == 0,
-//!         .on_click_handler = cx.updateWith(@as(u8, 0), State.setContact),
+//!         .on_click = cx.updateWith(@as(u8, 0), State.setContact),
 //!     },
 //!     RadioButton{
 //!         .label = "Phone",
 //!         .is_selected = s.contact == 1,
-//!         .on_click_handler = cx.updateWith(@as(u8, 1), State.setContact),
+//!         .on_click = cx.updateWith(@as(u8, 1), State.setContact),
 //!     },
 //! }));
 //! ```
@@ -46,8 +46,10 @@ pub const RadioButton = struct {
     label: []const u8,
     is_selected: bool,
 
-    // Click handler - use with cx.updateWith() for index-based selection
-    on_click_handler: ?HandlerRef = null,
+    // Click handler - use with cx.updateWith() for index-based selection.
+    // No `_handler` suffix: RadioButton has no stateless `on_click` variant,
+    // so the base name is free (mirrors the Tab convention).
+    on_click: ?HandlerRef = null,
 
     // Styling (null = use theme)
     size: f32 = 18,
@@ -96,7 +98,7 @@ pub const RadioButton = struct {
             .direction = .row,
             .gap = self.gap,
             .alignment = .{ .cross = .center },
-            .on_click_handler = self.on_click_handler,
+            .on_click_handler = self.on_click,
         }, .{
             RadioCircle{
                 .is_selected = self.is_selected,
@@ -247,7 +249,7 @@ const RadioGroupItems = struct {
             cx.with(RadioButton{
                 .label = label,
                 .is_selected = i == self.selected,
-                .on_click_handler = handler,
+                .on_click = handler,
                 .size = self.size,
                 .selected_color = self.selected_color,
                 .unselected_color = self.unselected_color,

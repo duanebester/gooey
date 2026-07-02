@@ -720,7 +720,7 @@ Checkbox{
 RadioButton{
     .label = "Email",
     .is_selected = s.contact_method == 0,
-    .on_click_handler = cx.updateWith(@as(u8, 0), State.setContactMethod),
+    .on_click = cx.updateWith(@as(u8, 0), State.setContactMethod),
 }
 
 // RadioGroup - grouped buttons with handlers array
@@ -762,7 +762,7 @@ Select{
 
 The widget manages open/close state internally — no toggle/close handlers or per-option handler arrays needed. Just provide `on_select` and a single handler that receives the selected index.
 
-> **Legacy API:** The explicit `is_open` / `on_toggle_handler` / `on_close_handler` / `handlers` fields are still supported for full manual control.
+> **Legacy API:** The explicit `is_open` / `on_toggle` / `on_close` / `handlers` fields are still supported for full manual control.
 
 ### Modal
 
@@ -886,12 +886,12 @@ cx.render(ui.hstack(.{ .gap = 4 }, .{
     Tab{
         .label = "Home",
         .is_active = s.tab == 0,
-        .on_click_handler = cx.updateWith(@as(u8, 0), State.setTab),
+        .on_click = cx.updateWith(@as(u8, 0), State.setTab),
     },
     Tab{
         .label = "Settings",
         .is_active = s.tab == 1,
-        .on_click_handler = cx.updateWith(@as(u8, 1), State.setTab),
+        .on_click = cx.updateWith(@as(u8, 1), State.setTab),
         .style = .underline,  // .pills (default), .underline, .segmented
     },
 }))
@@ -1245,7 +1245,7 @@ gooey.ValidatedTextInput{
     .error_message = s.validateEmail(),  // Simple string error
     .show_error = s.touched_email,       // Only show after interaction
     .help_text = "We'll never share your email",
-    .on_blur_handler = cx.update(State.onEmailBlur),
+    .on_blur = cx.update(State.onEmailBlur),
     .width = 300,
 }
 

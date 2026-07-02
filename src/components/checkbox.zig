@@ -22,7 +22,10 @@ pub const Checkbox = struct {
     checked: bool,
     label: ?[]const u8 = null,
 
-    // For simple toggle callback (no bool arg, just toggles)
+    // For simple toggle callback (no bool arg, just toggles) - one or the
+    // other, never both (enforced in `render`). As with Button, the
+    // `_handler` suffix is retained on `on_click_handler` because the base
+    // name `on_click` is already taken by the stateless variant above it.
     on_click: ?*const fn () void = null,
     on_click_handler: ?HandlerRef = null,
 
@@ -41,6 +44,13 @@ pub const Checkbox = struct {
     accessible_description: ?[]const u8 = null,
 
     pub fn render(self: Checkbox, cx: *ui.Cx) void {
+        // Enforce the "one or the other" contract documented on the fields.
+        // The row box below forwards both click paths unconditionally, so a
+        // caller that set both would wire up two competing handlers; assert
+        // the invariant here where debug builds can still catch it.
+        if (self.on_click != null) std.debug.assert(self.on_click_handler == null);
+        if (self.on_click_handler != null) std.debug.assert(self.on_click == null);
+
         const t = cx.theme();
 
         // Resolve font size: explicit override OR theme base

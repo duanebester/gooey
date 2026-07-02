@@ -6,6 +6,8 @@
 //! Colors default to null, which means "use the current theme".
 //! Set explicit colors to override theme defaults.
 
+const std = @import("std");
+const assert = std.debug.assert;
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
@@ -19,7 +21,11 @@ pub const Button = struct {
     size: Size = .medium,
     enabled: bool = true,
 
-    // Interaction - one or the other
+    // Interaction - one or the other, never both (enforced in `render`).
+    // The stateless `on_click` callback and the state-bound `on_click_handler`
+    // are mutually exclusive. Unlike the other components in this pass, the
+    // `_handler` suffix is retained here because the base name `on_click` is
+    // already taken by the stateless variant directly above it.
     on_click: ?*const fn () void = null,
     on_click_handler: ?HandlerRef = null,
 
@@ -62,6 +68,13 @@ pub const Button = struct {
     };
 
     pub fn render(self: Button, cx: *ui.Cx) void {
+        // Enforce the "one or the other" contract documented on the fields.
+        // `render` forwards both to the box unconditionally, so a caller that
+        // set both would silently wire up two competing click paths; assert
+        // the invariant here where we can still catch it in debug builds.
+        if (self.on_click != null) assert(self.on_click_handler == null);
+        if (self.on_click_handler != null) assert(self.on_click == null);
+
         const t = cx.theme();
 
         // Get theme-based colors for variant
