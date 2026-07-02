@@ -10,12 +10,12 @@
 //! cx.render(ui.box(.{ .direction = .column, .gap = 10 }, .{
 //!     RadioButton{
 //!         .label = "Email",
-//!         .is_selected = s.contact == 0,
+//!         .selected = s.contact == 0,
 //!         .on_click_handler = cx.updateWith(@as(u8, 0), State.setContact),
 //!     },
 //!     RadioButton{
 //!         .label = "Phone",
-//!         .is_selected = s.contact == 1,
+//!         .selected = s.contact == 1,
 //!         .on_click_handler = cx.updateWith(@as(u8, 1), State.setContact),
 //!     },
 //! }));
@@ -44,7 +44,7 @@ const HandlerRef = ui.HandlerRef;
 /// A single radio button. Can be used standalone or composed into groups.
 pub const RadioButton = struct {
     label: []const u8,
-    is_selected: bool,
+    selected: bool,
 
     // Click handler - use with cx.updateWith() for index-based selection
     on_click_handler: ?HandlerRef = null,
@@ -85,7 +85,9 @@ pub const RadioButton = struct {
             .role = .radio,
             .name = self.accessible_name orelse self.label,
             .state = .{
-                .checked = self.is_selected,
+                // The accessibility protocol names this boolean `checked`;
+                // we feed it from our unified `selected` field.
+                .checked = self.selected,
             },
             .pos_in_set = self.pos_in_set,
             .set_size = self.set_size,
@@ -99,7 +101,7 @@ pub const RadioButton = struct {
             .on_click_handler = self.on_click_handler,
         }, .{
             RadioCircle{
-                .is_selected = self.is_selected,
+                .selected = self.selected,
                 .size = self.size,
                 .selected_color = selected,
                 .unselected_color = unselected,
@@ -111,7 +113,7 @@ pub const RadioButton = struct {
 };
 
 const RadioCircle = struct {
-    is_selected: bool,
+    selected: bool,
     size: f32,
     selected_color: Color,
     unselected_color: Color,
@@ -122,13 +124,13 @@ const RadioCircle = struct {
             .width = self.size,
             .height = self.size,
             .background = self.unselected_color,
-            .border_color = if (self.is_selected) self.selected_color else self.border_color,
-            .border_width = .{ .all = if (self.is_selected) 2 else 1 },
+            .border_color = if (self.selected) self.selected_color else self.border_color,
+            .border_width = .{ .all = if (self.selected) 2 else 1 },
             .corner_radius = self.size / 2,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             RadioDot{
-                .visible = self.is_selected,
+                .visible = self.selected,
                 .size = self.size * 0.5,
                 .color = self.selected_color,
             },
@@ -160,7 +162,9 @@ pub const RadioGroup = struct {
     // (PR 11b.2a). The old `"radio-group"` default collided across groups.
     id: ?[]const u8 = null,
     options: []const []const u8,
-    selected: usize,
+    // Optional so "no radio selected" is a uniform, first-class state
+    // (null) rather than a magic sentinel index.
+    selected: ?usize = null,
 
     /// Array of handlers, one per option. Use cx.updateWith() to create these.
     /// If null or shorter than options, missing handlers are treated as no-op.
@@ -227,7 +231,7 @@ pub const RadioGroup = struct {
 
 const RadioGroupItems = struct {
     options: []const []const u8,
-    selected: usize,
+    selected: ?usize,
     handlers: ?[]const HandlerRef,
     size: f32,
     selected_color: Color,
@@ -244,9 +248,13 @@ const RadioGroupItems = struct {
             else
                 null;
 
+            // Treat null as "no radio selected": only the item whose index
+            // matches the chosen index is selected.
+            const item_selected = if (self.selected) |sel| i == sel else false;
+
             cx.with(RadioButton{
                 .label = label,
-                .is_selected = i == self.selected,
+                .selected = item_selected,
                 .on_click_handler = handler,
                 .size = self.size,
                 .selected_color = self.selected_color,

@@ -446,7 +446,7 @@ const ContactPreferencesSection = struct {
             ui.spacerMin(8),
             Checkbox{
                 .id = "newsletter",
-                .checked = self.newsletter,
+                .selected = self.newsletter,
                 .label = "Subscribe to our newsletter",
                 .accessible_name = "Subscribe to newsletter",
                 .accessible_description = "Receive weekly updates about our products and services",
@@ -636,7 +636,7 @@ const TermsSection = struct {
         }, .{
             Checkbox{
                 .id = "terms",
-                .checked = self.terms_accepted,
+                .selected = self.terms_accepted,
                 .label = "I accept the Terms and Conditions *",
                 .accessible_name = "Accept terms and conditions, required",
                 .accessible_description = if (self.has_error)

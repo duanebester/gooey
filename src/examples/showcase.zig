@@ -1271,20 +1271,20 @@ const CheckboxCard = struct {
             ui.box(.{ .gap = 12 }, .{
                 Checkbox{
                     .id = "opt-a",
-                    .checked = s.option_a,
+                    .selected = s.option_a,
                     .label = "Option A (checked by default)",
                     .on_click_handler = cx.update(AppState.toggleOptionA),
                     // Uses theme defaults
                 },
                 Checkbox{
                     .id = "opt-b",
-                    .checked = s.option_b,
+                    .selected = s.option_b,
                     .label = "Option B",
                     .on_click_handler = cx.update(AppState.toggleOptionB),
                 },
                 Checkbox{
                     .id = "opt-c",
-                    .checked = s.option_c,
+                    .selected = s.option_c,
                     .label = "Option C (success color)",
                     .on_click_handler = cx.update(AppState.toggleOptionC),
                     // Override just the checked color
@@ -1308,19 +1308,19 @@ const RadioCard = struct {
                     ui.text("Color", .{ .size = 13, .color = t.muted }),
                     RadioButton{
                         .label = "Red",
-                        .is_selected = s.color_choice == 0,
+                        .selected = s.color_choice == 0,
                         .on_click_handler = cx.updateWith(@as(u8, 0), AppState.setColor),
                         .selected_color = t.danger,
                     },
                     RadioButton{
                         .label = "Green",
-                        .is_selected = s.color_choice == 1,
+                        .selected = s.color_choice == 1,
                         .on_click_handler = cx.updateWith(@as(u8, 1), AppState.setColor),
                         .selected_color = t.success,
                     },
                     RadioButton{
                         .label = "Blue",
-                        .is_selected = s.color_choice == 2,
+                        .selected = s.color_choice == 2,
                         .on_click_handler = cx.updateWith(@as(u8, 2), AppState.setColor),
                         .selected_color = t.primary,
                     },
