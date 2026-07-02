@@ -8,7 +8,7 @@
 //!
 //! // Components (preferred)
 //! gooey.Button{ .label = "Click", .on_click_handler = cx.update(State.onClick) }
-//! gooey.Checkbox{ .id = "agree", .checked = state.agreed, .on_click_handler = cx.update(State.toggle) }
+//! gooey.Checkbox{ .id = "agree", .selected = state.agreed, .on_click_handler = cx.update(State.toggle) }
 //! gooey.TextInput{ .id = "name", .placeholder = "Enter name", .bind = &state.name }
 //!
 //! // Primitives (for text, spacers, etc.)

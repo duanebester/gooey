@@ -569,11 +569,13 @@ const SelectOptions = struct {
 
         for (self.options, 0..) |label, i| {
             const handler: ?HandlerRef = self.resolveOptionHandler(i);
-            const is_selected = if (self.selected) |sel| sel == i else false;
+            // `self.selected` is the chosen index (?usize); this derives the
+            // per-option boolean for the item at index `i`.
+            const option_selected = if (self.selected) |sel| sel == i else false;
 
             cx.with(SelectOption{
                 .label = label,
-                .is_selected = is_selected,
+                .selected = option_selected,
                 .on_click_handler = handler,
                 .selected_background = self.selected_background,
                 .hover_background = self.hover_background,
@@ -611,7 +613,7 @@ const SelectOptions = struct {
 /// A single option in the dropdown
 const SelectOption = struct {
     label: []const u8,
-    is_selected: bool,
+    selected: bool,
     on_click_handler: ?HandlerRef,
     selected_background: Color,
     hover_background: Color,
@@ -622,7 +624,7 @@ const SelectOption = struct {
     padding: f32,
 
     pub fn render(self: SelectOption, cx: *ui.Cx) void {
-        const bg = if (self.is_selected) self.selected_background else Color.transparent;
+        const bg = if (self.selected) self.selected_background else Color.transparent;
 
         cx.box(.{
             .fill_width = true,
@@ -637,7 +639,7 @@ const SelectOption = struct {
         }, .{
             // Checkmark for selected item
             SelectCheckmark{
-                .visible = self.is_selected,
+                .visible = self.selected,
                 .color = self.checkmark_color,
             },
             // Option text

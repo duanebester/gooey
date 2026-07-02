@@ -269,7 +269,7 @@ const TodoRow = struct {
             .background = ui.Color.white,
             .corner_radius = 8,
         }, .{
-            Checkbox{ .checked = self.done, .on_click_handler = cx.updateWith(self.index, AppState.toggle) },
+            Checkbox{ .selected = self.done, .on_click_handler = cx.updateWith(self.index, AppState.toggle) },
             ui.text(self.label, .{ .size = 16 }),
             ui.spacer(),
             Button{ .label = "Delete", .variant = .danger, .size = .small, .on_click_handler = cx.updateWith(self.index, AppState.remove) },
@@ -708,7 +708,7 @@ TextArea{
 ```zig
 Checkbox{
     .id = "terms",
-    .checked = s.agreed_to_terms,
+    .selected = s.agreed_to_terms,
     .on_click_handler = cx.update(State.toggleTerms),
 }
 ```
@@ -719,7 +719,7 @@ Checkbox{
 // RadioButton - individual buttons for custom layouts
 RadioButton{
     .label = "Email",
-    .is_selected = s.contact_method == 0,
+    .selected = s.contact_method == 0,
     .on_click_handler = cx.updateWith(@as(u8, 0), State.setContactMethod),
 }
 
@@ -885,12 +885,12 @@ ProgressBar{
 cx.render(ui.hstack(.{ .gap = 4 }, .{
     Tab{
         .label = "Home",
-        .is_active = s.tab == 0,
+        .selected = s.tab == 0,
         .on_click_handler = cx.updateWith(@as(u8, 0), State.setTab),
     },
     Tab{
         .label = "Settings",
-        .is_active = s.tab == 1,
+        .selected = s.tab == 1,
         .on_click_handler = cx.updateWith(@as(u8, 1), State.setTab),
         .style = .underline,  // .pills (default), .underline, .segmented
     },
