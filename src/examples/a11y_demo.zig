@@ -298,7 +298,7 @@ const ToggleSection = struct {
                 // Notifications toggle - Checkbox has built-in a11y
                 gooey.components.Checkbox{
                     .id = "notifications",
-                    .checked = self.notifications,
+                    .selected = self.notifications,
                     .label = if (self.notifications) "Notifications On" else "Notifications Off",
                     .accessible_name = "Enable Notifications",
                     .on_click_handler = cx.update(AppState.toggleNotifications),
@@ -306,7 +306,7 @@ const ToggleSection = struct {
                 // Dark mode toggle - Checkbox has built-in a11y
                 gooey.components.Checkbox{
                     .id = "dark_mode",
-                    .checked = self.dark_mode,
+                    .selected = self.dark_mode,
                     .label = if (self.dark_mode) "Dark Mode On" else "Dark Mode Off",
                     .accessible_name = "Dark Mode",
                     .on_click_handler = cx.update(AppState.toggleDarkMode),
@@ -405,7 +405,7 @@ const ActionLogSection = struct {
 //
 //   Checkbox{
 //       .id = "agree",
-//       .checked = state.agreed,
+//       .selected = state.agreed,
 //       .label = "I agree",
 //       .accessible_name = "Accept terms and conditions",
 //       .on_click_handler = handler,
