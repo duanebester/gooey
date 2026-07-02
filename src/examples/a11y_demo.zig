@@ -195,7 +195,7 @@ const A11yStatusSection = struct {
             defer cx.accessibleEnd();
         }
 
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ui.box(.{
                 .width = 12,
                 .height = 12,
@@ -239,7 +239,7 @@ const CounterSection = struct {
                 .weight = .semibold,
             }),
 
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 // Decrement button - Button has built-in a11y
                 Button{
                     .label = "−",
@@ -351,7 +351,7 @@ const StatusSection = struct {
             .background = bg_color,
             .corner_radius = 8,
         }, .{
-            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
                 ui.text(if (is_error) "⚠" else "✓", .{ .size = 16, .color = text_color }),
                 ui.text(self.message, .{ .size = 14, .color = text_color }),
                 ui.spacerMin(20),

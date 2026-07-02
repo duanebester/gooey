@@ -170,7 +170,7 @@ const ControlPanel = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             // These need command() because they create/remove entities
             Button{ .label = "+ Add Counter", .on_click_handler = cx.command(AppState.addCounter) },
             Button{ .label = "- Remove Counter", .variant = .secondary, .on_click_handler = cx.command(AppState.removeCounter) },

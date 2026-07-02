@@ -96,11 +96,12 @@ fn render(cx: *Cx) void {
     const s = cx.state(AppState);
     const size = cx.windowSize();
 
-    // Resolve alignment based on state
-    const main_align: ui.StackStyle.Alignment = switch (s.selected_alignment) {
-        .start => .start,
-        .center => .center,
-        .end => .end,
+    // Resolve alignment based on state. Stacks now take a full `Box.Alignment`;
+    // this demo only varies the cross axis, matching the pre-unification behavior.
+    const main_align: ui.Box.Alignment = switch (s.selected_alignment) {
+        .start => .{ .cross = .start },
+        .center => .{ .cross = .center },
+        .end => .{ .cross = .end },
     };
 
     cx.render(ui.box(.{
@@ -148,7 +149,7 @@ fn render(cx: *Cx) void {
         // Test 2: on_click_handler on ui.box()
         // =================================================================
         SectionHeader{ .title = "2. Click Handler on Box" },
-        ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             ui.box(.{
                 .padding = .{ .all = 16 },
                 .background = Color.rgb(0.3, 0.5, 0.7),
@@ -168,7 +169,7 @@ fn render(cx: *Cx) void {
         // Test 3: Alignment on ui.hstack() / ui.vstack()
         // =================================================================
         SectionHeader{ .title = "3. Stack Alignment" },
-        ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ui.text("Alignment:", .{ .size = 12, .color = Color.rgb(0.6, 0.6, 0.6) }),
             Button{
                 .label = "Start",
@@ -208,7 +209,7 @@ fn render(cx: *Cx) void {
         // Test 4: Nested ui.when() inside ui.box()
         // =================================================================
         SectionHeader{ .title = "4. Nested Conditionals" },
-        ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             Button{
                 .label = if (s.show_details) "Hide" else "Show",
                 .size = .small,
@@ -236,7 +237,7 @@ fn render(cx: *Cx) void {
         // Test 5: Components with render() inside new containers
         // =================================================================
         SectionHeader{ .title = "5. Components in Containers" },
-        ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             // Custom component inside ui.hstack
             CounterBadge{ .value = s.count, .label = "Count" },
             CounterBadge{ .value = s.click_count, .label = "Clicks" },
@@ -269,7 +270,7 @@ fn render(cx: *Cx) void {
             .corner_radius = 6,
             .padding = .{ .all = 12 },
         }, .{
-            ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
                 ui.text("Left", .{ .size = 12, .color = Color.white }),
                 ui.spacer(), // Flexible spacer pushes content apart
                 ui.text("Right", .{ .size = 12, .color = Color.white }),
@@ -281,7 +282,7 @@ fn render(cx: *Cx) void {
             .corner_radius = 6,
             .padding = .{ .all = 12 },
         }, .{
-            ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
                 ui.text("A", .{ .size = 12, .color = Color.white }),
                 ui.spacerMin(50), // Fixed minimum spacer
                 ui.text("B", .{ .size = 12, .color = Color.white }),

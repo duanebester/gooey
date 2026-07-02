@@ -211,7 +211,7 @@ const InputRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             TextInput{
                 .id = draft_input_id,
                 .placeholder = "What needs doing?",
@@ -326,7 +326,7 @@ const Footer = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             ui.textFmt("{d} left", .{s.remaining()}, .{
                 .size = 14,
                 .color = ui.Color.rgb(0.4, 0.4, 0.45),

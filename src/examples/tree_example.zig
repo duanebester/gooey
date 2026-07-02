@@ -177,7 +177,7 @@ const Header = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const theme = cx.theme();
 
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ui.text("Tree List Demo", .{
                 .size = 18,
                 .weight = .bold,

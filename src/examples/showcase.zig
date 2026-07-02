@@ -1120,13 +1120,13 @@ const ButtonVariantsCard = struct {
         const card = Card{ .title = "Button Variants", .description = "Different button styles for various contexts" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
                 Button{ .label = "Primary", .variant = .primary },
                 Button{ .label = "Secondary", .variant = .secondary },
                 Button{ .label = "Danger", .variant = .danger },
             }),
 
-            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
                 Button{ .label = "Disabled", .variant = .primary, .enabled = false },
                 Tooltip(Button){
                     .text = "This button has a tooltip!",
@@ -1144,7 +1144,7 @@ const ButtonSizesCard = struct {
         const card = Card{ .title = "Button Sizes", .description = "Small, medium, and large variants" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
                 Button{ .label = "Small", .size = .small },
                 Button{ .label = "Medium", .size = .medium },
                 Button{ .label = "Large", .size = .large },
@@ -1160,7 +1160,7 @@ const ButtonInteractiveCard = struct {
         const card = Card{ .title = "Interactive Demo", .description = "Click to see state updates" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 Button{
                     .label = "Click Me!",
                     .variant = .primary,
@@ -1204,7 +1204,7 @@ const TextInputCard = struct {
 
         card.render(cx, .{
             ui.box(.{ .gap = 16 }, .{
-                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                     TextInput{
                         .id = "name-input",
                         .placeholder = "Your name",
@@ -1302,7 +1302,7 @@ const RadioCard = struct {
         const card = Card{ .title = "Radio Buttons", .description = "Select one option from a group" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 32, .alignment = .start }, .{
+            ui.hstack(.{ .gap = 32, .alignment = .{ .cross = .start } }, .{
                 // Color selection - vertical
                 ui.box(.{ .gap = 8 }, .{
                     ui.text("Color", .{ .size = 13, .color = t.muted }),
@@ -1358,7 +1358,7 @@ const SelectCard = struct {
         const card = Card{ .title = "Select / Dropdown", .description = "Choose from a list of options" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 24, .alignment = .start }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .{ .cross = .start } }, .{
                 ui.box(.{ .gap = 8 }, .{
                     ui.text("Fruit", .{ .size = 13, .color = t.muted }),
                     Select{
@@ -1407,7 +1407,7 @@ const ProgressCard = struct {
 
         card.render(cx, .{
             ui.box(.{ .gap = 16 }, .{
-                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                     ui.text("65%", .{ .size = 13, .color = t.muted }),
                     ProgressBar{
                         .progress = 0.65,
@@ -1416,7 +1416,7 @@ const ProgressCard = struct {
                         // Uses theme defaults (overlay bg, primary fill)
                     },
                 }),
-                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                     ui.text("25%", .{ .size = 13, .color = t.muted }),
                     ProgressBar{
                         .progress = 0.25,
@@ -1425,7 +1425,7 @@ const ProgressCard = struct {
                         .fill = t.warning,
                     },
                 }),
-                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                     ui.text("100%", .{ .size = 13, .color = t.muted }),
                     ProgressBar{
                         .progress = 1.0,
@@ -1434,7 +1434,7 @@ const ProgressCard = struct {
                         .fill = t.success,
                     },
                 }),
-                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                     Button{
                         .label = "Step Progress",
                         .variant = .secondary,
@@ -1462,7 +1462,7 @@ const TooltipCard = struct {
         const card = Card{ .title = "Tooltips", .description = "Hover to see contextual information" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                 Tooltip(Button){
                     .text = "Appears above",
                     .position = .top,
@@ -1508,7 +1508,7 @@ const ModalCard = struct {
 
         card.render(cx, .{
             ui.box(.{ .gap = 16 }, .{
-                ui.hstack(.{ .gap = 16, .alignment = .center }, .{
+                ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                     Button{
                         .label = "Info Modal",
                         .variant = .primary,
@@ -1560,7 +1560,7 @@ const ConfirmModalContent = struct {
                 .color = t.subtext,
                 .wrap = .words,
             }),
-            ui.hstack(.{ .gap = 12, .alignment = .end }, .{
+            ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .end } }, .{
                 ui.spacer(),
                 Button{
                     .label = "Cancel",
@@ -1597,7 +1597,7 @@ const BasicIconsCard = struct {
         const card = Card{ .title = "Basic Icons", .description = "Built-in Material Design icon set" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 20, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 20, .alignment = .{ .cross = .center } }, .{
                 IconWithLabel{ .icon = Icons.folder, .label = "Folder" },
                 IconWithLabel{ .icon = Icons.search, .label = "Search" },
                 IconWithLabel{ .icon = Icons.edit, .label = "Edit" },
@@ -1607,7 +1607,7 @@ const BasicIconsCard = struct {
                 IconWithLabel{ .icon = Icons.menu, .label = "Menu" },
                 IconWithLabel{ .icon = Icons.download, .label = "Download" },
             }),
-            ui.hstack(.{ .gap = 20, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 20, .alignment = .{ .cross = .center } }, .{
                 IconWithLabel{ .icon = Icons.check, .label = "Check", .color = t.success },
                 IconWithLabel{ .icon = Icons.close, .label = "Close", .color = t.danger },
                 IconWithLabel{ .icon = Icons.warning, .label = "Warning", .color = t.warning },
@@ -1647,7 +1647,7 @@ const StyledIconsCard = struct {
         const card = Card{ .title = "Icon Styles", .description = "Different sizes and stroke widths" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 24, .alignment = .end }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .{ .cross = .end } }, .{
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     // Use no_fill = true for stroke-only rendering
                     Svg{ .path = Icons.star_outline, .size = 16, .no_fill = true, .stroke_color = t.subtext, .stroke_width = 1.5 },
@@ -1666,7 +1666,7 @@ const StyledIconsCard = struct {
                     ui.text("48px", .{ .size = 11, .color = t.muted }),
                 }),
             }),
-            ui.hstack(.{ .gap = 24, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .{ .cross = .center } }, .{
                 // Filled star (use fill for solid icons)
                 Svg{ .path = Icons.star, .size = 32, .color = t.warning },
                 // Stroke only (use no_fill + stroke for outline icons)
@@ -1689,7 +1689,7 @@ const CustomPathsCard = struct {
         const card = Card{ .title = "Custom SVG Paths", .description = "Arcs, beziers, and custom shapes" };
 
         card.render(cx, .{
-            ui.hstack(.{ .gap = 24, .alignment = .center }, .{
+            ui.hstack(.{ .gap = 24, .alignment = .{ .cross = .center } }, .{
                 ui.box(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
                     Svg{ .path = circle_path, .size = 32, .no_fill = true, .stroke_color = t.primary, .stroke_width = 2 },
                     ui.text("Circle (Arc)", .{ .size = 11, .color = t.muted }),

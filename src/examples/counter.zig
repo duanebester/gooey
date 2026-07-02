@@ -143,7 +143,7 @@ const CounterDisplay = struct {
 
 const ControlButtons = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             // Pure state handlers - cx.update()
             Button{ .label = "−", .size = .large, .on_click_handler = cx.update(AppState.decrement) },
             Button{ .label = "+", .size = .large, .on_click_handler = cx.update(AppState.increment) },
@@ -163,7 +163,7 @@ const StepSelector = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
 
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .center }, .{
+        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ui.text("Step:", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
 
             // Using cx.updateWith() to pass arguments

@@ -826,7 +826,7 @@ const EditorPanel = struct {
                     .corner_radius = 8,
                     .alignment = .{ .main = .center, .cross = .center },
                 }, .{
-                    ui.vstack(.{ .gap = 16, .alignment = .center }, .{
+                    ui.vstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
                         Svg{
                             .path = s.file_status.getIconPath(),
                             .size = 48,

@@ -816,18 +816,13 @@ pub const Builder = struct {
     }
 
     fn vstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
+        // A vstack is a box fixed to column direction; alignment and padding
+        // pass straight through now that they share Box's types.
         self.boxWithIdTracked(null, .{
             .direction = .column,
             .gap = style.gap,
-            .padding = .{ .all = style.padding },
-            .alignment = .{
-                .cross = switch (style.alignment) {
-                    .start => .start,
-                    .center => .center,
-                    .end => .end,
-                    .stretch => .stretch,
-                },
-            },
+            .padding = style.padding,
+            .alignment = style.alignment,
         }, children, loc);
     }
 
@@ -843,18 +838,13 @@ pub const Builder = struct {
     }
 
     fn hstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
+        // A hstack is a box fixed to row direction; alignment and padding
+        // pass straight through now that they share Box's types.
         self.boxWithIdTracked(null, .{
             .direction = .row,
             .gap = style.gap,
-            .padding = .{ .all = style.padding },
-            .alignment = .{
-                .cross = switch (style.alignment) {
-                    .start => .start,
-                    .center => .center,
-                    .end => .end,
-                    .stretch => .stretch,
-                },
-            },
+            .padding = style.padding,
+            .alignment = style.alignment,
         }, children, loc);
     }
 
@@ -862,7 +852,7 @@ pub const Builder = struct {
     pub fn center(self: *Self, style: CenterStyle, children: anytype) void {
         self.box(.{
             .grow = true,
-            .padding = .{ .all = style.padding },
+            .padding = style.padding,
             .alignment = .{ .main = .center, .cross = .center },
         }, children);
     }
@@ -1010,7 +1000,10 @@ pub const Builder = struct {
                     .height = content_height_sizing,
                 },
                 .layout_direction = .top_to_bottom,
-                .child_gap = style.gap,
+                // `style.gap` is f32 (matching Box/StackStyle); the layout
+                // engine's `child_gap` is an integer pixel count, so truncate
+                // here exactly as box does with `props.gap`.
+                .child_gap = @intFromFloat(style.gap),
             },
         }) catch return;
 

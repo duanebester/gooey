@@ -438,17 +438,21 @@ pub const CodeEditorStyle = struct {
 // =============================================================================
 
 /// Stack layout options
+///
+/// A stack is a `Box` with a fixed `.direction`, so it shares `Box`'s
+/// alignment and padding types. This makes a stack a clean subset of box
+/// (and a superset: main-axis distribution is now available on stacks too).
+/// The `.{}` default (main=start, cross=start) preserves prior behavior,
+/// where stack alignment only affected the cross axis.
 pub const StackStyle = struct {
     gap: f32 = 0,
-    alignment: Alignment = .start,
-    padding: f32 = 0,
-
-    pub const Alignment = enum { start, center, end, stretch };
+    alignment: Box.Alignment = .{},
+    padding: Box.PaddingValue = .{ .all = 0 },
 };
 
 /// Center container options
 pub const CenterStyle = struct {
-    padding: f32 = 0,
+    padding: Box.PaddingValue = .{ .all = 0 },
 };
 
 /// Scroll container options
@@ -469,7 +473,10 @@ pub const ScrollStyle = struct {
 
     /// Padding inside the scroll area
     padding: Box.PaddingValue = .{ .all = 0 },
-    gap: u16 = 0,
+    /// Gap between children, in pixels. `f32` to match `Box.gap` and
+    /// `StackStyle.gap`; converted to the layout engine's integer
+    /// `child_gap` at the point of use.
+    gap: f32 = 0,
     background: ?Color = null,
     corner_radius: f32 = 0,
     /// Scrollbar styling
