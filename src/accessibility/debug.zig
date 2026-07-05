@@ -60,7 +60,7 @@ pub const TreeStats = struct {
             .announcement_count = 0,
             .max_depth = 0,
             .focusable_count = 0,
-            .role_counts = [_]usize{0} ** 256,
+            .role_counts = @splat(0),
         };
     }
 };

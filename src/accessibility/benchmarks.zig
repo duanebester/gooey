@@ -102,6 +102,8 @@ const NAME_STRIDE: u32 = 20;
 
 /// Table width for benchmark output formatting (characters per row).
 const TABLE_WIDTH = 99;
+const TABLE_RULE: [TABLE_WIDTH]u8 = @splat('=');
+const TABLE_SEPARATOR: [TABLE_WIDTH]u8 = @splat('-');
 
 // =============================================================================
 // Iteration Sample Collection and Percentile Computation
@@ -514,7 +516,7 @@ pub fn main(init: std.process.Init) !void {
     printSectionHeader("Gooey Accessibility Benchmarks — Fingerprint (fingerprint.compute)");
     collect(&reporter, benchFingerprint("fingerprint_flat_4k", 4000, false));
     collect(&reporter, benchFingerprint("fingerprint_parented_4k", 4000, true));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     // =========================================================================
     // Frame Diff (the full per-frame snapshot + rebuild + dirty/removed diff)
@@ -526,7 +528,7 @@ pub fn main(init: std.process.Init) !void {
     collectFrame(&reporter, try benchFrameDiff(allocator, "frame_stable_1000", 1000, 0));
     collectFrame(&reporter, try benchFrameDiff(allocator, "frame_churn_256", 256, 32));
     collectFrame(&reporter, try benchFrameDiff(allocator, "frame_churn_1000", 1000, 125));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
 
     std.debug.print(
         \\
@@ -556,11 +558,11 @@ fn printSectionHeader(comptime title: []const u8) void {
     comptime std.debug.assert(title.len > 0);
     comptime std.debug.assert(title.len < TABLE_WIDTH);
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("{s}\n", .{title});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 }
 
 fn printHeader() void {
@@ -576,9 +578,9 @@ fn printHeader() void {
 
 fn printFrameHeader() void {
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("Gooey Accessibility Benchmarks — Frame Diff (beginFrame -> build N -> endFrame)\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_RULE ++ "\n", .{});
     std.debug.print("| {s:<28} | {s:>6} | {s:>13} | {s:>13} | {s:>6} | {s:>6} |\n", .{
         "Test",
         "Elems",
@@ -587,5 +589,5 @@ fn printFrameHeader() void {
         "60Hz",
         "120Hz",
     });
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(TABLE_SEPARATOR ++ "\n", .{});
 }

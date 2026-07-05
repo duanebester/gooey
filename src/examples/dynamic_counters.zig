@@ -47,7 +47,7 @@ const Counter = struct {
 const MaxCounters = 10;
 
 const AppState = struct {
-    counters: [MaxCounters]gooey.context.Entity(Counter) = [_]gooey.context.Entity(Counter){gooey.context.Entity(Counter).nil()} ** MaxCounters,
+    counters: [MaxCounters]gooey.context.Entity(Counter) = @splat(.nil()),
     counter_count: usize = 0,
     next_label: u8 = 'A',
 

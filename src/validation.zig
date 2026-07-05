@@ -715,7 +715,7 @@ pub fn FormErrors(comptime max_fields: usize) type {
         /// Initialize with no errors.
         pub fn init() Self {
             return .{
-                .errors = [_]?[]const u8{null} ** max_fields,
+                .errors = @splat(null),
             };
         }
 
@@ -741,7 +741,7 @@ pub fn FormErrors(comptime max_fields: usize) type {
 
         /// Clear all errors.
         pub fn clear(self: *Self) void {
-            self.errors = [_]?[]const u8{null} ** max_fields;
+            self.errors = @splat(null);
         }
 
         /// Returns the number of fields with errors.
@@ -777,7 +777,7 @@ pub fn TouchedFields(comptime max_fields: usize) type {
         /// Initialize with no fields touched.
         pub fn init() Self {
             return .{
-                .touched = [_]bool{false} ** max_fields,
+                .touched = @splat(false),
             };
         }
 
@@ -795,12 +795,12 @@ pub fn TouchedFields(comptime max_fields: usize) type {
 
         /// Mark all fields as touched (useful on form submit).
         pub fn touchAll(self: *Self) void {
-            self.touched = [_]bool{true} ** max_fields;
+            self.touched = @splat(true);
         }
 
         /// Reset all fields to untouched.
         pub fn reset(self: *Self) void {
-            self.touched = [_]bool{false} ** max_fields;
+            self.touched = @splat(false);
         }
 
         /// Get error only if field is touched.

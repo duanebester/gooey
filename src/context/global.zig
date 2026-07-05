@@ -130,7 +130,7 @@ const Entry = struct {
 pub const Globals = struct {
     /// Backing table. Linear-scanned on every access; see the module
     /// doc for why a hash map would be slower at this size.
-    entries: [MAX_GLOBALS]Entry = @splat(Entry.empty),
+    entries: [MAX_GLOBALS]Entry = @splat(.empty),
 
     /// High-water mark. Lookups scan `[0, count)` rather than the
     /// full capacity, so a sparsely-populated table stays fast. Never

@@ -376,7 +376,7 @@ test "counter with bounds pattern" {
 test "toggle collection pattern" {
     // Common pattern: multi-select with toggles
     const SelectionState = struct {
-        selected: [8]bool = [_]bool{false} ** 8,
+        selected: [8]bool = @splat(false),
         count: usize = 8,
 
         pub fn toggle(self: *@This(), index: usize) void {

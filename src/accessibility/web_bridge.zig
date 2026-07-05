@@ -86,14 +86,14 @@ pub const WebBridge = struct {
     container_id: u32 = 0,
 
     /// Pool of DOM element IDs (0 = unused)
-    dom_ids: [constants.MAX_ELEMENTS]u32 = [_]u32{0} ** constants.MAX_ELEMENTS,
+    dom_ids: [constants.MAX_ELEMENTS]u32 = @splat(0),
 
     /// Map fingerprint -> slot for stable identity
     fingerprint_to_slot: [constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint =
-        [_]fingerprint_mod.Fingerprint{fingerprint_mod.Fingerprint.INVALID} ** constants.MAX_ELEMENTS,
+        @splat(.INVALID),
 
     /// Slot usage tracking
-    slot_active: [constants.MAX_ELEMENTS]bool = [_]bool{false} ** constants.MAX_ELEMENTS,
+    slot_active: [constants.MAX_ELEMENTS]bool = @splat(false),
 
     /// Currently focused slot (to prevent focus loops)
     focused_slot: ?u16 = null,

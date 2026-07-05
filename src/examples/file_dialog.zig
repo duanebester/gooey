@@ -20,7 +20,7 @@ const AppState = struct {
     last_action: []const u8 = "No file selected yet",
     // Store up to 10 paths for display
     path_storage: [10][256]u8 = undefined,
-    path_lens: [10]usize = [_]usize{0} ** 10,
+    path_lens: [10]usize = @splat(0),
     path_count: usize = 0,
 
     pub fn openSingleFile(self: *AppState) void {

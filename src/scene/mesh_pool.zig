@@ -97,7 +97,7 @@ pub const MeshPool = struct {
         return .{
             .allocator = allocator,
             .persistent = null,
-            .persistent_hashes = [_]u64{0} ** MAX_PERSISTENT_MESHES,
+            .persistent_hashes = @splat(0),
             .persistent_count = 0,
             .frame_meshes = null,
             .frame_count = 0,

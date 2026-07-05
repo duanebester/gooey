@@ -63,7 +63,7 @@ pub const MacBridge = struct {
     /// Map fingerprint -> wrapper slot for stable identity
     /// Linear search is fine for typical element counts (<500)
     fingerprint_to_slot: [constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint =
-        [_]fingerprint_mod.Fingerprint{fingerprint_mod.Fingerprint.INVALID} ** constants.MAX_ELEMENTS,
+        @splat(.INVALID),
 
     /// Root accessibility element (the window)
     root_element: ?objc.Object = null,

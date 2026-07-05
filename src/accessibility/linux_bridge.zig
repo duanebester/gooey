@@ -71,13 +71,13 @@ pub const LinuxBridge = struct {
     bus_name_len: u8 = 0,
 
     /// Pool of AT-SPI2 accessible objects (static allocation)
-    objects: [constants.MAX_ELEMENTS]A11yObject = [_]A11yObject{A11yObject{}} ** constants.MAX_ELEMENTS,
+    objects: [constants.MAX_ELEMENTS]A11yObject = @splat(.{}),
     object_count: u16 = 0,
 
     /// Map fingerprint -> object slot for stable identity
     /// Linear search is fine for typical element counts (<500)
     fingerprint_to_slot: [constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint =
-        [_]fingerprint_mod.Fingerprint{fingerprint_mod.Fingerprint.INVALID} ** constants.MAX_ELEMENTS,
+        @splat(.INVALID),
 
     /// Is AT-SPI2 active and a screen reader running?
     atspi_active: bool = false,
@@ -720,7 +720,9 @@ pub const LinuxBridge = struct {
         else
             "accessible-value";
 
-        const signal_name = std.fmt.bufPrintZ(&signal_detail_buf, "PropertyChange:{s}", .{detail_name}) catch return;
+        // Zig 0.17 removed "std.fmt.bufPrintZ"
+        // Use "bufPrintSentinel" with sentinel 0 here
+        const signal_name = std.fmt.bufPrintSentinel(&signal_detail_buf, "PropertyChange:{s}", .{detail_name}, 0) catch return;
         _ = signal_name;
 
         // Get null-terminated path
@@ -745,7 +747,7 @@ pub const LinuxBridge = struct {
 
         // Append detail string
         var detail_z_buf: [32]u8 = undefined;
-        const detail_z = std.fmt.bufPrintZ(&detail_z_buf, "{s}", .{detail_name}) catch return;
+        const detail_z = std.fmt.bufPrintSentinel(&detail_z_buf, "{s}", .{detail_name}, 0) catch return;
         if (!iter.appendString(detail_z)) return;
 
         // Append detail1 (0)
@@ -756,7 +758,7 @@ pub const LinuxBridge = struct {
 
         // Append value as variant (string)
         var value_z_buf: [256]u8 = undefined;
-        const value_z = std.fmt.bufPrintZ(&value_z_buf, "{s}", .{value}) catch return;
+        const value_z = std.fmt.bufPrintSentinel(&value_z_buf, "{s}", .{value}, 0) catch return;
         if (!iter.appendVariantString(value_z)) return;
 
         // Send signal
@@ -819,7 +821,7 @@ pub const LinuxBridge = struct {
 
         // State name (e.g., "focused", "checked")
         var state_z_buf: [32]u8 = undefined;
-        const state_z = std.fmt.bufPrintZ(&state_z_buf, "{s}", .{state_name}) catch return;
+        const state_z = std.fmt.bufPrintSentinel(&state_z_buf, "{s}", .{state_name}, 0) catch return;
         if (!iter.appendString(state_z)) return;
 
         // detail1: 1 if state is now active, 0 if inactive
@@ -855,7 +857,7 @@ pub const LinuxBridge = struct {
 
         // change_type: "add" or "remove"
         var type_z_buf: [16]u8 = undefined;
-        const type_z = std.fmt.bufPrintZ(&type_z_buf, "{s}", .{change_type}) catch return;
+        const type_z = std.fmt.bufPrintSentinel(&type_z_buf, "{s}", .{change_type}, 0) catch return;
         if (!iter.appendString(type_z)) return;
 
         // detail1: child index
@@ -920,7 +922,7 @@ pub const LinuxBridge = struct {
             .off => "off",
         };
         var priority_z_buf: [16]u8 = undefined;
-        const priority_z = std.fmt.bufPrintZ(&priority_z_buf, "{s}", .{priority}) catch return;
+        const priority_z = std.fmt.bufPrintSentinel(&priority_z_buf, "{s}", .{priority}, 0) catch return;
         if (!iter.appendString(priority_z)) return;
 
         // detail1, detail2
@@ -929,7 +931,7 @@ pub const LinuxBridge = struct {
 
         // Message as variant
         var msg_z_buf: [512]u8 = undefined;
-        const msg_z = std.fmt.bufPrintZ(&msg_z_buf, "{s}", .{message}) catch return;
+        const msg_z = std.fmt.bufPrintSentinel(&msg_z_buf, "{s}", .{message}, 0) catch return;
         if (!iter.appendVariantString(msg_z)) return;
 
         conn.send(&msg) catch return;

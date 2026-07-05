@@ -27,10 +27,10 @@ const FingerprintMap = struct {
     const EMPTY: u16 = 0xFFFF; // Sentinel for empty bucket
 
     /// Maps hash bucket → element index (or EMPTY)
-    buckets: [BUCKET_COUNT]u16 = [_]u16{EMPTY} ** BUCKET_COUNT,
+    buckets: [BUCKET_COUNT]u16 = @splat(EMPTY),
 
     /// Fingerprints stored at each bucket (for collision resolution)
-    fingerprints: [BUCKET_COUNT]Fingerprint = [_]Fingerprint{Fingerprint.INVALID} ** BUCKET_COUNT,
+    fingerprints: [BUCKET_COUNT]Fingerprint = @splat(.INVALID),
 
     const Self = @This();
 
@@ -118,11 +118,11 @@ pub const Tree = struct {
 
     /// Previous frame's fingerprints (for identity correlation)
     prev_fingerprints: [constants.MAX_ELEMENTS]Fingerprint =
-        [_]Fingerprint{Fingerprint.INVALID} ** constants.MAX_ELEMENTS,
+        @splat(.INVALID),
     prev_count: u16 = 0,
 
     /// Previous frame's content hashes (for dirty detection)
-    prev_hashes: [constants.MAX_ELEMENTS]u32 = [_]u32{0} ** constants.MAX_ELEMENTS,
+    prev_hashes: [constants.MAX_ELEMENTS]u32 = @splat(0),
 
     /// Hash map for O(1) previous fingerprint lookups
     prev_fingerprint_map: FingerprintMap = .{},

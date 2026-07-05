@@ -40,8 +40,8 @@ pub const MAX_TRACKED_VALUES: u32 = 64;
 // =============================================================================
 
 pub const ChangeTracker = struct {
-    keys: [MAX_TRACKED_VALUES]u32 = [_]u32{0} ** MAX_TRACKED_VALUES,
-    value_hashes: [MAX_TRACKED_VALUES]u64 = [_]u64{0} ** MAX_TRACKED_VALUES,
+    keys: [MAX_TRACKED_VALUES]u32 = @splat(0),
+    value_hashes: [MAX_TRACKED_VALUES]u64 = @splat(0),
     count: u32 = 0,
 
     const Self = @This();

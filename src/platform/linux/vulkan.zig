@@ -8,14 +8,7 @@
 
 const std = @import("std");
 
-// =============================================================================
-// C Import - Vulkan headers
-// =============================================================================
-
-pub const c = @cImport({
-    @cDefine("VK_USE_PLATFORM_WAYLAND_KHR", "1");
-    @cInclude("vulkan/vulkan.h");
-});
+pub const c = @import("vulkan_c");
 
 // =============================================================================
 // Basic Types

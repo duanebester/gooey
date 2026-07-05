@@ -140,7 +140,7 @@ pub const LinearScale = struct {
 /// Used for bar charts, grouped data, etc.
 pub const BandScale = struct {
     labels: [MAX_CATEGORIES][MAX_LABEL_LENGTH]u8 = undefined,
-    label_lens: [MAX_CATEGORIES]u8 = [_]u8{0} ** MAX_CATEGORIES,
+    label_lens: [MAX_CATEGORIES]u8 = @splat(0),
     label_count: u32 = 0,
     range_min: f32 = 0,
     range_max: f32 = 0,

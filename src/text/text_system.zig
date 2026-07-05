@@ -56,7 +56,7 @@ const ShapedRunKey = struct {
 
     /// Extract prefix bytes, zero-padded if text is shorter
     fn extractPrefix(text: []const u8) [PREFIX_LEN]u8 {
-        var prefix: [PREFIX_LEN]u8 = [_]u8{0} ** PREFIX_LEN;
+        var prefix: [PREFIX_LEN]u8 = @splat(0);
         const copy_len = @min(text.len, PREFIX_LEN);
         @memcpy(prefix[0..copy_len], text[0..copy_len]);
         return prefix;
@@ -64,7 +64,7 @@ const ShapedRunKey = struct {
 
     /// Extract suffix bytes, zero-padded if text is shorter
     fn extractSuffix(text: []const u8) [SUFFIX_LEN]u8 {
-        var suffix: [SUFFIX_LEN]u8 = [_]u8{0} ** SUFFIX_LEN;
+        var suffix: [SUFFIX_LEN]u8 = @splat(0);
         const copy_len = @min(text.len, SUFFIX_LEN);
         const start = text.len - copy_len;
         @memcpy(suffix[0..copy_len], text[start..]);
@@ -155,7 +155,7 @@ pub const ShapedRunCache = struct {
     pub fn init() Self {
         var self = Self{
             .entries = undefined,
-            .hash_table = [_]u16{EMPTY_SLOT} ** HASH_TABLE_SIZE,
+            .hash_table = @splat(EMPTY_SLOT),
             .entry_count = 0,
             .access_counter = 0,
             .current_font_ptr = 0,

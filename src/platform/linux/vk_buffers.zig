@@ -393,7 +393,7 @@ pub fn allocateCommandBuffers(
     std.debug.assert(command_pool != null);
 
     var result: CommandBuffers = .{
-        .render = [_]vk.CommandBuffer{null} ** FRAME_COUNT,
+        .render = @splat(null),
     };
 
     // Allocate render command buffers (one per frame in flight)
@@ -424,9 +424,9 @@ pub fn createSyncObjects(device: vk.Device) SyncError!SyncObjects {
     std.debug.assert(device != null);
 
     var result: SyncObjects = .{
-        .image_available_semaphores = [_]vk.Semaphore{null} ** FRAME_COUNT,
-        .render_finished_semaphores = [_]vk.Semaphore{null} ** FRAME_COUNT,
-        .in_flight_fences = [_]vk.Fence{null} ** FRAME_COUNT,
+        .image_available_semaphores = @splat(null),
+        .render_finished_semaphores = @splat(null),
+        .in_flight_fences = @splat(null),
     };
     errdefer result.destroy(device);
 

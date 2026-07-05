@@ -122,7 +122,7 @@ const TABLE_WIDTH: u32 = COLUMN_WIDTH_NAME + COLUMN_WIDTH_VALUE * 2 +
 /// All strings are copied into fixed-size buffers so the JSON parse
 /// tree can be freed immediately.
 const ParsedEntry = struct {
-    name: [MAX_NAME_LENGTH]u8 = [_]u8{0} ** MAX_NAME_LENGTH,
+    name: [MAX_NAME_LENGTH]u8 = @splat(0),
     name_length: u32 = 0,
 
     operation_count: u32 = 0,
@@ -153,16 +153,16 @@ const ParsedEntry = struct {
 // =============================================================================
 
 const ParsedReport = struct {
-    module: [MAX_MODULE_NAME_LENGTH]u8 = [_]u8{0} ** MAX_MODULE_NAME_LENGTH,
+    module: [MAX_MODULE_NAME_LENGTH]u8 = @splat(0),
     module_length: u32 = 0,
 
-    os: [MAX_META_STRING_LENGTH]u8 = [_]u8{0} ** MAX_META_STRING_LENGTH,
+    os: [MAX_META_STRING_LENGTH]u8 = @splat(0),
     os_length: u32 = 0,
 
-    arch: [MAX_META_STRING_LENGTH]u8 = [_]u8{0} ** MAX_META_STRING_LENGTH,
+    arch: [MAX_META_STRING_LENGTH]u8 = @splat(0),
     arch_length: u32 = 0,
 
-    date: [MAX_META_STRING_LENGTH]u8 = [_]u8{0} ** MAX_META_STRING_LENGTH,
+    date: [MAX_META_STRING_LENGTH]u8 = @splat(0),
     date_length: u32 = 0,
 
     entries: [MAX_ENTRIES]ParsedEntry = undefined,
@@ -219,7 +219,7 @@ const ComparisonStatus = enum(u8) {
 
 /// One row in the comparison table.
 const ComparisonEntry = struct {
-    name: [MAX_NAME_LENGTH]u8 = [_]u8{0} ** MAX_NAME_LENGTH,
+    name: [MAX_NAME_LENGTH]u8 = @splat(0),
     name_length: u32 = 0,
 
     baseline_ns_per_op: f64 = 0.0,
@@ -276,10 +276,10 @@ const ComparisonResult = struct {
 // =============================================================================
 
 const Args = struct {
-    baseline_path: [MAX_PATH_LENGTH]u8 = [_]u8{0} ** MAX_PATH_LENGTH,
+    baseline_path: [MAX_PATH_LENGTH]u8 = @splat(0),
     baseline_path_length: u32 = 0,
 
-    current_path: [MAX_PATH_LENGTH]u8 = [_]u8{0} ** MAX_PATH_LENGTH,
+    current_path: [MAX_PATH_LENGTH]u8 = @splat(0),
     current_path_length: u32 = 0,
 
     threshold_percent: f64 = DEFAULT_THRESHOLD_PERCENT,
@@ -642,7 +642,7 @@ fn compareReports(
 
     // Track which baseline entries have been matched, so we can
     // detect removed entries in the second pass.
-    var baseline_matched: [MAX_ENTRIES]bool = [_]bool{false} ** MAX_ENTRIES;
+    var baseline_matched: [MAX_ENTRIES]bool = @splat(false);
 
     // First pass: iterate current entries.
     for (0..current.count) |ci| {
@@ -1173,7 +1173,7 @@ test "jsonAsU32: validates range" {
 }
 
 test "copyJsonString: copies string values" {
-    var dest: [32]u8 = [_]u8{0} ** 32;
+    var dest: [32]u8 = @splat(0);
     const str_val = std.json.Value{ .string = "hello" };
     const len = copyJsonString(str_val, &dest);
     std.debug.assert(len == 5);

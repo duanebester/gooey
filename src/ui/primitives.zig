@@ -65,7 +65,7 @@ pub fn text(content: []const u8, style: TextStyle) Text {
 
 // Rotating buffer pool for textFmt (allows multiple calls per frame).
 // Thread-local so concurrently-rendering windows don't race on the buffers.
-threadlocal var fmt_buffers: [16][256]u8 = [_][256]u8{[_]u8{0} ** 256} ** 16;
+threadlocal var fmt_buffers: [16][256]u8 = @splat(@splat(0));
 threadlocal var fmt_buffer_index: usize = 0;
 
 /// Create a formatted text element. Thread-safe via thread-local buffers.
