@@ -71,7 +71,33 @@ zig build run-code-editor  # Code editor with syntax highlighting
 zig build test             # Run tests
 ```
 
-## Example
+## Hello World
+
+An example for the smallest way to get a window with some text.
+
+```zig
+const std = @import("std");
+const gooey = @import("gooey");
+
+const Cx = gooey.Cx;
+const ui = gooey.ui;
+
+var state: void = {};
+
+fn render(cx: *Cx) void {
+    cx.render(ui.box(.{}, .{
+        ui.text("Hello World!", .{}),
+    }));
+}
+
+const App = gooey.App(void, &state, render, .{});
+
+pub fn main(init: std.process.Init) !void {
+    return App.main(init);
+}
+```
+
+## Todo App Example
 
 A small todo app that touches a representative slice of the API: a pure,
 UI-free state model; `cx.update` / `cx.updateWith` / `cx.command` handlers; a
