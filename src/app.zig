@@ -105,25 +105,38 @@ pub fn App(
             // other field in the `.{...}` config literal below is
             // identical to the pre-7d-framework shape.
             pub fn main(init: std.process.Init) !void {
-                try runCx(State, state, render, .{
-                    .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
-                    .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
-                    .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
-                    .background_color = if (@hasField(@TypeOf(config), "background_color")) config.background_color else null,
-                    .on_init = if (@hasField(@TypeOf(config), "init")) config.init else null,
-                    .on_event = if (@hasField(@TypeOf(config), "on_event")) config.on_event else null,
-                    // Custom shaders (cross-platform - MSL for macOS, WGSL for web)
-                    .custom_shaders = if (@hasField(@TypeOf(config), "custom_shaders")) coerceShaders(config.custom_shaders) else &.{},
-                    // Glass/transparency options
-                    .background_opacity = if (@hasField(@TypeOf(config), "background_opacity")) config.background_opacity else 1.0,
-                    .glass_style = if (@hasField(@TypeOf(config), "glass_style")) config.glass_style else .none,
-                    .glass_corner_radius = if (@hasField(@TypeOf(config), "glass_corner_radius")) config.glass_corner_radius else 16.0,
-                    .titlebar_transparent = if (@hasField(@TypeOf(config), "titlebar_transparent")) config.titlebar_transparent else false,
-                    .full_size_content = if (@hasField(@TypeOf(config), "full_size_content")) config.full_size_content else false,
-                    // Font configuration
-                    .font = if (@hasField(@TypeOf(config), "font")) config.font else null,
-                    .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
-                }, init);
+                // Build a fully-defaulted `CxConfig(State)` and overwrite only
+                // the fields the caller supplied. Enumerating every `CxConfig`
+                // field (rather than a hand-picked subset) means `App` and
+                // `runCx` can never silently drift: a new `CxConfig` field is
+                // forwarded here for free, and callers no longer have to fall
+                // back to `gooey.run(...)` just to reach `on_close`,
+                // `on_resize`, `min_size`, `max_size`, `centered`, or `io`.
+                var cfg: runtime.CxConfig(State) = .{};
+                const ConfigType = @TypeOf(config);
+                inline for (@typeInfo(runtime.CxConfig(State)).@"struct".fields) |field| {
+                    // `on_init` and `custom_shaders` need special handling
+                    // (name mismatch / MSL-vs-WGSL coercion); everything else
+                    // is a straight copy when the caller provided it.
+                    if (comptime std.mem.eql(u8, field.name, "on_init")) {
+                        // Historically `App` read `config.init` while `runCx`
+                        // calls the field `on_init`, so `.on_init = ...` on an
+                        // `App` config was silently dropped. Accept both spellings
+                        // now, preferring the canonical `on_init`.
+                        if (@hasField(ConfigType, "on_init")) {
+                            cfg.on_init = config.on_init;
+                        } else if (@hasField(ConfigType, "init")) {
+                            cfg.on_init = config.init;
+                        }
+                    } else if (comptime std.mem.eql(u8, field.name, "custom_shaders")) {
+                        if (@hasField(ConfigType, "custom_shaders")) {
+                            cfg.custom_shaders = coerceShaders(config.custom_shaders);
+                        }
+                    } else if (@hasField(ConfigType, field.name)) {
+                        @field(cfg, field.name) = @field(config, field.name);
+                    }
+                }
+                try runCx(State, state, render, cfg, init);
             }
         };
     }
@@ -196,7 +209,12 @@ pub fn WebApp(
         else
             null;
 
-        const on_init: ?*const fn (*Cx) void = if (@hasField(@TypeOf(config), "init"))
+        // Accept both `on_init` (canonical, matches `CxConfig`) and the
+        // legacy `init` spelling so `.on_init = ...` is no longer silently
+        // dropped on the WASM path either (mirrors the native fix).
+        const on_init: ?*const fn (*Cx) void = if (@hasField(@TypeOf(config), "on_init"))
+            config.on_init
+        else if (@hasField(@TypeOf(config), "init"))
             config.init
         else
             null;

@@ -316,6 +316,17 @@ pub const CodeEditorState = struct {
         return self.text_area.isFocused();
     }
 
+    /// Opt into raw keyboard-navigation keys: a code editor consumes Tab
+    /// (indent) and Shift-Tab itself instead of yielding them to focus
+    /// traversal. Read through the `Focusable` vtable by `runtime/input`,
+    /// which folds the former hard-coded CodeEditor Tab carve-out into this
+    /// one general rule. Leaving a focused editor is done with Escape
+    /// (`handleKeyDownEvent` blurs focused text widgets on Escape).
+    pub fn wantsRawKeys(self: *Self) bool {
+        _ = self;
+        return true;
+    }
+
     /// Build a `Focusable` trait for this widget instance. Called by
     /// the UI builder during render so the framework can drive focus
     /// without importing the widget type — see PR 4 in

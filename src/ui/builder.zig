@@ -321,7 +321,16 @@ pub const Builder = struct {
     /// landed, so the index always resolves to a live slot later.
     fn enqueuePendingTextWidget(self: *Self, kind: TextWidgetKind, index: usize) void {
         std.debug.assert(index <= std.math.maxInt(u32));
-        std.debug.assert(self.pending_text_widgets.items.len < MAX_PENDING_TEXT_WIDGETS);
+        // Clamp-and-report rather than silently growing past the cap in release
+        // (CLAUDE.md §4: put a limit on everything / fail fast). A Debug assert
+        // alone let release builds grow the backing ArrayList unbounded.
+        if (self.pending_text_widgets.items.len >= MAX_PENDING_TEXT_WIDGETS) {
+            std.log.warn(
+                "pending text-widget queue limit ({d}) reached - dropping widget",
+                .{MAX_PENDING_TEXT_WIDGETS},
+            );
+            return;
+        }
         self.pending_text_widgets.append(self.allocator, .{
             .kind = kind,
             .index = @intCast(index),
@@ -334,7 +343,17 @@ pub const Builder = struct {
 
     /// Register a pending canvas for deferred rendering after layout.
     pub fn registerPendingCanvas(self: *Self, pending: canvas_mod.PendingCanvas) void {
-        std.debug.assert(self.pending_canvas.items.len < MAX_PENDING_CANVAS);
+        // Clamp-and-report rather than silently growing past the cap in release
+        // (CLAUDE.md §4). Terminal-grid / multi-pane workloads are the ones most
+        // likely to find this cap, so surface it instead of leaking frames into
+        // an unbounded ArrayList.
+        if (self.pending_canvas.items.len >= MAX_PENDING_CANVAS) {
+            std.log.warn(
+                "pending canvas limit ({d}) reached - dropping canvas",
+                .{MAX_PENDING_CANVAS},
+            );
+            return;
+        }
         self.pending_canvas.append(self.allocator, pending) catch {};
     }
 
