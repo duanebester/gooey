@@ -35,7 +35,6 @@ const TextSystem = text_mod.TextSystem;
 // `text_area_state.zig` do post-PR-8.4b.
 
 const event = @import("../input/event.zig");
-const Event = event.Event;
 const EventResult = event.EventResult;
 
 const input_mod = @import("../input/events.zig");

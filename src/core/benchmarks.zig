@@ -1,7 +1,7 @@
 //! Core Module Benchmarks
 //!
 //! Benchmark suite for triangulation, stroke expansion, FixedArray, Vec2,
-//! geometry, and ElementId hot paths.  Measures the performance-critical
+//! and geometry hot paths.  Measures the performance-critical
 //! operations that run during path rendering every frame.
 //!
 //! Run as executable: zig build bench-core
@@ -14,7 +14,6 @@
 //!   - FixedArray: append/clear, pop, orderedRemove, swapRemove
 //!   - Vec2: batch normalize, batch dot product
 //!   - Rect.contains: batch containment testing
-//!   - ElementId: hash throughput and equality comparison
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -56,7 +55,6 @@ const Triangulator = core.Triangulator;
 const FixedArray = core.FixedArray;
 const RectF = core.RectF;
 const PointF = core.PointF;
-const ElementId = core.ElementId;
 const limits = core.limits;
 
 const stroke_mod = core.stroke;
@@ -773,130 +771,6 @@ fn benchRectContains(
 }
 
 // =============================================================================
-// Benchmark Runners — ElementId
-// =============================================================================
-
-/// Static pool of element names for hash benchmarks.
-const element_names = [_][]const u8{
-    "button_ok",      "button_cancel",  "sidebar_left",  "header_main",
-    "footer_nav",     "modal_dialog",   "input_email",   "label_name",
-    "checkbox_terms", "radio_option_a", "slider_volume", "dropdown_menu",
-    "tab_home",       "tab_settings",   "tab_profile",   "tab_messages",
-};
-
-/// Benchmark ElementId named hashing throughput.
-/// Hashes hash_count names drawn round-robin from the name pool.
-/// Operation count = hash_count.
-fn benchElementIdHash(
-    comptime name: []const u8,
-    comptime hash_count: u32,
-) BenchmarkResult {
-    comptime {
-        std.debug.assert(hash_count > 0);
-        std.debug.assert(element_names.len > 0);
-    }
-
-    const operation_count = hash_count;
-    const warmup_count = getWarmupIterations(operation_count);
-
-    // Warmup.
-    var hash_sink: u64 = 0;
-    for (0..warmup_count) |_| {
-        for (0..hash_count) |i| {
-            const element_id = ElementId.named(element_names[i % element_names.len]);
-            hash_sink +%= element_id.hash();
-        }
-    }
-
-    // Timed sampling.
-    const min_iterations = getMinSampleIterations(operation_count);
-    var sampler: bench.Sampler = .{};
-
-    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
-        const start = time.Instant.now();
-        for (0..hash_count) |i| {
-            const element_id = ElementId.named(element_names[i % element_names.len]);
-            hash_sink +%= element_id.hash();
-        }
-        const end = time.Instant.now();
-        sampler.record(end.since(start));
-    }
-
-    // Hash sink must have accumulated values.
-    std.debug.assert(hash_sink != 0);
-
-    return .{
-        .name = name,
-        .operation_count = operation_count,
-        .total_time_ns = sampler.total_time_ns,
-        .iterations = sampler.iterations,
-        .min_time_ns = sampler.min_time_ns,
-    };
-}
-
-/// Benchmark ElementId equality comparison throughput.
-/// Compares comparison_count pairs of IDs (alternating equal and unequal).
-/// Operation count = comparison_count.
-fn benchElementIdEquality(
-    comptime name: []const u8,
-    comptime comparison_count: u32,
-) BenchmarkResult {
-    comptime {
-        std.debug.assert(comparison_count > 0);
-        std.debug.assert(element_names.len >= 2);
-    }
-
-    const operation_count = comparison_count;
-    const warmup_count = getWarmupIterations(operation_count);
-
-    // Pre-build ID pairs.
-    var ids_a: [comparison_count]ElementId = undefined;
-    var ids_b: [comparison_count]ElementId = undefined;
-    for (0..comparison_count) |i| {
-        ids_a[i] = ElementId.named(element_names[i % element_names.len]);
-        // Even indices: same name (equal).  Odd indices: next name (unequal).
-        const b_index = if (i % 2 == 0) i else i + 1;
-        ids_b[i] = ElementId.named(element_names[b_index % element_names.len]);
-    }
-
-    // Warmup.
-    var match_count: u32 = 0;
-    for (0..warmup_count) |_| {
-        for (0..comparison_count) |i| {
-            if (ids_a[i].eql(ids_b[i])) {
-                match_count += 1;
-            }
-        }
-    }
-
-    // Timed sampling.
-    const min_iterations = getMinSampleIterations(operation_count);
-    var sampler: bench.Sampler = .{};
-
-    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
-        const start = time.Instant.now();
-        for (0..comparison_count) |i| {
-            if (ids_a[i].eql(ids_b[i])) {
-                match_count += 1;
-            }
-        }
-        const end = time.Instant.now();
-        sampler.record(end.since(start));
-    }
-
-    // Some comparisons must have matched (even indices are equal).
-    std.debug.assert(match_count > 0);
-
-    return .{
-        .name = name,
-        .operation_count = operation_count,
-        .total_time_ns = sampler.total_time_ns,
-        .iterations = sampler.iterations,
-        .min_time_ns = sampler.min_time_ns,
-    };
-}
-
-// =============================================================================
 // Comptime Wrappers — Polygon Generators
 // =============================================================================
 
@@ -1068,13 +942,6 @@ test "validate: Rect.contains boundary behavior" {
     // Outside.
     try std.testing.expect(!rect.contains(PointF.init(0.0, 0.0)));
     try std.testing.expect(!rect.contains(PointF.init(200.0, 200.0)));
-}
-
-test "validate: ElementId hash determinism" {
-    const id_a = ElementId.named("button_ok");
-    const id_b = ElementId.named("button_ok");
-    try std.testing.expectEqual(id_a.hash(), id_b.hash());
-    try std.testing.expect(id_a.eql(id_b));
 }
 
 // =============================================================================
@@ -1292,28 +1159,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("=" ** 105 ++ "\n", .{});
 
     // =========================================================================
-    // ElementId — Hash + Equality
-    // =========================================================================
-
-    std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
-    std.debug.print("Gooey Core Benchmarks — ElementId Hash + Equality\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
-    printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
-
-    collect(&reporter, benchElementIdHash("hash_100", 100));
-    collect(&reporter, benchElementIdHash("hash_1000", 1000));
-    collect(&reporter, benchElementIdHash("hash_4000", 4000));
-
-    std.debug.print("-" ** 105 ++ "\n", .{});
-
-    collect(&reporter, benchElementIdEquality("equality_100", 100));
-    collect(&reporter, benchElementIdEquality("equality_1000", 1000));
-
-    std.debug.print("=" ** 105 ++ "\n", .{});
-
-    // =========================================================================
     // Scaling Analysis — Triangulation
     // =========================================================================
 
@@ -1353,7 +1198,6 @@ pub fn main(init: std.process.Init) !void {
         \\  - FixedArray: append/clear measures write throughput; pop/swap are O(1); orderedRemove is O(n).
         \\  - Vec2 Normalize = batch normalize with sqrt + division per vector.
         \\  - Rect.contains = four comparisons per point (branch-heavy).
-        \\  - ElementId Hash = Wyhash over variable-length name strings.
         \\  - Scaling Analysis: if triangulate ns/op grows linearly, total cost is O(n²).
         \\    Convex polygons have zero reflex vertices — best case for ear-clipper.
         \\    Star polygons have ~N/2 reflex vertices — worst case for point-in-triangle checks.

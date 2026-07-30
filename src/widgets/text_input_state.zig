@@ -67,12 +67,8 @@ const Edit = history_mod.Edit;
 // pre-PR-8.4b `ElementId` was strictly internal book-keeping that
 // survived from the days when the engine type owned its own id
 // space.
-const event = @import("../input/event.zig");
 const geometry = @import("../core/geometry.zig");
 const focus_mod = @import("../context/focus.zig");
-
-const Event = event.Event;
-const EventResult = event.EventResult;
 
 const Scene = scene_mod.Scene;
 const Quad = scene_mod.Quad;
@@ -278,50 +274,6 @@ pub const TextInputState = struct {
     /// across all `TextInputState` instances and lives in static storage.
     pub fn focusable(self: *Self) focus_mod.Focusable {
         return focus_mod.Focusable.fromInstance(Self, self);
-    }
-
-    // =========================================================================
-    // Input Handling
-    // =========================================================================
-
-    pub fn handleEvent(self: *Self, ev: *Event) EventResult {
-        // Only handle events in target or bubble phase
-        if (ev.phase == .capture) return .ignored;
-
-        switch (ev.inner) {
-            .mouse_down => |m| {
-                const px: f32 = @floatCast(m.position.x);
-                const py: f32 = @floatCast(m.position.y);
-                if (self.bounds.contains(px, py)) {
-                    // Request focus through event system
-                    ev.stopPropagation();
-                    return .stop;
-                }
-            },
-            .key_down => |k| {
-                if (self.focused) {
-                    self.handleKey(k) catch {};
-                    ev.stopPropagation();
-                    return .stop;
-                }
-            },
-            .text_input => |t| {
-                if (self.focused) {
-                    self.insertText(t.text) catch {};
-                    ev.stopPropagation();
-                    return .stop;
-                }
-            },
-            .composition => |c| {
-                if (self.focused) {
-                    self.setComposition(c.text) catch {};
-                    ev.stopPropagation();
-                    return .stop;
-                }
-            },
-            else => {},
-        }
-        return .ignored;
     }
 
     /// Element interface: get bounds

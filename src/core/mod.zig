@@ -62,13 +62,6 @@ pub const Vec2 = vec2.Vec2;
 pub const IndexSlice = vec2.IndexSlice;
 
 // =============================================================================
-// Element ID (stable identity across renders)
-// =============================================================================
-
-pub const element_id = @import("element_id.zig");
-pub const ElementId = element_id.ElementId;
-
-// =============================================================================
 // Limits (static allocation bounds)
 // =============================================================================
 
