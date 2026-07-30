@@ -82,6 +82,15 @@ pub fn focusedCodeEditor(window: *Window, builder: *const Builder) ?*CodeEditorS
     return null;
 }
 
+/// Whether the currently focused widget opts into raw keyboard-navigation
+/// keys (Tab / Shift-Tab). Consulted before focus traversal so terminals,
+/// grids, and CodeEditors can consume Tab themselves. Type-erased through
+/// the `Focusable` vtable — `runtime/input` never learns the widget type.
+fn focusedWidgetWantsRawKeys(window: *Window) bool {
+    const focusable = window.focus.getFocusedWidget() orelse return false;
+    return focusable.wantsRawKeys();
+}
+
 // =============================================================================
 // Main Entry Point
 // =============================================================================
@@ -614,27 +623,28 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
         return true;
     }
 
-    // Tab navigation - but let CodeEditor handle Tab for indentation.
-    // The `builder` borrow is shared across the arms below so each pending-list
-    // walk is paid for at most once per key event.
+    // Tab navigation. A focused widget can opt out of focus traversal via
+    // the `Focusable` vtable (`wantsRawKeys`) so it receives Tab itself:
+    // CodeEditor indents, a terminal grid forwards Tab for shell completion
+    // and Shift-Tab as back-tab. This is one general rule rather than a
+    // hard-coded per-widget branch — the CodeEditor case folds into it
+    // (`CodeEditorState.wantsRawKeys` returns true), and Tab then falls
+    // through to the CodeEditor key arm below (Tab is a control key) or,
+    // for non-widget focusables, on to the app `on_event` hook.
+    // The `builder` borrow is shared across the arms below so each
+    // pending-list walk is paid for at most once per key event.
     const builder = cx.builder();
     if (k.key == .tab) {
-        // CodeEditor intercepts Tab for indentation (not focus navigation)
-        if (focusedCodeEditor(window, builder)) |ce| {
-            if (!k.modifiers.shift and !k.modifiers.ctrl and !k.modifiers.alt) {
-                _ = ce.handleKey(k.key, k.modifiers);
-                syncCodeEditorBoundVariablesCx(cx);
-                cx.notify();
-                return true;
-            }
-        }
-        // Default: use Tab for focus navigation
-        if (k.modifiers.shift) {
-            window.focusPrev();
+        if (focusedWidgetWantsRawKeys(window)) {
+            // Do not consume Tab: let it reach the widget / app.
         } else {
-            window.focusNext();
+            if (k.modifiers.shift) {
+                window.focusPrev();
+            } else {
+                window.focusNext();
+            }
+            return true;
         }
-        return true;
     }
 
     // Try action dispatch through focus path

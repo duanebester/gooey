@@ -107,6 +107,15 @@ pub const Focusable = struct {
         /// `CodeEditorState` delegates to its embedded `TextArea` and
         /// cannot promise const access). The thunk does not mutate.
         is_focused: *const fn (ptr: *anyopaque) bool,
+        /// Whether this widget consumes the keyboard-navigation keys
+        /// (currently Tab / Shift-Tab) itself rather than yielding them to
+        /// the framework's focus traversal. Widgets that want raw keys —
+        /// `CodeEditor` (Tab indents), a terminal grid (Tab is shell
+        /// completion, Shift-Tab is back-tab) — return true so
+        /// `handleKeyDownEvent` stops stealing Tab for focus movement and
+        /// lets the key reach the widget and the app `on_event` hook.
+        /// Defaults to "no" for the vast majority of focusables.
+        wants_raw_keys: *const fn (ptr: *anyopaque) bool,
     };
 
     /// Call the widget's `focus()` method through the vtable.
@@ -122,6 +131,13 @@ pub const Focusable = struct {
     /// Read the widget's focused flag through the vtable.
     pub fn isFocused(self: Focusable) bool {
         return self.vtable.is_focused(self.ptr);
+    }
+
+    /// Whether the widget wants raw keyboard-navigation keys (see
+    /// `VTable.wants_raw_keys`). Read through the vtable so `runtime/input`
+    /// can consult it without importing widget types.
+    pub fn wantsRawKeys(self: Focusable) bool {
+        return self.vtable.wants_raw_keys(self.ptr);
     }
 
     /// Pointer-equality identity. Two `Focusable`s refer to the same
@@ -162,6 +178,17 @@ pub const Focusable = struct {
                 const self: *T = @ptrCast(@alignCast(ptr));
                 return self.isFocused();
             }
+            // Opt-in: a widget that wants raw navigation keys declares
+            // `pub fn wantsRawKeys(self: *T) bool`. Widgets that don't
+            // (the common case) get a constant-false thunk, so the trait
+            // shape stays a three-method contract for everyone else.
+            fn wantsRawKeysFn(ptr: *anyopaque) bool {
+                if (comptime @hasDecl(T, "wantsRawKeys")) {
+                    const self: *T = @ptrCast(@alignCast(ptr));
+                    return self.wantsRawKeys();
+                }
+                return false;
+            }
         };
 
         // One vtable per `T`, in `comptime` static storage.
@@ -169,6 +196,7 @@ pub const Focusable = struct {
             .focus = Thunks.focusFn,
             .blur = Thunks.blurFn,
             .is_focused = Thunks.isFocusedFn,
+            .wants_raw_keys = Thunks.wantsRawKeysFn,
         };
 
         return .{ .ptr = instance, .vtable = vtable };
@@ -545,6 +573,14 @@ pub const FocusManager = struct {
     /// Get the currently focused element's ID
     pub fn getFocused(self: *const Self) ?FocusId {
         return self.focused;
+    }
+
+    /// Get the `Focusable` vtable of the currently focused widget, if the
+    /// focused element has an associated widget instance. Backed by the
+    /// cached `focused_widget` (stable across frames), so it works even
+    /// when the handle has momentarily fallen out of `focus_order`.
+    pub fn getFocusedWidget(self: *const Self) ?Focusable {
+        return self.focused_widget;
     }
 
     /// Get the currently focused element's handle (if registered this frame)

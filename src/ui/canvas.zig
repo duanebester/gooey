@@ -109,6 +109,11 @@ pub const PendingCanvas = struct {
     base_order: scene_mod.DrawOrder = 0,
     /// Clip bounds captured at layout time
     clip_bounds: scene_mod.ContentMask.ClipBounds = scene_mod.ContentMask.none.bounds,
+    /// Opaque state pointer forwarded to `DrawContext.user_data`. Lets a
+    /// stateful canvas reach its own state without a module global — the
+    /// paint callback keeps the bare `*DrawContext` signature and reads
+    /// `ctx.user_data`. Null for stateless canvases.
+    user_data: ?*anyopaque = null,
 };
 
 // =============================================================================
@@ -131,6 +136,12 @@ pub const DrawContext = struct {
     clip_bounds: scene_mod.ContentMask.ClipBounds = scene_mod.ContentMask.none.bounds,
     /// Current draw order (increments with each primitive)
     current_order: scene_mod.DrawOrder = 0,
+    /// Opaque state pointer supplied at canvas construction. A stateful
+    /// canvas recovers its state with
+    /// `@as(*T, @ptrCast(@alignCast(ctx.user_data.?)))`, so N independent
+    /// canvases no longer have to share one module global. Null when the
+    /// canvas was created without state.
+    user_data: ?*anyopaque = null,
 
     const Self = @This();
 
@@ -1387,6 +1398,7 @@ pub fn executePendingCanvas(
         .base_order = pending.base_order,
         .clip_bounds = pending.clip_bounds,
         .current_order = pending.base_order,
+        .user_data = pending.user_data,
     };
     pending.paint(&ctx);
 }
@@ -1404,6 +1416,10 @@ pub const Canvas = struct {
     paint: *const fn (*DrawContext) void,
     /// Optional explicit ID (defaults to auto-generated)
     id: ?[]const u8 = null,
+    /// Optional opaque state pointer, surfaced to the paint callback as
+    /// `ctx.user_data`. Supply via `ui.canvasWithData` for stateful,
+    /// multi-instance canvases (e.g. one per terminal pane).
+    user_data: ?*anyopaque = null,
 
     const Self = @This();
 
@@ -1426,6 +1442,7 @@ pub const Canvas = struct {
             .layout_id = layout_id.id,
             .paint = self.paint,
             .scale = scale,
+            .user_data = self.user_data,
         });
 
         // Create a box to reserve space in layout - use same layout_id!
@@ -1458,6 +1475,33 @@ pub fn canvas(w: f32, h: f32, paint: *const fn (*DrawContext) void) Canvas {
         .width = w,
         .height = h,
         .paint = paint,
+    };
+}
+
+/// Create a stateful canvas: the paint callback receives its `state` pointer
+/// through `ctx.user_data`. This is the multi-instance-safe alternative to a
+/// module-global — each canvas carries its own state.
+///
+/// ## Example
+/// ```zig
+/// fn paintPane(ctx: *ui.DrawContext) void {
+///     const pane: *Pane = @ptrCast(@alignCast(ctx.user_data.?));
+///     pane.draw(ctx);
+/// }
+///
+/// ui.canvasWithData(w, h, paintPane, &my_pane).render(cx);
+/// ```
+pub fn canvasWithData(
+    w: f32,
+    h: f32,
+    paint: *const fn (*DrawContext) void,
+    user_data: ?*anyopaque,
+) Canvas {
+    return Canvas{
+        .width = w,
+        .height = h,
+        .paint = paint,
+        .user_data = user_data,
     };
 }
 
