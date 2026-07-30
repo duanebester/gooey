@@ -28,6 +28,14 @@ pub const evdev = struct {
     pub const KEY_F10: u32 = 68;
     pub const KEY_F11: u32 = 87;
     pub const KEY_F12: u32 = 88;
+    pub const KEY_F13: u32 = 183;
+    pub const KEY_F14: u32 = 184;
+    pub const KEY_F15: u32 = 185;
+    pub const KEY_F16: u32 = 186;
+    pub const KEY_F17: u32 = 187;
+    pub const KEY_F18: u32 = 188;
+    pub const KEY_F19: u32 = 189;
+    pub const KEY_F20: u32 = 190;
 
     // Number row
     pub const KEY_1: u32 = 2;
@@ -115,6 +123,26 @@ pub const evdev = struct {
     pub const KEY_COMMA: u32 = 51; // , <
     pub const KEY_DOT: u32 = 52; // . >
     pub const KEY_SLASH: u32 = 53; // / ?
+
+    // Keypad
+    pub const KEY_NUMLOCK: u32 = 69;
+    pub const KEY_KPASTERISK: u32 = 55;
+    pub const KEY_KP7: u32 = 71;
+    pub const KEY_KP8: u32 = 72;
+    pub const KEY_KP9: u32 = 73;
+    pub const KEY_KPMINUS: u32 = 74;
+    pub const KEY_KP4: u32 = 75;
+    pub const KEY_KP5: u32 = 76;
+    pub const KEY_KP6: u32 = 77;
+    pub const KEY_KPPLUS: u32 = 78;
+    pub const KEY_KP1: u32 = 79;
+    pub const KEY_KP2: u32 = 80;
+    pub const KEY_KP3: u32 = 81;
+    pub const KEY_KP0: u32 = 82;
+    pub const KEY_KPDOT: u32 = 83;
+    pub const KEY_KPENTER: u32 = 96;
+    pub const KEY_KPSLASH: u32 = 98;
+    pub const KEY_KPEQUAL: u32 = 117;
 };
 
 // =============================================================================
@@ -284,6 +312,49 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_F10 => .f10,
         evdev.KEY_F11 => .f11,
         evdev.KEY_F12 => .f12,
+        evdev.KEY_F13 => .f13,
+        evdev.KEY_F14 => .f14,
+        evdev.KEY_F15 => .f15,
+        evdev.KEY_F16 => .f16,
+        evdev.KEY_F17 => .f17,
+        evdev.KEY_F18 => .f18,
+        evdev.KEY_F19 => .f19,
+        evdev.KEY_F20 => .f20,
+
+        // Punctuation. KeyCode names are positional (US ANSI); text input goes
+        // through the layout-aware path, so positional names are fine here.
+        evdev.KEY_MINUS => .minus,
+        evdev.KEY_EQUAL => .equal,
+        evdev.KEY_LEFTBRACE => .left_bracket,
+        evdev.KEY_RIGHTBRACE => .right_bracket,
+        evdev.KEY_BACKSLASH => .backslash,
+        evdev.KEY_SEMICOLON => .semicolon,
+        evdev.KEY_APOSTROPHE => .quote,
+        evdev.KEY_COMMA => .comma,
+        evdev.KEY_DOT => .period,
+        evdev.KEY_SLASH => .slash,
+        evdev.KEY_GRAVE => .grave,
+
+        // Keypad. NumLock maps to keypad_clear: same physical position, and
+        // macOS keyboards have no NumLock key to name it after.
+        evdev.KEY_KP0 => .keypad_0,
+        evdev.KEY_KP1 => .keypad_1,
+        evdev.KEY_KP2 => .keypad_2,
+        evdev.KEY_KP3 => .keypad_3,
+        evdev.KEY_KP4 => .keypad_4,
+        evdev.KEY_KP5 => .keypad_5,
+        evdev.KEY_KP6 => .keypad_6,
+        evdev.KEY_KP7 => .keypad_7,
+        evdev.KEY_KP8 => .keypad_8,
+        evdev.KEY_KP9 => .keypad_9,
+        evdev.KEY_KPDOT => .keypad_decimal,
+        evdev.KEY_KPASTERISK => .keypad_multiply,
+        evdev.KEY_KPPLUS => .keypad_plus,
+        evdev.KEY_KPMINUS => .keypad_minus,
+        evdev.KEY_KPSLASH => .keypad_divide,
+        evdev.KEY_KPENTER => .keypad_enter,
+        evdev.KEY_KPEQUAL => .keypad_equals,
+        evdev.KEY_NUMLOCK => .keypad_clear,
 
         // Modifiers
         evdev.KEY_LEFTSHIFT => .shift,
@@ -634,6 +705,12 @@ test "evdev to keycode mapping" {
     try testing.expectEqual(input.KeyCode.escape, evdevToKeyCode(evdev.KEY_ESC));
     try testing.expectEqual(input.KeyCode.left, evdevToKeyCode(evdev.KEY_LEFT));
     try testing.expectEqual(input.KeyCode.f1, evdevToKeyCode(evdev.KEY_F1));
+    try testing.expectEqual(input.KeyCode.f13, evdevToKeyCode(evdev.KEY_F13));
+    try testing.expectEqual(input.KeyCode.f20, evdevToKeyCode(evdev.KEY_F20));
+    try testing.expectEqual(input.KeyCode.left_bracket, evdevToKeyCode(evdev.KEY_LEFTBRACE));
+    try testing.expectEqual(input.KeyCode.keypad_enter, evdevToKeyCode(evdev.KEY_KPENTER));
+    try testing.expectEqual(input.KeyCode.keypad_5, evdevToKeyCode(evdev.KEY_KP5));
+    try testing.expectEqual(input.KeyCode.keypad_clear, evdevToKeyCode(evdev.KEY_NUMLOCK));
     try testing.expectEqual(input.KeyCode.unknown, evdevToKeyCode(9999));
 }
 
