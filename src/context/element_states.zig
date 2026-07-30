@@ -69,9 +69,9 @@ pub fn typeId(comptime T: type) TypeId {
 /// state. Same `id` with different state types, and same type under
 /// different ids, live in separate slots; the pool encodes both axes.
 ///
-/// `element_id_hash` is the `u64` returned by `ElementId.hash()` — callers
-/// hash at the boundary, the pool never sees raw `[]const u8` IDs and never
-/// owns key memory.
+/// `element_id_hash` is a `u64` hash the caller computes at the boundary
+/// (e.g. the framework's `LayoutId.id` widened to `u64`), so the pool never
+/// sees raw `[]const u8` IDs and never owns key memory.
 pub const Key = struct {
     element_id_hash: u64,
     type_id: TypeId,

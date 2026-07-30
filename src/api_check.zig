@@ -156,7 +156,6 @@ fn pinTier1NamespacedCore() void {
         _ = gooey.core.Bounds;
         _ = gooey.core.Edges;
         _ = gooey.core.Corners;
-        _ = gooey.core.ElementId;
         _ = gooey.core.CustomShader;
     }
 }

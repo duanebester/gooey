@@ -47,15 +47,12 @@ const text_mod = @import("../text/mod.zig");
 // keyed by `LayoutId.id` (a u32 hash) on `Window.element_states`,
 // and the only reader of the field (`getId()`) was unused outside
 // its own definition.
-const event = @import("../input/event.zig");
 const common = @import("text_common.zig");
 const history_mod = @import("edit_history.zig");
 const focus_mod = @import("../context/focus.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const Event = event.Event;
-const EventResult = event.EventResult;
 const Scene = scene_mod.Scene;
 const Quad = scene_mod.Quad;
 const Hsla = scene_mod.Hsla;
@@ -394,59 +391,6 @@ pub const TextAreaState = struct {
     /// across all `TextAreaState` instances and lives in static storage.
     pub fn focusable(self: *Self) focus_mod.Focusable {
         return focus_mod.Focusable.fromInstance(Self, self);
-    }
-
-    // =========================================================================
-    // Event Handling
-    // =========================================================================
-
-    pub fn handleEvent(self: *Self, evt: Event) EventResult {
-        switch (evt) {
-            .mouse_down => |e| {
-                if (self.bounds.contains(e.x, e.y)) {
-                    self.focus();
-                    // Store click position for processing during render (when text_system is available)
-                    self.pending_click = .{ .x = e.x, .y = e.y };
-                    self.selection_anchor = null; // Clear selection on click
-                    return .consumed;
-                }
-            },
-            .key_down => |key_event| {
-                if (self.focused) {
-                    self.handleKey(key_event) catch {};
-                    return .consumed;
-                }
-            },
-            .text_input => |txt| {
-                if (self.focused) {
-                    self.insertText(txt) catch {};
-                    return .consumed;
-                }
-            },
-            .composition => |comp| {
-                if (self.focused) {
-                    self.setComposition(comp.text) catch {};
-                    return .consumed;
-                }
-            },
-            .scroll => |scroll| {
-                if (self.bounds.contains(scroll.x, scroll.y)) {
-                    self.handleScroll(scroll.delta_y);
-                    return .consumed;
-                }
-            },
-            else => {},
-        }
-        return .ignored;
-    }
-
-    fn handleScroll(self: *Self, delta_y: f32) void {
-        const max_scroll = self.maxScrollY();
-        self.scroll_offset_y = std.math.clamp(
-            self.scroll_offset_y - delta_y * 20, // 20px per scroll unit
-            0,
-            max_scroll,
-        );
     }
 
     fn maxScrollY(self: *const Self) f32 {
