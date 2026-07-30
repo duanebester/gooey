@@ -43,6 +43,22 @@ pub const KeyCode = enum(u16) {
     @"9" = 0x19,
     @"0" = 0x1D,
 
+    // Punctuation. Keycodes are positional (US ANSI layout); on other layouts
+    // the physical key at this position may produce a different character, so
+    // consumers that care about the typed character must use the event's
+    // `characters_ignoring_modifiers` instead of these names.
+    minus = 0x1B,
+    equal = 0x18,
+    left_bracket = 0x21,
+    right_bracket = 0x1E,
+    backslash = 0x2A,
+    semicolon = 0x29,
+    quote = 0x27,
+    comma = 0x2B,
+    period = 0x2F,
+    slash = 0x2C,
+    grave = 0x32,
+
     // Special
     @"return" = 0x24,
     tab = 0x30,
@@ -50,6 +66,27 @@ pub const KeyCode = enum(u16) {
     delete = 0x33,
     escape = 0x35,
     forward_delete = 0x75,
+
+    // Keypad (kVK_ANSI_Keypad*). Distinct from the number row so terminal
+    // emulators and games can honor application keypad mode (DECKPAM).
+    keypad_0 = 0x52,
+    keypad_1 = 0x53,
+    keypad_2 = 0x54,
+    keypad_3 = 0x55,
+    keypad_4 = 0x56,
+    keypad_5 = 0x57,
+    keypad_6 = 0x58,
+    keypad_7 = 0x59,
+    keypad_8 = 0x5B,
+    keypad_9 = 0x5C,
+    keypad_decimal = 0x41,
+    keypad_multiply = 0x43,
+    keypad_plus = 0x45,
+    keypad_clear = 0x47, // NumLock position on PC keyboards
+    keypad_divide = 0x4B,
+    keypad_enter = 0x4C,
+    keypad_minus = 0x4E,
+    keypad_equals = 0x51,
 
     // Modifiers
     command = 0x37,
@@ -81,6 +118,14 @@ pub const KeyCode = enum(u16) {
     f10 = 0x6D,
     f11 = 0x67,
     f12 = 0x6F,
+    f13 = 0x69,
+    f14 = 0x6B,
+    f15 = 0x71,
+    f16 = 0x6A,
+    f17 = 0x40,
+    f18 = 0x4F,
+    f19 = 0x50,
+    f20 = 0x5A,
 
     // Navigation
     home = 0x73,
@@ -178,3 +223,37 @@ pub const InputEvent = union(enum) {
     /// All active touch points on the surface were cancelled by the compositor.
     touch_cancelled,
 };
+
+// Goal: `KeyCode.from` must resolve every named virtual keycode to its tag and
+// collapse only genuinely unnamed codes to `.unknown`. Keypad, punctuation,
+// and extended function keys were historically absent from the enum and were
+// destroyed here before any consumer could see them; these cases pin the fix.
+test "KeyCode.from resolves named codes and collapses unnamed ones" {
+    const testing = std.testing;
+
+    // Writing keys, one per historical group.
+    try testing.expectEqual(KeyCode.a, KeyCode.from(0x00));
+    try testing.expectEqual(KeyCode.@"5", KeyCode.from(0x17));
+    try testing.expectEqual(KeyCode.@"return", KeyCode.from(0x24));
+
+    // Punctuation (kVK_ANSI_*).
+    try testing.expectEqual(KeyCode.minus, KeyCode.from(0x1B));
+    try testing.expectEqual(KeyCode.left_bracket, KeyCode.from(0x21));
+    try testing.expectEqual(KeyCode.grave, KeyCode.from(0x32));
+
+    // Keypad. KeypadEnter (0x4C) is the key regression case: it produces no
+    // printable text, so collapsing it to `.unknown` drops the keystroke.
+    try testing.expectEqual(KeyCode.keypad_enter, KeyCode.from(0x4C));
+    try testing.expectEqual(KeyCode.keypad_0, KeyCode.from(0x52));
+    try testing.expectEqual(KeyCode.keypad_9, KeyCode.from(0x5C));
+    try testing.expectEqual(KeyCode.keypad_clear, KeyCode.from(0x47));
+
+    // Extended function keys.
+    try testing.expectEqual(KeyCode.f13, KeyCode.from(0x69));
+    try testing.expectEqual(KeyCode.f20, KeyCode.from(0x5A));
+
+    // Negative space: codes with no name still collapse to `.unknown`.
+    try testing.expectEqual(KeyCode.unknown, KeyCode.from(0x42)); // gap in kVK table
+    try testing.expectEqual(KeyCode.unknown, KeyCode.from(0xFFFF));
+    try testing.expectEqual(KeyCode.unknown, KeyCode.from(0x1234));
+}
