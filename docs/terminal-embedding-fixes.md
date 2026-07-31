@@ -28,7 +28,7 @@ Done so far (build + `zig build test` green):
 
 **Evidence.** `TextStyle` carries `weight` and `italic`
 (`src/ui/styles.zig:150`), but `builder.renderText` forwards only two of the
-four style flags (`src/ui/builder.zig:1232`):
+four style flags (`src/ui/builder.zig:1251`):
 
 ```zig
 .decoration = .{
@@ -100,12 +100,14 @@ terminal. `CodeEditor` already carves out a special case here (it wants Tab
 for indentation), so there is precedent, but it is hard-coded to that one
 widget.
 
-**Booey workaround.** The most invasive hack in booey: `captureRawKeys`
-(`booey/src/terminal.zig:362`) swaps `platform_window.on_input` behind Gooey's
-back, chains the original callback, and reaches the widget through a
-`raw_key_owner` module global because the filter is a bare function pointer
-with no userdata slot. It works for exactly one window and one widget, and it
-depends on an internal field Gooey never promised to keep stable.
+**Booey workaround (since deleted).** The most invasive hack in booey was
+`captureRawKeys` (`booey/src/terminal.zig`), which swapped
+`platform_window.on_input` behind Gooey's back, chained the original
+callback, and reached the widget through a `raw_key_owner` module global
+because the filter was a bare function pointer with no userdata slot. It
+worked for exactly one window and one widget, and it depended on an internal
+field Gooey never promised to keep stable. With `wantsRawKeys` landed, booey
+now opts out via the `Focusable` contract and the hack is gone.
 
 **Fix.** A general "this focusable takes raw keys" opt-out on the `Focusable`
 vtable, checked before the Tab arm in `handleKeyDownEvent`, rather than a
@@ -116,10 +118,12 @@ here unblocks both projects.)
 
 ## 3. `ui.canvas` has no userdata slot
 
-**Evidence.** `ui.canvas` takes a bare `*const fn (*DrawContext) void`. Any
-stateful canvas must reach its state through a module global —
-`booey/src/main.zig:12` (`var term: Terminal = .{}`) exists only for this
-reason. Workable for one pane, unusable for N.
+**Evidence (historical).** `ui.canvas` took a bare
+`*const fn (*DrawContext) void`. Any stateful canvas had to reach its state
+through a module global — booey's `var term: Terminal = .{}`
+(`booey/src/main.zig`) originally existed only for this reason. Workable for
+one pane, unusable for N. Landed as `ui.canvasWithData` /
+`DrawContext.user_data` (see status above).
 
 **Fix (preferred).** Don't patch canvas; supersede it for grid-shaped content
 with a `cellGrid` primitive (item 4). If canvas is kept for ad-hoc drawing, a
@@ -153,17 +157,22 @@ Full design: `jenkins/docs/terminal-multiplexer-mvp.md` §3 and §6 Slice 1.
 
 ## 5. `gooey.App` drops config options that `runCx` supports
 
-**Evidence.** `App.main` (`src/app.zig:107-127`) forwards a hard-coded subset
+**Evidence (historical).** `App.main` used to forward a hard-coded subset
 of fields to `runCx`: title, width, height, background_color, on_init,
 on_event, custom_shaders, the glass options, font, and font_size. `CxConfig`
 also has `on_close`, `on_resize`, `min_size`, `centered`, and `io` — silently
-ignored if passed. Booey needs `on_close` (to hand the keyboard back and close
-the pty before the window dies) and had to bypass `App` entirely and call
-`gooey.run(...)` directly (`booey/src/main.zig:16-18`).
+ignored if passed. Booey needed `on_close` (to hand the keyboard back and
+close the pty before the window dies) and had to bypass `App` entirely and
+call `gooey.run(...)` directly.
 
-Note `on_init` also has a field-name mismatch: `App` reads `config.init`
-(`src/app.zig:113`) while `runCx` calls it `on_init` — callers of `App` who
-write `.on_init = ...` get it silently dropped too.
+`on_init` also had a field-name mismatch: `App` read `config.init` while
+`runCx` calls it `on_init` — callers of `App` who wrote `.on_init = ...` got
+it silently dropped too.
+
+Both are fixed: `App.main` (`src/app.zig`) now enumerates every `CxConfig`
+field via `inline for` (so the two can never drift) and accepts both `init`
+and `on_init` spellings. Booey no longer bypasses `App` — it uses
+`gooey.App(...)` directly (`booey/src/main.zig:24`).
 
 **Fix.** Forward every `CxConfig` field with the same
 `@hasField`-with-default pattern, or better: accept a `CxConfig` directly and

@@ -418,6 +418,9 @@ pub const BarChart = struct {
     group_padding: f32 = 0.2,    // Between groups (0-1)
     corner_radius: f32 = 0,
 
+    // Orientation
+    horizontal: bool = false,    // true = horizontal bars
+
     // Axes
     show_x_axis: bool = true,
     show_y_axis: bool = true,
@@ -426,18 +429,24 @@ pub const BarChart = struct {
 
     // Grid
     show_grid: bool = true,
-    grid_opts: Grid.Options = .{},
+    grid_opts: Grid.Options = .{ .show_horizontal = true, .show_vertical = false },
 
     // Theme
     chart_theme: ?*const ChartTheme = null,
 
+    // Accessibility overrides
+    accessible_title: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
     pub fn init(data: []const CategorySeries) BarChart;
     pub fn initSingle(series: *const CategorySeries) BarChart;
+    pub fn seriesCount(self: *const BarChart) u32;
     pub fn render(self: *const BarChart, ctx: *DrawContext) void;
 
     // Accessibility
     pub fn getAccessibilityInfo(self: *const BarChart) accessibility.ChartInfo;
     pub fn describe(self: *const BarChart, buf: []u8) []const u8;
+    pub fn summarize(self: *const BarChart, buf: []u8) []const u8;
 };
 ```
 
@@ -500,12 +509,16 @@ pub const LineChart = struct {
     show_x_axis: bool = true,
     show_y_axis: bool = true,
     show_grid: bool = true,
-    x_axis_opts: Axis.Options = .{},
+    x_axis_opts: Axis.Options = .{ .orientation = .bottom },
     y_axis_opts: Axis.Options = .{ .orientation = .left },
-    grid_opts: Grid.Options = .{},
+    grid_opts: Grid.Options = .{ .show_horizontal = true, .show_vertical = true },
 
     // Theme
     chart_theme: ?*const ChartTheme = null,
+
+    // Accessibility overrides
+    accessible_title: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
 
     // Level-of-detail (for large datasets)
     enable_lod: bool = true,
@@ -513,11 +526,13 @@ pub const LineChart = struct {
 
     pub fn init(data: []const Series) LineChart;
     pub fn initSingle(series: *const Series) LineChart;
+    pub fn seriesCount(self: *const LineChart) u32;
     pub fn render(self: *const LineChart, ctx: *DrawContext) void;
 
     // Accessibility
     pub fn getAccessibilityInfo(self: *const LineChart) accessibility.ChartInfo;
     pub fn describe(self: *const LineChart, buf: []u8) []const u8;
+    pub fn summarize(self: *const LineChart, buf: []u8) []const u8;
 };
 ```
 
@@ -1185,7 +1200,7 @@ See `src/examples/dashboard.zig` for a multi-chart analytics dashboard:
 Run examples with:
 
 ```gooey/docs/charts.md#L1217-1219
-zig build run-charts      # Charts demo
+zig build run-charts-demo # Charts demo
 zig build run-dashboard   # Dashboard example
 ```
 

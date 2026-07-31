@@ -7,9 +7,9 @@ compute device positions → batch-resolve glyphs under one lock → emit to sce
 ## Status
 
 Of the six enhancements catalogued below, **four landed** and **two were
-evaluated and rejected**. Landed items carry an inline **`Implemented.`** callout
-(same convention as `scene-data-plane-performance.md`); the two Phase-3 items
-now carry **`Evaluated — rejected.`** with the benchmark evidence.
+evaluated and rejected**. Landed items carry an inline **`Implemented.`**
+callout; the two Phase-3 items now carry **`Evaluated — rejected.`** with the
+benchmark evidence.
 
 | #   | Enhancement                                        | Status                  | Where it lives                                     |
 | --- | -------------------------------------------------- | ----------------------- | -------------------------------------------------- |
@@ -21,9 +21,10 @@ now carry **`Evaluated — rejected.`** with the benchmark evidence.
 | 6   | Precompute run-constant reciprocals for UV / scale | ❌ Evaluated — rejected | benchmarked neutral (`emit_div` vs `emit_hoisted`) |
 
 Both rejected items targeted **Phase 3 (`emitGlyphsToScene`)**. Benchmarking the
-phase in isolation (new `emit_div` / `emit_hoisted` pairing in `bench-text`)
-showed it is **memory-store-bound** — one 80-byte `GlyphInstance` write per glyph
-at ~3.1 ns/glyph on Apple Silicon. The proposed arithmetic and insert-batching
+phase in isolation (an `emit_div` / `emit_hoisted` pairing built for the
+evaluation; see the note under Benchmarking Plan — these benchmarks are not in
+the current `src/text/benchmarks.zig`) showed it is **memory-store-bound** —
+one 80-byte `GlyphInstance` write per glyph at ~3.1 ns/glyph on Apple Silicon. The proposed arithmetic and insert-batching
 changes did not move that floor, so Phase 3 was left as the simple per-glyph
 emit. See enhancements 5 and 6 for the measured results.
 
@@ -350,8 +351,9 @@ exactly where the two remaining open items (5, 6) live.
 >
 > Neither beat per-glyph insertion, so no batch API was added to `scene.zig` and
 > `emitGlyphsToScene` keeps its per-glyph `insertGlyphClipped` /
-> `insertGlyphWithOrder` calls. The `emit_div` benchmark gates the phase against
-> future regressions. The original problem analysis below is retained for context.
+> `insertGlyphWithOrder` calls. (The `emit_div` benchmark used for this
+> evaluation was not kept in the tree — see Benchmarking Plan.) The original
+> problem analysis below is retained for context.
 
 ### Problem
 
@@ -527,30 +529,36 @@ entry to gate the open items:
   `benchGlyphRasterWarmBatch` (`glyph_warm_batch`) is the per-glyph-lock vs
   batch-lock comparison, on the same working set — `bench-compare` gates the gap.
 - **#2 — covered.** `benchGlyphRasterWarm` / `benchGlyphRasterWarmSubpixel`
-  (`glyph_warm_ascii_x20`, `glyph_warm_subpixel_ascii_x5`) exercise the packed
+  (`glyph_raster_warm_ascii_x20`, `glyph_warm_subpixel_ascii_x5`) exercise the packed
   hash. A standalone hash-distribution test is still worth adding.
 - **#3 — covered.** `benchGlyphRasterCold` (`glyph_raster_cold_ascii`) is where the
   insert dominates; the free-list pop replaced the O(N) scan there.
 - **#4 — covered.** `benchRenderText` (`render_text_{short,medium,long}`) measures
   the three-phase split end-to-end.
-- **#5, #6 — covered, and the gate is what rejected them.** `benchEmitGlyphsDiv`
-  (`emit_div_ascii_x20`) and `benchEmitGlyphsHoisted` (`emit_hoisted_ascii_x20`)
-  isolate Phase 3 on identical resolved-glyph inputs and the same insert path,
-  differing only in arithmetic (per-glyph divisions vs hoisted reciprocals) —
-  mirroring the `glyph_warm_perglyph` vs `glyph_warm_batch` pairing. Both land at
+- **#5, #6 — evaluated with a benchmark pairing that is no longer in the
+  tree.** A `benchEmitGlyphsDiv` (`emit_div_ascii_x20`) / `benchEmitGlyphsHoisted`
+  (`emit_hoisted_ascii_x20`) pairing isolated Phase 3 on identical
+  resolved-glyph inputs and the same insert path, differing only in arithmetic
+  (per-glyph divisions vs hoisted reciprocals) — mirroring the
+  `glyph_warm_perglyph` vs `glyph_warm_batch` pairing. Both landed at
   **~3.1 ns/glyph (p50)**, which is the evidence that Phase 3 is memory-store-
-  bound and the micro-opts are neutral. `bench-compare` now gates the phase
-  against regressions, and the pairing stands as the recorded rationale for not
-  shipping 5/6.
+  bound and the micro-opts are neutral. **These two benchmarks were removed (or
+  never committed) along with the rejected candidates** — they do not exist in
+  the current `src/text/benchmarks.zig`, so nothing gates Phase 3 today.
+  Re-adding the pairing is the first step if Phase 3 is ever revisited; the
+  numbers above stand as the recorded rationale for not shipping 5/6.
 
 ### How to reproduce
 
 ```
-zig build bench-text          # prints the "Phase 3 Emit" section
+zig build bench-text                        # shaping / glyph-resolve / renderText suites
 zig build bench-text -Dbench-json-dir=out   # JSON for bench-compare
 ```
 
-Note on methodology: the `emit_hoisted` candidate is benchmarked as a
+Note: `bench-text` currently covers enhancements #1–#4 only. The Phase 3
+`emit_div` / `emit_hoisted` benchmarks quoted above are **not present** in
+`src/text/benchmarks.zig`; to reproduce the #5/#6 numbers they must be
+recreated. Methodology if you do: benchmark the `emit_hoisted` candidate as a
 bench-local function structurally identical to the shipping per-glyph emit
 except for the arithmetic. Calling the real `emitGlyphsToScene` across the bench
 module boundary instead measures non-inlined call overhead (it inlines into

@@ -58,7 +58,7 @@ Button{
 // Checkbox - label is used by default
 Checkbox{
     .id = "notifications",
-    .checked = state.notifications_enabled,
+    .selected = state.notifications_enabled,
     .label = "Enable notifications",
     // accessible_name defaults to label
 }
@@ -71,13 +71,12 @@ For custom UI elements, use `b.accessible()`:
 ```zig
 fn renderCustomWidget(b: *ui.Builder) void {
     // Push accessible element BEFORE the visual element
-    if (b.accessible(.{
+    const a11y_pushed = b.accessible(.{
         .role = .button,
         .name = "Custom action",
         .state = .{ .disabled = is_disabled },
-    })) {
-        defer b.accessibleEnd();
-    }
+    });
+    defer if (a11y_pushed) b.accessibleEnd();
 
     // Visual rendering
     b.box(.{ ... }, .{ ... });
@@ -170,27 +169,43 @@ const Role = enum {
     option,      // Single option
     menu,        // Menu container
     menuitem,    // Menu item
+    menubar,     // Menu bar container
 
     // Navigation
     tab,         // Tab button
     tablist,     // Tab container
     tabpanel,    // Tab content
 
+    // Disclosure
+    tree,        // Tree container
+    treeitem,    // Tree item
+
+    // Sliders
+    slider,      // Value slider
+    scrollbar,   // Scroll bar
+
     // Structure
     group,       // Generic grouping
     region,      // Landmark region
     dialog,      // Modal dialog
-    heading,     // Section heading (use with heading_level)
-    list,        // List container
-    listitem,    // List item
+    alertdialog, // Alert dialog
+    toolbar,     // Toolbar container
+    tooltip,     // Tooltip
 
     // Status
     alert,       // Important message (announced immediately)
     status,      // Status information
     progressbar, // Progress indicator
 
-    // Special
+    // Document
+    heading,     // Section heading (use with heading_level)
+    paragraph,   // Paragraph of text
+    list,        // List container
+    listitem,    // List item
     img,         // Image
+    separator,   // Visual separator
+
+    // Special
     presentation,// Explicitly NOT accessible
     none,        // Inherit from context
 };
@@ -213,6 +228,8 @@ const State = packed struct(u16) {
     invalid: bool = false,    // Validation failed
     busy: bool = false,       // Async operation in progress
     hidden: bool = false,     // Not visible (skip in a11y tree)
+    has_popup: bool = false,  // Element triggers a popup (listbox, menu, dialog, etc.)
+    _reserved: u4 = 0,
 };
 ```
 
@@ -222,16 +239,16 @@ Fingerprints provide stable identity for elements across frames without manual I
 
 ```zig
 // Fingerprint computed from:
-// - Role (6 bits)
+// - Role (8 bits)
 // - Parent contribution (16 bits)
-// - Position in parent (16 bits)
-// - Name hash (26 bits)
+// - Position in parent (8 bits)
+// - Name hash (32 bits)
 
 const Fingerprint = packed struct(u64) {
-    role: u6,
+    role: u8,
     parent_contrib: u16,
-    position: u16,
-    name_hash: u26,
+    position: u8,
+    name_hash: u32,
 };
 ```
 
@@ -628,7 +645,7 @@ Use the accessibility tree dump for debugging:
 ```zig
 // In debug builds, dump the a11y tree
 if (builtin.mode == .Debug) {
-    const tree = gooey.a11y_tree;
+    const tree = window.a11y.getTree();
     for (tree.elements[0..tree.element_count]) |elem| {
         std.debug.print("Role: {s}, Name: {s}\n", .{
             @tagName(elem.role),
@@ -697,11 +714,8 @@ pub fn isA11yEnabled(self: *Builder) bool
 
 ```zig
 pub const AccessibleConfig = struct {
-    // Identity
-    layout_id: ?LayoutId = null,
-
     // Semantics
-    role: Role = .none,
+    role: Role, // required - no default
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
     value: ?[]const u8 = null,
@@ -709,7 +723,7 @@ pub const AccessibleConfig = struct {
     // State
     state: State = .{},
     live: Live = .off,
-    heading_level: ?HeadingLevel = null,
+    heading_level: HeadingLevel = .none,
 
     // Range values (for sliders, progress bars)
     value_min: ?f32 = null,
@@ -719,6 +733,14 @@ pub const AccessibleConfig = struct {
     // Set position (for tabs, list items)
     pos_in_set: ?u16 = null,
     set_size: ?u16 = null,
+
+    // Identity: optional layout_id for bounds correlation (none = no correlation)
+    layout_id: LayoutId = LayoutId.none,
+
+    // Relationships - string IDs resolved to element indices
+    labelled_by_id: ?[]const u8 = null,  // aria-labelledby
+    described_by_id: ?[]const u8 = null, // aria-describedby
+    controls_id: ?[]const u8 = null,     // aria-controls
 };
 ```
 

@@ -20,7 +20,7 @@ Multi-Window Implementation Plan
 
 - **`src/runtime/window_context.zig`**: New per-window context struct
   - Generic over `State` type: `WindowContext(comptime State: type)`
-  - Owns `Gooey`, `Builder`, and `Cx` instances
+  - Owns `Window` (the framework context, formerly named `Gooey`), `Builder`, and `Cx` instances
   - Provides static callback functions that retrieve context via `window.getUserData()`
   - Handles render, input, close, and resize callbacks
 
@@ -47,7 +47,7 @@ Multi-Window Implementation Plan
 
 1. **Heap Allocation**: `WindowContext` is allocated on heap via `allocator.create()` to avoid stack size issues (per CLAUDE.md WASM stack budget rules)
 
-2. **Owned Resources**: Each `WindowContext` owns its `Gooey` and `Builder` instances, enabling true per-window isolation
+2. **Owned Resources**: Each `WindowContext` owns its `Window` and `Builder` instances, enabling true per-window isolation
 
 3. **Static Callbacks**: Window callbacks are static functions that retrieve the `WindowContext` from `window.getUserData()`:
 
@@ -194,7 +194,7 @@ pub const WindowRegistry = struct {
 
 - **Exports added**:
   - `src/runtime/mod.zig`: Exports `WindowHandle`
-  - `src/root.zig`: Exports `WindowHandle`, `WindowContext`, `WindowId`, `WindowRegistry`
+  - Reachable from the public API via the `gooey.runtime` and `gooey.platform` namespaces (`runtime.WindowHandle`, `platform.WindowId` / `WindowRegistry`); not re-exported at the top level of `src/root.zig`
 
 ### Tasks
 
@@ -219,6 +219,11 @@ pub const WindowRegistry = struct {
 5. **Cross-Platform**: `focus()` and `close()` implemented on all platforms with appropriate behavior (Wayland best-effort, Web no-op)
 
 ### Design
+
+> Note: the sketch below predates implementation. The shipped handle methods
+> in `src/runtime/window_handle.zig` take a `registry: *WindowRegistry`
+> parameter rather than `app: *App`, and the Cx variant is named
+> `updateWithCx()`.
 
 ```/dev/null/window_handle.zig#L1-55
 pub fn WindowHandle(comptime State: type) type {
@@ -297,8 +302,7 @@ Created `MultiWindowApp` struct in `src/runtime/multi_window_app.zig` that provi
 Key files:
 
 - `src/runtime/multi_window_app.zig` - Main `App` struct implementation
-- `src/runtime/mod.zig` - Module exports (`MultiWindowApp`, `AppWindowOptions`, `MAX_WINDOWS`)
-- `src/root.zig` - Public API exports
+- `src/runtime/mod.zig` - Module exports (`MultiWindowApp`, `AppWindowOptions`, `MAX_WINDOWS`), reachable via the public `gooey.runtime` namespace
 - `src/examples/multi_window.zig` - Working example with main window + dialog
 
 ### Tasks
@@ -307,7 +311,7 @@ Key files:
 | -------------------------------------------------- | ------ | --------------------------------------- |
 | 4.1 Create `App` struct (owns platform + registry) | Medium | Replaces implicit globals               |
 | 4.2 Add `openWindow()` method                      | Large  | Creates window + context + handle       |
-| 4.3 Per-window Gooey instance                      | Large  | Each window needs layout/scene/dispatch |
+| 4.3 Per-window `Window` instance                   | Large  | Each window needs layout/scene/dispatch |
 | 4.4 Shared resources (text system, SVG atlas)      | Medium | Share expensive resources               |
 | 4.5 Event routing                                  | Medium | Which window gets events?               |
 | 4.6 Window close behavior                          | Medium | Close one vs quit app                   |
@@ -317,7 +321,7 @@ Key files:
 
 1. **Shared vs Per-Window Resources**:
    - Shared: `TextSystem`, `SvgAtlas`, `ImageAtlas` (expensive, one per App)
-   - Per-window: `Gooey`, `LayoutEngine`, `Scene`, `DispatchTree` (via `WindowContext`)
+   - Per-window: `Window`, `LayoutEngine`, `Scene`, `DispatchTree` (via `WindowContext`)
 
 2. **Resource Ownership**:
    - `App` owns shared resources and registry
@@ -329,9 +333,9 @@ Key files:
    - `MultiWindowApp` is additive - use when you need multiple windows
 
 4. **Current Implementation Note**:
-   - App's shared atlases are wired to each `Window` via `setTextAtlas/setSvgAtlas/setImageAtlas`
-   - Each `WindowContext`'s `Gooey` still creates its own internal copies (used during layout)
-   - Future optimization: Add `Gooey.initWithSharedResources()` to truly share atlas memory
+   - App's shared atlases are wired to each window via `setTextAtlas/setSvgAtlas/setImageAtlas`
+   - Each `WindowContext`'s `Window` still creates its own internal copies (used during layout)
+   - Future optimization: Add `Window.initWithSharedResources()` to truly share atlas memory (landed in Phase 5)
 
 ### Design
 
@@ -448,7 +452,7 @@ pub const App = struct {
 
 Implemented cross-window communication and fixed shared resource glitching:
 
-1. **Shared Resources Fix**: Added `Gooey.initWithSharedResources()` and `initWithSharedResourcesPtr()` that accept external text system and atlases instead of creating duplicates. This fixes font glitching where layout measured with one atlas but rendering used another.
+1. **Shared Resources Fix**: Added `Window.initWithSharedResources()` and `initWithSharedResourcesPtr()` that accept external text system and atlases instead of creating duplicates. This fixes font glitching where layout measured with one atlas but rendering used another.
 
 2. **Cross-Window State Updates**: Dialog windows can now update parent window state through direct references. The `DialogState` stores a pointer to `MainState` enabling real-time cross-window communication.
 
@@ -460,7 +464,7 @@ Implemented cross-window communication and fixed shared resource glitching:
 
 Key changes:
 
-- `src/context/gooey.zig` - Added `initWithSharedResources()`, changed `svg_atlas` and `image_atlas` to pointers with ownership flags
+- `src/context/window.zig` - Added `initWithSharedResources()`, changed `svg_atlas` and `image_atlas` to pointers with ownership flags
 - `src/runtime/window_context.zig` - Added `initWithSharedResources()` for multi-window mode
 - `src/runtime/multi_window_app.zig` - Updated `createWindowContext()` to pass shared resources
 - `src/runtime/render.zig` - Updated atlas access to dereference pointers
@@ -477,11 +481,11 @@ Key changes:
 
 ### Key Design Points
 
-1. **Shared Resources**: `Gooey` now stores `svg_atlas` and `image_atlas` as pointers with `_owned` flags, matching the `text_system` pattern. Multi-window apps share these across windows.
+1. **Shared Resources**: `Window` now stores `svg_atlas` and `image_atlas` as pointers with `_owned` flags, matching the `text_system` pattern. Multi-window apps share these across windows.
 
 2. **Cross-Window Pattern**: Dialog state contains a pointer back to parent state, enabling direct updates without complex message passing.
 
-3. **Font Glitching Fix**: The root cause was layout using Gooey's internal text system for measurement while Window rendered with App's shared atlas. Now both use the same shared resources.
+3. **Font Glitching Fix**: The root cause was layout using `Window`'s internal text system for measurement while the platform window rendered with App's shared atlas. Now both use the same shared resources.
 
 ### Design
 
