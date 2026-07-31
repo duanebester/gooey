@@ -472,7 +472,7 @@ const ClearDoneButton = struct {
 
         if (s.completedCount(g) > 0) {
             cx.render(ui.box(.{}, .{
-                Button{ .label = "Clear done", .size = .small, .variant = .secondary, .on_click_handler = cx.command(AppState.clearCompleted) },
+                Button{ .label = "Clear done", .size_preset = .small, .variant = .secondary, .on_click_handler = cx.command(AppState.clearCompleted) },
             }));
         }
     }

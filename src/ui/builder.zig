@@ -1581,12 +1581,12 @@ pub const Builder = struct {
         _ = self.dispatch.pushNode();
         self.dispatch.setLayoutId(layout_id.id);
 
-        // Check hover state
-        const is_hovered = btn.style.enabled and
+        // Check hover state - disabled buttons never hover
+        const is_hovered = !btn.style.disabled and
             if (self.window) |g| g.isHovered(layout_id.id) else false;
 
         const bg = switch (btn.style.style) {
-            .primary => if (!btn.style.enabled)
+            .primary => if (btn.style.disabled)
                 Color.rgb(0.5, 0.7, 1.0)
             else if (is_hovered)
                 Color.rgb(0.3, 0.6, 1.0) // Lighter on hover
@@ -1627,9 +1627,9 @@ pub const Builder = struct {
 
         self.layout.closeElement();
 
-        // Register click handler with dispatch tree
+        // Register click handler with dispatch tree - disabled buttons don't click
         if (btn.on_click) |callback| {
-            if (btn.style.enabled) {
+            if (!btn.style.disabled) {
                 self.dispatch.onClick(callback);
             }
         }
@@ -1645,12 +1645,12 @@ pub const Builder = struct {
         _ = self.dispatch.pushNode();
         self.dispatch.setLayoutId(layout_id.id);
 
-        // Check hover state
-        const is_hovered = btn.style.enabled and
+        // Check hover state - disabled buttons never hover
+        const is_hovered = !btn.style.disabled and
             if (self.window) |g| g.isHovered(layout_id.id) else false;
 
         const bg = switch (btn.style.style) {
-            .primary => if (!btn.style.enabled)
+            .primary => if (btn.style.disabled)
                 Color.rgb(0.5, 0.7, 1.0)
             else if (is_hovered)
                 Color.rgb(0.3, 0.6, 1.0) // Lighter on hover
@@ -1691,8 +1691,8 @@ pub const Builder = struct {
 
         self.layout.closeElement();
 
-        // Register handler-based click handler
-        if (btn.style.enabled) {
+        // Register handler-based click handler - disabled buttons don't click
+        if (!btn.style.disabled) {
             self.dispatch.onClickHandler(btn.handler);
         }
 

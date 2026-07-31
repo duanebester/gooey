@@ -297,7 +297,16 @@ pub fn onActionHandler(comptime Action: type, ref: HandlerRef) ActionHandlerRefP
 // Conditional Rendering
 // =============================================================================
 
-/// Conditional rendering - returns a struct that renders children only if condition is true
+/// Conditional rendering - returns a struct that renders children only if condition is true.
+///
+/// WARNING: `children` is EAGERLY evaluated. The child tuple is built as an
+/// argument, before the condition is checked — only the *rendering* is
+/// conditional. Code like
+/// `ui.when(user != null, .{ ui.text(user.?.name, .{}) })`
+/// dereferences `user.?` even when the condition is false and will crash.
+/// For guarded access to optionals use `ui.maybe`, which only invokes its
+/// callback when the optional is non-null; for arbitrary lazy conditions use
+/// `ui.whenFn`, which only invokes its callback when the condition is true.
 pub fn when(condition: bool, children: anytype) When(@TypeOf(children)) {
     return .{ .condition = condition, .children = children };
 }
@@ -320,7 +329,42 @@ pub fn When(comptime ChildrenType: type) type {
     };
 }
 
-/// Render with value if optional is non-null
+/// Lazy conditional rendering - invokes `render_fn` (and therefore builds the
+/// children) only when `condition` is true.
+///
+/// Use this instead of `ui.when` whenever building the children has a
+/// precondition that only holds when the condition is true:
+/// ```
+/// ui.whenFn(s.items.len > 0, struct {
+///     fn render() ui.Text {
+///         return ui.text(s.items[0].name, .{});
+///     }
+/// }.render)
+/// ```
+pub fn whenFn(condition: bool, comptime render_fn: anytype) WhenFn(render_fn) {
+    return .{ .condition = condition };
+}
+
+/// Lazy conditional wrapper type - calls render_fn only if condition is true
+pub fn WhenFn(comptime render_fn: anytype) type {
+    return struct {
+        condition: bool,
+
+        const Cx = @import("../cx.zig").Cx;
+
+        pub fn render(self: @This(), cx: *Cx) void {
+            if (self.condition) {
+                const result = render_fn();
+                cx.render(result);
+            }
+        }
+    };
+}
+
+/// Render with value if optional is non-null.
+///
+/// Unlike `ui.when`, this is LAZY: `render_fn` is only invoked when the
+/// optional holds a value, so it is safe to use the unwrapped value inside.
 pub fn maybe(optional: anytype, comptime render_fn: anytype) Maybe(@TypeOf(optional), render_fn) {
     return .{ .optional = optional };
 }
@@ -341,7 +385,21 @@ pub fn Maybe(comptime OptionalType: type, comptime render_fn: anytype) type {
     };
 }
 
-/// Render for each item in a slice
+/// Render for each item in a slice.
+///
+/// `render_fn` receives `(item, index)` and must declare a single, concrete
+/// element return type — use a named type such as `ui.Text` or a component
+/// struct, not `@TypeOf(...)` incantations:
+/// ```
+/// ui.each(&s.items, struct {
+///     fn render(item: Item, _: usize) ui.Text {
+///         return ui.text(item.name, .{});
+///     }
+/// }.render)
+/// ```
+/// A callback cannot return different types per item (that surfaces as a
+/// peer-type-resolution compile error); to vary layout per item, return one
+/// component type that branches internally.
 pub fn each(items: anytype, comptime render_fn: anytype) Each(@TypeOf(items), render_fn) {
     return .{ .items = items };
 }
@@ -650,6 +708,24 @@ test "scrollTracked with source location" {
     try std.testing.expectEqualStrings("tracked-scroll", s.id);
     try std.testing.expectEqual(@as(?f32, 400), s.style.height);
     try std.testing.expectEqualStrings("primitives.zig", s.source_loc.file[s.source_loc.file.len - 14 ..]);
+}
+
+test "whenFn primitive" {
+    // Goal: `whenFn` stores the condition and defers the callback — the
+    // callback is only invoked inside `render`, never at construction.
+    // Methodology: mirror the `maybe` tests — build the wrapper for both
+    // condition values and verify the stored state.
+    const Callbacks = struct {
+        fn render() Text {
+            return text("Lazily built", .{});
+        }
+    };
+
+    const w = whenFn(false, Callbacks.render);
+    try std.testing.expect(!w.condition);
+
+    const w2 = whenFn(true, Callbacks.render);
+    try std.testing.expect(w2.condition);
 }
 
 test "maybe primitive with value" {

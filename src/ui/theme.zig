@@ -80,7 +80,7 @@ pub const Theme = struct {
     /// Large corner radius (e.g., modals, panels)
     radius_lg: f32 = 16,
     /// Base font size in points. Components scale relative to this value.
-    /// e.g. Button.Size.small = base - 2, .medium = base, .large = base + 2
+    /// e.g. Button.SizePreset.small = base - 2, .medium = base, .large = base + 2
     /// Aligned with FontConfig.font_size (16pt) so UI text matches rasterization size.
     font_size_base: u16 = 16,
 

@@ -18,8 +18,18 @@ pub const Button = struct {
     label: []const u8,
     id: ?[]const u8 = null,
     variant: Variant = .primary,
-    size: Size = .medium,
-    enabled: bool = true,
+
+    // Named `size_preset` (not `size`) because bare `size` means an f32
+    // pixel dimension everywhere else (Checkbox/RadioButton/Image/Svg);
+    // reusing it here for a .small/.medium/.large enum overloaded one name
+    // with two meanings (rule 9). The qualifier comes last per convention.
+    size_preset: SizePreset = .medium,
+
+    // `disabled: bool = false` is the house polarity for interactivity
+    // (TextInput/Select/MenuItem, and a11y `State.disabled` all use it), so
+    // the resting state of every widget is spelled the same way: all-defaults
+    // means"interactive".
+    disabled: bool = false,
 
     // Interaction - one or the other, never both (enforced in `render`).
     // The stateless `on_click` callback and the state-bound `on_click_handler`
@@ -45,12 +55,12 @@ pub const Button = struct {
         danger,
     };
 
-    pub const Size = enum {
+    pub const SizePreset = enum {
         small,
         medium,
         large,
 
-        fn padding(self: Size) Box.PaddingValue {
+        fn padding(self: SizePreset) Box.PaddingValue {
             return switch (self) {
                 .small => .{ .symmetric = .{ .x = 12, .y = 6 } },
                 .medium => .{ .symmetric = .{ .x = 24, .y = 10 } },
@@ -58,7 +68,7 @@ pub const Button = struct {
             };
         }
 
-        fn fontSize(self: Size, base: u16) u16 {
+        fn fontSize(self: SizePreset, base: u16) u16 {
             return switch (self) {
                 .small => base -| 2,
                 .medium => base,
@@ -87,13 +97,13 @@ pub const Button = struct {
         const radius = self.corner_radius orelse t.radius_md;
 
         // Apply disabled state
-        const final_bg = if (self.enabled) bg else bg.withAlpha(0.5);
-        const final_hover = if (self.enabled) hover_bg else null;
-        const final_fg = if (self.enabled) fg else fg.withAlpha(0.7);
+        const final_bg = if (self.disabled) bg.withAlpha(0.5) else bg;
+        const final_hover = if (self.disabled) null else hover_bg;
+        const final_fg = if (self.disabled) fg.withAlpha(0.7) else fg;
 
-        // Resolve click handler
-        const on_click = if (self.enabled) self.on_click else null;
-        const on_click_handler = if (self.enabled) self.on_click_handler else null;
+        // Resolve click handler: disabled buttons drop both click paths.
+        const on_click = if (self.disabled) null else self.on_click;
+        const on_click_handler = if (self.disabled) null else self.on_click_handler;
 
         // Resolve identity once (PR 11b.2b). An explicit id hashes through
         // `idFor`; a null id now falls back to the parent-scoped auto id
@@ -110,13 +120,13 @@ pub const Button = struct {
             .name = self.accessible_name orelse self.label,
             .description = self.accessible_description,
             .state = .{
-                .disabled = !self.enabled,
+                .disabled = self.disabled,
             },
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
         cx.boxWithLayoutId(layout_id, .{
-            .padding = self.size.padding(),
+            .padding = self.size_preset.padding(),
             .background = final_bg,
             .hover_background = final_hover,
             .corner_radius = radius,
@@ -126,7 +136,7 @@ pub const Button = struct {
         }, .{
             ui.text(self.label, .{
                 .color = final_fg,
-                .size = self.size.fontSize(t.font_size_base),
+                .size = self.size_preset.fontSize(t.font_size_base),
             }),
         });
     }

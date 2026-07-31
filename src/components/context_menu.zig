@@ -45,10 +45,10 @@
 //!     .y = s.menu_y,
 //!     .on_close = cx.update(State.closeMenu),
 //!     .items = &.{
-//!         .{ .label = "Cut",  .icon = gooey.Icons.close, .shortcut = "Ctrl+X", .on_select = cx.update(State.cut) },
-//!         .{ .label = "Copy", .shortcut = "Ctrl+C", .on_select = cx.update(State.copy) },
+//!         .{ .label = "Cut",  .icon = gooey.Icons.close, .shortcut = "Ctrl+X", .on_click = cx.update(State.cut) },
+//!         .{ .label = "Copy", .shortcut = "Ctrl+C", .on_click = cx.update(State.copy) },
 //!         .{ .separator = true },
-//!         .{ .label = "Delete", .danger = true, .on_select = cx.update(State.delete) },
+//!         .{ .label = "Delete", .danger = true, .on_click = cx.update(State.delete) },
 //!     },
 //! }
 //!
@@ -101,12 +101,14 @@ pub const MenuItem = struct {
     /// convention this method should also set the app's open flag to false.
     /// `null` renders a non-interactive row (e.g. a section header).
     ///
-    /// Typed `?HandlerRef` (NOT `?OnSelectHandler`): a menu item triggers one
-    /// fixed action and carries no index, unlike `select.Select.on_select`
-    /// which is `?OnSelectHandler` so it can pass the chosen option index. The
-    /// two fields deliberately share the `on_select` name but differ in type;
-    /// unifying them is a deeper design change left out of the naming pass.
-    on_select: ?HandlerRef = null,
+    /// Named `on_click` (typed `?HandlerRef`), matching Button/Tab/RadioButton:
+    /// a menu row triggers one fixed action, exactly like a click. This is the
+    /// counterpart to the index-based `on_select: ?OnSelectHandler` used by
+    /// Select/RadioGroup/TabBar. The framework now keeps the two concepts on
+    /// distinct names — `on_click`/`HandlerRef` for a fixed action,
+    /// `on_select`/`OnSelectHandler` for index-based selection — so a field
+    /// named `on_select` always has one type and copy-paste can't miscompile.
+    on_click: ?HandlerRef = null,
 
     /// Optional leading icon as SVG markup (e.g. one of `gooey.Lucide`),
     /// rendered stroke-based to match the Lucide icon style.
@@ -134,7 +136,10 @@ pub const MenuItem = struct {
 /// `x`, `y`, `on_close`) in the same shape as `Modal`.
 pub const ContextMenu = struct {
     /// Stable identifier — used for the layout id and a11y bounds correlation.
-    id: []const u8 = "context-menu",
+    /// Required (no default): ContextMenu is controlled/retained like `Modal`,
+    /// and the old shared `"context-menu"` default made two menus on one
+    /// screen collide silently. Matches `Modal`'s required-`id` convention.
+    id: []const u8,
 
     /// Whether the menu is currently visible.
     is_open: bool = false,
@@ -406,7 +411,7 @@ const MenuRow = struct {
 
         // Action row. Interactivity collapses to null when disabled or when no
         // handler was supplied, so a disabled/header row neither hovers nor clicks.
-        const interactive = !self.item.disabled and self.item.on_select != null;
+        const interactive = !self.item.disabled and self.item.on_click != null;
         const label_color = if (self.item.disabled)
             self.palette.disabled
         else if (self.item.danger)
@@ -432,7 +437,7 @@ const MenuRow = struct {
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
             .gap = 16,
-            .on_click_handler = if (interactive) self.item.on_select else null,
+            .on_click_handler = if (interactive) self.item.on_click else null,
         }, .{
             MenuRowLabel{
                 .label = self.item.label,

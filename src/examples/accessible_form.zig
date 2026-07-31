@@ -670,7 +670,7 @@ const FormActions = struct {
                 .label = "Submit",
                 .accessible_name = "Submit registration form",
                 .variant = .primary,
-                .size = .large,
+                .size_preset = .large,
                 .on_click_handler = cx.update(FormState.submit),
             },
 
@@ -678,7 +678,7 @@ const FormActions = struct {
                 .label = "Reset",
                 .accessible_name = "Reset form to default values",
                 .variant = .secondary,
-                .size = .large,
+                .size_preset = .large,
                 .on_click_handler = cx.update(FormState.reset),
             },
         }));

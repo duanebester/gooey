@@ -6,7 +6,7 @@
 //!   * State access — `cx.state(AppState)` / `cx.stateConst(AppState)`.
 //!   * Rendering    — `cx.render(ui.box(...))`.
 //!   * Handlers     — `cx.update`, `cx.updateWith`, `cx.command`,
-//!                    `cx.commandWith`, `cx.onSelect`, `cx.defer`.
+//!                    `cx.commandWith`, `cx.onSelect`, `cx.deferCommand`.
 //!   * Sub-namespaces (PR 5): `cx.lists`, `cx.animations`,
 //!                    `cx.entities`, `cx.focus`. PR 8.3 adds
 //!                    `cx.element_states` (keyed pool of
@@ -434,13 +434,15 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Deferred commands — `defer` / `deferWith`
+    // Deferred commands — `deferCommand` / `deferCommandWith`
     // =========================================================================
 
     /// Schedule `fn(*State, *Window) void` to run after current event
     /// handling completes. Use for modal dialogs and other operations
-    /// that can't safely run mid-event (re-entrancy, heavy work).
-    pub fn @"defer"(
+    /// that can't safely run mid-event (re-entrancy, heavy work). Mirrors
+    /// `Window.deferCommand`; named to avoid the `defer` keyword — the old
+    /// `cx.@"defer"` needed an escape and could not be spelled `cx.defer()`.
+    pub fn deferCommand(
         self: *Self,
         comptime method: anytype,
     ) void {
@@ -448,8 +450,9 @@ pub const Cx = struct {
     }
 
     /// Schedule `fn(*State, *Window, Arg) void` for after-event
-    /// execution. `arg` follows the 8-byte capture rule.
-    pub fn deferWith(
+    /// execution. `arg` follows the 8-byte capture rule. Mirrors
+    /// `Window.deferCommandWith`.
+    pub fn deferCommandWith(
         self: *Self,
         arg: anytype,
         comptime method: anytype,
@@ -748,8 +751,14 @@ pub const Cx = struct {
     /// True when the value at `key` differs from the previous frame.
     /// First call for a key returns false — there's no prior value to
     /// diff against. Replaces the module-level `var last_foo` /
-    /// manual-diff pattern. Works with any value type; pointer types
-    /// compare by address (identity), not pointee.
+    /// manual-diff pattern.
+    ///
+    /// Value comparison is structural (see `change_tracker.hashValue`):
+    /// structs diff field-by-field (padding-safe) and slices — including
+    /// `[]const u8` strings — diff by *content*, so an in-place string edit
+    /// registers as changed and an identical string at a new address does
+    /// not. Non-slice pointers still compare by address (identity), not
+    /// pointee, since following them could dangle.
     pub fn changed(self: *Self, comptime key: []const u8, value: anytype) bool {
         const key_hash = comptime animation_mod.hashString(key);
         const value_hash = change_tracker_mod.hashValue(@TypeOf(value), value);

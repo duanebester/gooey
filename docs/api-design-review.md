@@ -2,8 +2,17 @@
 
 Status: review notes / backlog. **P0 items resolved in PR #41** (Theme 2
 release-safe assertion fixes + Theme 4 README/quick-start doc drift). **P1
-consistency pass opened as PRs #42 (selection fields), #43 (handler naming),
-and #44 (alignment/gap/padding types)**; P2–P3 remain open. Author:
+consistency pass merged via PRs #42 (selection fields), #43 (handler naming),
+and #44 (alignment/gap/padding types)** — verified against source, see the
+per-theme and priority-table notes below. **P2 is now essentially complete**:
+beyond the earlier Select/ContextMenu shared-default-id fix and the
+`cx.@"defer"` rename, this pass landed the index-based handler unification
+(RadioGroup + TabBar gained `on_select: ?OnSelectHandler`; TabBar's raw `fn`
+pointer and its aliasing static-var wrapper are gone; `MenuItem.on_select` →
+`on_click` so the `on_select` name now always means `OnSelectHandler`), the
+`cx.changed` value-semantics fix (structural hashing — content-based slices,
+padding-safe structs), and the canonical `App` entry-point documentation. Only
+P3 nits remain. Author:
 agent-assisted review. Scope: the public developer-facing
 API surface (`cx.*`, `ui.*`, components, `root.zig` module layout, README).
 Findings are grounded in the source at the line references given; a handful were
@@ -47,6 +56,32 @@ consistency/polish backlog, **not** a rewrite proposal — the core model
 ## Cross-cutting themes
 
 ### Theme 1 — Naming/type inconsistency across equivalent concepts
+
+> **Status: MOSTLY RESOLVED** (PRs #42/#43/#44, verified against source). The
+> tables and traps below are kept as the historical "before" state. Fixed:
+> selection fields unified to `selected: bool` / `selected: ?usize`; the
+> `alignment` shape + `gap`/`padding` types unified so `hstack`/`vstack` are a
+> clean subset of `box` (and `Scroll.gap` promoted `u16 → f32`); handler-field
+> naming reconciled with the `_handler`-suffix rationale documented per field
+> (`Select.on_close`/`on_toggle` now match `Modal`'s `?HandlerRef`). **The two
+> items deferred to P2 are now resolved:** the `on_select` type split is gone
+> — index-based selection is `on_select: ?OnSelectHandler` across
+> Select/RadioGroup/TabBar, while fixed index-free actions use
+> `on_click: ?HandlerRef` (Button/Tab/RadioButton/MenuItem), so `MenuItem`'s
+> handler was renamed `on_select` → `on_click` and the shared-name/different-type
+> footgun no longer exists; and `TabBar.on_change`'s raw `?*const fn (usize)
+> void` was replaced by `on_select: ?OnSelectHandler` (which also deleted a
+> per-item static-var wrapper that aliased across tabs). **The P3 naming nits
+> are now resolved as well:** Tab/TabBar `style: Tab.Style` →
+> `variant: Tab.Variant` (matching Button's word for "visual kind"); Button
+> `enabled: bool = true` → `disabled: bool = false` (matching
+> TextInput/Select/MenuItem, `InputStyle`, and a11y `State.disabled` — the
+> low-level `ui.ButtonStyle.enabled` was flipped in the same pass, so
+> all-defaults uniformly means "interactive"); and Button's preset enum field
+> was renamed `size` → `size_preset: SizePreset`, so bare `size` now
+> uniformly means an f32 pixel dimension (Checkbox/RadioButton/Image/Svg).
+> Note: TextArea still exposes no `disabled` at all — adding one is a
+> feature (focus/edit gating), not a naming fix, and remains untracked here.
 
 The dominant DX drag. Near-identical concepts use divergent names/types/shapes
 across the API, so developers cannot build muscle memory. Violates project
@@ -98,14 +133,22 @@ bare `f32` on stack/center. `.gap = 8.5` compiles in some places, not others.
 Also `f32` spacing is false precision — the engine truncates via
 `@intFromFloat` (`builder.zig:733`), so `8.5` silently becomes `8`.
 
-**`size` is overloaded:** enum (`.small/.medium/.large`) on Button
+✅ **`size` is overloaded** (**done**): enum (`.small/.medium/.large`) on Button
 (`button.zig:19`) vs pixels (`f32`) on Checkbox/RadioButton/Image/Svg.
+**Fixed:** pixels won the bare name (4 components vs 1, and "size" literally
+means a dimension there); Button's preset field is now
+`size_preset: SizePreset` per rule 9 (qualifier last), with all call sites
+mechanically renamed.
 
-**`enabled` vs `disabled`:** Button uses `enabled: bool = true`
+✅ **`enabled` vs `disabled`** (**done**): Button used `enabled: bool = true`
 (`button.zig:20`); TextInput/Select/MenuItem use `disabled: bool = false`
-(opposite polarity); TextArea has neither.
+(opposite polarity); TextArea has neither. **Fixed:** Button (component and
+`ui.ButtonStyle`) now uses `disabled: bool = false` like everything else.
+TextArea is unchanged — giving it a real disabled state is a feature, not a
+rename.
 
-**Other naming drift:** `variant` (Button) vs `style` (Tabs) for "visual kind";
+**Other naming drift:** ~~`variant` (Button) vs `style` (Tabs) for "visual
+kind"~~ ✅ (Tab/TabBar now use `variant: Tab.Variant`);
 `border_color_focused` (TextInput) vs `focus_border_color` (Select);
 ProgressBar's `fill`/`secondary_fill` lack the `_color` suffix used elsewhere;
 Modal prefixes everything with `content_*`; ValidatedTextInput renames the
@@ -151,6 +194,19 @@ cost is negligible), promoted to unconditional `@panic` guards that survive
 release.
 
 ### Theme 3 — Stringly-typed identity + value-semantics surprises
+
+> **Status: value-semantics RESOLVED; identity-collision still open.** The
+> `cx.changed` value-hashing surprise is fixed: `change_tracker.hashValue` now
+> hashes _structurally_ instead of over raw value bytes — structs are hashed
+> field-by-field (padding never enters the hash, killing the rule-21
+> buffer-bleed correctness bug) and slices, including `[]const u8`, are hashed
+> by _content_, so an in-place string edit registers as changed and an
+> identical string at a new address does not. Non-slice pointers still hash the
+> address (identity) by design, and unsupported types now `@compileError`
+> rather than silently hashing ambiguous bytes. Still open (larger, additive):
+> the rename-safe enum-keyed `cx.changed(.key, v)` overload and stringly-typed
+> id **collision detection** — both are new API surface, not a semantics fix,
+> so they're left as a follow-up.
 
 Identity-by-string is pervasive: `cx.changed("dark_mode", …)`,
 `cx.animations.tween("id", …)`, `TextInput{ .id = "new-todo" }`,
@@ -207,17 +263,24 @@ in the `root.zig` quick-start. Still open (follow-up): extend the
 
 ## Individual findings
 
-- **Two entry points, unclear canonical**: `gooey.run(...)` (native-only) vs
-  `gooey.App(...) + App.main(init)` (handles the WASM `@export` path).
-  `root.zig:48` claims `run` is used by "~all examples," but most examples use
-  `App`, and the two quick-starts (root.zig vs README todo) disagree. `App` is
-  the superset — document it as canonical; demote `run` to "native shortcut."
+- ✅ **Two entry points, unclear canonical** (**done**): `gooey.run(...)`
+  (native-only) vs `gooey.App(...) + App.main(init)` (handles the WASM
+  `@export` path). `root.zig` claimed `run` was used by "~all examples," but
+  most examples use `App`, and the two quick-starts (root.zig vs README todo)
+  disagreed. **Fixed:** `App` is now documented as the canonical,
+  cross-platform entry point (a strict superset of `run`) and `run` is
+  explicitly labelled the native-only shortcut, on both the module quick-start
+  and the two `pub const` doc comments; the `root.zig` quick-start was rewritten
+  to use the `App` + `App.main(init)` shape so it agrees with the README.
 
-- **Two deferral APIs**: `cx.@"defer"` / `cx.deferWith` (keyword-escaped, ugly
-  at call sites; `cx.zig:434`) exist on `Cx`, while the README documents a
-  different, more verbose `g.deferCommand(State, method)` on the window. Rename
-  the `Cx` method to a non-keyword (`deferCommand`/`enqueue`) and reconcile the
-  two APIs.
+- ✅ **Two deferral APIs** (**done**): `cx.@"defer"` / `cx.deferWith` were
+  keyword-escaped and ugly at call sites (`cx.@"defer"` could not even be
+  spelled `cx.defer()`), while the README documented `g.deferCommand` on the
+  window. **Fixed:** the `Cx` methods are renamed to `cx.deferCommand` /
+  `cx.deferCommandWith`, mirroring `Window.deferCommand` /
+  `Window.deferCommandWith` exactly, and the README Handler Types table +
+  module doc were updated to match. There were no call sites of the old names
+  outside the definitions, so the rename was churn-free.
 
 - **`on_click` + `on_click_handler` "one or the other" is unenforced**:
   `button.zig:15` labels them "one or the other," but `render` forwards _both_
@@ -227,33 +290,48 @@ in the `root.zig` quick-start. Still open (follow-up): extend the
   real.) Collapsing to one `on_click: ?HandlerRef` removes both the footgun and
   the awkward `_handler` suffix.
 
-- **`ui.when` evaluates children eagerly** while `ui.maybe` is lazy
-  (`primitives.zig:301` vs `:324`). `ui.when(user != null, .{ ui.text(user.?.name, .{}) })`
-  dereferences `user.?` before the condition is checked, because the child tuple
-  is built as an argument. The family looks uniform but only `maybe` is
-  null-safe — a latent crash that reads like guarded access. Document loudly, or
-  add a lazy `whenFn` variant.
+- ✅ **`ui.when` evaluates children eagerly** (**done**) while `ui.maybe` is
+  lazy (`primitives.zig:301` vs `:324`).
+  `ui.when(user != null, .{ ui.text(user.?.name, .{}) })` dereferences `user.?`
+  before the condition is checked, because the child tuple is built as an
+  argument. **Fixed both ways:** the eager evaluation is now documented loudly
+  on `ui.when` (doc comment + README key-primitives list, with the crashing
+  example spelled out), `ui.maybe` documents that it is the lazy/null-safe
+  member of the family, and a lazy `ui.whenFn(condition, render_fn)` variant
+  was added for arbitrary conditions whose children are only safe to build
+  when the condition holds.
 
-- **`ui.each` teaches a cryptic return type**: the README uses
+- ✅ **`ui.each` teaches a cryptic return type** (**done**): the README used
   `@TypeOf(ui.text("", .{}))` as the callback return annotation
   (`readme.md:342`); the tests just write `ui.Text` (`primitives.zig:685`). The
   `@TypeOf` incantation invites cargo-culting and breaks when the callback
-  returns a container. Also note `each`'s callback must return a single element
-  type (undocumented; surfaces as a peer-type-resolution error).
+  returns a container. **Fixed:** the README example now annotates `ui.Text`
+  directly, and `ui.each`'s doc comment documents the single-concrete-return-type
+  requirement (previously it surfaced only as a peer-type-resolution error) plus
+  the escape hatch: return one component type that branches internally.
 
-- **RadioGroup didn't get Select's ergonomic upgrade**: Select uses a single
-  `on_select` receiving the index (good); RadioGroup still needs a positional
-  `handlers: []const HandlerRef` array hand-aligned to option indices
-  (`radio_group.zig:167`), where a too-short array makes those radios silently
-  dead. Give RadioGroup an `on_select` mirroring Select; make `selected`
-  optional.
+- ✅ **RadioGroup didn't get Select's ergonomic upgrade** (**done**): Select
+  uses a single `on_select` receiving the index (good); RadioGroup previously
+  needed a positional `handlers: []const HandlerRef` array hand-aligned to
+  option indices, where a too-short array made those radios silently dead.
+  **Fixed:** RadioGroup now has `on_select: ?OnSelectHandler` mirroring Select
+  (generated per option via `forIndex`, since RadioGroup keeps no open/close
+  state); `selected` was already `?usize`. The legacy `handlers` array is
+  retained and still wins when both are set (matching Select's resolution
+  order). TabBar got the same `on_select` upgrade in the same pass.
 
-- **`id` requiredness is inconsistent** and reintroduces a fixed bug: required
-  on TextInput/Modal, optional (`?…= null`, auto-id) on Button/Checkbox/etc.,
-  but defaulted to a shared string literal on Select (`"select"`,
-  `select.zig:155`) and ContextMenu (`"context-menu"`, `context_menu.zig:131`) —
-  the exact "two on one screen collide silently" anti-pattern that PR 11b.2b
-  removed elsewhere.
+- ✅ **`id` requiredness is inconsistent** (**Select/ContextMenu part done**):
+  required on TextInput/Modal, optional (`?…= null`, auto-id) on
+  Button/Checkbox/etc., but was defaulted to a shared string literal on Select
+  (`"select"`) and ContextMenu (`"context-menu"`) — the exact "two on one
+  screen collide silently" anti-pattern that PR 11b.2b removed elsewhere.
+  **Fixed:** both `id` fields are now required (no default), matching the
+  `Modal`/`TextInput` convention — the right call here because Select and
+  ContextMenu are controlled/retained-by-id widgets (Select keys its open/close
+  state in `Window.element_states` by the id hash), so a shared default silently
+  merged distinct widgets' state. All existing call sites already passed an
+  explicit `id`, so no callers broke. The broader inconsistency (auto-id
+  Button/Checkbox vs required TextInput/Modal) is left as-is by design.
 
 - **`widgetState(T, "id").clear()` escape hatch**: the flagship todo reaches into
   a retained widget by string id to clear it after submit, because `bind` is
@@ -313,17 +391,18 @@ in the `root.zig` quick-start. Still open (follow-up): extend the
 
 ## Priority summary
 
-| Priority  | Item                                                                                                     | Type                          |
-| --------- | -------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| ~~P0~~ ✅ | `changed` 64-key release OOB; `cx.state` release UB; entity arg-size assert — **done (PR #41)**          | correctness / release-only UB |
-| ~~P0~~ ✅ | README doc drift (`cx.animate`/`entityCx`/`*Gooey`, uncompilable quick-start) — **done (PR #41)**        | first-run experience          |
-| ~~P1~~ 🔀 | Unify `.alignment` shape + `gap`/`padding` types (stack becomes a clean subset of box) — **PR #44**      | consistency                   |
-| ~~P1~~ 🔀 | Unify selection fields (`checked`/`is_selected`/`is_active`/`selected`/`active`) — **PR #42**            | consistency                   |
-| ~~P1~~ 🔀 | Unify handler naming; fix `on_select` type collision; enforce Button "one or the other" — **PR #43**     | consistency / footgun         |
-| P2        | `changed` string/struct value semantics; stringly-typed id collisions                                    | correctness surprise          |
-| P2        | Give RadioGroup a Select-style `on_select`; fix Select/ContextMenu default ids                           | footgun                       |
-| P2        | Document canonical entry point (`App`); rename `cx.@"defer"`                                             | clarity                       |
-| P3        | `ui.when` eager-eval docs; `ui.each` return-type example; `disabled`/`enabled` polarity; `size` overload | nits                          |
+| Priority     | Item                                                                                                                                                                                                                                                                | Type                          |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| ~~P0~~ ✅    | `changed` 64-key release OOB; `cx.state` release UB; entity arg-size assert — **done (PR #41)**                                                                                                                                                                     | correctness / release-only UB |
+| ~~P0~~ ✅    | README doc drift (`cx.animate`/`entityCx`/`*Gooey`, uncompilable quick-start) — **done (PR #41)**                                                                                                                                                                   | first-run experience          |
+| ~~P1~~ ✅    | Unify `.alignment` shape + `gap`/`padding` types (stack now a clean subset of box; `Scroll.gap` u16→f32) — **merged (PR #44)**                                                                                                                                      | consistency                   |
+| ~~P1~~ ✅    | Unify selection fields → `selected: bool` / `selected: ?usize` everywhere — **merged (PR #42)**                                                                                                                                                                     | consistency                   |
+| ~~P1~~ ✅    | Unify handler naming (`_handler` rationale documented; `Select.on_close`/`on_toggle` → `?HandlerRef`) — **merged (PR #43)**                                                                                                                                         | consistency / footgun         |
+| P2 (partial) | ~~`changed` string/struct value semantics~~ ✅ (structural hashing: content-based slices, padding-safe structs); still open: rename-safe enum-keyed overload + stringly-typed id collision detection (both new API surface)                                         | correctness surprise          |
+| ~~P2~~ ✅    | ~~Fix Select/ContextMenu default ids~~ (`id` now required) + ~~give RadioGroup a Select-style `on_select`~~ (also added to TabBar) — **done**                                                                                                                       | footgun                       |
+| ~~P2~~ ✅    | ~~Deferred from #43: unify `on_select` type (`OnSelectHandler` vs `HandlerRef`)~~ (MenuItem → `on_click`); ~~replace `TabBar.on_change` raw `fn` ptr~~ (→ `on_select: ?OnSelectHandler`) — **done**                                                                 | consistency / footgun         |
+| ~~P2~~ ✅    | ~~Rename `cx.@"defer"`~~ (→ `cx.deferCommand` / `cx.deferCommandWith`) + ~~document canonical entry point (`App`)~~ — **done**                                                                                                                                      | clarity                       |
+| ~~P3~~ ✅    | ~~`ui.when` eager-eval docs~~ (+ lazy `ui.whenFn`); ~~`ui.each` return-type example~~; ~~`disabled`/`enabled` polarity~~ (→ `disabled: bool = false` everywhere); ~~`size` overload~~ (Button → `size_preset`); ~~`variant`/`style`~~ (Tabs → `variant`) — **done** | nits                          |
 
 **Through-line:** the design is good, but it reads like several well-designed
 corners never reconciled with each other. A single "naming and types
@@ -335,13 +414,37 @@ dev-ex from "good with sharp edges" to "genuinely polished."
 debug→release assertion fixes (Theme 2) and the README doc drift (Theme 4).
 
 > **Update:** Theme 2 and Theme 4 shipped in PR #41. The P1 consistency pass
-> is now open as three independent PRs — selection fields (#42), handler naming
-> (#43), and alignment/gap/padding types (#44). Each standardizes one axis of
-> naming/typing and updates its call sites + README; all three pass
-> `zig build` and `zig build test`. Because they all touch example files and
-> `readme.md`, merge them one at a time and resolve conflicts (suggested order:
-> #42 → #43 → #44, saving the widest-blast-radius alignment PR for last).
-> Handler-naming leaves the `on_select` type unification (OnSelectHandler vs
-> HandlerRef) documented-but-deferred as a P2-sized follow-up. Next open items
-> are the P2 batch (value-semantics/id collisions, RadioGroup `on_select`,
-> canonical entry point).
+> has since **merged** as three independent PRs — selection fields (#42),
+> handler naming (#43), and alignment/gap/padding types (#44) — each
+> standardizing one axis of naming/typing and updating its call sites + README.
+> Verified against source: selection state is now `selected: bool` /
+> `selected: ?usize` across Checkbox/RadioButton/Tab/RadioGroup/TabBar/Select;
+> `StackStyle` is a clean subset of `Box` (`alignment: Box.Alignment`,
+> `gap: f32`, `padding: Box.PaddingValue`) and `Scroll.gap` was promoted
+> `u16 → f32`; the `_handler`-suffix rationale is documented per-field and
+> `Select.on_close`/`on_toggle` now share `Modal`'s `?HandlerRef` shape.
+> The two items consciously **deferred** from #43 into P2 are now **resolved**:
+> the `on_select` type split is gone (index-based selection is
+> `on_select: ?OnSelectHandler` across Select/RadioGroup/TabBar; the fixed
+> per-item action on `MenuItem` was renamed `on_select` → `on_click` to join
+> the `on_click: ?HandlerRef` family of Button/Tab/RadioButton), and
+> `TabBar.on_change`'s raw `?*const fn (usize) void` was replaced with
+> `on_select: ?OnSelectHandler` — which additionally removed a per-item
+> static-var wrapper that aliased across tabs (all tabs shared one storage
+> slot and fired the last index). **Also landed this pass:** RadioGroup gained
+> the Select-style `on_select`; `cx.changed` now hashes structurally
+> (content-based slices — including `[]const u8` — and padding-safe structs),
+> fixing the value-semantics surprise; and `App` is documented as the canonical
+> cross-platform entry point with `run` demoted to the native-only shortcut.
+> These join the earlier Select/ContextMenu required-`id` fix and the
+> `cx.@"defer"`/`cx.deferWith` → `cx.deferCommand`/`cx.deferCommandWith`
+> rename. **The P3 pass has since landed:** `ui.when`'s eager evaluation is
+> documented loudly (with a new lazy `ui.whenFn` sibling), the README `ui.each`
+> example annotates `ui.Text` instead of the `@TypeOf` incantation (and the
+> single-return-type rule is documented on `each`), Button's polarity flipped
+> to the house `disabled: bool = false` (component + `ui.ButtonStyle`),
+> Button's preset enum was renamed `size` → `size_preset` so bare `size`
+> uniformly means f32 pixels, and Tab/TabBar's `style` was renamed `variant`
+> to match Button. **Still open (all lower-priority):** the rename-safe
+> enum-keyed `cx.changed` overload + stringly-typed id collision detection
+> (new API surface, not a semantics fix).

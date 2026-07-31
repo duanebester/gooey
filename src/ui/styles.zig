@@ -641,7 +641,9 @@ pub const DataTableStyle = struct {
 /// Button styling options
 pub const ButtonStyle = struct {
     style: Style = .primary,
-    enabled: bool = true,
+    // `disabled: bool = false` matches InputStyle and the Button component,
+    // so "interactive" is always the all-defaults resting state.
+    disabled: bool = false,
 
     pub const Style = enum { primary, secondary, danger };
 };

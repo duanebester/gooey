@@ -136,8 +136,8 @@ const CounterButtons = struct {
         const inc_id = std.fmt.bufPrint(&inc_id_buf, "inc_{d}", .{self.counter.id.id}) catch "+";
 
         cx.render(ui.hstack(.{ .gap = 8 }, .{
-            Button{ .id = dec_id, .label = "-", .size = .small, .on_click_handler = entity_cx.update(Counter.decrement) },
-            Button{ .id = inc_id, .label = "+", .size = .small, .on_click_handler = entity_cx.update(Counter.increment) },
+            Button{ .id = dec_id, .label = "-", .size_preset = .small, .on_click_handler = entity_cx.update(Counter.decrement) },
+            Button{ .id = inc_id, .label = "+", .size_preset = .small, .on_click_handler = entity_cx.update(Counter.increment) },
         }));
     }
 };

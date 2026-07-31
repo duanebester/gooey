@@ -1127,7 +1127,7 @@ const ButtonVariantsCard = struct {
             }),
 
             ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-                Button{ .label = "Disabled", .variant = .primary, .enabled = false },
+                Button{ .label = "Disabled", .variant = .primary, .disabled = true },
                 Tooltip(Button){
                     .text = "This button has a tooltip!",
                     .position = .top,
@@ -1145,9 +1145,9 @@ const ButtonSizesCard = struct {
 
         card.render(cx, .{
             ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-                Button{ .label = "Small", .size = .small },
-                Button{ .label = "Medium", .size = .medium },
-                Button{ .label = "Large", .size = .large },
+                Button{ .label = "Small", .size_preset = .small },
+                Button{ .label = "Medium", .size_preset = .medium },
+                Button{ .label = "Large", .size_preset = .large },
             }),
         });
     }
@@ -1438,7 +1438,7 @@ const ProgressCard = struct {
                     Button{
                         .label = "Step Progress",
                         .variant = .secondary,
-                        .size = .small,
+                        .size_preset = .small,
                         .on_click_handler = cx.update(AppState.stepProgress),
                     },
                     ProgressBar{
@@ -1466,22 +1466,22 @@ const TooltipCard = struct {
                 Tooltip(Button){
                     .text = "Appears above",
                     .position = .top,
-                    .child = Button{ .label = "Top", .variant = .secondary, .size = .small },
+                    .child = Button{ .label = "Top", .variant = .secondary, .size_preset = .small },
                 },
                 Tooltip(Button){
                     .text = "Appears below",
                     .position = .bottom,
-                    .child = Button{ .label = "Bottom", .variant = .secondary, .size = .small },
+                    .child = Button{ .label = "Bottom", .variant = .secondary, .size_preset = .small },
                 },
                 Tooltip(Button){
                     .text = "Appears left",
                     .position = .left,
-                    .child = Button{ .label = "Left", .variant = .secondary, .size = .small },
+                    .child = Button{ .label = "Left", .variant = .secondary, .size_preset = .small },
                 },
                 Tooltip(Button){
                     .text = "Appears right",
                     .position = .right,
-                    .child = Button{ .label = "Right", .variant = .secondary, .size = .small },
+                    .child = Button{ .label = "Right", .variant = .secondary, .size_preset = .small },
                 },
             }),
         });

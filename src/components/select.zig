@@ -151,8 +151,13 @@ fn internalClose(g: *Window, packed_id: EntityId) void {
 
 /// A dropdown select component for single-option selection.
 pub const Select = struct {
-    /// Unique identifier for the select (used for element IDs and internal state)
-    id: []const u8 = "select",
+    /// Unique identifier — used for element IDs and to key the retained
+    /// open/close state in `Window.element_states`. Required (no default):
+    /// Select is a stateful, retained-by-id widget, and the old shared
+    /// `"select"` default made two selects on one screen silently share a
+    /// single open/close state. Matches the required-`id` convention of the
+    /// other controlled widgets (`Modal`, `TextInput`).
+    id: []const u8,
 
     /// List of options to display
     options: []const []const u8,
@@ -170,11 +175,11 @@ pub const Select = struct {
 
     /// Index-based selection handler, typed `?OnSelectHandler` (NOT a plain
     /// `?HandlerRef`) because it must carry the chosen option index through to
-    /// the state method. This is a deliberate divergence from
-    /// `context_menu.MenuItem.on_select`, which is `?HandlerRef`: a menu item
-    /// activates a single fixed action and needs no index. Unifying the two
-    /// names onto one type would be a deeper design change, so the shared name
-    /// with differing types is intentional and documented on both fields.
+    /// the state method. `RadioGroup` and `TabBar` share this exact shape, so
+    /// index-based selection reads identically across all three widgets.
+    /// Fixed, index-free actions (Button, Tab, `context_menu.MenuItem`) use
+    /// `on_click: ?HandlerRef` instead — the framework keeps the two concepts
+    /// on distinct names so a field named `on_select` always has one type.
     /// When set without explicit toggle/close handlers, the widget manages
     /// open/close state internally. Created via `cx.onSelect(State.method)`.
     on_select: ?OnSelectHandler = null,

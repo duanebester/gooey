@@ -173,19 +173,19 @@ fn render(cx: *Cx) void {
             ui.text("Alignment:", .{ .size = 12, .color = Color.rgb(0.6, 0.6, 0.6) }),
             Button{
                 .label = "Start",
-                .size = .small,
+                .size_preset = .small,
                 .variant = if (s.selected_alignment == .start) .primary else .secondary,
                 .on_click_handler = cx.update(AppState.setAlignStart),
             },
             Button{
                 .label = "Center",
-                .size = .small,
+                .size_preset = .small,
                 .variant = if (s.selected_alignment == .center) .primary else .secondary,
                 .on_click_handler = cx.update(AppState.setAlignCenter),
             },
             Button{
                 .label = "End",
-                .size = .small,
+                .size_preset = .small,
                 .variant = if (s.selected_alignment == .end) .primary else .secondary,
                 .on_click_handler = cx.update(AppState.setAlignEnd),
             },
@@ -212,7 +212,7 @@ fn render(cx: *Cx) void {
         ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             Button{
                 .label = if (s.show_details) "Hide" else "Show",
-                .size = .small,
+                .size_preset = .small,
                 .variant = .secondary,
                 .on_click_handler = cx.update(AppState.toggleDetails),
             },
@@ -244,18 +244,18 @@ fn render(cx: *Cx) void {
             // Built-in Button component
             Button{
                 .label = "−",
-                .size = .small,
+                .size_preset = .small,
                 .on_click_handler = cx.update(AppState.decrement),
             },
             Button{
                 .label = "+",
-                .size = .small,
+                .size_preset = .small,
                 .on_click_handler = cx.update(AppState.increment),
             },
             Button{
                 .label = "Reset",
                 .variant = .danger,
-                .size = .small,
+                .size_preset = .small,
                 .on_click_handler = cx.update(AppState.reset),
             },
         }),

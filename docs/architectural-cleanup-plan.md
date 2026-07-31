@@ -11,14 +11,14 @@ has a `mod.zig`, namespaces are layered, and `core/interface_verify.zig`
 provides compile-time platform-backend checks. But the architecture has
 drifted in a few specific ways:
 
-| Issue | Symptom |
-|---|---|
-| **`Gooey` is a god object** | 1,984 lines, ~50 public methods, depends on widgets/a11y/svg/image/debug/text/scene/layout |
-| **`Cx` largely re-exports `Gooey`** | 1,971 lines, 60+ methods, mostly thin wrappers + widget-specific list APIs |
-| **Layering is muddy** | `context/` imports from `widgets/`, `ui/builder.zig` reaches into `widgets/uniform_list.zig`, `runtime/` directly imports widget state |
-| **Two parallel scene/svg modules** | `scene/svg.zig` (path parsing) vs `svg/mod.zig` (rasterizer + atlas) — namespaces collide |
-| **`root.zig` has 100+ flat re-exports** | Hard to see what's API surface vs. convenience alias |
-| **Owned/shared resources tracked by `_owned: bool` flags** | Six ownership flags on `Gooey` — error-prone |
+| Issue                                                      | Symptom                                                                                                                                |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **`Gooey` is a god object**                                | 1,984 lines, ~50 public methods, depends on widgets/a11y/svg/image/debug/text/scene/layout                                             |
+| **`Cx` largely re-exports `Gooey`**                        | 1,971 lines, 60+ methods, mostly thin wrappers + widget-specific list APIs                                                             |
+| **Layering is muddy**                                      | `context/` imports from `widgets/`, `ui/builder.zig` reaches into `widgets/uniform_list.zig`, `runtime/` directly imports widget state |
+| **Two parallel scene/svg modules**                         | `scene/svg.zig` (path parsing) vs `svg/mod.zig` (rasterizer + atlas) — namespaces collide                                              |
+| **`root.zig` has 100+ flat re-exports**                    | Hard to see what's API surface vs. convenience alias                                                                                   |
+| **Owned/shared resources tracked by `_owned: bool` flags** | Six ownership flags on `Gooey` — error-prone                                                                                           |
 
 None of this is "broken" — it works. But each issue makes future contributors
 slower and increases the blast radius of changes.
@@ -114,8 +114,8 @@ pub const Gooey = struct {
 
 **Split `Gooey` into composable subsystems with explicit ownership.**
 
-Introduce a `Resources` struct that holds the *shared, expensive* things
-(text, svg atlas, image atlas) and a `FrameContext` struct for *per-window*
+Introduce a `Resources` struct that holds the _shared, expensive_ things
+(text, svg atlas, image atlas) and a `FrameContext` struct for _per-window_
 things (layout, scene, dispatch, hover, drag, deferred queue). `Gooey`
 becomes a thin orchestrator:
 
@@ -188,7 +188,7 @@ pub fn uniformList(
 
 1. **State access** (`state`, `stateConst`)
 2. **Handler creation** (`update`, `updateWith`, `command`, `commandWith`,
-   `defer`, `deferWith`)
+   `deferCommand`, `deferCommandWith`)
 3. **Frame primitives** (`render`, `windowSize`, `scaleFactor`, `theme`,
    `setTheme`)
 4. **Resource accessors that return narrow handles** — `cx.focus()`,
@@ -432,19 +432,19 @@ list in `src/api_check.zig` is the source of truth.
 
 ## 9. File-size red flags
 
-| File | Lines | Notes |
-|---|---|---|
-| `layout/engine.zig` | 4,009 | Too large; consider splitting per-pass (sizing pass, position pass, scroll pass) |
-| `ui/builder.zig` | 2,405 | Hosts virtualized-list helpers that belong in `widgets/` |
-| `text/benchmarks.zig` | 2,220 | OK if benchmark-only |
-| `cx.zig` | 1,971 | Mostly delegation; lists/animations should sub-namespace |
-| `context/gooey.zig` | 1,984 | Split per §2 |
-| `examples/showcase.zig` | 1,876 | Just an example, fine |
-| `scene/path.zig` | 1,867 | Watch closely |
-| `components/svg.zig` | 1,846 | Surprisingly large for a component — likely contains baked-in icon data |
+| File                          | Lines | Notes                                                                                                                          |
+| ----------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `layout/engine.zig`           | 4,009 | Too large; consider splitting per-pass (sizing pass, position pass, scroll pass)                                               |
+| `ui/builder.zig`              | 2,405 | Hosts virtualized-list helpers that belong in `widgets/`                                                                       |
+| `text/benchmarks.zig`         | 2,220 | OK if benchmark-only                                                                                                           |
+| `cx.zig`                      | 1,971 | Mostly delegation; lists/animations should sub-namespace                                                                       |
+| `context/gooey.zig`           | 1,984 | Split per §2                                                                                                                   |
+| `examples/showcase.zig`       | 1,876 | Just an example, fine                                                                                                          |
+| `scene/path.zig`              | 1,867 | Watch closely                                                                                                                  |
+| `components/svg.zig`          | 1,846 | Surprisingly large for a component — likely contains baked-in icon data                                                        |
 | `widgets/text_area_state.zig` | 1,613 | Probably fine, but `text_input_state` (1,157) + `code_editor_state` (1,025) — opportunity for shared core in `text_common.zig` |
-| `context/dispatch.zig` | 1,595 | Self-contained, OK |
-| `ui/canvas.zig` | 1,594 | Self-contained |
+| `context/dispatch.zig`        | 1,595 | Self-contained, OK                                                                                                             |
+| `ui/canvas.zig`               | 1,594 | Self-contained                                                                                                                 |
 
 70-line function limit per `CLAUDE.md` is going to be hard to enforce in a
 4,000-line file — `layout/engine.zig` is overdue for a split.
@@ -465,11 +465,11 @@ patterns Gooey should adopt.
 
 GPUI splits state across three structs with very clear lifetimes:
 
-| Struct | Owns | Lifetime |
-|---|---|---|
-| `App` | entities, globals, focus map, platform, action listeners, asset cache, keymap | application |
-| `Window` | `rendered_frame`/`next_frame`, `platform_window`, `sprite_atlas`, `layout_engine`, mouse position, focus listeners, tab stops | per-window |
-| `Context<'a, T>` | `&'a mut App` + `WeakEntity<T>` (just a typed wrapper) | per-callback |
+| Struct           | Owns                                                                                                                          | Lifetime     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `App`            | entities, globals, focus map, platform, action listeners, asset cache, keymap                                                 | application  |
+| `Window`         | `rendered_frame`/`next_frame`, `platform_window`, `sprite_atlas`, `layout_engine`, mouse position, focus listeners, tab stops | per-window   |
+| `Context<'a, T>` | `&'a mut App` + `WeakEntity<T>` (just a typed wrapper)                                                                        | per-callback |
 
 `Context<T>` literally `Deref`s to `App`. So when a method takes
 `&mut Context<T>`, you can call any `App` method on it transparently — but
@@ -611,7 +611,7 @@ function, and this is essentially free in release builds.
 
 ## 13. `SubscriberSet<EmitterKey, Callback>` and RAII `Subscription`
 
-GPUI has *one* generic subscriber storage type used for everything
+GPUI has _one_ generic subscriber storage type used for everything
 event-like:
 
 ```rust
@@ -629,12 +629,12 @@ observed entity.
 
 Compare to what `Gooey` carries today:
 
-| Gooey field | Zed equivalent |
-|---|---|
-| `blur_handlers: [?BlurHandlerEntry; 64]` + count | `SubscriberSet<FocusId, BlurCallback>` |
-| `cancel_groups: [*Group; 64]` + count | `SubscriberSet<(), CancelGroup>` |
-| `pending_image_hashes: [u64; 64]` + count | folded into `AssetCache` (see §14) |
-| `failed_image_hashes: [u64; 128]` + count | folded into `AssetCache` |
+| Gooey field                                        | Zed equivalent                          |
+| -------------------------------------------------- | --------------------------------------- |
+| `blur_handlers: [?BlurHandlerEntry; 64]` + count   | `SubscriberSet<FocusId, BlurCallback>`  |
+| `cancel_groups: [*Group; 64]` + count              | `SubscriberSet<(), CancelGroup>`        |
+| `pending_image_hashes: [u64; 64]` + count          | folded into `AssetCache` (see §14)      |
+| `failed_image_hashes: [u64; 128]` + count          | folded into `AssetCache`                |
 | `deferred_commands: [DeferredCommand; 32]` + count | `App.pending_effects: VecDeque<Effect>` |
 
 Five different fixed-capacity ad-hoc registries become one parameterized
@@ -675,7 +675,7 @@ window.use_asset::<MyImageAsset>(&url, cx)  // returns Option<Output>, redraws w
 
 The cache automatically dedupes concurrent loads of the same source (the
 "is_first" pattern), and the view auto-redraws when load completes. We have
-*exactly this pattern* hand-rolled in `Gooey` for images — the
+_exactly this pattern_ hand-rolled in `Gooey` for images — the
 `pending_image_hashes`/`failed_image_hashes`/`drainImageLoadQueue` sets are
 reinventing this. SVG rasterization has the same shape too.
 
@@ -901,25 +901,25 @@ free-list-on-frame-N-not-accessed-on-N+1 logic moves with it.
 
 Combining all the above:
 
-| # | Task | Maps to GPUI pattern | Risk | Payoff |
-|---|---|---|---|---|
-| 1 | Extract `ImageLoader`, `HoverState`, `BlurHandlerRegistry`, `CancelRegistry`, `A11ySystem` from `Gooey` | n/a (just hygiene) | Low (mechanical) | Drops `Gooey` from 1,984 to ~900 lines |
-| 2 | Introduce `Focusable` vtable; remove widget imports from `context/gooey.zig` | `Focusable` trait | Low | Breaks the `context → widgets` backward edge |
-| 3 | Move `computeUniformListLayout`/etc. into `widgets/`; `Builder` takes a thin interface | n/a | Medium | Breaks the `ui → widgets` backward edge |
-| 4 | Sub-namespace `Cx`: `cx.lists.*`, `cx.animate.*`, `cx.entities.*`, `cx.focus.*` | n/a | Low (additive; deprecate old names later) | Cuts `Cx` to ~600 lines |
-| 5 | Split `Gooey` → `App` + `Window` (renamed, refocused) | `App`/`Window`/`Context` split | Medium-high (touches all callers) | Eliminates god object; clean ownership |
-| 6 | Introduce `Frame` struct with `rendered_frame`/`next_frame` double buffer | `Frame` + `mem::swap` | Medium-high | Hit-test correctness; deferred draw becomes possible |
-| 7 | Add `DrawPhase` enum + per-method phase asserts | `WindowInvalidator::debug_assert_*` | Low | Catches misuse at method boundary |
-| 8 | Generic `SubscriberSet(K, Cb, cap)` + RAII `Subscription` | Same | Low | Collapses 5+ ad-hoc registries |
-| 9 | Generic `Asset(T)` cache for image/svg/font loaders | `Asset` trait + `AssetCache` | Low | Removes 200+ lines of bespoke async tracking |
-| 10 | `Global(G)` type-keyed singletons; move debugger/keymap/theme out of `Gooey` | `Global` trait | Low | `Gooey` shrinks; user extensibility |
-| 11 | Single `element_states: HashMap((id, TypeId), *anyopaque)` replaces per-type widget maps | `with_element_state` | Medium | Adding widgets = zero framework work |
-| 12 | Consolidate `scene/svg.zig` + `svg/` into one `svg/` module | n/a | Low | Removes name collision; one less Vec2 |
-| 13 | Curated 7-name flat block in `root.zig`; demote rest to namespaces (no separate `prelude.zig` — Zig 0.16 removed `usingnamespace`) | `prelude.rs` (philosophy only; not the file shape) | Medium (breaking) | API surface becomes legible |
-| 14 | Encode ownership in types — drop all `_owned: bool` flags | `Option<T>` / `Box<dyn>` patterns | Medium | Memory safety improves |
-| 15 | Split `layout/engine.zig` per pass | n/a | Medium | Frees the engine from 4,000-line gravity |
-| 16 | Add `api_check.zig` compile-time pinning of Tier-1 surface (☑️ landed via PR 11a) | n/a | Low | Prevents future regressions |
-| 17 | Three-phase Element lifecycle (request_layout / prepaint / paint) | `Element` trait | Large | Tooltips, drag previews, autoscroll done correctly |
+| #   | Task                                                                                                                               | Maps to GPUI pattern                               | Risk                                      | Payoff                                               |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------- |
+| 1   | Extract `ImageLoader`, `HoverState`, `BlurHandlerRegistry`, `CancelRegistry`, `A11ySystem` from `Gooey`                            | n/a (just hygiene)                                 | Low (mechanical)                          | Drops `Gooey` from 1,984 to ~900 lines               |
+| 2   | Introduce `Focusable` vtable; remove widget imports from `context/gooey.zig`                                                       | `Focusable` trait                                  | Low                                       | Breaks the `context → widgets` backward edge         |
+| 3   | Move `computeUniformListLayout`/etc. into `widgets/`; `Builder` takes a thin interface                                             | n/a                                                | Medium                                    | Breaks the `ui → widgets` backward edge              |
+| 4   | Sub-namespace `Cx`: `cx.lists.*`, `cx.animate.*`, `cx.entities.*`, `cx.focus.*`                                                    | n/a                                                | Low (additive; deprecate old names later) | Cuts `Cx` to ~600 lines                              |
+| 5   | Split `Gooey` → `App` + `Window` (renamed, refocused)                                                                              | `App`/`Window`/`Context` split                     | Medium-high (touches all callers)         | Eliminates god object; clean ownership               |
+| 6   | Introduce `Frame` struct with `rendered_frame`/`next_frame` double buffer                                                          | `Frame` + `mem::swap`                              | Medium-high                               | Hit-test correctness; deferred draw becomes possible |
+| 7   | Add `DrawPhase` enum + per-method phase asserts                                                                                    | `WindowInvalidator::debug_assert_*`                | Low                                       | Catches misuse at method boundary                    |
+| 8   | Generic `SubscriberSet(K, Cb, cap)` + RAII `Subscription`                                                                          | Same                                               | Low                                       | Collapses 5+ ad-hoc registries                       |
+| 9   | Generic `Asset(T)` cache for image/svg/font loaders                                                                                | `Asset` trait + `AssetCache`                       | Low                                       | Removes 200+ lines of bespoke async tracking         |
+| 10  | `Global(G)` type-keyed singletons; move debugger/keymap/theme out of `Gooey`                                                       | `Global` trait                                     | Low                                       | `Gooey` shrinks; user extensibility                  |
+| 11  | Single `element_states: HashMap((id, TypeId), *anyopaque)` replaces per-type widget maps                                           | `with_element_state`                               | Medium                                    | Adding widgets = zero framework work                 |
+| 12  | Consolidate `scene/svg.zig` + `svg/` into one `svg/` module                                                                        | n/a                                                | Low                                       | Removes name collision; one less Vec2                |
+| 13  | Curated 7-name flat block in `root.zig`; demote rest to namespaces (no separate `prelude.zig` — Zig 0.16 removed `usingnamespace`) | `prelude.rs` (philosophy only; not the file shape) | Medium (breaking)                         | API surface becomes legible                          |
+| 14  | Encode ownership in types — drop all `_owned: bool` flags                                                                          | `Option<T>` / `Box<dyn>` patterns                  | Medium                                    | Memory safety improves                               |
+| 15  | Split `layout/engine.zig` per pass                                                                                                 | n/a                                                | Medium                                    | Frees the engine from 4,000-line gravity             |
+| 16  | Add `api_check.zig` compile-time pinning of Tier-1 surface (☑️ landed via PR 11a)                                                  | n/a                                                | Low                                       | Prevents future regressions                          |
+| 17  | Three-phase Element lifecycle (request_layout / prepaint / paint)                                                                  | `Element` trait                                    | Large                                     | Tooltips, drag previews, autoscroll done correctly   |
 
 ## Recommended ordering
 
@@ -939,7 +939,7 @@ Combining all the above:
 
 Items #1–4 are independently shippable, low-risk, and each one removes a
 meaningful chunk of `gooey.zig`/`cx.zig`. Items #5, #6 and #11 are the
-*most architecturally transformative* — they're the difference between
+_most architecturally transformative_ — they're the difference between
 "Gooey is a hand-rolled retained UI thing" and "Gooey has GPUI's data
 model".
 

@@ -131,13 +131,13 @@ fn render(cx: *Cx) void {
             .y = s.menu_y,
             .on_close = cx.update(AppState.closeMenu),
             .items = &.{
-                .{ .label = "Cut", .icon = Lucide.scissors, .shortcut = "Ctrl+X", .on_select = cx.update(AppState.doCut) },
-                .{ .label = "Copy", .icon = Lucide.copy, .shortcut = "Ctrl+C", .on_select = cx.update(AppState.doCopy) },
+                .{ .label = "Cut", .icon = Lucide.scissors, .shortcut = "Ctrl+X", .on_click = cx.update(AppState.doCut) },
+                .{ .label = "Copy", .icon = Lucide.copy, .shortcut = "Ctrl+C", .on_click = cx.update(AppState.doCopy) },
                 .{ .label = "Paste", .icon = Lucide.clipboard_paste, .shortcut = "Ctrl+V", .disabled = true },
                 .{ .separator = true },
-                .{ .label = "Rename", .icon = Lucide.pencil, .on_select = cx.update(AppState.doRename) },
+                .{ .label = "Rename", .icon = Lucide.pencil, .on_click = cx.update(AppState.doRename) },
                 .{ .separator = true },
-                .{ .label = "Delete", .icon = Lucide.trash_2, .danger = true, .on_select = cx.update(AppState.doDelete) },
+                .{ .label = "Delete", .icon = Lucide.trash_2, .danger = true, .on_click = cx.update(AppState.doDelete) },
             },
         },
     }));

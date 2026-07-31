@@ -478,7 +478,7 @@ pub const Window = struct {
     // =========================================================================
 
     /// Queue a callback to run after current event handling completes.
-    /// Used internally by Cx.defer().
+    /// Used internally by Cx.deferCommand().
     ///
     /// The State type is inferred from the method's first parameter.
     /// The method should be `fn(*State, *Window) void`.
@@ -509,7 +509,7 @@ pub const Window = struct {
     }
 
     /// Queue a callback with an argument to run after current event handling completes.
-    /// Used internally by Cx.deferWith().
+    /// Used internally by Cx.deferCommandWith().
     ///
     /// The State type is inferred from the method's first parameter.
     /// The argument is stored inline in the command struct (packed into u64),

@@ -293,7 +293,7 @@ fn renderForm(cx: *Cx) void {
     // Subscribe checkbox
     gooey.Checkbox{
         .id = "subscribe",
-        .checked = s.subscribe,
+        .selected = s.subscribe,
         .label = "Subscribe to newsletter",
         .on_click_handler = cx.update(FormState.toggleSubscribe),
     };
@@ -302,7 +302,7 @@ fn renderForm(cx: *Cx) void {
     gooey.Button{
         .label = "Send",
         .accessible_name = "Submit contact form",
-        .enabled = s.isValid(),
+        .disabled = !s.isValid(),
         .on_click_handler = cx.update(FormState.submit),
     };
 }

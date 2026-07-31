@@ -21,25 +21,27 @@
 //! }));
 //! ```
 //!
-//! Or use RadioGroup with handler array:
+//! Or use RadioGroup with a single index-based handler (recommended — mirrors
+//! Select's `on_select`, so one method handles every option):
 //! ```zig
 //! RadioGroup{
 //!     .id = "contact",
 //!     .options = &.{ "Email", "Phone", "Mail" },
-//!     .selected = s.contact,
-//!     .handlers = &.{
-//!         cx.updateWith(@as(u8, 0), State.setContact),
-//!         cx.updateWith(@as(u8, 1), State.setContact),
-//!         cx.updateWith(@as(u8, 2), State.setContact),
-//!     },
+//!     .selected = s.contact, // ?usize
+//!     .on_select = cx.onSelect(State.setContact), // fn(*State, usize) void
 //! }
 //! ```
+//!
+//! A per-option `handlers` array is still supported for the rare case where
+//! each option needs a distinct method, but prefer `on_select`: a too-short
+//! `handlers` array silently leaves the trailing radios dead.
 
 const std = @import("std");
 const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
+const OnSelectHandler = @import("../context/handler.zig").OnSelectHandler;
 
 /// A single radio button. Can be used standalone or composed into groups.
 pub const RadioButton = struct {
@@ -168,8 +170,19 @@ pub const RadioGroup = struct {
     // (null) rather than a magic sentinel index.
     selected: ?usize = null,
 
-    /// Array of handlers, one per option. Use cx.updateWith() to create these.
-    /// If null or shorter than options, missing handlers are treated as no-op.
+    /// Index-based selection handler (recommended). Typed `?OnSelectHandler`
+    /// to match `Select.on_select`: one method receives the chosen option
+    /// index, so callers no longer hand-align a positional handler array.
+    /// Created via `cx.onSelect(State.method)` where `method` is
+    /// `fn(*State, usize) void`. RadioGroup keeps no open/close state, so the
+    /// handler is generated per option via `forIndex` (like Select's external
+    /// path). If both are set, the explicit `handlers` array wins, matching
+    /// Select's resolution order.
+    on_select: ?OnSelectHandler = null,
+
+    /// Legacy per-option handler array. Use `cx.updateWith()` to create these.
+    /// If null or shorter than `options`, the missing handlers are no-ops —
+    /// prefer `on_select`, which cannot silently leave a radio dead.
     handlers: ?[]const HandlerRef = null,
 
     // Layout
@@ -218,6 +231,7 @@ pub const RadioGroup = struct {
             RadioGroupItems{
                 .options = self.options,
                 .selected = self.selected,
+                .on_select = self.on_select,
                 .handlers = self.handlers,
                 .size = self.size,
                 .selected_color = selected,
@@ -234,6 +248,7 @@ pub const RadioGroup = struct {
 const RadioGroupItems = struct {
     options: []const []const u8,
     selected: ?usize,
+    on_select: ?OnSelectHandler,
     handlers: ?[]const HandlerRef,
     size: f32,
     selected_color: Color,
@@ -245,10 +260,7 @@ const RadioGroupItems = struct {
 
     pub fn render(self: RadioGroupItems, cx: *ui.Cx) void {
         for (self.options, 0..) |label, i| {
-            const handler: ?HandlerRef = if (self.handlers) |h|
-                (if (i < h.len) h[i] else null)
-            else
-                null;
+            const handler: ?HandlerRef = self.resolveOptionHandler(i);
 
             // Treat null as "no radio selected": only the item whose index
             // matches the chosen index is selected.
@@ -268,5 +280,19 @@ const RadioGroupItems = struct {
                 .set_size = self.set_size,
             });
         }
+    }
+
+    /// Resolve the click handler for the option at `index`. Prefers the
+    /// explicit `handlers` array (legacy); otherwise generates one from
+    /// `on_select` via `forIndex` (RadioGroup has no internal open/close
+    /// state, so the select-and-close path does not apply).
+    fn resolveOptionHandler(self: RadioGroupItems, index: usize) ?HandlerRef {
+        if (self.handlers) |h| {
+            return if (index < h.len) h[index] else null;
+        }
+        if (self.on_select) |os| {
+            return os.forIndex(index);
+        }
+        return null;
     }
 };

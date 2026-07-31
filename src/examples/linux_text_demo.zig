@@ -173,12 +173,12 @@ const CounterSection = struct {
             ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
                 Button{
                     .label = "−",
-                    .size = .large,
+                    .size_preset = .large,
                     .on_click_handler = cx.update(AppState.decrement),
                 },
                 Button{
                     .label = "+",
-                    .size = .large,
+                    .size_preset = .large,
                     .on_click_handler = cx.update(AppState.increment),
                 },
                 ui.spacerMin(16),
@@ -204,7 +204,7 @@ const FontSizeSection = struct {
 
             Button{
                 .label = "A−",
-                .size = .small,
+                .size_preset = .small,
                 .on_click_handler = cx.update(AppState.decreaseFontSize),
             },
 
@@ -215,7 +215,7 @@ const FontSizeSection = struct {
 
             Button{
                 .label = "A+",
-                .size = .small,
+                .size_preset = .small,
                 .on_click_handler = cx.update(AppState.increaseFontSize),
             },
         }));

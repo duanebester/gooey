@@ -14,12 +14,13 @@
 //! }));
 //! ```
 //!
-//! Or use TabBar for simple cases with fn callback:
+//! Or use TabBar with a single index-based handler (mirrors Select/RadioGroup
+//! `on_select`, so one method handles every tab):
 //! ```zig
 //! TabBar{
 //!     .tabs = &.{ "Home", "Settings", "About" },
-//!     .selected = s.current_tab,
-//!     .on_change = setTab,
+//!     .selected = s.current_tab, // ?usize
+//!     .on_select = cx.onSelect(State.setTab), // fn(*State, usize) void
 //! }
 //! ```
 
@@ -28,6 +29,7 @@ const ui = @import("../ui/mod.zig");
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
+const OnSelectHandler = @import("../context/handler.zig").OnSelectHandler;
 
 /// A single tab button. Can be used standalone or composed into a tab bar.
 pub const Tab = struct {
@@ -40,7 +42,9 @@ pub const Tab = struct {
     on_click: ?HandlerRef = null,
 
     // Styling (null = use theme)
-    style: Style = .pills,
+    // Named `variant` (not `style`) to match Button: one word for "visual
+    // kind" across components, so the name transfers between call sites.
+    variant: Variant = .pills,
     active_background: ?Color = null,
     inactive_background: ?Color = null,
     active_text_color: ?Color = null,
@@ -57,7 +61,7 @@ pub const Tab = struct {
     pos_in_set: ?u16 = null, // 1-based position in tab list
     set_size: ?u16 = null, // Total tabs in list
 
-    pub const Style = enum {
+    pub const Variant = enum {
         /// Rounded pill-style tabs (default)
         pills,
         /// Underlined tabs
@@ -105,18 +109,18 @@ pub const Tab = struct {
         else
             null;
 
-        // Style-specific adjustments
-        const style_radius: f32 = switch (self.style) {
+        // Variant-specific adjustments
+        const variant_radius: f32 = switch (self.variant) {
             .underline => 0,
             else => radius,
         };
 
-        const border_width: f32 = switch (self.style) {
+        const border_width: f32 = switch (self.variant) {
             .underline => if (self.selected) 2 else 0,
             else => 0,
         };
 
-        const actual_bg: Color = switch (self.style) {
+        const actual_bg: Color = switch (self.variant) {
             .underline => Color.transparent,
             else => bg,
         };
@@ -125,9 +129,9 @@ pub const Tab = struct {
             .padding = .{ .symmetric = .{ .x = self.padding_x, .y = self.padding_y } },
             .background = actual_bg,
             .hover_background = hover_bg,
-            .corner_radius = style_radius,
+            .corner_radius = variant_radius,
             .border_width = .{ .all = border_width },
-            .border_color = if (self.style == .underline and self.selected) active_bg else Color.transparent,
+            .border_color = if (self.variant == .underline and self.selected) active_bg else Color.transparent,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
             .on_click_handler = self.on_click,
@@ -136,13 +140,13 @@ pub const Tab = struct {
         });
     }
 
-    /// Create a tab with common styling presets
-    pub fn styled(label: []const u8, selected: bool, handler: ?HandlerRef, style: Style) Tab {
+    /// Create a tab with a common variant preset
+    pub fn styled(label: []const u8, selected: bool, handler: ?HandlerRef, variant: Variant) Tab {
         return .{
             .label = label,
             .selected = selected,
             .on_click = handler,
-            .style = style,
+            .variant = variant,
         };
     }
 };
@@ -158,15 +162,22 @@ pub const TabBar = struct {
     // rather than a magic sentinel index.
     selected: ?usize = null,
 
-    // Simple callback (not for use with Cx.updateWith - use Tab directly for that)
-    on_change: ?*const fn (usize) void = null,
+    /// Index-based selection handler. Typed `?OnSelectHandler` to match
+    /// `Select`/`RadioGroup`: one method receives the chosen tab index. This
+    /// replaced the old `?*const fn (usize) void` raw pointer, which (a) was
+    /// the lone index-widget handler that couldn't be built with `cx.*`, and
+    /// (b) forced a per-item static-var wrapper that aliased across tabs — all
+    /// tabs shared one storage slot, so every tab fired the last index.
+    /// Created via `cx.onSelect(State.method)`. TabBar keeps no open/close
+    /// state, so handlers are generated per tab via `forIndex`.
+    on_select: ?OnSelectHandler = null,
 
     // Layout
     gap: f32 = 0,
     fill_width: bool = false,
 
     // Styling (null = use theme)
-    style: Tab.Style = .pills,
+    variant: Tab.Variant = .pills,
     background: ?Color = null,
     active_background: ?Color = null,
     inactive_background: ?Color = null,
@@ -196,17 +207,17 @@ pub const TabBar = struct {
         const radius = self.corner_radius orelse t.radius_md;
         const bg = self.background orelse Color.transparent;
 
-        const container_bg = switch (self.style) {
+        const container_bg = switch (self.variant) {
             .segmented => t.muted.withAlpha(0.2),
             else => bg,
         };
 
-        const container_radius: f32 = switch (self.style) {
+        const container_radius: f32 = switch (self.variant) {
             .segmented => radius + 2,
             else => 0,
         };
 
-        const container_padding: ?ui.Box.PaddingValue = switch (self.style) {
+        const container_padding: ?ui.Box.PaddingValue = switch (self.variant) {
             .segmented => .{ .all = 3 },
             else => null,
         };
@@ -233,8 +244,8 @@ pub const TabBar = struct {
             TabBarItems{
                 .tabs = self.tabs,
                 .selected = self.selected,
-                .on_change = self.on_change,
-                .style = self.style,
+                .on_select = self.on_select,
+                .variant = self.variant,
                 .active_background = active_bg,
                 .inactive_background = inactive_bg,
                 .active_text_color = active_text,
@@ -254,8 +265,8 @@ pub const TabBar = struct {
 const TabBarItems = struct {
     tabs: []const []const u8,
     selected: ?usize,
-    on_change: ?*const fn (usize) void,
-    style: Tab.Style,
+    on_select: ?OnSelectHandler,
+    variant: Tab.Variant,
     active_background: Color,
     inactive_background: Color,
     active_text_color: Color,
@@ -278,8 +289,8 @@ const TabBarItems = struct {
                 .label = label,
                 .index = i,
                 .selected = item_selected,
-                .on_change = self.on_change,
-                .style = self.style,
+                .on_select = self.on_select,
+                .variant = self.variant,
                 .active_background = self.active_background,
                 .inactive_background = self.inactive_background,
                 .active_text_color = self.active_text_color,
@@ -301,8 +312,8 @@ const TabBarItem = struct {
     label: []const u8,
     index: usize,
     selected: bool,
-    on_change: ?*const fn (usize) void,
-    style: Tab.Style,
+    on_select: ?OnSelectHandler,
+    variant: Tab.Variant,
     active_background: Color,
     inactive_background: Color,
     active_text_color: Color,
@@ -325,40 +336,34 @@ const TabBarItem = struct {
         else
             null;
 
-        const radius: f32 = switch (self.style) {
+        const radius: f32 = switch (self.variant) {
             .underline => 0,
             else => self.corner_radius,
         };
 
-        const border_width: f32 = switch (self.style) {
+        const border_width: f32 = switch (self.variant) {
             .underline => if (self.selected) 2 else 0,
             else => 0,
         };
 
-        const border_color: Color = switch (self.style) {
+        const border_color: Color = switch (self.variant) {
             .underline => if (self.selected) self.active_background else Color.transparent,
             else => Color.transparent,
         };
 
-        const actual_bg: Color = switch (self.style) {
+        const actual_bg: Color = switch (self.variant) {
             .underline => Color.transparent,
             else => bg,
         };
 
-        // Create click callback that captures index
-        const on_click: ?*const fn () void = if (self.on_change) |change_fn| blk: {
-            const ClickWrapper = struct {
-                var captured_index: usize = 0;
-                var captured_fn: *const fn (usize) void = undefined;
-
-                fn call() void {
-                    captured_fn(captured_index);
-                }
-            };
-            ClickWrapper.captured_index = self.index;
-            ClickWrapper.captured_fn = change_fn;
-            break :blk ClickWrapper.call;
-        } else null;
+        // Per-tab handler carrying this tab's index. Generated from the
+        // shared `on_select` via `forIndex` — each call produces a distinct
+        // `HandlerRef` with the index packed into its `entity_id`, so tabs no
+        // longer alias through a single static-var wrapper.
+        const on_click: ?HandlerRef = if (self.on_select) |os|
+            os.forIndex(self.index)
+        else
+            null;
 
         // Resolve identity once for both a11y and the box (PR 11b.2b).
         const layout_id = cx.idFor(self.label);
@@ -385,7 +390,7 @@ const TabBarItem = struct {
             .border_color = border_color,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
-            .on_click = on_click,
+            .on_click_handler = on_click,
         }, .{
             ui.text(self.label, .{ .color = text_color, .size = self.font_size }),
         });

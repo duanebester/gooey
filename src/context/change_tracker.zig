@@ -23,7 +23,9 @@
 //!
 //! - Zero allocation after initialization (fixed-capacity parallel arrays)
 //! - Linear scan for lookup (cache-friendly for expected entry counts <64)
-//! - Value identity via `std.hash.Wyhash` over raw bytes — works for any type
+//! - Value identity via `std.hash.Wyhash`, fed *structurally* (field-by-field
+//!   for structs, by content for slices) rather than over the raw value bytes.
+//!   See `hashValue` for why raw-byte hashing was a correctness bug.
 
 const std = @import("std");
 
@@ -109,18 +111,110 @@ pub const ChangeTracker = struct {
 // Value Hashing
 // =============================================================================
 
-/// Hash any value's raw bytes into a u64 for change detection.
+/// Hash a value into a u64 for change detection.
 ///
-/// Works for scalars (bool, i32, f32, etc.), small structs, enums, and
-/// optionals. For pointer types, hashes the pointer value (address), not
-/// the pointee — this is intentional (identity, not deep equality).
+/// The hash is fed *structurally*, not from the value's raw bytes, because
+/// raw-byte hashing had two correctness bugs that read as the opposite of
+/// what a function named `changed` implies (rules 3 and 21):
+///
+///   1. **Struct padding.** `std.mem.asBytes(&value)` includes a struct's
+///      uninitialised padding bytes, so two structs equal in every field
+///      could hash differently → a spurious "changed" (the rule-21
+///      buffer-bleed hazard surfacing as a correctness bug). Hashing
+///      field-by-field never touches padding.
+///   2. **Slices compared by address.** A `[]const u8` fat pointer hashed
+///      by its (ptr, len) bytes tracks the *address*, not the *content* —
+///      so an in-place string edit could be missed, and an identical string
+///      at a new address could spuriously fire. Slices are now hashed by
+///      content, which is what change detection actually wants.
+///
+/// Type support: ints, floats, bools, enums, optionals, arrays, slices, and
+/// structs composed of those. Non-slice pointers hash the address (identity,
+/// not the pointee — following it could dangle); this is intentional and
+/// documented on `cx.changed`. Unsupported types (unions, error sets, …)
+/// `@compileError` rather than silently hashing ambiguous bytes.
 pub fn hashValue(comptime T: type, value: T) u64 {
-    // Assertion: type has a well-defined memory layout
     std.debug.assert(@sizeOf(T) > 0); // Zero-sized types can't change
-    std.debug.assert(@sizeOf(T) <= 256); // Sanity bound — not meant for large structs
 
-    const bytes = std.mem.asBytes(&value);
-    return std.hash.Wyhash.hash(0, bytes);
+    var hasher = std.hash.Wyhash.init(0);
+    hashInto(&hasher, T, value);
+    return hasher.final();
+}
+
+/// True for scalar types with no padding, whose contiguous memory is safe to
+/// hash as a single byte span (lets `[]const u8` and other flat slices hash in
+/// one `update` call instead of one call per element).
+fn isFlatlyHashable(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .int, .float, .bool, .@"enum" => true,
+        else => false,
+    };
+}
+
+/// Feed `value` into `hasher` structurally. Recurses over *types* at comptime
+/// (not over runtime data), and every recursion strictly shrinks the type:
+/// aggregates recurse into their element/field types and pointers stop at the
+/// address, so the expansion always terminates. This is unlike the rule-6
+/// runtime-recursion ban, which targets unbounded traversal of dynamic data.
+fn hashInto(hasher: *std.hash.Wyhash, comptime T: type, value: T) void {
+    switch (@typeInfo(T)) {
+        // Scalars: hash the raw bytes. Floats are hashed bytewise on purpose —
+        // `std.hash.autoHash` rejects them, and for change detection bitwise
+        // identity is exactly the "is the value I stored still the same"
+        // question we want (incl. treating -0.0 and +0.0 as distinct).
+        .int, .float, .bool, .@"enum" => {
+            hasher.update(std.mem.asBytes(&value));
+        },
+        // Slices: hash length + contents. `[]const u8` (strings) and every
+        // other `[]T` therefore compare by value, not by fat-pointer address.
+        .pointer => |ptr| {
+            if (ptr.size == .slice) {
+                const len: usize = value.len;
+                hasher.update(std.mem.asBytes(&len));
+                if (comptime isFlatlyHashable(ptr.child)) {
+                    hasher.update(std.mem.sliceAsBytes(value));
+                } else {
+                    for (value) |element| hashInto(hasher, ptr.child, element);
+                }
+            } else {
+                // Single/many/C pointers: hash the address (identity). The
+                // pointee's lifetime is the caller's concern; following it
+                // could dangle. Documented on `cx.changed`.
+                const address: usize = @intFromPtr(value);
+                hasher.update(std.mem.asBytes(&address));
+            }
+        },
+        // Structs: hash each field so padding bytes never enter the hash.
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                hashInto(hasher, field.type, @field(value, field.name));
+            }
+        },
+        // Optionals: hash a presence tag, then the payload when present. This
+        // distinguishes `null` from a zero payload and skips the optional's
+        // own padding.
+        .optional => |info| {
+            if (value) |payload| {
+                hasher.update(&[_]u8{1});
+                hashInto(hasher, info.child, payload);
+            } else {
+                hasher.update(&[_]u8{0});
+            }
+        },
+        // Arrays: element-by-element, same padding rationale as structs.
+        .array => |info| {
+            if (comptime isFlatlyHashable(info.child)) {
+                hasher.update(std.mem.sliceAsBytes(value[0..]));
+            } else {
+                for (value) |element| hashInto(hasher, info.child, element);
+            }
+        },
+        else => {
+            @compileError("cx.changed: unsupported value type '" ++ @typeName(T) ++
+                "'. Supported: ints, floats, bools, enums, optionals, arrays, " ++
+                "slices, and structs composed of those.");
+        },
+    }
 }
 
 // =============================================================================
@@ -222,6 +316,66 @@ test "hashValue works with various types" {
     const hu = hashValue(Direction, .up);
     const hdn = hashValue(Direction, .down);
     try std.testing.expect(hu != hdn);
+}
+
+test "strings hash by content, not address" {
+    // The motivating bug: a `[]const u8` must compare by content so an
+    // in-place edit registers as changed and an identical string at a
+    // different address does not.
+    var buf_a = [_]u8{ 'h', 'i' };
+    var buf_b = [_]u8{ 'h', 'i' };
+    const from_a: []const u8 = buf_a[0..];
+    const from_b: []const u8 = buf_b[0..];
+
+    // Same content at two different addresses → same hash.
+    try std.testing.expectEqual(
+        hashValue([]const u8, from_a),
+        hashValue([]const u8, from_b),
+    );
+
+    // Different content → different hash.
+    const hello = hashValue([]const u8, "hello");
+    const world = hashValue([]const u8, "world");
+    try std.testing.expect(hello != world);
+
+    // An in-place edit at the *same* address must be detected as changed.
+    var tracker = ChangeTracker{};
+    const key: u32 = 99;
+    _ = tracker.changed(key, hashValue([]const u8, buf_a[0..])); // first: false
+    buf_a[1] = 'o'; // "hi" -> "ho", same backing memory
+    try std.testing.expect(tracker.changed(key, hashValue([]const u8, buf_a[0..])));
+}
+
+test "structs with padding hash by field, not raw bytes" {
+    // A struct whose layout has padding (bool + u32) must hash purely from its
+    // field values, so two field-equal instances never diverge on stale
+    // padding (the rule-21 buffer-bleed hazard as a correctness bug).
+    const Padded = struct { flag: bool, count: u32 };
+
+    // Build two instances from differently-initialised backing memory so any
+    // padding bytes are likely to differ, then set identical field values.
+    var raw_a: [8]u8 = [_]u8{0xAA} ** 8;
+    var raw_b: [8]u8 = [_]u8{0x55} ** 8;
+    const a: *Padded = @ptrCast(@alignCast(&raw_a));
+    const b: *Padded = @ptrCast(@alignCast(&raw_b));
+    a.* = .{ .flag = true, .count = 7 };
+    b.* = .{ .flag = true, .count = 7 };
+
+    try std.testing.expectEqual(hashValue(Padded, a.*), hashValue(Padded, b.*));
+
+    // A real field change is still detected.
+    const changed_count: Padded = .{ .flag = true, .count = 8 };
+    try std.testing.expect(hashValue(Padded, a.*) != hashValue(Padded, changed_count));
+}
+
+test "optionals distinguish null from payload" {
+    const none: ?u32 = null;
+    const zero: ?u32 = 0;
+    const one: ?u32 = 1;
+
+    try std.testing.expect(hashValue(?u32, none) != hashValue(?u32, zero));
+    try std.testing.expect(hashValue(?u32, zero) != hashValue(?u32, one));
+    try std.testing.expectEqual(hashValue(?u32, one), hashValue(?u32, @as(?u32, 1)));
 }
 
 test "struct size is bounded" {

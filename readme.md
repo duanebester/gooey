@@ -262,7 +262,7 @@ fn render(cx: *Cx) void {
         ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             ui.textFmt("{d} left", .{s.remaining()}, .{ .size = 14 }),
             ui.spacer(),
-            Button{ .label = "Clear completed", .variant = .secondary, .size = .small, .on_click_handler = cx.update(AppState.clearCompleted) },
+            Button{ .label = "Clear completed", .variant = .secondary, .size_preset = .small, .on_click_handler = cx.update(AppState.clearCompleted) },
         }),
     }));
 }
@@ -298,7 +298,7 @@ const TodoRow = struct {
             Checkbox{ .selected = self.done, .on_click_handler = cx.updateWith(self.index, AppState.toggle) },
             ui.text(self.label, .{ .size = 16 }),
             ui.spacer(),
-            Button{ .label = "Delete", .variant = .danger, .size = .small, .on_click_handler = cx.updateWith(self.index, AppState.remove) },
+            Button{ .label = "Delete", .variant = .danger, .size_preset = .small, .on_click_handler = cx.updateWith(self.index, AppState.remove) },
         }));
     }
 };
@@ -311,7 +311,7 @@ const FilterButton = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         cx.render(Button{
             .label = self.label,
-            .size = .small,
+            .size_preset = .small,
             .variant = if (self.active) .primary else .secondary,
             .on_click_handler = cx.updateWith(self.filter, AppState.setFilter),
         });
@@ -363,9 +363,10 @@ fn render(cx: *Cx) void {
             ui.text("Extra content", .{}),
         }),
 
-        // Iterate over items
+        // Iterate over items. The callback returns a single, concrete
+        // element type - name it directly (ui.Text, or a component struct).
         ui.each(&s.items, struct {
-            fn render(item: Item, _: usize) @TypeOf(ui.text("", .{})) {
+            fn render(item: Item, _: usize) ui.Text {
                 return ui.text(item.name, .{});
             }
         }.render),
@@ -379,28 +380,29 @@ fn render(cx: *Cx) void {
 - `ui.rect()` - Childless box (dividers, spacers, colored blocks)
 - `ui.hstack()` / `ui.vstack()` - Horizontal/vertical stacks
 - `ui.text()` / `ui.textFmt()` - Text rendering
-- `ui.when(cond, children)` - Conditional rendering
-- `ui.maybe(optional, fn)` - Render if optional has value
-- `ui.each(items, fn)` - Render for each item
+- `ui.when(cond, children)` - Conditional rendering. **Children are built eagerly** - only the rendering is conditional, so `ui.when(user != null, .{ ui.text(user.?.name, .{}) })` crashes: `user.?` runs before the check. Use `ui.maybe`/`ui.whenFn` for guarded access
+- `ui.whenFn(cond, fn)` - Lazy conditional rendering; `fn` is only called when `cond` is true
+- `ui.maybe(optional, fn)` - Render if optional has value; `fn` receives the unwrapped value (lazy, null-safe)
+- `ui.each(items, fn)` - Render for each item; `fn(item, index)` must return one concrete element type
 - `ui.scroll(id, style, children)` - Scrollable container
 - `ui.spacer()` - Flexible space
 
 ## Handler Types
 
-| Method             | Signature                       | Use Case                                 |
-| ------------------ | ------------------------------- | ---------------------------------------- |
-| `cx.update()`      | `fn(*State) void`               | Pure state mutations                     |
-| `cx.updateWith()`  | `fn(*State, Arg) void`          | Mutations with argument                  |
-| `cx.command()`     | `fn(*State, *Window) void`      | Framework access (focus, quit, entities) |
-| `cx.commandWith()` | `fn(*State, *Window, Arg) void` | Framework access with argument           |
-| `cx.defer()`       | `fn(*State, *Window) void`      | Run after current event completes        |
-| `cx.deferWith()`   | `fn(*State, *Window, Arg) void` | Deferred with argument                   |
+| Method                  | Signature                       | Use Case                                 |
+| ----------------------- | ------------------------------- | ---------------------------------------- |
+| `cx.update()`           | `fn(*State) void`               | Pure state mutations                     |
+| `cx.updateWith()`       | `fn(*State, Arg) void`          | Mutations with argument                  |
+| `cx.command()`          | `fn(*State, *Window) void`      | Framework access (focus, quit, entities) |
+| `cx.commandWith()`      | `fn(*State, *Window, Arg) void` | Framework access with argument           |
+| `cx.deferCommand()`     | `fn(*State, *Window) void`      | Run after current event completes        |
+| `cx.deferCommandWith()` | `fn(*State, *Window, Arg) void` | Deferred with argument                   |
 
 > **Note:** The state type is inferred automatically from the method pointer's first parameter — no need to pass it separately.
 
 ### Handlers with Arguments
 
-The `*With` variants (`updateWith`, `commandWith`, `deferWith`) let you pass data to your handler. The argument is captured at handler creation time and passed when invoked:
+The `*With` variants (`updateWith`, `commandWith`, `deferCommandWith`) let you pass data to your handler. The argument is captured at handler creation time and passed when invoked:
 
 ```zig
 // In a list render callback - capture the index
@@ -704,7 +706,7 @@ Gooey includes ready-to-use components:
 ```zig
 // Button variants
 Button{ .label = "Save", .variant = .primary, .on_click_handler = cx.update(State.save) }
-Button{ .label = "Cancel", .variant = .secondary, .size = .small, .on_click_handler = ... }
+Button{ .label = "Cancel", .variant = .secondary, .size_preset = .small, .on_click_handler = ... }
 Button{ .label = "Delete", .variant = .danger, .on_click_handler = ... }
 ```
 
@@ -749,20 +751,18 @@ RadioButton{
     .on_click = cx.updateWith(@as(u8, 0), State.setContactMethod),
 }
 
-// RadioGroup - grouped buttons with handlers array
+// RadioGroup - grouped buttons with a single index-based handler
 RadioGroup{
     .id = "priority",
     .options = &.{ "Low", "Medium", "High" },
-    .selected = s.priority,
-    .handlers = &.{
-        cx.updateWith(@as(u8, 0), State.setPriority),
-        cx.updateWith(@as(u8, 1), State.setPriority),
-        cx.updateWith(@as(u8, 2), State.setPriority),
-    },
+    .selected = s.priority, // ?usize
+    .on_select = cx.onSelect(State.setPriority), // fn(*State, usize) void
     .direction = .row,  // or .column
     .gap = 16,
 }
 ```
+
+`on_select` mirrors `Select`/`TabBar`: one method receives the chosen index, so you never hand-align a positional handler array. A per-option `handlers` array is still supported when each option needs a distinct method.
 
 ### Select (Dropdown)
 
@@ -918,9 +918,17 @@ cx.render(ui.hstack(.{ .gap = 4 }, .{
         .label = "Settings",
         .selected = s.tab == 1,
         .on_click = cx.updateWith(@as(u8, 1), State.setTab),
-        .style = .underline,  // .pills (default), .underline, .segmented
+        .variant = .underline, // .pills (default), .underline, .segmented
     },
 }))
+
+// Or TabBar for the common case: one index-based handler for all tabs
+// (same `on_select` shape as Select and RadioGroup).
+TabBar{
+    .tabs = &.{ "Home", "Settings", "About" },
+    .selected = s.tab, // ?usize
+    .on_select = cx.onSelect(State.selectTab), // fn(*State, usize) void
+}
 ```
 
 ### UniformList

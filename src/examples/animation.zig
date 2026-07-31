@@ -103,12 +103,12 @@ const ControlButtons = struct {
         cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             Button{
                 .label = "-",
-                .size = .large,
+                .size_preset = .large,
                 .on_click_handler = cx.update(AppState.decrement),
             },
             Button{
                 .label = "+",
-                .size = .large,
+                .size_preset = .large,
                 .on_click_handler = cx.update(AppState.increment),
             },
             Button{

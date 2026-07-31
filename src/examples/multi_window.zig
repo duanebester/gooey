@@ -207,12 +207,12 @@ fn renderMain(cx: *Cx) void {
             ui.hstack(.{ .gap = 12 }, .{
                 Button{
                     .label = "−",
-                    .size = .large,
+                    .size_preset = .large,
                     .on_click_handler = cx.update(MainState.decrement),
                 },
                 Button{
                     .label = "+",
-                    .size = .large,
+                    .size_preset = .large,
                     .on_click_handler = cx.update(MainState.increment),
                 },
             }),
@@ -222,7 +222,7 @@ fn renderMain(cx: *Cx) void {
         Button{
             .label = if (s.dialog_open.load(.seq_cst)) "Dialog Open..." else "Open Settings Dialog",
             .variant = if (s.dialog_open.load(.seq_cst)) .secondary else .primary,
-            .size = .large,
+            .size_preset = .large,
             .on_click_handler = cx.update(MainState.openDialog),
         },
 
@@ -321,19 +321,19 @@ fn renderDialog(cx: *Cx) void {
             ui.hstack(.{ .gap = 12 }, .{
                 Button{
                     .label = "−",
-                    .size = .medium,
+                    .size_preset = .medium,
                     .on_click_handler = cx.update(DialogState.decrementNew),
                 },
                 Button{
                     .label = "+",
-                    .size = .medium,
+                    .size_preset = .medium,
                     .on_click_handler = cx.update(DialogState.incrementNew),
                 },
                 ui.spacerMin(8),
                 Button{
                     .label = "Reset",
                     .variant = .secondary,
-                    .size = .small,
+                    .size_preset = .small,
                     .on_click_handler = cx.update(DialogState.reset),
                 },
             }),
@@ -347,13 +347,13 @@ fn renderDialog(cx: *Cx) void {
             Button{
                 .label = "Cancel",
                 .variant = .secondary,
-                .size = .medium,
+                .size_preset = .medium,
                 .on_click_handler = cx.update(DialogState.cancel),
             },
             Button{
                 .label = if (has_changes) "Apply Changes" else "Apply",
                 .variant = if (has_changes) .primary else .secondary,
-                .size = .medium,
+                .size_preset = .medium,
                 .on_click_handler = cx.update(DialogState.applyAndClose),
             },
         }),

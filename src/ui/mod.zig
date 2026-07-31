@@ -55,6 +55,7 @@ pub const keyContext = primitives.keyContext;
 pub const onAction = primitives.onAction;
 pub const onActionHandler = primitives.onActionHandler;
 pub const when = primitives.when;
+pub const whenFn = primitives.whenFn;
 pub const maybe = primitives.maybe;
 pub const each = primitives.each;
 pub const canvas = canvas_mod.canvas;

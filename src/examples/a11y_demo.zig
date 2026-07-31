@@ -358,7 +358,7 @@ const StatusSection = struct {
                 ui.when(is_error, .{
                     Button{
                         .label = "Dismiss",
-                        .size = .small,
+                        .size_preset = .small,
                         .variant = .secondary,
                         .on_click_handler = cx.update(AppState.clearError),
                     },
@@ -366,7 +366,7 @@ const StatusSection = struct {
                 ui.when(!is_error, .{
                     Button{
                         .label = "Test Error",
-                        .size = .small,
+                        .size_preset = .small,
                         .variant = .danger,
                         .on_click_handler = cx.update(AppState.simulateError),
                     },

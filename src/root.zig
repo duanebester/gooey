@@ -17,6 +17,11 @@
 //!
 //! ## Quick start
 //!
+//! `gooey.App(...)` is the canonical entry point: it builds a type whose
+//! `main` runs natively *and* generates the WASM exports on freestanding
+//! targets, so the same source ships to desktop and web unchanged. (Reach for
+//! `gooey.run(...)` only when you want a native-only one-liner — see its doc.)
+//!
 //! ```zig
 //! const std = @import("std");
 //! const gooey = @import("gooey");
@@ -26,10 +31,12 @@
 //! const AppState = struct { count: i32 = 0 };
 //! var state: AppState = .{};
 //!
+//! const App = gooey.App(AppState, &state, render, .{
+//!     .title = "Counter",
+//! });
+//!
 //! pub fn main(init: std.process.Init) !void {
-//!     try gooey.run(AppState, &state, render, .{
-//!         .title = "Counter",
-//!     }, init);
+//!     try App.main(init);
 //! }
 //!
 //! fn render(cx: *gooey.Cx) void {
@@ -46,14 +53,20 @@ const builtin = @import("builtin");
 // Curated core (7)
 // =============================================================================
 
-/// Run an app with the unified `Cx` context. The framework's one-liner
-/// entry point. Used by ~all `pub fn main(init)` example bodies.
+/// Native-only one-liner: run an app with the unified `Cx` context directly
+/// from `main`, without generating a wrapper type. Convenient for desktop-only
+/// programs and quick experiments, but it does **not** emit the WASM exports,
+/// so it can't ship to web. For cross-platform code prefer `App` (below),
+/// which is the canonical entry point; `run` is the native shortcut.
 pub const run = @import("app.zig").runCx;
 
-/// Cross-platform app generator. Picks the WASM `WebApp` shape on
-/// freestanding targets and the native shape everywhere else; the
-/// resulting type exposes a `pub fn main(init: std.process.Init)` that
-/// `pub fn main = App.main;` lines hand the OS entry point off to.
+/// Canonical, cross-platform app entry point. Generates a type whose
+/// `pub fn main(init: std.process.Init)` runs the native event loop, and on
+/// freestanding (WASM) targets instead emits the browser `init`/`frame`/
+/// `resize` exports — so one `App` definition ships to both desktop and web.
+/// Application `main` bodies just forward to it: `pub fn main(init) { try
+/// App.main(init); }`. `App` is a strict superset of `run`; reach for `run`
+/// only when you explicitly want the native-only shortcut.
 pub const App = @import("app.zig").App;
 
 /// The unified rendering context handed to every `render` callback.

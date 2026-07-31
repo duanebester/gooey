@@ -244,7 +244,7 @@ const FilterButton = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         cx.render(Button{
             .label = self.label,
-            .size = .small,
+            .size_preset = .small,
             .variant = if (self.active) .primary else .secondary,
             .on_click_handler = cx.updateWith(self.filter, AppState.setFilter),
         });
@@ -314,7 +314,7 @@ const TodoRow = struct {
             Button{
                 .label = "Delete",
                 .variant = .danger,
-                .size = .small,
+                .size_preset = .small,
                 .on_click_handler = cx.updateWith(self.index, AppState.remove),
             },
         }));
@@ -335,7 +335,7 @@ const Footer = struct {
             Button{
                 .label = "Clear completed",
                 .variant = .secondary,
-                .size = .small,
+                .size_preset = .small,
                 .on_click_handler = cx.update(AppState.clearCompleted),
             },
         }));

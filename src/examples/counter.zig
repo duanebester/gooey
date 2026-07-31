@@ -145,8 +145,8 @@ const ControlButtons = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             // Pure state handlers - cx.update()
-            Button{ .label = "−", .size = .large, .on_click_handler = cx.update(AppState.decrement) },
-            Button{ .label = "+", .size = .large, .on_click_handler = cx.update(AppState.increment) },
+            Button{ .label = "−", .size_preset = .large, .on_click_handler = cx.update(AppState.decrement) },
+            Button{ .label = "+", .size_preset = .large, .on_click_handler = cx.update(AppState.increment) },
 
             ui.spacerMin(20),
 
@@ -188,7 +188,7 @@ const StepButton = struct {
                 10 => "10",
                 else => "?",
             },
-            .size = .small,
+            .size_preset = .small,
             .variant = if (is_active) .primary else .secondary,
             .on_click_handler = cx.updateWith(self.value, AppState.setStep),
         });
