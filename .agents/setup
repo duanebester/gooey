@@ -15,6 +15,8 @@ packages=(
     libpng-dev
     libvulkan-dev
     libwayland-dev
+    mesa-vulkan-drivers
+    weston
     xz-utils
 )
 
