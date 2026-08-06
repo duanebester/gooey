@@ -624,7 +624,13 @@ pub fn build(b: *std.Build) void {
         // Link system libraries (Vulkan + Wayland + text rendering)
         linkLinuxLibraries(exe);
 
-        b.installArtifact(exe);
+        const install_showcase = b.addInstallArtifact(exe, .{});
+        b.getInstallStep().dependOn(&install_showcase.step);
+
+        // Keep preview builds focused: the default install step also builds
+        // every example, while this step installs only the showcase binary.
+        const showcase_step = b.step("showcase", "Build the showcase demo");
+        showcase_step.dependOn(&install_showcase.step);
 
         // Ensure shaders are compiled before building executables that @embedFile them
         // (only if shader compilation is enabled)
@@ -637,7 +643,6 @@ pub fn build(b: *std.Build) void {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
         run_step.dependOn(&run_cmd.step);
-        run_cmd.step.dependOn(b.getInstallStep());
 
         if (b.args) |args| {
             run_cmd.addArgs(args);

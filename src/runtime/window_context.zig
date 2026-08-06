@@ -155,9 +155,9 @@ pub fn WindowContext(comptime State: type) type {
             // Initialize Window with owned resources (single-window mode).
             const window = try allocator.create(Window);
             errdefer allocator.destroy(window);
-            window.* = try Window.initOwned(allocator, platform_window, font_config, io);
+            try window.initOwnedPtr(allocator, platform_window, font_config, io);
             // Wire the borrowed `*App` onto the freshly-initialised `Window`
-            // (`initOwned` left `window.app` undefined). This is the latest
+            // (`initOwnedPtr` left `window.app` undefined). This is the latest
             // safe point; every path that reaches `window.app.*` runs after it.
             window.app = app;
             errdefer window.deinit();
