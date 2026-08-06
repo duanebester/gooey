@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+zig_version="0.16.0"
+
+if ! command -v zig >/dev/null 2>&1; then
+    echo "Zig is unavailable; rerun .agents/setup." >&2
+    exit 1
+fi
+
+installed_version="$(zig version)"
+if [[ "$installed_version" != "$zig_version" ]]; then
+    echo "Expected Zig ${zig_version}, found ${installed_version}; rerun .agents/setup." >&2
+    exit 1
+fi
+
+echo "Gooey orb environment is ready."
