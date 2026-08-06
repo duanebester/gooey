@@ -114,6 +114,14 @@ pub fn handleInputCx(
         .mouse_moved => |move_ev| {
             if (handleMouseMoveEvent(cx, window, move_ev.position, false)) return true;
         },
+        .mouse_entered => |enter_ev| {
+            // Wayland does not guarantee a motion event after pointer enter,
+            // so hit-test the supplied coordinates immediately without
+            // consuming the enter event or running drag-move behavior.
+            const x: f32 = @floatCast(enter_ev.position.x);
+            const y: f32 = @floatCast(enter_ev.position.y);
+            if (window.updateHover(x, y)) cx.notify();
+        },
         .mouse_dragged => |drag_ev| {
             if (handleMouseDragEvent(cx, window, builder, drag_ev.position)) return true;
             if (handleMouseMoveEvent(cx, window, drag_ev.position, true)) return true;

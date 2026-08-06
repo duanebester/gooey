@@ -185,6 +185,9 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // Update IME cursor position for focused text input
     updateImeCursorPosition(window, builder);
+    if (comptime @import("../platform/mod.zig").is_linux) {
+        updateCursorShape(window, builder);
+    }
 
     // End render timing for profiler
     window.debugger().endRender(window.io);
@@ -448,6 +451,29 @@ fn updateImeCursorPosition(window: *Window, builder: *const Builder) void {
         const rect = ce.getCursorRect();
         platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
+}
+
+/// Text controls select an I-beam while all other content resets to the
+/// compositor's default cursor. The protocol call itself is Linux-only.
+fn updateCursorShape(window: *Window, builder: *const Builder) void {
+    std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
+    std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
+    const hovered_layout_id = window.hover.hovered_layout_id orelse {
+        if (window.getPlatformWindow()) |platform_window| platform_window.setCursorShape(.default);
+        return;
+    };
+
+    var shape: @import("../platform/interface.zig").CursorShape = .default;
+    for (builder.pending_inputs.items) |pending| {
+        if (pending.layout_id.id == hovered_layout_id) shape = .text;
+    }
+    for (builder.pending_text_areas.items) |pending| {
+        if (pending.layout_id.id == hovered_layout_id) shape = .text;
+    }
+    for (builder.pending_code_editors.items) |pending| {
+        if (pending.layout_id.id == hovered_layout_id) shape = .text;
+    }
+    if (window.getPlatformWindow()) |platform_window| platform_window.setCursorShape(shape);
 }
 
 /// Render debug overlays if enabled

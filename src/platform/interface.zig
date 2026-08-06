@@ -59,6 +59,12 @@ pub const WindowId = window_registry.WindowId;
 /// Central registry for tracking windows by ID.
 pub const WindowRegistry = window_registry.WindowRegistry;
 
+/// Cursor shapes selected by framework widgets.
+pub const CursorShape = enum(u8) {
+    default,
+    text,
+};
+
 // =============================================================================
 // Platform Interface
 // =============================================================================
