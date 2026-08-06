@@ -15,6 +15,18 @@ const linux_input = @import("input.zig");
 const input = @import("../../input/events.zig");
 const clipboard = @import("clipboard.zig");
 
+const HIDDEN_FRAME_POLL_MS: i32 = 50;
+
+fn eventLoopPollTimeout(has_pending_work: bool, waiting_for_frame: bool, refresh_rate_mhz: i32) i32 {
+    std.debug.assert(refresh_rate_mhz > 0);
+    std.debug.assert(refresh_rate_mhz <= 1_000_000);
+    if (waiting_for_frame) return HIDDEN_FRAME_POLL_MS;
+    if (has_pending_work) return 0;
+
+    const frame_time_ms = @divFloor(@as(i32, 1_000_000), refresh_rate_mhz);
+    return @max(frame_time_ms, 1);
+}
+
 // Static listeners - must persist for lifetime of Wayland objects
 const registry_listener = wayland.RegistryListener{
     .global = LinuxPlatform.registryGlobal,
@@ -104,6 +116,8 @@ pub const LinuxPlatform = struct {
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
+    cursor_shape_manager: ?*wayland.WpCursorShapeManagerV1 = null,
+    cursor_shape_device: ?*wayland.WpCursorShapeDeviceV1 = null,
     output: ?*wayland.Output = null,
 
     // Display refresh rate in millihertz (e.g., 60000 = 60Hz, 144000 = 144Hz)
@@ -119,6 +133,8 @@ pub const LinuxPlatform = struct {
     pointer_buttons: u32 = 0,
     last_key_serial: u32 = 0,
     last_pointer_serial: u32 = 0,
+    pointer_enter_serial: ?u32 = null,
+    cursor_shape: ?interface_mod.CursorShape = null,
     modifier_alt: bool = false,
     modifier_ctrl: bool = false,
     modifier_shift: bool = false,
@@ -274,6 +290,10 @@ pub const LinuxPlatform = struct {
         }
 
         // Input devices (they depend on seat)
+        if (self.cursor_shape_device) |device| {
+            wayland.cursorShapeDeviceDestroy(device);
+            self.cursor_shape_device = null;
+        }
         if (self.keyboard) |kb| {
             wayland.keyboardDestroy(kb);
             self.keyboard = null;
@@ -293,6 +313,10 @@ pub const LinuxPlatform = struct {
         if (self.decoration_manager) |dm| {
             wayland.zxdgDecorationManagerV1Destroy(dm);
             self.decoration_manager = null;
+        }
+        if (self.cursor_shape_manager) |manager| {
+            wayland.cursorShapeManagerDestroy(manager);
+            self.cursor_shape_manager = null;
         }
         if (self.xdg_wm_base) |wm| {
             wayland.xdgWmBaseDestroy(wm);
@@ -336,13 +360,21 @@ pub const LinuxPlatform = struct {
             pollfds_buf[0] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 };
             var pollfds = pollfds_buf[0..1];
 
-            // Render frame if we have an active window
+            // Render eagerly only when no compositor callback is pending.
+            // A redraw requested during frameCallback() must remain queued
+            // until that newly-scheduled callback fires, otherwise animation
+            // frames are submitted twice per compositor tick.
             if (self.active_window) |window| {
                 if (window.isClosed()) {
                     self.running = false;
                     break;
                 }
-                window.renderFrame();
+                // A bufferless surface may not receive its first callback, so
+                // bootstrap with one eager presentation. Every later frame is
+                // paced by the compositor callback already in flight.
+                if (window.frame_callback == null or !window.has_presented_frame) {
+                    window.renderFrame();
+                }
             }
 
             // Flush outgoing requests before polling
@@ -368,22 +400,17 @@ pub const LinuxPlatform = struct {
                 break;
             }
 
-            // Adaptive poll timeout based on work state:
-            // - 0ms if redraw/animation pending (minimize latency, max FPS)
-            // - 1000/refresh_rate if idle (reduce CPU usage, match display responsiveness)
-            // Wayland frame callbacks still pace actual rendering to vsync.
-            const timeout_ms: i32 = blk: {
-                if (self.active_window) |window| {
-                    // Check if window has pending work
-                    if (window.needs_redraw or window.continuous_render or window.pending_resize) {
-                        break :blk 0; // Work pending - poll immediately
-                    }
-                }
-                // Calculate frame time from display refresh rate (mHz to ms)
-                // refresh_rate_mhz is in millihertz, so 1000000 / mHz = ms per frame
-                const frame_time_ms: i32 = @intCast(@divTrunc(@as(i64, 1000000), self.refresh_rate_mhz));
-                break :blk frame_time_ms; // Idle - match display refresh rate
-            };
+            // Never spin while a frame callback is outstanding. Compositors
+            // can withhold callbacks for hidden windows, so use the same 20Hz
+            // fallback cadence as other Wayland clients while still waking
+            // immediately when a visible surface receives its callback.
+            var has_pending_work = false;
+            var waiting_for_frame = false;
+            if (self.active_window) |window| {
+                has_pending_work = window.needs_redraw or window.continuous_render or window.pending_resize;
+                waiting_for_frame = window.frame_callback != null;
+            }
+            const timeout_ms = eventLoopPollTimeout(has_pending_work, waiting_for_frame, self.refresh_rate_mhz);
             const poll_result = posix.poll(pollfds, timeout_ms) catch {
                 self.running = false;
                 break;
@@ -539,6 +566,33 @@ pub const LinuxPlatform = struct {
         return @floatFromInt(self.scale_factor);
     }
 
+    fn ensureCursorShapeDevice(self: *Self) void {
+        if (self.cursor_shape_device != null) std.debug.assert(self.pointer != null);
+        if (self.cursor_shape_device != null) std.debug.assert(self.cursor_shape_manager != null);
+        if (self.cursor_shape_device != null) return;
+
+        const manager = self.cursor_shape_manager orelse return;
+        const pointer = self.pointer orelse return;
+        self.cursor_shape_device = wayland.cursorShapeManagerGetPointer(manager, pointer);
+        std.debug.assert(self.cursor_shape_manager != null);
+        std.debug.assert(self.pointer != null);
+    }
+
+    pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
+        if (self.cursor_shape_device != null) std.debug.assert(self.pointer != null);
+        if (self.cursor_shape_device != null) std.debug.assert(self.cursor_shape_manager != null);
+        if (self.cursor_shape == shape) return;
+        const serial = self.pointer_enter_serial orelse return;
+        const device = self.cursor_shape_device orelse return;
+
+        const protocol_shape: u32 = switch (shape) {
+            .default => 1,
+            .text => 9,
+        };
+        wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
+        self.cursor_shape = shape;
+    }
+
     /// Get interface for runtime polymorphism
     pub fn interface(self: *Self) interface_mod.PlatformVTable {
         return interface_mod.makePlatformVTable(Self, self);
@@ -611,6 +665,14 @@ pub const LinuxPlatform = struct {
             }
         } else if (std.mem.eql(u8, interface_name, wayland.WP_VIEWPORTER_INTERFACE_NAME)) {
             self.viewporter = wayland.bindViewporter(registry, name, version);
+        } else if (std.mem.eql(u8, interface_name, wayland.WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME)) {
+            self.cursor_shape_manager = @ptrCast(@alignCast(wayland.registryBind(
+                registry,
+                name,
+                &wayland.wp_cursor_shape_manager_v1_interface,
+                @min(version, 2),
+            )));
+            self.ensureCursorShapeDevice();
         } else if (std.mem.eql(u8, interface_name, wayland.WL_OUTPUT_INTERFACE_NAME)) {
             // Bind to first output only (for refresh rate)
             if (self.output == null) {
@@ -772,9 +834,16 @@ pub const LinuxPlatform = struct {
                 // Uses module-level static listener
                 _ = wayland.pointerAddListener(ptr, &pointer_listener, self);
             }
+            self.ensureCursorShapeDevice();
         } else if (!caps.pointer and self.pointer != null) {
+            if (self.cursor_shape_device) |device| {
+                wayland.cursorShapeDeviceDestroy(device);
+                self.cursor_shape_device = null;
+            }
             wayland.pointerDestroy(self.pointer.?);
             self.pointer = null;
+            self.pointer_enter_serial = null;
+            self.cursor_shape = null;
         }
 
         // Handle keyboard
@@ -822,8 +891,11 @@ pub const LinuxPlatform = struct {
         _ = surface;
         const self: *Self = @ptrCast(@alignCast(data));
         self.last_pointer_serial = serial;
+        self.pointer_enter_serial = serial;
         self.pointer_x = wayland.fixedToDouble(surface_x);
         self.pointer_y = wayland.fixedToDouble(surface_y);
+        self.cursor_shape = null;
+        self.setCursorShape(.default);
 
         // Dispatch mouse_entered event to active window
         if (self.active_window) |window| {
@@ -848,6 +920,8 @@ pub const LinuxPlatform = struct {
         _ = serial;
         _ = surface;
         const self: *Self = @ptrCast(@alignCast(data));
+        self.pointer_enter_serial = null;
+        self.cursor_shape = null;
 
         // Dispatch mouse_exited event to active window
         if (self.active_window) |window| {
@@ -1573,3 +1647,9 @@ pub const LinuxPlatform = struct {
         }
     }
 };
+
+test "event loop waits instead of spinning for compositor frame" {
+    try std.testing.expectEqual(@as(i32, HIDDEN_FRAME_POLL_MS), eventLoopPollTimeout(true, true, 240_000));
+    try std.testing.expectEqual(@as(i32, 0), eventLoopPollTimeout(true, false, 240_000));
+    try std.testing.expectEqual(@as(i32, 4), eventLoopPollTimeout(false, false, 240_000));
+}

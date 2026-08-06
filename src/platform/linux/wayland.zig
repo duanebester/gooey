@@ -65,6 +65,10 @@ pub const ZwpTextInputManagerV3 = opaque {};
 pub const WpViewporter = opaque {};
 pub const WpViewport = opaque {};
 
+// Cursor shape protocol types
+pub const WpCursorShapeManagerV1 = opaque {};
+pub const WpCursorShapeDeviceV1 = opaque {};
+
 // Wayland array type (used in listeners)
 pub const Array = extern struct {
     size: usize,
@@ -644,6 +648,10 @@ const zwp_text_input_manager_v3_get_text_input_types = [_]?*const Interface{ zwp
 const wp_viewport_interface_ptr: ?*const Interface = &wp_viewport_interface;
 const wp_viewporter_get_viewport_types = [_]?*const Interface{ wp_viewport_interface_ptr, &wl_surface_interface };
 
+// Cursor shape forward declarations
+const wp_cursor_shape_device_v1_interface_ptr: ?*const Interface = &wp_cursor_shape_device_v1_interface;
+const wp_cursor_shape_manager_v1_get_pointer_types = [_]?*const Interface{ wp_cursor_shape_device_v1_interface_ptr, &wl_pointer_interface };
+
 // Type arrays for text input v3 events with object arguments
 const zwp_text_input_v3_enter_types = [_]?*const Interface{&wl_surface_interface};
 const zwp_text_input_v3_leave_types = [_]?*const Interface{&wl_surface_interface};
@@ -1160,6 +1168,51 @@ pub fn pointerDestroy(pointer: *Pointer) void {
     wl_proxy_destroy(@ptrCast(pointer));
 }
 
+pub fn cursorShapeManagerGetPointer(manager: *WpCursorShapeManagerV1, pointer: *Pointer) ?*WpCursorShapeDeviceV1 {
+    const result = wl_proxy_marshal_flags(
+        @ptrCast(manager),
+        1, // get_pointer
+        &wp_cursor_shape_device_v1_interface,
+        wl_proxy_get_version(@ptrCast(manager)),
+        0,
+        @as(?*anyopaque, null),
+        pointer,
+    );
+    return @ptrCast(@alignCast(result));
+}
+
+pub fn cursorShapeManagerDestroy(manager: *WpCursorShapeManagerV1) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(manager),
+        0, // destroy
+        null,
+        wl_proxy_get_version(@ptrCast(manager)),
+        MARSHAL_FLAG_DESTROY,
+    );
+}
+
+pub fn cursorShapeDeviceSetShape(device: *WpCursorShapeDeviceV1, serial: u32, shape: u32) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(device),
+        1, // set_shape
+        null,
+        wl_proxy_get_version(@ptrCast(device)),
+        0,
+        serial,
+        shape,
+    );
+}
+
+pub fn cursorShapeDeviceDestroy(device: *WpCursorShapeDeviceV1) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(device),
+        0, // destroy
+        null,
+        wl_proxy_get_version(@ptrCast(device)),
+        MARSHAL_FLAG_DESTROY,
+    );
+}
+
 // Keyboard operations
 pub fn keyboardAddListener(keyboard: *Keyboard, listener: *const KeyboardListener, data: ?*anyopaque) bool {
     return wl_proxy_add_listener(@ptrCast(keyboard), @ptrCast(listener), data) == 0;
@@ -1607,6 +1660,7 @@ pub const XDG_WM_BASE_INTERFACE_NAME = "xdg_wm_base";
 pub const ZXDG_DECORATION_MANAGER_V1_INTERFACE_NAME = "zxdg_decoration_manager_v1";
 pub const ZWP_TEXT_INPUT_MANAGER_V3_INTERFACE_NAME = "zwp_text_input_manager_v3";
 pub const WP_VIEWPORTER_INTERFACE_NAME = "wp_viewporter";
+pub const WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME = "wp_cursor_shape_manager_v1";
 
 // =============================================================================
 // wp_viewporter interface (for HiDPI support)
@@ -1623,6 +1677,37 @@ pub const wp_viewporter_interface: Interface = .{
     .version = 1,
     .method_count = 2,
     .methods = @ptrCast(&wp_viewporter_methods),
+    .event_count = 0,
+    .events = null,
+};
+
+// wp_cursor_shape_manager_v1 methods: destroy, get_pointer, get_tablet_tool_v2
+const wp_cursor_shape_manager_v1_methods = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "get_pointer", .signature = "no", .types = @ptrCast(&wp_cursor_shape_manager_v1_get_pointer_types) },
+    .{ .name = "get_tablet_tool_v2", .signature = "no", .types = null },
+};
+
+pub const wp_cursor_shape_manager_v1_interface: Interface = .{
+    .name = "wp_cursor_shape_manager_v1",
+    .version = 2,
+    .method_count = 3,
+    .methods = @ptrCast(&wp_cursor_shape_manager_v1_methods),
+    .event_count = 0,
+    .events = null,
+};
+
+// wp_cursor_shape_device_v1 methods: destroy, set_shape
+const wp_cursor_shape_device_v1_methods = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "set_shape", .signature = "uu", .types = null },
+};
+
+pub const wp_cursor_shape_device_v1_interface: Interface = .{
+    .name = "wp_cursor_shape_device_v1",
+    .version = 2,
+    .method_count = 2,
+    .methods = @ptrCast(&wp_cursor_shape_device_v1_methods),
     .event_count = 0,
     .events = null,
 };

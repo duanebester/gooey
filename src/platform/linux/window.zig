@@ -90,9 +90,11 @@ pub const Window = struct {
     renderer: VulkanRenderer,
     background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
     needs_redraw: bool = true,
+    has_presented_frame: bool = false,
 
-    /// When true, continuously schedule frames at vsync rate (like macOS DisplayLink).
-    /// This enables smooth 120fps+ rendering without requiring explicit requestRender() calls.
+    /// Continuously schedule frames at vsync rate for immediate-mode UI.
+    /// Hidden windows are throttled by the platform event loop while their
+    /// compositor frame callback is withheld.
     continuous_render: bool = true,
 
     // Scene reference (set externally)
@@ -499,6 +501,12 @@ pub const Window = struct {
         self.scheduleFrame();
     }
 
+    pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
+        std.debug.assert(self.platform.pointer == null or self.platform.seat != null);
+        std.debug.assert(self.platform.cursor_shape_device == null or self.platform.pointer != null);
+        self.platform.setCursorShape(shape);
+    }
+
     pub fn setScene(self: *Self, scene: *const scene_mod.Scene) void {
         self.scene = scene;
     }
@@ -758,6 +766,10 @@ pub const Window = struct {
         if (!self.configured) return;
         if (!self.needs_redraw and !self.pending_resize) return;
 
+        // Clear before invoking application code so requestRender() calls made
+        // while building an animation survive for the following frame.
+        self.needs_redraw = false;
+
         // Handle pending resize
         if (self.pending_resize) {
             const old_width = self.size.width;
@@ -794,8 +806,6 @@ pub const Window = struct {
             }
             self.renderer.resize(self.width, self.height, self.scale_factor);
             self.pending_resize = false;
-            self.needs_redraw = true; // Ensure we redraw after resize
-
             // Notify user of resize if size actually changed
             const size_changed = (old_width != self.size.width or old_height != self.size.height);
             if (size_changed) {
@@ -836,6 +846,7 @@ pub const Window = struct {
             defer empty_scene.deinit();
             self.renderer.render(&empty_scene);
         }
+        self.has_presented_frame = true;
 
         const gpu_end = std.Io.Timestamp.now(render_io, .awake);
         const gpu_ns: i96 = gpu_start.durationTo(gpu_end).toNanoseconds();
@@ -843,7 +854,6 @@ pub const Window = struct {
         self.last_gpu_submit_ns = @intCast(gpu_ns);
         self.last_atlas_upload_ns = 0; // Atlas transfers are now async (inside render cmd buf)
 
-        self.needs_redraw = false;
     }
 
     // =========================================================================
@@ -909,7 +919,9 @@ pub const Window = struct {
         _ = surface;
         _ = output;
         const self: *Self = @ptrCast(@alignCast(data));
-        self.mouse_inside = true;
+        // Output membership can change scale/configure state when moving a
+        // window between workspaces or displays, so rebuild layout once.
+        self.requestRender();
     }
 
     fn surfaceLeave(
@@ -920,7 +932,7 @@ pub const Window = struct {
         _ = surface;
         _ = output;
         const self: *Self = @ptrCast(@alignCast(data));
-        self.mouse_inside = false;
+        self.requestRender();
     }
 
     fn surfacePreferredScale(
