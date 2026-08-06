@@ -973,10 +973,15 @@ pub const DispatchTree = struct {
 
     /// Register an action handler using HandlerRef (new pattern)
     pub fn onActionHandler(self: *Self, comptime Action: type, ref: HandlerRef) void {
+        self.onActionHandlerRaw(actionTypeId(Action), ref);
+    }
+
+    /// Register an action handler whose type ID was resolved by a UI primitive.
+    pub fn onActionHandlerRaw(self: *Self, action_type: ActionTypeId, ref: HandlerRef) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
             node.getOrCreateListeners(self.allocator).action_listeners_handler.append(self.allocator, .{
-                .action_type = actionTypeId(Action),
+                .action_type = action_type,
                 .handler = ref,
             }) catch @panic("dispatch: action handler registration failed (OOM)");
         }
@@ -1122,6 +1127,29 @@ test "DispatchTree construction" {
 
     const grandchild_node = tree.getNodeConst(grandchild).?;
     try std.testing.expectEqual(child2, grandchild_node.parent);
+}
+
+test "DispatchTree registers a pre-resolved action handler" {
+    // The UI builder resolves action types before rendering, so verify the raw
+    // registration path preserves both that ID and its handler reference.
+    const allocator = std.testing.allocator;
+    var tree = DispatchTree.init(allocator);
+    defer tree.deinit();
+
+    const callback = struct {
+        fn invoke(_: *Window, _: handler_mod.EntityId) void {}
+    }.invoke;
+    const handler = HandlerRef{ .callback = callback };
+    const action_type: ActionTypeId = 42;
+
+    const root = tree.pushNode();
+    tree.onActionHandlerRaw(action_type, handler);
+    tree.popNode();
+
+    const listeners = tree.getNodeConst(root).?.listeners.?;
+    try std.testing.expectEqual(@as(usize, 1), listeners.action_listeners_handler.items.len);
+    try std.testing.expectEqual(action_type, listeners.action_listeners_handler.items[0].action_type);
+    try std.testing.expectEqual(handler.callback, listeners.action_listeners_handler.items[0].handler.callback);
 }
 
 test "DispatchTree hit testing" {
