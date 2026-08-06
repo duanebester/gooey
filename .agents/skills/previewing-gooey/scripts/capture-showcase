@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../../../.." && pwd)"
+output_path="${1:-.amp/in/artifacts/gooey-showcase.png}"
+
+if [[ "$output_path" != /* ]]; then
+    output_path="${repo_root}/${output_path}"
+fi
+
+for command in amp dbus-run-session weston weston-screenshooter zig; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "Missing ${command}; run .agents/setup first." >&2
+        exit 1
+    fi
+done
+
+cd "$repo_root"
+echo "Building the Gooey showcase..."
+zig build showcase -Dskip-shader-compile=true
+
+amp orb service stop gooey-app >/dev/null 2>&1 || true
+amp orb service stop gooey-wayland >/dev/null 2>&1 || true
+
+echo "Starting headless Wayland..."
+amp orb service start gooey-wayland --command \
+    'install -d -m 700 /tmp/gooey-runtime; export XDG_RUNTIME_DIR=/tmp/gooey-runtime; exec weston --backend=headless-backend.so --socket=wayland-gooey --width=1280 --height=800 --use-pixman --idle-time=0 --no-config --debug'
+
+socket_ready=false
+for _ in $(seq 1 100); do
+    if [[ -S /tmp/gooey-runtime/wayland-gooey ]]; then
+        socket_ready=true
+        break
+    fi
+    sleep 0.1
+done
+
+if [[ "$socket_ready" != true ]]; then
+    amp orb service logs gooey-wayland | tail -n 80 >&2
+    echo "Weston did not create its Wayland socket within 10 seconds." >&2
+    exit 1
+fi
+
+echo "Starting Gooey..."
+amp orb service start gooey-app --command \
+    'export XDG_RUNTIME_DIR=/tmp/gooey-runtime WAYLAND_DISPLAY=wayland-gooey; exec dbus-run-session -- ./zig-out/bin/gooey'
+
+# Software Vulkan needs several frames to populate the first presentation.
+sleep 5
+if ! amp orb service status gooey-app | grep -Fq 'Active: active (running)'; then
+    amp orb service logs gooey-app | tail -n 120 >&2
+    echo "Gooey did not remain active." >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$output_path")"
+capture_dir="$(mktemp -d)"
+trap 'rm -rf "$capture_dir"' EXIT
+
+(
+    cd "$capture_dir"
+    XDG_RUNTIME_DIR=/tmp/gooey-runtime \
+        WAYLAND_DISPLAY=wayland-gooey \
+        weston-screenshooter
+)
+
+captures=("${capture_dir}"/wayland-screenshot-*.png)
+if [[ ! -f "${captures[0]}" ]]; then
+    echo "Weston did not produce a screenshot." >&2
+    exit 1
+fi
+
+mv "${captures[0]}" "$output_path"
+echo "Captured ${output_path}"
