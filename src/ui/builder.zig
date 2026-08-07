@@ -1817,6 +1817,33 @@ fn testBuilderHarness(
     return Builder.init(allocator, engine, scene_ptr, tree);
 }
 
+test "onActionHandler primitive registers its pre-resolved action type" {
+    // Render the public primitive through a real Builder to cover the bridge
+    // from its runtime action ID into DispatchTree listener registration.
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer builder.deinit();
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    const Action = struct {};
+    const callback = struct {
+        fn invoke(_: *Window, _: handler_mod.EntityId) void {}
+    }.invoke;
+    const handler = HandlerRef{ .callback = callback };
+
+    builder.box(.{}, .{primitives.onActionHandler(Action, handler)});
+
+    const listeners = tree.getNodeConst(tree.root).?.listeners.?;
+    try std.testing.expectEqual(@as(usize, 1), listeners.action_listeners_handler.items.len);
+    try std.testing.expectEqual(actionTypeId(Action), listeners.action_listeners_handler.items[0].action_type);
+    try std.testing.expectEqual(handler.callback, listeners.action_listeners_handler.items[0].handler.callback);
+}
+
 test "generateId: same-parent siblings never collide" {
     const gpa = std.testing.allocator;
     var engine: LayoutEngine = undefined;
