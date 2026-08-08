@@ -61,12 +61,10 @@ Add the current release to your application's `build.zig.zon`:
 },
 ```
 
-Then import Gooey's module and apply its platform linker integration in your
-`build.zig`:
+Then import Gooey's module in your `build.zig`:
 
 ```zig
 const std = @import("std");
-const gooey_build = @import("gooey");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -87,14 +85,13 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    gooey_build.linkSystemDeps(executable);
     b.installArtifact(executable);
 }
 ```
 
-Application source can now use `const gooey = @import("gooey");`. The
-`linkSystemDeps` call is the supported cross-platform linker setup and keeps
-consumer builds independent of Gooey's internal framework/library list.
+Application source can now use `const gooey = @import("gooey");`. Gooey's
+module carries its platform linker requirements transitively, keeping consumer
+builds independent of Gooey's internal framework/library list.
 
 ### Run this repository's examples
 
