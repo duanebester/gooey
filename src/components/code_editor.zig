@@ -12,7 +12,7 @@
 //! ```zig
 //! const gooey = @import("gooey");
 //!
-//! gooey.CodeEditor{
+//! gooey.components.CodeEditor{
 //!     .id = "source",
 //!     .placeholder = "Enter code here...",
 //!     .bind = &state.source_code,

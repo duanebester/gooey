@@ -1,6 +1,6 @@
 //! App - Convenience wrapper for quick application setup
 //!
-//! Provides a simple `run()` function that handles all boilerplate:
+//! Provides a native-only `run()` function that handles all boilerplate:
 //! - Platform initialization
 //! - Window creation
 //! - UI context setup
@@ -13,10 +13,9 @@
 //! var state = struct { count: i32 = 0 }{};
 //!
 //! pub fn main(init: std.process.Init) !void {
-//!     try gooey.run(init, .{
+//!     try gooey.run(@TypeOf(state), &state, render, .{
 //!         .title = "Counter",
-//!         .render = render,
-//!     });
+//!     }, init);
 //! }
 //!
 //! fn render(cx: *gooey.Cx) void {

@@ -16,22 +16,22 @@
 //! const gooey = @import("gooey");
 //!
 //! // Simple image from path (works on native AND WASM)
-//! gooey.Image{ .src = "assets/logo.png" }
+//! gooey.components.Image{ .src = "assets/logo.png" }
 //!
 //! // With explicit sizing
-//! gooey.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
+//! gooey.components.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
 //!
 //! // Rounded avatar
-//! gooey.Image{ .src = "avatar.png", .size = 48, .rounded = true }
+//! gooey.components.Image{ .src = "avatar.png", .size = 48, .rounded = true }
 //!
 //! // Cover image (fills container, may crop)
-//! gooey.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
+//! gooey.components.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
 //!
 //! // Grayscale + tinted
-//! gooey.Image{ .src = "icon.png", .grayscale = 1.0, .tint = gooey.Color.blue }
+//! gooey.components.Image{ .src = "icon.png", .grayscale = 1.0, .tint = gooey.Color.blue }
 //!
 //! // With placeholder color (shown while loading on WASM)
-//! gooey.Image{ .src = "assets/logo.png", .size = 28, .placeholder = theme.surface }
+//! gooey.components.Image{ .src = "assets/logo.png", .size = 28, .placeholder = theme.surface }
 //! ```
 
 const std = @import("std");

@@ -97,7 +97,7 @@ pub fn Entity(comptime T: type) type {
         ///
         /// ```zig
         /// const CounterButtons = struct {
-        ///     counter: gooey.Entity(Counter),
+        ///     counter: gooey.context.Entity(Counter),
         ///
         ///     pub fn render(self: @This(), b: *ui.Builder) void {
         ///         var cx = self.counter.context(g_window);

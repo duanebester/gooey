@@ -604,6 +604,14 @@ pub const LinuxBridge = struct {
 
     /// Emit all pending signals over D-Bus
     fn emitPendingSignals(self: *Self) void {
+        std.debug.assert(self.signal_count <= MAX_PENDING_SIGNALS);
+        std.debug.assert(self.object_count <= constants.MAX_ELEMENTS);
+
+        // A flush consumes the batch even when AT-SPI is disconnected. Keeping
+        // stale signals would make the next frame retry obsolete events and
+        // eventually write past the fixed-capacity queue.
+        defer self.signal_count = 0;
+
         if (builtin.os.tag != .linux) return;
 
         const conn = &(self.connection orelse return);
@@ -616,8 +624,6 @@ pub const LinuxBridge = struct {
 
         // Flush D-Bus connection to ensure signals are sent
         conn.flush();
-
-        self.signal_count = 0;
     }
 
     /// Emit a single AT-SPI2 signal
