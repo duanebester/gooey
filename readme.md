@@ -227,11 +227,8 @@ pub fn main(init: std.process.Init) !void {
 
 fn render(cx: *Cx) void {
     const s = cx.state(AppState);
-    const size = cx.windowSize();
 
-    cx.render(ui.box(.{
-        .width = size.width,
-        .height = size.height,
+    cx.render(ui.root(.{
         .direction = .column,
         .padding = .{ .all = 24 },
         .gap = 16,
@@ -1461,6 +1458,9 @@ if (cx.window().readEntity(Counter, entity)) |data| {
 Flexbox-inspired layout with shrink behavior and text wrapping:
 
 ```zig
+// Application roots track the current window size automatically.
+cx.render(ui.root(.{ .padding = .{ .all = 24 } }, .{...}));
+
 cx.render(ui.box(.{
     .direction = .row,           // or .column
     .gap = 16,
@@ -1481,6 +1481,13 @@ cx.render(ui.box(.{ .width = 150, .min_width = 60 }, .{...}));
 // Text wrapping
 ui.text("Long text...", .{ .wrap = .words });  // .none, .words, .newlines
 ```
+
+`grow` participates in flexible-space distribution (`grow_width` and
+`grow_height` select one axis). `fill_width` and `fill_height` request 100% of
+the parent's available size without sharing flex space; percentages request a
+fraction from 0 through 1. Grow wins over fixed sizing, fixed sizing wins over
+percentage and fill, and percentage wins over fill. Min/max constrain grow or
+fixed sizing and select fit sizing when neither is present.
 
 ## Custom Shaders
 

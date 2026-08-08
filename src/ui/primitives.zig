@@ -450,6 +450,48 @@ pub fn box(style: styles.Box, children: anytype) BoxElement(@TypeOf(children), f
     return .{ .style = style, .children = children, .source_loc = {} };
 }
 
+/// Create the application's root box, sized to the current window every frame.
+///
+/// `style` controls appearance and child layout. Explicit sizing is diagnosed
+/// in safety builds and ignored otherwise because it would make the fill-window
+/// contract ambiguous. Use `box` for a deliberately fixed-size root.
+pub fn root(style: styles.Box, children: anytype) BoxElement(@TypeOf(children), false) {
+    assertRootStyleHasNoSizing(style);
+
+    var root_style = style;
+    // Preserve the contract where diagnostic assertions are compiled out.
+    root_style.width = null;
+    root_style.height = null;
+    root_style.min_width = null;
+    root_style.min_height = null;
+    root_style.max_width = null;
+    root_style.max_height = null;
+    root_style.grow = false;
+    root_style.grow_width = false;
+    root_style.grow_height = false;
+    root_style.fill_width = true;
+    root_style.fill_height = true;
+    root_style.width_percent = null;
+    root_style.height_percent = null;
+    return .{ .style = root_style, .children = children, .source_loc = {} };
+}
+
+fn assertRootStyleHasNoSizing(style: styles.Box) void {
+    std.debug.assert(style.width == null);
+    std.debug.assert(style.height == null);
+    std.debug.assert(style.min_width == null);
+    std.debug.assert(style.min_height == null);
+    std.debug.assert(style.max_width == null);
+    std.debug.assert(style.max_height == null);
+    std.debug.assert(!style.grow);
+    std.debug.assert(!style.grow_width);
+    std.debug.assert(!style.grow_height);
+    std.debug.assert(!style.fill_width);
+    std.debug.assert(!style.fill_height);
+    std.debug.assert(style.width_percent == null);
+    std.debug.assert(style.height_percent == null);
+}
+
 /// Childless box — a visual-only rectangle (divider, spacer, colored block).
 ///
 /// Equivalent to `box(style, .{})` but without the empty children tuple:
@@ -592,6 +634,16 @@ test "box element primitive" {
     try std.testing.expectEqual(PrimitiveType.box_element, @TypeOf(b).primitive_type);
     try std.testing.expectEqual(@as(?f32, 100), b.style.width);
     try std.testing.expectEqual(@as(?f32, 50), b.style.height);
+}
+
+test "root primitive fills the window without explicit dimensions" {
+    // Goal: roots request both parent axes while retaining normal Box styling.
+    // Methodology: inspect the descriptor that the builder receives.
+    const r = root(.{ .padding = .{ .all = 16 }, .gap = 8 }, .{});
+    try std.testing.expectEqual(PrimitiveType.box_element, @TypeOf(r).primitive_type);
+    try std.testing.expect(r.style.fill_width);
+    try std.testing.expect(r.style.fill_height);
+    try std.testing.expectEqual(@as(f32, 8), r.style.gap);
 }
 
 test "hstack element primitive" {

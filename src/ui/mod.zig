@@ -62,6 +62,7 @@ pub const canvas = canvas_mod.canvas;
 pub const canvasWithData = canvas_mod.canvasWithData;
 
 // Container element functions: return element structs for use with cx.render().
+pub const root = primitives.root;
 pub const box = primitives.box;
 pub const rect = primitives.rect;
 pub const hstack = primitives.hstack;

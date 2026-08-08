@@ -597,6 +597,8 @@ pub const Builder = struct {
 
     /// Internal: Box implementation with pre-resolved LayoutId
     fn boxWithLayoutIdImpl(self: *Self, layout_id: LayoutId, props: Box, children: anytype, source_loc: SourceLoc, is_canvas: bool) void {
+        // Reject bad inputs before they propagate through every layout pass.
+        std.debug.assert(props.sizingIsValid());
 
         // Push dispatch node at element open
         _ = self.dispatch.pushNode();
