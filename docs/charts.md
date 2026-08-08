@@ -61,9 +61,11 @@ Import both gooey and gooey-charts in your build:
 
 ```gooey/docs/charts.md#L50-58
 // build.zig
+const gooey_build = @import("gooey");
 const gooey_dep = b.dependency("gooey", .{ .target = target, .optimize = optimize });
 exe.root_module.addImport("gooey", gooey_dep.module("gooey"));
 exe.root_module.addImport("gooey-charts", gooey_dep.module("gooey-charts"));
+gooey_build.linkSystemDeps(exe);
 
 // your_app.zig
 const gooey = @import("gooey");

@@ -45,7 +45,7 @@
 //!     .y = s.menu_y,
 //!     .on_close = cx.update(State.closeMenu),
 //!     .items = &.{
-//!         .{ .label = "Cut",  .icon = gooey.Icons.close, .shortcut = "Ctrl+X", .on_click = cx.update(State.cut) },
+//!         .{ .label = "Cut",  .icon = gooey.components.Icons.close, .shortcut = "Ctrl+X", .on_click = cx.update(State.cut) },
 //!         .{ .label = "Copy", .shortcut = "Ctrl+C", .on_click = cx.update(State.copy) },
 //!         .{ .separator = true },
 //!         .{ .label = "Delete", .danger = true, .on_click = cx.update(State.delete) },
@@ -110,7 +110,7 @@ pub const MenuItem = struct {
     /// named `on_select` always has one type and copy-paste can't miscompile.
     on_click: ?HandlerRef = null,
 
-    /// Optional leading icon as SVG markup (e.g. one of `gooey.Lucide`),
+    /// Optional leading icon as SVG markup (e.g. one of `gooey.components.Lucide`),
     /// rendered stroke-based to match the Lucide icon style.
     icon: ?[]const u8 = null,
 

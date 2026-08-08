@@ -10,7 +10,7 @@
 //! Naming: this is the *engine* type — the heap-allocated state object
 //! that owns the multi-line text buffer, line index, cursor, IME
 //! composition, edit history, and focus state. The user-facing
-//! declarative component is `gooey.TextArea` in
+//! declarative component is `gooey.components.TextArea` in
 //! `components/text_area.zig`, which is what application code
 //! constructs as a literal
 //! (`TextArea{ .id = "...", .placeholder = "..." }`). The two types

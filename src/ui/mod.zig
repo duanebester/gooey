@@ -7,9 +7,9 @@
 //! const gooey = @import("gooey");
 //!
 //! // Components (preferred)
-//! gooey.Button{ .label = "Click", .on_click_handler = cx.update(State.onClick) }
-//! gooey.Checkbox{ .id = "agree", .selected = state.agreed, .on_click_handler = cx.update(State.toggle) }
-//! gooey.TextInput{ .id = "name", .placeholder = "Enter name", .bind = &state.name }
+//! gooey.components.Button{ .label = "Click", .on_click_handler = cx.update(State.onClick) }
+//! gooey.components.Checkbox{ .id = "agree", .selected = state.agreed, .on_click_handler = cx.update(State.toggle) }
+//! gooey.components.TextInput{ .id = "name", .placeholder = "Enter name", .bind = &state.name }
 //!
 //! // Primitives (for text, spacers, etc.)
 //! gooey.ui.text("Hello", .{})
