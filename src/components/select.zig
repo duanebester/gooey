@@ -168,7 +168,8 @@ pub const Select = struct {
     /// Placeholder text when nothing is selected
     placeholder: []const u8 = "Select...",
 
-    /// Whether the dropdown is currently open (legacy — ignored when using on_select)
+    /// Whether the dropdown is currently open. Legacy manual-control field;
+    /// ignored only when `controlMode()` resolves to `.internal`.
     is_open: bool = false,
 
     // === New API: on_select (recommended) ===
@@ -194,6 +195,8 @@ pub const Select = struct {
     on_close: ?HandlerRef = null,
 
     /// Array of handlers, one per option. Use cx.updateWith() to create these.
+    /// Mutually exclusive with `on_select`; mixing both selection APIs traps
+    /// during render instead of silently preferring this legacy field.
     handlers: ?[]const HandlerRef = null,
 
     // === Layout ===
@@ -262,9 +265,23 @@ pub const Select = struct {
         }
     };
 
+    /// Select either owns open/close state or delegates it to legacy manual
+    /// fields. Exposed so callers can reason about compatibility explicitly.
+    pub const ControlMode = enum {
+        internal,
+        manual,
+    };
+
+    pub const ControlError = error{
+        MixedSelectionHandlers,
+    };
+
     pub fn render(self: Select, cx: *ui.Cx) void {
         std.debug.assert(self.id.len > 0);
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
+        self.validateControl() catch {
+            @panic("Select: on_select and legacy handlers are mutually exclusive");
+        };
 
         const layout_id = LayoutId.fromString(self.id);
         const t = cx.theme();
@@ -315,7 +332,7 @@ pub const Select = struct {
                 .selected = self.selected,
                 .handlers = self.handlers,
                 .on_select = self.on_select,
-                .id_hash = if (self.usesInternalState()) layout_id.id else 0,
+                .id_hash = if (self.controlMode() == .internal) layout_id.id else 0,
                 .on_close = resolved.close_handler,
                 .min_width = self.min_dropdown_width orelse self.width,
                 .background = colors.background,
@@ -331,19 +348,31 @@ pub const Select = struct {
         });
     }
 
-    /// Determine whether this Select uses internal (widget-managed) open/close state.
-    /// True when `on_select` is set and no legacy toggle/close/handlers are provided.
-    fn usesInternalState(self: Select) bool {
-        return self.on_select != null and
+    /// Determine whether this Select uses widget-managed or manual open state.
+    /// `on_select` with explicit toggle/close handlers remains supported as a
+    /// manual-control compatibility path.
+    pub fn controlMode(self: Select) ControlMode {
+        std.debug.assert(self.id.len > 0);
+        std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
+        const uses_internal_state = self.on_select != null and
             self.on_toggle == null and
             self.on_close == null and
             self.handlers == null;
+        return if (uses_internal_state) .internal else .manual;
+    }
+
+    pub fn validateControl(self: Select) ControlError!void {
+        std.debug.assert(self.id.len > 0);
+        std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
+        if (self.on_select != null and self.handlers != null) {
+            return error.MixedSelectionHandlers;
+        }
     }
 
     /// Resolve open/close state and handlers — internal vs external.
     fn resolveState(self: Select, cx: *ui.Cx, layout_id: LayoutId) ResolvedState {
         // Legacy path: caller manages open/close externally
-        if (!self.usesInternalState()) {
+        if (self.controlMode() == .manual) {
             std.debug.assert(self.on_select != null or self.handlers != null or
                 self.on_toggle == null);
             return .{
@@ -416,7 +445,6 @@ pub const Select = struct {
 
     fn getDisplayText(self: Select) []const u8 {
         if (self.selected) |idx| {
-            std.debug.assert(self.options.len > 0);
             if (idx < self.options.len) {
                 return self.options[idx];
             }
@@ -424,6 +452,41 @@ pub const Select = struct {
         return self.placeholder;
     }
 };
+
+test "Select control mode distinguishes internal and compatibility paths" {
+    // The canonical on_select-only shape owns open state. Supplying either
+    // manual open-state handler deliberately retains legacy external control.
+    const callback: OnSelectHandler = undefined;
+    const handler: HandlerRef = undefined;
+    const options = &.{"One"};
+
+    try std.testing.expectEqual(Select.ControlMode.internal, (Select{
+        .id = "internal",
+        .options = options,
+        .on_select = callback,
+    }).controlMode());
+    try std.testing.expectEqual(Select.ControlMode.manual, (Select{
+        .id = "manual",
+        .options = options,
+        .on_select = callback,
+        .on_toggle = handler,
+    }).controlMode());
+}
+
+test "Select rejects mixed canonical and legacy selection handlers" {
+    // Selection must have one source; this catches the formerly silent
+    // `handlers`-wins precedence before event wiring can become ambiguous.
+    const callback: OnSelectHandler = undefined;
+    const handler: HandlerRef = undefined;
+    const select = Select{
+        .id = "invalid",
+        .options = &.{"One"},
+        .on_select = callback,
+        .handlers = &.{handler},
+    };
+
+    try std.testing.expectError(error.MixedSelectionHandlers, select.validateControl());
+}
 
 // =============================================================================
 // Sub-components

@@ -8,9 +8,9 @@
 //! Usage with Cx (recommended):
 //! ```zig
 //! cx.render(ui.box(.{ .direction = .row, .gap = 0 }, .{
-//!     Tab{ .label = "Home", .selected = s.page == 0, .on_click = cx.updateWith(@as(u8, 0), State.setPage) },
-//!     Tab{ .label = "Settings", .selected = s.page == 1, .on_click = cx.updateWith(@as(u8, 1), State.setPage) },
-//!     Tab{ .label = "About", .selected = s.page == 2, .on_click = cx.updateWith(@as(u8, 2), State.setPage) },
+//!     Tab{ .label = "Home", .selected = s.page == 0, .on_click_handler = cx.updateWith(@as(u8, 0), State.setPage) },
+//!     Tab{ .label = "Settings", .selected = s.page == 1, .on_click_handler = cx.updateWith(@as(u8, 1), State.setPage) },
+//!     Tab{ .label = "About", .selected = s.page == 2, .on_click_handler = cx.updateWith(@as(u8, 2), State.setPage) },
 //! }));
 //! ```
 //!
@@ -36,9 +36,11 @@ pub const Tab = struct {
     label: []const u8,
     selected: bool,
 
-    // Click handler - use with cx.updateWith() for index-based navigation.
-    // No `_handler` suffix: Tab has no stateless `on_click` variant, so the
-    // base name is free (unlike Button/Checkbox which keep both).
+    /// Canonical click handler name, matching Button and Checkbox.
+    on_click_handler: ?HandlerRef = null,
+
+    /// Compatibility alias for the original Tab API. Prefer
+    /// `on_click_handler`; setting both fields is invalid.
     on_click: ?HandlerRef = null,
 
     // Styling (null = use theme)
@@ -72,6 +74,8 @@ pub const Tab = struct {
 
     pub fn render(self: Tab, cx: *ui.Cx) void {
         const t = cx.theme();
+        if (self.on_click != null) std.debug.assert(self.on_click_handler == null);
+        if (self.on_click_handler != null) std.debug.assert(self.on_click == null);
 
         // Resolve font size: explicit override OR theme base
         const font_size = self.font_size orelse t.font_size_base;
@@ -134,7 +138,7 @@ pub const Tab = struct {
             .border_color = if (self.variant == .underline and self.selected) active_bg else Color.transparent,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
-            .on_click_handler = self.on_click,
+            .on_click_handler = self.on_click_handler orelse self.on_click,
         }, .{
             ui.text(self.label, .{ .color = text_color, .size = font_size }),
         });
@@ -145,11 +149,24 @@ pub const Tab = struct {
         return .{
             .label = label,
             .selected = selected,
-            .on_click = handler,
+            .on_click_handler = handler,
             .variant = variant,
         };
     }
 };
+
+test "Tab canonical click handler and compatibility alias resolve identically" {
+    // Both field names remain source compatible, while the canonical path now
+    // matches Button/Checkbox and the primitive Box event field.
+    const handler: HandlerRef = undefined;
+    const canonical = Tab{ .label = "One", .selected = false, .on_click_handler = handler };
+    const legacy = Tab{ .label = "One", .selected = false, .on_click = handler };
+
+    try std.testing.expect(canonical.on_click_handler != null);
+    try std.testing.expect(canonical.on_click == null);
+    try std.testing.expect(legacy.on_click_handler == null);
+    try std.testing.expect(legacy.on_click != null);
+}
 
 /// A tab bar container that renders multiple tabs with simple fn callback.
 /// For more control (especially with Cx handlers), render Tab components directly.

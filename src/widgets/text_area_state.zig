@@ -181,6 +181,12 @@ pub const TextAreaState = struct {
 
     const Self = @This();
 
+    pub const BindingSync = enum {
+        unchanged,
+        applied,
+        deferred_ime,
+    };
+
     const BLINK_INTERVAL_MS: i64 = 530;
 
     /// Initialize TextAreaState.
@@ -232,10 +238,11 @@ pub const TextAreaState = struct {
 
         if (aliases) {
             var temp: std.ArrayList(u8) = .empty;
+            defer temp.deinit(self.allocator);
+
             try temp.appendSlice(self.allocator, text);
             self.buffer.clearRetainingCapacity();
             try self.buffer.appendSlice(self.allocator, temp.items);
-            temp.deinit(self.allocator);
         } else {
             self.buffer.clearRetainingCapacity();
             try self.buffer.appendSlice(self.allocator, text);
@@ -245,6 +252,28 @@ pub const TextAreaState = struct {
         self.cursor_byte = @min(self.cursor_byte, self.buffer.items.len);
         self.updateCursorPosition();
         self.selection_anchor = null;
+    }
+
+    /// Reconcile a controlled binding while preserving valid editing offsets.
+    /// IME preedit is never discarded by a render-time model update.
+    pub fn syncBoundText(self: *Self, text: []const u8) !BindingSync {
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
+        if (self.selection_anchor) |anchor| std.debug.assert(anchor <= self.buffer.items.len);
+        if (std.mem.eql(u8, self.buffer.items, text)) return .unchanged;
+        if (self.preedit_buffer.items.len > 0) return .deferred_ime;
+
+        const selection_anchor = self.selection_anchor;
+        try self.setText(text);
+        self.cursor_byte = common.snapToCharBoundary(text, @min(self.cursor_byte, text.len));
+        self.selection_anchor = if (selection_anchor) |anchor|
+            common.snapToCharBoundary(text, @min(anchor, text.len))
+        else
+            null;
+        if (self.selection_anchor == self.cursor_byte) self.selection_anchor = null;
+        self.updateCursorPosition();
+        self.preferred_column = null;
+        self.clearHistory();
+        return .applied;
     }
 
     pub fn clear(self: *Self) void {
@@ -1560,4 +1589,45 @@ test "TextAreaState cursor navigation" {
     // Move up
     ta.moveUp();
     try std.testing.expectEqual(@as(usize, 1), ta.cursor_row);
+}
+
+test "TextAreaState controlled binding resets and preserves active editing state" {
+    // External content replaces committed text, rebuilds line metadata, and
+    // preserves cursor/selection offsets only as far as the new value allows.
+    const allocator = std.testing.allocator;
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    defer ta.deinit();
+
+    try ta.setText("one\ntwo");
+    ta.cursor_byte = 5;
+    ta.selection_anchor = 2;
+    try std.testing.expectEqual(TextAreaState.BindingSync.applied, try ta.syncBoundText("alpha\nbeta"));
+    try std.testing.expectEqual(@as(usize, 5), ta.cursor_byte);
+    try std.testing.expectEqual(@as(?usize, 2), ta.selection_anchor);
+    try std.testing.expectEqual(@as(usize, 2), ta.lineCount());
+
+    try std.testing.expectEqual(TextAreaState.BindingSync.applied, try ta.syncBoundText(""));
+    try std.testing.expectEqualStrings("", ta.getText());
+    try std.testing.expectEqual(@as(usize, 0), ta.cursor_byte);
+    try std.testing.expectEqual(@as(?usize, null), ta.selection_anchor);
+
+    try ta.insertText("x");
+    try std.testing.expect(!ta.hasSelection());
+}
+
+test "TextAreaState controlled binding defers replacement during IME preedit" {
+    // The next render may carry a new model value, but composition owns the
+    // visible edit until the platform commits or cancels it.
+    const allocator = std.testing.allocator;
+    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+    defer ta.deinit();
+
+    try ta.setText("before");
+    try ta.setComposition("候補");
+    try std.testing.expectEqual(TextAreaState.BindingSync.deferred_ime, try ta.syncBoundText("external"));
+    try std.testing.expectEqualStrings("before", ta.getText());
+
+    try ta.setComposition("");
+    try std.testing.expectEqual(TextAreaState.BindingSync.applied, try ta.syncBoundText("external"));
+    try std.testing.expectEqualStrings("external", ta.getText());
 }
