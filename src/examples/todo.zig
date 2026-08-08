@@ -8,7 +8,6 @@
 //! - Pure state methods + `cx.update` (toggle-free mutations like clearCompleted)
 //! - `cx.updateWith` with a packed index argument (toggle / remove a row)
 //! - `cx.updateWith` with a packed enum argument (filter switch)
-//! - `cx.command` for framework access (clearing the input widget's buffer)
 //! - `TextInput` two-way binding via `.bind`
 //! - `Checkbox`, `Button` variants/sizes
 //! - Layout with `ui.box` (backgrounds, `{ .main, .cross }` alignment) vs
@@ -37,8 +36,6 @@ const TextInput = gooey.components.TextInput;
 const MAX_TODOS = 64;
 const TEXT_CAP = 128;
 
-/// Stable layout id for the draft input. Used both to render the field and to
-/// reach its retained widget buffer from `addTodo` so we can clear it.
 const draft_input_id = "new-todo";
 
 // =============================================================================
@@ -66,8 +63,7 @@ const Filter = enum { all, active, done };
 const AppState = struct {
     todos: [MAX_TODOS]Todo = [_]Todo{.{}} ** MAX_TODOS,
     count: usize = 0,
-    /// Bound to the TextInput; the widget writes the live text back here each
-    /// frame (widget -> state only — see `addTodo` for why clearing is manual).
+    /// Bound to the TextInput through a controlled two-way binding.
     draft: []const u8 = "",
     filter: Filter = .all,
 
@@ -139,19 +135,13 @@ const AppState = struct {
     }
 
     // -------------------------------------------------------------------------
-    // Command — needs Window access, so it goes through `cx.command`.
+    // Bound action.
     // -------------------------------------------------------------------------
 
-    /// Add the current draft, then clear the input. The binding only flows
-    /// widget -> state, so zeroing `self.draft` is not enough; we reach the
-    /// retained `TextInputState` by its string id and clear its buffer.
-    pub fn addTodo(self: *AppState, g: *gooey.Window) void {
+    /// Add the current draft, then reset the controlled input value.
+    pub fn addTodo(self: *AppState) void {
         self.pushTodo(self.draft);
         self.draft = "";
-
-        if (g.widgetState(gooey.widgets.TextInputState, draft_input_id)) |input| {
-            input.clear();
-        }
     }
 };
 
@@ -201,8 +191,7 @@ fn render(cx: *Cx) void {
 // Components
 // =============================================================================
 
-/// Text field + Add button. The field binds straight to `state.draft`; Add is
-/// a command because it has to clear the input widget after appending.
+/// Text field + Add button. Resetting the bound model clears the input.
 const InputRow = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
@@ -212,9 +201,9 @@ const InputRow = struct {
                 .id = draft_input_id,
                 .placeholder = "What needs doing?",
                 .bind = &s.draft,
-                .fill_width = true,
+                .width = 360,
             },
-            Button{ .label = "Add", .on_click_handler = cx.command(AppState.addTodo) },
+            Button{ .label = "Add", .on_click_handler = cx.update(AppState.addTodo) },
         }));
     }
 };
@@ -355,6 +344,17 @@ test "add trims, ignores blanks, and respects capacity" {
     var i: usize = 0;
     while (i < MAX_TODOS + 5) : (i += 1) s.pushTodo("x");
     try std.testing.expectEqual(@as(usize, MAX_TODOS), s.count);
+}
+
+test "addTodo appends the controlled draft and resets its model value" {
+    // The widget observes the empty model on the next render; no retained
+    // TextInputState lookup is required in the application handler.
+    var s = AppState{ .draft = "  buy milk  " };
+
+    s.addTodo();
+    try std.testing.expectEqual(@as(usize, 1), s.count);
+    try std.testing.expectEqualStrings("buy milk", s.todos[0].text());
+    try std.testing.expectEqualStrings("", s.draft);
 }
 
 test "toggle flips done and is bounds-checked" {

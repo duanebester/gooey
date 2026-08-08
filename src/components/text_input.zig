@@ -20,6 +20,9 @@ pub const TextInput = struct {
     // Content
     placeholder: []const u8 = "",
     secure: bool = false,
+    /// Controlled two-way binding. User edits update the model; changed model
+    /// values reconcile into retained editor state without resetting valid
+    /// cursor/selection offsets or interrupting active IME preedit.
     bind: ?*[]const u8 = null,
 
     // State

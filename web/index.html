@@ -525,6 +525,8 @@
 
         // Text input via hidden input element
         hiddenInput.addEventListener("input", (e) => {
+          // Composition commits are queued by compositionend exactly once.
+          if (e.isComposing) return;
           if (hiddenInput.value) {
             appendText(hiddenInput.value);
             hiddenInput.value = ""; // Clear after capturing
@@ -533,19 +535,17 @@
 
         // Handle composition start
         hiddenInput.addEventListener("compositionstart", (e) => {
-          setCompositionActive(true);
+          startComposition();
         });
 
         // Handle composition updates (preedit text)
         hiddenInput.addEventListener("compositionupdate", (e) => {
-          if (e.data) {
-            updateCompositionText(e.data);
-          }
+          updateCompositionText(e.data || "");
         });
 
         // Handle composition end
         hiddenInput.addEventListener("compositionend", (e) => {
-          setCompositionActive(false);
+          finishComposition();
           if (e.data) {
             appendText(e.data);
             hiddenInput.value = "";
@@ -599,6 +599,7 @@
       }
 
       function handleKeyDown(e) {
+        if (isImeOwnedKey(e)) return;
         // Prevent browser defaults for keys we handle
         if (shouldPreventDefault(e)) {
           e.preventDefault();
@@ -608,7 +609,14 @@
       }
 
       function handleKeyUp(e) {
+        if (isImeOwnedKey(e)) return;
         pushKeyEvent(1, e); // 1 = key_up
+      }
+
+      function isImeOwnedKey(e) {
+        // Safari can report candidate confirmation as keyCode 229 after
+        // compositionend, when isComposing has already changed to false.
+        return e.isComposing || e.keyCode === 229;
       }
 
       function handleBeforeInput(e) {
@@ -627,6 +635,7 @@
       }
 
       function shouldPreventDefault(e) {
+        if (isImeOwnedKey(e)) return false;
         // Prevent defaults for navigation and common shortcuts
         const dominated = [
           "Tab",
@@ -731,10 +740,22 @@
         compositionBufferPtr = wasmInstance.exports.getCompositionBufferPtr();
       }
 
-      function setCompositionActive(active) {
+      function startComposition() {
         if (!compositionBufferPtr) return;
         const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
-        mem[compositionBufferPtr + 4] = active ? 1 : 0; // active flag at offset 4
+        const view = new DataView(wasmInstance.exports.memory.buffer);
+        view.setUint32(compositionBufferPtr, 0, true);
+        mem[compositionBufferPtr + 4] = 1; // active
+        mem[compositionBufferPtr + 5] = 0; // wait for first preedit update
+      }
+
+      function finishComposition() {
+        if (!compositionBufferPtr) return;
+        const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
+        const view = new DataView(wasmInstance.exports.memory.buffer);
+        view.setUint32(compositionBufferPtr, 0, true);
+        mem[compositionBufferPtr + 4] = 0; // inactive
+        mem[compositionBufferPtr + 5] = 1; // pending clear event
       }
 
       function updateCompositionText(text) {
@@ -755,6 +776,8 @@
         view.setUint32(compositionBufferPtr, writeLen, true);
         // Mark as active
         mem[compositionBufferPtr + 4] = 1;
+        // Queue this update exactly once.
+        mem[compositionBufferPtr + 5] = 1;
       }
 
       // Text rendering helper
