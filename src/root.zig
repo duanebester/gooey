@@ -374,6 +374,9 @@ test {
         @import("widgets/edit_history.zig"),
         @import("widgets/text_common.zig"),
 
+        // Platform-independent web input buffer logic.
+        @import("platform/web/composition_buffer.zig"),
+
         // Scene leaves — path/polyline/svg test-heavy files.
         @import("scene/path.zig"),
         @import("scene/path_instance.zig"),

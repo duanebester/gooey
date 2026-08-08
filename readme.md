@@ -198,14 +198,10 @@ const AppState = struct {
         };
     }
 
-    // Command — needs framework access (the binding only flows widget -> state,
-    // so we reach the retained input widget to clear it after adding).
-    pub fn addTodo(self: *AppState, g: *gooey.Window) void {
+    // Controlled binding: resetting the model clears retained editor state.
+    pub fn addTodo(self: *AppState) void {
         self.pushTodo(self.draft);
         self.draft = "";
-        if (g.widgetState(gooey.widgets.TextInputState, draft_input_id)) |input| {
-            input.clear();
-        }
     }
 };
 
@@ -239,10 +235,10 @@ fn render(cx: *Cx) void {
     }, .{
         ui.text("Todos", .{ .size = 28 }),
 
-        // Input row: TextInput binds to state.draft; Add is a command.
+        // Input row: TextInput binds to state.draft; Add resets the model.
         ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            TextInput{ .id = draft_input_id, .placeholder = "What needs doing?", .bind = &s.draft, .fill_width = true },
-            Button{ .label = "Add", .on_click_handler = cx.command(AppState.addTodo) },
+            TextInput{ .id = draft_input_id, .placeholder = "What needs doing?", .bind = &s.draft, .width = 360 },
+            Button{ .label = "Add", .on_click_handler = cx.update(AppState.addTodo) },
         }),
 
         // Filters: each button packs its enum value into the handler arg.
@@ -731,6 +727,11 @@ TextArea{
 }
 ```
 
+Bindings are controlled and two-way: user edits update the bound slice, and
+assigning a new model value (including `""`) updates the retained editor on the
+next render. Active IME preedit is allowed to finish before an external value is
+applied, and valid cursor/selection offsets are preserved.
+
 ### Checkbox
 
 ```zig
@@ -788,7 +789,11 @@ Select{
 
 The widget manages open/close state internally — no toggle/close handlers or per-option handler arrays needed. Just provide `on_select` and a single handler that receives the selected index.
 
-> **Legacy API:** The explicit `is_open` / `on_toggle` / `on_close` / `handlers` fields are still supported for full manual control.
+> **Legacy API:** The explicit `is_open` / `on_toggle` / `on_close` / `handlers`
+> fields are still supported for full manual control. `on_select` may be paired
+> with manual toggle/close handlers, but it is mutually exclusive with the
+> per-option `handlers` array. Use `controlMode()` to inspect which open-state
+> contract a configuration selects.
 
 ### Modal
 

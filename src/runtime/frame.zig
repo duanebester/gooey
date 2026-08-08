@@ -335,6 +335,12 @@ fn renderTextWidgets(window: *Window, builder: *const Builder) !void {
 fn renderTextInput(window: *Window, pending: *const Builder.PendingInput) !void {
     const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
     const input_widget = window.element_states.get(TextInputState, @as(u64, pending.layout_id.id)) orelse return;
+    std.debug.assert(pending.layout_id.id != 0);
+    std.debug.assert(input_widget.cursor_byte <= input_widget.getText().len);
+
+    if (pending.style.bind) |binding| {
+        _ = try input_widget.syncBoundText(binding.*);
+    }
 
     // If disabled and currently focused, blur it
     if (pending.style.disabled and input_widget.isFocused()) {
@@ -370,6 +376,12 @@ fn renderTextInput(window: *Window, pending: *const Builder.PendingInput) !void 
 fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !void {
     const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
     const ta_widget = window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse return;
+    std.debug.assert(pending.layout_id.id != 0);
+    std.debug.assert(ta_widget.cursor_byte <= ta_widget.getText().len);
+
+    if (pending.style.bind) |binding| {
+        _ = try ta_widget.syncBoundText(binding.*);
+    }
 
     const inset = pending.style.padding + pending.style.border_width;
     // Compute inner_width from layout bounds when fill_width is true

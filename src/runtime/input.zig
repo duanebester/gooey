@@ -661,8 +661,9 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     // Handle focused TextInput
     if (focusedTextInput(window, builder)) |input| {
         if (isControlKey(k.key, k.modifiers)) {
+            const binding_deferred = reconcileTextInputBinding(cx, input);
             input.handleKey(k) catch {};
-            syncBoundVariablesCx(cx);
+            if (!binding_deferred) writeTextInputBinding(cx, input);
             cx.notify();
             return true;
         }
@@ -671,8 +672,9 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     // Handle focused TextArea
     if (focusedTextArea(window, builder)) |ta| {
         if (isControlKey(k.key, k.modifiers)) {
+            const binding_deferred = reconcileTextAreaBinding(cx, ta);
             ta.handleKey(k) catch {};
-            syncTextAreaBoundVariablesCx(cx);
+            if (!binding_deferred) writeTextAreaBinding(cx, ta);
             cx.notify();
             return true;
         }
@@ -730,14 +732,16 @@ fn handleFocusedKeyAction(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool 
 fn handleTextInputEvent(cx: *Cx, window: *Window, text: []const u8) bool {
     const builder = cx.builder();
     if (focusedTextInput(window, builder)) |input| {
+        const binding_deferred = reconcileTextInputBinding(cx, input);
         input.insertText(text) catch {};
-        syncBoundVariablesCx(cx);
+        if (!binding_deferred) writeTextInputBinding(cx, input);
         cx.notify();
         return true;
     }
     if (focusedTextArea(window, builder)) |ta| {
+        const binding_deferred = reconcileTextAreaBinding(cx, ta);
         ta.insertText(text) catch {};
-        syncTextAreaBoundVariablesCx(cx);
+        if (!binding_deferred) writeTextAreaBinding(cx, ta);
         cx.notify();
         return true;
     }
@@ -754,11 +758,13 @@ fn handleTextInputEvent(cx: *Cx, window: *Window, text: []const u8) bool {
 fn handleCompositionEvent(cx: *Cx, window: *Window, text: []const u8) bool {
     const builder = cx.builder();
     if (focusedTextInput(window, builder)) |input| {
+        _ = reconcileTextInputBinding(cx, input);
         input.setComposition(text) catch {};
         cx.notify();
         return true;
     }
     if (focusedTextArea(window, builder)) |ta| {
+        _ = reconcileTextAreaBinding(cx, ta);
         ta.setComposition(text) catch {};
         cx.notify();
         return true;
@@ -775,32 +781,62 @@ fn handleCompositionEvent(cx: *Cx, window: *Window, text: []const u8) bool {
 // Bound Variable Syncing
 // =============================================================================
 
+fn reconcileTextInputBinding(cx: *Cx, input: *TextInputState) bool {
+    std.debug.assert(input.cursor_byte <= input.getText().len);
+    std.debug.assert(input.preedit_cursor <= input.preedit_buffer.items.len);
+    for (cx.builder().pending_inputs.items) |pending| {
+        const candidate = cx.window().element_states.get(TextInputState, @as(u64, pending.layout_id.id)) orelse continue;
+        if (candidate != input) continue;
+        const binding = pending.style.bind orelse return false;
+        return (input.syncBoundText(binding.*) catch return true) == .deferred_ime;
+    }
+    return false;
+}
+
+fn reconcileTextAreaBinding(cx: *Cx, text_area: *TextAreaState) bool {
+    std.debug.assert(text_area.cursor_byte <= text_area.getText().len);
+    std.debug.assert(text_area.preedit_cursor <= text_area.preedit_buffer.items.len);
+    for (cx.builder().pending_text_areas.items) |pending| {
+        const candidate = cx.window().element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse continue;
+        if (candidate != text_area) continue;
+        const binding = pending.style.bind orelse return false;
+        return (text_area.syncBoundText(binding.*) catch return true) == .deferred_ime;
+    }
+    return false;
+}
+
+fn writeTextInputBinding(cx: *Cx, input: *TextInputState) void {
+    std.debug.assert(input.cursor_byte <= input.getText().len);
+    std.debug.assert(input.preedit_cursor <= input.preedit_buffer.items.len);
+    for (cx.builder().pending_inputs.items) |pending| {
+        const candidate = cx.window().element_states.get(TextInputState, @as(u64, pending.layout_id.id)) orelse continue;
+        if (candidate != input) continue;
+        if (pending.style.bind) |binding| binding.* = input.getText();
+        return;
+    }
+}
+
+fn writeTextAreaBinding(cx: *Cx, text_area: *TextAreaState) void {
+    std.debug.assert(text_area.cursor_byte <= text_area.getText().len);
+    std.debug.assert(text_area.preedit_cursor <= text_area.preedit_buffer.items.len);
+    for (cx.builder().pending_text_areas.items) |pending| {
+        const candidate = cx.window().element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse continue;
+        if (candidate != text_area) continue;
+        if (pending.style.bind) |binding| binding.* = text_area.getText();
+        return;
+    }
+}
+
 /// Sync TextInput content back to bound variables (Cx version).
 pub fn syncBoundVariablesCx(cx: *Cx) void {
-    const builder = cx.builder();
-    const window = cx.window();
-
-    for (builder.pending_inputs.items) |pending| {
-        if (pending.style.bind) |bind_ptr| {
-            if (window.element_states.get(TextInputState, @as(u64, pending.layout_id.id))) |input| {
-                bind_ptr.* = input.getText();
-            }
-        }
-    }
+    const input = focusedTextInput(cx.window(), cx.builder()) orelse return;
+    writeTextInputBinding(cx, input);
 }
 
 /// Sync TextArea content back to bound variables (Cx version).
 pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
-    const builder = cx.builder();
-    const window = cx.window();
-
-    for (builder.pending_text_areas.items) |pending| {
-        if (pending.style.bind) |bind_ptr| {
-            if (window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id))) |ta| {
-                bind_ptr.* = ta.getText();
-            }
-        }
-    }
+    const text_area = focusedTextArea(cx.window(), cx.builder()) orelse return;
+    writeTextAreaBinding(cx, text_area);
 }
 
 /// Sync CodeEditor content back to bound variables (Cx version).

@@ -170,6 +170,12 @@ pub const TextInputState = struct {
 
     const Self = @This();
 
+    pub const BindingSync = enum {
+        unchanged,
+        applied,
+        deferred_ime,
+    };
+
     /// Cursor blink interval in milliseconds
     const BLINK_INTERVAL_MS: i64 = 530;
 
@@ -207,6 +213,37 @@ pub const TextInputState = struct {
     /// Set the text content
     /// Safety: Handles the case where `text` might alias with the internal buffer
     pub fn setText(self: *Self, text: []const u8) !void {
+        try self.replaceText(text);
+        self.cursor_byte = self.buffer.items.len;
+        self.selection_anchor = null;
+        self.notifyChange();
+    }
+
+    /// Reconcile a controlled binding without treating the model update as
+    /// user input. Cursor and selection offsets survive when they remain valid;
+    /// active IME preedit takes precedence until it is committed or cancelled.
+    pub fn syncBoundText(self: *Self, text: []const u8) !BindingSync {
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
+        if (self.selection_anchor) |anchor| std.debug.assert(anchor <= self.buffer.items.len);
+        if (std.mem.eql(u8, self.buffer.items, text)) return .unchanged;
+        if (self.preedit_buffer.items.len > 0) return .deferred_ime;
+
+        const cursor_byte = self.cursor_byte;
+        const selection_anchor = self.selection_anchor;
+        try self.replaceText(text);
+        self.cursor_byte = common.snapToCharBoundary(text, @min(cursor_byte, text.len));
+        self.selection_anchor = if (selection_anchor) |anchor|
+            common.snapToCharBoundary(text, @min(anchor, text.len))
+        else
+            null;
+        if (self.selection_anchor == self.cursor_byte) self.selection_anchor = null;
+        self.clearHistory();
+        return .applied;
+    }
+
+    fn replaceText(self: *Self, text: []const u8) !void {
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
+        std.debug.assert(self.preedit_cursor <= self.preedit_buffer.items.len);
         // Check if input slice aliases with our buffer (would cause @memcpy panic)
         const buf_start = @intFromPtr(self.buffer.items.ptr);
         const buf_end = buf_start + self.buffer.items.len;
@@ -226,10 +263,6 @@ pub const TextInputState = struct {
             self.buffer.clearRetainingCapacity();
             try self.buffer.appendSlice(self.allocator, text);
         }
-
-        self.cursor_byte = self.buffer.items.len;
-        self.selection_anchor = null;
-        self.notifyChange();
     }
 
     /// Clear all text
@@ -1118,4 +1151,44 @@ test "TextInputState selection" {
     try std.testing.expect(input.hasSelection());
     try std.testing.expectEqual(@as(usize, 0), input.selectionStart());
     try std.testing.expectEqual(@as(usize, 5), input.selectionEnd());
+}
+
+test "TextInputState controlled binding resets and preserves active editing state" {
+    // Model changes reconcile without resetting a valid cursor/selection, while
+    // an empty reset clamps both offsets and does not emit a user edit.
+    const allocator = std.testing.allocator;
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    defer input.deinit();
+
+    try input.setText("draft");
+    input.cursor_byte = 3;
+    input.selection_anchor = 1;
+    try std.testing.expectEqual(TextInputState.BindingSync.applied, try input.syncBoundText("draft updated"));
+    try std.testing.expectEqual(@as(usize, 3), input.cursor_byte);
+    try std.testing.expectEqual(@as(?usize, 1), input.selection_anchor);
+
+    try std.testing.expectEqual(TextInputState.BindingSync.applied, try input.syncBoundText(""));
+    try std.testing.expectEqualStrings("", input.getText());
+    try std.testing.expectEqual(@as(usize, 0), input.cursor_byte);
+    try std.testing.expectEqual(@as(?usize, null), input.selection_anchor);
+
+    try input.insertText("x");
+    try std.testing.expect(!input.hasSelection());
+}
+
+test "TextInputState controlled binding defers replacement during IME preedit" {
+    // Committed text remains stable until composition ends, avoiding loss of
+    // the platform-owned preedit sequence on an unrelated render.
+    const allocator = std.testing.allocator;
+    var input = TextInputState.init(allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    defer input.deinit();
+
+    try input.setText("before");
+    try input.setComposition("候補");
+    try std.testing.expectEqual(TextInputState.BindingSync.deferred_ime, try input.syncBoundText("external"));
+    try std.testing.expectEqualStrings("before", input.getText());
+
+    try input.setComposition("");
+    try std.testing.expectEqual(TextInputState.BindingSync.applied, try input.syncBoundText("external"));
+    try std.testing.expectEqualStrings("external", input.getText());
 }
