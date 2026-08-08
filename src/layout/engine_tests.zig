@@ -58,6 +58,43 @@ test "basic layout" {
     try std.testing.expect(commands.len > 0);
 }
 
+test "root fill follows viewport resize" {
+    // Goal: a fill-window root must use fresh viewport dimensions every frame.
+    // Methodology: lay out the same root before and after a viewport resize.
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(320, 240);
+    try engine.openElement(.{
+        .id = LayoutId.init("resizing-root"),
+        .layout = .{ .sizing = .{
+            .width = SizingAxis.percent(1.0),
+            .height = SizingAxis.percent(1.0),
+        } },
+    });
+    engine.closeElement();
+    _ = try engine.endFrame();
+
+    const initial = engine.getBoundingBox(LayoutId.init("resizing-root").id).?;
+    try std.testing.expectEqual(@as(f32, 320), initial.width);
+    try std.testing.expectEqual(@as(f32, 240), initial.height);
+
+    engine.beginFrame(1024, 576);
+    try engine.openElement(.{
+        .id = LayoutId.init("resizing-root"),
+        .layout = .{ .sizing = .{
+            .width = SizingAxis.percent(1.0),
+            .height = SizingAxis.percent(1.0),
+        } },
+    });
+    engine.closeElement();
+    _ = try engine.endFrame();
+
+    const resized = engine.getBoundingBox(LayoutId.init("resizing-root").id).?;
+    try std.testing.expectEqual(@as(f32, 1024), resized.width);
+    try std.testing.expectEqual(@as(f32, 576), resized.height);
+}
+
 test "nested layout" {
     var engine = LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
