@@ -48,6 +48,56 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 
 **Linux:** Wayland compositor, Vulkan drivers, FreeType, HarfBuzz, Fontconfig, libpng, D-Bus
 
+### Add Gooey to an application
+
+Add the current release to your application's `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .gooey = .{
+        .url = "https://github.com/duanebester/gooey/archive/refs/tags/v0.2.6.tar.gz",
+        .hash = "gooey-0.2.6-uPBZ7jMhXQAhifhzm8HyurjFUx5S0BrLXq1ZDO0DcwTr",
+    },
+},
+```
+
+Then import Gooey's module and apply its platform linker integration in your
+`build.zig`:
+
+```zig
+const std = @import("std");
+const gooey_build = @import("gooey");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const gooey_dependency = b.dependency("gooey", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const executable = b.addExecutable(.{
+        .name = "my-app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_dependency.module("gooey") },
+            },
+        }),
+    });
+    gooey_build.linkSystemDeps(executable);
+    b.installArtifact(executable);
+}
+```
+
+Application source can now use `const gooey = @import("gooey");`. The
+`linkSystemDeps` call is the supported cross-platform linker setup and keeps
+consumer builds independent of Gooey's internal framework/library list.
+
+### Run this repository's examples
+
 ```bash
 zig build run              # Showcase demo
 zig build run-counter      # Counter example
@@ -620,7 +670,7 @@ fn render(cx: *Cx) void {
 Define a light/dark pair of `Theme` values and swap between them the same way as the built-ins. Every field has a semantic role so components resolve colors automatically without per-component overrides:
 
 ```zig
-const my_light = gooey.Theme{
+const my_light = gooey.ui.Theme{
     .bg      = Color.rgb(0.97, 0.97, 0.98),
     .surface = Color.rgb(0.93, 0.93, 0.95),
     .overlay = Color.rgb(0.88, 0.88, 0.91),
@@ -646,7 +696,7 @@ const my_light = gooey.Theme{
     .font_size_base = 14,
 };
 
-const my_dark = gooey.Theme{
+const my_dark = gooey.ui.Theme{
     .bg      = Color.rgb(0.10, 0.10, 0.12),
     .surface = Color.rgb(0.15, 0.15, 0.18),
     .overlay = Color.rgb(0.20, 0.20, 0.24),
@@ -691,7 +741,7 @@ The `font_size_base` field (default `14`) is the single source of truth for text
 Set it once in your theme and every component scales consistently — no per-component font size overrides needed:
 
 ```zig
-const large_text_theme = gooey.Theme{
+const large_text_theme = gooey.ui.Theme{
     // ...colors...
     .font_size_base = 18,  // small=16, medium=18, large=20
 };
@@ -847,19 +897,19 @@ Tooltip(IconButton){
 
 ```zig
 // Simple image from path
-gooey.Image{ .src = "assets/logo.png" }
+gooey.components.Image{ .src = "assets/logo.png" }
 
 // With explicit sizing
-gooey.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
+gooey.components.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
 
 // Rounded avatar
-gooey.Image{ .src = "avatar.png", .size = 48, .rounded = true }
+gooey.components.Image{ .src = "avatar.png", .size = 48, .rounded = true }
 
 // Cover image (fills container, may crop)
-gooey.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
+gooey.components.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
 
 // With effects
-gooey.Image{
+gooey.components.Image{
     .src = "icon.png",
     .size = 64,
     .grayscale = 1.0,           // 0.0 = color, 1.0 = grayscale
@@ -873,8 +923,8 @@ gooey.Image{
 
 ```zig
 const gooey = @import("gooey");
-const Svg = gooey.Svg;
-const Icons = gooey.Icons;
+const Svg = gooey.components.Svg;
+const Icons = gooey.components.Icons;
 
 // Using built-in icon paths
 Svg{ .path = Icons.star, .size = 24, .color = Color.gold }
@@ -1238,7 +1288,7 @@ if (result) |r| {
 }
 
 // Use with ValidatedTextInput for full a11y control
-gooey.ValidatedTextInput{
+gooey.components.ValidatedTextInput{
     .id = "email",
     .error_result = validation.requiredResult(s.email, .{
         .message = "Required",
@@ -1270,7 +1320,7 @@ const State = struct {
 };
 
 // In render:
-gooey.ValidatedTextInput{
+gooey.components.ValidatedTextInput{
     .id = "email",
     .label = "Email Address",
     .required_indicator = true,        // Shows "*" after label
@@ -1284,7 +1334,7 @@ gooey.ValidatedTextInput{
 }
 
 // Or with structured result for different a11y messages:
-gooey.ValidatedTextInput{
+gooey.components.ValidatedTextInput{
     .id = "email",
     .label = "Email Address",
     .error_result = validation.emailResult(s.email, .{
@@ -1486,6 +1536,10 @@ ui.text("Long text...", .{ .wrap = .words });  // .none, .words, .newlines
 
 Add custom post-processing shaders for visual effects. Shaders are cross-platform with MSL for macOS and WGSL for web:
 
+> **Advanced/unstable API:** Custom shader descriptors and backend shader
+> interfaces may change while the platform renderers converge. Prefer standard
+> components unless an application owns the backend-specific shader code.
+
 ```zig
 // MSL shader (macOS)
 pub const plasma_msl =
@@ -1515,7 +1569,7 @@ pub const plasma_wgsl =
     \\}
 ;
 
-try gooey.runCx(AppState, &state, render, .{
+const App = gooey.App(AppState, &state, render, .{
     .custom_shaders = &.{.{ .msl = plasma_msl, .wgsl = plasma_wgsl }},
 });
 ```
@@ -1535,7 +1589,7 @@ You can also provide only one platform's shader:
 Transparent window with liquid glass effect:
 
 ```zig
-try gooey.runCx(AppState, &state, render, .{
+const App = gooey.App(AppState, &state, render, .{
     .title = "Glass Demo",
     .background_color = gooey.Color.rgba(0.1, 0.1, 0.15, 1.0),
     .background_opacity = 0.2,

@@ -10,7 +10,7 @@
 //! Naming: this is the *engine* type — the heap-allocated state object
 //! that owns the text buffer, cursor, IME composition, edit history, and
 //! focus state for a single-line text input. The user-facing declarative
-//! component is `gooey.TextInput` in `components/text_input.zig`, which
+//! component is `gooey.components.TextInput` in `components/text_input.zig`, which
 //! is what application code constructs as a literal
 //! (`TextInput{ .id = "...", .placeholder = "..." }`). The two types
 //! used to share the name `TextInput`, which only worked as long as no

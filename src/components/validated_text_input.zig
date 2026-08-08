@@ -13,7 +13,7 @@
 //! ## Usage
 //!
 //! ```zig
-//! gooey.ValidatedTextInput{
+//! gooey.components.ValidatedTextInput{
 //!     .id = "email",
 //!     .label = "Email Address",
 //!     .required_indicator = true,

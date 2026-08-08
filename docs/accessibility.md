@@ -45,8 +45,8 @@ Gooey's accessibility system provides:
 All standard Gooey components have built-in accessibility. Simply use the `accessible_name` field to customize what screen readers announce:
 
 ```zig
-const Button = gooey.Button;
-const Checkbox = gooey.Checkbox;
+const Button = gooey.components.Button;
+const Checkbox = gooey.components.Checkbox;
 
 // Button with custom accessible name
 Button{
@@ -67,6 +67,10 @@ Checkbox{
 ### Adding Accessibility to Custom Elements
 
 For custom UI elements, use `b.accessible()`:
+
+> **Advanced API:** This is the low-level accessibility-tree builder. Prefer
+> `gooey.components.*` for standard controls because those components maintain
+> roles, state, and names automatically.
 
 ```zig
 fn renderCustomWidget(b: *ui.Builder) void {
@@ -292,7 +296,7 @@ fn renderForm(cx: *Cx) void {
     cx.text("Contact Form", .{ .size = 24, .weight = .bold });
 
     // Name field
-    gooey.TextInput{
+    gooey.components.TextInput{
         .id = "name",
         .placeholder = "Your name",
         .accessible_name = "Full name",
@@ -300,7 +304,7 @@ fn renderForm(cx: *Cx) void {
     };
 
     // Email field
-    gooey.TextInput{
+    gooey.components.TextInput{
         .id = "email",
         .placeholder = "email@example.com",
         .accessible_name = "Email address",
@@ -308,7 +312,7 @@ fn renderForm(cx: *Cx) void {
     };
 
     // Subscribe checkbox
-    gooey.Checkbox{
+    gooey.components.Checkbox{
         .id = "subscribe",
         .selected = s.subscribe,
         .label = "Subscribe to newsletter",
@@ -316,7 +320,7 @@ fn renderForm(cx: *Cx) void {
     };
 
     // Submit button
-    gooey.Button{
+    gooey.components.Button{
         .label = "Send",
         .accessible_name = "Submit contact form",
         .disabled = !s.isValid(),

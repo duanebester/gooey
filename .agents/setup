@@ -8,6 +8,7 @@ echo "Installing Gooey's Linux build dependencies..."
 packages=(
     ca-certificates
     curl
+    glslc
     libdbus-1-dev
     libfontconfig-dev
     libfreetype-dev

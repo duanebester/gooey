@@ -430,3 +430,23 @@ test "tier 1 public API surface compiles" {
         pinCxSubNamespaces();
     }
 }
+
+// Compile representative declarations used by the README and accessibility
+// guide. Unlike the declaration pin list above, these literals verify the
+// canonical namespace and the documented required fields together.
+test "promoted documentation API snippets compile" {
+    const Button = gooey.components.Button;
+    const Checkbox = gooey.components.Checkbox;
+    const TextInput = gooey.components.TextInput;
+
+    const button = Button{ .label = "Save" };
+    const checkbox = Checkbox{ .selected = false, .label = "Remember me" };
+    const text_input = TextInput{ .id = "email", .placeholder = "Email" };
+
+    std.debug.assert(button.label.len > 0);
+    std.debug.assert(text_input.id.len > 0);
+    _ = checkbox;
+    _ = gooey.ui.Theme.light;
+    _ = gooey.components.Image{ .src = "logo.png" };
+    _ = gooey.components.Svg{ .path = "M0 0" };
+}
