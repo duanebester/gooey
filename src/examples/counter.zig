@@ -87,11 +87,8 @@ pub fn main(init: std.process.Init) !void {
 
 fn render(cx: *Cx) void {
     const s = cx.state(AppState);
-    const size = cx.windowSize();
 
-    cx.render(ui.box(.{
-        .width = size.width,
-        .height = size.height,
+    cx.render(ui.root(.{
         .padding = .{ .all = 32 },
         .gap = 20,
         .direction = .column,

@@ -168,20 +168,29 @@ pub const TextStyle = struct {
 
 /// Box is the fundamental UI primitive. All interactive elements are built on Box.
 pub const Box = struct {
-    // Sizing
+    // Sizing. Grow wins over fixed sizing; fixed sizing wins over percentage
+    // and fill; percentage wins over fill. Min/max constrain grow or fixed
+    // sizing and select fit sizing when neither is present.
     width: ?f32 = null,
     height: ?f32 = null,
     min_width: ?f32 = null,
     min_height: ?f32 = null,
     max_width: ?f32 = null,
     max_height: ?f32 = null,
-    grow: bool = false, // Grow both axes
-    grow_width: bool = false, // Grow width only
-    grow_height: bool = false, // Grow height only
-    fill_width: bool = false, // 100% of parent width
-    fill_height: bool = false, // 100% of parent height
-    width_percent: ?f32 = null, // Percentage of parent width (0.0-1.0)
-    height_percent: ?f32 = null, // Percentage of parent height (0.0-1.0)
+    /// Participate in flexible space distribution on both axes.
+    grow: bool = false,
+    /// Participate in flexible horizontal space distribution.
+    grow_width: bool = false,
+    /// Participate in flexible vertical space distribution.
+    grow_height: bool = false,
+    /// Occupy 100% of the parent's available width without sharing flex space.
+    fill_width: bool = false,
+    /// Occupy 100% of the parent's available height without sharing flex space.
+    fill_height: bool = false,
+    /// Fraction of the parent's available width, in the inclusive range 0...1.
+    width_percent: ?f32 = null,
+    /// Fraction of the parent's available height, in the inclusive range 0...1.
+    height_percent: ?f32 = null,
 
     // Spacing
     padding: PaddingValue = .{ .all = 0 },
@@ -287,7 +296,32 @@ pub const Box = struct {
             .each => |e| e.top > 0 or e.right > 0 or e.bottom > 0 or e.left > 0,
         };
     }
+
+    /// Reports whether percentages can be resolved without invalid geometry.
+    /// The builder asserts this at the public layout boundary in safety builds.
+    pub fn sizingIsValid(self: Box) bool {
+        if (self.width_percent) |value| {
+            if (!std.math.isFinite(value)) return false;
+            if (value < 0 or value > 1) return false;
+        }
+        if (self.height_percent) |value| {
+            if (!std.math.isFinite(value)) return false;
+            if (value < 0 or value > 1) return false;
+        }
+        return true;
+    }
 };
+
+test "Box rejects percentages outside the parent range" {
+    // Goal: prevent invalid percentages from reaching layout arithmetic.
+    // Methodology: exercise both axes, infinities, NaN, and valid endpoints.
+    try std.testing.expect((Box{ .width_percent = 0 }).sizingIsValid());
+    try std.testing.expect((Box{ .height_percent = 1 }).sizingIsValid());
+    try std.testing.expect(!(Box{ .width_percent = -0.01 }).sizingIsValid());
+    try std.testing.expect(!(Box{ .height_percent = 1.01 }).sizingIsValid());
+    try std.testing.expect(!(Box{ .width_percent = std.math.inf(f32) }).sizingIsValid());
+    try std.testing.expect(!(Box{ .height_percent = std.math.nan(f32) }).sizingIsValid());
+}
 
 // =============================================================================
 // Input Styles
