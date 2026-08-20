@@ -1097,7 +1097,7 @@ pub const TextInputState = struct {
 /// analyzed for `wasm32-freestanding`.
 fn getTimestamp() i64 {
     const timestamp_ms = if (comptime builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
-        @as(i64, @intFromFloat(@import("../platform/web/imports.zig").getTimestampMillis()))
+        @as(i64, @intFromFloat(@import("../platform/web/imports.zig").getFrameTime()))
     else blk: {
         const io = std.Io.Threaded.global_single_threaded.io();
         break :blk std.Io.Timestamp.now(io, .awake).toMilliseconds();
