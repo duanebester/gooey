@@ -8,7 +8,7 @@
 #   - test-macos: Run unit tests on macOS
 #   - build-linux: Build all optimization levels on Linux
 #   - build-macos: Build all optimization levels on macOS
-#   - build-wasm: Build WebAssembly targets (disabled — pending Zig 0.16 support)
+#   - build-wasm: Build WebAssembly targets
 #   - valgrind: Memory leak detection (Linux only)
 #   - zig-fmt: Code formatting check
 # =============================================================================
@@ -51,6 +51,7 @@ jobs:
       - test-macos
       - build-linux
       - build-macos
+      - build-wasm
       - valgrind
       - zig-fmt
       - bench-macos
@@ -231,9 +232,37 @@ jobs:
   # ==========================================================================
   # WebAssembly Build
   # ==========================================================================
-  # NOTE: WASM builds are temporarily disabled. The WASM targets are not
-  # yet compatible with Zig 0.16 — re-enable once the WASM build path has
-  # been updated.
+  build-wasm:
+    name: Build (WebAssembly)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache
+          key: zig-cache-wasm-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-wasm-
+
+      - name: Build browser examples
+        run: zig build wasm wasm-counter
+
+      - name: Upload browser examples
+        uses: actions/upload-artifact@v6
+        with:
+          name: gooey-wasm
+          path: zig-out/web/
+          retention-days: 14
 
   # ==========================================================================
   # Benchmarks (macOS)

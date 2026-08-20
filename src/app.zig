@@ -252,8 +252,11 @@ pub fn WebApp(
                 .font_name = if (@hasField(@TypeOf(config), "font")) config.font else null,
                 .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
             };
-            // WASM uses single-threaded IO — no fibers, sequential execution.
-            const io = std.Io.Threaded.global_single_threaded.io();
+            // Browser integrations provide asynchronous services through explicit
+            // JavaScript callbacks, so general std.Io operations are unsupported.
+            // Using the failing backend avoids analyzing std.Io.Threaded, which is
+            // not portable to wasm32-freestanding in Zig 0.16 or current 0.17-dev.
+            const io = std.Io.failing;
 
             // PR 7b.3 — allocate the shared `App` before the
             // `Window` so it can be wired in immediately after
