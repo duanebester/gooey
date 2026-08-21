@@ -1510,15 +1510,20 @@ pub const TextAreaState = struct {
 };
 
 /// Monotonic millisecond timestamp for edit-history entries and the cursor
-/// blink timer. See the matching comment in `text_input_state.zig` — we
-/// reach for the process-lifetime single-threaded `Io` here because every
-/// keystroke path would otherwise need to thread `io` through
-/// `handleKey`/`insertText` and friends. `.awake` is the correct clock:
-/// edit history wants a stable monotonic ordering, and blink deltas must
-/// not jump if the wall clock is adjusted.
+/// blink timer. Native targets use the process-lifetime `Io`; browsers use
+/// their JavaScript monotonic clock because `Io.Threaded` cannot be analyzed
+/// for `wasm32-freestanding`. Both clocks provide stable edit ordering and
+/// keep blink deltas independent of wall-clock adjustments.
 fn getTimestamp() i64 {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    return std.Io.Timestamp.now(io, .awake).toMilliseconds();
+    const timestamp_ms = if (comptime builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
+        @as(i64, @intFromFloat(@import("../platform/web/imports.zig").getFrameTime()))
+    else blk: {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        break :blk std.Io.Timestamp.now(io, .awake).toMilliseconds();
+    };
+    std.debug.assert(timestamp_ms >= 0);
+    std.debug.assert(timestamp_ms <= std.math.maxInt(i64));
+    return timestamp_ms;
 }
 
 // =============================================================================

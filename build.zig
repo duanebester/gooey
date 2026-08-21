@@ -1016,27 +1016,7 @@ pub fn build(b: *std.Build) void {
         test_valgrind_step.dependOn(&valgrind_run.step);
     }
 
-    // =============================================================================
-    // WebAssembly Builds — deferred on Zig 0.16.0
-    // =============================================================================
-    //
-    // `std.Io.Threaded` does not compile for `wasm32-freestanding` on Zig 0.16.0:
-    // its comptime body eagerly references `posix.system.getrandom`
-    // (Threaded.zig:2064) and `posix.IOV_MAX` (posix.zig:90), both of which resolve
-    // to `void` / absent on wasm32-freestanding. This breaks the Phase-1 invariant
-    // ("WASM uses `init_single_threaded`") at the type-analysis level — so even
-    // reaching for `global_single_threaded` fails to compile.
-    //
-    // The WASM code paths (`src/platform/web/`, `WebApp` in `app.zig`, all
-    // `src/examples/*_wasm.zig` and web-specific examples) are deliberately left
-    // in place; they'll resume compiling once upstream gates these references
-    // behind `native_os == .linux` or the `@TypeOf(...) != void` idiom already
-    // used elsewhere in `Threaded.zig`. When that lands, restore the WASM build
-    // steps below (pulled from the git history prior to the 0.1.0 tag) and flip
-    // the deferred row in `docs/zig-0.16-io-migration.md` to complete.
-    //
-    // See `docs/zig-0.16-io-migration.md` → "Remediation Plan" → Step 3 for
-    // rationale, tracking, and exit criteria.
+    addWasmBuilds(b);
 }
 
 // =============================================================================
@@ -1153,9 +1133,106 @@ fn addChartsExample(
     run_cmd.step.dependOn(b.getInstallStep());
 }
 
-// `addWasmExample` helper removed alongside the WASM build steps — see the
-// deferral note in `pub fn build` above. Restore from git history (pre-0.1.0
-// tag) once upstream `Io.Threaded` compiles for `wasm32-freestanding`.
+fn addWasmBuilds(b: *std.Build) void {
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const gooey_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    addWasmShaderImports(b, gooey_module);
+
+    std.debug.assert(wasm_target.result.cpu.arch == .wasm32);
+    std.debug.assert(wasm_target.result.os.tag == .freestanding);
+
+    addWasmExample(b, gooey_module, wasm_target, .{
+        .step_name = "wasm",
+        .description = "Build showcase for web",
+        .source = "src/examples/showcase.zig",
+        .output_dir = "web",
+        .copy_showcase_assets = true,
+    });
+    addWasmExample(b, gooey_module, wasm_target, .{
+        .step_name = "wasm-counter",
+        .description = "Build counter example for web",
+        .source = "src/examples/counter.zig",
+        .output_dir = "web/counter",
+        .copy_showcase_assets = false,
+    });
+}
+
+fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
+    const shaders = [_]struct { name: []const u8, path: []const u8 }{
+        .{ .name = "unified_wgsl", .path = "src/platform/wgpu/shaders/unified.wgsl" },
+        .{ .name = "text_wgsl", .path = "src/platform/wgpu/shaders/text.wgsl" },
+        .{ .name = "svg_wgsl", .path = "src/platform/wgpu/shaders/svg.wgsl" },
+        .{ .name = "image_wgsl", .path = "src/platform/wgpu/shaders/image.wgsl" },
+        .{ .name = "path_wgsl", .path = "src/platform/wgpu/shaders/path.wgsl" },
+        .{ .name = "solid_path_wgsl", .path = "src/platform/wgpu/shaders/path_solid.wgsl" },
+        .{ .name = "polyline_wgsl", .path = "src/platform/wgpu/shaders/polyline.wgsl" },
+        .{ .name = "point_cloud_wgsl", .path = "src/platform/wgpu/shaders/point_cloud.wgsl" },
+    };
+    std.debug.assert(shaders.len == 8);
+    std.debug.assert(shaders[0].name.len > 0);
+    for (shaders) |shader| {
+        module.addAnonymousImport(shader.name, .{
+            .root_source_file = b.path(shader.path),
+        });
+    }
+}
+
+fn addWasmExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    wasm_target: std.Build.ResolvedTarget,
+    options: struct {
+        step_name: []const u8,
+        description: []const u8,
+        source: []const u8,
+        output_dir: []const u8,
+        copy_showcase_assets: bool,
+    },
+) void {
+    std.debug.assert(options.step_name.len > 0);
+    std.debug.assert(options.output_dir.len > 0);
+
+    const application_module = b.createModule(.{
+        .root_source_file = b.path(options.source),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{.{ .name = "gooey", .module = gooey_module }},
+    });
+    const executable = b.addExecutable(.{
+        .name = "app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/platform/web/entry.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "application", .module = application_module }},
+        }),
+    });
+    executable.entry = .disabled;
+    executable.rdynamic = true;
+    executable.stack_size = 1024 * 1024;
+
+    const step = b.step(options.step_name, options.description);
+    step.dependOn(&b.addInstallArtifact(executable, .{
+        .dest_dir = .{ .override = .{ .custom = options.output_dir } },
+    }).step);
+    step.dependOn(&b.addInstallFile(
+        b.path("web/index.html"),
+        b.fmt("{s}/index.html", .{options.output_dir}),
+    ).step);
+    if (options.copy_showcase_assets) {
+        step.dependOn(&b.addInstallFile(
+            b.path("assets/gooey-logo-final.png"),
+            b.fmt("{s}/assets/gooey-logo-final.png", .{options.output_dir}),
+        ).step);
+    }
+}
 
 /// Helper to add a Linux native example with Vulkan + Wayland system libraries.
 fn addLinuxExample(

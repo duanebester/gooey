@@ -1091,16 +1091,20 @@ pub const TextInputState = struct {
 /// interval — both are immune to wall-clock adjustments, so `.awake` is
 /// the right clock.
 ///
-/// This runs on every keystroke, deep inside widget code that does not
-/// carry a `*Cx`/`Gooey`. Threading `io` through `handleKey`/`insertText`
-/// and all their callers purely to read a timestamp would balloon this
-/// patch; instead we reach for the process-lifetime single-threaded `Io`
-/// (a pair of pointers into a static vtable — the read is essentially
-/// free). Same escape hatch used by the render mutex; see phase-5
-/// option 3 in `docs/zig-0.16-io-migration.md`.
+/// This runs on every keystroke, deep inside widget code that does not carry
+/// a `*Cx`/`Window`. Native targets use the process-lifetime `Io`; browsers
+/// use their JavaScript monotonic clock because `Io.Threaded` cannot be
+/// analyzed for `wasm32-freestanding`.
 fn getTimestamp() i64 {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    return std.Io.Timestamp.now(io, .awake).toMilliseconds();
+    const timestamp_ms = if (comptime builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
+        @as(i64, @intFromFloat(@import("../platform/web/imports.zig").getFrameTime()))
+    else blk: {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        break :blk std.Io.Timestamp.now(io, .awake).toMilliseconds();
+    };
+    std.debug.assert(timestamp_ms >= 0);
+    std.debug.assert(timestamp_ms <= std.math.maxInt(i64));
+    return timestamp_ms;
 }
 
 test "TextInputState basic operations" {

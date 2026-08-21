@@ -234,6 +234,7 @@ const App = gooey.App(AppState, &state, render, .{
     .height = 800,
     .on_event = onEvent,
 });
+pub const wasm_app = App;
 
 pub fn main(init: std.process.Init) !void {
     try App.main(init);

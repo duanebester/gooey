@@ -69,6 +69,7 @@ const App = gooey.App(AppState, &state, render, .{
     .width = 500,
     .height = 350,
 });
+pub const wasm_app = App;
 
 // Force type analysis - triggers @export on WASM
 comptime {

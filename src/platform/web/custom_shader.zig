@@ -310,7 +310,7 @@ pub const PostProcessState = struct {
 
     /// Update timing uniforms
     pub fn updateTiming(self: *Self) void {
-        const now = imports.getTimestampMillis();
+        const now = imports.getFrameTime();
 
         if (self.start_time == null) {
             self.start_time = now;

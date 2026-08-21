@@ -18,7 +18,7 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 
 ## Features
 
-- **GPU Rendering** - Metal (macOS), Vulkan (Linux) with MSAA anti-aliasing (WebGPU/WASM is blocked upstream on Zig 0.16 — see [WASM](#wasm))
+- **GPU Rendering** - Metal (macOS), Vulkan (Linux) with MSAA anti-aliasing, and WebGPU (WASM)
 - **Declarative UI** - Component-based layout with `ui.*` primitives and flexbox-style system
 - **Cx/UI Separation** - `Cx` for state, handlers, and focus; `ui.*` for layout primitives
 - **Pure State Pattern** - Testable state methods with automatic re-rendering
@@ -1738,35 +1738,17 @@ On native, `gooey.log` delegates to `std.log.scoped()`. On WASM, it writes direc
 
 ## WASM
 
-> **⚠️ Temporarily deferred on Zig 0.16.0 (upstream `Io.Threaded`).**
-> `std.Io.Threaded` does not compile for `wasm32-freestanding` on Zig 0.16.0 —
-> its comptime body eagerly references `posix.system.getrandom` and
-> `posix.IOV_MAX`, which resolve to `void`/absent on that target. This is an
-> upstream issue, not a Gooey one. The `zig build wasm*` steps have been removed
-> from `build.zig` (the commands no longer exist), while the web code paths
-> (`src/platform/web/`, `WebApp` in `app.zig`, and `src/examples/*_wasm.zig`) are
-> deliberately left in place to resume compiling once upstream gates those
-> references. Tracking: [`docs/zig-0.16-io-migration.md`](docs/zig-0.16-io-migration.md).
-
-Once the upstream fix lands, the WASM build steps will be restored. The commands
-below are the intended interface — **currently inactive**:
+Gooey avoids `std.Io.Threaded` on `wasm32-freestanding`, where the implementation
+does not compile in Zig 0.16. Browser services use the explicit JavaScript
+callback bridges in `src/platform/web/`; unsupported general-purpose `std.Io`
+operations use `std.Io.failing`.
 
 ```bash
-# (currently disabled — see the note above)
-# zig build wasm                 # showcase
-# zig build wasm-counter
-# zig build wasm-dynamic-counters
-# zig build wasm-pomodoro
-# zig build wasm-spaceship
-# zig build wasm-layout
-# zig build wasm-select
-# zig build wasm-tooltip
-# zig build wasm-modal
-# zig build wasm-images
-# zig build wasm-file-dialog
+zig build wasm                 # Showcase
+zig build wasm-counter         # Counter example
 
-# Run with a local server
-# python3 -m http.server 8080 -d zig-out/web
+# Run the showcase with a local server
+python3 -m http.server 8080 -d zig-out/web
 ```
 
 ## Hot Reloading (macOS)

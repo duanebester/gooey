@@ -3,6 +3,7 @@
 //! Exports for WebAssembly/browser target.
 
 pub const imports = @import("imports.zig");
+pub const io = @import("io.zig");
 pub const window = @import("window.zig");
 pub const renderer = @import("renderer.zig");
 pub const platform = @import("platform.zig");

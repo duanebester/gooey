@@ -2493,6 +2493,12 @@
 
         // Load WASM
         const response = await fetch("app.wasm");
+        if (!response.ok) {
+          throw new Error(
+            `Failed to load ${response.url}: HTTP ${response.status} ${response.statusText}. ` +
+              "Serve the generated zig-out/web directory, not the source web directory.",
+          );
+        }
         const wasmBytes = await response.arrayBuffer();
         const { instance } = await WebAssembly.instantiate(wasmBytes, {
           env,
