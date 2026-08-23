@@ -571,6 +571,65 @@ test "z-index propagates to render commands" {
     try std.testing.expectEqual(@as(i16, 100), dropdown_item_z.?);
 }
 
+test "nested floating z-index composes with its host" {
+    // Goal: a dropdown inside a modal must sort above the modal's complete
+    // subtree. Methodology: place a normal sibling after the nested dropdown
+    // so equal-tier DFS ordering cannot accidentally make the test pass.
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{
+        .id = LayoutId.init("modal"),
+        .layout = .{ .sizing = Sizing.fixed(400, 300) },
+        .floating = .{ .z_index = 1000 },
+        .background_color = Color.white,
+    });
+    try engine.openElement(.{
+        .id = LayoutId.init("dropdown"),
+        .layout = .{ .sizing = Sizing.fixed(200, 100) },
+        .floating = .{ .z_index = 100 },
+        .background_color = Color.blue,
+    });
+    engine.closeElement();
+    try engine.openElement(.{
+        .id = LayoutId.init("later-modal-content"),
+        .layout = .{ .sizing = Sizing.fixed(200, 100) },
+        .background_color = Color.red,
+    });
+    engine.closeElement();
+    engine.closeElement();
+
+    const commands = try engine.endFrame();
+    try std.testing.expectEqual(@as(i16, 1000), engine.getZIndex(LayoutId.init("modal").id));
+    try std.testing.expectEqual(@as(i16, 1100), engine.getZIndex(LayoutId.init("dropdown").id));
+    try std.testing.expectEqual(@as(i16, 1000), engine.getZIndex(LayoutId.init("later-modal-content").id));
+    try std.testing.expect(commands[commands.len - 1].id == LayoutId.init("dropdown").id);
+}
+
+test "nested floating z-index overflow fails the frame" {
+    // Goal: composition must not silently wrap a top overlay behind content.
+    // Methodology: exceed i16 by one with two nested floating elements.
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{
+        .id = LayoutId.init("maximum-tier"),
+        .layout = .{ .sizing = Sizing.fixed(100, 100) },
+        .floating = .{ .z_index = std.math.maxInt(i16) },
+    });
+    try engine.openElement(.{
+        .id = LayoutId.init("overflowing-tier"),
+        .layout = .{ .sizing = Sizing.fixed(50, 50) },
+        .floating = .{ .z_index = 1 },
+    });
+    engine.closeElement();
+    engine.closeElement();
+
+    try std.testing.expectError(error.Overflow, engine.endFrame());
+}
+
 test "getZIndex returns inherited z-index" {
     var engine = LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
