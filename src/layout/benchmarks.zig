@@ -772,6 +772,49 @@ test "validate: percentage_sizing" {
 }
 
 // =============================================================================
+// Benchmark: nested_floating_overlays (385 nodes, 256 floating)
+// =============================================================================
+// Models 128 open modals, each with a nested dropdown and later modal content.
+// This saturates MAX_FLOATING_ROOTS and exercises z-index composition on
+// two-thirds of all elements without overflowing the fixed floating pool.
+
+fn buildNestedFloatingOverlays(engine: *LayoutEngine) !u32 {
+    const group_count: u32 = 128;
+    comptime {
+        std.debug.assert(group_count > 0);
+        std.debug.assert(group_count * 2 == layout.engine.MAX_FLOATING_ROOTS);
+    }
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(1000, 1000) },
+    });
+
+    for (0..group_count) |_| {
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(400, 300) },
+            .floating = .{ .z_index = 1000, .attach_to_parent = false },
+        });
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(200, 100) },
+            .floating = .{ .z_index = 100 },
+        });
+        engine.closeElement();
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(200, 100) },
+        });
+        engine.closeElement();
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return 1 + group_count * 3;
+}
+
+test "validate: nested_floating_overlays" {
+    try validateBenchmark(buildNestedFloatingOverlays, 385);
+}
+
+// =============================================================================
 // Main Entry Point (for benchmark executable)
 // =============================================================================
 
@@ -808,6 +851,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("-" ** 90 ++ "\n", .{});
 
     // Smallest first
+    collect(&reporter, runBenchmark(allocator, "nested_floating_overlays", buildNestedFloatingOverlays));
     collect(&reporter, runBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
     collect(&reporter, runBenchmark(allocator, "deep_nesting", buildDeepNesting));
     collect(&reporter, runBenchmark(allocator, "space_distribution", buildSpaceDistribution));
@@ -837,6 +881,7 @@ pub fn main(init: std.process.Init) !void {
     });
     std.debug.print("-" ** 90 ++ "\n", .{});
 
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_nested_floating_overlays", buildNestedFloatingOverlays));
     collect(&reporter, runFullFrameBenchmark(allocator, "full_wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
     collect(&reporter, runFullFrameBenchmark(allocator, "full_deep_nesting", buildDeepNesting));
     collect(&reporter, runFullFrameBenchmark(allocator, "full_space_distribution", buildSpaceDistribution));
