@@ -9,8 +9,8 @@
 //! into per-primitive `emit*Command` helpers.
 //!
 //! Inherited state threads through the recursion:
-//!   - `inherited_z_index` — floating elements override; descendants
-//!     inherit until another floating ancestor changes it.
+//!   - `inherited_z_index` — floating elements add their local tier;
+//!     descendants inherit the resulting composed value.
 //!   - `inherited_opacity` — multiplicative; alpha-folded into each
 //!     emitted command so the renderer doesn't need a stack.
 
@@ -47,8 +47,13 @@ pub fn generateRenderCommands(
     const elem = engine.elements.get(index);
     const bbox = elem.computed.bounding_box;
 
-    // Floating elements override z_index for themselves and their children.
-    const z_index: i16 = if (elem.config.floating) |f| f.z_index else inherited_z_index;
+    // A floating tier is local to its host. Adding it keeps nested overlays
+    // above the complete host subtree, including siblings visited later.
+    const z_index: i16 = if (elem.config.floating) |floating| blk: {
+        const sum = @addWithOverflow(inherited_z_index, floating.z_index);
+        if (sum[1] == 0) break :blk sum[0];
+        return error.Overflow;
+    } else inherited_z_index;
 
     // Combine element opacity with inherited opacity (multiplicative).
     const opacity = elem.config.opacity * inherited_opacity;

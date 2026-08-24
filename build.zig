@@ -152,6 +152,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_mod, target, optimize, "todo", "src/examples/todo.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "layout", "src/examples/layout.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "select", "src/examples/select.zig", false);
+        addNativeExample(b, mod, objc_mod, target, optimize, "nested-overlay", "src/examples/nested_overlay.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "dynamic-counters", "src/examples/dynamic_counters.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "actions", "src/examples/actions.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "text-debug", "src/examples/text_debug_example.zig", false);
@@ -667,6 +668,7 @@ pub fn build(b: *std.Build) void {
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "layout", "src/examples/layout.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "actions", "src/examples/actions.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "select", "src/examples/select.zig");
+        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "nested-overlay", "src/examples/nested_overlay.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "tooltip", "src/examples/tooltip.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "modal", "src/examples/modal.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "context-menu", "src/examples/context_menu.zig");

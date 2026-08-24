@@ -628,7 +628,7 @@ pub const LayoutEngine = struct {
     }
 
     /// Get z-index for an element by ID (O(1) lookup using cached value)
-    /// Returns the z_index from the nearest floating ancestor, or 0 for non-floating subtrees.
+    /// Returns the composed z-index from all floating ancestors, or 0 for non-floating subtrees.
     /// The z_index is cached during generateRenderCommands.
     pub fn getZIndex(self: *const Self, id: u32) i16 {
         const index = self.id_to_index.get(id) orelse return 0;

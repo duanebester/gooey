@@ -353,7 +353,7 @@ Floating elements are positioned relative to a parent but don't affect sibling l
 ```zig
 .floating = .{
     .offset = Offset2D.init(10, 20),     // Position offset
-    .z_index = 100,                       // Render order (i16)
+    .z_index = 100,                       // Local render tier, added to floating ancestors (i16)
     .attach_to_parent = true,             // Use direct parent
     .parent_id = LayoutId.init("target").id,  // Or reference by ID
     .element_attach = .left_top,          // Anchor point on this element
