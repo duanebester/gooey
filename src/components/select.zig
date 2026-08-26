@@ -473,6 +473,15 @@ test "Select control mode distinguishes internal and compatibility paths" {
     }).controlMode());
 }
 
+test "Select dropdown width is a floor rather than a fixed constraint" {
+    // Goal: option content may widen the popup beyond the trigger width.
+    // Methodology: inspect the exact sizing pair consumed by SelectDropdown.
+    const sizing = resolveDropdownSizing(160);
+
+    try std.testing.expectEqual(@as(?f32, null), sizing.width);
+    try std.testing.expectEqual(@as(?f32, 160), sizing.min_width);
+}
+
 test "Select rejects mixed canonical and legacy selection handlers" {
     // Selection must have one source; this catches the formerly silent
     // `handlers`-wins precedence before event wiring can become ambiguous.
@@ -560,6 +569,19 @@ const ChevronIcon = struct {
     }
 };
 
+const DropdownSizing = struct {
+    width: ?f32,
+    min_width: ?f32,
+};
+
+fn resolveDropdownSizing(min_width: ?f32) DropdownSizing {
+    if (min_width) |width| std.debug.assert(width >= 0);
+    const sizing = DropdownSizing{ .width = null, .min_width = min_width };
+    std.debug.assert(sizing.width == null);
+    std.debug.assert(sizing.min_width == min_width);
+    return sizing;
+}
+
 /// The floating dropdown menu containing options
 const SelectDropdown = struct {
     is_open: bool,
@@ -586,9 +608,13 @@ const SelectDropdown = struct {
     pub fn render(self: SelectDropdown, cx: *ui.Cx) void {
         if (!self.is_open) return;
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
+        std.debug.assert(self.font_size > 0);
+        if (self.min_width) |width| std.debug.assert(width >= 0);
+        const sizing = resolveDropdownSizing(self.min_width);
 
         cx.box(.{
-            .width = self.min_width,
+            .width = sizing.width,
+            .min_width = sizing.min_width,
             .padding = .{ .all = 4 },
             .background = self.background,
             .border_color = self.border_color,
@@ -699,6 +725,8 @@ const SelectOption = struct {
     padding: f32,
 
     pub fn render(self: SelectOption, cx: *ui.Cx) void {
+        std.debug.assert(self.font_size > 0);
+        std.debug.assert(self.padding >= 0);
         const bg = if (self.selected) self.selected_background else Color.transparent;
 
         cx.box(.{
@@ -708,20 +736,19 @@ const SelectOption = struct {
             .hover_background = self.hover_background,
             .corner_radius = self.corner_radius,
             .direction = .row,
-            .alignment = .{ .cross = .center },
+            .alignment = .{ .main = .space_between, .cross = .center },
             .gap = 8,
             .on_click_handler = self.on_click,
         }, .{
-            // Checkmark for selected item
-            SelectCheckmark{
-                .visible = self.selected,
-                .color = self.checkmark_color,
-            },
-            // Option text
+            // Keep labels aligned with the trigger; the checkmark is a trailing accessory.
             ui.text(self.label, .{
                 .color = self.text_color,
                 .size = self.font_size,
             }),
+            SelectCheckmark{
+                .visible = self.selected,
+                .color = self.checkmark_color,
+            },
         });
     }
 };
