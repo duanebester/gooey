@@ -105,6 +105,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.pending_canvas.clearRetainingCapacity();
     builder.pending_scrolls_by_layout_id.clearRetainingCapacity();
     builder.active_scroll_drag_id = null;
+    builder.hover_cursor = null;
 
     // Call user's render function with Cx — time tree construction separately
     window.debugger().beginTreeBuild(window.io);
@@ -185,7 +186,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     // Update IME cursor position for focused text input
     updateImeCursorPosition(window, builder);
-    if (comptime @import("../platform/mod.zig").is_linux) {
+    if (comptime !@import("../platform/mod.zig").is_wasm) {
         updateCursorShape(window, builder);
     }
 
@@ -465,8 +466,10 @@ fn updateImeCursorPosition(window: *Window, builder: *const Builder) void {
     }
 }
 
-/// Text controls select an I-beam while all other content resets to the
-/// compositor's default cursor. The protocol call itself is Linux-only.
+/// Text controls select an I-beam, boxes with an explicit `Box.cursor`
+/// select that shape, and all other content resets to the platform's
+/// default cursor. Implemented on Linux (`wp_cursor_shape_manager_v1`)
+/// and macOS (`NSCursor`); a no-op on web (see `platform.PlatformCapabilities.custom_cursors`).
 fn updateCursorShape(window: *Window, builder: *const Builder) void {
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
@@ -475,7 +478,7 @@ fn updateCursorShape(window: *Window, builder: *const Builder) void {
         return;
     };
 
-    var shape: @import("../platform/interface.zig").CursorShape = .default;
+    var shape: @import("../platform/interface.zig").CursorShape = builder.hover_cursor orelse .default;
     for (builder.pending_inputs.items) |pending| {
         if (pending.layout_id.id == hovered_layout_id) shape = .text;
     }

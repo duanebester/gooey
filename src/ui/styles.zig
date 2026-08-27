@@ -19,6 +19,7 @@ pub const AttachPoint = layout_types.AttachPoint;
 pub const CornerRadius = layout_mod.CornerRadius;
 pub const ObjectFit = @import("../image/atlas.zig").ObjectFit;
 pub const HandlerRef = @import("../context/handler.zig").HandlerRef;
+pub const CursorShape = @import("../platform/interface.zig").CursorShape;
 
 // Drag & Drop
 const drag_mod = @import("../context/drag.zig");
@@ -211,6 +212,12 @@ pub const Box = struct {
     // Hover styles (applied when element is hovered)
     hover_background: ?Color = null,
     hover_border_color: ?Color = null,
+
+    /// OS-level pointer icon to show while this element is hovered
+    /// (e.g. `.pointer` for a clickable row). `null` leaves the cursor
+    /// untouched by this element, falling back to whatever the frame's
+    /// default resolution picks (see `runtime/frame.zig::updateCursorShape`).
+    cursor: ?CursorShape = null,
 
     // Layout
     direction: Direction = .column,

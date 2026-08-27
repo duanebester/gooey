@@ -588,6 +588,7 @@ pub const LinuxPlatform = struct {
         const protocol_shape: u32 = switch (shape) {
             .default => 1,
             .text => 9,
+            .pointer => 4,
         };
         wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
         self.cursor_shape = shape;

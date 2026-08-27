@@ -63,6 +63,8 @@ pub const WindowRegistry = window_registry.WindowRegistry;
 pub const CursorShape = enum(u8) {
     default,
     text,
+    /// Hand/pointing-finger cursor for clickable elements (buttons, links).
+    pointer,
 };
 
 // =============================================================================

@@ -234,6 +234,13 @@ pub const Builder = struct {
     /// Avoids an O(n) scan (and a string re-hash) per mouse drag event.
     active_scroll_drag_id: ?u32 = null,
 
+    /// Cursor shape requested by the hovered box's `Box.cursor`, if any.
+    /// Set in `boxWithLayoutIdImpl` when the currently-hovered element
+    /// declares an explicit cursor; reset every frame in `renderFrameImpl`.
+    /// Read by `runtime/frame.zig::updateCursorShape` as the fallback when
+    /// no text widget (input/text area/code editor) is hovered.
+    hover_cursor: ?styles.CursorShape = null,
+
     /// Kind discriminant for the text-widget control queue; the render pass
     /// switches on it at comptime to pick the matching data-plane pool.
     pub const TextWidgetKind = enum { input, text_area, code_editor };
@@ -609,6 +616,24 @@ pub const Builder = struct {
             g.isHovered(layout_id.id)
         else
             false;
+
+        // Surface an explicit per-element cursor override to the frame's
+        // end-of-frame cursor resolution (see `hover_cursor` field doc and
+        // `runtime/frame.zig::updateCursorShape`). Unlike `is_hovered` above
+        // (exact-match, used for background/border hover styling), this uses
+        // `isHoveredOrDescendant` — a box like an icon button commonly wraps
+        // an inner hit-testable child (e.g. `Svg`'s own box) with no cursor
+        // of its own, and the pointer should still show while that child is
+        // the exact hit target. A descendant that declares no `.cursor`
+        // can't clobber this: the `props.cursor != null` guard means only
+        // elements that opt in ever write `hover_cursor`.
+        const cursor_hovered = if (self.window) |g|
+            g.isHoveredOrDescendant(layout_id.id)
+        else
+            is_hovered;
+        if (cursor_hovered and props.cursor != null) {
+            self.hover_cursor = props.cursor;
+        }
 
         // Check if this is a valid drag-over target
         const is_drag_over = if (self.window) |g| blk: {

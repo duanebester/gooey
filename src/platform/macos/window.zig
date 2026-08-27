@@ -87,6 +87,11 @@ pub const Window = struct {
     mouse_inside: bool = false,
     hovered_quad_index: ?usize = null,
 
+    /// Last OS-level pointer icon applied via `NSCursor.set()`. Cached so
+    /// the per-frame `setCursorShape` call (see `runtime/frame.zig`) is a
+    /// no-op on the common case where the hovered element didn't change.
+    cursor_shape: ?interface_mod.CursorShape = null,
+
     // IME (Input Method Editor) state
     marked_text: []const u8 = "",
     marked_text_buffer: [256]u8 = undefined,
@@ -815,6 +820,33 @@ pub const Window = struct {
             const appearance = objc.Object.fromId(ptr);
             self.ns_window.msgSend(void, "setAppearance:", .{appearance.value});
         }
+    }
+
+    /// Set the OS-level mouse pointer icon (not the text-caret drawn by
+    /// `TextInput`/`TextArea`/`CodeEditor` — see `interface.CursorShape`).
+    ///
+    /// `NSCursor.set()` pushes onto a stack rather than replacing outright,
+    /// but since Gooey calls this once per frame with the fully-resolved
+    /// shape (mirroring the Linux/`wp_cursor_shape_manager_v1` path in
+    /// `runtime/frame.zig::updateCursorShape`), there is never more than
+    /// one Gooey-owned cursor pushed at a time.
+    pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
+        std.debug.assert(self.ns_window.value != null);
+        std.debug.assert(self.ns_view.value != null);
+        if (self.cursor_shape) |current| {
+            if (current == shape) return;
+        }
+
+        const NSCursor = objc.getClass("NSCursor") orelse return;
+        const cursor = switch (shape) {
+            .default => NSCursor.msgSend(objc.Object, "arrowCursor", .{}),
+            .text => NSCursor.msgSend(objc.Object, "IBeamCursor", .{}),
+            .pointer => NSCursor.msgSend(objc.Object, "pointingHandCursor", .{}),
+        };
+        std.debug.assert(cursor.value != null);
+
+        cursor.msgSend(void, "set", .{});
+        self.cursor_shape = shape;
     }
 
     /// Change the glass effect style at runtime
