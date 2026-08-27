@@ -33,6 +33,7 @@ const RadioGroup = gooey.components.RadioGroup;
 const ProgressBar = gooey.components.ProgressBar;
 const Svg = gooey.components.Svg;
 const Icons = gooey.components.Icons;
+const Lucide = gooey.components.Lucide;
 const Select = gooey.components.Select;
 const Tooltip = gooey.components.Tooltip;
 const Modal = gooey.components.Modal;
@@ -404,6 +405,9 @@ const ThemeToggle = struct {
         const s = cx.state(AppState);
         const t = cx.theme();
 
+        // Show the icon for the *current* theme: a moon while dark mode is
+        // active, a sun while light mode is active. Both are Lucide's
+        // stroke-only icons, so render with no_fill + stroke_color.
         cx.render(ui.box(.{
             .padding = .{ .all = 8 },
             .corner_radius = 6,
@@ -412,9 +416,11 @@ const ThemeToggle = struct {
             .on_click_handler = cx.update(AppState.toggleTheme),
         }, .{
             Svg{
-                .path = if (s.is_dark) Icons.visibility else Icons.visibility_off,
+                .path = if (s.is_dark) Lucide.moon else Lucide.sun,
                 .size = 20,
-                .color = t.muted,
+                .no_fill = true,
+                .stroke_color = t.muted,
+                .stroke_width = 2,
             },
         }));
     }

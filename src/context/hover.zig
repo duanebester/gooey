@@ -314,6 +314,46 @@ test "HoverState: isHoveredOrDescendant matches cached ancestors only" {
     try testing.expectEqual(@as(u32, 100), view[0]);
 }
 
+test "HoverState: update() reports an icon-wrapping button as hovered via its inner icon" {
+    // Regression test for a real shape: an icon button (e.g. `RecordButton`
+    // in gooey-dic) is a box with `.cursor = .pointer` wrapping an `Svg`,
+    // and `Svg` renders its own nested hit-testable box. Hovering directly
+    // over the icon glyph makes the icon's box — not the button's — the
+    // exact hit. `isHovered` alone would miss the button; the cursor
+    // resolution in `ui/builder.zig` relies on `isHoveredOrDescendant`
+    // seeing through to the ancestor instead.
+    const allocator = testing.allocator;
+    var tree = DispatchTree.init(allocator);
+    defer tree.deinit();
+
+    const button = tree.pushNode();
+    tree.setLayoutId(1); // button's padding box
+    tree.setBounds(button, .{ .x = 0, .y = 0, .width = 40, .height = 40 });
+
+    const icon = tree.pushNode();
+    tree.setLayoutId(2); // Svg's own nested box
+    tree.setBounds(icon, .{ .x = 10, .y = 10, .width = 20, .height = 20 });
+    tree.popNode();
+
+    tree.popNode();
+
+    var h = HoverState.init();
+    // Point inside the icon's bounds, mimicking the cursor sitting directly
+    // on the glyph rather than the button's padding.
+    _ = h.update(&tree, 20, 20);
+
+    try testing.expectEqual(@as(?u32, 2), h.hovered_layout_id);
+
+    // Exact-match hover sees only the icon, not the button it's nested in.
+    try testing.expect(h.isHovered(2));
+    try testing.expect(!h.isHovered(1));
+
+    // Ancestor-aware hover sees both — this is what keeps the button's
+    // pointer cursor showing while the mouse is over its icon.
+    try testing.expect(h.isHoveredOrDescendant(2));
+    try testing.expect(h.isHoveredOrDescendant(1));
+}
+
 test "HoverState: isHovered and isLayoutIdHovered agree" {
     var h = HoverState.init();
     h.hovered_layout_id = 77;
