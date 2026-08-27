@@ -200,6 +200,7 @@ pub const Box = struct {
     // Appearance
     background: Color = Color.transparent,
     corner_radius: f32 = 0,
+    corner_radii: ?CornerRadius = null,
     opacity: f32 = 1.0,
     border_color: Color = Color.transparent,
     border_width: BorderWidthValue = .{ .all = 0 },

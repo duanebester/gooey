@@ -420,6 +420,20 @@ pub const VirtualListState = struct {
         self.pending_scroll = .to_end;
     }
 
+    /// Return whether the viewport is at the end within a pixel tolerance.
+    /// A deferred end request counts as following the end before the next sync.
+    pub fn isScrolledToBottom(self: *const Self, tolerance_pixels: f32) bool {
+        std.debug.assert(tolerance_pixels >= 0.0);
+        std.debug.assert(std.math.isFinite(tolerance_pixels));
+        if (self.pending_scroll) |request| {
+            switch (request) {
+                .to_end => return true,
+                else => {},
+            }
+        }
+        return self.maxScrollOffset() - self.scroll_offset_px <= tolerance_pixels;
+    }
+
     /// Get scroll percentage (0.0 - 1.0)
     pub fn scrollPercent(self: *const Self) f32 {
         const max = self.maxScrollOffset();
@@ -903,6 +917,30 @@ test "VirtualListState scrollBy" {
 
     state.scrollBy(-200.0);
     try std.testing.expectEqual(@as(f32, 0), state.scroll_offset_px); // Clamped to 0
+}
+
+test "VirtualListState isScrolledToBottom respects tolerance" {
+    // The viewport follows streaming content only while it remains within the
+    // caller's explicit end tolerance; moving farther away relinquishes follow.
+    var state = VirtualListState.init(10, 32.0);
+    state.viewport_height_px = 100.0;
+    state.scroll_offset_px = state.maxScrollOffset() - 2.0;
+
+    try std.testing.expect(state.isScrolledToBottom(2.0));
+    state.scroll_offset_px -= 0.01;
+    try std.testing.expect(!state.isScrolledToBottom(2.0));
+}
+
+test "VirtualListState pending bottom remains followed" {
+    // A deferred bottom request has not reached ScrollContainer yet, but it must
+    // still preserve follow mode when more content arrives in the same frame.
+    var state = VirtualListState.init(10, 32.0);
+    state.viewport_height_px = 100.0;
+    state.scroll_offset_px = 0.0;
+    state.scrollToBottom();
+
+    try std.testing.expect(state.isScrolledToBottom(0.0));
+    try std.testing.expect(state.pending_scroll != null);
 }
 
 test "VirtualListState isItemVisible" {

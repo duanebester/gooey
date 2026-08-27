@@ -782,7 +782,7 @@ pub const Builder = struct {
                 .main_axis_distribution = main_distribution,
             },
             .background_color = resolved_background,
-            .corner_radius = CornerRadius.all(props.corner_radius),
+            .corner_radius = props.corner_radii orelse CornerRadius.all(props.corner_radius),
             .border = border_config,
             .shadow = props.shadow,
             .floating = floating_config,
@@ -1116,10 +1116,17 @@ pub const Builder = struct {
                 const ct = content_bounds.?;
 
                 if (self.window) |g| {
-                    // The slot was seeded by `Builder.scroll` earlier this
-                    // frame, so a read-only `get` suffices; a miss (only under
-                    // capacity exhaustion) just skips this frame's update.
-                    if (g.element_states.get(ScrollContainer, @as(u64, pending.layout_id.id))) |sc| {
+                    // Primitive scroll containers seed their retained state in
+                    // `Builder.scroll`, while list helpers register directly in
+                    // `pending_scrolls`. Seed here as well so every registration
+                    // path has a live container before input events are routed.
+                    const sc_or_null = g.element_states.getOrInsertWith(
+                        ScrollContainer,
+                        @as(u64, pending.layout_id.id),
+                        g.allocator,
+                        ScrollContainer.init,
+                    ) catch null;
+                    if (sc_or_null) |sc| {
                         // Update bounds (full bounding box for hit testing)
                         sc.bounds = .{
                             .x = vp.x,
