@@ -380,31 +380,56 @@ fn handleMouseDownEvent(
     // 3. Check if click is in a CodeEditor
     if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
 
-    // 4. Compute hit target once for both click-outside and click dispatch
+    // 4. Compute hit target once for focus clearing, click-outside, and dispatch.
     const hit_target = window.rendered_frame.dispatch.hitTest(x, y);
 
-    // 4. Check for drag source — start pending drag
+    // Clicking non-focusable content ends text editing. Focusable targets perform
+    // their own transition during dispatch, avoiding a blur/refocus cycle when
+    // clicking an already-focused control or one of its rendered children.
+    const text_widget_focused = focusedTextInput(window, builder) != null or
+        focusedTextArea(window, builder) != null or
+        focusedCodeEditor(window, builder) != null;
+    if (text_widget_focused and !hitPathHasFocusTarget(window, hit_target)) {
+        window.blurAll();
+        cx.notify();
+    }
+
+    // 5. Check for drag source — start pending drag
     if (hit_target) |target| {
         _ = handleDragSourceClick(window, target, x, y);
         // Don't return true yet — still dispatch click-outside etc.
     }
 
-    // 5. Dispatch click-outside events (for closing dropdowns, modals, etc.)
+    // 6. Dispatch click-outside events (for closing dropdowns, modals, etc.)
     if (window.rendered_frame.dispatch.dispatchClickOutsideWithTarget(x, y, hit_target, window)) {
         cx.notify();
     }
 
-    // 6. Dispatch click to hit target
+    // 7. Dispatch click to hit target
     if (hit_target) |target| {
         if (handleDispatchClick(cx, window, target)) return true;
     }
 
-    // 7. Debugger: handle click to select element for inspection
+    // 8. Debugger: handle click to select element for inspection
     if (window.debugger().isActive()) {
         window.debugger().handleClick(window.hover.hovered_layout_id);
         cx.notify();
     }
 
+    return false;
+}
+
+/// Return whether the hit node or any ancestor participates in focus.
+fn hitPathHasFocusTarget(window: *const Window, hit_target: ?DispatchNodeId) bool {
+    const target = hit_target orelse return false;
+    std.debug.assert(target.isValid());
+    std.debug.assert(target.toIndex().? < window.rendered_frame.dispatch.nodes.items.len);
+    var path_buffer: [64]DispatchNodeId = undefined;
+    const path = window.rendered_frame.dispatch.dispatchPath(target, &path_buffer);
+    for (path) |node_id| {
+        const node = window.rendered_frame.dispatch.getNodeConst(node_id) orelse continue;
+        if (node.focus_id != null) return true;
+    }
     return false;
 }
 
