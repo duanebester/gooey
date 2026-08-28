@@ -76,6 +76,21 @@ pub const Uniforms = extern struct {
     pub fn setMouse(self: *Uniforms, x: f32, y: f32, click_x: f32, click_y: f32) void {
         self.mouse = .{ x, y, click_x, click_y };
     }
+
+    comptime {
+        // Metal pads float3 to 16 bytes, after which the scalar timing fields
+        // exactly fill the next 16-byte block. Keep these offsets paired with
+        // ShaderUniforms below so extension uniforms cannot silently drift.
+        std.debug.assert(@offsetOf(Uniforms, "time") == 16);
+        std.debug.assert(@offsetOf(Uniforms, "frame") == 28);
+        std.debug.assert(@offsetOf(Uniforms, "mouse") == 32);
+        std.debug.assert(@offsetOf(Uniforms, "date") == 48);
+        std.debug.assert(@offsetOf(Uniforms, "focused_bounds") == 64);
+        std.debug.assert(@offsetOf(Uniforms, "hovered_bounds") == 80);
+        std.debug.assert(@offsetOf(Uniforms, "accent_color") == 96);
+        std.debug.assert(@offsetOf(Uniforms, "scroll_offset") == 112);
+        std.debug.assert(@sizeOf(Uniforms) == 128);
+    }
 };
 
 /// MSL prefix that provides Shadertoy-compatible interface
@@ -90,7 +105,6 @@ pub const msl_prefix =
     \\    float iTimeDelta;
     \\    float iFrameRate;
     \\    int iFrame;
-    \\    int _pad0;
     \\    float4 iMouse;
     \\    float4 iDate;
     \\    // Gooey extensions
