@@ -162,6 +162,20 @@ pub const Select = struct {
     /// List of options to display
     options: []const []const u8,
 
+    /// Optional per-option leading icon shown in each dropdown row (not the
+    /// trigger), index-aligned with `options`. A `null` slice means no
+    /// option has an icon; an individual `null` entry means that specific
+    /// option has none. Added so a single dropdown spanning multiple
+    /// logical groups (e.g. chat models from different providers) can
+    /// brand each row without the trigger being pinned to one icon.
+    option_icons: ?[]const ?OptionIcon = null,
+
+    /// Uniform render size for `option_icons` entries.
+    option_icon_size: f32 = 16,
+
+    /// Tint for `option_icons`. Null falls back to `text_color`.
+    option_icon_color: ?Color = null,
+
     /// Currently selected option index (null = nothing selected)
     selected: ?usize = null,
 
@@ -249,6 +263,22 @@ pub const Select = struct {
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
+    /// A leading icon for one dropdown option (see `option_icons` above).
+    /// Kept separate from `Svg` itself (rather than embedding `Svg` directly)
+    /// so `Select` only depends on the two fields it actually varies per
+    /// option — everything else (size, tint) is uniform and lives on `Select`.
+    /// Nested (rather than a module-level type) so callers spell it
+    /// `Select.OptionIcon`, matching `Select.ControlMode` / `ControlError`.
+    pub const OptionIcon = struct {
+        /// SVG path data (the `d` attribute), same convention as `Svg.path`.
+        path: []const u8,
+
+        /// Source SVG viewBox size (square). Default 24 covers most icon
+        /// sets; override for logos with a non-square or differently-scaled
+        /// viewBox.
+        viewbox: f32 = 24,
+    };
+
     /// Resolved open/close state + handlers (internal vs external).
     const ResolvedState = struct {
         is_open: bool,
@@ -279,6 +309,7 @@ pub const Select = struct {
     pub fn render(self: Select, cx: *ui.Cx) void {
         std.debug.assert(self.id.len > 0);
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
+        if (self.option_icons) |icons| std.debug.assert(icons.len == self.options.len);
         self.validateControl() catch {
             @panic("Select: on_select and legacy handlers are mutually exclusive");
         };
@@ -329,6 +360,9 @@ pub const Select = struct {
             SelectDropdown{
                 .is_open = resolved.is_open,
                 .options = self.options,
+                .option_icons = self.option_icons,
+                .option_icon_size = self.option_icon_size,
+                .option_icon_color = self.option_icon_color orelse colors.text_col,
                 .selected = self.selected,
                 .handlers = self.handlers,
                 .on_select = self.on_select,
@@ -586,6 +620,9 @@ fn resolveDropdownSizing(min_width: ?f32) DropdownSizing {
 const SelectDropdown = struct {
     is_open: bool,
     options: []const []const u8,
+    option_icons: ?[]const ?Select.OptionIcon,
+    option_icon_size: f32,
+    option_icon_color: Color,
     selected: ?usize,
     // Legacy: explicit handler array (one per option)
     handlers: ?[]const HandlerRef,
@@ -632,6 +669,9 @@ const SelectDropdown = struct {
         }, .{
             SelectOptions{
                 .options = self.options,
+                .option_icons = self.option_icons,
+                .option_icon_size = self.option_icon_size,
+                .option_icon_color = self.option_icon_color,
                 .selected = self.selected,
                 .handlers = self.handlers,
                 .on_select = self.on_select,
@@ -651,6 +691,9 @@ const SelectDropdown = struct {
 /// Renders all option items
 const SelectOptions = struct {
     options: []const []const u8,
+    option_icons: ?[]const ?Select.OptionIcon,
+    option_icon_size: f32,
+    option_icon_color: Color,
     selected: ?usize,
     // Legacy: explicit handler array
     handlers: ?[]const HandlerRef,
@@ -673,9 +716,13 @@ const SelectOptions = struct {
             // `self.selected` is the chosen index (?usize); this derives the
             // per-option boolean for the item at index `i`.
             const option_selected = if (self.selected) |sel| sel == i else false;
+            const icon: ?Select.OptionIcon = if (self.option_icons) |icons| icons[i] else null;
 
             cx.with(SelectOption{
                 .label = label,
+                .icon = icon,
+                .icon_size = self.option_icon_size,
+                .icon_color = self.option_icon_color,
                 .selected = option_selected,
                 .on_click = handler,
                 .selected_background = self.selected_background,
@@ -714,6 +761,9 @@ const SelectOptions = struct {
 /// A single option in the dropdown
 const SelectOption = struct {
     label: []const u8,
+    icon: ?Select.OptionIcon,
+    icon_size: f32,
+    icon_color: Color,
     selected: bool,
     on_click: ?HandlerRef,
     selected_background: Color,
@@ -740,14 +790,53 @@ const SelectOption = struct {
             .gap = 8,
             .on_click_handler = self.on_click,
         }, .{
-            // Keep labels aligned with the trigger; the checkmark is a trailing accessory.
-            ui.text(self.label, .{
-                .color = self.text_color,
-                .size = self.font_size,
+            // Icon + label grouped together so `space_between` still puts
+            // exactly one leading group against the trailing checkmark.
+            ui.box(.{
+                .direction = .row,
+                .alignment = .{ .main = .start, .cross = .center },
+                .gap = 8,
+            }, .{
+                SelectOptionIcon{
+                    .icon = self.icon,
+                    .size = self.icon_size,
+                    .color = self.icon_color,
+                },
+                ui.text(self.label, .{
+                    .color = self.text_color,
+                    .size = self.font_size,
+                }),
             }),
             SelectCheckmark{
                 .visible = self.selected,
                 .color = self.checkmark_color,
+            },
+        });
+    }
+};
+
+/// Leading icon for one dropdown row. Renders nothing when `icon` is null
+/// (no reserved space, no gap contributed) so options without an icon sit
+/// flush with the row's left edge, matching pre-icon layout exactly.
+const SelectOptionIcon = struct {
+    icon: ?Select.OptionIcon,
+    size: f32,
+    color: Color,
+
+    pub fn render(self: SelectOptionIcon, cx: *ui.Cx) void {
+        const icon = self.icon orelse return;
+        std.debug.assert(self.size > 0);
+        std.debug.assert(icon.viewbox > 0);
+        cx.box(.{
+            .width = self.size,
+            .height = self.size,
+            .alignment = .{ .main = .center, .cross = .center },
+        }, .{
+            Svg{
+                .path = icon.path,
+                .size = self.size,
+                .color = self.color,
+                .viewbox = icon.viewbox,
             },
         });
     }
