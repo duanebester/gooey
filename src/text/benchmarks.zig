@@ -2082,6 +2082,22 @@ fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) 
     collect(reporter, benchMeasureText(text_sys, "measure_long_104ch_x100", TEXT_LONG, 100));
     collect(reporter, benchMeasureTextWrapped(text_sys, "measure_wrapped_50ch_200px_x100", TEXT_MEDIUM, 200.0, 100));
     collect(reporter, benchMeasureTextWrapped(text_sys, "measure_wrapped_104ch_300px_x100", TEXT_LONG, 300.0, 100));
+
+    // Regression guard for the shape-cache insert boundary.  `ShapedRunCache.put`
+    // refuses runs longer than MAX_GLYPHS_PER_ENTRY, while the `measureText`
+    // lookup gate admits anything up to MAX_TEXT_LEN.  Text in between used to
+    // shape through CoreText on *every* call and never warm up -- a permanent
+    // miss that cost ~35us per measurement versus ~160ns for a hit (~220x).
+    // `MeasureCache` closes that gap by caching width without glyphs.
+    //
+    // These two cases straddle the boundary with otherwise-identical ASCII text
+    // (1 byte = 1 glyph), so they should now report the *same* cost.  If the
+    // 129ch row ever diverges sharply from the 128ch row again, the width cache
+    // has stopped covering the over-limit band.
+    std.debug.assert(ShapedRunCache.MAX_GLYPHS_PER_ENTRY == 128);
+    std.debug.assert(ShapedRunCache.MAX_TEXT_LEN >= 129);
+    collect(reporter, benchMeasureText(text_sys, "measure_at_shape_limit_128ch_x100", SCALING_TEXT_BASE[0..128], 100));
+    collect(reporter, benchMeasureText(text_sys, "measure_over_shape_limit_129ch_x100", SCALING_TEXT_BASE[0..129], 100));
     std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
 }
 

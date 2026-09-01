@@ -1026,3 +1026,154 @@ test "space_between with single child stays at start" {
     // Single child should be at start (x=0)
     try std.testing.expectEqual(@as(f32, 0.0), child.computed.bounding_box.x);
 }
+
+/// Records what the layout engine asks the text-measurement callback to
+/// measure, so tests can assert *how much* measuring a frame does rather than
+/// only what it computes.  Widths mirror the 10px-per-character mock used by
+/// the wrapping tests above.
+const MeasureRecorder = struct {
+    /// Byte length of the message under test.  `text()` measures the whole
+    /// string in a single call, while `wrapText` only ever measures individual
+    /// words, so a call of exactly this length is unambiguously the former.
+    whole_string_len: u32,
+    call_count: u32 = 0,
+    whole_string_calls: u32 = 0,
+    /// Longest call that was not the whole string — the longest word wrapping
+    /// measured.
+    longest_word_len: u32 = 0,
+
+    fn measure(
+        content: []const u8,
+        _: u16,
+        font_size: u16,
+        _: ?f32,
+        user_data: ?*anyopaque,
+    ) TextMeasurement {
+        const self: *MeasureRecorder = @ptrCast(@alignCast(user_data.?));
+        const content_len: u32 = @intCast(content.len);
+
+        self.call_count += 1;
+        if (content_len == self.whole_string_len) {
+            self.whole_string_calls += 1;
+        } else {
+            self.longest_word_len = @max(self.longest_word_len, content_len);
+        }
+
+        return .{
+            .width = @as(f32, @floatFromInt(content_len)) * 10.0,
+            .height = @floatFromInt(font_size),
+        };
+    }
+};
+
+/// Shape cache insert limit from `text.ShapedRunCache.MAX_GLYPHS_PER_ENTRY`,
+/// duplicated as a plain constant so the layout tests stay free of any
+/// dependency on the platform text backend.
+const SHAPE_CACHE_INSERT_LIMIT: u32 = 128;
+
+test "wrapped text re-measures the whole string on every frame" {
+    // Goal: pin the measurement pattern of `LayoutEngine.text()`.  It measures
+    // the entire string unconditionally, but for wrap-enabled text
+    // `computeTextWrapping` recomputes width and height from per-word
+    // measurements later in the same frame and overwrites both.
+    //
+    // That whole-string call is the only one long enough to exceed the shape
+    // cache's 128-glyph insert limit.  It used to re-shape through the platform
+    // shaper every frame because `ShapedRunCache.put` refuses over-limit runs;
+    // `TextSystem.MeasureCache` now absorbs it by caching width without glyphs,
+    // so the call remains but is a hash lookup rather than a full shape.
+    // The count below is therefore still expected to equal the frame count --
+    // the fix removed the cost, not the call.
+    //
+    // Methodology: lay out one long wrapped paragraph across several frames
+    // with a recording measure callback, then assert the whole-string call
+    // happens once per frame and that every other call is a short word.
+    const message = "The quick brown fox jumps over the lazy dog while the " ++
+        "cat watches from a sunny windowsill and the world turns slowly " ++
+        "onward through another long and uneventful afternoon";
+
+    // The message sits in the band that the shaped-run cache cannot store: past
+    // its insert limit but under the lookup gate.  This is exactly the range
+    // `MeasureCache` exists to cover.
+    try std.testing.expect(message.len > SHAPE_CACHE_INSERT_LIMIT);
+    try std.testing.expect(message.len < 512);
+
+    var recorder = MeasureRecorder{ .whole_string_len = @intCast(message.len) };
+
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);
+
+    const frame_count: u32 = 5;
+    var frame: u32 = 0;
+    while (frame < frame_count) : (frame += 1) {
+        engine.beginFrame(800, 600);
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = Sizing.fixed(400, 600),
+                .layout_direction = .top_to_bottom,
+            },
+        });
+        {
+            try engine.text(message, .{ .wrap_mode = .words, .font_size = 14 });
+        }
+        engine.closeElement();
+        _ = try engine.endFrame();
+    }
+
+    // One whole-string measurement per frame, whose result is superseded by
+    // wrapping before the frame ends.  Deliberately NOT driven to 0: the value
+    // feeds Phase 1 min-sizing (`content_width = @max(content_width,
+    // td.measured_width)` in sizing_pass.zig), so skipping it would change the
+    // min content width of any fit-content ancestor -- a behaviour change, not
+    // an optimisation.  The cost is removed in the text layer instead.
+    try std.testing.expectEqual(frame_count, recorder.whole_string_calls);
+
+    // Wrapping itself was already cache-friendly: every other measurement is a
+    // single word, comfortably inside the shaped-run cache's insert limit.
+    try std.testing.expect(recorder.longest_word_len > 0);
+    try std.testing.expect(recorder.longest_word_len < SHAPE_CACHE_INSERT_LIMIT);
+}
+
+test "unwrapped text depends on the whole-string measurement" {
+    // Goal: guard the obvious over-correction.  With `wrap_mode == .none`,
+    // `computeTextWrapping` returns early and never overwrites the measurement,
+    // so `text()`'s whole-string call is the *only* source of the element's
+    // size.  Any fix that skips measuring must keep this path exact, which is
+    // why the redundancy cannot simply be deleted for all text.
+    //
+    // Methodology: lay out one unwrapped string and assert the sized width
+    // still matches what the measure callback reported.
+    const message = "Sized entirely by the whole-string measurement";
+
+    var recorder = MeasureRecorder{ .whole_string_len = @intCast(message.len) };
+
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);
+    engine.beginFrame(800, 600);
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = Sizing.fixed(400, 600),
+            .layout_direction = .top_to_bottom,
+        },
+    });
+    {
+        try engine.text(message, .{ .wrap_mode = .none, .font_size = 14 });
+    }
+    engine.closeElement();
+
+    _ = try engine.endFrame();
+
+    try std.testing.expectEqual(@as(u32, 1), recorder.whole_string_calls);
+
+    // No wrapping ran, so the measured width survives to the computed size.
+    const text_elem = engine.elements.getConst(1);
+    const text_data = text_elem.text_data.?;
+    const expected_width = @as(f32, @floatFromInt(message.len)) * 10.0;
+    try std.testing.expectEqual(expected_width, text_data.measured_width);
+    try std.testing.expect(text_data.wrapped_lines == null);
+}
