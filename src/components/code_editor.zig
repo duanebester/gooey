@@ -197,7 +197,7 @@ pub const CodeEditor = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.box(.{}, .{
+        cx.render(ui.box(.{}, .{
             ui.codeEditor(self.id, .{
                 .placeholder = self.placeholder,
                 .bind = self.bind,
@@ -237,6 +237,6 @@ pub const CodeEditor = struct {
                 .tab_stop = self.tab_stop,
                 .on_blur_handler = self.on_blur,
             }),
-        });
+        }));
     }
 };

@@ -113,7 +113,7 @@ pub fn Tooltip(comptime ChildType: type) type {
             // HoverArea contains both the child and the tooltip popup.
             // This ensures the floating popup's parent IS the hover area,
             // so attach_to_parent positions correctly relative to the trigger.
-            cx.boxWithLayoutId(layout_id, .{}, .{
+            cx.render(ui.box_with_layout_id(layout_id, .{}, .{
                 self.child,
                 // Tooltip popup (only visible when hovered)
                 TooltipPopup{
@@ -128,7 +128,7 @@ pub fn Tooltip(comptime ChildType: type) type {
                     .corner_radius = radius,
                     .gap = self.gap,
                 },
-            });
+            }));
         }
     };
 }
@@ -156,7 +156,7 @@ const TooltipPopup = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .max_width = self.max_width,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding * 0.75 } },
             .background = self.background,
@@ -173,7 +173,7 @@ const TooltipPopup = struct {
                 .size = self.font_size,
                 .wrap = .words,
             }),
-        });
+        }));
     }
 
     fn floatingConfig(self: TooltipPopup) ui.Floating {

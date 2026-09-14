@@ -230,7 +230,7 @@ pub const ValidatedTextInput = struct {
             (self.border_color_focused orelse t.border_focus);
 
         // Container for the whole field
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.width,
             .direction = .column,
             .gap = self.gap,
@@ -277,7 +277,7 @@ pub const ValidatedTextInput = struct {
                 .helper_size = self.helper_size,
                 .live_region = self.error_live_region,
             },
-        });
+        }));
     }
 
     /// Generate a unique error ID based on the input ID.
@@ -313,7 +313,7 @@ const LabelRow = struct {
 
     pub fn render(self: LabelRow, cx: *ui.Cx) void {
         if (self.label) |lbl| {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .direction = .row,
                 .gap = 2,
             }, .{
@@ -327,7 +327,7 @@ const LabelRow = struct {
                     .color = self.error_color,
                     .size = self.label_size,
                 },
-            });
+            }));
         }
     }
 };
@@ -339,13 +339,13 @@ const RequiredIndicator = struct {
 
     pub fn render(self: RequiredIndicator, cx: *ui.Cx) void {
         if (self.show) {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 ui.text("*", .{
                     .color = self.color,
                     .size = self.size,
                     .weight = .bold,
                 }),
-            });
+            }));
         }
     }
 };
@@ -418,7 +418,7 @@ const InputField = struct {
 
         // Use fill_width so box expands horizontally within parent column,
         // height will fit to the input child automatically.
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
         }, .{
             ui.input(self.id, .{
@@ -441,7 +441,7 @@ const InputField = struct {
                 .tab_stop = self.tab_stop,
                 .on_blur_handler = self.on_blur,
             }),
-        });
+        }));
     }
 };
 
@@ -483,22 +483,22 @@ const HelperText = struct {
             defer if (a11y_pushed) cx.accessibleEnd();
 
             // Display the visual error message (may differ from screen reader message)
-            cx.box(.{ .min_height = min_height }, .{
+            cx.render(ui.box(.{ .min_height = min_height }, .{
                 ui.text(err, .{
                     .color = self.error_color,
                     .size = self.helper_size,
                 }),
-            });
+            }));
         } else if (self.help_text) |help| {
-            cx.box(.{ .min_height = min_height }, .{
+            cx.render(ui.box(.{ .min_height = min_height }, .{
                 ui.text(help, .{
                     .color = self.help_color,
                     .size = self.helper_size,
                 }),
-            });
+            }));
         } else {
             // Empty placeholder to maintain consistent layout
-            cx.box(.{ .min_height = min_height }, .{});
+            cx.render(ui.box(.{ .min_height = min_height }, .{}));
         }
     }
 };

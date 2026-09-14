@@ -122,7 +122,7 @@ pub const Image = struct {
             null;
 
         // Emit the image primitive
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .width = w,
             .height = h,
             .corner_radius = radius_value,
@@ -138,7 +138,7 @@ pub const Image = struct {
                 .opacity = self.opacity,
                 .placeholder_color = self.placeholder,
             },
-        });
+        }));
     }
 };
 

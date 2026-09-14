@@ -78,9 +78,9 @@ pub const RadioButton = struct {
         const border = self.border_color orelse t.border;
         const label_col = self.label_color orelse t.text;
 
-        // Resolve identity once for both a11y and the box (PR 11b.2b). The
-        // label is the radio's identity; previously a11y referenced it but
-        // the box used `cx.box`'s auto id, so the two diverged.
+        // Resolve identity once for both a11y and the box. The label is the
+        // radio's identity; previously the visual box generated a different
+        // automatic id, so the two diverged.
         const layout_id = cx.idFor(self.label);
 
         // Push accessible element (role: radio)
@@ -98,7 +98,7 @@ pub const RadioButton = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .direction = .row,
             .gap = self.gap,
             .alignment = .{ .cross = .center },
@@ -112,7 +112,7 @@ pub const RadioButton = struct {
                 .border_color = border,
             },
             ui.text(self.label, .{ .color = label_col, .size = font_size }),
-        });
+        }));
     }
 };
 
@@ -124,7 +124,7 @@ const RadioCircle = struct {
     border_color: Color,
 
     pub fn render(self: RadioCircle, cx: *ui.Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .background = self.unselected_color,
@@ -138,7 +138,7 @@ const RadioCircle = struct {
                 .size = self.size * 0.5,
                 .color = self.selected_color,
             },
-        });
+        }));
     }
 };
 
@@ -149,12 +149,12 @@ const RadioDot = struct {
 
     pub fn render(self: RadioDot, cx: *ui.Cx) void {
         if (self.visible) {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .width = self.size,
                 .height = self.size,
                 .background = self.color,
                 .corner_radius = self.size / 2,
-            }, .{});
+            }, .{}));
         }
     }
 };
@@ -223,7 +223,7 @@ pub const RadioGroup = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .direction = if (self.direction == .row) .row else .column,
             .gap = self.gap,
             .alignment = .{ .cross = .start },
@@ -241,7 +241,7 @@ pub const RadioGroup = struct {
                 .font_size = font_size,
                 .set_size = @intCast(self.options.len),
             },
-        });
+        }));
     }
 };
 

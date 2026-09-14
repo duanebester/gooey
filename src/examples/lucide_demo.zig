@@ -115,7 +115,7 @@ const RowContent = struct {
 
         var i = self.start;
         while (i < self.end) : (i += 1) {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .width = CELL_SIZE,
                 .height = CELL_SIZE,
                 .alignment = .{ .main = .center, .cross = .center },
@@ -130,7 +130,7 @@ const RowContent = struct {
                     .stroke_color = ui.Color.hex(0xe2e8f0),
                     .stroke_width = 1.5,
                 },
-            });
+            }));
         }
     }
 };

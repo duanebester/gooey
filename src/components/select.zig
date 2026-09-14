@@ -340,7 +340,7 @@ pub const Select = struct {
         // `layout_id` (PR 11b.2b) instead of re-hashing `self.id` through
         // `boxWithId` — `self.id` is a stateful, retained-by-id widget, so
         // the explicit id stays required, but it's hashed exactly once.
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .width = self.width,
         }, .{
             SelectTrigger{
@@ -379,7 +379,7 @@ pub const Select = struct {
                 .corner_radius = colors.radius,
                 .padding = self.padding,
             },
-        });
+        }));
     }
 
     /// Determine whether this Select uses widget-managed or manual open state.
@@ -556,7 +556,7 @@ const SelectTrigger = struct {
 
         const opacity: f32 = if (self.disabled) 0.6 else 1.0;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .height = @as(f32, @floatFromInt(self.font_size)) + self.padding * 2 + 4,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding / 2 } },
@@ -580,7 +580,7 @@ const SelectTrigger = struct {
                 .color = self.text_color.withAlpha(opacity),
                 .size = 10,
             },
-        });
+        }));
     }
 };
 
@@ -593,13 +593,13 @@ const ChevronIcon = struct {
     pub fn render(self: ChevronIcon, cx: *ui.Cx) void {
         std.debug.assert(self.size > 0);
         const icon_path = if (self.is_open) Icons.chevron_up else Icons.chevron_down;
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             Svg{ .path = icon_path, .size = self.size, .color = self.color },
-        });
+        }));
     }
 };
 
@@ -649,7 +649,7 @@ const SelectDropdown = struct {
         if (self.min_width) |width| std.debug.assert(width >= 0);
         const sizing = resolveDropdownSizing(self.min_width);
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = sizing.width,
             .min_width = sizing.min_width,
             .padding = .{ .all = 4 },
@@ -684,7 +684,7 @@ const SelectDropdown = struct {
                 .corner_radius = self.corner_radius - 2,
                 .padding = self.padding,
             },
-        });
+        }));
     }
 };
 
@@ -779,7 +779,7 @@ const SelectOption = struct {
         std.debug.assert(self.padding >= 0);
         const bg = if (self.selected) self.selected_background else Color.transparent;
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = self.padding, .y = self.padding * 0.7 } },
             .background = bg,
@@ -811,7 +811,7 @@ const SelectOption = struct {
                 .visible = self.selected,
                 .color = self.checkmark_color,
             },
-        });
+        }));
     }
 };
 
@@ -827,7 +827,7 @@ const SelectOptionIcon = struct {
         const icon = self.icon orelse return;
         std.debug.assert(self.size > 0);
         std.debug.assert(icon.viewbox > 0);
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .alignment = .{ .main = .center, .cross = .center },
@@ -838,7 +838,7 @@ const SelectOptionIcon = struct {
                 .color = self.color,
                 .viewbox = icon.viewbox,
             },
-        });
+        }));
     }
 };
 
@@ -849,19 +849,19 @@ const SelectCheckmark = struct {
 
     pub fn render(self: SelectCheckmark, cx: *ui.Cx) void {
         if (self.visible) {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .width = 16,
                 .height = 16,
                 .alignment = .{ .main = .center, .cross = .center },
             }, .{
                 Svg{ .path = Icons.check, .size = 14, .color = self.color },
-            });
+            }));
         } else {
             // Empty space to maintain alignment
-            cx.box(.{
+            cx.render(ui.box(.{
                 .width = 16,
                 .height = 16,
-            }, .{});
+            }, .{}));
         }
     }
 };

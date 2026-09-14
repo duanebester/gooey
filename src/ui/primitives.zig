@@ -5,6 +5,8 @@
 
 const std = @import("std");
 
+const LayoutId = @import("../layout/layout_id.zig").LayoutId;
+
 // Import styles
 const styles = @import("styles.zig");
 pub const Color = styles.Color;
@@ -450,6 +452,36 @@ pub fn box(style: styles.Box, children: anytype) BoxElement(@TypeOf(children), f
     return .{ .style = style, .children = children, .source_loc = {} };
 }
 
+/// Box descriptor carrying identity separately from its layout and paint style.
+pub fn BoxWithLayoutIdElement(comptime ChildrenType: type) type {
+    return struct {
+        layout_id: LayoutId,
+        style: styles.Box,
+        children: ChildrenType,
+
+        pub const primitive_type: PrimitiveType = .box_element;
+
+        const Builder = @import("builder.zig").Builder;
+
+        pub fn render(self: @This(), builder: *Builder) void {
+            std.debug.assert(self.layout_id.id != 0);
+            std.debug.assert(self.layout_id.base_id != 0);
+            builder.boxWithLayoutId(self.layout_id, self.style, self.children);
+        }
+    };
+}
+
+/// Create an identified box without adding identity storage to anonymous boxes.
+pub fn box_with_layout_id(
+    layout_id: LayoutId,
+    style: styles.Box,
+    children: anytype,
+) BoxWithLayoutIdElement(@TypeOf(children)) {
+    std.debug.assert(layout_id.id != 0);
+    std.debug.assert(layout_id.base_id != 0);
+    return .{ .layout_id = layout_id, .style = style, .children = children };
+}
+
 /// Create the application's root box, sized to the current window every frame.
 ///
 /// `style` controls appearance and child layout. Explicit sizing is diagnosed
@@ -634,6 +666,19 @@ test "box element primitive" {
     try std.testing.expectEqual(PrimitiveType.box_element, @TypeOf(b).primitive_type);
     try std.testing.expectEqual(@as(?f32, 100), b.style.width);
     try std.testing.expectEqual(@as(?f32, 50), b.style.height);
+}
+
+test "identified box keeps identity out of anonymous descriptors" {
+    // Goal: only boxes requiring stable external identity pay its storage cost.
+    // Methodology: compare descriptor fields and inspect the identified value.
+    const anonymous = box(.{}, .{});
+    const layout_id = LayoutId.fromString("identified-box");
+    const identified = box_with_layout_id(layout_id, .{ .width = 100 }, .{});
+
+    try std.testing.expect(!@hasField(@TypeOf(anonymous), "layout_id"));
+    try std.testing.expect(@hasField(@TypeOf(identified), "layout_id"));
+    try std.testing.expectEqual(layout_id.id, identified.layout_id.id);
+    try std.testing.expectEqual(@as(?f32, 100), identified.style.width);
 }
 
 test "root primitive fills the window without explicit dimensions" {

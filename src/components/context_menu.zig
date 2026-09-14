@@ -326,7 +326,7 @@ const MenuSurface = struct {
         floating.offset_y = self.y;
         floating.z_index = self.z_index;
 
-        cx.boxWithLayoutId(self.layout_id, .{
+        cx.render(ui.box_with_layout_id(self.layout_id, .{
             .min_width = self.min_width,
             .max_width = self.max_width,
             .padding = .{ .all = 4 },
@@ -351,7 +351,7 @@ const MenuSurface = struct {
                 .item_padding_x = self.item_padding_x,
                 .item_padding_y = self.item_padding_y,
             },
-        });
+        }));
     }
 };
 
@@ -401,11 +401,11 @@ const MenuRow = struct {
 
         // Separator: a thin divider, hidden from the a11y tree.
         if (self.item.separator) {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .fill_width = true,
                 .height = 1,
                 .background = self.palette.separator,
-            }, .{});
+            }, .{}));
             return;
         }
 
@@ -428,7 +428,7 @@ const MenuRow = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.box(.{
+        cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .symmetric = .{ .x = self.item_padding_x, .y = self.item_padding_y } },
             .background = Color.transparent,
@@ -450,7 +450,7 @@ const MenuRow = struct {
                 .color = self.palette.shortcut,
                 .font_size = self.palette.font_size,
             },
-        });
+        }));
     }
 };
 
@@ -464,14 +464,14 @@ const MenuRowLabel = struct {
     pub fn render(self: MenuRowLabel, cx: *ui.Cx) void {
         std.debug.assert(self.font_size > 0);
         const icon_size: f32 = @floatFromInt(self.font_size);
-        cx.box(.{
+        cx.render(ui.box(.{
             .direction = .row,
             .alignment = .{ .cross = .center },
             .gap = 8,
         }, .{
             MenuRowIcon{ .path = self.icon, .size = icon_size, .color = self.color },
             ui.text(self.label, .{ .color = self.color, .size = self.font_size }),
-        });
+        }));
     }
 };
 
@@ -484,13 +484,13 @@ const MenuRowIcon = struct {
     pub fn render(self: MenuRowIcon, cx: *ui.Cx) void {
         std.debug.assert(self.size > 0);
         const path = self.path orelse return;
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             Svg{ .path = path, .size = self.size, .no_fill = true, .stroke_color = self.color, .stroke_width = 1.5, .viewbox = ICON_VIEWBOX },
-        });
+        }));
     }
 };
 

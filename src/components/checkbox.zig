@@ -82,7 +82,7 @@ pub const Checkbox = struct {
         defer if (a11y_pushed) cx.accessibleEnd();
 
         // Outer container - clickable row
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .direction = .row,
             .gap = 8,
             .alignment = .{ .cross = .center },
@@ -103,7 +103,7 @@ pub const Checkbox = struct {
                 .color = label_col,
                 .font_size = font_size,
             },
-        });
+        }));
     }
 };
 
@@ -117,7 +117,7 @@ const CheckboxBox = struct {
     corner_radius: f32,
 
     pub fn render(self: CheckboxBox, cx: *ui.Cx) void {
-        cx.box(.{
+        cx.render(ui.box(.{
             .width = self.size,
             .height = self.size,
             .background = if (self.selected) self.checked_background else self.unchecked_background,
@@ -127,7 +127,7 @@ const CheckboxBox = struct {
             .alignment = .{ .main = .center, .cross = .center },
         }, .{
             Checkmark{ .visible = self.selected, .color = self.checkmark_color, .size = self.size },
-        });
+        }));
     }
 };
 
@@ -138,11 +138,11 @@ const Checkmark = struct {
 
     pub fn render(self: Checkmark, cx: *ui.Cx) void {
         if (self.visible) {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .alignment = .{ .main = .center, .cross = .center },
             }, .{
                 Svg{ .path = Icons.check, .size = self.size * 0.7, .color = self.color },
-            });
+            }));
         }
     }
 };
@@ -154,9 +154,9 @@ const CheckboxLabel = struct {
 
     pub fn render(self: CheckboxLabel, cx: *ui.Cx) void {
         if (self.label) |lbl| {
-            cx.box(.{}, .{
+            cx.render(ui.box(.{}, .{
                 ui.text(lbl, .{ .color = self.color, .size = self.font_size }),
-            });
+            }));
         }
     }
 };

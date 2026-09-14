@@ -48,11 +48,9 @@ pub const ProgressBar = struct {
         const clamped = @max(0.0, @min(1.0, self.progress));
         const fill_width = self.width * clamped;
 
-        // Resolve identity once and use it for *both* the a11y correlation
-        // and the box (PR 11b.2b). Previously the a11y call referenced
-        // `LayoutId.fromString(self.id)` while the box below used `cx.box`'s
-        // auto id — two different ids, so a11y bounds correlation pointed at
-        // an element that didn't exist.
+        // Resolve identity once and use it for both a11y correlation and the
+        // box. Previously, the visual box generated a different automatic id,
+        // so a11y bounds correlation pointed at an element that did not exist.
         const layout_id = cx.idFor(self.id);
 
         // Push accessible element (role: progressbar)
@@ -67,7 +65,7 @@ pub const ProgressBar = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .width = self.width,
             .height = self.height,
             .background = background,
@@ -84,7 +82,7 @@ pub const ProgressBar = struct {
                     null,
                 .secondary_color = secondary_fill,
             },
-        });
+        }));
     }
 };
 
@@ -100,23 +98,23 @@ const ProgressFillBar = struct {
         // Secondary fill (e.g., buffer progress) rendered behind primary
         if (self.secondary_width) |sw| {
             if (sw > 0) {
-                cx.box(.{
+                cx.render(ui.box(.{
                     .width = sw,
                     .height = self.height,
                     .background = self.secondary_color,
                     .corner_radius = self.radius,
-                }, .{});
+                }, .{}));
             }
         }
 
         // Primary fill
         if (self.width > 0) {
-            cx.box(.{
+            cx.render(ui.box(.{
                 .width = self.width,
                 .height = self.height,
                 .background = self.color,
                 .corner_radius = self.radius,
-            }, .{});
+            }, .{}));
         }
     }
 };
