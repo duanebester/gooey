@@ -190,7 +190,7 @@ const Canvas = struct {
         // Stamp the panel with an explicit layout id so `onEvent` can hit-test
         // right-clicks against exactly this box. `cx.idFor(CANVAS_ID)` hashes
         // the string the same way the handler does, so the ids match.
-        cx.boxWithLayoutId(cx.idFor(CANVAS_ID), .{
+        cx.render(ui.box_with_layout_id(cx.idFor(CANVAS_ID), .{
             .fill_width = true,
             .grow_height = true,
             .background = ui.Color.white,
@@ -203,7 +203,7 @@ const Canvas = struct {
                 .size = 16,
                 .color = ui.Color.rgb(0.6, 0.6, 0.6),
             }),
-        });
+        }));
     }
 };
 

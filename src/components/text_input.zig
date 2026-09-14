@@ -91,7 +91,7 @@ pub const TextInput = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.box(.{ .fill_width = self.fill_width }, .{
+        cx.render(ui.box(.{ .fill_width = self.fill_width }, .{
             ui.input(self.id, .{
                 .placeholder = self.placeholder,
                 .secure = self.secure,
@@ -114,6 +114,6 @@ pub const TextInput = struct {
                 .tab_stop = self.tab_stop,
                 .on_blur_handler = self.on_blur,
             }),
-        });
+        }));
     }
 };

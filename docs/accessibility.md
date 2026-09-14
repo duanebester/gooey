@@ -66,24 +66,24 @@ Checkbox{
 
 ### Adding Accessibility to Custom Elements
 
-For custom UI elements, use `b.accessible()`:
+For custom UI elements, use `cx.accessible()`:
 
 > **Advanced API:** This is the low-level accessibility-tree builder. Prefer
 > `gooey.components.*` for standard controls because those components maintain
 > roles, state, and names automatically.
 
 ```zig
-fn renderCustomWidget(b: *ui.Builder) void {
+fn renderCustomWidget(cx: *ui.Cx) void {
     // Push accessible element BEFORE the visual element
-    const a11y_pushed = b.accessible(.{
+    const a11y_pushed = cx.accessible(.{
         .role = .button,
         .name = "Custom action",
         .state = .{ .disabled = is_disabled },
     });
-    defer if (a11y_pushed) b.accessibleEnd();
+    defer if (a11y_pushed) cx.accessibleEnd();
 
     // Visual rendering
-    b.box(.{ ... }, .{ ... });
+    cx.render(ui.box(.{ ... }, .{ ... }));
 }
 ```
 
@@ -93,10 +93,10 @@ Announce dynamic changes to screen reader users:
 
 ```zig
 // Non-urgent update (announced when idle)
-b.announce("3 items selected", .polite);
+cx.announce("3 items selected", .polite);
 
 // Critical alert (interrupts current speech)
-b.announce("Error: Connection lost!", .assertive);
+cx.announce("Error: Connection lost!", .assertive);
 ```
 
 ---
@@ -109,7 +109,7 @@ b.announce("Error: Connection lost!", .assertive);
 │                                                             │
 │   Button{ .label = "+", .accessible_name = "Increase" }     │
 │                           │                                 │
-│   b.accessible(.{ .role = .button, .name = "Save" })        │
+│   cx.accessible(.{ .role = .button, .name = "Save" })       │
 └───────────────────────────┼─────────────────────────────────┘
                             │
                             ▼
@@ -287,45 +287,45 @@ All standard Gooey components have accessibility built-in:
 ```zig
 fn renderForm(cx: *Cx) void {
     const s = cx.state(FormState);
-    const b = cx.builder();
 
-    // Form heading
-    if (b.accessible(.{ .role = .heading, .name = "Contact Form", .heading_level = 1 })) {
-        defer b.accessibleEnd();
+    // Scope the heading node to its visual text.
+    {
+        const pushed = cx.accessible(.{
+            .role = .heading,
+            .name = "Contact Form",
+            .heading_level = 1,
+        });
+        defer if (pushed) cx.accessibleEnd();
+        cx.render(ui.text("Contact Form", .{ .size = 24, .weight = .bold }));
     }
-    cx.text("Contact Form", .{ .size = 24, .weight = .bold });
 
-    // Name field
-    gooey.components.TextInput{
+    cx.render(gooey.components.TextInput{
         .id = "name",
         .placeholder = "Your name",
         .accessible_name = "Full name",
         .bind = &s.name,
-    };
+    });
 
-    // Email field
-    gooey.components.TextInput{
+    cx.render(gooey.components.TextInput{
         .id = "email",
         .placeholder = "email@example.com",
         .accessible_name = "Email address",
         .bind = &s.email,
-    };
+    });
 
-    // Subscribe checkbox
-    gooey.components.Checkbox{
+    cx.render(gooey.components.Checkbox{
         .id = "subscribe",
         .selected = s.subscribe,
         .label = "Subscribe to newsletter",
         .on_click_handler = cx.update(FormState.toggleSubscribe),
-    };
+    });
 
-    // Submit button
-    gooey.components.Button{
+    cx.render(gooey.components.Button{
         .label = "Send",
         .accessible_name = "Submit contact form",
         .disabled = !s.isValid(),
         .on_click_handler = cx.update(FormState.submit),
-    };
+    });
 }
 ```
 
@@ -336,46 +336,43 @@ fn renderForm(cx: *Cx) void {
 ### Basic Pattern
 
 ```zig
-fn renderCustomElement(b: *ui.Builder) void {
+fn renderCustomElement(cx: *ui.Cx) void {
     // 1. Push accessible element FIRST
-    const a11y_pushed = b.accessible(.{
+    const a11y_pushed = cx.accessible(.{
         .role = .button,
         .name = "Action name",
     });
-    defer if (a11y_pushed) b.accessibleEnd();
+    defer if (a11y_pushed) cx.accessibleEnd();
 
     // 2. Render visual element
-    b.box(.{ ... }, .{ ... });
+    cx.render(ui.box(.{ ... }, .{ ... }));
 }
 ```
 
 ### With Layout ID (for bounds tracking)
 
 ```zig
-const layout_mod = @import("layout/layout.zig");
-const LayoutId = layout_mod.LayoutId;
+fn renderTrackedElement(cx: *ui.Cx, id: []const u8) void {
+    const layout_id = cx.idFor(id);
 
-fn renderTrackedElement(b: *ui.Builder, id: []const u8) void {
-    const layout_id = LayoutId.fromString(id);
-
-    const a11y_pushed = b.accessible(.{
+    const a11y_pushed = cx.accessible(.{
         .layout_id = layout_id,  // Links to visual element bounds
         .role = .button,
         .name = "Tracked button",
     });
-    defer if (a11y_pushed) b.accessibleEnd();
+    defer if (a11y_pushed) cx.accessibleEnd();
 
-    b.boxWithId(id, .{ ... }, .{ ... });
+    cx.render(ui.box_with_layout_id(layout_id, .{ ... }, .{ ... }));
 }
 ```
 
 ### Complex Widget Example
 
 ```zig
-fn renderSlider(b: *ui.Builder, value: f32, min: f32, max: f32) void {
-    const layout_id = LayoutId.fromString("volume-slider");
+fn renderSlider(cx: *ui.Cx, value: f32, min: f32, max: f32) void {
+    const layout_id = cx.idFor("volume-slider");
 
-    const a11y_pushed = b.accessible(.{
+    const a11y_pushed = cx.accessible(.{
         .layout_id = layout_id,
         .role = .slider,
         .name = "Volume",
@@ -383,9 +380,9 @@ fn renderSlider(b: *ui.Builder, value: f32, min: f32, max: f32) void {
         .value_max = max,
         .value_now = value,
     });
-    defer if (a11y_pushed) b.accessibleEnd();
+    defer if (a11y_pushed) cx.accessibleEnd();
 
-    // Visual slider rendering...
+    cx.render(ui.box_with_layout_id(layout_id, .{ ... }, .{ ... }));
 }
 ```
 
@@ -405,13 +402,13 @@ fn renderSlider(b: *ui.Builder, value: f32, min: f32, max: f32) void {
 
 ```zig
 // Status update (polite)
-b.announce("File saved successfully", .polite);
+cx.announce("File saved successfully", .polite);
 
 // Error alert (assertive)
-b.announce("Connection lost! Please check your network.", .assertive);
+cx.announce("Connection lost! Please check your network.", .assertive);
 
 // Progress update
-b.announce("Upload 75% complete", .polite);
+cx.announce("Upload 75% complete", .polite);
 ```
 
 ### Live Region Elements
@@ -420,23 +417,23 @@ For content that changes regularly:
 
 ```zig
 // Status bar that updates automatically
-if (b.accessible(.{
+if (cx.accessible(.{
     .role = .status,
     .name = status_message,
     .live = .polite,  // Announce when content changes
 })) {
-    defer b.accessibleEnd();
+    defer cx.accessibleEnd();
 }
 cx.render(ui.text(status_message, .{ ... }));
 
 // Alert that appears
 if (show_error) {
-    if (b.accessible(.{
+    if (cx.accessible(.{
         .role = .alert,
         .name = error_message,
         .live = .assertive,  // Immediate announcement
     })) {
-        defer b.accessibleEnd();
+        defer cx.accessibleEnd();
     }
     cx.render(ui.box(.{ .background = Color.red }, .{
         ui.text(error_message, .{ ... }),
@@ -542,12 +539,12 @@ pub const MyWidget = struct {
         defer if (a11y_pushed) cx.accessibleEnd();
 
         // Visual rendering
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .on_click_handler = if (self.enabled) self.on_click_handler else null,
             // ... styling ...
         }, .{
             ui.text(self.label, .{ ... }),
-        });
+        }));
     }
 };
 ```

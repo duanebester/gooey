@@ -125,7 +125,7 @@ pub const Button = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .padding = self.size_preset.padding(),
             .background = final_bg,
             .hover_background = final_hover,
@@ -138,7 +138,7 @@ pub const Button = struct {
                 .color = final_fg,
                 .size = self.size_preset.fontSize(t.font_size_base),
             }),
-        });
+        }));
     }
 
     fn getVariantColors(self: Button, t: *const Theme) struct { bg: Color, hover: Color, fg: Color } {

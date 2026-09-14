@@ -180,7 +180,7 @@ fn ModalOverlay(comptime ChildType: type) type {
         pub fn render(self: @This(), cx: *ui.Cx) void {
             // Full viewport overlay. Uses the dialog's pre-resolved layout id
             // (PR 11b.2b) so the overlay box and the a11y node share one hash.
-            cx.boxWithLayoutId(self.layout_id, .{
+            cx.render(ui.box_with_layout_id(self.layout_id, .{
                 // Full viewport via floating with no parent attachment
                 .floating = .{
                     .attach_to_parent = false,
@@ -206,7 +206,7 @@ fn ModalOverlay(comptime ChildType: type) type {
                     .corner_radius = self.corner_radius,
                     .shadow = self.shadow,
                 },
-            });
+            }));
         }
     };
 }
@@ -229,7 +229,7 @@ fn ModalContent(comptime ChildType: type) type {
             // Calculate scaled dimensions (if max_width is set)
             const scaled_max_width: ?f32 = if (self.max_width) |mw| mw * scale else null;
 
-            cx.box(.{
+            cx.render(ui.box(.{
                 .max_width = scaled_max_width,
                 .padding = .{ .all = self.padding },
                 .background = self.background,
@@ -244,7 +244,7 @@ fn ModalContent(comptime ChildType: type) type {
                 .direction = .column,
             }, .{
                 self.child,
-            });
+            }));
         }
     };
 }

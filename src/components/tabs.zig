@@ -129,7 +129,7 @@ pub const Tab = struct {
             else => bg,
         };
 
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .padding = .{ .symmetric = .{ .x = self.padding_x, .y = self.padding_y } },
             .background = actual_bg,
             .hover_background = hover_bg,
@@ -141,7 +141,7 @@ pub const Tab = struct {
             .on_click_handler = self.on_click_handler orelse self.on_click,
         }, .{
             ui.text(self.label, .{ .color = text_color, .size = font_size }),
-        });
+        }));
     }
 
     /// Create a tab with a common variant preset
@@ -249,7 +249,7 @@ pub const TabBar = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .direction = .row,
             .gap = self.gap,
             .background = container_bg,
@@ -275,7 +275,7 @@ pub const TabBar = struct {
                 .grow = self.fill_width,
                 .set_size = @intCast(self.tabs.len),
             },
-        });
+        }));
     }
 };
 
@@ -398,7 +398,7 @@ const TabBarItem = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .padding = .{ .symmetric = .{ .x = self.padding_x, .y = self.padding_y } },
             .background = actual_bg,
             .hover_background = hover_bg,
@@ -410,7 +410,7 @@ const TabBarItem = struct {
             .on_click_handler = on_click,
         }, .{
             ui.text(self.label, .{ .color = text_color, .size = self.font_size }),
-        });
+        }));
     }
 };
 

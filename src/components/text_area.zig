@@ -88,7 +88,7 @@ pub const TextArea = struct {
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
-        cx.box(.{ .fill_width = self.fill_width }, .{
+        cx.render(ui.box(.{ .fill_width = self.fill_width }, .{
             ui.textArea(self.id, .{
                 .placeholder = self.placeholder,
                 .bind = self.bind,
@@ -113,6 +113,6 @@ pub const TextArea = struct {
                 .tab_stop = self.tab_stop,
                 .on_blur_handler = self.on_blur,
             }),
-        });
+        }));
     }
 };

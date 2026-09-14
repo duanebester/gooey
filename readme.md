@@ -414,9 +414,27 @@ fn render(cx: *Cx) void {
 }
 ```
 
+When layout, accessibility, focus, or input must share one identity, resolve it once and
+attach it to the declarative box:
+
+```/dev/null/identified_box.zig#L1-12
+const layout_id = cx.idFor("save-button");
+const pushed = cx.accessible(.{
+    .layout_id = layout_id,
+    .role = .button,
+    .name = "Save",
+});
+defer if (pushed) cx.accessibleEnd();
+
+cx.render(ui.box_with_layout_id(layout_id, .{}, .{
+    ui.text("Save", .{}),
+}));
+```
+
 **Key primitives:**
 
-- `ui.box()` - Container with flexbox layout
+- `ui.box()` - Anonymous container with flexbox layout
+- `ui.box_with_layout_id()` - Container with identity resolved once by `cx.idFor()`
 - `ui.rect()` - Childless box (dividers, spacers, colored blocks)
 - `ui.hstack()` / `ui.vstack()` - Horizontal/vertical stacks
 - `ui.text()` / `ui.textFmt()` - Text rendering

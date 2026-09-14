@@ -105,7 +105,7 @@ pub const Svg = struct {
         const final_color = fill_color orelse Color.transparent;
 
         // Emit the SVG primitive (atlas handles caching internally)
-        cx.boxWithLayoutId(layout_id, .{
+        cx.render(ui.box_with_layout_id(layout_id, .{
             .width = w,
             .height = h,
         }, .{
@@ -119,7 +119,7 @@ pub const Svg = struct {
                 .viewbox = self.viewbox,
                 .has_fill = has_fill,
             },
-        });
+        }));
     }
 };
 
