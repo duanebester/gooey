@@ -1,0 +1,102 @@
+# =============================================================================
+# Discord Merge Notification
+# =============================================================================
+# Posts a single embed to a Discord channel when a pull request is merged.
+#
+# Closed-without-merge events are ignored, so this is strictly a "landed on
+# main" signal rather than general PR chatter.
+#
+# Trigger note: `pull_request_target` is used instead of `pull_request` because
+# secrets are not exposed to `pull_request` runs originating from forks, which
+# would silently drop notifications for outside contributions.  This workflow
+# never checks out or executes pull request code, so the usual
+# `pull_request_target` privilege-escalation risk does not apply.
+#
+# Setup: add a repository secret `DISCORD_WEBHOOK_URL` containing the channel
+# webhook URL (Discord: Channel Settings -> Integrations -> Webhooks).  Do not
+# append `/github` to it; this workflow sends a native Discord payload.
+# =============================================================================
+
+name: Discord Merge Notification
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+# No repository access is required: every value comes from the event payload.
+permissions: {}
+
+concurrency:
+  group: discord-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Notify Discord
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    steps:
+      - name: Post merge embed
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_MERGER: ${{ github.event.pull_request.merged_by.login }}
+          PR_MERGER_AVATAR: ${{ github.event.pull_request.merged_by.avatar_url }}
+          PR_ADDITIONS: ${{ github.event.pull_request.additions }}
+          PR_DELETIONS: ${{ github.event.pull_request.deletions }}
+          PR_FILES: ${{ github.event.pull_request.changed_files }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL is not configured; skipping."
+            exit 0
+          fi
+
+          # Build the payload with jq so titles containing quotes, backslashes,
+          # or newlines cannot break out of the JSON string.
+          payload="$(jq -n \
+            --arg title "#${PR_NUMBER}: ${PR_TITLE}" \
+            --arg url "${PR_URL}" \
+            --arg merger "${PR_MERGER}" \
+            --arg avatar "${PR_MERGER_AVATAR}" \
+            --arg author "${PR_AUTHOR}" \
+            --arg base "${PR_BASE}" \
+            --arg diff "+${PR_ADDITIONS} / -${PR_DELETIONS} across ${PR_FILES} files" \
+            --arg footer "${REPO}" \
+            '{
+              embeds: [{
+                title: $title[0:256],
+                url: $url,
+                color: 6570404,
+                author: { name: ("merged by " + $merger), icon_url: $avatar },
+                fields: [
+                  { name: "Author", value: $author, inline: true },
+                  { name: "Target", value: $base, inline: true },
+                  { name: "Diff", value: $diff, inline: false }
+                ],
+                footer: { text: $footer }
+              }]
+            }')"
+
+          # Discord answers 204 on success; anything else is a delivery failure
+          # and must fail the job rather than pass silently.
+          status="$(printf '%s' "${payload}" \
+            | curl --silent --show-error --fail-with-body \
+                --output /dev/stderr \
+                --write-out '%{http_code}' \
+                --request POST \
+                --header 'Content-Type: application/json' \
+                --data @- \
+                "${DISCORD_WEBHOOK_URL}")"
+
+          if [ "${status}" != "204" ]; then
+            echo "::error::Discord webhook returned HTTP ${status}"
+            exit 1
+          fi
