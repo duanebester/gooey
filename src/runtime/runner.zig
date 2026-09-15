@@ -65,20 +65,25 @@ pub fn runCx(
     // It outlives `main`, so it outlives this function's stack frame.
     const allocator = init.gpa;
 
-    // Initialize platform
-    var plat = try Platform.init();
+    // Initialize the platform in place. `plat` lives in this frame, which
+    // outlives the event loop, so the address native listeners capture during
+    // initialization stays valid. This replaces a by-value `Platform.init()`
+    // plus a Linux-only `plat.setupListeners()` follow-up call: Wayland
+    // registry listeners retain `&self`, so they could only be armed after the
+    // value had reached its final address. Each backend now completes its own
+    // host wiring inside `initInPlace`, and shared runtime code no longer
+    // encodes which protocol needs a second initialization phase.
+    var plat: Platform = undefined;
+    try plat.initInPlace(allocator);
     defer plat.deinit();
-
-    // Linux-specific: set up Wayland listeners to get compositor/globals
-    if (platform.is_linux) {
-        try plat.setupListeners();
-    }
 
     // Default background color
     const bg_color = config.background_color orelse geometry_mod.Color.rgba(0.95, 0.95, 0.95, 1.0);
 
-    // Create window
-    var window = try PlatformWindow.init(allocator, &plat, .{
+    // Window options are named rather than passed as a literal because the
+    // boundary takes `*const WindowOptions`; the struct is far over the
+    // 16-byte by-value threshold.
+    const window_options = interface_mod.WindowOptions{
         .title = config.title,
         .width = config.width,
         .height = config.height,
@@ -88,19 +93,22 @@ pub fn runCx(
         .min_size = config.min_size,
         .max_size = config.max_size,
         .centered = config.centered,
-        // Glass/transparency options
+        // Glass/transparency options. `glass_style` is passed straight through:
+        // there is now one canonical `GlassStyle` shared by every backend, so
+        // the previous `@enumFromInt(@intFromEnum(...))` bridge between two
+        // differently ordered enums is gone.
         .background_opacity = config.background_opacity,
-        .glass_style = @enumFromInt(@intFromEnum(config.glass_style)),
+        .glass_style = config.glass_style,
         .glass_corner_radius = config.glass_corner_radius,
         .titlebar_transparent = config.titlebar_transparent,
         .full_size_content = config.full_size_content,
-    });
-    defer window.deinit();
+    };
 
-    // Linux-specific: register window with platform for pointer/input handling
-    if (platform.is_linux) {
-        plat.setActiveWindow(window);
-    }
+    // Create window. `PlatformWindow.init` registers itself with the platform
+    // and, where the host requires it, routes input to itself — so there is no
+    // longer a Linux-only `plat.setActiveWindow(window)` call here.
+    var window = try PlatformWindow.init(allocator, &plat, &window_options);
+    defer window.deinit();
 
     // Resolve IO: caller-provided instance, else the runtime-selected `init.io`.
     const io = config.io orelse init.io;
@@ -196,13 +204,13 @@ pub fn CxConfig(comptime State: type) type {
         // Glass/transparency options (macOS only)
 
         /// Background opacity (0.0 = fully transparent, 1.0 = opaque)
-        background_opacity: f32 = 1.0,
+        background_opacity: f64 = 1.0,
 
         /// Glass blur style
-        glass_style: interface_mod.WindowOptions.GlassStyleCompat = .none,
+        glass_style: interface_mod.GlassStyle = .none,
 
         /// Corner radius for glass effect
-        glass_corner_radius: f32 = 16.0,
+        glass_corner_radius: f64 = 16.0,
 
         /// Make titlebar transparent
         titlebar_transparent: bool = false,

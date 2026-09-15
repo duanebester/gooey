@@ -19,6 +19,7 @@ const text_mod = @import("../../text/mod.zig");
 const svg_instance_mod = @import("../../scene/svg_instance.zig");
 const image_instance_mod = @import("../../scene/image_instance.zig");
 const scene_renderer = @import("scene_renderer.zig");
+const geometry = @import("../../core/geometry.zig");
 pub const vk_types = @import("vk_types.zig");
 const vk_pipelines = @import("vk_pipelines.zig");
 const vk_atlas = @import("vk_atlas.zig");
@@ -186,6 +187,11 @@ pub const VulkanRenderer = struct {
 
     // Scale factor for HiDPI
     scale_factor: f64 = 1.0,
+
+    // Framebuffer clear color, republished by `Window.renderFrame` from
+    // `Window.getClearColor()` before every frame. The default only covers the
+    // window's very first record, before the owner has spoken.
+    clear_color: geometry.Color = geometry.Color.rgba(0.1, 0.1, 0.12, 1.0),
 
     // Render pass & framebuffers
     render_pass: vk.RenderPass = null,
@@ -851,6 +857,17 @@ pub const VulkanRenderer = struct {
     // Resize
     // =========================================================================
 
+    /// Set the color the render pass clears the framebuffer to.
+    ///
+    /// Recorded into the next command buffer rather than applied immediately:
+    /// frames in flight must keep the clear they were recorded with.
+    pub fn setClearColor(self: *Self, color: geometry.Color) void {
+        std.debug.assert(color.a >= 0.0);
+        std.debug.assert(color.a <= 1.0);
+
+        self.clear_color = color;
+    }
+
     /// Resize the renderer (recreates swapchain).
     /// width/height are logical pixels, scale_factor converts to physical pixels.
     pub fn resize(self: *Self, width: u32, height: u32, scale_factor: f64) void {
@@ -1245,7 +1262,12 @@ pub const VulkanRenderer = struct {
         self.recordAtlasTransfers(cmd, transfers);
 
         // Begin render pass
-        const clear_value = vk.clearColor(0.1, 0.1, 0.12, 1.0);
+        const clear_value = vk.clearColor(
+            self.clear_color.r,
+            self.clear_color.g,
+            self.clear_color.b,
+            self.clear_color.a,
+        );
         const render_pass_info = vk.RenderPassBeginInfo{
             .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .pNext = null,

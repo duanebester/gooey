@@ -1019,6 +1019,7 @@ pub fn build(b: *std.Build) void {
     }
 
     addWasmBuilds(b);
+    addLinuxTypecheck(b);
 }
 
 // =============================================================================
@@ -1133,6 +1134,208 @@ fn addChartsExample(
     const run_cmd = b.addRunArtifact(exe);
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
+}
+
+// =============================================================================
+// Linux Type Checking (host-independent)
+// =============================================================================
+
+/// Absolute ceiling on the number of Linux typecheck roots. Each root is a
+/// full semantic analysis of the Linux tree, so the count bounds both build
+/// graph size and worst-case step wall time.
+const typecheck_linux_root_count_max: usize = 8;
+
+/// How to obtain the headers `typecheck-linux` needs. Shared by the skip
+/// notice and the `-Dtypecheck-linux-required=true` failure so the actionable
+/// instructions survive either outcome.
+const typecheck_linux_fetch_help: []const u8 =
+    "  Fetch them (not vendored; see CLAUDE.md §12):\n" ++
+    "    mkdir -p /tmp/vkh && cd /tmp/vkh && curl -sSL -o vh.tar.gz \\\n" ++
+    "      https://github.com/KhronosGroup/Vulkan-Headers/archive/" ++
+    "refs/tags/v1.3.280.tar.gz && tar xzf vh.tar.gz\n" ++
+    "  Then re-run:\n" ++
+    "    zig build typecheck-linux \\\n" ++
+    "      -Dvulkan-headers=/tmp/vkh/Vulkan-Headers-1.3.280/include";
+
+/// A single semantic-analysis root for the `typecheck-linux` step.
+const TypecheckRoot = struct {
+    /// Source file analyzed as the root module.
+    source: []const u8,
+    /// True when the root is the `gooey` library itself and must be analyzed
+    /// as a test binary so `test {}` blocks are reachable; false when it is an
+    /// example that imports `gooey` as a dependency.
+    as_test: bool,
+};
+
+/// Adds the opt-in `typecheck-linux` step: full semantic analysis of the
+/// Linux/Wayland/Vulkan backend from any host, with no linking.
+///
+/// Why this exists: `src/platform/linux/**` is only reachable by the compiler
+/// when the target is Linux, and the macOS development hosts (and any CI
+/// runner without a Linux job) therefore could not compile it at all. The one
+/// blocker was `src/platform/linux/vulkan.zig`, which `@cImport`s
+/// `vulkan/vulkan.h`; `wayland.zig` and `dbus.zig` use plain `extern`
+/// declarations and need no headers. Supplying the Vulkan headers plus the
+/// four-line Wayland forward-declaration stub in `tools/typecheck/` closes a
+/// permanent verification gap where Linux-only code could only be reviewed by
+/// hand.
+///
+/// Getting the headers (not vendored — CLAUDE.md §12 forbids third-party
+/// dependencies in-tree, and the Khronos headers are versioned upstream):
+///
+/// ```sh
+/// mkdir -p /tmp/vkh && cd /tmp/vkh
+/// curl -sSL -o vh.tar.gz \
+///     https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.3.280.tar.gz
+/// tar xzf vh.tar.gz
+/// cd -
+/// zig build typecheck-linux \
+///     -Dvulkan-headers=/tmp/vkh/Vulkan-Headers-1.3.280/include
+/// ```
+///
+/// The step is deliberately not wired into `install`, `test`, or any default
+/// step: it needs an operator-supplied path, so making it default would break
+/// `zig build` for everyone who has not fetched the headers. Without the path
+/// the step skips and says so; `-Dtypecheck-linux-required=true` turns that
+/// skip into a failure, which is what CI must use so a green run means the
+/// Linux tree was actually analyzed.
+///
+/// No system libraries are linked. Library resolution happens *before*
+/// semantic analysis, so a single `-lvulkan` would fail on a macOS host and
+/// hide the errors this step exists to find. libc is still enabled because
+/// `@cImport` needs a C translation environment, and Zig ships cross-compiling
+/// glibc stubs. Binary emission is suppressed by never asking for the emitted
+/// binary: `std.Build.Step.Compile` leaves `generated_bin` null until
+/// `getEmittedBin()` is called and then passes `-fno-emit-bin` itself, so
+/// depending on the compile step alone gives exact `-fno-emit-bin` semantics
+/// through the build API. No helper program is needed.
+fn addLinuxTypecheck(b: *std.Build) void {
+    const step = b.step(
+        "typecheck-linux",
+        "Semantically analyze the Linux backend from any host (needs -Dvulkan-headers)",
+    );
+
+    const vulkan_headers = b.option(
+        []const u8,
+        "vulkan-headers",
+        "Path to a Vulkan-Headers `include` directory, for `typecheck-linux`",
+    );
+
+    // A skip that exits 0 is indistinguishable from a pass, so a CI job
+    // wiring up this step would be permanently green while checking nothing.
+    // CI sets `-Dtypecheck-linux-required=true` and gets a hard failure on
+    // missing headers; local developers keep the friendly skip.
+    const required = b.option(
+        bool,
+        "typecheck-linux-required",
+        "Fail `typecheck-linux` instead of skipping when -Dvulkan-headers is absent",
+    ) orelse false;
+
+    const headers_path = vulkan_headers orelse {
+        if (required) {
+            const fail = b.addFail(b.fmt(
+                "typecheck-linux: required but no Vulkan headers supplied.\n{s}",
+                .{typecheck_linux_fetch_help},
+            ));
+            step.dependOn(&fail.step);
+            return;
+        }
+
+        const notice = b.addSystemCommand(&.{
+            "echo",
+            b.fmt(
+                "typecheck-linux: SKIPPED (checked nothing) — no Vulkan headers" ++
+                    " supplied.\n{s}\n" ++
+                    "  CI should pass -Dtypecheck-linux-required=true so this" ++
+                    " skip fails instead.",
+                .{typecheck_linux_fetch_help},
+            ),
+        });
+        step.dependOn(&notice.step);
+        return;
+    };
+
+    const linux_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .gnu,
+    });
+    std.debug.assert(linux_target.result.os.tag == .linux);
+    std.debug.assert(linux_target.result.cpu.arch == .x86_64);
+
+    // `src/examples/linux_demo.zig` is the Linux entry point and reaches the
+    // window/event/render path. The `src/root.zig` test root covers far more
+    // code: every `test {}` block in the library, plus the `refAllDecls`
+    // discovery chain. `src/examples/glass.zig` is macOS-only at run time but
+    // is the one example that touches glass styling, so typechecking it for
+    // Linux proves the capability gate actually compiles out.
+    const roots = [_]TypecheckRoot{
+        .{ .source = "src/root.zig", .as_test = true },
+        .{ .source = "src/examples/linux_demo.zig", .as_test = false },
+        .{ .source = "src/examples/glass.zig", .as_test = false },
+    };
+    comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
+
+    for (roots) |root| {
+        addLinuxTypecheckRoot(b, step, linux_target, headers_path, root);
+    }
+}
+
+/// Analyzes one root for the Linux target. Split out so `addLinuxTypecheck`
+/// keeps the option handling and the root list, and this owns per-root module
+/// wiring.
+fn addLinuxTypecheckRoot(
+    b: *std.Build,
+    step: *std.Build.Step,
+    target: std.Build.ResolvedTarget,
+    vulkan_headers: []const u8,
+    root: TypecheckRoot,
+) void {
+    std.debug.assert(root.source.len > 0);
+    std.debug.assert(vulkan_headers.len > 0);
+
+    const gooey_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .Debug,
+    });
+    addLinuxTypecheckIncludes(b, gooey_mod, vulkan_headers);
+
+    const compile = if (root.as_test) b.addTest(.{
+        .root_module = gooey_mod,
+    }) else blk: {
+        const root_mod = b.createModule(.{
+            .root_source_file = b.path(root.source),
+            .target = target,
+            .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_mod },
+            },
+        });
+        addLinuxTypecheckIncludes(b, root_mod, vulkan_headers);
+
+        break :blk b.addExecutable(.{
+            .name = b.fmt("typecheck-linux-{s}", .{std.fs.path.stem(root.source)}),
+            .root_module = root_mod,
+        });
+    };
+
+    // Depend on the compile step *only*. Installing it or calling
+    // `getEmittedBin()` would populate `generated_bin` and re-enable linking.
+    step.dependOn(&compile.step);
+}
+
+/// Applies the include paths the Linux `@cImport` needs. Both the `gooey`
+/// module and each importing root need them: include paths are per-module, and
+/// `@cImport` is resolved in the module that contains it.
+fn addLinuxTypecheckIncludes(
+    b: *std.Build,
+    module: *std.Build.Module,
+    vulkan_headers: []const u8,
+) void {
+    module.addIncludePath(.{ .cwd_relative = vulkan_headers });
+    module.addIncludePath(b.path("tools/typecheck"));
+    module.link_libc = true;
 }
 
 fn addWasmBuilds(b: *std.Build) void {

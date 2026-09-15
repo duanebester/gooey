@@ -77,13 +77,15 @@ Multi-Window Implementation Plan
 - **Window structs updated** (macOS, Linux, Web):
   - Added `window_id: WindowId = .invalid` field to all Window types
   - Added `getWindowId()` method for consistent access
-  - Updated `WindowVTable` interface with `getWindowId` for runtime polymorphism
+  - `PlatformWindow.init` registers itself with the platform and publishes focus
 
 - **Platform structs updated** (MacPlatform, LinuxPlatform, WebPlatform):
   - Added `WindowRegistry` instance to each platform
   - Added `registerWindow()`, `unregisterWindow()`, `getWindow()` methods
   - Added `getActiveWindowId()`, `setActiveWindowId()`, `windowCount()` methods
-  - Added `initWithAllocator()` for allocator flexibility
+  - Lifecycle is `initInPlace(self, allocator)`; the by-value `init()` /
+    `initWithAllocator()` pair was removed because a platform must not move
+    after native listeners retain `&self`
 
 ### Tasks
 
@@ -104,9 +106,19 @@ Multi-Window Implementation Plan
 
 3. **Hard Limits**: `MAX_WINDOWS = 32` enforced via assertions (per CLAUDE.md: "put a limit on everything")
 
-4. **Automatic Active Tracking**: First registered window becomes active; unregistering active window clears it
+4. **Explicit Active Tracking**: each backend publishes focus with
+   `setActiveWindowId` from its `Window.init`; unregistering the active window
+   clears the slot. Registration itself deliberately does _not_ elect a window
+   — an implicit "first window wins" inside `WindowRegistry.register` made the
+   backends disagree about which window was active for the same program.
 
-5. **VTable Support**: `WindowVTable` interface updated with `getWindowId` for runtime polymorphism
+5. **No runtime polymorphism**: `PlatformVTable` and `WindowVTable` have been
+   **removed**. The platform boundary is compile-time monomorphic — the backend
+   is selected once in `platform/mod.zig` and every call binds directly to its
+   concrete types. The vtables had zero consumers and formed a second contract
+   that had already drifted from the real one. Exact conformance is now
+   enforced at comptime by `src/platform/contract.zig`; see
+   `docs/platform_interface_design.md`.
 
 ### Design
 
@@ -220,10 +232,19 @@ pub const WindowRegistry = struct {
 
 ### Design
 
-> Note: the sketch below predates implementation. The shipped handle methods
-> in `src/runtime/window_handle.zig` take a `registry: *WindowRegistry`
-> parameter rather than `app: *App`, and the Cx variant is named
-> `updateWithCx()`.
+> Note: the sketch below predates implementation. The shipped handle methods in
+> `src/runtime/window_handle.zig` take a `plat: *Platform` parameter rather
+> than `app: *App`, and the Cx variant is named `updateWithCx()`.
+>
+> The platform's registry is now the single source of window identity: there is
+> no `App.registry`, and `PlatformWindow.init` registers itself, so
+> `window.getWindowId()` and the handle's `id` are always the same value. An
+> earlier design kept a second registry on `App`, which minted its own ids and
+> would silently diverge from the platform's. Handles resolve through
+> `plat.getWindow(id)`.
+>
+> `handle.close()` only _requests_ a host close; the owning `App` reclaims the
+> window at its next drain point. See `docs/platform_interface_design.md`.
 
 ```/dev/null/window_handle.zig#L1-55
 pub fn WindowHandle(comptime State: type) type {
@@ -293,7 +314,9 @@ pub fn WindowHandle(comptime State: type) type {
 
 Created `MultiWindowApp` struct in `src/runtime/multi_window_app.zig` that provides:
 
-- **App struct**: Owns platform, registry, and shared resources (text system, SVG atlas, image atlas)
+- **App struct**: Owns the platform and the shared resources (text system, SVG
+  atlas, image atlas). Window identity lives in the platform's registry, not on
+  `App`; `App` keeps only a fixed-capacity teardown list of open window ids.
 - **openWindow()**: Opens typed windows with `WindowHandle(State)` return for cross-window communication
 - **Shared resources**: Text system and atlases are created once and shared across all windows
 - **Quit behavior**: Configurable `quit_when_last_window_closes` (default: true)

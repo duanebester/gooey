@@ -1777,9 +1777,23 @@ pub const Window = struct {
         return self.platform_window;
     }
 
-    /// Set the accent color uniform for custom shaders
-    /// The alpha channel can be used as a mode selector
+    /// Set the accent color uniform for custom shaders.
+    /// The alpha channel can be used as a mode selector.
+    ///
+    /// Gated on the backend's comptime `capabilities.glass_effects`, the same
+    /// idiom as `Cx.setGlassStyle`. The accent tint is consumed by the
+    /// post-process pass, which only the Metal renderer has: reaching
+    /// `renderer.getPostProcess()` unconditionally made this method
+    /// uncompilable on Linux (`VulkanRenderer` has no such member) and on web.
+    /// Because nothing called it, the drift went unnoticed until
+    /// `zig build typecheck-linux` started analyzing the Linux tree.
+    ///
+    /// `glass_effects` is the honest flag here rather than a new one: it is
+    /// true exactly on the backend that composites a translucent, tinted
+    /// backdrop, which is the same pass the accent uniform feeds.
     pub fn setAccentColor(self: *Window, r: f32, g: f32, b: f32, a: f32) void {
+        if (comptime !platform.Platform.capabilities.glass_effects) return;
+
         if (self.platform_window) |w| {
             if (w.renderer.getPostProcess()) |pp| {
                 pp.uniforms.accent_color = .{ r, g, b, a };

@@ -21,37 +21,56 @@ pub const WebPlatform = struct {
     const Self = @This();
 
     /// Platform capabilities for Web/WASM
-    pub const capabilities = interface_mod.PlatformCapabilities{
+    pub const capabilities: interface_mod.PlatformCapabilities = .{
         .high_dpi = true,
         .multi_window = false, // Browser manages windows
         .gpu_accelerated = true,
         .display_link = false, // Uses requestAnimationFrame
         .can_close_window = false, // Can't close browser tabs
         .glass_effects = false, // CSS backdrop-filter would be separate
+        // Write-only: `clipboard.setText` forwards to
+        // `navigator.clipboard.writeText`, but `clipboard.getText` always
+        // returns null because paste arrives as a JS paste event injected as
+        // text input rather than through a read API.
         .clipboard = true,
         .file_dialogs = true, // Via <input type="file"> and Blob downloads
         .ime = true, // Via beforeinput/compositionend events
-        .custom_cursors = true, // Via CSS cursor property
+        // CSS could express every `CursorShape`, but `imports.zig` has no
+        // cursor binding, so `WebWindow.setCursorShape` only records the
+        // request and the JS host never applies it. Flip back to `true` in the
+        // same change that lands the import (design decision 7: unsupported
+        // operations must be explicit, and this is the mechanism).
+        .custom_cursors = false,
         .window_drag_by_content = false,
         .name = "Web/WASM",
         .graphics_backend = "WebGPU",
     };
 
-    pub fn init() !Self {
-        return initWithAllocator(std.heap.page_allocator);
-    }
+    /// Initialize in place.
+    ///
+    /// The previous by-value `init`/`initWithAllocator` pair forced the caller
+    /// to move the platform after construction, which is unsound for any
+    /// backend whose host retains `&self`. Web does not retain it today, but
+    /// the boundary is shared with Wayland, which does, so the contract pins
+    /// the in-place form on every backend (see `contract.verifyPlatform`).
+    pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
+        self.allocator = allocator;
+        self.window_registry = WindowRegistry.init(allocator);
+        self.running = true;
 
-    pub fn initWithAllocator(allocator: std.mem.Allocator) !Self {
-        return .{
-            .running = true,
-            .window_registry = WindowRegistry.init(allocator),
-            .allocator = allocator,
-        };
+        std.debug.assert(self.running);
+        std.debug.assert(self.window_registry.count() == 0);
     }
 
     pub fn deinit(self: *Self) void {
+        // Every window must have unregistered itself first; a live entry here
+        // means a `WebWindow.deinit` was skipped and its ID would dangle.
+        std.debug.assert(self.window_registry.count() == 0);
+
         self.window_registry.deinit();
         self.running = false;
+
+        std.debug.assert(!self.running);
     }
 
     // =========================================================================
@@ -59,45 +78,81 @@ pub const WebPlatform = struct {
     // =========================================================================
 
     /// Register a window with the platform and return its ID.
-    /// Note: Web only supports a single window.
+    ///
+    /// The browser owns tab and window management, so `capabilities`
+    /// advertises `multi_window = false`. Enforce that here rather than
+    /// letting a second canvas-less window register and silently never render.
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
-        return self.window_registry.register(window);
+        comptime std.debug.assert(!capabilities.multi_window);
+        std.debug.assert(self.window_registry.count() == 0);
+
+        const id = try self.window_registry.register(window);
+
+        std.debug.assert(id.isValid());
+        std.debug.assert(self.window_registry.count() == 1);
+        return id;
     }
 
     /// Unregister a window by ID.
     pub fn unregisterWindow(self: *Self, id: WindowId) void {
+        std.debug.assert(id.isValid());
+
         _ = self.window_registry.unregister(id);
+
+        std.debug.assert(!self.window_registry.contains(id));
     }
 
     /// Get a window by ID.
     pub fn getWindow(self: *const Self, id: WindowId) ?*anyopaque {
-        return self.window_registry.get(id);
+        const found = self.window_registry.get(id);
+        if (!id.isValid()) std.debug.assert(found == null);
+        return found;
     }
 
     /// Get the active window ID.
     pub fn getActiveWindowId(self: *const Self) ?WindowId {
-        return self.window_registry.getActiveWindow();
+        const active = self.window_registry.getActiveWindow();
+        if (active) |id| std.debug.assert(id.isValid());
+        if (self.window_registry.count() == 0) std.debug.assert(active == null);
+        return active;
     }
 
     /// Set the active window by ID.
     pub fn setActiveWindowId(self: *Self, id: ?WindowId) void {
+        if (id) |window_id| std.debug.assert(window_id.isValid());
+
         self.window_registry.setActiveWindow(id);
+
+        std.debug.assert(self.window_registry.getActiveWindow() == id);
     }
 
     /// Get the number of registered windows.
     pub fn windowCount(self: *const Self) u32 {
-        return self.window_registry.count();
+        const count = self.window_registry.count();
+        std.debug.assert(count <= 1); // Single-window backend; see `registerWindow`.
+        return count;
     }
 
-    /// On web, run() kicks off the animation loop (non-blocking)
+    /// Arm the browser frame callback and return immediately.
+    ///
+    /// This is the `DriveModel.host_callback` half of the contract: unlike the
+    /// native backends there is no loop to block in, because the host owns the
+    /// clock. `isRunning` is what lets the host know to keep rescheduling.
     pub fn run(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= 1);
+
         if (self.running) {
             imports.requestAnimationFrame();
         }
     }
 
+    /// Stop rescheduling frames. The browser tab itself stays open; see
+    /// `capabilities.can_close_window`.
     pub fn quit(self: *Self) void {
         self.running = false;
+
+        std.debug.assert(!self.running);
+        std.debug.assert(!self.isRunning());
     }
 
     pub fn isRunning(self: *const Self) bool {

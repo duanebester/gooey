@@ -435,3 +435,21 @@ test {
         std.testing.refAllDecls(leaf);
     }
 }
+
+test {
+    // Method *bodies* on `Cx` and `Window`, which the block above cannot
+    // reach. `refAllDecls(@This())` references the `Cx` / `Window` aliases,
+    // which forces struct-level analysis only: field types and decl
+    // signatures. A `pub fn` body is analyzed lazily, on first call. Neither
+    // type has in-tree callers for every method, so several bodies had never
+    // been compiled on any target — `Cx.setTitle` referenced a field renamed
+    // two refactors earlier and `Window.setAccentColor` reached a
+    // macOS-only renderer member. Both were found by inspection, not by CI.
+    //
+    // `refAllDecls` takes a pointer to each decl, so naming these two types
+    // explicitly makes every method body a hard compile error at test time,
+    // on every target the test root is built for — including the
+    // `typecheck-linux` step's Linux analysis.
+    std.testing.refAllDecls(Cx);
+    std.testing.refAllDecls(Window);
+}

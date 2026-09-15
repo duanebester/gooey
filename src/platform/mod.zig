@@ -20,16 +20,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 // =============================================================================
-// Platform Interface (for runtime polymorphism)
+// Shared contract
 // =============================================================================
 
 pub const interface = @import("interface.zig");
 
-/// Platform interface for runtime polymorphism
-pub const PlatformVTable = interface.PlatformVTable;
-
-/// Window interface for runtime polymorphism
-pub const WindowVTable = interface.WindowVTable;
+/// Exact compile-time verification of the platform boundary.
+pub const contract = @import("contract.zig");
 
 // PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
 // to free up the `Window` name for the upcoming `Gooey → Window` rename
@@ -49,6 +46,15 @@ pub const PlatformCapabilities = interface.PlatformCapabilities;
 
 /// Window creation options (platform-agnostic)
 pub const WindowOptions = interface.WindowOptions;
+
+/// How the selected backend's host hands control to Gooey.
+pub const DriveModel = interface.DriveModel;
+
+/// Cursor shapes selected by framework widgets.
+pub const CursorShape = interface.CursorShape;
+
+/// Translucent-background style, shared by every backend.
+pub const GlassStyle = interface.GlassStyle;
 
 /// Renderer capabilities
 pub const RendererCapabilities = interface.RendererCapabilities;
@@ -93,13 +99,15 @@ else switch (builtin.os.tag) {
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
-/// Platform type for the current OS (compile-time selected)
-pub const Platform = if (is_wasm)
-    backend.WebPlatform
-else if (is_linux)
-    backend.LinuxPlatform
-else
-    backend.MacPlatform;
+// Every backend namespace declares `Platform`, `PlatformWindow`, and
+// `drive_model`, and pins itself with `contract.verifyBackend`. Deriving the
+// public aliases from those canonical names — rather than switching on each
+// backend's own spelling (`MacPlatform`, `LinuxPlatform`, `WebPlatform`) —
+// means adding a backend cannot silently skip the contract, and the selection
+// logic no longer has to know what any backend calls its own types.
+
+/// Platform type for the current target (compile-time selected).
+pub const Platform = backend.Platform;
 
 /// OS-level window handle for the current target (compile-time selected).
 ///
@@ -112,12 +120,23 @@ else
 ///
 /// Renamed from `Window` in PR 7b.1a so the framework wrapper can
 /// claim that name in PR 7b.1b without a `platform.Window` collision.
-pub const PlatformWindow = if (is_wasm)
-    backend.WebWindow
-else if (is_linux)
-    backend.Window
-else
-    backend.Window;
+pub const PlatformWindow = backend.PlatformWindow;
+
+/// Host drive model of the selected backend.
+///
+/// `blocking_event_loop` on macOS and Linux, `host_callback` on web. This is a
+/// comptime constant, so branching on it costs nothing and the untaken arm is
+/// never analyzed.
+///
+/// Phase-4 groundwork, not a landed feature: every backend declares it and
+/// `contract.verifyBackend` pins its type, but no runtime code branches on it
+/// yet. The intended first consumer is `src/runtime/runner.zig`, which runs
+/// `plat.run()` and then unwinds its `defer`s — correct for
+/// `blocking_event_loop`, wrong for `host_callback`, where `run` returns
+/// immediately and teardown must wait for the host to stop calling back. Until
+/// that branch exists, this is verified documentation of a host difference
+/// rather than something the runtime honours.
+pub const drive_model: DriveModel = backend.drive_model;
 
 /// DisplayLink for vsync (native only, not available on Linux)
 pub const DisplayLink = if (is_wasm)

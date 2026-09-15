@@ -78,6 +78,7 @@ const MainState = struct {
                     .width = 420,
                     .height = 340,
                     .centered = true,
+                    .on_close = dialogWillClose,
                 },
             ) catch {
                 std.debug.print("Failed to open dialog window\n", .{});
@@ -125,29 +126,38 @@ const DialogState = struct {
         // Update main window's counter with our new value
         if (self.main_state) |main_win| {
             main_win.counter = self.new_value;
-            main_win.onDialogClosed();
-
-            // Close this dialog window
-            if (main_win.dialog_handle) |handle| {
-                if (main_win.app) |the_app| {
-                    handle.close(the_app.getRegistry());
-                }
-            }
+            closeDialog(main_win);
         }
     }
 
     /// Cancel and close dialog without applying changes
     pub fn cancel(self: *DialogState) void {
         if (self.main_state) |main_win| {
-            main_win.onDialogClosed();
+            closeDialog(main_win);
+        }
+    }
 
-            // Close this dialog window
-            if (main_win.dialog_handle) |handle| {
-                if (main_win.app) |the_app| {
-                    handle.close(the_app.getRegistry());
-                }
+    /// Request the dialog's close, then forget the handle.
+    ///
+    /// Order matters: `onDialogClosed` nulls `dialog_handle`, so reading the
+    /// handle first is what makes the close actually happen. Doing it the other
+    /// way round left the close block permanently unreachable and the dialog
+    /// window open.
+    ///
+    /// `handle.close` requests a host close rather than destroying the window,
+    /// which matters here: we are running inside the dialog's own button
+    /// handler. The owning `App` reclaims the window on its next teardown drain.
+    ///
+    /// The trailing `onDialogClosed` is not redundant with `dialogWillClose`:
+    /// backends that cannot close a window (web) never run the close callback,
+    /// and clearing the flag twice is harmless.
+    fn closeDialog(main_win: *MainState) void {
+        if (main_win.dialog_handle) |handle| {
+            if (main_win.app) |the_app| {
+                handle.close(the_app.getPlatform());
             }
         }
+        main_win.onDialogClosed();
     }
 
     /// Check if value has changed from snapshot
@@ -155,6 +165,18 @@ const DialogState = struct {
         return self.new_value != self.main_counter_snapshot;
     }
 };
+
+/// Host close handler for the dialog (the title-bar close button).
+///
+/// The Cancel/Apply buttons clear `dialog_open` themselves, but the OS close
+/// button reaches the window directly. Without this the flag would stay set,
+/// `openDialog` would refuse to reopen, and the closed window would never be
+/// reached by an `App` teardown drain. Returning true permits the close.
+fn dialogWillClose(cx: *Cx) bool {
+    const s = cx.state(DialogState);
+    if (s.main_state) |main_win| main_win.onDialogClosed();
+    return true;
+}
 
 // =============================================================================
 // Main Window Render
@@ -375,9 +397,12 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Create the multi-window app
+    // Create the multi-window app. Initialized in place because the app embeds
+    // a `Platform` by value and native listeners capture `&app.platform`;
+    // `app` lives in this frame, which outlives the event loop.
     const io = std.Io.Threaded.global_single_threaded.io();
-    var app = try MultiWindowApp.init(allocator, .{ .font_size = 16.0 }, io);
+    var app: MultiWindowApp = undefined;
+    try app.initInPlace(allocator, .{ .font_size = 16.0 }, io);
     defer app.deinit();
 
     // Create main window state with app reference

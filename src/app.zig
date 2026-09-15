@@ -64,7 +64,13 @@ pub const Cx = cx_mod.Cx;
 // to free up the `Window` name for the upcoming `Window → Window` rename
 // in PR 7b.1b. The local `PlatformWindow` alias is used everywhere
 // below where the OS-level handle (vs. the framework wrapper) is meant.
-pub const GlassStyle = platform.PlatformWindow.GlassStyle;
+// `GlassStyle` is one canonical enum shared by every backend
+// (`platform/interface.zig`). It used to be read off the selected
+// `PlatformWindow`, which meant each backend declared its own variant list
+// with its own tag values — and the runtime bridged them with
+// `@enumFromInt(@intFromEnum(...))`, silently producing the wrong style
+// wherever the orderings disagreed. They did.
+pub const GlassStyle = platform.GlassStyle;
 const Platform = platform.Platform;
 const PlatformWindow = platform.PlatformWindow;
 const Window = window_mod.Window;
@@ -235,15 +241,30 @@ pub fn WebApp(
         noinline fn initImpl() !void {
             const allocator = std.heap.wasm_allocator;
 
-            // Initialize platform
-            g_platform = try Platform.init();
+            // Initialize the platform in place. `g_platform` is a module-level
+            // global, so its payload address is stable for the lifetime of the
+            // module — which is what `initInPlace` requires: a backend may arm
+            // host callbacks that retain `self` during initialization. Setting
+            // the optional to an undefined payload first gives the payload its
+            // final address before anything reads it.
+            g_platform = @as(Platform, undefined);
+            const plat = &g_platform.?;
+            try plat.initInPlace(allocator);
 
-            // Create window
-            g_platform_window = try PlatformWindow.init(allocator, &g_platform.?, .{
+            // Window options are named because the boundary takes
+            // `*const WindowOptions`; the struct is well over the 16-byte
+            // by-value threshold. The canvas-backed window reads only these
+            // three fields today, but passing the shared type keeps web on the
+            // same contract as native instead of a web-local options struct.
+            const window_options = platform.WindowOptions{
                 .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
                 .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                 .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
-            });
+            };
+
+            // Create window. `PlatformWindow.init` registers itself with the
+            // platform, so there is no follow-up registration call here.
+            g_platform_window = try PlatformWindow.init(allocator, plat, &window_options);
 
             // Initialize Window (owns layout, scene, text_system)
             // Heap-allocated with initOwnedPtr to avoid ~400KB stack frame on WASM
@@ -472,8 +493,13 @@ pub fn WebApp(
             const bg = w.background_color;
             g_renderer.?.render(g_window.?.rendered_frame.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
 
-            // Request next frame
-            if (g_platform) |p| {
+            // Request next frame.
+            //
+            // `|*p|` rather than `|p|`: the latter copies the whole
+            // `Platform` out of the optional on every frame, which is both
+            // wasted work on the hot path (CLAUDE.md §20) and a move of a
+            // value that `initInPlace` exists to keep pinned.
+            if (g_platform) |*p| {
                 if (p.isRunning()) web_imports.requestAnimationFrame();
             }
         }

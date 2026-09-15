@@ -140,7 +140,9 @@ pub const LinuxPlatform = struct {
     modifier_shift: bool = false,
     modifier_super: bool = false,
 
-    // Active window for interactive operations (move/resize)
+    // Active window for input dispatch, frame pacing and interactive
+    // move/resize. Derived from `window_registry.active_window` — write it
+    // only through `setActiveWindowId` so the two cannot disagree.
     active_window: ?*LinuxWindow = null,
 
     // Window receiving the current touch gesture sequence
@@ -181,12 +183,19 @@ pub const LinuxPlatform = struct {
 
     /// Register a window with the platform and return its ID.
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
-        return self.window_registry.register(window);
+        std.debug.assert(@intFromPtr(window) != 0);
+        std.debug.assert(self.window_registry.count() < WindowRegistry.MAX_WINDOWS);
+
+        const id = try self.window_registry.register(window);
+        std.debug.assert(id.isValid());
+        return id;
     }
 
     /// Unregister a window by ID.
     pub fn unregisterWindow(self: *Self, id: WindowId) void {
+        std.debug.assert(id.isValid());
         _ = self.window_registry.unregister(id);
+        std.debug.assert(!self.window_registry.contains(id));
     }
 
     /// Get a window by ID.
@@ -200,8 +209,48 @@ pub const LinuxPlatform = struct {
     }
 
     /// Set the active window by ID.
+    ///
+    /// The `WindowId` is the single authority. Wayland input dispatch and the
+    /// render pump in `run()` both need the concrete `*LinuxWindow`, so the
+    /// pointer is *derived* here rather than published separately: two setters
+    /// would let `getActiveWindowId()` name one window while every event and
+    /// frame went to another.
     pub fn setActiveWindowId(self: *Self, id: ?WindowId) void {
         self.window_registry.setActiveWindow(id);
+        self.active_window = if (id) |window_id|
+            self.window_registry.getTyped(LinuxWindow, window_id)
+        else
+            null;
+
+        // `setActiveWindow` already asserted the id is registered, so the
+        // lookup above cannot miss; a null here would mean registry corruption.
+        if (id != null) std.debug.assert(self.active_window != null);
+        if (id == null) std.debug.assert(self.active_window == null);
+    }
+
+    /// Hand the active role to a surviving window after the current one dies.
+    ///
+    /// `run()` renders and computes its poll timeout from `active_window`
+    /// alone, so leaving it null while other windows remain would stop every
+    /// survivor from ever drawing again. Any registered window is a sound
+    /// choice: the compositor corrects us with the next `enter` event.
+    pub fn reelectActiveWindow(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+
+        // The registry is capped at MAX_WINDOWS, so one pass is bounded work.
+        var scanned: u32 = 0;
+        var chosen: ?WindowId = null;
+        var ids = self.window_registry.iterator();
+        while (ids.next()) |id| {
+            std.debug.assert(scanned < WindowRegistry.MAX_WINDOWS);
+            scanned += 1;
+            std.debug.assert(id.isValid());
+            chosen = id.*;
+            break;
+        }
+
+        self.setActiveWindowId(chosen);
+        std.debug.assert(scanned <= self.window_registry.count());
     }
 
     /// Get the number of registered windows.
@@ -209,36 +258,56 @@ pub const LinuxPlatform = struct {
         return self.window_registry.count();
     }
 
-    /// Initialize platform - connects to Wayland and gets globals.
-    /// IMPORTANT: After calling init(), you MUST call setupListeners() on the
-    /// final memory location of the platform struct before using it.
-    pub fn init() !Self {
-        return initWithAllocator(std.heap.page_allocator);
-    }
+    /// Initialize the platform against its final address.
+    ///
+    /// This cannot be a by-value `init`: `wl_registry_add_listener` and
+    /// `xdg_wm_base_add_listener` retain the `data` pointer for the lifetime
+    /// of the proxy, so handing them the address of a temporary would leave
+    /// the compositor writing into a dead frame once the value was moved to
+    /// its home. Listener setup therefore runs here as the final step instead
+    /// of in a second call every caller had to remember to make.
+    pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
+        std.debug.assert(@intFromPtr(self) != 0);
 
-    /// Initialize platform with a specific allocator.
-    pub fn initWithAllocator(allocator: std.mem.Allocator) !Self {
-        var self = Self{
+        self.* = Self{
             .window_registry = WindowRegistry.init(allocator),
             .allocator = allocator,
         };
 
-        // Connect to Wayland display
+        errdefer self.window_registry.deinit();
+
         self.display = wayland.wl_display_connect(null) orelse {
             return error.FailedToConnectToDisplay;
         };
+        errdefer {
+            // Disconnecting also reclaims any globals bound during the
+            // roundtrips below, so a failed bind needs no separate unwind.
+            wayland.wl_display_disconnect(self.display.?);
+            self.display = null;
+        }
 
-        // Get registry - we'll set up the listener in setupListeners()
         self.registry = wayland.wl_display_get_registry(self.display.?) orelse {
             return error.FailedToGetRegistry;
         };
+        errdefer {
+            wayland.registryDestroy(self.registry.?);
+            self.registry = null;
+        }
 
-        return self;
+        try self.setupListeners();
+
+        std.debug.assert(self.compositor != null);
+        std.debug.assert(self.xdg_wm_base != null);
     }
 
-    /// Set up Wayland listeners. Must be called after the platform struct is
-    /// at its final memory location (not on a temporary stack variable).
-    pub fn setupListeners(self: *Self) !void {
+    /// Bind the Wayland listeners that capture `self`.
+    ///
+    /// Private because it is only ever correct to run it from `initInPlace`,
+    /// where the address is already final.
+    fn setupListeners(self: *Self) !void {
+        std.debug.assert(self.display != null);
+        std.debug.assert(self.registry != null);
+
         // Set up registry listener with the FINAL pointer location
         _ = wayland.registryAddListener(self.registry.?, &registry_listener, self);
 
@@ -527,11 +596,6 @@ pub const LinuxPlatform = struct {
         self.running = false;
     }
 
-    /// Set the active window for pointer events (move/resize operations)
-    pub fn setActiveWindow(self: *Self, window: *LinuxWindow) void {
-        self.active_window = window;
-    }
-
     pub fn isRunning(self: *const Self) bool {
         return self.running;
     }
@@ -592,11 +656,6 @@ pub const LinuxPlatform = struct {
         };
         wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
         self.cursor_shape = shape;
-    }
-
-    /// Get interface for runtime polymorphism
-    pub fn interface(self: *Self) interface_mod.PlatformVTable {
-        return interface_mod.makePlatformVTable(Self, self);
     }
 
     // =========================================================================

@@ -17,51 +17,58 @@ const AppState = struct {
     opacity: f32 = 0.7,
     corner_radius: f32 = 10.0,
 
-    const GlassStyle = enum {
-        none,
-        blur,
-        glass_regular,
-        glass_clear,
+    // The window style is the framework's canonical `platform.GlassStyle`.
+    // This example used to declare its own four-variant copy and then remap it
+    // to the backend's enum in `cycleStyleCmd`; with one shared enum there is
+    // nothing to remap.
+    const GlassStyle = gooey.platform.GlassStyle;
 
-        pub fn name(self: GlassStyle) []const u8 {
-            return switch (self) {
-                .none => "None (opaque)",
-                .blur => "Traditional Blur",
-                .glass_regular => "Liquid Glass (Regular)",
-                .glass_clear => "Liquid Glass (Clear)",
-            };
-        }
-
-        pub fn next(self: GlassStyle) GlassStyle {
-            return switch (self) {
-                .none => .blur,
-                .blur => .glass_regular,
-                .glass_regular => .glass_clear,
-                .glass_clear => .none,
-            };
-        }
-    };
-
-    /// Command method - needs Window access to change window glass
-    pub fn cycleStyleCmd(self: *AppState, g: *gooey.Window) void {
-        self.glass_style = self.glass_style.next();
-
-        // g.window is already *Window, no cast needed!
-        // PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
-        // to free up the `Window` name for the framework-level wrapper
-        // landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
-        const win_style: gooey.platform.PlatformWindow.GlassStyle = switch (self.glass_style) {
-            .none => .none,
-            .blur => .blur,
-            .glass_regular => .glass_regular,
-            .glass_clear => .glass_clear,
+    fn styleName(style: GlassStyle) []const u8 {
+        return switch (style) {
+            .none => "None (opaque)",
+            .blur => "Traditional Blur",
+            .glass_regular => "Liquid Glass (Regular)",
+            .glass_clear => "Liquid Glass (Clear)",
+            .vibrancy => "Vibrancy (web only)",
         };
+    }
+
+    /// Advance to the next style, skipping any the backend cannot render.
+    ///
+    /// `vibrancy` is a browser `backdrop-filter` effect with no AppKit
+    /// counterpart, so cycling into it on macOS would show an unchanged window
+    /// and read as a bug. Skipping it is the honest behaviour.
+    fn nextStyle(style: GlassStyle) GlassStyle {
+        const order = [_]GlassStyle{ .none, .blur, .glass_regular, .glass_clear, .vibrancy };
+        const current = std.mem.indexOfScalar(GlassStyle, &order, style) orelse 0;
+
+        var step: usize = 1;
+        while (step <= order.len) : (step += 1) {
+            const candidate = order[(current + step) % order.len];
+            if (candidate != .vibrancy or gooey.platform.is_wasm) return candidate;
+        }
+        unreachable; // `.none` is always renderable, so the loop always returns.
+    }
+
+    /// Command method - needs Window access to change window glass.
+    ///
+    /// `Cx.command` hands the callback a `*gooey.Window`, not a `*Cx`, so this
+    /// cannot route through `Cx.setGlassStyle` and must repeat that method's
+    /// comptime capability gate. Without the gate the body reaches
+    /// `PlatformWindow.setGlassStyle`, which does not exist on backends where
+    /// `capabilities.glass_effects` is false — the example then fails to
+    /// compile for Linux even though it can never run there.
+    pub fn cycleStyleCmd(self: *AppState, g: *gooey.Window) void {
+        if (comptime !gooey.platform.Platform.capabilities.glass_effects) return;
+
+        self.glass_style = nextStyle(self.glass_style);
+
         // PR 7b.1b — `g.window` (the OS-level handle field on the
         // framework wrapper) was renamed to `g.platform_window` so the
         // wrapper struct itself could claim the name `Window`. The
         // captured `w` is still a `*PlatformWindow`.
         if (g.platform_window) |w| {
-            w.setGlassStyle(win_style, self.opacity, self.corner_radius);
+            w.setGlassStyle(self.glass_style, self.opacity, self.corner_radius);
         }
     }
 
@@ -147,7 +154,7 @@ const StyleDisplay = struct {
             .direction = .column,
             .gap = 8,
         }, .{
-            ui.textFmt("Style: {s}", .{s.glass_style.name()}, .{
+            ui.textFmt("Style: {s}", .{AppState.styleName(s.glass_style)}, .{
                 .size = 16,
                 .color = text_color,
             }),

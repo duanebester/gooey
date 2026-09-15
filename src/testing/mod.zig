@@ -44,6 +44,10 @@ pub const MockFileDialog = @import("mock_file_dialog.zig").MockFileDialog;
 pub const mock_svg_rasterizer = @import("mock_svg_rasterizer.zig");
 pub const MockSvgRasterizer = mock_svg_rasterizer.MockSvgRasterizer;
 
+/// Fixed-capacity headless platform backend module
+pub const test_backend = @import("test_backend.zig");
+pub const TestBackend = test_backend.TestBackend;
+
 // =============================================================================
 // Re-exports
 // =============================================================================
