@@ -49,6 +49,10 @@ pub const MacPlatform = struct {
         .display_link = true,
         .can_close_window = true,
         .glass_effects = true,
+        // `metal.Renderer.getPostProcess` exists, which is the whole contract
+        // this flag asserts. Metal is currently the only renderer with the
+        // pass, so this is the only backend that may set it.
+        .has_post_process = true,
         .clipboard = true,
         .file_dialogs = true,
         .ime = true,

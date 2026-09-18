@@ -132,8 +132,29 @@ pub const PlatformCapabilities = struct {
     /// Can programmatically close windows.
     can_close_window: bool = true,
 
-    /// Supports glass/blur effects.
+    /// The host can composite a translucent backdrop behind the window
+    /// surface, so a non-`.none` `GlassStyle` is actually visible.
+    ///
+    /// Setting this true obliges the backend to declare
+    /// `PlatformWindow.setGlassStyle`, which is how a caller selects the
+    /// style; `contract.verifyPlatformWindow` checks that conditionally.
+    ///
+    /// This says nothing about the renderer. See `has_post_process` for the
+    /// renderer-side fact; the two were conflated until a caller that needed
+    /// only the latter started gating on this one.
     glass_effects: bool = false,
+
+    /// The backend's `PlatformWindow.renderer` exposes
+    /// `getPostProcess() ?*PostProcessState`, whose `uniforms` shared code
+    /// writes through (`Window.setAccentColor`).
+    ///
+    /// A backend must not set this true until its renderer declares that
+    /// method, because the gated bodies name it directly and a missing member
+    /// is a compile error rather than a degraded effect. Independent of
+    /// `glass_effects`: a host can composite a translucent backdrop with no
+    /// post-process pass at all, and a renderer can own a post-process pass on
+    /// a fully opaque window.
+    has_post_process: bool = false,
 
     /// Supports clipboard access.
     clipboard: bool = true,

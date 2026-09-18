@@ -406,9 +406,10 @@ pub const Window = struct {
             self.window_id = .invalid;
         }
         if (self.platform.active_window == self) {
-            // Re-elect rather than clear: `run()` renders and paces its poll
-            // timeout from the active window alone, so a null here with other
-            // windows still open would freeze every survivor.
+            // Re-elect rather than clear: `active_window` is the routing target
+            // for every Wayland pointer, keyboard, and IME event, so a null here
+            // with other windows still open would strand input. Unregistration
+            // above already removed this window from the candidates.
             self.platform.reelectActiveWindow();
         }
         if (self.platform.touch_window == self) self.platform.touch_window = null;
@@ -530,18 +531,64 @@ pub const Window = struct {
 
     /// Close this window programmatically.
     ///
-    /// Triggers the close callback if set, allowing it to cancel.
-    /// If close proceeds, signals the platform event loop to stop.
+    /// The veto callback runs first and may decline the close. Otherwise the
+    /// window records `closed = true`, stops presenting, and returns. It is
+    /// deliberately neither torn down here nor allowed to stop the host loop.
+    ///
+    /// Teardown cannot happen here: `close()` is reachable from inside this
+    /// window's own input dispatch, where the `Cx` being dispatched lives in
+    /// the `WindowContext` that teardown would free. The owning `App` reclaims
+    /// the window from a safe point (`App.drainClosedWindows`, which polls
+    /// `isClosed()`), and `App.checkQuitCondition` decides whether losing the
+    /// last window should quit.
+    ///
+    /// This used to end with `platform.quit()`, which made closing any single
+    /// window terminate the whole application — Linux multi-window was
+    /// effectively single-window. macOS has always routed through the delegate
+    /// to the owning `App` instead; this now matches.
     pub fn close(self: *Self) void {
-        // Call close callback first to allow cancellation
+        std.debug.assert(@intFromPtr(self) != 0);
+
+        // Idempotent: `App.closeWindowById` and the compositor can both reach
+        // a window, and re-running the veto would ask the application twice.
+        if (self.closed) return;
+
         if (self.on_close) |callback| {
-            if (!callback(self)) {
-                return; // User prevented close
-            }
+            if (!callback(self)) return; // Declined by the application.
         }
-        // Mark as closed and signal platform to stop event loop
+
+        self.markClosed();
+
+        std.debug.assert(self.isClosed());
+    }
+
+    /// Record the close and stop this window from presenting further frames.
+    ///
+    /// Shared by the programmatic `close()` and the compositor-initiated
+    /// `xdg_toplevel.close`, so a titlebar click and an application call
+    /// converge on one state transition exactly as they do on macOS, where
+    /// both arrive at `handleClose`.
+    ///
+    /// An outstanding `wl_callback` is left in place rather than destroyed:
+    /// `deinit` owns exactly one destroy of it, and when it fires `renderFrame`
+    /// returns immediately while neither `continuous_render` nor `needs_redraw`
+    /// asks for a successor, so the callback chain retires by itself.
+    fn markClosed(self: *Self) void {
+        std.debug.assert(!self.closed);
+        std.debug.assert(self.window_id.isValid());
+
         self.closed = true;
-        self.platform.quit();
+        self.needs_redraw = false;
+        self.continuous_render = false;
+
+        // A closed window stays registered until its owner reclaims it, but it
+        // is no longer a legal input target, so focus must move on now rather
+        // than at teardown. `reelectActiveWindow` skips closed windows, so it
+        // cannot re-elect this one.
+        if (self.platform.active_window == self) self.platform.reelectActiveWindow();
+
+        std.debug.assert(self.closed);
+        std.debug.assert(self.platform.active_window != self);
     }
 
     pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
@@ -600,8 +647,19 @@ pub const Window = struct {
     }
 
     pub fn requestRender(self: *Self) void {
+        // A closed window never presents again (`renderFrame` returns at once),
+        // so arming a `wl_callback` here would start a chain that re-schedules
+        // itself every vsync on a window that can only ever drop the frame.
+        // Setters such as `setBackgroundColor` still reach a closed window
+        // between the close and the owner's reclaim, so this must be checked
+        // here and not only at the call sites.
+        if (self.closed) return;
+
         self.needs_redraw = true;
         self.scheduleFrame();
+
+        std.debug.assert(self.needs_redraw);
+        std.debug.assert(!self.closed);
     }
 
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
@@ -866,6 +924,11 @@ pub const Window = struct {
 
     /// Render the current frame
     pub fn renderFrame(self: *Self) void {
+        // A closed window holds its Vulkan resources until its owner reclaims
+        // it, but must never present again: its `WindowContext` may already be
+        // on the way out. This also retires an in-flight frame callback rather
+        // than letting it drive a zombie render chain (see `markClosed`).
+        if (self.closed) return;
         if (!self.configured) return;
         if (!self.needs_redraw and !self.pending_resize) return;
 
@@ -1148,24 +1211,28 @@ pub const Window = struct {
         // We don't need to handle it for now
     }
 
+    /// The compositor asked this toplevel to close (titlebar button, window
+    /// menu, or a session request).
+    ///
+    /// Routed through `close()` so the compositor request and a programmatic
+    /// close run the same veto and the same state transition; the application
+    /// cannot tell the two apart, which is the macOS behaviour. Destroying the
+    /// window here would free it underneath the Wayland dispatch calling us,
+    /// and quitting here would take every other window down with it.
     fn xdgToplevelClose(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,
     ) callconv(.c) void {
         _ = xdg_toplevel;
         const self: *Self = @ptrCast(@alignCast(data));
-        std.debug.print("Window close requested\n", .{});
+        std.debug.assert(@intFromPtr(self) != 0);
 
-        // Call user callback first - they can prevent close by returning false
-        if (self.on_close) |callback| {
-            if (!callback(self)) {
-                std.debug.print("Window close prevented by callback\n", .{});
-                return; // User prevented close
-            }
-        }
+        self.close();
 
-        self.closed = true;
-        self.platform.quit();
+        // Nothing was torn down: `window_id` is invalidated only by `deinit`,
+        // so this proves the window is still registered and still resolvable
+        // by the owner that will reclaim it.
+        std.debug.assert(self.window_id.isValid());
     }
 
     fn decorationConfigure(

@@ -1513,6 +1513,54 @@ test "TestBackend satisfies the compile-time platform contract" {
     try testing.expectEqual(DriveModel.blocking_event_loop, TestBackend.drive_model);
 }
 
+test "isRunning is false before run, true during, and false after quit" {
+    // Goal: pin the three transitions `contract.verifyPlatform` documents for
+    // `isRunning` but cannot check, since a comptime signature check proves
+    // nothing about behaviour. `TestPlatform` is the only backend that can be
+    // driven headlessly, so it stands in for the shared contract suite.
+    //
+    // The transitions are load-bearing for `host_callback` backends: the host
+    // asks after every frame whether to schedule another, so a backend that
+    // answered true before `run` would render against a half-built
+    // application, and one that answered true after `quit` would never stop.
+    var plat: TestPlatform = undefined;
+    try initPlatform(&plat);
+    defer plat.deinit();
+
+    // Initialized but not started: the platform accepts calls, which rules out
+    // "false because nothing is live yet".
+    try testing.expect(!plat.isRunning());
+    try testing.expect(plat.lifecycle.accepts_calls());
+
+    plat.run();
+    try testing.expect(plat.isRunning());
+
+    plat.quit();
+    try testing.expect(!plat.isRunning());
+}
+
+test "isRunning tracks run and quit across repeated cycles" {
+    // Goal: prove the flag is a transition, not a latch. A backend that set it
+    // once and never cleared it, or cleared it once and never set it again,
+    // would pass a single-cycle test.
+    var plat: TestPlatform = undefined;
+    try initPlatform(&plat);
+    defer plat.deinit();
+
+    const cycle_count: u32 = 3;
+    var cycle: u32 = 0;
+    while (cycle < cycle_count) : (cycle += 1) {
+        plat.run();
+        try testing.expect(plat.isRunning());
+
+        plat.quit();
+        try testing.expect(!plat.isRunning());
+    }
+
+    try testing.expectEqual(cycle_count, plat.countCalls(.platform_run));
+    try testing.expectEqual(cycle_count, plat.countCalls(.platform_quit));
+}
+
 test "platform init and deinit walk the lifecycle in order" {
     var plat: TestPlatform = undefined;
     try initPlatform(&plat);

@@ -44,6 +44,7 @@ const interface = @import("interface.zig");
 const WindowId = interface.WindowId;
 const WindowOptions = interface.WindowOptions;
 const CursorShape = interface.CursorShape;
+const GlassStyle = interface.GlassStyle;
 const DriveModel = interface.DriveModel;
 const PlatformCapabilities = interface.PlatformCapabilities;
 
@@ -339,6 +340,25 @@ pub fn verifyPlatform(comptime Platform: type) void {
         verifyFn(Platform, "deinit", .{ .params = &.{self_mut}, .returns = void });
         verifyFn(Platform, "run", .{ .params = &.{self_mut}, .returns = void });
         verifyFn(Platform, "quit", .{ .params = &.{self_mut}, .returns = void });
+
+        // `isRunning` reports whether the host loop has been started and not
+        // yet stopped. Exactly:
+        //
+        //   - false after `initInPlace` and before `run`;
+        //   - true from the moment `run` is entered;
+        //   - false from the moment `quit` returns.
+        //
+        // It is not "this backend is usable" and not "a frame is in flight".
+        // The narrow reading is forced by `host_callback` backends, where the
+        // host asks after every frame whether to schedule another one (see
+        // `verifyBackend`): answering true before `run` would let a host that
+        // polls during initialization start a frame chain against a
+        // half-built application, and answering true after `quit` would never
+        // let the chain stop. Backends previously disagreed — web reported
+        // true from `initInPlace` — which made the one required use unusable.
+        //
+        // A comptime check cannot prove behaviour, so the three transitions
+        // are pinned by tests in `src/testing/test_backend.zig`.
         verifyFn(Platform, "isRunning", .{ .params = &.{self_const}, .returns = bool });
 
         // Bounded window registry.
@@ -385,6 +405,7 @@ pub fn verifyPlatformWindow(comptime Platform: type, comptime Window: type) void
         verifyWindowGeometry(Window);
         verifyWindowProperties(Window);
         verifyWindowHostControl(Window);
+        verifyGlassStyleControl(Platform, Window);
         verifyFrameHandoff(Window);
         verifyImeBridge(Window);
         verifyCallbacks(Window);
@@ -472,6 +493,34 @@ fn verifyWindowHostControl(comptime Window: type) void {
         verifyFn(Window, "focus", .{ .params = &.{*Window}, .returns = void });
         verifyFn(Window, "close", .{ .params = &.{*Window}, .returns = void });
         verifyFn(Window, "isClosed", .{ .params = &.{*const Window}, .returns = bool });
+    }
+}
+
+/// Verify the glass-style control that a `glass_effects` backend owes callers.
+///
+/// `capabilities.glass_effects` advertises that the host can composite a
+/// translucent backdrop; `setGlassStyle` is how a caller selects which one.
+/// `src/cx.zig` and `src/examples/glass.zig` each gate on the flag and then
+/// call the method, so setting the flag already obliged a backend to declare
+/// it — the obligation was simply unchecked, and a signature drift there would
+/// have surfaced as an error inside an example rather than at the boundary.
+///
+/// Conditional rather than unconditional because Wayland has no portable blur
+/// protocol: Linux has no style to select and declares no such method, and
+/// demanding one would force a stub that lies. Gating a check on a comptime
+/// backend property is the same shape as the `drive_model`-conditional
+/// `isRunning` check in `verifyBackend`.
+fn verifyGlassStyleControl(comptime Platform: type, comptime Window: type) void {
+    comptime {
+        if (!Platform.capabilities.glass_effects) return;
+
+        // `f64` throughout, matching `WindowOptions.background_opacity` and
+        // `glass_corner_radius`: the values come straight from those fields on
+        // the native path, and an `f32` parameter would silently narrow them.
+        verifyFn(Window, "setGlassStyle", .{
+            .params = &.{ *Window, GlassStyle, f64, f64 },
+            .returns = void,
+        });
     }
 }
 
@@ -674,7 +723,10 @@ pub fn verifyBackend(comptime Backend: type) void {
         verifyPlatformWindow(Backend.Platform, Backend.PlatformWindow);
 
         // A `host_callback` backend returns from `run` immediately, so it must
-        // be able to report liveness for the host to keep rescheduling.
+        // be able to report liveness for the host to keep rescheduling. The
+        // required meaning is documented on the `verifyPlatform` check; this
+        // re-verification exists so the declaration cannot be dropped from a
+        // backend whose host depends on it.
         if (Backend.drive_model == .host_callback) {
             verifyFn(Backend.Platform, "isRunning", .{
                 .params = &.{*const Backend.Platform},

@@ -365,9 +365,13 @@ pub fn main() !void {
     std.debug.print("NOTE: Window uses client-side decorations (no title bar from compositor).\n", .{});
     std.debug.print("\n", .{});
 
-    // Run the event loop
-    // Use blocking dispatch to properly receive all Wayland events including keyboard
-    while (plat.isRunning() and !window.isClosed()) {
+    // Run the event loop.
+    // Use blocking dispatch to properly receive all Wayland events including
+    // keyboard. This loop owns its own termination, so it tests the two things
+    // it actually depends on: its window, and the compositor connection. It
+    // must not ask `isRunning()`, which reports whether `plat.run()` is on the
+    // stack and is false for the whole of a hand-rolled loop like this one.
+    while (plat.isConnected() and !window.isClosed()) {
         // Render frame first (handles any pending redraws)
         window.renderFrame();
 

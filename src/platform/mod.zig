@@ -125,17 +125,21 @@ pub const PlatformWindow = backend.PlatformWindow;
 /// Host drive model of the selected backend.
 ///
 /// `blocking_event_loop` on macOS and Linux, `host_callback` on web. This is a
-/// comptime constant, so branching on it costs nothing and the untaken arm is
-/// never analyzed.
+/// comptime constant, so reading it costs nothing at runtime.
 ///
-/// Phase-4 groundwork, not a landed feature: every backend declares it and
-/// `contract.verifyBackend` pins its type, but no runtime code branches on it
-/// yet. The intended first consumer is `src/runtime/runner.zig`, which runs
-/// `plat.run()` and then unwinds its `defer`s — correct for
-/// `blocking_event_loop`, wrong for `host_callback`, where `run` returns
-/// immediately and teardown must wait for the host to stop calling back. Until
-/// that branch exists, this is verified documentation of a host difference
-/// rather than something the runtime honours.
+/// Its consumer is `runCx` in `src/runtime/runner.zig`, which guards every
+/// teardown `defer` on an ownership flag and, once `plat.run()` has returned,
+/// recomputes that flag from this value via `ownsTeardownAfterRun`:
+/// `blocking_event_loop` returns from `run` only after quit, so the frame tears
+/// everything down; `host_callback` returns immediately with the host still
+/// holding `&plat`, so teardown is suppressed and the host owns the state.
+/// `contract.verifyBackend` pins the type here and additionally requires
+/// `isRunning` on the `host_callback` arm, which is exactly what `runCx`
+/// samples to cross-check the handoff.
+///
+/// The `host_callback` arm keeps `runCx`'s heap state alive; it does not make
+/// `runCx` a usable entry point for a host-driven backend, because `plat` is a
+/// local of that frame. See `docs/platform_interface_design.md`, "Known gaps".
 pub const drive_model: DriveModel = backend.drive_model;
 
 /// DisplayLink for vsync (native only, not available on Linux)

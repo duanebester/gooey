@@ -9,7 +9,10 @@ const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
 
 pub const WebPlatform = struct {
-    running: bool = true,
+    /// Whether `run` has armed the frame callback and `quit` has not stopped
+    /// it. Backs `isRunning`; see `contract.verifyPlatform` for the exact
+    /// transitions every backend owes its host.
+    running: bool = false,
 
     /// Registry for tracking windows by ID.
     /// Note: Web only supports a single window, but included for API consistency.
@@ -28,6 +31,9 @@ pub const WebPlatform = struct {
         .display_link = false, // Uses requestAnimationFrame
         .can_close_window = false, // Can't close browser tabs
         .glass_effects = false, // CSS backdrop-filter would be separate
+        // `WebRenderer` has no post-process pass, so `has_post_process` stays
+        // at its `false` default rather than being restated here.
+
         // Write-only: `clipboard.setText` forwards to
         // `navigator.clipboard.writeText`, but `clipboard.getText` always
         // returns null because paste arrives as a JS paste event injected as
@@ -56,10 +62,14 @@ pub const WebPlatform = struct {
     pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
         self.allocator = allocator;
         self.window_registry = WindowRegistry.init(allocator);
-        self.running = true;
+        // Not running yet. `run` is the only place this becomes true: the host
+        // consults `isRunning` after every frame to decide whether to schedule
+        // another, and reporting true here would invite a frame against an
+        // application that has not finished initializing.
+        self.running = false;
 
-        std.debug.assert(self.running);
         std.debug.assert(self.window_registry.count() == 0);
+        std.debug.assert(self.window_registry.getActiveWindow() == null);
     }
 
     pub fn deinit(self: *Self) void {
@@ -68,9 +78,9 @@ pub const WebPlatform = struct {
         std.debug.assert(self.window_registry.count() == 0);
 
         self.window_registry.deinit();
+        // Teardown ends the loop whether or not the host called `quit` first,
+        // so a post-`deinit` poll cannot ask for another frame.
         self.running = false;
-
-        std.debug.assert(!self.running);
     }
 
     // =========================================================================
@@ -137,22 +147,28 @@ pub const WebPlatform = struct {
     ///
     /// This is the `DriveModel.host_callback` half of the contract: unlike the
     /// native backends there is no loop to block in, because the host owns the
-    /// clock. `isRunning` is what lets the host know to keep rescheduling.
+    /// clock. `isRunning` is what lets the host know to keep rescheduling, and
+    /// this is the moment it starts reporting true.
     pub fn run(self: *Self) void {
+        // Arming twice would start a second `requestAnimationFrame` chain, and
+        // both chains would render every tick for the rest of the session.
+        std.debug.assert(!self.running);
         std.debug.assert(self.window_registry.count() <= 1);
 
-        if (self.running) {
-            imports.requestAnimationFrame();
-        }
+        self.running = true;
+        imports.requestAnimationFrame();
     }
 
     /// Stop rescheduling frames. The browser tab itself stays open; see
     /// `capabilities.can_close_window`.
     pub fn quit(self: *Self) void {
-        self.running = false;
+        // Legal before `run`, during a frame, and during teardown; all three
+        // are states the browser host can reach. The single-window invariant
+        // still has to hold, because a `quit` from a stray second canvas would
+        // mean the registry guard in `registerWindow` had been bypassed.
+        std.debug.assert(self.window_registry.count() <= 1);
 
-        std.debug.assert(!self.running);
-        std.debug.assert(!self.isRunning());
+        self.running = false;
     }
 
     pub fn isRunning(self: *const Self) bool {

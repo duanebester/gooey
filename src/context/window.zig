@@ -1780,19 +1780,28 @@ pub const Window = struct {
     /// Set the accent color uniform for custom shaders.
     /// The alpha channel can be used as a mode selector.
     ///
-    /// Gated on the backend's comptime `capabilities.glass_effects`, the same
-    /// idiom as `Cx.setGlassStyle`. The accent tint is consumed by the
-    /// post-process pass, which only the Metal renderer has: reaching
+    /// Gated on the backend's comptime `capabilities.has_post_process`. The
+    /// accent tint is consumed by the post-process pass, so reaching
     /// `renderer.getPostProcess()` unconditionally made this method
     /// uncompilable on Linux (`VulkanRenderer` has no such member) and on web.
     /// Because nothing called it, the drift went unnoticed until
     /// `zig build typecheck-linux` started analyzing the Linux tree.
     ///
-    /// `glass_effects` is the honest flag here rather than a new one: it is
-    /// true exactly on the backend that composites a translucent, tinted
-    /// backdrop, which is the same pass the accent uniform feeds.
+    /// The gate used to be `glass_effects`, which happens to be true on
+    /// exactly the backend that has the pass. That is a coincidence of the
+    /// current backend set, not a rule: a Wayland blur protocol would flip
+    /// `glass_effects` true on Linux and break this body, which has nothing to
+    /// do with whether the host composites a translucent backdrop.
     pub fn setAccentColor(self: *Window, r: f32, g: f32, b: f32, a: f32) void {
-        if (comptime !platform.Platform.capabilities.glass_effects) return;
+        // Checked on every backend, not just the gated one: a NaN reaching a
+        // shader uniform produces silently undefined pixels rather than a
+        // failure, so the caller must be caught where it is wrong.
+        std.debug.assert(!std.math.isNan(r));
+        std.debug.assert(!std.math.isNan(g));
+        std.debug.assert(!std.math.isNan(b));
+        std.debug.assert(!std.math.isNan(a));
+
+        if (comptime !platform.Platform.capabilities.has_post_process) return;
 
         if (self.platform_window) |w| {
             if (w.renderer.getPostProcess()) |pp| {

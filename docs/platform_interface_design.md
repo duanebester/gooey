@@ -76,22 +76,49 @@ Other gaps:
 - Shared code reads `platform_window.size` and `platform_window.scale_factor` as struct fields
   (for example `src/app.zig` in the web frame path) instead of through the contract-verified
   `width`/`height`/`getScaleFactor` methods, so the contract cannot pin those accesses.
-- `isRunning()` means different things per backend: `WebPlatform.initInPlace` sets
-  `running = true` immediately, while `MacPlatform` and `TestPlatform` only set it inside
-  `run()`. Callers cannot use it as a portable "has the loop started" test.
-- `platform.drive_model` has no runtime consumer. It is verified by `contract.verifyBackend` and
-  documented as phase-4 groundwork; `src/runtime/runner.zig` still unwinds its `defer`s straight
-  after `plat.run()`, which is only correct for `blocking_event_loop`.
-- Linux `Window.close()` (`src/platform/linux/window.zig`) calls `platform.quit()`, so closing
-  one window terminates the whole application.
+- `isRunning()` now has one documented meaning on every backend — false before `run`, true
+  from the moment `run` is entered, false once `quit` returns — stated at the check in
+  `contract.verifyPlatform` and pinned by `TestPlatform` transition tests, since a comptime
+  check cannot prove behaviour. Linux previously reported true before its loop started
+  because `running` was doing two jobs: loop state, and "the Wayland connection is alive" for
+  the `poll`/`dispatch`/`dispatchWithTimeout` helpers that let a caller hand-roll its own
+  loop. Those are now separate (`running` and `connection_alive`, the latter exposed as
+  `isConnected()`), so `runCx` can assert `!isRunning()` on the blocking arm of its teardown
+  handoff. Remaining: the semantics live in a doc comment and in test-backend tests, not in
+  a suite instantiated against every backend.
+- `platform.drive_model` now has a runtime consumer — `runCx` in `src/runtime/runner.zig` guards
+  each teardown `defer` on an ownership flag and recomputes it from the drive model once
+  `plat.run()` returns — but the `host_callback` arm only suppresses teardown. It keeps the heap
+  state (`App`, `WindowContext`, `PlatformWindow`) alive for the host's next callback; it does
+  not make `runCx` usable as a host-driven entry point, because `plat` is a local of `runCx`'s
+  frame, so the `&plat` the host retains dangles the moment `runCx` returns. Web avoids this by
+  going through `WebApp` (`src/app.zig`) and never reaching `runCx`. A full fix requires
+  platform and window ownership to be hoisted above `runCx` (heap-allocated and handed to the
+  host, as `WebApp` does) so one entry point can serve both drive models.
+- Windows closed by the host are not reclaimed until the next `App` drain point. Linux
+  `Window.close()` no longer calls `platform.quit()`, and `LinuxPlatform.run()` now exits on
+  "no window is open" rather than on the active window closing, so closing one window of
+  several leaves the rest running. But `App.drainClosedWindows` is only reached from
+  `openWindow`, `closeWindowById`, and `deinit` — so a compositor- or titlebar-initiated close
+  marks the window closed while its `WindowContext` stays alive until one of those runs. With
+  `quit_when_last_window_closes = false`, repeated open/close therefore walks the slot table
+  toward `MAX_WINDOWS`. macOS has the same gap. Closing it needs a per-event-loop-turn hook on
+  the platform contract (`setLoopTurnCallback`) so `App` can drain at a point where the host is
+  provably not inside a window's dispatch.
 - Linux `Window.focus()` can only schedule a redraw. Wayland gives the compositor sole
   authority over activation, so raising a window would need `xdg-activation-v1`, and there is no
   capability flag (`can_raise_window`) to express that the request was not honoured.
 - `src/platform/web/clipboard.zig` still declares `getText(_: anytype) ?[]const u8`. Clipboard
   is a platform service, so it sits outside the window contract and is unverified until
   phase 6.
-- `capabilities.glass_effects` does double duty as a proxy for "this backend has a post-process
-  pass" in `src/context/window.zig` `setAccentColor`, which is really a Metal-renderer fact.
+- `capabilities.glass_effects` no longer doubles as a post-process proxy. The renderer fact
+  `src/context/window.zig` `setAccentColor` actually needs is now
+  `capabilities.has_post_process` (default `false`, true only on macOS), so a future Wayland
+  blur protocol can flip `glass_effects` without breaking the Linux build. `glass_effects`
+  keeps one meaning — the host can composite a translucent backdrop — and the
+  `PlatformWindow.setGlassStyle` declaration it implies is now verified conditionally by
+  `contract.verifyPlatformWindow` instead of being an unchecked assumption of `src/cx.zig`
+  and `src/examples/glass.zig`.
 - Web `capabilities.custom_cursors` is `false` because `imports.zig` has no cursor binding, and
   `capabilities.clipboard` is write-only there (`clipboard.getText` always returns null).
 
