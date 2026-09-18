@@ -158,10 +158,10 @@ pub fn WindowHandle(comptime State: type) type {
         /// If the close is not vetoed the window becomes `isClosed()`, and
         /// `isValid()` reports false from that moment. The window itself is
         /// reclaimed by the owning `App` the next time it drains
-        /// (`App.drainClosedWindows`, which `App.openWindow`,
-        /// `App.closeWindowById`, and `App.deinit` all call). Until that drain
-        /// the window stays registered with the platform, so `windowCount()`
-        /// still includes it.
+        /// (`App.drainClosedWindows`), which while the app is running happens
+        /// on the next turn of the host event loop. Until that drain the window
+        /// stays registered with the platform, so `windowCount()` still
+        /// includes it.
         pub fn close(self: Self, plat: *Platform) void {
             std.debug.assert(self.id.isValid());
             std.debug.assert(@intFromPtr(plat) != 0);

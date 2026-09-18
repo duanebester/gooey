@@ -162,6 +162,15 @@ pub const WebWindow = struct {
     // Identity
     // =========================================================================
 
+    /// The platform that owns this window.
+    ///
+    /// Contract-pinned so shared code can reach the host without spelling a
+    /// per-backend field name; see `contract.verifyWindowLifecycle`.
+    pub fn getPlatform(self: *Self) *WebPlatform {
+        std.debug.assert(@intFromPtr(self.platform) != 0);
+        return self.platform;
+    }
+
     pub fn getWindowId(self: *const Self) WindowId {
         std.debug.assert(!self.closed or self.window_id.isValid());
         return self.window_id;

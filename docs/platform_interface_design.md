@@ -15,23 +15,26 @@ every platform method was out of scope and would have swamped the architectural 
 
 ### What landed
 
-| Area                                 | State                                                |
-| ------------------------------------ | ---------------------------------------------------- |
-| Platform/window vtables and adapters | Removed                                              |
-| `src/platform/contract.zig`          | Exact comptime signature verification                |
-| Backend self-pinning                 | `comptime verifyBackend(@This())` per backend        |
-| `Platform` lifecycle                 | `initInPlace(self, allocator)`; by-value `init` gone |
-| Linux `setupListeners` second phase  | Folded into `initInPlace`, now private               |
-| Platform/window lifecycle branches   | Removed from the shared runtime runners              |
-| `GlassStyle`                         | One canonical enum; cross-enum cast gone             |
-| `getScaleFactor`                     | `f64` on every backend (was `f32` on web)            |
-| Window size getters                  | `width`/`height` on every backend                    |
-| Callback setters                     | Exact optional types (was `anytype` on web)          |
-| Window identity                      | One registry; `PlatformWindow.init` self-registers   |
-| Focus policy                         | Published per backend; implicit election removed     |
-| `src/testing/test_backend.zig`       | Fixed-capacity headless backend, same contract       |
-| `verify*Interface` name-only checks  | Removed (dead, superseded)                           |
-| `zig build typecheck-linux`          | New step; analyzes Linux from any host               |
+| Area                                 | State                                                   |
+| ------------------------------------ | ------------------------------------------------------- |
+| Platform/window vtables and adapters | Removed                                                 |
+| `src/platform/contract.zig`          | Exact comptime signature verification                   |
+| Backend self-pinning                 | `comptime verifyBackend(@This())` per backend           |
+| `Platform` lifecycle                 | `initInPlace(self, allocator)`; by-value `init` gone    |
+| Linux `setupListeners` second phase  | Folded into `initInPlace`, now private                  |
+| Platform/window lifecycle branches   | Removed from the shared runtime runners                 |
+| `GlassStyle`                         | One canonical enum; cross-enum cast gone                |
+| `getScaleFactor`                     | `f64` on every backend (was `f32` on web)               |
+| Window size getters                  | `width`/`height` on every backend                       |
+| Callback setters                     | Exact optional types (was `anytype` on web)             |
+| Window identity                      | One registry; `PlatformWindow.init` self-registers      |
+| Focus policy                         | Published per backend; implicit election removed        |
+| `src/testing/test_backend.zig`       | Fixed-capacity headless backend, same contract          |
+| `verify*Interface` name-only checks  | Removed (dead, superseded)                              |
+| `zig build typecheck-linux`          | New step; analyzes Linux from any host                  |
+| Host-initiated window reclamation    | `setLoopTurnCallback` per-turn hook on the contract     |
+| `PlatformWindow.getPlatform`         | Contract-pinned; replaced `plat`/`platform` field reads |
+| Quit-on-last-window policy           | `QuitPolicy`, platform-conventional by default          |
 
 The lifecycle row is narrow on purpose. The platform and window construction, teardown, and
 registration branches are gone from `src/runtime/runner.zig` and
@@ -40,7 +43,7 @@ code; they are listed under [Known gaps](#known-gaps).
 
 ### Verification
 
-`zig build`, `zig build test` (1259 tests, as reported by `zig build test --summary all` across
+`zig build`, `zig build test` (1263 tests, as reported by `zig build test --summary all` across
 all ten test binaries), `zig build wasm`, and `zig build typecheck-linux` all pass. The Linux
 backend has no native CI on the development host, so the `typecheck-linux` step exists to give
 it real compiler coverage; it needs Vulkan headers supplied through
@@ -55,8 +58,14 @@ list covers what a reader might otherwise assume landed with it.
 
 OS-specific branches remaining in shared (non-backend) code:
 
-- `src/context/window.zig` `Window.quit()` — a three-way `is_wasm`/`is_linux`/macOS branch that
-  writes `w.closed = true` directly and inline-imports `objc` for the macOS arm.
+- ~~`src/context/window.zig` `Window.quit()`~~ — fixed. It was a three-way
+  `is_wasm`/`is_linux`/macOS branch whose Linux arm wrote `w.closed = true` directly
+  (conflating "stop the application" with "close this window", and bypassing `markClosed`'s
+  handover of the active role) while the macOS arm inline-imported `objc` and sent
+  `-[NSApp terminate:]` itself, leaving `Platform.running` set. The branch existed only because
+  each backend spelled its platform back-pointer differently (`plat` on macOS, `platform` on
+  Linux and web); `PlatformWindow.getPlatform` is now contract-verified, so the body is one
+  target-independent call. Web remains an early return — the browser owns the tab.
 - `src/context/window.zig` — four `if (builtin.os.tag == .macos) platform_window.ns_window` /
   `ns_view` pairs feeding accessibility setup.
 - `src/runtime/frame.zig` — `if (comptime !is_wasm)` gating `updateCursorShape`.
@@ -95,16 +104,20 @@ Other gaps:
   going through `WebApp` (`src/app.zig`) and never reaching `runCx`. A full fix requires
   platform and window ownership to be hoisted above `runCx` (heap-allocated and handed to the
   host, as `WebApp` does) so one entry point can serve both drive models.
-- Windows closed by the host are not reclaimed until the next `App` drain point. Linux
-  `Window.close()` no longer calls `platform.quit()`, and `LinuxPlatform.run()` now exits on
-  "no window is open" rather than on the active window closing, so closing one window of
-  several leaves the rest running. But `App.drainClosedWindows` is only reached from
-  `openWindow`, `closeWindowById`, and `deinit` — so a compositor- or titlebar-initiated close
-  marks the window closed while its `WindowContext` stays alive until one of those runs. With
-  `quit_when_last_window_closes = false`, repeated open/close therefore walks the slot table
-  toward `MAX_WINDOWS`. macOS has the same gap. Closing it needs a per-event-loop-turn hook on
-  the platform contract (`setLoopTurnCallback`) so `App` can drain at a point where the host is
-  provably not inside a window's dispatch.
+- Windows closed by the host are now reclaimed on the next turn of the host event loop. The
+  contract requires `LoopTurnCallback` and `setLoopTurnCallback` on every `Platform`, and
+  `App.run` installs a hook that calls `App.drainClosedWindows`. Each backend fires it once per
+  turn from a point where no window callback is on the stack: Linux at the top of its `run`
+  iteration, macOS after `sendEvent:` has returned, web from the `requestAnimationFrame` entry
+  via `WebPlatform.fireLoopTurn`. Previously `drainClosedWindows` was only reachable from
+  `openWindow`, `closeWindowById`, and `deinit`, so a compositor- or titlebar-initiated close
+  marked the window closed while its `WindowContext` stayed alive until one of those ran — for
+  an app that does not quit on its last window, repeated open/close leaked a context per cycle
+  and walked the slot table toward `MAX_WINDOWS`. It also meant macOS never observed the last
+  window's close at all, so no quit policy could act on it.
+  Remaining: comptime cannot prove _where_ a backend fires the hook. Placement and
+  re-entrancy are pinned by `TestPlatform.pumpLoopTurn` tests, not by a suite instantiated
+  against every backend — the same limitation recorded for `isRunning` above.
 - Linux `Window.focus()` can only schedule a redraw. Wayland gives the compositor sole
   authority over activation, so raising a window would need `xdg-activation-v1`, and there is no
   capability flag (`can_raise_window`) to express that the request was not honoured.

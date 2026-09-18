@@ -266,6 +266,7 @@ pub const CallTag = enum(u8) {
     set_ime_cursor_rect,
     dispatch_input,
     resize,
+    loop_turn,
 };
 
 /// One recorded contract call.
@@ -474,6 +475,9 @@ pub const TestPlatform = struct {
     /// `FailurePlan.fail_on_nth_register` is unambiguous.
     register_call_count: u32,
 
+    /// Owner hook fired by `pumpLoopTurn`; see `setLoopTurnCallback`.
+    loop_turn_callback: ?LoopTurnCallback = null,
+
     /// One window slot. `occupied` tracks the pool, not the registry, so a
     /// leaked slot is distinguishable from a leaked registration.
     pub const WindowSlot = struct {
@@ -541,6 +545,7 @@ pub const TestPlatform = struct {
         self.event_count = 0;
         self.sequence_next = 1;
         self.register_call_count = 0;
+        self.loop_turn_callback = null;
 
         assert(self.registry.count() == 0);
         assert(self.registry.getActive() == null);
@@ -622,6 +627,38 @@ pub const TestPlatform = struct {
         assert(self.lifecycle != .uninitialized);
         assert(self.lifecycle != .initializing);
         return self.host_running;
+    }
+
+    /// Callback invoked once per simulated host loop turn.
+    pub const LoopTurnCallback = *const fn (*Self) void;
+
+    /// Install the per-turn owner hook. `null` clears it.
+    pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
+        const live = self.lifecycle.accepts_calls();
+        assert(live);
+
+        self.loop_turn_callback = callback;
+    }
+
+    /// Simulate one turn of a host event loop.
+    ///
+    /// The production backends fire the hook from inside their own cycle —
+    /// Linux per `run` iteration, macOS after each `sendEvent:`, web per frame
+    /// callback. A headless backend has no cycle (see `run`), so a turn is
+    /// something a test performs explicitly. This is the seam that makes a
+    /// host-initiated close testable: mark a window closed via
+    /// `TestWindow.close`, pump a turn, and assert the owner reclaimed it.
+    ///
+    /// The turn is recorded before the callback runs, so a hook that calls
+    /// back into the platform leaves its own records *after* the `loop_turn`
+    /// entry and the ordering stays readable.
+    pub fn pumpLoopTurn(self: *Self) void {
+        assert(self.lifecycle == .running);
+        assert(self.host_running);
+        assert(self.call_count <= call_count_max);
+
+        self.recordCall(.loop_turn, .invalid, 0);
+        if (self.loop_turn_callback) |on_turn| on_turn(self);
     }
 
     // =========================================================================
@@ -1139,6 +1176,13 @@ pub const TestWindow = struct {
     // Identity and geometry
     // =========================================================================
 
+    /// The platform that owns this window. Contract-pinned; see
+    /// `contract.verifyWindowLifecycle`.
+    pub fn getPlatform(self: *Self) *TestPlatform {
+        assert(@intFromPtr(self.platform) != 0);
+        return self.platform;
+    }
+
     pub fn getWindowId(self: *const Self) WindowId {
         assert(self.window_id.isValid());
         return self.window_id;
@@ -1537,6 +1581,204 @@ test "isRunning is false before run, true during, and false after quit" {
 
     plat.quit();
     try testing.expect(!plat.isRunning());
+}
+
+// =============================================================================
+// Per-turn owner hook
+// =============================================================================
+
+/// Scratch for the loop-turn tests below.
+///
+/// `LoopTurnCallback` is a bare function pointer with no context parameter, by
+/// design: the production owner recovers itself by field offset from the
+/// `*Platform` it is handed (`multi_window_app.loopTurn`). A test has no such
+/// enclosing struct, so it observes effects through module state instead — the
+/// same shape `pending_failure_plan` already uses here.
+const LoopTurnProbe = struct {
+    var turn_count: u32 = 0;
+    var reclaimed_count: u32 = 0;
+    var observed_closed: bool = false;
+
+    fn reset() void {
+        turn_count = 0;
+        reclaimed_count = 0;
+        observed_closed = false;
+    }
+
+    /// Counts turns and nothing else.
+    fn count(plat: *TestPlatform) void {
+        assert(@intFromPtr(plat) != 0);
+        turn_count += 1;
+    }
+
+    /// Stands in for `App.drainClosedWindows`: poll every registered window
+    /// and destroy the ones that recorded a close.
+    fn reclaim(plat: *TestPlatform) void {
+        turn_count += 1;
+
+        var slot_index: u32 = 0;
+        while (slot_index < window_count_max) : (slot_index += 1) {
+            if (!plat.window_slots[slot_index].occupied) continue;
+
+            const window = &plat.window_slots[slot_index].window;
+            if (!window.isClosed()) continue;
+
+            observed_closed = true;
+            window.deinit();
+            reclaimed_count += 1;
+        }
+    }
+};
+
+fn openProbeWindow(plat: *TestPlatform) !*TestWindow {
+    const options = WindowOptions{ .title = "turn", .width = 64, .height = 48 };
+    return TestWindow.init(testing.allocator, plat, &options);
+}
+
+test "pumpLoopTurn invokes the installed hook and records the turn first" {
+    // Goal: pin the two facts a backend owes the hook — it runs, and the turn
+    // is logged before it, so anything the hook does to the platform appears
+    // after the `loop_turn` entry rather than interleaved ahead of it.
+    LoopTurnProbe.reset();
+
+    var plat: TestPlatform = undefined;
+    try initPlatform(&plat);
+    defer plat.deinit();
+
+    plat.setLoopTurnCallback(LoopTurnProbe.count);
+    plat.run();
+
+    plat.pumpLoopTurn();
+    try testing.expectEqual(@as(u32, 1), LoopTurnProbe.turn_count);
+    try testing.expectEqual(@as(u32, 1), plat.countCalls(.loop_turn));
+
+    const turn_index = plat.findCall(.loop_turn).?;
+    const run_index = plat.findCall(.platform_run).?;
+    try testing.expect(run_index < turn_index);
+}
+
+test "a cleared hook leaves the turn a no-op" {
+    // Goal: `null` must be a real clear, not "keep the last one". `App`
+    // disarms after a blocking `run` returns, and a backend that ignored the
+    // clear would call into an owner that has stopped expecting turns.
+    LoopTurnProbe.reset();
+
+    var plat: TestPlatform = undefined;
+    try initPlatform(&plat);
+    defer plat.deinit();
+
+    plat.run();
+
+    // No hook installed at all.
+    plat.pumpLoopTurn();
+    try testing.expectEqual(@as(u32, 0), LoopTurnProbe.turn_count);
+
+    plat.setLoopTurnCallback(LoopTurnProbe.count);
+    plat.pumpLoopTurn();
+    try testing.expectEqual(@as(u32, 1), LoopTurnProbe.turn_count);
+
+    plat.setLoopTurnCallback(null);
+    plat.pumpLoopTurn();
+    try testing.expectEqual(@as(u32, 1), LoopTurnProbe.turn_count);
+
+    // The turn itself is still recorded every time: the backend owes the turn
+    // whether or not anyone is listening.
+    try testing.expectEqual(@as(u32, 3), plat.countCalls(.loop_turn));
+}
+
+test "a host-initiated close is reclaimed on the next turn" {
+    // Goal: the regression this hook exists for. `close()` is the host route —
+    // titlebar button, compositor request — and it deliberately does not
+    // destroy the window, because it runs inside that window's own dispatch.
+    // Before the hook, nothing polled `isClosed()` until the app happened to
+    // call `openWindow`, `closeWindowById`, or `deinit`, so the window's slot
+    // and its context stayed live indefinitely.
+    LoopTurnProbe.reset();
+
+    var plat: TestPlatform = undefined;
+    try initPlatform(&plat);
+    defer plat.deinit();
+
+    plat.setLoopTurnCallback(LoopTurnProbe.reclaim);
+    plat.run();
+
+    const window = try openProbeWindow(&plat);
+    const id = window.window_id;
+    try testing.expectEqual(@as(u32, 1), plat.windowCount());
+
+    // The host closes it. Still registered, still holding its slot.
+    window.close();
+    try testing.expect(window.isClosed());
+    try testing.expectEqual(@as(u32, 1), plat.windowCount());
+    try testing.expect(plat.getWindow(id) != null);
+
+    // One turn is all it takes.
+    plat.pumpLoopTurn();
+    try testing.expectEqual(@as(u32, 1), LoopTurnProbe.reclaimed_count);
+    try testing.expect(LoopTurnProbe.observed_closed);
+    try testing.expectEqual(@as(u32, 0), plat.windowCount());
+    try testing.expect(plat.getWindow(id) == null);
+    try testing.expectEqual(@as(u32, 0), plat.occupiedWindowSlotCount());
+
+    // Idempotent: a turn with nothing pending must not double-free.
+    plat.pumpLoopTurn();
+    try testing.expectEqual(@as(u32, 1), LoopTurnProbe.reclaimed_count);
+}
+
+test "open and close cycles past capacity do not exhaust the slot pool" {
+    // Goal: the leak's actual failure mode. With `quit_when_last_window_closes`
+    // false, an app opens and closes windows for its whole session. Each
+    // host-initiated close used to retain a slot, so after `window_count_max`
+    // cycles the pool was full and the next open failed — a capacity error
+    // caused purely by never reclaiming.
+    //
+    // Runs one full cycle past capacity (CLAUDE.md §24: fill the resource
+    // exactly, then go one beyond) and asserts the pool returns to empty each
+    // time rather than merely staying under the cap.
+    LoopTurnProbe.reset();
+
+    var plat: TestPlatform = undefined;
+    try initPlatform(&plat);
+    defer plat.deinit();
+
+    plat.setLoopTurnCallback(LoopTurnProbe.reclaim);
+    plat.run();
+
+    const cycle_count: u32 = window_count_max + 1;
+    var cycle: u32 = 0;
+    while (cycle < cycle_count) : (cycle += 1) {
+        const window = try openProbeWindow(&plat);
+        try testing.expectEqual(@as(u32, 1), plat.occupiedWindowSlotCount());
+
+        window.close();
+        plat.pumpLoopTurn();
+
+        try testing.expectEqual(@as(u32, 0), plat.occupiedWindowSlotCount());
+        try testing.expectEqual(@as(u32, 0), plat.windowCount());
+    }
+
+    try testing.expectEqual(cycle_count, LoopTurnProbe.reclaimed_count);
+
+    // The pool is still fully usable, which is what the leak destroyed: prove
+    // every slot can be claimed at once after all that churn.
+    var held: [window_count_max]*TestWindow = undefined;
+    var index: u32 = 0;
+    while (index < window_count_max) : (index += 1) {
+        held[index] = try openProbeWindow(&plat);
+    }
+    try testing.expectEqual(window_count_max, plat.occupiedWindowSlotCount());
+
+    // One past the limit must fail rather than grow (CLAUDE.md §2). The same
+    // boundary is checked on a fresh platform by "window slots fill exactly to
+    // capacity and reject one more"; the point here is that it still holds
+    // *after* churn, which is what a slot leak would have broken.
+    try testing.expectError(error.WindowSlotsExhausted, openProbeWindow(&plat));
+
+    index = 0;
+    while (index < window_count_max) : (index += 1) {
+        held[index].deinit();
+    }
+    try testing.expectEqual(@as(u32, 0), plat.occupiedWindowSlotCount());
 }
 
 test "isRunning tracks run and quit across repeated cycles" {

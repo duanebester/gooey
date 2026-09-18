@@ -493,13 +493,21 @@ pub fn WebApp(
             const bg = w.background_color;
             g_renderer.?.render(g_window.?.rendered_frame.scene, vw, vh, bg.r, bg.g, bg.b, bg.a);
 
-            // Request next frame.
+            // Give the platform's owner its per-turn hook, then request the
+            // next frame.
+            //
+            // This is web's turn point: `run` armed `requestAnimationFrame`
+            // and returned, so the browser owns the cycle and there is no loop
+            // to fire from. Placed after input drain and render, where no
+            // window callback is on the stack — the same position the native
+            // backends fire from. See `WebPlatform.fireLoopTurn`.
             //
             // `|*p|` rather than `|p|`: the latter copies the whole
             // `Platform` out of the optional on every frame, which is both
             // wasted work on the hot path (CLAUDE.md §20) and a move of a
             // value that `initInPlace` exists to keep pinned.
             if (g_platform) |*p| {
+                p.fireLoopTurn();
                 if (p.isRunning()) web_imports.requestAnimationFrame();
             }
         }

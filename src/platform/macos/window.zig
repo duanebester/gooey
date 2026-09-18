@@ -705,6 +705,16 @@ pub const Window = struct {
         return self.window_id;
     }
 
+    /// The platform that owns this window.
+    ///
+    /// Contract-pinned so shared code can reach the host without spelling a
+    /// per-backend field name — this backend stores it as `plat`, the others as
+    /// `platform`. See `contract.verifyWindowLifecycle`.
+    pub fn getPlatform(self: *Self) *platform.MacPlatform {
+        assert(@intFromPtr(self.plat) != 0);
+        return self.plat;
+    }
+
     // =========================================================================
     // Window Lifecycle
     // =========================================================================

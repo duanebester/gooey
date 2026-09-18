@@ -385,6 +385,35 @@ pub fn verifyPlatform(comptime Platform: type) void {
         });
         verifyFn(Platform, "windowCount", .{ .params = &.{self_const}, .returns = u32 });
 
+        // Per-turn owner hook.
+        //
+        // The one point in the host's cycle where the owner is provably *not*
+        // inside a window's dispatch. That property is what the hook exists
+        // for: a window closed by the titlebar or the compositor records
+        // `isClosed()` from inside its own teardown, where destroying its
+        // `WindowContext` would free the `Cx` the host is still unwinding
+        // through. Without a hook the owner never learns, so
+        // `App.drainClosedWindows` was only reachable from `openWindow`,
+        // `closeWindowById`, and `deinit` — and a host-initiated close leaked
+        // the context until one of those happened to run.
+        //
+        // "Turn" is deliberately not "frame": a backend must fire this once
+        // per iteration of its host cycle whether or not anything rendered,
+        // because the close that needs reclaiming may be the reason nothing
+        // will ever render again. For `blocking_event_loop` backends the turn
+        // is one pass of the loop inside `run`; for `host_callback` backends
+        // it is one host callback.
+        //
+        // Backends must fire it outside any window callback and must tolerate
+        // the callback calling back in — reclamation unregisters windows and
+        // can call `quit`. A comptime check cannot prove placement, so the
+        // ordering is pinned by tests against `src/testing/test_backend.zig`.
+        verifyType(Platform, "LoopTurnCallback", *const fn (*Platform) void);
+        verifyFn(Platform, "setLoopTurnCallback", .{
+            .params = &.{ self_mut, ?Platform.LoopTurnCallback },
+            .returns = void,
+        });
+
         // Comptime backend properties.
         verifyConst(Platform, "capabilities", PlatformCapabilities);
     }
@@ -426,6 +455,19 @@ fn verifyWindowLifecycle(comptime Platform: type, comptime Window: type) void {
         verifyFn(Window, "getWindowId", .{
             .params = &.{*const Window},
             .returns = WindowId,
+        });
+
+        // Every backend already retains its owning platform so `deinit` can
+        // unregister without the caller tracking the pairing — but under three
+        // different field names (`plat` on macOS, `platform` on Linux and web).
+        // Shared code that needed the platform therefore had to branch on the
+        // target to spell the field, which is how `context/window.zig`'s
+        // `Window.quit()` ended up with a three-way `is_wasm`/`is_linux`/macOS
+        // split whose arms had drifted apart. Publishing the back-pointer as a
+        // method puts it under the verifier and lets shared code ask once.
+        verifyFn(Window, "getPlatform", .{
+            .params = &.{*Window},
+            .returns = *Platform,
         });
     }
 }
@@ -749,13 +791,17 @@ const GoodPlatform = struct {
     allocator: std.mem.Allocator = undefined,
     running: bool = false,
     registry: interface.WindowRegistry = undefined,
+    loop_turn_callback: ?LoopTurnCallback = null,
 
     pub const capabilities = PlatformCapabilities{ .name = "contract-fixture" };
+
+    pub const LoopTurnCallback = *const fn (*@This()) void;
 
     pub fn initInPlace(self: *@This(), allocator: std.mem.Allocator) !void {
         self.allocator = allocator;
         self.running = false;
         self.registry = interface.WindowRegistry.init(allocator);
+        self.loop_turn_callback = null;
     }
     pub fn deinit(self: *@This()) void {
         self.registry.deinit();
@@ -786,6 +832,9 @@ const GoodPlatform = struct {
     }
     pub fn windowCount(self: *const @This()) u32 {
         return self.registry.count();
+    }
+    pub fn setLoopTurnCallback(self: *@This(), callback: ?LoopTurnCallback) void {
+        self.loop_turn_callback = callback;
     }
 };
 

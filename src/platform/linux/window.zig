@@ -642,6 +642,15 @@ pub const Window = struct {
         return self.window_id;
     }
 
+    /// The platform that owns this window.
+    ///
+    /// Contract-pinned so shared code can reach the host without spelling a
+    /// per-backend field name; see `contract.verifyWindowLifecycle`.
+    pub fn getPlatform(self: *Self) *LinuxPlatform {
+        std.debug.assert(@intFromPtr(self.platform) != 0);
+        return self.platform;
+    }
+
     pub fn isClosed(self: *const Self) bool {
         return self.closed;
     }

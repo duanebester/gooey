@@ -34,7 +34,13 @@ pub const MacPlatform = struct {
     /// Allocator for platform resources
     allocator: std.mem.Allocator,
 
+    /// Owner hook fired once per `run` iteration; see `setLoopTurnCallback`.
+    loop_turn_callback: ?LoopTurnCallback = null,
+
     const Self = @This();
+
+    /// Callback invoked once per iteration of the `run` loop.
+    pub const LoopTurnCallback = *const fn (*Self) void;
 
     /// Platform capabilities for macOS.
     ///
@@ -87,6 +93,7 @@ pub const MacPlatform = struct {
         self.app = app;
         self.delegate = null;
         self.running = false;
+        self.loop_turn_callback = null;
 
         self.window_registry = WindowRegistry.init(allocator);
         errdefer self.window_registry.deinit();
@@ -164,6 +171,14 @@ pub const MacPlatform = struct {
         return total;
     }
 
+    /// Install the per-turn owner hook. `null` clears it.
+    ///
+    /// Contract-pinned; see the `LoopTurnCallback` note in
+    /// `platform/contract.zig` for why the owner needs this point at all.
+    pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
+        self.loop_turn_callback = callback;
+    }
+
     /// Run the application event loop.
     /// This blocks until quit() is called or the app terminates.
     /// Rendering happens on the DisplayLink thread, not here.
@@ -205,6 +220,22 @@ pub const MacPlatform = struct {
                 self.app.msgSend(void, "sendEvent:", .{e});
                 self.app.msgSend(void, "updateWindows", .{});
             }
+
+            // `sendEvent:` has returned, so every AppKit delegate callback it
+            // ran — including `windowShouldClose:` and `windowWillClose:` for a
+            // titlebar close — has unwound off the stack. This is the point
+            // where destroying a window's `WindowContext` is sound, so the
+            // owner gets its turn here.
+            //
+            // Outside the `if` above: a turn is owed once per iteration even
+            // when the host handed back no event, because the work waiting to
+            // be reclaimed is the *previous* event's close.
+            //
+            // AppKit's nested run loops (menu tracking, modal panels, live
+            // resize) never reach this line, so no turn fires during them.
+            // That only defers reclamation to the next outer iteration, which
+            // is exactly the deferral this hook is built around.
+            if (self.loop_turn_callback) |on_turn| on_turn(self);
         }
     }
 

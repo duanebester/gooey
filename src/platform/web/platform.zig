@@ -21,7 +21,13 @@ pub const WebPlatform = struct {
     /// Allocator for platform resources
     allocator: std.mem.Allocator,
 
+    /// Owner hook fired once per host frame callback; see `fireLoopTurn`.
+    loop_turn_callback: ?LoopTurnCallback = null,
+
     const Self = @This();
+
+    /// Callback invoked once per host frame callback.
+    pub const LoopTurnCallback = *const fn (*Self) void;
 
     /// Platform capabilities for Web/WASM
     pub const capabilities: interface_mod.PlatformCapabilities = .{
@@ -62,6 +68,7 @@ pub const WebPlatform = struct {
     pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
         self.allocator = allocator;
         self.window_registry = WindowRegistry.init(allocator);
+        self.loop_turn_callback = null;
         // Not running yet. `run` is the only place this becomes true: the host
         // consults `isRunning` after every frame to decide whether to schedule
         // another, and reporting true here would invite a frame against an
@@ -173,6 +180,31 @@ pub const WebPlatform = struct {
 
     pub fn isRunning(self: *const Self) bool {
         return self.running;
+    }
+
+    /// Install the per-turn owner hook. `null` clears it.
+    ///
+    /// Contract-pinned; see the `LoopTurnCallback` note in
+    /// `platform/contract.zig` for why the owner needs this point at all.
+    pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
+        self.loop_turn_callback = callback;
+    }
+
+    /// Run the owner's turn for this host frame callback.
+    ///
+    /// `DriveModel.host_callback` has no loop to fire from: `run` arms
+    /// `requestAnimationFrame` and returns, so the browser owns the cycle and
+    /// the turn point is the frame entry itself. `WebApp.frame` in
+    /// `src/app.zig` calls this once per tick, after it has drained the input
+    /// ring buffers and rendered — the same "no window callback is on the
+    /// stack" position the native backends fire from.
+    ///
+    /// Native backends need no equivalent method because their `run` loop is
+    /// the cycle and fires the hook inline.
+    pub fn fireLoopTurn(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= 1);
+
+        if (self.loop_turn_callback) |on_turn| on_turn(self);
     }
 
     // =========================================================================

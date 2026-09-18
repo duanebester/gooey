@@ -319,13 +319,15 @@ Created `MultiWindowApp` struct in `src/runtime/multi_window_app.zig` that provi
   `App`; `App` keeps only a fixed-capacity teardown list of open window ids.
 - **openWindow()**: Opens typed windows with `WindowHandle(State)` return for cross-window communication
 - **Shared resources**: Text system and atlases are created once and shared across all windows
-- **Quit behavior**: Configurable `quit_when_last_window_closes` (default: true)
+- **Quit behavior**: `quit_policy: QuitPolicy` — `.platform_default` (stay alive on macOS,
+  quit elsewhere), `.last_window_closed`, or `.explicit`. Defaults to `.platform_default`.
 - **Window lifecycle**: `closeWindow()`, `closeWindowById()`, `windowCount()`, `activeWindow()`
 
 Key files:
 
 - `src/runtime/multi_window_app.zig` - Main `App` struct implementation
-- `src/runtime/mod.zig` - Module exports (`MultiWindowApp`, `AppWindowOptions`, `MAX_WINDOWS`), reachable via the public `gooey.runtime` namespace
+- `src/runtime/mod.zig` - Module exports (`MultiWindowApp`, `AppWindowOptions`, `MAX_WINDOWS`,
+  `QuitPolicy`), reachable via the public `gooey.runtime` namespace
 - `src/examples/multi_window.zig` - Working example with main window + dialog
 
 ### Tasks
@@ -374,7 +376,7 @@ pub const App = struct {
     image_atlas: *ImageAtlas,
 
     // Quit behavior
-    quit_when_last_window_closes: bool = true,
+    quit_policy: QuitPolicy = .platform_default,
     running: bool = false,
 
     pub fn init(allocator: Allocator) !App {
@@ -430,7 +432,7 @@ pub const App = struct {
         self.registry.closeWindow(id);
 
         // Check if we should quit
-        if (self.quit_when_last_window_closes and self.registry.windows.count() == 0) {
+        if (self.quit_policy.quitsOnLastWindowClosed() and self.registry.windows.count() == 0) {
             self.quit();
         }
     }

@@ -235,6 +235,9 @@ pub const LinuxPlatform = struct {
     // Scale factor from output
     scale_factor: i32 = 1,
 
+    /// Owner hook fired once per `run` iteration; see `setLoopTurnCallback`.
+    loop_turn_callback: ?LoopTurnCallback = null,
+
     // IME state (accumulated during event batch, applied on done)
     ime_preedit_text: ?[]const u8 = null,
     ime_commit_text: ?[]const u8 = null,
@@ -346,6 +349,17 @@ pub const LinuxPlatform = struct {
     /// Get the number of registered windows.
     pub fn windowCount(self: *const Self) u32 {
         return self.window_registry.count();
+    }
+
+    /// Callback invoked once per iteration of the `run` loop.
+    pub const LoopTurnCallback = *const fn (*Self) void;
+
+    /// Install the per-turn owner hook. `null` clears it.
+    ///
+    /// Contract-pinned; see the `LoopTurnCallback` note in
+    /// `platform/contract.zig` for why the owner needs this point at all.
+    pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
+        self.loop_turn_callback = callback;
     }
 
     /// Initialize the platform against its final address.
@@ -544,6 +558,19 @@ pub const LinuxPlatform = struct {
         while (self.running) {
             pollfds_buf[0] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 };
             const pollfds = pollfds_buf[0..1];
+
+            // Give the owner its turn first, while no window callback is on
+            // the stack: `wl_display_dispatch` below is what runs them, and it
+            // has fully unwound by the time control returns here. A window the
+            // compositor or titlebar closed during the previous iteration is
+            // reclaimed now, which is also what lets the `open_count` test
+            // below see the registry shrink instead of counting a corpse.
+            //
+            // Before the exit test, not after: reclaiming the last window is
+            // exactly the case that ends the loop, and the owner may call
+            // `quit` from here.
+            if (self.loop_turn_callback) |on_turn| on_turn(self);
+            if (!self.running) break;
 
             // With no open window there is no surface to present and no
             // surface for the compositor to send events to, so no further

@@ -1671,10 +1671,17 @@ pub const Window = struct {
 
     /// Quit the application.
     ///
-    /// Portable across all platforms:
-    /// - macOS: calls NSApp terminate:
-    /// - Linux: signals the platform event loop to stop
-    /// - WASM: no-op (browser tabs can't be closed programmatically)
+    /// Stops the host event loop through the platform, which is an
+    /// *application*-lifetime operation: it does not close this window, and it
+    /// is not how you close one. Use `WindowHandle.close` (or
+    /// `App.closeWindowById`) to close a single window and leave the rest of a
+    /// multi-window application running.
+    ///
+    /// Per backend, via `Platform.quit`:
+    /// - macOS: clears the loop flag and sends `-[NSApp terminate:]`.
+    /// - Linux: signals the Wayland event loop to stop.
+    /// - WASM: no-op. The browser owns the tab, and stopping the frame chain
+    ///   would leave a frozen page with no way to restart it.
     ///
     /// Use from a `command` handler:
     /// ```zig
@@ -1685,22 +1692,25 @@ pub const Window = struct {
     /// Button{ .on_click_handler = cx.command(AppState.quitApp) }
     /// ```
     pub fn quit(self: *Self) void {
-        if (comptime platform.is_wasm) {
-            // No-op on web - can't quit browser
-        } else if (comptime platform.is_linux) {
-            if (self.platform_window) |w| {
-                w.closed = true;
-                w.platform.quit();
-            } else {
-                std.process.exit(0);
-            }
-        } else {
-            // macOS: call NSApp terminate:
-            const objc = @import("objc");
-            const NSApp = objc.getClass("NSApplication") orelse return;
-            const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});
-            app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
-        }
+        // Web has no application to quit; see the doc comment above.
+        if (comptime platform.is_wasm) return;
+
+        // Unreachable from a real application: `quit` is invoked from a command
+        // or input handler, which can only run while this window is live. The
+        // previous revision called `std.process.exit(0)` here, skipping every
+        // teardown path for a state it could not actually be in.
+        std.debug.assert(self.platform_window != null);
+        const platform_window = self.platform_window orelse return;
+
+        // One path for both native backends. This used to be a three-way
+        // target branch whose Linux arm also wrote `w.closed = true` directly
+        // — conflating "stop the application" with "close this window", and
+        // bypassing the backend's own close bookkeeping (on Linux,
+        // `markClosed`, which hands the active role to a surviving window). It
+        // also reached for `NSApplication` itself on macOS instead of going
+        // through the platform, so `Platform.running` was left set while the
+        // host tore the process down.
+        platform_window.getPlatform().quit();
     }
 
     // =========================================================================

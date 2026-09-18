@@ -91,6 +91,10 @@ pub const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 
 pub const is_linux = builtin.os.tag == .linux;
 
+/// True on macOS. Read by policy that follows platform convention rather than
+/// by backend selection, which goes through `backend` below.
+pub const is_macos = builtin.os.tag == .macos;
+
 pub const backend = if (is_wasm)
     @import("web/mod.zig")
 else switch (builtin.os.tag) {

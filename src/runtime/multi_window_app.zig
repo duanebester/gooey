@@ -112,6 +112,41 @@ const SCALE_FACTOR_MAX: f64 = 8.0;
 /// from without naming `State`: it is the window's user data.
 const ContextTeardownFn = *const fn (*PlatformWindow) void;
 
+/// Whether losing the last window should stop the application.
+///
+/// Three named states rather than a `bool`, because the right answer is
+/// platform-dependent and a boolean has to pick one default that is wrong
+/// somewhere. macOS applications outlive their windows — Finder, Safari, and
+/// Mail all keep a menu bar with nothing open, and AppKit's own
+/// `applicationShouldTerminateAfterLastWindowClosed` defaults to `NO`. Linux
+/// and Windows applications exit.
+///
+/// `App` previously hardcoded `quit_when_last_window_closes = true` on every
+/// target, which made every macOS Gooey application non-native in a way an
+/// author could only discover by reading `checkQuitCondition`.
+pub const QuitPolicy = enum {
+    /// Follow platform convention: stay alive on macOS, quit elsewhere.
+    platform_default,
+
+    /// Quit as soon as the last window closes, on every platform.
+    last_window_closed,
+
+    /// Never quit because of window count. Only `App.quit` stops the app.
+    explicit,
+
+    /// Resolve this policy against the build target.
+    ///
+    /// Pure, and the only place `platform_default` is interpreted, so the
+    /// convention lives in exactly one expression.
+    pub fn quitsOnLastWindowClosed(self: QuitPolicy) bool {
+        return switch (self) {
+            .platform_default => !platform.is_macos,
+            .last_window_closed => true,
+            .explicit => false,
+        };
+    }
+};
+
 // =============================================================================
 // App
 // =============================================================================
@@ -180,9 +215,12 @@ pub const App = struct {
     // App State
     // =========================================================================
 
-    /// Quit when the last window closes. `initInPlace` sets this to `true`;
-    /// there is no default because the struct is never built as a literal.
-    quit_when_last_window_closes: bool,
+    /// When losing the last window should stop the application.
+    ///
+    /// `initInPlace` sets `.platform_default`; there is no field default
+    /// because the struct is never built as a literal. Assign before `run` to
+    /// override.
+    quit_policy: QuitPolicy,
 
     /// Is the app currently running?
     running: bool,
@@ -238,7 +276,7 @@ pub const App = struct {
         self.open_window_ids = @splat(.invalid);
         self.open_window_teardowns = @splat(null);
         self.open_window_count = 0;
-        self.quit_when_last_window_closes = true;
+        self.quit_policy = .platform_default;
         self.running = false;
         self.initialized = true;
 
@@ -424,6 +462,13 @@ pub const App = struct {
     /// still on the host's stack, and on every backend it can run inside the
     /// window's own input dispatch. Both make destroying the window there a
     /// use-after-free. Draining separates the decision from the destruction.
+    ///
+    /// Reached from `openWindow`, `closeWindowById`, `deinit`, and — while the
+    /// app is running — once per host event-loop turn via the hook `run`
+    /// installs. The last of those is what covers closes the app never asked
+    /// for: the titlebar button and the compositor only set `isClosed()`, so
+    /// without a per-turn drain such a window kept its context and its slot
+    /// until the app happened to call one of the other three.
     ///
     /// Precondition: as `closeWindowById`. Idempotent and bounded; safe to call
     /// when nothing is pending.
@@ -656,15 +701,43 @@ pub const App = struct {
 
     /// Run the application event loop.
     ///
-    /// Blocks until `quit()` is called or all windows are closed
-    /// (if `quit_when_last_window_closes` is true).
+    /// Blocks until `quit()` is called or, if `quit_policy` says so, until the
+    /// last window closes.
+    ///
+    /// The per-turn hook installed here is what makes a host-initiated close —
+    /// the titlebar button, a compositor request, the window menu — reclaim its
+    /// `WindowContext`. Those routes only mark the window `isClosed()`; before
+    /// the hook existed nothing polled that flag until the app happened to call
+    /// `openWindow`, `closeWindowById`, or `deinit`, so an app that does not
+    /// quit on its last window leaked a full context per open/close cycle and
+    /// walked the slot table toward `MAX_WINDOWS`.
     pub fn run(self: *Self) void {
         // Assertions: validate state
         std.debug.assert(self.initialized);
         std.debug.assert(self.platform.windowCount() > 0); // Need at least one window
 
+        self.platform.setLoopTurnCallback(loopTurn);
         self.running = true;
+
         self.platform.run();
+
+        // A `host_callback` backend returns from `run` with the host still
+        // scheduled to call back, so the hook must stay armed and the windows
+        // must stay live (`runner.ownsTeardownAfterRun` draws the same line).
+        // A `blocking_event_loop` backend has stopped, so this frame owns what
+        // the final turn left behind: reclaim it, then disarm so nothing can
+        // re-enter `App` between here and `deinit`.
+        if (!self.platform.isRunning()) {
+            self.platform.setLoopTurnCallback(null);
+            self.drainClosedWindows();
+
+            // The loop has stopped, so the app is no longer running however it
+            // was stopped. `quit()` clears this itself, but the host can also
+            // stop the loop without it — `Cx.quit` goes straight to
+            // `Platform.quit` because a `Cx` cannot reach its `App` — and that
+            // left `isRunning()` reporting true for the rest of the process.
+            self.running = false;
+        }
     }
 
     /// Signal the application to quit.
@@ -730,11 +803,19 @@ pub const App = struct {
         return ctx;
     }
 
-    /// Check if we should quit based on window count.
+    /// Stop the application if the configured policy says the last window
+    /// closing should end it.
+    ///
+    /// Split into two branches rather than one `and`: whether the policy quits
+    /// at all and whether any window remains are separate facts, and a failed
+    /// assertion or a debugger stop should say which one decided (CLAUDE.md §6).
     fn checkQuitCondition(self: *Self) void {
-        if (self.quit_when_last_window_closes and self.platform.windowCount() == 0) {
-            self.quit();
-        }
+        std.debug.assert(self.initialized);
+
+        if (!self.quit_policy.quitsOnLastWindowClosed()) return;
+        if (self.platform.windowCount() != 0) return;
+
+        self.quit();
     }
 };
 
@@ -771,6 +852,33 @@ fn windowOptionsFrom(options: *const AppWindowOptions) WindowOptions {
         .full_size_content = options.full_size_content,
         .custom_shaders = options.custom_shaders,
     };
+}
+
+/// Reclaim closed windows once per host event-loop turn.
+///
+/// Installed by `App.run` and called by the backend from the one point in its
+/// cycle where no window callback is on the stack. That placement is the
+/// precondition `drainClosedWindows` documents and cannot check: teardown frees
+/// the `WindowContext` that owns the `Cx`, so draining from inside a window's
+/// own dispatch — which is where every close route runs — would be a
+/// use-after-free. See `platform/contract.zig`'s `LoopTurnCallback` note.
+///
+/// `App` is recovered by field offset rather than through a stored context
+/// pointer because `App` owns `platform` by value and is documented as never
+/// moving after `initInPlace`, so the offset is exact and costs no storage
+/// (CLAUDE.md §10 — don't take aliases). `App.run` is the only installer, so
+/// the platform reached here is always an `App`'s own field.
+fn loopTurn(plat: *Platform) void {
+    std.debug.assert(@intFromPtr(plat) != 0);
+
+    const app: *App = @fieldParentPtr("platform", plat);
+
+    // Proves the recovery landed on a live `App` rather than some other
+    // owner's platform: `initialized` is only ever set by `initInPlace`.
+    std.debug.assert(app.initialized);
+    std.debug.assert(&app.platform == plat);
+
+    app.drainClosedWindows();
 }
 
 /// Build the platform close callback for a window of the given state type.
@@ -1043,6 +1151,54 @@ test "repeated open/close cycles do not walk the slot table toward capacity" {
     }
 
     try expectSlotTableEmpty(app);
+}
+
+test "QuitPolicy resolves the two explicit policies on every target" {
+    // These two arms are the point of the enum: an author who wants a specific
+    // behaviour gets it regardless of what the host platform's convention is.
+    try std.testing.expect(QuitPolicy.last_window_closed.quitsOnLastWindowClosed());
+    try std.testing.expect(!QuitPolicy.explicit.quitsOnLastWindowClosed());
+}
+
+test "QuitPolicy.platform_default follows the host convention" {
+    // Goal: pin the convention itself, not just that it compiles. macOS
+    // applications outlive their windows; everywhere else they exit. This is
+    // the one place `platform_default` is interpreted, so if the expression
+    // ever inverts, this is what catches it.
+    //
+    // Asserted against `builtin.os.tag` directly rather than reusing
+    // `platform.is_macos`, so the test cannot agree with a broken constant by
+    // construction.
+    const on_macos = @import("builtin").os.tag == .macos;
+    const quits = QuitPolicy.platform_default.quitsOnLastWindowClosed();
+
+    if (on_macos) {
+        try std.testing.expect(!quits);
+    } else {
+        try std.testing.expect(quits);
+    }
+
+    // Positive and negative space (CLAUDE.md §11): `platform_default` must
+    // resolve to exactly one of the explicit policies, never to something else.
+    const matches_explicit = quits == QuitPolicy.last_window_closed.quitsOnLastWindowClosed();
+    const matches_never = quits == QuitPolicy.explicit.quitsOnLastWindowClosed();
+    try std.testing.expect(matches_explicit or matches_never);
+}
+
+test "a fresh App defaults to the platform convention" {
+    // The default is the whole behaviour change: `initInPlace` used to set an
+    // unconditional "quit on last window", so this guards against a regression
+    // to a hardcoded policy. Only the policy field is exercised — a full
+    // `initInPlace` needs a host connection.
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+
+    app.quit_policy = .platform_default;
+    try std.testing.expectEqual(QuitPolicy.platform_default, app.quit_policy);
+    try std.testing.expectEqual(
+        !platform.is_macos,
+        app.quit_policy.quitsOnLastWindowClosed(),
+    );
 }
 
 test "untracking an id the table never held is a no-op" {
