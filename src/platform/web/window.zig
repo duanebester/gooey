@@ -560,8 +560,14 @@ pub const WebWindow = struct {
     /// assertion instead of producing a nonsense `@intFromFloat`.
     const size_px_max: u32 = 32_768;
 
-    /// `devicePixelRatio` above this means the host is misreporting; 4 covers
-    /// every shipping display density with headroom.
+    /// `devicePixelRatio` above this means the host is misreporting.
+    ///
+    /// 8 rather than a tighter bound because every layer has to agree: macOS
+    /// `getScaleFactor` asserts the same 8.0, and `runtime`'s shared
+    /// `SCALE_FACTOR_MAX` is pinned to the loosest backend bound. A stricter
+    /// value here would let a host reporting, say, 5x pass this backend and
+    /// then panic in shared code that never touched the host — which is exactly
+    /// what the 4.0 this comment used to quote did before it was raised.
     const scale_factor_max: f64 = 8.0;
 
     /// Document titles are host-visible strings, not unbounded data.
