@@ -1,7 +1,16 @@
 //! Compile-time interface verification
 //!
-//! Ensures platform backends implement required methods with correct signatures.
-//! This provides interface-like guarantees without runtime overhead.
+//! Duck-typed `@hasDecl` checks for the subsystem shapes that have no single
+//! authoritative contract: renderers, clipboards, SVG rasterizers, image
+//! loaders, file dialogs, and focusable widgets. These verify that a
+//! declaration exists, not that its type matches, because the backends
+//! legitimately differ in signature (see `verifyRendererInterface`).
+//!
+//! This module does NOT cover the platform boundary. `Platform` and
+//! `PlatformWindow` are verified by `src/platform/contract.zig`, which checks
+//! complete function types rather than mere presence, and which each backend
+//! pins on itself from its own `mod.zig`. Adding a weaker duck-typed check
+//! beside it would form a second, drifting contract.
 //!
 //! Usage in a backend file:
 //!   const interface_verify = @import("../../core/interface_verify.zig");
@@ -116,30 +125,6 @@ pub fn verifyClipboardInterface(comptime T: type) void {
     comptime {
         assertHasDecl(T, "getText", "Clipboard");
         assertHasDecl(T, "setText", "Clipboard");
-    }
-}
-
-/// Verify a type implements the Platform interface
-///
-/// Required methods:
-///   - init
-///   - deinit
-pub fn verifyPlatformInterface(comptime T: type) void {
-    comptime {
-        assertHasDecl(T, "init", "Platform");
-        assertHasDecl(T, "deinit", "Platform");
-    }
-}
-
-/// Verify a type implements the Window interface
-///
-/// Required methods:
-///   - getSize
-///   - setTitle
-pub fn verifyWindowInterface(comptime T: type) void {
-    comptime {
-        assertHasDecl(T, "getSize", "Window");
-        assertHasDecl(T, "setTitle", "Window");
     }
 }
 

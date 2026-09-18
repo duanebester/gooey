@@ -30,6 +30,7 @@ pub const WindowHandle = window_handle.WindowHandle;
 pub const MultiWindowApp = multi_window_app.App;
 pub const AppWindowOptions = multi_window_app.AppWindowOptions;
 pub const MAX_WINDOWS = multi_window_app.MAX_WINDOWS;
+pub const QuitPolicy = multi_window_app.QuitPolicy;
 
 // Input utilities
 pub const isControlKey = input.isControlKey;

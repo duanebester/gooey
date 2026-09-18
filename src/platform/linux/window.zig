@@ -61,9 +61,14 @@ pub const Window = struct {
     frame_callback: ?*wayland.Callback = null,
     viewport: ?*wayland.WpViewport = null,
 
-    // Window state
-    width: u32 = 800,
-    height: u32 = 600,
+    // Window state.
+    //
+    // These carry the `_px` suffix because `width`/`height` are taken by the
+    // contract's accessor methods, and Zig puts fields and declarations in one
+    // struct namespace. Both are *logical* pixels; multiply by `scale_factor`
+    // for the physical swapchain extent.
+    width_px: u32 = 800,
+    height_px: u32 = 600,
     /// Size in logical pixels (for API compatibility with other platforms)
     size: Size = .{ .width = 800, .height = 600 },
     scale_factor: f64 = 1.0,
@@ -89,6 +94,18 @@ pub const Window = struct {
     // Rendering (Vulkan)
     renderer: VulkanRenderer,
     background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
+
+    /// Translucent-background style requested by the application.
+    ///
+    /// Stored but ignored at render time: Wayland has no portable window-blur
+    /// protocol, which is why `LinuxPlatform.capabilities.glass_effects` is
+    /// false. Only `getClearColor` consults it, so that a compositor which
+    /// does composite behind the surface has something to show through.
+    glass_style: interface_mod.GlassStyle = .none,
+
+    /// Last appearance requested via `setAppearance`. Advisory only; see there.
+    dark_appearance: bool = false,
+
     needs_redraw: bool = true,
     has_presented_frame: bool = false,
 
@@ -106,8 +123,9 @@ pub const Window = struct {
     image_atlas: ?*const text_mod.Atlas = null,
     last_image_atlas_generation: u32 = 0,
 
-    // Title storage
-    title_buf: [256]u8 = undefined,
+    // Title storage. `xdg_toplevel.set_title` takes a C string, so the buffer
+    // holds `title_bytes_max` payload bytes plus the terminating NUL.
+    title_buf: [title_bytes_max + 1]u8 = undefined,
     title_len: usize = 0,
 
     // =========================================================================
@@ -185,57 +203,55 @@ pub const Window = struct {
     /// Safe for operations that run nested event loops (modal dialogs, etc).
     pub const PostInputCallback = *const fn (*Self) void;
 
-    /// Glass style (no-op on Linux, for API compatibility with macOS)
-    pub const GlassStyle = enum(u8) {
-        none = 0,
-        // Linux doesn't support window blur effects like macOS
-        // These are included for API compatibility only
-        titlebar = 1,
-        header_view = 2,
-        sidebar = 3,
-        content = 4,
-        full_screen_ui = 5,
-        tooltip = 6,
-        menu = 7,
-        popover = 8,
-        selection = 9,
-        window_background = 10,
-        hudWindow = 11,
-        ultra_thin = 12,
-        thin = 13,
-        medium = 14,
-        thick = 15,
-        ultra_thick = 16,
-    };
-
     const Self = @This();
 
-    pub fn init(allocator: Allocator, platform: *LinuxPlatform, options: WindowOptions) !*Self {
+    /// Longest window title, in bytes, that `setTitle` accepts.
+    ///
+    /// The bound exists because the title is stored inline (no allocation after
+    /// initialization, `CLAUDE.md` §2) and must reach the compositor as a C
+    /// string, so the buffer is one byte wider for the terminator.
+    pub const title_bytes_max: usize = 255;
+
+    pub fn init(allocator: Allocator, plat: *LinuxPlatform, options: *const WindowOptions) !*Self {
+        std.debug.assert(options.width > 0);
+        std.debug.assert(options.height > 0);
+
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
         // Get initial scale factor from platform (may be updated later by surface events)
-        const initial_scale = platform.getScaleFactor();
+        const initial_scale = plat.getScaleFactor();
 
         self.* = Self{
             .allocator = allocator,
-            .platform = platform,
-            .width = @intFromFloat(options.width),
-            .height = @intFromFloat(options.height),
+            .platform = plat,
+            .width_px = @intFromFloat(options.width),
+            .height_px = @intFromFloat(options.height),
             .size = .{ .width = options.width, .height = options.height },
             .scale_factor = initial_scale,
             .background_color = options.background_color,
+            .glass_style = options.glass_style,
             .renderer = VulkanRenderer.init(allocator),
         };
 
-        // Store title
-        const title_len = @min(options.title.len, self.title_buf.len - 1);
+        // Store title. Same contract as `setTitle`: over-long is a programmer
+        // error, and the clamp is what keeps a release build in bounds.
+        std.debug.assert(options.title.len <= title_bytes_max);
+        const title_len = @min(options.title.len, title_bytes_max);
         @memcpy(self.title_buf[0..title_len], options.title[0..title_len]);
         self.title_buf[title_len] = 0;
         self.title_len = title_len;
 
+        // Register before any Wayland object exists so that every later error
+        // path unwinds through one errdefer rather than a second exit branch.
+        self.window_id = try plat.registerWindow(self);
+        errdefer {
+            plat.unregisterWindow(self.window_id);
+            self.window_id = .invalid;
+        }
+
         // Create Wayland surface
-        const compositor = platform.getCompositor() orelse return error.NoCompositor;
+        const compositor = plat.getCompositor() orelse return error.NoCompositor;
         self.wl_surface = wayland.compositorCreateSurface(compositor) orelse return error.FailedToCreateSurface;
         errdefer {
             if (self.wl_surface) |s| wayland.surfaceDestroy(s);
@@ -246,7 +262,7 @@ pub const Window = struct {
         _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
 
         // Create XDG surface
-        const xdg_wm_base = platform.getXdgWmBase() orelse return error.NoXdgWmBase;
+        const xdg_wm_base = plat.getXdgWmBase() orelse return error.NoXdgWmBase;
         self.xdg_surface = wayland.xdgWmBaseGetXdgSurface(xdg_wm_base, self.wl_surface.?) orelse return error.FailedToCreateXdgSurface;
         errdefer {
             if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
@@ -287,7 +303,7 @@ pub const Window = struct {
         }
 
         // Request server-side decorations if available
-        if (platform.getDecorationManager()) |dm| {
+        if (plat.getDecorationManager()) |dm| {
             std.debug.print("Decoration manager available, requesting server-side decorations...\n", .{});
             self.decoration = wayland.zxdgDecorationManagerV1GetToplevelDecoration(dm, self.xdg_toplevel.?);
             if (self.decoration) |dec| {
@@ -304,7 +320,7 @@ pub const Window = struct {
         wayland.surfaceCommit(self.wl_surface.?);
 
         // Wait for initial configure - this may update scale_factor via preferred_buffer_scale callback
-        _ = wayland.wl_display_roundtrip(platform.display.?);
+        _ = wayland.wl_display_roundtrip(plat.display.?);
 
         // errdefer for decoration (created above, may be null)
         errdefer {
@@ -314,11 +330,15 @@ pub const Window = struct {
 
         // Create viewport for HiDPI scaling (preferred method over set_buffer_scale for Vulkan)
         // wp_viewporter allows us to render at physical resolution and display at logical size
-        if (platform.getViewporter()) |viewporter| {
+        if (plat.getViewporter()) |viewporter| {
             self.viewport = wayland.viewporterGetViewport(viewporter, self.wl_surface.?);
             if (self.viewport) |vp| {
                 // Set destination to logical size - the compositor will scale our buffer to this size
-                wayland.viewportSetDestination(vp, @intCast(self.width), @intCast(self.height));
+                wayland.viewportSetDestination(
+                    vp,
+                    @intCast(self.width_px),
+                    @intCast(self.height_px),
+                );
             }
         } else {
             // Fallback: use buffer scale (may not work correctly with Vulkan on all compositors)
@@ -337,22 +357,22 @@ pub const Window = struct {
             self.xdg_surface.?,
             0,
             0,
-            @intCast(self.width),
-            @intCast(self.height),
+            @intCast(self.width_px),
+            @intCast(self.height_px),
         );
 
         // Commit surface state before creating Vulkan swapchain
         wayland.surfaceCommit(self.wl_surface.?);
-        _ = wayland.wl_display_roundtrip(platform.display.?);
+        _ = wayland.wl_display_roundtrip(plat.display.?);
 
         // Initialize Vulkan renderer with Wayland surface
         // Swapchain will be created at physical pixel resolution
-        const wl_display = platform.getDisplay() orelse return error.NoDisplay;
+        const wl_display = plat.getDisplay() orelse return error.NoDisplay;
         try self.renderer.initWithWaylandSurface(
             wl_display,
             @ptrCast(self.wl_surface),
-            self.width,
-            self.height,
+            self.width_px,
+            self.height_px,
             self.scale_factor,
         );
 
@@ -362,12 +382,39 @@ pub const Window = struct {
         // Roundtrip to ensure compositor has processed viewport state
         // This is important for HiDPI - pointer coordinates won't be in
         // the correct (logical) coordinate space until viewport is applied
-        _ = wayland.wl_display_roundtrip(platform.display.?);
+        _ = wayland.wl_display_roundtrip(plat.display.?);
 
+        // A newly mapped window claims focus. `setActiveWindowId` also derives
+        // the `*LinuxWindow` that Wayland input dispatch needs, so publishing
+        // the id alone keeps both authorities in agreement.
+        plat.setActiveWindowId(self.window_id);
+
+        std.debug.assert(self.window_id.isValid());
+        std.debug.assert(self.wl_surface != null);
         return self;
     }
 
     pub fn deinit(self: *Self) void {
+        std.debug.assert(@intFromPtr(self) != 0);
+
+        // Drop every platform-held reference before any Wayland object dies,
+        // so a queued event cannot be routed into a half-destroyed window.
+        // `.invalid` makes a second deinit a no-op here rather than tripping
+        // the registry's validity assertion.
+        if (self.window_id.isValid()) {
+            self.platform.unregisterWindow(self.window_id);
+            self.window_id = .invalid;
+        }
+        if (self.platform.active_window == self) {
+            // Re-elect rather than clear: `active_window` is the routing target
+            // for every Wayland pointer, keyboard, and IME event, so a null here
+            // with other windows still open would strand input. Unregistration
+            // above already removed this window from the candidates.
+            self.platform.reelectActiveWindow();
+        }
+        if (self.platform.touch_window == self) self.platform.touch_window = null;
+        std.debug.assert(self.platform.active_window != self);
+
         // Destroy viewport
         if (self.viewport) |vp| {
             wayland.viewportDestroy(vp);
@@ -388,6 +435,7 @@ pub const Window = struct {
         if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
         if (self.wl_surface) |s| wayland.surfaceDestroy(s);
 
+        std.debug.assert(!self.window_id.isValid());
         self.allocator.destroy(self);
     }
 
@@ -395,28 +443,30 @@ pub const Window = struct {
     // Public Interface
     // =========================================================================
 
-    pub fn getWidth(self: *const Self) u32 {
-        return self.width;
+    /// Window width in logical pixels.
+    pub fn width(self: *const Self) u32 {
+        return self.width_px;
     }
 
-    pub fn getHeight(self: *const Self) u32 {
-        return self.height;
+    /// Window height in logical pixels.
+    pub fn height(self: *const Self) u32 {
+        return self.height_px;
     }
 
-    /// Window width in logical pixels (convenience alias for getWidth)
+    /// Window width in logical pixels (convenience alias for `width`)
     pub fn widthPx(self: *const Self) u32 {
-        return self.width;
+        return self.width_px;
     }
 
-    /// Window height in logical pixels (convenience alias for getHeight)
+    /// Window height in logical pixels (convenience alias for `height`)
     pub fn heightPx(self: *const Self) u32 {
-        return self.height;
+        return self.height_px;
     }
 
     pub fn getSize(self: *const Self) geometry.Size(f64) {
         return .{
-            .width = @floatFromInt(self.width),
-            .height = @floatFromInt(self.height),
+            .width = @floatFromInt(self.width_px),
+            .height = @floatFromInt(self.height_px),
         };
     }
 
@@ -424,11 +474,29 @@ pub const Window = struct {
         return self.scale_factor;
     }
 
+    /// Copy `title` into the fixed title buffer and publish it to the
+    /// compositor.
+    ///
+    /// An over-long title is a programmer error here, exactly as it is on web
+    /// (`title.len <= title_bytes_max`) and in the test backend. This used to
+    /// truncate silently, so the same call that trips an assertion on two
+    /// targets quietly produced a different window title on the third.
+    ///
+    /// The clamp is kept as well, and is not a second policy: with assertions
+    /// elided in release builds it is what keeps the `@memcpy` inside
+    /// `title_buf` instead of overrunning it.
     pub fn setTitle(self: *Self, title: []const u8) void {
-        const len = @min(title.len, self.title_buf.len - 1);
+        std.debug.assert(title.len <= title_bytes_max);
+        std.debug.assert(self.title_buf.len == title_bytes_max + 1);
+
+        const len = @min(title.len, title_bytes_max);
         @memcpy(self.title_buf[0..len], title[0..len]);
+        // NUL-terminate, and zero nothing else: the tail beyond the terminator
+        // is never read, and `xdgToplevelSetTitle` stops at the first zero.
         self.title_buf[len] = 0;
         self.title_len = len;
+
+        std.debug.assert(self.title_len <= title_bytes_max);
 
         if (self.xdg_toplevel) |tl| {
             wayland.xdgToplevelSetTitle(tl, @ptrCast(&self.title_buf));
@@ -439,32 +507,88 @@ pub const Window = struct {
     // Window Operations
     // =========================================================================
 
-    /// Focus this window (bring to front).
+    /// Request focus for this window.
     ///
-    /// Note: On Wayland, window activation is controlled by the compositor.
-    /// This is a best-effort request that may be ignored depending on compositor policy.
+    /// Wayland gives the compositor sole authority over activation: a client
+    /// cannot raise itself, and there is no protocol error to report when the
+    /// request is declined. Without `xdg-activation-v1` there is nothing to
+    /// send, so this schedules a redraw and nothing more.
+    ///
+    /// The previous comment claimed it "request[s] a render", but the body was
+    /// `_ = self;` and did not. Callers such as `WindowHandle.focus` publish a
+    /// new active window id immediately afterwards, so a silent no-op here left
+    /// `getActiveWindowId()` reporting a window the compositor had never been
+    /// asked about. Redrawing is the only honest action available, and
+    /// `capabilities` carries no `can_raise_window` flag yet to express the
+    /// rest.
     pub fn focus(self: *Self) void {
-        // Wayland doesn't allow clients to forcibly grab focus.
-        // The best we can do is request a render which may prompt user attention.
-        // Some compositors support activation tokens, but that's more complex.
-        _ = self;
-        // TODO: Consider implementing xdg-activation-v1 protocol for proper focus requests
+        std.debug.assert(!self.closed);
+
+        self.requestRender();
+
+        std.debug.assert(self.needs_redraw);
     }
 
     /// Close this window programmatically.
     ///
-    /// Triggers the close callback if set, allowing it to cancel.
-    /// If close proceeds, signals the platform event loop to stop.
+    /// The veto callback runs first and may decline the close. Otherwise the
+    /// window records `closed = true`, stops presenting, and returns. It is
+    /// deliberately neither torn down here nor allowed to stop the host loop.
+    ///
+    /// Teardown cannot happen here: `close()` is reachable from inside this
+    /// window's own input dispatch, where the `Cx` being dispatched lives in
+    /// the `WindowContext` that teardown would free. The owning `App` reclaims
+    /// the window from a safe point (`App.drainClosedWindows`, which polls
+    /// `isClosed()`), and `App.checkQuitCondition` decides whether losing the
+    /// last window should quit.
+    ///
+    /// This used to end with `platform.quit()`, which made closing any single
+    /// window terminate the whole application — Linux multi-window was
+    /// effectively single-window. macOS has always routed through the delegate
+    /// to the owning `App` instead; this now matches.
     pub fn close(self: *Self) void {
-        // Call close callback first to allow cancellation
+        std.debug.assert(@intFromPtr(self) != 0);
+
+        // Idempotent: `App.closeWindowById` and the compositor can both reach
+        // a window, and re-running the veto would ask the application twice.
+        if (self.closed) return;
+
         if (self.on_close) |callback| {
-            if (!callback(self)) {
-                return; // User prevented close
-            }
+            if (!callback(self)) return; // Declined by the application.
         }
-        // Mark as closed and signal platform to stop event loop
+
+        self.markClosed();
+
+        std.debug.assert(self.isClosed());
+    }
+
+    /// Record the close and stop this window from presenting further frames.
+    ///
+    /// Shared by the programmatic `close()` and the compositor-initiated
+    /// `xdg_toplevel.close`, so a titlebar click and an application call
+    /// converge on one state transition exactly as they do on macOS, where
+    /// both arrive at `handleClose`.
+    ///
+    /// An outstanding `wl_callback` is left in place rather than destroyed:
+    /// `deinit` owns exactly one destroy of it, and when it fires `renderFrame`
+    /// returns immediately while neither `continuous_render` nor `needs_redraw`
+    /// asks for a successor, so the callback chain retires by itself.
+    fn markClosed(self: *Self) void {
+        std.debug.assert(!self.closed);
+        std.debug.assert(self.window_id.isValid());
+
         self.closed = true;
-        self.platform.quit();
+        self.needs_redraw = false;
+        self.continuous_render = false;
+
+        // A closed window stays registered until its owner reclaims it, but it
+        // is no longer a legal input target, so focus must move on now rather
+        // than at teardown. `reelectActiveWindow` skips closed windows, so it
+        // cannot re-elect this one.
+        if (self.platform.active_window == self) self.platform.reelectActiveWindow();
+
+        std.debug.assert(self.closed);
+        std.debug.assert(self.platform.active_window != self);
     }
 
     pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
@@ -472,9 +596,35 @@ pub const Window = struct {
         self.requestRender();
     }
 
-    /// Set the window appearance (light or dark mode).
-    /// No-op on Linux - appearance is controlled by the desktop environment.
-    pub fn setAppearance(_: *Self, _: bool) void {}
+    /// Record the requested light/dark appearance.
+    ///
+    /// Advisory only: Wayland has no server-side appearance protocol, so the
+    /// desktop environment owns the theme and the compositor cannot be told.
+    /// The flag is stored rather than dropped so the value the application
+    /// asked for stays observable instead of vanishing into a silent no-op.
+    pub fn setAppearance(self: *Self, dark: bool) void {
+        std.debug.assert(@intFromPtr(self) != 0);
+        self.dark_appearance = dark;
+        std.debug.assert(self.dark_appearance == dark);
+    }
+
+    /// Effective framebuffer clear color.
+    ///
+    /// Applied by `renderFrame` through `VulkanRenderer.setClearColor`, which
+    /// records it into the next render pass.
+    ///
+    /// A glass style needs a transparent clear so a host-composited backdrop
+    /// shows through. Wayland cannot produce the blur itself (see
+    /// `glass_style`), so on this backend the transparent clear is the whole
+    /// of the effect, and it only shows if the compositor honours the
+    /// surface's alpha.
+    pub fn getClearColor(self: *const Self) geometry.Color {
+        std.debug.assert(self.background_color.a >= 0.0);
+        std.debug.assert(self.background_color.a <= 1.0);
+
+        if (self.glass_style.needsTransparentClear()) return geometry.Color.transparent;
+        return self.background_color;
+    }
 
     pub fn getMousePosition(self: *const Self) geometry.Point(f64) {
         return .{
@@ -492,13 +642,33 @@ pub const Window = struct {
         return self.window_id;
     }
 
+    /// The platform that owns this window.
+    ///
+    /// Contract-pinned so shared code can reach the host without spelling a
+    /// per-backend field name; see `contract.verifyWindowLifecycle`.
+    pub fn getPlatform(self: *Self) *LinuxPlatform {
+        std.debug.assert(@intFromPtr(self.platform) != 0);
+        return self.platform;
+    }
+
     pub fn isClosed(self: *const Self) bool {
         return self.closed;
     }
 
     pub fn requestRender(self: *Self) void {
+        // A closed window never presents again (`renderFrame` returns at once),
+        // so arming a `wl_callback` here would start a chain that re-schedules
+        // itself every vsync on a window that can only ever drop the frame.
+        // Setters such as `setBackgroundColor` still reach a closed window
+        // between the close and the owner's reclaim, so this must be checked
+        // here and not only at the call sites.
+        if (self.closed) return;
+
         self.needs_redraw = true;
         self.scheduleFrame();
+
+        std.debug.assert(self.needs_redraw);
+        std.debug.assert(!self.closed);
     }
 
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
@@ -721,8 +891,8 @@ pub const Window = struct {
     /// Determine which resize edge the mouse is near, if any.
     /// Returns null if not near any edge (inside the content area).
     pub fn getResizeEdge(self: *const Self, x: f64, y: f64, border_width: f64) ?wayland.ResizeEdge {
-        const w: f64 = @floatFromInt(self.width);
-        const h: f64 = @floatFromInt(self.height);
+        const w: f64 = @floatFromInt(self.width_px);
+        const h: f64 = @floatFromInt(self.height_px);
 
         const near_left = x < border_width;
         const near_right = x >= w - border_width;
@@ -763,6 +933,11 @@ pub const Window = struct {
 
     /// Render the current frame
     pub fn renderFrame(self: *Self) void {
+        // A closed window holds its Vulkan resources until its owner reclaims
+        // it, but must never present again: its `WindowContext` may already be
+        // on the way out. This also retires an in-flight frame callback rather
+        // than letting it drive a zombie render chain (see `markClosed`).
+        if (self.closed) return;
         if (!self.configured) return;
         if (!self.needs_redraw and !self.pending_resize) return;
 
@@ -775,15 +950,19 @@ pub const Window = struct {
             const old_width = self.size.width;
             const old_height = self.size.height;
 
-            self.width = self.pending_width;
-            self.height = self.pending_height;
+            self.width_px = self.pending_width;
+            self.height_px = self.pending_height;
             self.size = .{
                 .width = @floatFromInt(self.pending_width),
                 .height = @floatFromInt(self.pending_height),
             };
             // Update viewport destination size for HiDPI scaling
             if (self.viewport) |vp| {
-                wayland.viewportSetDestination(vp, @intCast(self.width), @intCast(self.height));
+                wayland.viewportSetDestination(
+                    vp,
+                    @intCast(self.width_px),
+                    @intCast(self.height_px),
+                );
             } else if (self.wl_surface) |surface| {
                 // Fallback to buffer scale
                 const scale_int: i32 = @intFromFloat(self.scale_factor);
@@ -794,8 +973,8 @@ pub const Window = struct {
                     xdg,
                     0,
                     0,
-                    @intCast(self.width),
-                    @intCast(self.height),
+                    @intCast(self.width_px),
+                    @intCast(self.height_px),
                 );
             }
             // Commit surface state (viewport, geometry) before recreating swapchain
@@ -804,7 +983,7 @@ pub const Window = struct {
             if (self.wl_surface) |surface| {
                 wayland.surfaceCommit(surface);
             }
-            self.renderer.resize(self.width, self.height, self.scale_factor);
+            self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
             self.pending_resize = false;
             // Notify user of resize if size actually changed
             const size_changed = (old_width != self.size.width or old_height != self.size.height);
@@ -819,6 +998,10 @@ pub const Window = struct {
         if (self.on_render) |callback| {
             callback(self);
         }
+
+        // Republish every frame: `setBackgroundColor` may have run since the
+        // last record, and the renderer only reads this when recording.
+        self.renderer.setClearColor(self.getClearColor());
 
         // Stage atlas uploads — stores data pointers only, no memcpy.
         // Actual staging + GPU transfer happens inside render() after
@@ -952,8 +1135,8 @@ pub const Window = struct {
             }
             // Trigger resize to recreate swapchain with new scale
             self.pending_resize = true;
-            self.pending_width = self.width;
-            self.pending_height = self.height;
+            self.pending_width = self.width_px;
+            self.pending_height = self.height_px;
         }
         self.requestRender();
     }
@@ -988,11 +1171,13 @@ pub const Window = struct {
         self.requestRender();
     }
 
+    // Parameters are suffixed `_px` because `width`/`height` are declarations
+    // on this struct, and a parameter may not shadow one.
     fn xdgToplevelConfigure(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,
-        width: i32,
-        height: i32,
+        width_px: i32,
+        height_px: i32,
         states: *anyopaque,
     ) callconv(.c) void {
         _ = xdg_toplevel;
@@ -1000,25 +1185,25 @@ pub const Window = struct {
         const self: *Self = @ptrCast(@alignCast(data));
 
         // Width/height of 0 means we can choose our own size
-        if (width > 0 and height > 0) {
-            self.pending_width = @intCast(width);
-            self.pending_height = @intCast(height);
+        if (width_px > 0 and height_px > 0) {
+            self.pending_width = @intCast(width_px);
+            self.pending_height = @intCast(height_px);
         } else {
-            self.pending_width = self.width;
-            self.pending_height = self.height;
+            self.pending_width = self.width_px;
+            self.pending_height = self.height_px;
         }
     }
 
     fn xdgToplevelConfigureBounds(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,
-        width: i32,
-        height: i32,
+        width_px: i32,
+        height_px: i32,
     ) callconv(.c) void {
         _ = data;
         _ = xdg_toplevel;
-        _ = width;
-        _ = height;
+        _ = width_px;
+        _ = height_px;
         // Configure bounds is informational - the compositor suggests max size
         // We don't need to enforce it for now
     }
@@ -1035,24 +1220,28 @@ pub const Window = struct {
         // We don't need to handle it for now
     }
 
+    /// The compositor asked this toplevel to close (titlebar button, window
+    /// menu, or a session request).
+    ///
+    /// Routed through `close()` so the compositor request and a programmatic
+    /// close run the same veto and the same state transition; the application
+    /// cannot tell the two apart, which is the macOS behaviour. Destroying the
+    /// window here would free it underneath the Wayland dispatch calling us,
+    /// and quitting here would take every other window down with it.
     fn xdgToplevelClose(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,
     ) callconv(.c) void {
         _ = xdg_toplevel;
         const self: *Self = @ptrCast(@alignCast(data));
-        std.debug.print("Window close requested\n", .{});
+        std.debug.assert(@intFromPtr(self) != 0);
 
-        // Call user callback first - they can prevent close by returning false
-        if (self.on_close) |callback| {
-            if (!callback(self)) {
-                std.debug.print("Window close prevented by callback\n", .{});
-                return; // User prevented close
-            }
-        }
+        self.close();
 
-        self.closed = true;
-        self.platform.quit();
+        // Nothing was torn down: `window_id` is invalidated only by `deinit`,
+        // so this proves the window is still registered and still resolvable
+        // by the owner that will reclaim it.
+        std.debug.assert(self.window_id.isValid());
     }
 
     fn decorationConfigure(
@@ -1124,106 +1313,6 @@ pub const Window = struct {
         if (self.continuous_render or self.needs_redraw) {
             self.scheduleFrame();
         }
-    }
-
-    // =========================================================================
-    // Interface VTable
-    // =========================================================================
-
-    /// Get the WindowVTable interface for runtime polymorphism
-    pub fn interface(self: *Self) interface_mod.WindowVTable {
-        const vtable = struct {
-            fn deinitFn(p: *anyopaque) void {
-                const win: *Self = @ptrCast(@alignCast(p));
-                win.deinit();
-            }
-
-            fn getWindowIdFn(p: *anyopaque) WindowId {
-                const win: *const Self = @ptrCast(@alignCast(p));
-                return win.getWindowId();
-            }
-
-            fn widthFn(p: *anyopaque) u32 {
-                const win: *const Self = @ptrCast(@alignCast(p));
-                return win.getWidth();
-            }
-
-            fn heightFn(p: *anyopaque) u32 {
-                const win: *const Self = @ptrCast(@alignCast(p));
-                return win.getHeight();
-            }
-
-            fn getSizeFn(p: *anyopaque) geometry.Size(f64) {
-                const win: *const Self = @ptrCast(@alignCast(p));
-                return win.getSize();
-            }
-
-            fn getScaleFactorFn(p: *anyopaque) f64 {
-                const win: *const Self = @ptrCast(@alignCast(p));
-                return win.getScaleFactor();
-            }
-
-            fn setTitleFn(p: *anyopaque, title: []const u8) void {
-                const win: *Self = @ptrCast(@alignCast(p));
-                win.setTitle(title);
-            }
-
-            fn setBackgroundColorFn(p: *anyopaque, color: geometry.Color) void {
-                const win: *Self = @ptrCast(@alignCast(p));
-                win.setBackgroundColor(color);
-            }
-
-            fn setAppearanceFn(_: *anyopaque, _: bool) void {
-                // No-op on Linux - appearance is controlled by the desktop environment
-            }
-
-            fn getMousePositionFn(p: *anyopaque) geometry.Point(f64) {
-                const win: *const Self = @ptrCast(@alignCast(p));
-                return win.getMousePosition();
-            }
-
-            fn isMouseInsideFn(p: *anyopaque) bool {
-                const win: *const Self = @ptrCast(@alignCast(p));
-                return win.isMouseInside();
-            }
-
-            fn requestRenderFn(p: *anyopaque) void {
-                const win: *Self = @ptrCast(@alignCast(p));
-                win.requestRender();
-            }
-
-            fn setSceneFn(p: *anyopaque, s: *const scene_mod.Scene) void {
-                const win: *Self = @ptrCast(@alignCast(p));
-                win.setScene(s);
-            }
-
-            fn setTextAtlasFn(p: *anyopaque, atlas: *const text_mod.Atlas) void {
-                const win: *Self = @ptrCast(@alignCast(p));
-                win.setTextAtlas(atlas);
-            }
-
-            const table = interface_mod.WindowVTable.VTable{
-                .deinit = deinitFn,
-                .getWindowId = getWindowIdFn,
-                .width = widthFn,
-                .height = heightFn,
-                .getSize = getSizeFn,
-                .getScaleFactor = getScaleFactorFn,
-                .setTitle = setTitleFn,
-                .setBackgroundColor = setBackgroundColorFn,
-                .setAppearance = setAppearanceFn,
-                .getMousePosition = getMousePositionFn,
-                .isMouseInside = isMouseInsideFn,
-                .requestRender = requestRenderFn,
-                .setScene = setSceneFn,
-                .setTextAtlas = setTextAtlasFn,
-            };
-        };
-
-        return .{
-            .ptr = self,
-            .vtable = &vtable.table,
-        };
     }
 
     /// Get renderer capabilities

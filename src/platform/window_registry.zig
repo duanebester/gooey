@@ -133,10 +133,15 @@ pub const WindowRegistry = struct {
         // Store in registry
         try self.windows.put(id, window_ptr);
 
-        // Set as active if this is the first window
-        if (self.active_window == null) {
-            self.active_window = id;
-        }
+        // Registration deliberately does NOT elect an active window.
+        //
+        // This used to auto-activate the first registered window, which made
+        // focus policy an invisible side effect of registration: Linux
+        // additionally published focus explicitly from `Window.init` while
+        // macOS and web relied on this branch, so the three backends disagreed
+        // about which window `getActiveWindowId` named for the same program.
+        // Each backend now calls `setActiveWindowId` itself, so the policy is
+        // one readable line per backend and the registry stays a pure map.
 
         return id;
     }
@@ -289,28 +294,48 @@ test "WindowRegistry - unregister" {
     std.debug.assert(registry.get(id) == null);
 }
 
-test "WindowRegistry - active window tracking" {
+test "WindowRegistry - registration does not elect an active window" {
+    // Focus policy belongs to the backend, not to registration. Electing here
+    // made registration silently change focus, and the three backends then
+    // disagreed about which window was active. Registration must leave the
+    // active slot untouched.
     var registry = WindowRegistry.init(std.testing.allocator);
     defer registry.deinit();
 
     var dummy1: u32 = 1;
     var dummy2: u32 = 2;
 
-    // First window becomes active automatically
     const id1 = try registry.register(&dummy1);
-    std.debug.assert(registry.getActiveWindow().? == id1);
+    try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
 
-    // Second window doesn't change active
     const id2 = try registry.register(&dummy2);
-    std.debug.assert(registry.getActiveWindow().? == id1);
+    try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
 
-    // Can change active manually
+    // Only an explicit call elects.
+    registry.setActiveWindow(id1);
+    try std.testing.expectEqual(id1, registry.getActiveWindow().?);
+
     registry.setActiveWindow(id2);
-    std.debug.assert(registry.getActiveWindow().? == id2);
+    try std.testing.expectEqual(id2, registry.getActiveWindow().?);
+}
 
-    // Unregistering active window clears it
-    _ = registry.unregister(id2);
-    std.debug.assert(registry.getActiveWindow() == null);
+test "WindowRegistry - unregistering the active window clears the slot" {
+    // Negative space: a stale active id must never outlive its window, or a
+    // later lookup would resolve focus to a freed pointer.
+    var registry = WindowRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    var dummy: u32 = 7;
+    const id = try registry.register(&dummy);
+    registry.setActiveWindow(id);
+    try std.testing.expectEqual(id, registry.getActiveWindow().?);
+
+    _ = registry.unregister(id);
+    try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
+
+    // Clearing explicitly is also valid from the empty state.
+    registry.setActiveWindow(null);
+    try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
 }
 
 test "WindowRegistry - count limit constant" {

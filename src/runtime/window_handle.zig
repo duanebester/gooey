@@ -9,15 +9,15 @@
 //! // Create a window and get a typed handle
 //! const handle = try app.openWindow(MyState, &my_state, render, .{});
 //!
-//! // Later, from another window or callback:
-//! handle.update(app, struct {
+//! // Later, from another window or callback (`app.getPlatform()`):
+//! handle.update(app.getPlatform(), struct {
 //!     fn apply(state: *MyState) void {
 //!         state.counter += 1;
 //!     }
 //! }.apply);
 //!
 //! // Or read state:
-//! if (handle.read(app)) |state| {
+//! if (handle.read(app.getPlatformConst())) |state| {
 //!     std.debug.print("Counter: {}\n", .{state.counter});
 //! }
 //! ```
@@ -27,15 +27,21 @@
 //! WindowHandle wraps a WindowId with compile-time type information,
 //! ensuring type-safe access to window state. Operations gracefully
 //! handle closed windows by returning null or doing nothing.
+//!
+//! Ids are resolved against the *platform's* window registry. That registry is
+//! the single source of window identity: `PlatformWindow.init` registers itself
+//! and `getWindowId()` returns the id assigned there. Resolving through a
+//! second, app-level registry would mean two independent id sequences, and a
+//! handle would silently address the wrong window as soon as they drifted.
 
 const std = @import("std");
 
 // Platform imports
 const platform = @import("../platform/mod.zig");
+const Platform = platform.Platform;
 // `PlatformWindow` is the OS-level handle; `Window` is the framework wrapper.
 const PlatformWindow = platform.PlatformWindow;
 const WindowId = platform.WindowId;
-const WindowRegistry = platform.WindowRegistry;
 
 // Runtime imports
 const WindowContext = @import("window_context.zig").WindowContext;
@@ -68,11 +74,12 @@ pub fn WindowHandle(comptime State: type) type {
         /// After the update, the window is marked for re-rendering.
         ///
         /// Does nothing if the window has been closed.
-        pub fn update(self: Self, registry: *WindowRegistry, f: *const fn (*State) void) void {
+        pub fn update(self: Self, plat: *Platform, f: *const fn (*State) void) void {
             // Assertions: validate inputs
             std.debug.assert(self.id.isValid());
+            std.debug.assert(@intFromPtr(f) != 0);
 
-            const window = self.getWindow(registry) orelse return;
+            const window = self.getWindow(plat) orelse return;
             const ctx = window.getUserData(WinCtx) orelse return;
 
             // Apply the update
@@ -90,13 +97,14 @@ pub fn WindowHandle(comptime State: type) type {
         /// Does nothing if the window has been closed.
         pub fn updateWithCx(
             self: Self,
-            registry: *WindowRegistry,
+            plat: *Platform,
             comptime f: fn (*@import("../cx.zig").Cx, *State) void,
         ) void {
             // Assertions: validate inputs
             std.debug.assert(self.id.isValid());
+            std.debug.assert(@intFromPtr(plat) != 0);
 
-            const window = self.getWindow(registry) orelse return;
+            const window = self.getWindow(plat) orelse return;
             const ctx = window.getUserData(WinCtx) orelse return;
 
             // Apply the update with Cx access
@@ -109,11 +117,12 @@ pub fn WindowHandle(comptime State: type) type {
         /// Read this window's state (immutable).
         ///
         /// Returns null if the window has been closed.
-        pub fn read(self: Self, registry: *const WindowRegistry) ?*const State {
+        pub fn read(self: Self, plat: *const Platform) ?*const State {
             // Assertions: validate inputs
             std.debug.assert(self.id.isValid());
+            std.debug.assert(@intFromPtr(plat) != 0);
 
-            const window = self.getWindowConst(registry) orelse return null;
+            const window = self.getWindowConst(plat) orelse return null;
             const ctx = window.getUserData(WinCtx) orelse return null;
             return ctx.state;
         }
@@ -124,11 +133,12 @@ pub fn WindowHandle(comptime State: type) type {
         /// This method is for cases where you need mutable access without re-render.
         ///
         /// Returns null if the window has been closed.
-        pub fn readMut(self: Self, registry: *WindowRegistry) ?*State {
+        pub fn readMut(self: Self, plat: *Platform) ?*State {
             // Assertions: validate inputs
             std.debug.assert(self.id.isValid());
+            std.debug.assert(@intFromPtr(plat) != 0);
 
-            const window = self.getWindow(registry) orelse return null;
+            const window = self.getWindow(plat) orelse return null;
             const ctx = window.getUserData(WinCtx) orelse return null;
             return ctx.state;
         }
@@ -137,48 +147,72 @@ pub fn WindowHandle(comptime State: type) type {
         // Window Operations
         // =====================================================================
 
-        /// Close this window.
+        /// Request that this window close.
         ///
-        /// The window will be destroyed and removed from the registry.
-        /// After this call, `isValid()` will return false.
-        pub fn close(self: Self, registry: *WindowRegistry) void {
+        /// Routes through the host close sequence, so an `on_close` callback
+        /// can still veto it. Deliberately does *not* `deinit` the window: a
+        /// handle close is normally invoked from inside that window's own event
+        /// dispatch, and destroying it there would free the `WindowContext`
+        /// holding the `Cx` the host is dispatching through.
+        ///
+        /// If the close is not vetoed the window becomes `isClosed()`, and
+        /// `isValid()` reports false from that moment. The window itself is
+        /// reclaimed by the owning `App` the next time it drains
+        /// (`App.drainClosedWindows`), which while the app is running happens
+        /// on the next turn of the host event loop. Until that drain the window
+        /// stays registered with the platform, so `windowCount()` still
+        /// includes it.
+        pub fn close(self: Self, plat: *Platform) void {
             std.debug.assert(self.id.isValid());
+            std.debug.assert(@intFromPtr(plat) != 0);
 
-            if (registry.unregister(self.id)) |window_ptr| {
-                // Cast to PlatformWindow and close it
-                const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
-                window.close();
-            }
+            const window = self.getWindow(plat) orelse return;
+            std.debug.assert(window.getWindowId() == self.id);
+            window.close();
         }
 
         /// Focus this window (bring to front and make key window).
         ///
         /// Does nothing if the window has been closed.
-        pub fn focus(self: Self, registry: *WindowRegistry) void {
+        pub fn focus(self: Self, plat: *Platform) void {
             std.debug.assert(self.id.isValid());
 
-            const window = self.getWindow(registry) orelse return;
+            const window = self.getWindow(plat) orelse return;
             window.focus();
-            registry.setActiveWindow(self.id);
+
+            // Safe to publish: the lookup above proved the id is registered,
+            // which is what `setActiveWindowId` asserts.
+            plat.setActiveWindowId(self.id);
         }
 
         /// Set this window's title.
         ///
+        /// An empty title is legal: AppKit, `xdg_toplevel.set_title`, and
+        /// `document.title` all accept one and render an untitled window.
+        ///
+        /// No length bound is asserted here because there is no single bound to
+        /// assert — each backend declares its own (Wayland 255 bytes, web 1024)
+        /// and enforces it at its own `setTitle`. A fourth number invented at
+        /// this layer could only be wrong on two targets out of three.
+        ///
         /// Does nothing if the window has been closed.
-        pub fn setTitle(self: Self, registry: *WindowRegistry, title: []const u8) void {
+        pub fn setTitle(self: Self, plat: *Platform, title: []const u8) void {
             std.debug.assert(self.id.isValid());
+            std.debug.assert(@intFromPtr(plat) != 0);
 
-            const window = self.getWindow(registry) orelse return;
+            const window = self.getWindow(plat) orelse return;
+            std.debug.assert(window.getWindowId() == self.id);
             window.setTitle(title);
         }
 
         /// Request a re-render of this window.
         ///
         /// Does nothing if the window has been closed.
-        pub fn requestRender(self: Self, registry: *WindowRegistry) void {
+        pub fn requestRender(self: Self, plat: *Platform) void {
             std.debug.assert(self.id.isValid());
+            std.debug.assert(@intFromPtr(plat) != 0);
 
-            const window = self.getWindow(registry) orelse return;
+            const window = self.getWindow(plat) orelse return;
             window.requestRender();
         }
 
@@ -186,12 +220,18 @@ pub fn WindowHandle(comptime State: type) type {
         // Validation
         // =====================================================================
 
-        /// Check if this window still exists.
+        /// Check if this window still exists and has not closed.
         ///
-        /// Returns false if the window has been closed.
-        pub fn isValid(self: Self, registry: *const WindowRegistry) bool {
+        /// Registration alone is not enough: a closed window stays registered
+        /// until the owning `App` drains it, so `isClosed()` — not mere
+        /// presence in the registry — is what answers "can the user still see
+        /// this window?". `App.isWindowOpen` tests the same two things.
+        pub fn isValid(self: Self, plat: *const Platform) bool {
             if (!self.id.isValid()) return false;
-            return registry.contains(self.id);
+
+            const window = self.getWindowConst(plat) orelse return false;
+            std.debug.assert(window.getWindowId() == self.id);
+            return !window.isClosed();
         }
 
         /// Get the raw WindowId.
@@ -205,14 +245,32 @@ pub fn WindowHandle(comptime State: type) type {
         // Internal Helpers
         // =====================================================================
 
-        /// Get the window pointer from the registry (mutable).
-        fn getWindow(self: Self, registry: *WindowRegistry) ?*PlatformWindow {
-            return registry.getTyped(PlatformWindow, self.id);
+        /// Resolve the window pointer through the platform registry (mutable).
+        ///
+        /// The platform boundary deals only in `*anyopaque` (it has no
+        /// `getTyped` equivalent), so the cast lives here, at the one call site
+        /// that knows the concrete window type.
+        fn getWindow(self: Self, plat: *Platform) ?*PlatformWindow {
+            std.debug.assert(self.id.isValid());
+
+            const window_ptr = plat.getWindow(self.id) orelse return null;
+            const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
+
+            // Pair-assert the cast: the registry is keyed by id, so a window
+            // that reports a different id means the pointer we just
+            // reinterpreted is not the one this handle names.
+            std.debug.assert(window.getWindowId() == self.id);
+            return window;
         }
 
-        /// Get the window pointer from the registry (const).
-        fn getWindowConst(self: Self, registry: *const WindowRegistry) ?*PlatformWindow {
-            return registry.getTyped(PlatformWindow, self.id);
+        /// Resolve the window pointer through the platform registry (const).
+        fn getWindowConst(self: Self, plat: *const Platform) ?*PlatformWindow {
+            std.debug.assert(self.id.isValid());
+
+            const window_ptr = plat.getWindow(self.id) orelse return null;
+            const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
+            std.debug.assert(window.getWindowId() == self.id);
+            return window;
         }
 
         // =====================================================================

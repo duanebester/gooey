@@ -36,7 +36,13 @@ pub fn err(comptime fmt: []const u8, args: anytype) void {
 
 pub extern "env" fn getCanvasWidth() u32;
 pub extern "env" fn getCanvasHeight() u32;
-pub extern "env" fn getDevicePixelRatio() f32;
+/// `window.devicePixelRatio`.
+///
+/// `f64` because a JS `Number` *is* an IEEE-754 double, so this is the host's
+/// own width. Declaring it `f32` narrowed the host value and then
+/// `WebWindow.updateSize` widened it straight back, which bought nothing and
+/// cost precision on fractional browser-zoom ratios.
+pub extern "env" fn getDevicePixelRatio() f64;
 /// Get canvas actual pixel width (canvas.width, not clientWidth)
 pub extern "env" fn getCanvasPixelWidth() u32;
 pub extern "env" fn getCanvasPixelHeight() u32;
