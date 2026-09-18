@@ -84,8 +84,12 @@ Other gaps:
   after `plat.run()`, which is only correct for `blocking_event_loop`.
 - Linux `Window.close()` (`src/platform/linux/window.zig`) calls `platform.quit()`, so closing
   one window terminates the whole application.
-- Linux `Window.focus()` is an empty no-op whose comment claims it requests a render; Wayland
-  would need `xdg-activation-v1`.
+- Linux `Window.focus()` can only schedule a redraw. Wayland gives the compositor sole
+  authority over activation, so raising a window would need `xdg-activation-v1`, and there is no
+  capability flag (`can_raise_window`) to express that the request was not honoured.
+- `src/platform/web/clipboard.zig` still declares `getText(_: anytype) ?[]const u8`. Clipboard
+  is a platform service, so it sits outside the window contract and is unverified until
+  phase 6.
 - `capabilities.glass_effects` does double duty as a proxy for "this backend has a post-process
   pass" in `src/context/window.zig` `setAccentColor`, which is really a Metal-renderer fact.
 - Web `capabilities.custom_cursors` is `false` because `imports.zig` has no cursor binding, and
