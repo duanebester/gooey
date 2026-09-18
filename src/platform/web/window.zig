@@ -31,9 +31,9 @@ pub const WebWindow = struct {
     /// Logical canvas size in CSS pixels, refreshed by `updateSize`.
     size: geometry.Size(f64),
 
-    /// `devicePixelRatio`. Widened to `f64` to match the contract; the JS
-    /// import still hands back `f32`, so the cast happens at that boundary
-    /// only (see `updateSize`).
+    /// `devicePixelRatio`, in the host's own width: a JS `Number` is an
+    /// IEEE-754 double, and the contract speaks `f64`, so no conversion
+    /// happens anywhere along this path.
     scale_factor: f64,
 
     background_color: geometry.Color,
@@ -193,9 +193,10 @@ pub const WebWindow = struct {
         self.size.width = @floatFromInt(canvas_width);
         self.size.height = @floatFromInt(canvas_height);
 
-        // Sole `f32` → `f64` widening point for the DPI. `devicePixelRatio` is
-        // reported as `f32` by the import; the rest of Gooey speaks `f64`.
-        const ratio: f64 = @floatCast(imports.getDevicePixelRatio());
+        // A host that reports zero or a negative ratio is misreporting; fall
+        // back to 1.0 rather than propagating a scale that would divide to
+        // infinity downstream.
+        const ratio: f64 = imports.getDevicePixelRatio();
         self.scale_factor = if (ratio > 0.0) ratio else 1.0;
 
         std.debug.assert(self.scale_factor > 0.0);
