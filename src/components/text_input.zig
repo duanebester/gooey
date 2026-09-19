@@ -27,6 +27,9 @@ pub const TextInput = struct {
 
     // State
     disabled: bool = false,
+    /// Maximum UTF-8 bytes accepted by typing, paste, or IME composition.
+    /// An edit that would exceed the limit is rejected in full.
+    max_bytes: ?u32 = null,
 
     // Layout
     width: ?f32 = null,
@@ -96,6 +99,7 @@ pub const TextInput = struct {
                 .placeholder = self.placeholder,
                 .secure = self.secure,
                 .disabled = self.disabled,
+                .max_bytes = self.max_bytes,
                 .bind = self.bind,
                 .width = self.width,
                 .height = self.height,
