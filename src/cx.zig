@@ -36,6 +36,11 @@ comptime {
 }
 
 // Core imports
+// The platform module is imported once at file scope rather than inside each
+// method that needs it; `setGlassStyle` and `close` previously each did their
+// own in-body `@import`, which made it easy to miss that they were reaching
+// into backend-specific namespaces.
+const platform_mod = @import("platform/mod.zig");
 const window_mod = @import("context/window.zig");
 const Window = window_mod.Window;
 const ui_mod = @import("ui/mod.zig");
@@ -222,8 +227,19 @@ pub const Cx = struct {
     }
 
     /// Set the window title.
-    pub fn setTitle(self: *Self, title: [:0]const u8) void {
-        self._window.window.setTitle(title);
+    ///
+    /// The parameter is `[]const u8`, matching the platform contract's
+    /// `setTitle` (see `platform/contract.zig`). It was `[:0]const u8`, which
+    /// no backend required and which forced callers to keep a sentinel they
+    /// could not always produce; every backend copies into its own buffer and
+    /// adds the terminator itself.
+    ///
+    /// The field access was also stale: `_window.window` was renamed to the
+    /// optional `_window.platform_window`, so this method could not compile on
+    /// any platform. Nothing called it, so nothing caught it — which is why
+    /// `root.zig` now forces analysis of `Cx` method bodies.
+    pub fn setTitle(self: *Self, title: []const u8) void {
+        if (self._window.platform_window) |pw| pw.setTitle(title);
     }
 
     /// Change the font at runtime. Clears glyph / shape caches and
@@ -232,46 +248,52 @@ pub const Cx = struct {
         try self._window.setFont(name, size);
     }
 
-    /// Set the glass / blur effect style for the window. No-op on
-    /// platforms without native glass support (currently: web).
+    /// Set the glass / blur effect style for the window.
+    ///
+    /// Glass is a platform-specific capability, not part of the common window
+    /// contract, so it is gated on the backend's comptime
+    /// `capabilities.glass_effects`. Backends that cannot composite a
+    /// translucent backdrop (Wayland has no such protocol; the browser path
+    /// needs CSS the host does not yet apply) compile this out entirely.
+    ///
+    /// Previously this branched on `is_wasm` and then `@ptrCast` the window to
+    /// the macOS-concrete `Window` type — an unchecked cast that would have
+    /// reinterpreted a Wayland window as an AppKit one — and remapped the
+    /// style through `@enumFromInt(@intFromEnum(...))` between two enums whose
+    /// tag values did not agree. Both are gone: there is one `GlassStyle`, and
+    /// the call goes through the selected `PlatformWindow` directly.
     pub fn setGlassStyle(
         self: *Self,
-        style: anytype,
+        style: platform_mod.GlassStyle,
         opacity: f64,
         corner_radius: f64,
     ) void {
-        const platform = @import("platform/mod.zig");
+        if (comptime !platform_mod.Platform.capabilities.glass_effects) return;
 
-        if (comptime platform.is_wasm) {
-            // No-op on web - glass effects not supported
-        } else {
-            // PR 7b.1b — `_gooey.window` was the optional `*PlatformWindow`
-            // field; renamed to `_window.platform_window`. Capture name
-            // disambiguated from the new `pub fn window(self: *Self)`
-            // accessor on `Cx` (which `cx.window()` callers use).
-            const mac_window_mod = platform.mac.window;
-            if (self._window.platform_window) |pw| {
-                const mac_win: *mac_window_mod.Window = @ptrCast(@alignCast(pw));
-                mac_win.setGlassStyle(@enumFromInt(@intFromEnum(style)), opacity, corner_radius);
-            }
+        std.debug.assert(opacity >= 0.0 and opacity <= 1.0);
+        std.debug.assert(corner_radius >= 0.0);
+
+        // PR 7b.1b — `_gooey.window` was the optional `*PlatformWindow`
+        // field; renamed to `_window.platform_window`. Capture name
+        // disambiguated from the `pub fn window(self: *Self)` accessor.
+        if (self._window.platform_window) |pw| {
+            pw.setGlassStyle(style, opacity, corner_radius);
         }
     }
 
-    /// Close the window (and exit the application). No-op on web —
-    /// browser tabs can't be closed programmatically.
+    /// Close the window (and exit the application).
+    ///
+    /// `close` is part of the common window contract on every backend, so this
+    /// no longer needs a web special case. A browser cannot close a tab it did
+    /// not open — `capabilities.can_close_window` is `false` there — but the
+    /// web window still records the request so `isClosed()` is truthful and
+    /// Gooey can stop driving frames.
     pub fn close(self: *Self) void {
-        const platform = @import("platform/mod.zig");
-
-        if (comptime platform.is_wasm) {
-            // No-op on web - can't close browser tabs
-        } else {
-            // PR 7b.1b — capture renamed from `window` to `pw` to
-            // avoid shadowing the new `pub fn window(self: *Self)`
-            // accessor declared on `Cx`. Field also renamed
-            // (`window → platform_window`) on the framework wrapper.
-            if (self._window.platform_window) |pw| {
-                pw.close();
-            }
+        // PR 7b.1b — capture renamed from `window` to `pw` to avoid shadowing
+        // the `pub fn window(self: *Self)` accessor declared on `Cx`. Field
+        // also renamed (`window → platform_window`) on the framework wrapper.
+        if (self._window.platform_window) |pw| {
+            pw.close();
         }
     }
 

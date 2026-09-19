@@ -93,6 +93,9 @@ pub const CustomShader = shader.CustomShader;
 
 // =============================================================================
 // Interface Verification (compile-time checks)
+//
+// Subsystem shapes only. The platform boundary (`Platform`, `PlatformWindow`)
+// is verified by `src/platform/contract.zig` against complete function types.
 // =============================================================================
 
 pub const interface_verify = @import("interface_verify.zig");
@@ -102,8 +105,7 @@ pub const verifySvgRasterizerInterface = interface_verify.verifySvgRasterizerInt
 pub const verifySvgRasterizerModule = interface_verify.verifySvgRasterizerModule;
 pub const verifyImageLoaderInterface = interface_verify.verifyImageLoaderInterface;
 pub const verifyImageLoaderModule = interface_verify.verifyImageLoaderModule;
-pub const verifyPlatformInterface = interface_verify.verifyPlatformInterface;
-pub const verifyWindowInterface = interface_verify.verifyWindowInterface;
+
 pub const verifyFileDialogInterface = interface_verify.verifyFileDialogInterface;
 pub const verifyFocusableInterface = interface_verify.verifyFocusableInterface;
 

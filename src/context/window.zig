@@ -1671,10 +1671,17 @@ pub const Window = struct {
 
     /// Quit the application.
     ///
-    /// Portable across all platforms:
-    /// - macOS: calls NSApp terminate:
-    /// - Linux: signals the platform event loop to stop
-    /// - WASM: no-op (browser tabs can't be closed programmatically)
+    /// Stops the host event loop through the platform, which is an
+    /// *application*-lifetime operation: it does not close this window, and it
+    /// is not how you close one. Use `WindowHandle.close` (or
+    /// `App.closeWindowById`) to close a single window and leave the rest of a
+    /// multi-window application running.
+    ///
+    /// Per backend, via `Platform.quit`:
+    /// - macOS: clears the loop flag and sends `-[NSApp terminate:]`.
+    /// - Linux: signals the Wayland event loop to stop.
+    /// - WASM: no-op. The browser owns the tab, and stopping the frame chain
+    ///   would leave a frozen page with no way to restart it.
     ///
     /// Use from a `command` handler:
     /// ```zig
@@ -1685,22 +1692,25 @@ pub const Window = struct {
     /// Button{ .on_click_handler = cx.command(AppState.quitApp) }
     /// ```
     pub fn quit(self: *Self) void {
-        if (comptime platform.is_wasm) {
-            // No-op on web - can't quit browser
-        } else if (comptime platform.is_linux) {
-            if (self.platform_window) |w| {
-                w.closed = true;
-                w.platform.quit();
-            } else {
-                std.process.exit(0);
-            }
-        } else {
-            // macOS: call NSApp terminate:
-            const objc = @import("objc");
-            const NSApp = objc.getClass("NSApplication") orelse return;
-            const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});
-            app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
-        }
+        // Web has no application to quit; see the doc comment above.
+        if (comptime platform.is_wasm) return;
+
+        // Unreachable from a real application: `quit` is invoked from a command
+        // or input handler, which can only run while this window is live. The
+        // previous revision called `std.process.exit(0)` here, skipping every
+        // teardown path for a state it could not actually be in.
+        std.debug.assert(self.platform_window != null);
+        const platform_window = self.platform_window orelse return;
+
+        // One path for both native backends. This used to be a three-way
+        // target branch whose Linux arm also wrote `w.closed = true` directly
+        // — conflating "stop the application" with "close this window", and
+        // bypassing the backend's own close bookkeeping (on Linux,
+        // `markClosed`, which hands the active role to a surviving window). It
+        // also reached for `NSApplication` itself on macOS instead of going
+        // through the platform, so `Platform.running` was left set while the
+        // host tore the process down.
+        platform_window.getPlatform().quit();
     }
 
     // =========================================================================
@@ -1777,9 +1787,32 @@ pub const Window = struct {
         return self.platform_window;
     }
 
-    /// Set the accent color uniform for custom shaders
-    /// The alpha channel can be used as a mode selector
+    /// Set the accent color uniform for custom shaders.
+    /// The alpha channel can be used as a mode selector.
+    ///
+    /// Gated on the backend's comptime `capabilities.has_post_process`. The
+    /// accent tint is consumed by the post-process pass, so reaching
+    /// `renderer.getPostProcess()` unconditionally made this method
+    /// uncompilable on Linux (`VulkanRenderer` has no such member) and on web.
+    /// Because nothing called it, the drift went unnoticed until
+    /// `zig build typecheck-linux` started analyzing the Linux tree.
+    ///
+    /// The gate used to be `glass_effects`, which happens to be true on
+    /// exactly the backend that has the pass. That is a coincidence of the
+    /// current backend set, not a rule: a Wayland blur protocol would flip
+    /// `glass_effects` true on Linux and break this body, which has nothing to
+    /// do with whether the host composites a translucent backdrop.
     pub fn setAccentColor(self: *Window, r: f32, g: f32, b: f32, a: f32) void {
+        // Checked on every backend, not just the gated one: a NaN reaching a
+        // shader uniform produces silently undefined pixels rather than a
+        // failure, so the caller must be caught where it is wrong.
+        std.debug.assert(!std.math.isNan(r));
+        std.debug.assert(!std.math.isNan(g));
+        std.debug.assert(!std.math.isNan(b));
+        std.debug.assert(!std.math.isNan(a));
+
+        if (comptime !platform.Platform.capabilities.has_post_process) return;
+
         if (self.platform_window) |w| {
             if (w.renderer.getPostProcess()) |pp| {
                 pp.uniforms.accent_color = .{ r, g, b, a };

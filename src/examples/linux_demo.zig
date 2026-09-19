@@ -302,26 +302,32 @@ pub fn main() !void {
 
     std.debug.print("Initializing Linux platform...\n", .{});
 
-    // Initialize platform
-    var plat = try Platform.init();
+    // Initialize the platform in place. `plat` lives in this frame, which
+    // outlives the event loop below, so the address the Wayland registry
+    // listeners retain during initialization stays valid. `initInPlace` also
+    // arms those listeners itself, so there is no separate `setupListeners`
+    // phase for this caller to remember.
+    var plat: Platform = undefined;
+    try plat.initInPlace(allocator);
     defer plat.deinit();
-
-    // Set up listeners now that plat is at its final memory location
-    try plat.setupListeners();
 
     std.debug.print("Platform initialized. Creating window...\n", .{});
 
-    // Create window
-    var window = try PlatformWindow.init(allocator, &plat, .{
+    // Named rather than an anonymous literal because the boundary takes
+    // `*const WindowOptions`; the struct is far over the 16-byte by-value
+    // threshold.
+    const window_options: gooey.platform.WindowOptions = .{
         .title = "Gooey Linux Demo - Input Events",
         .width = 800,
         .height = 600,
         .background_color = Color.rgba(0.1, 0.1, 0.15, 1.0),
-    });
-    defer window.deinit();
+    };
 
-    // Register window with platform for client-side move/resize handling
-    plat.setActiveWindow(window);
+    // `PlatformWindow.init` registers itself with the platform and routes
+    // client-side move/resize input to itself, so the caller no longer makes a
+    // follow-up activation call.
+    var window = try PlatformWindow.init(allocator, &plat, &window_options);
+    defer window.deinit();
 
     std.debug.print("Window created. Setting up application state...\n", .{});
 
@@ -359,9 +365,13 @@ pub fn main() !void {
     std.debug.print("NOTE: Window uses client-side decorations (no title bar from compositor).\n", .{});
     std.debug.print("\n", .{});
 
-    // Run the event loop
-    // Use blocking dispatch to properly receive all Wayland events including keyboard
-    while (plat.isRunning() and !window.isClosed()) {
+    // Run the event loop.
+    // Use blocking dispatch to properly receive all Wayland events including
+    // keyboard. This loop owns its own termination, so it tests the two things
+    // it actually depends on: its window, and the compositor connection. It
+    // must not ask `isRunning()`, which reports whether `plat.run()` is on the
+    // stack and is false for the whole of a hand-rolled loop like this one.
+    while (plat.isConnected() and !window.isClosed()) {
         // Render frame first (handles any pending redraws)
         window.renderFrame();
 

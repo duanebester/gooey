@@ -14,18 +14,22 @@
 //! ```zig
 //! const linux = @import("gooey").platform.linux;
 //!
-//! var platform = try linux.LinuxPlatform.init();
-//! defer platform.deinit();
+//! var plat: linux.Platform = undefined;
+//! try plat.initInPlace(allocator);
+//! defer plat.deinit();
 //!
-//! var window = try linux.Window.init(allocator, &platform, .{
+//! const options = gooey.platform.WindowOptions{
 //!     .title = "My App",
 //!     .width = 800,
 //!     .height = 600,
-//! });
-//! defer window.deinit();
+//! };
+//! var win = try linux.PlatformWindow.init(allocator, &plat, &options);
+//! defer win.deinit();
 //!
-//! platform.run();
+//! plat.run();
 //! ```
+
+const interface = @import("../interface.zig");
 
 // Core platform types
 pub const platform = @import("platform.zig");
@@ -53,6 +57,14 @@ pub const input = @import("input.zig");
 // Shared GPU primitives (same as web)
 pub const unified = @import("../unified.zig");
 
+// Canonical backend contract. `platform/mod.zig` derives its public aliases
+// from exactly these three names, so the backend cannot invent parallel ones.
+pub const Platform = platform.LinuxPlatform;
+pub const PlatformWindow = window.Window;
+
+/// `Platform.run` blocks inside the Wayland poll/dispatch loop until quit.
+pub const drive_model: interface.DriveModel = .blocking_event_loop;
+
 // Type aliases for convenience
 pub const LinuxPlatform = platform.LinuxPlatform;
 pub const Window = window.Window;
@@ -65,3 +77,9 @@ pub const capabilities = LinuxPlatform.capabilities;
 pub const PathPromptOptions = file_dialog.PathPromptOptions;
 pub const PathPromptResult = file_dialog.PathPromptResult;
 pub const SavePromptOptions = file_dialog.SavePromptOptions;
+
+// Fail at compile time, in this file, if the backend drifts from the shared
+// contract — rather than at some distant shared call site.
+comptime {
+    @import("../contract.zig").verifyBackend(@This());
+}

@@ -98,7 +98,18 @@ fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) 
 }
 
 fn windowWillClose(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    // Window is definitely closing now - cleanup happens in handleClose via windowShouldClose
+    // Deliberately empty. The previous comment claimed "cleanup happens in
+    // handleClose via windowShouldClose", which was never true: `handleClose`
+    // only runs the veto callback and stops the display link.
+    //
+    // Teardown cannot happen here either. AppKit calls this from inside
+    // `-close`, with the NSWindow still live on the stack and the window's
+    // `WindowContext` still owning the `Cx` that any in-flight callback is
+    // using. Destroying either would be a use-after-free.
+    //
+    // Instead the window records `closed = true`, and the owning `App`
+    // reclaims it at its next drain point (`App.drainClosedWindows`), when the
+    // host is provably not inside this window's dispatch.
 }
 
 fn windowDidBecomeKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
