@@ -339,6 +339,7 @@ fn renderTextInput(window: *Window, pending: *const Builder.PendingInput) !void 
     std.debug.assert(pending.layout_id.id != 0);
     std.debug.assert(input_widget.cursor_byte <= input_widget.getText().len);
 
+    input_widget.max_bytes = pending.style.max_bytes;
     if (pending.style.bind) |binding| {
         _ = try input_widget.syncBoundText(binding.*);
     }

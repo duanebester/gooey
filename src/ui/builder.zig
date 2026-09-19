@@ -180,6 +180,7 @@ pub const Builder = struct {
     pub const MAX_PENDING_CODE_EDITORS = 32;
     pub const MAX_PENDING_SCROLLS = 64;
     pub const MAX_PENDING_CANVAS = canvas_mod.MAX_PENDING_CANVAS;
+    pub const MAX_DYNAMIC_BOX_DEPTH = 64;
     // One control-queue record per text widget across all three kinds, so the
     // cap is the sum of the three data-plane pools.
     pub const MAX_PENDING_TEXT_WIDGETS =
@@ -240,6 +241,11 @@ pub const Builder = struct {
     /// Read by `runtime/frame.zig::updateCursorShape` as the fallback when
     /// no text widget (input/text area/code editor) is hovered.
     hover_cursor: ?styles.CursorShape = null,
+
+    /// Open runtime containers. Static tuple containers bypass this storage,
+    /// but both paths share `beginBoxImpl` and `endBoxImpl` below.
+    dynamic_boxes: [MAX_DYNAMIC_BOX_DEPTH]Box = undefined,
+    dynamic_box_count: u8 = 0,
 
     /// Kind discriminant for the text-widget control queue; the render pass
     /// switches on it at comptime to pick the matching data-plane pool.
@@ -306,6 +312,7 @@ pub const Builder = struct {
             .pending_canvas = .empty,
             .pending_scrolls_by_layout_id = .{},
             .active_scroll_drag_id = null,
+            .dynamic_box_count = 0,
         };
     }
 
@@ -604,6 +611,31 @@ pub const Builder = struct {
 
     /// Internal: Box implementation with pre-resolved LayoutId
     fn boxWithLayoutIdImpl(self: *Self, layout_id: LayoutId, props: Box, children: anytype, source_loc: SourceLoc, is_canvas: bool) void {
+        if (!self.beginBoxImpl(layout_id, props, source_loc, is_canvas)) return;
+        self.processChildren(children);
+        self.endBoxImpl(props);
+    }
+
+    /// Open a runtime box. The matching `endDynamicBox` closes the exact same
+    /// layout and dispatch path used by compile-time tuple boxes.
+    pub fn beginDynamicBox(self: *Self, layout_id: LayoutId, props: Box) error{ DynamicBoxDepthExceeded, LayoutCapacityExceeded }!void {
+        std.debug.assert(layout_id.id != 0);
+        std.debug.assert(layout_id.base_id != 0);
+        if (self.dynamic_box_count >= MAX_DYNAMIC_BOX_DEPTH) return error.DynamicBoxDepthExceeded;
+        if (!self.beginBoxImpl(layout_id, props, SourceLoc.none, false)) return error.LayoutCapacityExceeded;
+
+        self.dynamic_boxes[self.dynamic_box_count] = props;
+        self.dynamic_box_count += 1;
+    }
+
+    /// Close the most recently opened runtime box.
+    pub fn endDynamicBox(self: *Self) void {
+        std.debug.assert(self.dynamic_box_count > 0);
+        self.dynamic_box_count -= 1;
+        self.endBoxImpl(self.dynamic_boxes[self.dynamic_box_count]);
+    }
+
+    fn beginBoxImpl(self: *Self, layout_id: LayoutId, props: Box, source_loc: SourceLoc, is_canvas: bool) bool {
         // Reject bad inputs before they propagate through every layout pass.
         std.debug.assert(props.sizingIsValid());
 
@@ -789,15 +821,20 @@ pub const Builder = struct {
             .opacity = props.opacity,
             .source_location = source_loc,
             .is_canvas = is_canvas,
-        }) catch return;
+        }) catch {
+            self.dispatch.popNode();
+            return false;
+        };
 
         // Mark floating elements for hit testing optimization
         if (floating_config != null) {
             self.dispatch.markFloating();
         }
+        return true;
+    }
 
-        self.processChildren(children);
-
+    fn endBoxImpl(self: *Self, props: Box) void {
+        std.debug.assert(props.sizingIsValid());
         self.layout.closeElement();
 
         // Register click handlers before popping dispatch node
@@ -1876,6 +1913,45 @@ test "onActionHandler primitive registers its pre-resolved action type" {
     try std.testing.expectEqual(@as(usize, 1), listeners.action_listeners_handler.items.len);
     try std.testing.expectEqual(actionTypeId(Action), listeners.action_listeners_handler.items[0].action_type);
     try std.testing.expectEqual(handler.callback, listeners.action_listeners_handler.items[0].handler.callback);
+}
+
+test "dynamic box has layout and dispatch parity with tuple box" {
+    // Render the same identified container through both public paths. Compare
+    // the declarations rather than final pixels so the test isolates the
+    // shared begin/end boundary from sizing-pass behavior.
+    const gpa = std.testing.allocator;
+    const layout_id = LayoutId.fromString("parity-box");
+    const style = Box{ .direction = .column, .gap = 7, .padding = .{ .all = 5 } };
+
+    var static_engine: LayoutEngine = undefined;
+    var static_scene: Scene = undefined;
+    var static_tree: DispatchTree = undefined;
+    var static_builder = testBuilderHarness(gpa, &static_engine, &static_scene, &static_tree);
+    defer static_builder.deinit();
+    defer static_engine.deinit();
+    defer static_scene.deinit();
+    defer static_tree.deinit();
+    static_builder.boxWithLayoutId(layout_id, style, .{primitives.text("same", .{})});
+
+    var dynamic_engine: LayoutEngine = undefined;
+    var dynamic_scene: Scene = undefined;
+    var dynamic_tree: DispatchTree = undefined;
+    var dynamic_builder = testBuilderHarness(gpa, &dynamic_engine, &dynamic_scene, &dynamic_tree);
+    defer dynamic_builder.deinit();
+    defer dynamic_engine.deinit();
+    defer dynamic_scene.deinit();
+    defer dynamic_tree.deinit();
+    try dynamic_builder.beginDynamicBox(layout_id, style);
+    dynamic_builder.processChildren(primitives.text("same", .{}));
+    dynamic_builder.endDynamicBox();
+
+    try std.testing.expectEqual(static_engine.elements.len(), dynamic_engine.elements.len());
+    try std.testing.expectEqual(static_tree.nodes.items.len, dynamic_tree.nodes.items.len);
+    const static_box = static_engine.elements.getConst(0);
+    const dynamic_box = dynamic_engine.elements.getConst(0);
+    try std.testing.expectEqual(static_box.id, dynamic_box.id);
+    try std.testing.expectEqual(static_box.config.layout, dynamic_box.config.layout);
+    try std.testing.expectEqual(static_tree.nodes.items[0].layout_id, dynamic_tree.nodes.items[0].layout_id);
 }
 
 test "generateId: same-parent siblings never collide" {

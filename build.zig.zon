@@ -9,5 +9,6 @@
         "build.zig.zon",
         "src",
         "charts",
+        "genui",
     },
 }

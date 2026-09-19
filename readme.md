@@ -93,6 +93,23 @@ Application source can now use `const gooey = @import("gooey");`. Gooey's
 module carries its platform linker requirements transitively, keeping consumer
 builds independent of Gooey's internal framework/library list.
 
+### Optional packages
+
+The same Gooey dependency exports optional sibling modules. Add only the ones
+your application uses:
+
+```zig
+.imports = &.{
+    .{ .name = "gooey", .module = gooey_dependency.module("gooey") },
+    .{ .name = "gooey-charts", .module = gooey_dependency.module("gooey-charts") },
+    .{ .name = "gooey-genui", .module = gooey_dependency.module("gooey-genui") },
+},
+```
+
+- [`gooey-charts`](charts/README.md) provides optional GPU-accelerated charts.
+- [`gooey-genui`](genui/README.md) provides catalog-constrained generated UI
+  with direct TypeSafe Jev evaluation and no Vercel AI Gateway dependency.
+
 ### Run this repository's examples
 
 ```bash
@@ -103,6 +120,7 @@ zig build run-animation    # Animation demo
 zig build run-pomodoro     # Pomodoro timer
 zig build run-glass        # Liquid glass effect
 zig build run-spaceship    # Space dashboard with shader
+zig build run-genui-demo      # Generated UI composition and native controls
 zig build run-dynamic-counters  # Entity system demo
 zig build run-layout       # Flexbox, shrink, text wrapping
 zig build run-actions      # Keybindings demo

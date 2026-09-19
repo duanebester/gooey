@@ -80,6 +80,7 @@ const SelectState = select_mod.SelectState;
 // / `CodeEditorState` since PR 8.4b).
 const layout_id_mod = @import("layout/layout_id.zig");
 const LayoutId = layout_id_mod.LayoutId;
+const Box = ui_mod.Box;
 
 // Text measurement types
 const text_mod = @import("text/mod.zig");
@@ -157,6 +158,31 @@ pub const Cx = struct {
     // `cx.element_states.*` surface; the underlying pool is
     // unchanged.
     element_states: element_states_mod.ElementStates = .{},
+
+    /// Paired runtime container operations for validated dynamic trees.
+    dynamic: Dynamic = .{},
+
+    pub const Dynamic = struct {
+        _align: [0]usize = .{},
+
+        inline fn cx(self: *Dynamic) *Cx {
+            return @fieldParentPtr("dynamic", self);
+        }
+
+        pub fn beginBox(self: *Dynamic, layout_id: LayoutId, style: Box) !void {
+            const context = self.cx();
+            std.debug.assert(layout_id.id != 0);
+            std.debug.assert(layout_id.base_id != 0);
+            try context._builder.beginDynamicBox(layout_id, style);
+        }
+
+        pub fn endBox(self: *Dynamic) void {
+            const context = self.cx();
+            std.debug.assert(context._builder.dynamic_box_count > 0);
+            std.debug.assert(context._builder.dynamic_box_count <= ui_mod.Builder.MAX_DYNAMIC_BOX_DEPTH);
+            context._builder.endDynamicBox();
+        }
+    };
 
     const Self = @This();
 

@@ -110,6 +110,17 @@ pub fn build(b: *std.Build) void {
         charts_mod.addImport("gooey", mod);
 
         // =========================================================================
+        // Gooey Gen UI Module
+        // =========================================================================
+
+        const genui_mod = b.addModule("gooey-genui", .{
+            .root_source_file = b.path("genui/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        genui_mod.addImport("gooey", mod);
+
+        // =========================================================================
         // Main Demo (Showcase)
         // =========================================================================
 
@@ -176,6 +187,7 @@ pub fn build(b: *std.Build) void {
         addNativeExample(b, mod, objc_mod, target, optimize, "multi-window", "src/examples/multi_window.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "ai-canvas-spike", "src/examples/ai_canvas_spike.zig", false);
         addNativeExample(b, mod, objc_mod, target, optimize, "ai-canvas", "src/examples/ai_canvas.zig", false);
+        addGenuiNativeExample(b, mod, genui_mod, objc_mod, target, optimize);
 
         // =========================================================================
         // Charts Examples
@@ -222,11 +234,17 @@ pub fn build(b: *std.Build) void {
         });
         const run_charts_tests = b.addRunArtifact(charts_tests);
 
+        const genui_tests = b.addTest(.{ .root_module = genui_mod });
+        const run_genui_tests = b.addRunArtifact(genui_tests);
+        const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
+        test_genui_step.dependOn(&run_genui_tests.step);
+
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_exe_tests.step);
         test_step.dependOn(&run_todo_example_tests.step);
         test_step.dependOn(&run_charts_tests.step);
+        test_step.dependOn(&run_genui_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
 
@@ -607,6 +625,17 @@ pub fn build(b: *std.Build) void {
         mod.link_libc = true;
 
         // =========================================================================
+        // Gooey Gen UI Module
+        // =========================================================================
+
+        const genui_mod = b.addModule("gooey-genui", .{
+            .root_source_file = b.path("genui/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        genui_mod.addImport("gooey", mod);
+
+        // =========================================================================
         // Linux Showcase (Main Demo)
         // =========================================================================
 
@@ -678,6 +707,7 @@ pub fn build(b: *std.Build) void {
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "uniform-list", "src/examples/uniform_list_example.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "virtual-list", "src/examples/virtual_list_example.zig");
         addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "data-table", "src/examples/data_table_example.zig");
+        addLinuxGenuiExample(b, mod, genui_mod, target, optimize, compile_shaders_step, skip_shader_compile);
 
         // =====================================================================
         // Layout Benchmarks
@@ -962,8 +992,19 @@ pub fn build(b: *std.Build) void {
 
         const run_mod_tests = b.addRunArtifact(mod_tests);
 
+        const genui_tests = b.addTest(.{
+            .root_module = genui_mod,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(genui_tests);
+        if (!skip_shader_compile) genui_tests.step.dependOn(compile_shaders_step);
+        const run_genui_tests = b.addRunArtifact(genui_tests);
+        const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
+        test_genui_step.dependOn(&run_genui_tests.step);
+
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_genui_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
         test_step.dependOn(&run_scene_bench_tests.step);
@@ -1098,6 +1139,37 @@ fn addNativeExample(
     }
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
+}
+
+fn addGenuiNativeExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    genui_module: *std.Build.Module,
+    objc_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
+    const executable = b.addExecutable(.{
+        .name = "genui-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/genui_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-genui", .module = genui_module },
+                .{ .name = "objc", .module = objc_module },
+            },
+        }),
+    });
+    const install = b.addInstallArtifact(executable, .{});
+    b.getInstallStep().dependOn(&install.step);
+    const build_step = b.step("genui-demo", "Build the Gooey Gen UI demo");
+    build_step.dependOn(&install.step);
+    const step = b.step("run-genui-demo", "Run the Gooey Gen UI demo");
+    const run = b.addRunArtifact(executable);
+    step.dependOn(&run.step);
+    run.step.dependOn(b.getInstallStep());
 }
 
 /// Helper to add a charts example with both gooey and gooey-charts modules.
@@ -1476,6 +1548,40 @@ fn addLinuxExample(
     run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
+}
+
+fn addLinuxGenuiExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    genui_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    compile_shaders_step: *std.Build.Step,
+    skip_shader_compile: bool,
+) void {
+    const executable = b.addExecutable(.{
+        .name = "gooey-genui-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/genui_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-genui", .module = genui_module },
+            },
+        }),
+    });
+    linkLinuxLibraries(executable);
+    const install = b.addInstallArtifact(executable, .{});
+    b.getInstallStep().dependOn(&install.step);
+    if (!skip_shader_compile) executable.step.dependOn(compile_shaders_step);
+    const build_step = b.step("genui-demo", "Build the Gooey Gen UI demo");
+    build_step.dependOn(&install.step);
+    const step = b.step("run-genui-demo", "Run the Gooey Gen UI demo");
+    const run = b.addRunArtifact(executable);
+    run.setCwd(b.path("."));
+    step.dependOn(&run.step);
+    run.step.dependOn(b.getInstallStep());
 }
 
 /// Links the standard set of Linux system libraries (Vulkan, Wayland, text rendering, etc.)

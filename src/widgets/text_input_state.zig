@@ -158,6 +158,10 @@ pub const TextInputState = struct {
     /// When true, display bullet characters instead of actual text content.
     secure: bool = false,
 
+    /// Maximum committed UTF-8 bytes. Oversized edits are rejected before
+    /// selection deletion, history writes, or buffer growth.
+    max_bytes: ?u32 = null,
+
     // Callbacks
     on_change: ?*const fn (*TextInputState) void = null,
     on_submit: ?*const fn (*TextInputState) void = null,
@@ -244,6 +248,7 @@ pub const TextInputState = struct {
     fn replaceText(self: *Self, text: []const u8) !void {
         std.debug.assert(self.cursor_byte <= self.buffer.items.len);
         std.debug.assert(self.preedit_cursor <= self.preedit_buffer.items.len);
+        try self.validateWholeReplacement(text);
         // Check if input slice aliases with our buffer (would cause @memcpy panic)
         const buf_start = @intFromPtr(self.buffer.items.ptr);
         const buf_end = buf_start + self.buffer.items.len;
@@ -338,6 +343,7 @@ pub const TextInputState = struct {
     pub fn insertText(self: *Self, text: []const u8) !void {
         // Skip empty inserts
         if (text.len == 0) return;
+        try self.validateReplacement(text);
 
         // Save state for history before any modifications
         const cursor_before: u32 = @intCast(self.cursor_byte);
@@ -401,10 +407,37 @@ pub const TextInputState = struct {
 
     /// Handle composition event (preedit text from IME)
     pub fn setComposition(self: *Self, text: []const u8) !void {
+        try self.validateReplacement(text);
         self.preedit_buffer.clearRetainingCapacity();
         try self.preedit_buffer.appendSlice(self.allocator, text);
         self.preedit_cursor = text.len;
         self.resetCursorBlink();
+    }
+
+    fn validateReplacement(self: *const Self, text: []const u8) !void {
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
+        if (self.selection_anchor) |anchor| std.debug.assert(anchor <= self.buffer.items.len);
+        const bytes_max = self.max_bytes orelse return;
+        const selection_len = if (self.selection_anchor) |anchor|
+            @max(anchor, self.cursor_byte) - @min(anchor, self.cursor_byte)
+        else
+            0;
+        const retained_len = self.buffer.items.len - selection_len;
+        if (retained_len > bytes_max) return error.TextLimitExceeded;
+        if (text.len > bytes_max - retained_len) return error.TextLimitExceeded;
+    }
+
+    fn validateWholeReplacement(self: *const Self, text: []const u8) !void {
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
+        std.debug.assert(text.len <= std.math.maxInt(u32));
+        const bytes_max = self.max_bytes orelse return;
+        if (text.len > bytes_max) return error.TextLimitExceeded;
+    }
+
+    fn pasteText(self: *Self, text: []const u8) void {
+        std.debug.assert(self.cursor_byte <= self.buffer.items.len);
+        if (self.selection_anchor) |anchor| std.debug.assert(anchor <= self.buffer.items.len);
+        self.insertText(text) catch {};
     }
 
     /// Handle key_down for cursor movement, delete, etc.
@@ -546,10 +579,7 @@ pub const TextInputState = struct {
                     // Paste from clipboard
                     if (clipboard.getText(self.allocator)) |text| {
                         defer self.allocator.free(text);
-                        if (self.hasSelection()) {
-                            self.deleteSelection();
-                        }
-                        self.insertText(text) catch {};
+                        self.pasteText(text);
                     }
                 }
             },
@@ -1195,4 +1225,69 @@ test "TextInputState controlled binding defers replacement during IME preedit" {
     try input.setComposition("");
     try std.testing.expectEqual(TextInputState.BindingSync.applied, try input.syncBoundText("external"));
     try std.testing.expectEqualStrings("external", input.getText());
+}
+
+test "TextInputState rejects oversized typing paste and IME before mutation" {
+    // All committed text enters through insertText, including paste. Exercise
+    // replacement accounting asymmetrically so selected bytes free capacity.
+    var input = TextInputState.init(std.testing.allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    defer input.deinit();
+    input.max_bytes = 6;
+    try input.setText("abcdef");
+
+    try std.testing.expectError(error.TextLimitExceeded, input.insertText("x"));
+    try std.testing.expectEqualStrings("abcdef", input.getText());
+    try std.testing.expectEqual(@as(usize, 6), input.cursor_byte);
+
+    input.selection_anchor = 2;
+    try input.insertText("XY");
+    try std.testing.expectEqualStrings("abXY", input.getText());
+    try std.testing.expectError(error.TextLimitExceeded, input.insertText("123"));
+    try std.testing.expectEqualStrings("abXY", input.getText());
+
+    input.max_bytes = 7;
+    try input.setComposition("中");
+    try std.testing.expectEqualStrings("中", input.preedit_buffer.items);
+    try std.testing.expectError(error.TextLimitExceeded, input.setComposition("日本"));
+    try std.testing.expectEqualStrings("中", input.preedit_buffer.items);
+}
+
+test "TextInputState controlled replacement checks only incoming whole value" {
+    var input = TextInputState.init(std.testing.allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    defer input.deinit();
+    input.max_bytes = 6;
+    try input.setText("abcdef");
+    input.selection_anchor = 1;
+
+    try std.testing.expectEqual(TextInputState.BindingSync.applied, try input.syncBoundText("UVWXYZ"));
+    try std.testing.expectEqualStrings("UVWXYZ", input.getText());
+    try std.testing.expectEqual(@as(usize, 6), input.cursor_byte);
+    try std.testing.expectEqual(@as(?usize, 1), input.selection_anchor);
+
+    try std.testing.expectEqual(TextInputState.BindingSync.applied, try input.syncBoundText("xy"));
+    try std.testing.expectEqualStrings("xy", input.getText());
+    try std.testing.expectEqual(@as(usize, 2), input.cursor_byte);
+    try std.testing.expectEqual(@as(?usize, 1), input.selection_anchor);
+}
+
+test "TextInputState paste rejection preserves text selection and history" {
+    // `pasteText` is the exact helper used by the platform clipboard branch.
+    var input = TextInputState.init(std.testing.allocator, .{ .x = 0, .y = 0, .width = 200, .height = 32 });
+    defer input.deinit();
+    input.max_bytes = 6;
+    try input.setText("abc");
+    try input.insertText("d");
+    input.cursor_byte = 3;
+    input.selection_anchor = 1;
+    const history_count = input.edit_history.?.count;
+    const history_current = input.edit_history.?.current;
+    const history_start = input.edit_history.?.start;
+
+    input.pasteText("123456");
+    try std.testing.expectEqualStrings("abcd", input.getText());
+    try std.testing.expectEqual(@as(usize, 3), input.cursor_byte);
+    try std.testing.expectEqual(@as(?usize, 1), input.selection_anchor);
+    try std.testing.expectEqual(history_count, input.edit_history.?.count);
+    try std.testing.expectEqual(history_current, input.edit_history.?.current);
+    try std.testing.expectEqual(history_start, input.edit_history.?.start);
 }
