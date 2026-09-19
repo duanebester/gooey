@@ -343,6 +343,9 @@ pub const InputStyle = struct {
 
     // State
     disabled: bool = false,
+    /// Reject an entire insertion or IME preedit before mutation when the
+    /// resulting UTF-8 byte length would exceed this limit.
+    max_bytes: ?u32 = null,
 
     // Binding
     bind: ?*[]const u8 = null,
