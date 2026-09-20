@@ -45,6 +45,15 @@ fn render(cx: *gooey.Cx) void {
 3. **Theme-aware** — Automatically adapts to Gooey's theme system
 4. **Accessible** — Screen reader descriptions for all chart types
 
+## Development
+
+Run the package tests from this directory. The local manifest resolves Gooey
+from the parent monorepo checkout:
+
+```sh
+zig build test
+```
+
 ## Limits
 
 Per CLAUDE.md engineering guidelines, all structures have hard limits:

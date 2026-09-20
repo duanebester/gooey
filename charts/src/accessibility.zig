@@ -26,7 +26,7 @@ const constants = @import("constants.zig");
 // Re-export Gooey's accessibility types for convenience
 pub const Role = gooey.accessibility.Role;
 pub const State = gooey.accessibility.State;
-pub const Live = gooey.accessibility.Live;
+pub const Live = gooey.accessibility.types.Live;
 
 // =============================================================================
 // Constants
@@ -654,4 +654,14 @@ test "announceSelection formats position" {
 test "ChartType roleDescription" {
     try std.testing.expectEqualStrings("bar chart", ChartType.bar.roleDescription());
     try std.testing.expectEqualStrings("scatter plot", ChartType.scatter.roleDescription());
+}
+
+test "public accessibility aliases compile" {
+    const role: Role = .img;
+    const state: State = .{};
+    const live: Live = .polite;
+
+    try std.testing.expectEqual(Role.img, role);
+    try std.testing.expectEqual(Live.polite, live);
+    _ = state;
 }
