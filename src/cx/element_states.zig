@@ -115,8 +115,8 @@ pub const ElementStates = struct {
     ///     `MAX_ELEMENT_STATES` (4096) cap was hit.
     ///
     /// ```zig
-    /// const ss = try cx.element_states.with(SelectState, "my-select", SelectState.defaultInit);
-    /// ss.is_open = !ss.is_open;
+    /// const state = try cx.element_states.with(HoverState, "card", HoverState.defaultInit);
+    /// state.is_hovered = true;
     /// ```
     pub fn with(
         self: *ElementStates,

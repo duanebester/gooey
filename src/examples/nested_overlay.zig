@@ -31,6 +31,16 @@ const AppState = struct {
         std.debug.assert(index < options.len);
         std.debug.assert(options.len == 3);
         self.selected = index;
+        self.select_open = false;
+        std.debug.assert(self.selected.? == index);
+        std.debug.assert(!self.select_open);
+    }
+
+    pub fn closeSelect(self: *AppState) void {
+        std.debug.assert(options.len > 0);
+        std.debug.assert(options.len <= 4096);
+        self.select_open = false;
+        std.debug.assert(!self.select_open);
     }
 };
 
@@ -97,9 +107,8 @@ const ModalContent = struct {
                 .selected = app_state.selected,
                 .is_open = app_state.select_open,
                 .on_select = cx.onSelect(AppState.selectOption),
-                // Supplying a toggle handler selects the controlled mode so
-                // this repro can launch with the dropdown already open.
                 .on_toggle = cx.update(AppState.toggleSelect),
+                .on_close = cx.update(AppState.closeSelect),
                 .width = 280,
             },
             ui.box(.{

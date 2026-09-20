@@ -109,6 +109,8 @@ const AppState = struct {
     // Select demos
     fruit_selected: ?usize = null,
     priority_selected: ?usize = 1,
+    fruit_select_open: bool = false,
+    priority_select_open: bool = false,
 
     // Progress demos
     progress: f32 = 0.65,
@@ -178,13 +180,45 @@ const AppState = struct {
         self.size_choice = s;
     }
 
-    // Select handlers (open/close managed internally by Select widget)
+    // Select handlers
     pub fn selectFruit(self: *AppState, idx: usize) void {
+        std.debug.assert(fruit_options.len > 0);
+        std.debug.assert(idx < fruit_options.len);
         self.fruit_selected = idx;
+        self.fruit_select_open = false;
+        std.debug.assert(self.fruit_selected.? == idx);
+        std.debug.assert(!self.fruit_select_open);
     }
 
     pub fn selectPriority(self: *AppState, idx: usize) void {
+        std.debug.assert(priority_options.len > 0);
+        std.debug.assert(idx < priority_options.len);
         self.priority_selected = idx;
+        self.priority_select_open = false;
+        std.debug.assert(self.priority_selected.? == idx);
+        std.debug.assert(!self.priority_select_open);
+    }
+
+    pub fn toggleFruitSelect(self: *AppState) void {
+        const was_open = self.fruit_select_open;
+        self.fruit_select_open = !self.fruit_select_open;
+        std.debug.assert(self.fruit_select_open != was_open);
+    }
+
+    pub fn closeFruitSelect(self: *AppState) void {
+        self.fruit_select_open = false;
+        std.debug.assert(!self.fruit_select_open);
+    }
+
+    pub fn togglePrioritySelect(self: *AppState) void {
+        const was_open = self.priority_select_open;
+        self.priority_select_open = !self.priority_select_open;
+        std.debug.assert(self.priority_select_open != was_open);
+    }
+
+    pub fn closePrioritySelect(self: *AppState) void {
+        self.priority_select_open = false;
+        std.debug.assert(!self.priority_select_open);
     }
 
     // Progress handlers
@@ -1374,6 +1408,9 @@ const SelectCard = struct {
                         .selected = s.fruit_selected,
                         .placeholder = "Choose a fruit...",
                         .width = 180,
+                        .is_open = s.fruit_select_open,
+                        .on_toggle = cx.update(AppState.toggleFruitSelect),
+                        .on_close = cx.update(AppState.closeFruitSelect),
                         .on_select = cx.onSelect(AppState.selectFruit),
                     },
                 }),
@@ -1384,6 +1421,9 @@ const SelectCard = struct {
                         .options = &priority_options,
                         .selected = s.priority_selected,
                         .width = 150,
+                        .is_open = s.priority_select_open,
+                        .on_toggle = cx.update(AppState.togglePrioritySelect),
+                        .on_close = cx.update(AppState.closePrioritySelect),
                         .on_select = cx.onSelect(AppState.selectPriority),
                         .focus_border_color = t.warning,
                     },

@@ -1373,6 +1373,64 @@ test "DispatchTree click-outside does not fire when click is inside bounds" {
     try std.testing.expect(State.fired);
 }
 
+test "DispatchTree controlled select treats trigger and popup as inside" {
+    // Model Select's outer listener with trigger and floating popup children.
+    // Dispatch outside-before-click to match runtime input ordering.
+    const State = struct {
+        var is_open: bool = true;
+        var close_count: u8 = 0;
+        var selection_count: u8 = 0;
+
+        fn toggle() void {
+            is_open = !is_open;
+        }
+        fn close() void {
+            is_open = false;
+            close_count += 1;
+        }
+        fn select() void {
+            is_open = false;
+            selection_count += 1;
+        }
+    };
+    const allocator = std.testing.allocator;
+    var tree = DispatchTree.init(allocator);
+    defer tree.deinit();
+
+    const outer = tree.pushNode();
+    tree.setBounds(outer, .{ .x = 100, .y = 100, .width = 100, .height = 40 });
+    tree.onClickOutside(State.close);
+    const trigger = tree.pushNode();
+    tree.setBounds(trigger, .{ .x = 100, .y = 100, .width = 100, .height = 40 });
+    tree.onClick(State.toggle);
+    tree.popNode();
+    const popup = tree.pushNode();
+    tree.setBounds(popup, .{ .x = 100, .y = 140, .width = 100, .height = 120 });
+    const option = tree.pushNode();
+    tree.setBounds(option, .{ .x = 100, .y = 140, .width = 100, .height = 30 });
+    tree.onClick(State.select);
+    tree.popNode();
+    tree.popNode();
+    tree.popNode();
+
+    var window: Window = undefined;
+    try std.testing.expect(!tree.dispatchClickOutsideWithTarget(150, 120, trigger, &window));
+    try std.testing.expect(tree.dispatchClick(trigger, &window));
+    try std.testing.expect(!State.is_open);
+    try std.testing.expectEqual(@as(u8, 0), State.close_count);
+
+    State.is_open = true;
+    try std.testing.expect(!tree.dispatchClickOutsideWithTarget(150, 155, option, &window));
+    try std.testing.expect(tree.dispatchClick(option, &window));
+    try std.testing.expect(!State.is_open);
+    try std.testing.expectEqual(@as(u8, 1), State.selection_count);
+
+    State.is_open = true;
+    try std.testing.expect(tree.dispatchClickOutsideWithTarget(50, 50, null, &window));
+    try std.testing.expect(!State.is_open);
+    try std.testing.expectEqual(@as(u8, 1), State.close_count);
+}
+
 test "DispatchTree multiple click-outside listeners" {
     const allocator = std.testing.allocator;
     var tree = DispatchTree.init(allocator);

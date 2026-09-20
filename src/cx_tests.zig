@@ -210,6 +210,61 @@ test "Cx.updateWith creates handler with packed argument" {
     try std.testing.expectEqual(@as(i32, 42), unpacked);
 }
 
+test "Cx.onSelect preserves indexes and only invokes application selection" {
+    // Exercise the generated decoding callback at every packing boundary and
+    // verify framework dispatch does not mutate application-owned open state.
+    const TestState = struct {
+        selected: usize = 0,
+        invocation_count: u8 = 0,
+        is_open: bool = true,
+
+        pub fn select(self: *@This(), index: usize) void {
+            std.debug.assert(self.invocation_count < 4);
+            std.debug.assert(self.is_open);
+            self.selected = index;
+            self.invocation_count += 1;
+        }
+    };
+    const indexes = if (@bitSizeOf(usize) > 32)
+        [_]usize{
+            0,
+            std.math.maxInt(u32),
+            @as(usize, std.math.maxInt(u32)) + 1,
+            std.math.maxInt(usize),
+        }
+    else
+        [_]usize{ 0, std.math.maxInt(usize) };
+
+    const window = try std.testing.allocator.create(Window);
+    defer std.testing.allocator.destroy(window);
+
+    var state = TestState{};
+    window.root_state_ptr = null;
+    window.root_state_type_id = 0;
+    window.platform_window = null;
+    window.needs_render = false;
+    window.setRootState(TestState, &state);
+    defer window.clearRootState();
+
+    var cx = Cx{
+        ._allocator = undefined,
+        ._window = window,
+        ._builder = undefined,
+        .state_ptr = @ptrCast(&state),
+        .state_type_id = typeId(TestState),
+    };
+    const on_select = cx.onSelect(TestState.select);
+
+    for (indexes, 1..) |index, expected_count| {
+        window.needs_render = false;
+        on_select.forIndex(index).invoke(window);
+        try std.testing.expectEqual(index, state.selected);
+        try std.testing.expectEqual(expected_count, state.invocation_count);
+        try std.testing.expect(state.is_open);
+        try std.testing.expect(window.checkAndClearRenderFlag());
+    }
+}
+
 test "navigation state pattern" {
     // Common pattern: enum-based page navigation
     const AppState = struct {

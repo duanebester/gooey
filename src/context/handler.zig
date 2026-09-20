@@ -52,42 +52,19 @@ pub const HandlerRef = struct {
 ///
 /// Created via `cx.onSelect(State.method)`.
 pub const OnSelectHandler = struct {
-    /// Callback that unpacks a packed index (and optional id hash) from EntityId.
+    /// Callback that unpacks an index from EntityId.
     /// Generated at comptime by `Cx.onSelect`.
     callback: *const fn (*Window, EntityId) void,
 
     /// Create a HandlerRef for a specific option index.
-    ///
-    /// Use when the caller manages open/close state externally.
     pub fn forIndex(self: OnSelectHandler, index: usize) HandlerRef {
-        return .{
+        const handler = HandlerRef{
             .callback = self.callback,
             .entity_id = packArg(usize, index),
         };
-    }
-
-    /// Create a HandlerRef that selects an option AND closes internal state.
-    ///
-    /// Packs both the option index (lower 32 bits) and the select's id hash
-    /// (upper 32 bits) into the EntityId. The comptime-generated callback
-    /// unpacks both, calls the user method, and closes the widget.
-    pub fn forIndexAndClose(self: OnSelectHandler, index: u32, id_hash: u32) HandlerRef {
-        std.debug.assert(id_hash != 0); // id_hash 0 is reserved (LayoutId.none)
-        return .{
-            .callback = self.callback,
-            .entity_id = .{ .id = @as(u64, id_hash) << 32 | @as(u64, index) },
-        };
-    }
-
-    /// Unpack the option index from a packed EntityId (lower 32 bits).
-    pub fn unpackIndex(entity_id: EntityId) u32 {
-        return @truncate(entity_id.id);
-    }
-
-    /// Unpack the select id hash from a packed EntityId (upper 32 bits).
-    /// Returns 0 if no hash was packed (forIndex was used instead of forIndexAndClose).
-    pub fn unpackIdHash(entity_id: EntityId) u32 {
-        return @truncate(entity_id.id >> 32);
+        std.debug.assert(handler.callback == self.callback);
+        std.debug.assert(unpackArg(usize, handler.entity_id) == index);
+        return handler;
     }
 };
 
@@ -184,4 +161,25 @@ test "packArg/unpackArg with zero values" {
 
     const false_bool = packArg(bool, false);
     try std.testing.expectEqual(false, unpackArg(bool, false_bool));
+}
+
+test "OnSelectHandler preserves the full usize index range" {
+    // The old Select-specific packing truncated indexes to 32 bits. Exercise
+    // zero, the first index beyond that boundary where available, and max.
+    const callback = struct {
+        fn invoke(_: *Window, _: EntityId) void {}
+    }.invoke;
+    const on_select = OnSelectHandler{ .callback = callback };
+
+    const zero = on_select.forIndex(0);
+    try std.testing.expectEqual(@as(usize, 0), unpackArg(usize, zero.entity_id));
+
+    if (@bitSizeOf(usize) > 32) {
+        const beyond_u32 = @as(usize, std.math.maxInt(u32)) + 1;
+        const boundary = on_select.forIndex(beyond_u32);
+        try std.testing.expectEqual(beyond_u32, unpackArg(usize, boundary.entity_id));
+    }
+
+    const maximum = on_select.forIndex(std.math.maxInt(usize));
+    try std.testing.expectEqual(std.math.maxInt(usize), unpackArg(usize, maximum.entity_id));
 }
