@@ -3,6 +3,8 @@
     .version = "0.1.0",
     .fingerprint = 0xaef8bcd3c103733e,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .gooey = .{ .path = ".." },
+    },
     .paths = .{ "README.md", "build.zig", "build.zig.zon", "src" },
 }

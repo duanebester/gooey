@@ -62,7 +62,14 @@ expires.
 
 ## Development
 
-The parent Gooey build supplies the `gooey` import and platform linker setup:
+Run the package tests from this directory. The local manifest resolves Gooey
+and Gooey Components from the parent monorepo checkout:
+
+```sh
+zig build test
+```
+
+The parent Gooey build also supplies integration and demo steps:
 
 ```sh
 zig build test-genui

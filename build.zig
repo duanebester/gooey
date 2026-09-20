@@ -284,6 +284,8 @@ pub fn build(b: *std.Build) void {
             .root_module = charts_mod,
         });
         const run_charts_tests = b.addRunArtifact(charts_tests);
+        const test_charts_step = b.step("test-charts", "Run gooey-charts tests");
+        test_charts_step.dependOn(&run_charts_tests.step);
 
         const genui_tests = b.addTest(.{ .root_module = genui_mod });
         const run_genui_tests = b.addRunArtifact(genui_tests);
@@ -689,6 +691,17 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         components_mod.addImport("gooey", mod);
+
+        // =========================================================================
+        // Gooey Charts Module
+        // =========================================================================
+
+        const charts_mod = b.addModule("gooey-charts", .{
+            .root_source_file = b.path("charts/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        charts_mod.addImport("gooey", mod);
 
         // =========================================================================
         // Gooey Gen UI Module
@@ -1098,6 +1111,16 @@ pub fn build(b: *std.Build) void {
         if (!skip_shader_compile) components_tests.step.dependOn(compile_shaders_step);
         const run_components_tests = b.addRunArtifact(components_tests);
 
+        const charts_tests = b.addTest(.{
+            .root_module = charts_mod,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(charts_tests);
+        if (!skip_shader_compile) charts_tests.step.dependOn(compile_shaders_step);
+        const run_charts_tests = b.addRunArtifact(charts_tests);
+        const test_charts_step = b.step("test-charts", "Run gooey-charts tests");
+        test_charts_step.dependOn(&run_charts_tests.step);
+
         const watcher_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/runtime/watcher.zig"),
@@ -1122,6 +1145,7 @@ pub fn build(b: *std.Build) void {
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_components_tests.step);
+        test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_genui_tests.step);
         test_step.dependOn(&run_compare_tests.step);
