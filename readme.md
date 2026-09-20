@@ -850,9 +850,19 @@ RadioGroup{
 ```zig
 const State = struct {
     selected_fruit: ?usize = null,
+    fruit_select_open: bool = false,
 
     pub fn selectFruit(self: *State, index: usize) void {
         self.selected_fruit = index;
+        self.fruit_select_open = false;
+    }
+
+    pub fn toggleFruitSelect(self: *State) void {
+        self.fruit_select_open = !self.fruit_select_open;
+    }
+
+    pub fn closeFruitSelect(self: *State) void {
+        self.fruit_select_open = false;
     }
 };
 
@@ -862,18 +872,17 @@ Select{
     .options = &.{ "Apple", "Banana", "Cherry", "Date" },
     .selected = s.selected_fruit,
     .placeholder = "Choose a fruit...",
+    .is_open = s.fruit_select_open,
+    .on_toggle = cx.update(State.toggleFruitSelect),
+    .on_close = cx.update(State.closeFruitSelect),
     .on_select = cx.onSelect(State.selectFruit),
     .width = 200,
 }
 ```
 
-The widget manages open/close state internally — no toggle/close handlers or per-option handler arrays needed. Just provide `on_select` and a single handler that receives the selected index.
-
-> **Legacy API:** The explicit `is_open` / `on_toggle` / `on_close` / `handlers`
-> fields are still supported for full manual control. `on_select` may be paired
-> with manual toggle/close handlers, but it is mutually exclusive with the
-> per-option `handlers` array. Use `controlMode()` to inspect which open-state
-> contract a configuration selects.
+Like `Modal` and `ContextMenu`, `Select` is controlled by the application. The
+application supplies `is_open`, toggles and closes that state, and decides in
+its selection method whether choosing an option also closes the dropdown.
 
 ### Modal
 

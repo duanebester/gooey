@@ -61,23 +61,12 @@ const text_area_mod = @import("widgets/text_area_state.zig");
 const code_editor_mod = @import("widgets/code_editor_state.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
 
-// PR 8.2 — `SelectState` lives next to the widget in
-// `components/select.zig` now (was a `WidgetStore` field pre-PR-8.2).
-// `cx.onSelect`'s `forIndexAndClose` path needs the type so it can
-// route the close-on-pick through `Window.element_states.get`. The
-// import is local to `cx.zig` only — future cleanup of `cx.zig`'s
-// per-widget knowledge is tracked separately and not in scope for
-// PR 8.2.
-const select_mod = @import("components/select.zig");
-const SelectState = select_mod.SelectState;
-
 // PR 8.4 — `cx.scrollView(id)` now goes through
 // `Window.element_states.getOrInsert(ScrollContainer, hash, init)`
 // instead of the retired `WidgetStore.scrollContainer` accessor.
 // `LayoutId.fromString(id).id` is the u32 hash key, matching every
-// other element-state path that comes from a string id
-// (`SelectState` since PR 8.2, `TextInputState` / `TextAreaState`
-// / `CodeEditorState` since PR 8.4b).
+// other element-state path that comes from a string id (`TextInputState` /
+// `TextAreaState` / `CodeEditorState` since PR 8.4b).
 const layout_id_mod = @import("layout/layout_id.zig");
 const LayoutId = layout_id_mod.LayoutId;
 const Box = ui_mod.Box;
@@ -372,8 +361,7 @@ pub const Cx = struct {
     /// Index-based selection handler from `fn(*State, usize) void`.
     /// Used by `Select`, `TabBar`, etc — the widget generates
     /// per-option `HandlerRef`s internally so callers don't have to
-    /// build a handler array. With `Select`, the widget also manages
-    /// its own open/close state.
+    /// build a handler array.
     pub fn onSelect(
         self: *Self,
         comptime method: anytype,
@@ -382,36 +370,10 @@ pub const Cx = struct {
         const State = comptime ExtractState("onSelect", @TypeOf(method));
 
         const Wrapper = struct {
-            // EntityId packing:
-            //   * upper 32 != 0: lower 32 = index, upper 32 = select
-            //     id hash (forIndexAndClose path — also closes internal state)
-            //   * upper 32 == 0: full u64 = usize index (forIndex
-            //     path — caller manages open/close)
             fn invoke(g: *Window, packed_arg: EntityId) void {
-                const id_hash = OnSelectHandler.unpackIdHash(packed_arg);
-
-                if (id_hash != 0) {
-                    // forIndexAndClose path: index in lower 32 bits
-                    const index: usize = @as(usize, OnSelectHandler.unpackIndex(packed_arg));
-                    const state_ptr = g.getRootState(State) orelse return;
-                    method(state_ptr, index);
-
-                    // Close internal select state. PR 8.2 — routed
-                    // through `Window.element_states.get` (was
-                    // `g.widgets.closeSelectState(id_hash)`
-                    // pre-PR-8.2). Reaching `forIndexAndClose`
-                    // implies the option button just rendered, so
-                    // the slot must already exist; the `null` arm
-                    // is defensive only.
-                    if (g.element_states.get(SelectState, @as(u64, id_hash))) |ss| {
-                        ss.is_open = false;
-                    }
-                } else {
-                    // forIndex path: full usize index
-                    const index = unpackArg(usize, packed_arg);
-                    const state_ptr = g.getRootState(State) orelse return;
-                    method(state_ptr, index);
-                }
+                const index = unpackArg(usize, packed_arg);
+                const state_ptr = g.getRootState(State) orelse return;
+                method(state_ptr, index);
 
                 g.requestRender();
             }

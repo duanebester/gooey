@@ -1,8 +1,7 @@
 //! Select Component Demo
 //!
 //! Demonstrates the Select component with various configurations.
-//! Uses the simplified `on_select` API — no toggle/close handlers or
-//! per-option handler arrays needed.
+//! Demonstrates application-controlled open state and index-based selection.
 
 const gooey = @import("gooey");
 const std = @import("std");
@@ -20,21 +19,71 @@ const Select = gooey.components.Select;
 // =============================================================================
 
 const AppState = struct {
-    // Selection state only — no open/close booleans needed
     fruit_selected: ?usize = null,
     country_selected: ?usize = 2, // Pre-selected: "Canada"
     size_selected: ?usize = 1, // Pre-selected: "Medium"
+    fruit_open: bool = false,
+    country_open: bool = false,
+    size_open: bool = false,
 
     pub fn selectFruit(self: *AppState, index: usize) void {
+        std.debug.assert(fruit_options.len > 0);
+        std.debug.assert(index < fruit_options.len);
         self.fruit_selected = index;
+        self.fruit_open = false;
+        std.debug.assert(self.fruit_selected.? == index);
+        std.debug.assert(!self.fruit_open);
     }
 
     pub fn selectCountry(self: *AppState, index: usize) void {
+        std.debug.assert(country_options.len > 0);
+        std.debug.assert(index < country_options.len);
         self.country_selected = index;
+        self.country_open = false;
+        std.debug.assert(self.country_selected.? == index);
+        std.debug.assert(!self.country_open);
     }
 
     pub fn selectSize(self: *AppState, index: usize) void {
+        std.debug.assert(size_options.len > 0);
+        std.debug.assert(index < size_options.len);
         self.size_selected = index;
+        self.size_open = false;
+        std.debug.assert(self.size_selected.? == index);
+        std.debug.assert(!self.size_open);
+    }
+
+    pub fn toggleFruit(self: *AppState) void {
+        const was_open = self.fruit_open;
+        self.fruit_open = !self.fruit_open;
+        std.debug.assert(self.fruit_open != was_open);
+    }
+
+    pub fn closeFruit(self: *AppState) void {
+        self.fruit_open = false;
+        std.debug.assert(!self.fruit_open);
+    }
+
+    pub fn toggleCountry(self: *AppState) void {
+        const was_open = self.country_open;
+        self.country_open = !self.country_open;
+        std.debug.assert(self.country_open != was_open);
+    }
+
+    pub fn closeCountry(self: *AppState) void {
+        self.country_open = false;
+        std.debug.assert(!self.country_open);
+    }
+
+    pub fn toggleSize(self: *AppState) void {
+        const was_open = self.size_open;
+        self.size_open = !self.size_open;
+        std.debug.assert(self.size_open != was_open);
+    }
+
+    pub fn closeSize(self: *AppState) void {
+        self.size_open = false;
+        std.debug.assert(!self.size_open);
     }
 };
 
@@ -45,7 +94,15 @@ var state = AppState{};
 // =============================================================================
 
 const fruit_options = [_][]const u8{ "Apple", "Banana", "Cherry", "Dragon Fruit", "Elderberry" };
-const country_options = [_][]const u8{ "United States", "United Kingdom", "Canada", "Australia", "Germany", "France", "Japan" };
+const country_options = [_][]const u8{
+    "United States",
+    "United Kingdom",
+    "Canada",
+    "Australia",
+    "Germany",
+    "France",
+    "Japan",
+};
 const size_options = [_][]const u8{ "Small", "Medium", "Large", "Extra Large" };
 
 // =============================================================================
@@ -103,7 +160,7 @@ const Header = struct {
             .gap = 8,
         }, .{
             ui.text("Select Component Demo", .{ .size = 24 }),
-            ui.text("Click a select to open the dropdown. Click outside or press Escape to close.", .{
+            ui.text("Click a select to open the dropdown. Click outside to close.", .{
                 .size = 14,
                 .color = ui.Color.rgb(0.5, 0.5, 0.5),
             }),
@@ -131,6 +188,9 @@ const SelectExamples = struct {
                     .options = &fruit_options,
                     .selected = s.fruit_selected,
                     .placeholder = "Choose a fruit...",
+                    .is_open = s.fruit_open,
+                    .on_toggle = cx.update(AppState.toggleFruit),
+                    .on_close = cx.update(AppState.closeFruit),
                     .on_select = cx.onSelect(AppState.selectFruit),
                 },
             },
@@ -143,6 +203,9 @@ const SelectExamples = struct {
                     .selected = s.country_selected,
                     .placeholder = "Select your country...",
                     .width = 250,
+                    .is_open = s.country_open,
+                    .on_toggle = cx.update(AppState.toggleCountry),
+                    .on_close = cx.update(AppState.closeCountry),
                     .on_select = cx.onSelect(AppState.selectCountry),
                 },
             },
@@ -156,6 +219,9 @@ const SelectExamples = struct {
                     .width = 160,
                     .focus_border_color = ui.Color.rgb(0.4, 0.7, 0.4),
                     .selected_background = ui.Color.rgb(0.9, 1.0, 0.9),
+                    .is_open = s.size_open,
+                    .on_toggle = cx.update(AppState.toggleSize),
+                    .on_close = cx.update(AppState.closeSize),
                     .on_select = cx.onSelect(AppState.selectSize),
                 },
             },

@@ -43,6 +43,7 @@ const FormState = struct {
 
     // Experience level selection
     experience_level: ?usize = null,
+    experience_open: bool = false,
 
     // Form status
     form_submitted: bool = false,
@@ -103,7 +104,23 @@ const FormState = struct {
     }
 
     pub fn selectExperience(self: *FormState, index: usize) void {
+        std.debug.assert(experience_options.len > 0);
+        std.debug.assert(index < experience_options.len);
         self.experience_level = index;
+        self.experience_open = false;
+        std.debug.assert(self.experience_level.? == index);
+        std.debug.assert(!self.experience_open);
+    }
+
+    pub fn toggleExperience(self: *FormState) void {
+        const was_open = self.experience_open;
+        self.experience_open = !self.experience_open;
+        std.debug.assert(self.experience_open != was_open);
+    }
+
+    pub fn closeExperience(self: *FormState) void {
+        self.experience_open = false;
+        std.debug.assert(!self.experience_open);
     }
 
     pub fn validate(self: *FormState) bool {
@@ -235,6 +252,7 @@ fn render(cx: *Cx) void {
             // Experience Level Section
             ExperienceSection{
                 .experience_level = s.experience_level,
+                .experience_open = s.experience_open,
             },
             // Terms and Submit Section
             TermsSection{
@@ -564,6 +582,7 @@ const RadioOption = struct {
 
 const ExperienceSection = struct {
     experience_level: ?usize,
+    experience_open: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Section heading (h2)
@@ -599,6 +618,9 @@ const ExperienceSection = struct {
                 .options = &FormState.experience_options,
                 .selected = self.experience_level,
                 .placeholder = "Select your experience level",
+                .is_open = self.experience_open,
+                .on_toggle = cx.update(FormState.toggleExperience),
+                .on_close = cx.update(FormState.closeExperience),
                 .on_select = cx.onSelect(FormState.selectExperience),
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
