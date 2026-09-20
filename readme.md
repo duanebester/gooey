@@ -101,11 +101,14 @@ your application uses:
 ```zig
 .imports = &.{
     .{ .name = "gooey", .module = gooey_dependency.module("gooey") },
+    .{ .name = "gooey-components", .module = gooey_dependency.module("gooey-components") },
     .{ .name = "gooey-charts", .module = gooey_dependency.module("gooey-charts") },
     .{ .name = "gooey-genui", .module = gooey_dependency.module("gooey-genui") },
 },
 ```
 
+- [`gooey-components`](components/README.md) provides high-level controls built
+  from Gooey's public primitives and state engines.
 - [`gooey-charts`](charts/README.md) provides optional GPU-accelerated charts.
 - [`gooey-genui`](genui/README.md) provides catalog-constrained generated UI
   with direct TypeSafe Jev evaluation and no Vercel AI Gateway dependency.
@@ -176,12 +179,13 @@ bottom, which run as part of `zig build test`.
 ```zig
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
-const Checkbox = gooey.components.Checkbox;
-const TextInput = gooey.components.TextInput;
+const Button = components.Button;
+const Checkbox = components.Checkbox;
+const TextInput = components.TextInput;
 
 const MAX_TODOS = 64;
 const TEXT_CAP = 128;
@@ -775,7 +779,14 @@ const large_text_theme = gooey.ui.Theme{
 
 ## Components
 
-Gooey includes ready-to-use components:
+The sibling `gooey-components` package provides ready-to-use controls built on
+Gooey's public API. Import it explicitly:
+
+```zig
+const components = @import("gooey-components");
+const Button = components.Button;
+const TextInput = components.TextInput;
+```
 
 ### Button
 
@@ -941,19 +952,19 @@ Tooltip(IconButton){
 
 ```zig
 // Simple image from path
-gooey.components.Image{ .src = "assets/logo.png" }
+components.Image{ .src = "assets/logo.png" }
 
 // With explicit sizing
-gooey.components.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
+components.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
 
 // Rounded avatar
-gooey.components.Image{ .src = "avatar.png", .size = 48, .rounded = true }
+components.Image{ .src = "avatar.png", .size = 48, .rounded = true }
 
 // Cover image (fills container, may crop)
-gooey.components.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
+components.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
 
 // With effects
-gooey.components.Image{
+components.Image{
     .src = "icon.png",
     .size = 64,
     .grayscale = 1.0,           // 0.0 = color, 1.0 = grayscale
@@ -967,8 +978,9 @@ gooey.components.Image{
 
 ```zig
 const gooey = @import("gooey");
-const Svg = gooey.components.Svg;
-const Icons = gooey.components.Icons;
+const components = @import("gooey-components");
+const Svg = components.Svg;
+const Icons = components.Icons;
 
 // Using built-in icon paths
 Svg{ .path = Icons.star, .size = 24, .color = Color.gold }
@@ -1332,7 +1344,7 @@ if (result) |r| {
 }
 
 // Use with ValidatedTextInput for full a11y control
-gooey.components.ValidatedTextInput{
+components.ValidatedTextInput{
     .id = "email",
     .error_result = validation.requiredResult(s.email, .{
         .message = "Required",
@@ -1364,7 +1376,7 @@ const State = struct {
 };
 
 // In render:
-gooey.components.ValidatedTextInput{
+components.ValidatedTextInput{
     .id = "email",
     .label = "Email Address",
     .required_indicator = true,        // Shows "*" after label
@@ -1378,7 +1390,7 @@ gooey.components.ValidatedTextInput{
 }
 
 // Or with structured result for different a11y messages:
-gooey.components.ValidatedTextInput{
+components.ValidatedTextInput{
     .id = "email",
     .label = "Email Address",
     .error_result = validation.emailResult(s.email, .{
@@ -1810,6 +1822,7 @@ zig build hot -- run-glass
 ## Architecture
 
 ```architecture.txt
+components/           # High-level controls built on Gooey's public API
 src/
 ├── app.zig          # App entry points (runCx, App, WebApp)
 ├── cx.zig           # Unified context (Cx)
@@ -1823,7 +1836,6 @@ src/
 ├── debug/           # Debugging tools and render stats
 │
 ├── ui/              # Declarative builder (box, vstack, hstack, primitives)
-├── components/      # UI components (Button, TextInput, Modal, Tooltip, etc.)
 ├── widgets/         # Stateful widget implementations (text input/area state)
 ├── layout/          # Flexbox-style layout engine
 │

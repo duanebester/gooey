@@ -45,8 +45,9 @@ Gooey's accessibility system provides:
 All standard Gooey components have built-in accessibility. Simply use the `accessible_name` field to customize what screen readers announce:
 
 ```zig
-const Button = gooey.components.Button;
-const Checkbox = gooey.components.Checkbox;
+const components = @import("gooey-components");
+const Button = components.Button;
+const Checkbox = components.Checkbox;
 
 // Button with custom accessible name
 Button{
@@ -69,7 +70,7 @@ Checkbox{
 For custom UI elements, use `cx.accessible()`:
 
 > **Advanced API:** This is the low-level accessibility-tree builder. Prefer
-> `gooey.components.*` for standard controls because those components maintain
+> `gooey-components` for standard controls because those components maintain
 > roles, state, and names automatically.
 
 ```zig
@@ -285,6 +286,8 @@ All standard Gooey components have accessibility built-in:
 ### Example: Accessible Form
 
 ```zig
+const components = @import("gooey-components");
+
 fn renderForm(cx: *Cx) void {
     const s = cx.state(FormState);
 
@@ -299,28 +302,28 @@ fn renderForm(cx: *Cx) void {
         cx.render(ui.text("Contact Form", .{ .size = 24, .weight = .bold }));
     }
 
-    cx.render(gooey.components.TextInput{
+    cx.render(components.TextInput{
         .id = "name",
         .placeholder = "Your name",
         .accessible_name = "Full name",
         .bind = &s.name,
     });
 
-    cx.render(gooey.components.TextInput{
+    cx.render(components.TextInput{
         .id = "email",
         .placeholder = "email@example.com",
         .accessible_name = "Email address",
         .bind = &s.email,
     });
 
-    cx.render(gooey.components.Checkbox{
+    cx.render(components.Checkbox{
         .id = "subscribe",
         .selected = s.subscribe,
         .label = "Subscribe to newsletter",
         .on_click_handler = cx.update(FormState.toggleSubscribe),
     });
 
-    cx.render(gooey.components.Button{
+    cx.render(components.Button{
         .label = "Send",
         .accessible_name = "Submit contact form",
         .disabled = !s.isValid(),

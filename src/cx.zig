@@ -577,7 +577,7 @@ pub const Cx = struct {
     // no widget with that id has been registered. The returned types
     // are the *engine* state objects (`TextInputState`, `TextAreaState`,
     // `CodeEditorState`) — not the user-facing `TextInput` / `TextArea`
-    // declarative components in `components/`. PR 8.4-prep renamed the
+    // declarative components in `components/src/`. PR 8.4-prep renamed the
     // engine types to disambiguate; the accessor verbs (`textField`,
     // `textAreaWidget`, `codeEditorWidget`) are unchanged.
     //

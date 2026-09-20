@@ -1,39 +1,34 @@
-//! TextInput Component
+//! TextArea Component
 //!
-//! A styled text input field. The component handles visual chrome (background,
-//! border, padding) while the underlying widget handles text editing.
+//! A styled multi-line text input field. The component handles visual chrome
+//! (background, border, padding) while the underlying widget handles text editing.
 //!
 //! Colors default to null, which means "use the current theme".
 //! Set explicit colors to override theme defaults.
 
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const layout_mod = @import("../layout/layout.zig");
+const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
 
-pub const TextInput = struct {
-    /// Unique identifier for the input (required for state retention)
+pub const TextArea = struct {
+    /// Unique identifier for the textarea (required for state retention)
     id: []const u8,
 
     // Content
     placeholder: []const u8 = "",
-    secure: bool = false,
     /// Controlled two-way binding. User edits update the model; changed model
     /// values reconcile into retained editor state without resetting valid
     /// cursor/selection offsets or interrupting active IME preedit.
     bind: ?*[]const u8 = null,
 
-    // State
-    disabled: bool = false,
-    /// Maximum UTF-8 bytes accepted by typing, paste, or IME composition.
-    /// An edit that would exceed the limit is rejected in full.
-    max_bytes: ?u32 = null,
-
     // Layout
     width: ?f32 = null,
-    height: ?f32 = null, // null = auto-size based on font metrics + padding
+    height: ?f32 = null, // null = auto-size based on rows
+    rows: usize = 4, // Default visible rows (used when height is null)
     fill_width: bool = false,
     padding: f32 = 8,
 
@@ -50,6 +45,11 @@ pub const TextInput = struct {
     selection_color: ?Color = null,
     cursor_color: ?Color = null,
 
+    // Scrollbar styling (null = use theme-derived defaults)
+    scrollbar_width: f32 = 8,
+    scrollbar_track_color: ?Color = null,
+    scrollbar_thumb_color: ?Color = null,
+
     // Focus navigation
     tab_index: i32 = 0,
     tab_stop: bool = true,
@@ -61,7 +61,7 @@ pub const TextInput = struct {
     accessible_name: ?[]const u8 = null, // Label for screen readers
     accessible_description: ?[]const u8 = null,
 
-    pub fn render(self: TextInput, cx: *ui.Cx) void {
+    pub fn render(self: TextArea, cx: *ui.Cx) void {
         const t = cx.theme();
 
         // Resolve colors: explicit value OR theme default
@@ -74,35 +74,28 @@ pub const TextInput = struct {
         const selection_color = self.selection_color orelse t.primary.withAlpha(0.3);
         const cursor_color = self.cursor_color orelse t.text;
 
+        // Scrollbar colors derived from theme
+        const scrollbar_track_color = self.scrollbar_track_color orelse t.muted.withAlpha(0.1);
+        const scrollbar_thumb_color = self.scrollbar_thumb_color orelse t.muted.withAlpha(0.4);
+
         const layout_id = LayoutId.fromString(self.id);
 
-        // Push accessible element (role: textbox)
-        // Phase 3.1: Expose value to screen readers (masked for secure inputs)
-        const a11y_value: ?[]const u8 = if (self.secure)
-            null // Don't expose secure input values
-        else if (self.bind) |binding|
-            if (binding.len > 0) binding.* else null
-        else
-            null;
-
+        // Push accessible element (role: textarea)
         const a11y_pushed = cx.accessible(.{
             .layout_id = layout_id,
-            .role = .textbox,
+            .role = .textarea,
             .name = self.accessible_name orelse self.placeholder,
             .description = self.accessible_description,
-            .value = a11y_value,
         });
         defer if (a11y_pushed) cx.accessibleEnd();
 
         cx.render(ui.box(.{ .fill_width = self.fill_width }, .{
-            ui.input(self.id, .{
+            ui.textArea(self.id, .{
                 .placeholder = self.placeholder,
-                .secure = self.secure,
-                .disabled = self.disabled,
-                .max_bytes = self.max_bytes,
                 .bind = self.bind,
                 .width = self.width,
                 .height = self.height,
+                .rows = self.rows,
                 .fill_width = self.fill_width,
                 .padding = self.padding,
                 .background = background,
@@ -114,6 +107,9 @@ pub const TextInput = struct {
                 .placeholder_color = placeholder_color,
                 .selection_color = selection_color,
                 .cursor_color = cursor_color,
+                .scrollbar_width = self.scrollbar_width,
+                .scrollbar_track_color = scrollbar_track_color,
+                .scrollbar_thumb_color = scrollbar_thumb_color,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
                 .on_blur_handler = self.on_blur,

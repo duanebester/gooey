@@ -25,11 +25,12 @@
 //! ```
 
 const std = @import("std");
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const OnSelectHandler = @import("../context/handler.zig").OnSelectHandler;
+const OnSelectHandler = gooey.context.OnSelectHandler;
 
 /// A single tab button. Can be used standalone or composed into a tab bar.
 pub const Tab = struct {

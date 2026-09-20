@@ -37,11 +37,12 @@
 //! `handlers` array silently leaves the trailing radios dead.
 
 const std = @import("std");
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const OnSelectHandler = @import("../context/handler.zig").OnSelectHandler;
+const OnSelectHandler = gooey.context.OnSelectHandler;
 
 /// A single radio button. Can be used standalone or composed into groups.
 pub const RadioButton = struct {

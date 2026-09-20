@@ -12,13 +12,14 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
-const Svg = gooey.components.Svg;
-const Icons = gooey.components.Icons;
-const Image = gooey.components.Image;
+const Button = components.Button;
+const Svg = components.Svg;
+const Icons = components.Icons;
+const Image = components.Image;
 
 // =============================================================================
 // Application State

@@ -25,14 +25,15 @@
 //! }
 //! ```
 
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
 const ShadowConfig = ui.ShadowConfig;
-const layout_mod = @import("../layout/layout.zig");
+const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
-const animation_mod = @import("../animation/mod.zig");
+const animation_mod = gooey.animation;
 const Easing = animation_mod.Easing;
 const AnimationHandle = animation_mod.AnimationHandle;
 

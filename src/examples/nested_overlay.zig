@@ -5,6 +5,7 @@
 //! replace inherited values, the modal paints over the dropdown instead.
 
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const std = @import("std");
 
 pub const std_options = gooey.std_options;
@@ -12,8 +13,8 @@ pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Modal = gooey.components.Modal;
-const Select = gooey.components.Select;
+const Modal = components.Modal;
+const Select = components.Select;
 
 const options = [_][]const u8{ "Alpha", "Bravo", "Charlie" };
 

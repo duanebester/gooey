@@ -8,18 +8,19 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
 const TreeListState = gooey.widgets.TreeListState;
 const TreeEntry = gooey.widgets.TreeEntry;
-const Button = gooey.components.Button;
+const Button = components.Button;
 
 const ui = gooey.ui;
 
-const Svg = gooey.components.Svg;
-const Icons = gooey.components.Icons;
+const Svg = components.Svg;
+const Icons = components.Icons;
 
 // =============================================================================
 // Constants

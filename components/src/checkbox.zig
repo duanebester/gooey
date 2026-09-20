@@ -6,7 +6,8 @@
 //! Set explicit colors to override theme defaults.
 
 const std = @import("std");
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const Box = ui.Box;

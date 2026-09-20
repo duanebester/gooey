@@ -40,16 +40,17 @@
 //! ```
 
 const std = @import("std");
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const layout_mod = @import("../layout/layout.zig");
+const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
 const Svg = @import("svg.zig").Svg;
 const Icons = @import("svg.zig").Icons;
 
-const handler_mod = @import("../context/handler.zig");
+const handler_mod = gooey.context;
 const OnSelectHandler = handler_mod.OnSelectHandler;
 
 /// Hard cap on option count to prevent runaway loops.

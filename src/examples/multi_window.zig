@@ -9,11 +9,12 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = ui.Color;
-const Button = gooey.components.Button;
+const Button = components.Button;
 const MultiWindowApp = gooey.runtime.MultiWindowApp;
 const WindowHandle = gooey.runtime.WindowHandle;
 

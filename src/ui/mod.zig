@@ -1,15 +1,16 @@
 //! UI Primitives and Builder
 //!
 //! Low-level primitives for the UI system. For most uses, prefer
-//! the component wrappers in `gooey.components`:
+//! the component wrappers in the sibling `gooey-components` package:
 //!
 //! ```zig
 //! const gooey = @import("gooey");
+//! const components = @import("gooey-components");
 //!
 //! // Components (preferred)
-//! gooey.components.Button{ .label = "Click", .on_click_handler = cx.update(State.onClick) }
-//! gooey.components.Checkbox{ .id = "agree", .selected = state.agreed, .on_click_handler = cx.update(State.toggle) }
-//! gooey.components.TextInput{ .id = "name", .placeholder = "Enter name", .bind = &state.name }
+//! components.Button{ .label = "Click", .on_click_handler = cx.update(State.onClick) }
+//! components.Checkbox{ .selected = state.agreed, .on_click_handler = cx.update(State.toggle) }
+//! components.TextInput{ .id = "name", .placeholder = "Enter name", .bind = &state.name }
 //!
 //! // Primitives (for text, spacers, etc.)
 //! gooey.ui.text("Hello", .{})

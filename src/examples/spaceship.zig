@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
 pub const std_options = gooey.std_options;
@@ -27,10 +28,10 @@ pub const std_options = gooey.std_options;
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
-const TextInput = gooey.components.TextInput;
+const Button = components.Button;
+const TextInput = components.TextInput;
 const Easing = gooey.animation.Easing;
-const Svg = gooey.components.Svg;
+const Svg = components.Svg;
 
 // =============================================================================
 // Custom Spaceship SVG Icons (24x24 viewbox)

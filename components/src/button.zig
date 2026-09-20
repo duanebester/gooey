@@ -8,7 +8,8 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const Box = ui.Box;

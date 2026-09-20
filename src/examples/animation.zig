@@ -6,11 +6,12 @@
 //! - `cx.animations.staggerComptime` — cascading list entry animations
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = ui.Color;
 const Easing = gooey.animation.Easing;
-const Button = gooey.components.Button;
+const Button = components.Button;
 
 // =============================================================================
 // App State

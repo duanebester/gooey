@@ -7,13 +7,14 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 
 const Cx = gooey.Cx;
 const Color = gooey.Color;
 const UniformListState = gooey.widgets.UniformListState;
 const ScrollStrategy = gooey.widgets.ScrollStrategy;
-const Button = gooey.components.Button;
+const Button = components.Button;
 
 const ui = gooey.ui;
 

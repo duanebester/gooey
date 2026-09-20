@@ -13,7 +13,7 @@
 //! ## Usage
 //!
 //! ```zig
-//! gooey.components.ValidatedTextInput{
+//! components.ValidatedTextInput{
 //!     .id = "email",
 //!     .label = "Email Address",
 //!     .required_indicator = true,
@@ -24,14 +24,15 @@
 //! ```
 
 const std = @import("std");
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const layout_mod = @import("../layout/layout.zig");
+const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
-const a11y = @import("../accessibility/accessibility.zig");
-const validation = @import("../validation.zig");
+const a11y = gooey.accessibility.types;
+const validation = gooey.validation;
 
 pub const ValidatedTextInput = struct {
     // =========================================================================
@@ -532,4 +533,9 @@ test "generateErrorId handles max-length IDs" {
     // Should be exactly 64 chars (58 + 6 for "-error")
     try std.testing.expectEqual(@as(usize, 64), len);
     try std.testing.expect(std.mem.endsWith(u8, error_id[0..len], "-error"));
+}
+
+test "default live region uses public accessibility type" {
+    const input = ValidatedTextInput{ .id = "email" };
+    try std.testing.expectEqual(a11y.Live.polite, input.error_live_region);
 }

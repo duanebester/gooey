@@ -18,6 +18,7 @@
 const std = @import("std");
 
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 
 /// Route std.log through the console on WASM, default logFn on native.
@@ -25,9 +26,9 @@ pub const std_options = gooey.std_options;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
-const Checkbox = gooey.components.Checkbox;
-const TextInput = gooey.components.TextInput;
+const Button = components.Button;
+const Checkbox = components.Checkbox;
+const TextInput = components.TextInput;
 
 // =============================================================================
 // Limits (CLAUDE.md §4 — a hard cap on everything)
