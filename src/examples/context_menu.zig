@@ -13,6 +13,7 @@
 //! before opening — clicks on the header or status row are ignored.
 
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const std = @import("std");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
@@ -21,8 +22,8 @@ const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 
-const ContextMenu = gooey.components.ContextMenu;
-const Lucide = gooey.components.Lucide;
+const ContextMenu = components.ContextMenu;
+const Lucide = components.Lucide;
 
 /// Stable layout id for the right-clickable panel. `Canvas.render` stamps it
 /// onto the box and `onEvent` hashes the same string to hit-test the cursor,

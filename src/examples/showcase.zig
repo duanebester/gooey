@@ -13,6 +13,7 @@
 const std = @import("std");
 
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
@@ -23,20 +24,20 @@ const Window = gooey.Window;
 const Theme = gooey.ui.Theme;
 
 // Components
-const Button = gooey.components.Button;
-const Checkbox = gooey.components.Checkbox;
-const TextInput = gooey.components.TextInput;
-const TextArea = gooey.components.TextArea;
-const Tab = gooey.components.Tab;
-const RadioButton = gooey.components.RadioButton;
-const RadioGroup = gooey.components.RadioGroup;
-const ProgressBar = gooey.components.ProgressBar;
-const Svg = gooey.components.Svg;
-const Icons = gooey.components.Icons;
-const Lucide = gooey.components.Lucide;
-const Select = gooey.components.Select;
-const Tooltip = gooey.components.Tooltip;
-const Modal = gooey.components.Modal;
+const Button = components.Button;
+const Checkbox = components.Checkbox;
+const TextInput = components.TextInput;
+const TextArea = components.TextArea;
+const Tab = components.Tab;
+const RadioButton = components.RadioButton;
+const RadioGroup = components.RadioGroup;
+const ProgressBar = components.ProgressBar;
+const Svg = components.Svg;
+const Icons = components.Icons;
+const Lucide = components.Lucide;
+const Select = components.Select;
+const Tooltip = components.Tooltip;
+const Modal = components.Modal;
 const Color = gooey.Color;
 
 // =============================================================================
@@ -386,7 +387,7 @@ const NavLogo = struct {
             // Image component handles WASM async loading automatically!
             // - On native: loads from file system directly
             // - On WASM: fetches via browser, shows placeholder while loading
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/gooey-logo-final.png",
                 .width = 32,
                 .height = 20,

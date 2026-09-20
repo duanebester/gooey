@@ -2,7 +2,7 @@
 //!
 //! Demonstrates form validation patterns in Gooey:
 //! - Using `gooey.validation` for pure validation functions
-//! - Using `gooey.components.ValidatedTextInput` for convenient form fields
+//! - Using `gooey-components.ValidatedTextInput` for convenient form fields
 //! - Per-field touched tracking with `on_blur_handler`
 //! - Real-time validation display
 //! - Form submission with full validation
@@ -21,12 +21,13 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
-const TextInput = gooey.components.TextInput;
-const ValidatedTextInput = gooey.components.ValidatedTextInput;
+const Button = components.Button;
+const TextInput = components.TextInput;
+const ValidatedTextInput = components.ValidatedTextInput;
 const validation = gooey.validation;
 
 // =============================================================================

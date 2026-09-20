@@ -5,7 +5,8 @@
 //! Colors default to null, which means "use the current theme".
 //! Set explicit colors to override theme defaults.
 
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 

@@ -5,8 +5,7 @@
 //!      satisfy ~all uses across `src/examples/*.zig` and are the
 //!      only names guaranteed to live at `gooey.X`.
 //!   2. Everything else lives under a namespace
-//!      (`gooey.core.Rect`, `gooey.components.Button`,
-//!      `gooey.animation.lerp`, \u2026). A namespace is the
+//!      (`gooey.core.Rect`, `gooey.animation.lerp`, \u2026). A namespace is the
 //!      source-of-truth home; the curated-core flat names are
 //!      re-exports for ergonomics only.
 //!
@@ -114,8 +113,8 @@ else
 // =============================================================================
 //
 // Each namespace below is the canonical home for the types underneath
-// it. Examples reach for `gooey.components.Button`, `gooey.core.Rect`,
-// `gooey.animation.lerp`, etc. PR 9 removed the duplicate flat aliases
+// it. Examples reach for `gooey.core.Rect`, `gooey.animation.lerp`, etc.
+// PR 9 removed the duplicate flat aliases
 // (`gooey.Button`, `gooey.Rect`, \u2026) that lived next to these
 // namespaces.
 
@@ -147,11 +146,6 @@ pub const text = @import("text/mod.zig");
 
 /// Declarative UI builder + theme + style types.
 pub const ui = @import("ui/mod.zig");
-
-/// High-level UI components: `Button`, `TextInput`, `Modal`, `Svg`,
-/// `Image`, `Tooltip`, \u2026 (the previously flat `gooey.Button` etc. land
-/// here in PR 9).
-pub const components = @import("components/mod.zig");
 
 /// Stateful widget engines: virtual / uniform / tree lists, data table,
 /// scroll container.
@@ -251,7 +245,6 @@ test {
     comptime {
         // Borrow the top-level namespace aliases without shadowing them.
         const anim = animation;
-        const comp = components;
         const wid = widgets;
         const u = ui;
         const lay = layout;
@@ -279,29 +272,6 @@ test {
         _ = anim.AnimationStore;
         _ = anim.Easing;
         _ = anim.Duration;
-
-        // Components.
-        _ = comp.Button;
-        _ = comp.Checkbox;
-        _ = comp.TextInput;
-        _ = comp.TextArea;
-        _ = comp.CodeEditor;
-        _ = comp.ProgressBar;
-        _ = comp.RadioGroup;
-        _ = comp.RadioButton;
-        _ = comp.Tab;
-        _ = comp.TabBar;
-        _ = comp.Svg;
-        _ = comp.Icons;
-        _ = comp.Lucide;
-        _ = comp.Select;
-        _ = comp.Image;
-        _ = comp.AspectRatio;
-        _ = comp.Tooltip;
-        _ = comp.Modal;
-        _ = comp.ContextMenu;
-        _ = comp.MenuItem;
-        _ = comp.ValidatedTextInput;
 
         // Widgets.
         _ = wid.UniformListState;

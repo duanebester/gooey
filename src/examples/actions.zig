@@ -1,7 +1,8 @@
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const ui = gooey.ui;
-const Button = gooey.components.Button;
+const Button = components.Button;
 const Cx = gooey.Cx;
 
 // Define action types

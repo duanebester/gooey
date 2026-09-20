@@ -18,13 +18,14 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
-const Checkbox = gooey.components.Checkbox;
-const TextInput = gooey.components.TextInput;
-const Select = gooey.components.Select;
+const Button = components.Button;
+const Checkbox = components.Checkbox;
+const TextInput = components.TextInput;
+const Select = components.Select;
 
 // =============================================================================
 // Form State

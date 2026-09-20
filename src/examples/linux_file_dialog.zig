@@ -7,10 +7,11 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const file_dialog = gooey.file_dialog;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
+const Button = components.Button;
 
 // =============================================================================
 // Application State

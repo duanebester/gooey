@@ -1,0 +1,8 @@
+.{
+    .name = .gooey_components,
+    .version = "0.1.0",
+    .fingerprint = 0x9ba4b626245056d4,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{ "README.md", "build.zig", "build.zig.zon", "src" },
+}

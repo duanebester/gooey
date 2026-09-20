@@ -4,6 +4,7 @@
 //! Demonstrates application-controlled open state and index-based selection.
 
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const std = @import("std");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
@@ -12,7 +13,7 @@ const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 
-const Select = gooey.components.Select;
+const Select = components.Select;
 
 // =============================================================================
 // State

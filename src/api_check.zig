@@ -6,8 +6,8 @@
 //! that's what `std.testing.refAllDecls(@This())` in `root.zig` already
 //! does at test-discovery time. The point is to call out the small,
 //! deliberate surface that examples and downstream apps reach for, so
-//! that an accidental rename of e.g. `gooey.Cx` or
-//! `gooey.components.Button` fails the **`zig build test`** step with a
+//! that an accidental rename of e.g. `gooey.Cx` fails the
+//! **`zig build test`** step with a
 //! file pointing at *this* file rather than at every example.
 //!
 //! ## Three pin tiers
@@ -17,7 +17,7 @@
 //!    `std_options`]). These are the names every example's header
 //!    imports unprefixed.
 //! 2. **Namespace anchors.** `gooey.<ns>` exists and is a struct/file —
-//!    `core`, `ui`, `components`, `widgets`, `scene`, `layout`,
+//!    `core`, `ui`, `widgets`, `scene`, `layout`,
 //!    `animation`, `context`, `input`, `runtime`, `platform`, `image`,
 //!    `svg`, `text`, `debug`, `validation`, `accessibility`, `ai`,
 //!    `file_dialog`, `app`. The anchor *promise* is just that the
@@ -55,7 +55,6 @@
 //! at the deleted name's pin line. This is the same shape as
 //! `core/interface_verify.zig`'s checks for platform backends.
 
-const std = @import("std");
 const gooey = @import("root.zig");
 
 // =============================================================================
@@ -116,7 +115,6 @@ fn pinNamespaces() void {
         _ = gooey.layout;
         _ = gooey.text;
         _ = gooey.ui;
-        _ = gooey.components;
         _ = gooey.widgets;
         _ = gooey.platform;
         _ = gooey.runtime;
@@ -266,36 +264,6 @@ fn pinTier1NamespacedUi() void {
     }
 }
 
-/// `gooey.components` — every high-level component reached for by
-/// example code. This is the largest Tier-3 block because the
-/// examples-as-docs philosophy means most components have at least
-/// one demo. Pin all of them so the doc set stays compilable.
-fn pinTier1NamespacedComponents() void {
-    comptime {
-        _ = gooey.components.Button;
-        _ = gooey.components.Checkbox;
-        _ = gooey.components.TextInput;
-        _ = gooey.components.TextArea;
-        _ = gooey.components.CodeEditor;
-        _ = gooey.components.ProgressBar;
-        _ = gooey.components.RadioGroup;
-        _ = gooey.components.RadioButton;
-        _ = gooey.components.Tab;
-        _ = gooey.components.TabBar;
-        _ = gooey.components.Svg;
-        _ = gooey.components.Icons;
-        _ = gooey.components.Lucide;
-        _ = gooey.components.Select;
-        _ = gooey.components.Image;
-        _ = gooey.components.AspectRatio;
-        _ = gooey.components.Tooltip;
-        _ = gooey.components.Modal;
-        _ = gooey.components.ContextMenu;
-        _ = gooey.components.MenuItem;
-        _ = gooey.components.ValidatedTextInput;
-    }
-}
-
 /// `gooey.widgets` — stateful widget engines. Each is reached for by
 /// list / table / scroll examples to size the state struct
 /// explicitly. Helper enum / range types (`ScrollStrategy`,
@@ -421,7 +389,6 @@ test "tier 1 public API surface compiles" {
         pinTier1NamespacedLayout();
         pinTier1NamespacedText();
         pinTier1NamespacedUi();
-        pinTier1NamespacedComponents();
         pinTier1NamespacedWidgets();
         pinTier1NamespacedPlatformAndRuntime();
         pinTier1NamespacedAssets();
@@ -429,24 +396,4 @@ test "tier 1 public API surface compiles" {
 
         pinCxSubNamespaces();
     }
-}
-
-// Compile representative declarations used by the README and accessibility
-// guide. Unlike the declaration pin list above, these literals verify the
-// canonical namespace and the documented required fields together.
-test "promoted documentation API snippets compile" {
-    const Button = gooey.components.Button;
-    const Checkbox = gooey.components.Checkbox;
-    const TextInput = gooey.components.TextInput;
-
-    const button = Button{ .label = "Save" };
-    const checkbox = Checkbox{ .selected = false, .label = "Remember me" };
-    const text_input = TextInput{ .id = "email", .placeholder = "Email" };
-
-    std.debug.assert(button.label.len > 0);
-    std.debug.assert(text_input.id.len > 0);
-    _ = checkbox;
-    _ = gooey.ui.Theme.light;
-    _ = gooey.components.Image{ .src = "logo.png" };
-    _ = gooey.components.Svg{ .path = "M0 0" };
 }

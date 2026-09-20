@@ -6,11 +6,12 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Svg = gooey.components.Svg;
-const Lucide = gooey.components.Lucide;
+const Svg = components.Svg;
+const Lucide = components.Lucide;
 const UniformListState = gooey.widgets.UniformListState;
 
 // =============================================================================

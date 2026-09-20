@@ -1,5 +1,6 @@
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const core = @import("core.zig");
 
 pub const control_id_bytes_max = core.key_bytes_max * 2 + 1;
@@ -205,7 +206,7 @@ pub const Renderer = struct {
         const action = props.action orelse return error.ButtonMissingAction;
         if (!catalog.permits(action)) return error.UnknownAction;
         bindAction(self, artifact, revision, node_index, candidate_index, action);
-        cx.render(gooey.components.Button{
+        cx.render(components.Button{
             .id = id,
             .label = props.label,
             .on_click_handler = actionHandler(&artifact.action_bindings[candidate_index]),
@@ -219,7 +220,7 @@ pub const Renderer = struct {
         const state_text = try state.text(state_index);
         try syncInputScratch(scratch, state_index, state_text);
         bindValue(self, artifact, state, scratch, revision, node_index, candidate_index, state_index);
-        cx.render(gooey.components.TextInput{
+        cx.render(components.TextInput{
             .id = id,
             .placeholder = props.placeholder,
             .disabled = props.disabled,
@@ -233,7 +234,7 @@ pub const Renderer = struct {
         const state_index = state.find(props.state_id) orelse return error.UnknownStateId;
         if (state.entries[state_index].value != .boolean) return error.WrongStateType;
         bindValue(self, artifact, state, null, revision, node_index, candidate_index, state_index);
-        cx.render(gooey.components.Checkbox{
+        cx.render(components.Checkbox{
             .id = id,
             .selected = state.entries[state_index].value.boolean,
             .label = props.label,

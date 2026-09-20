@@ -1,6 +1,6 @@
 //! Hot Reload Watcher
 //!
-//! Watches the src directory for .zig file changes and automatically
+//! Watches bounded source roots for .zig file changes and automatically
 //! rebuilds and restarts the application.
 //!
 //! Usage: zig build hot
@@ -57,6 +57,8 @@ fn sleep(ns: u64) void {
 
 const poll_interval_ms = 300;
 const debounce_ms = 100;
+const argument_count_max: usize = 128;
+const watch_root_count_max: usize = 8;
 
 /// Maximum number of files to track (per CLAUDE.md: "put a limit on everything")
 /// Prevents unbounded memory growth if pointed at a large directory tree.
@@ -77,27 +79,28 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-
-    if (args.len < 3) {
-        std.debug.print("Usage: {s} <watch_dir> <build_command...>\n", .{args[0]});
-        std.debug.print("Example: {s} src zig build run\n", .{args[0]});
+    std.debug.assert(args.len > 0);
+    const arguments = parseArguments(args) orelse {
+        std.debug.print("Usage: {s} <watch_dirs...> -- <build_command...>\n", .{args[0]});
+        std.debug.print("Example: {s} src components/src -- zig build run\n", .{args[0]});
         return;
+    };
+
+    std.debug.print("\n", .{});
+    std.debug.print("🔥 Gooey Hot Reload\n", .{});
+    for (arguments.watch_paths) |watch_path| {
+        std.debug.print("   Watching: {s}\n", .{watch_path});
     }
-
-    const watch_path = args[1];
-    const build_cmd = args[2..];
-
-    std.debug.print("\n", .{});
-    std.debug.print("┌─────────────────────────────────────┐\n", .{});
-    std.debug.print("│  🔥 Gooey Hot Reload                │\n", .{});
-    std.debug.print("├─────────────────────────────────────┤\n", .{});
-    std.debug.print("│  Watching: {s:<24}│\n", .{watch_path});
-    std.debug.print("│  Max files: {d:<22}│\n", .{MAX_WATCHED_FILES});
-    std.debug.print("│  Press Ctrl+C to stop               │\n", .{});
-    std.debug.print("└─────────────────────────────────────┘\n", .{});
+    std.debug.print("   Max files: {d}\n", .{MAX_WATCHED_FILES});
+    std.debug.print("   Press Ctrl+C to stop\n", .{});
     std.debug.print("\n", .{});
 
-    var watcher = Watcher.init(allocator, init.io, watch_path, build_cmd);
+    var watcher = Watcher.init(
+        allocator,
+        init.io,
+        arguments.watch_paths,
+        arguments.build_command,
+    );
     defer watcher.deinit();
 
     // Set up global pointer for signal handler
@@ -109,7 +112,7 @@ pub fn main(init: std.process.Init) !void {
     // Install signal handlers for clean shutdown
     const handler = posix.Sigaction{
         .handler = .{ .handler = handleSignal },
-        .mask = 0,
+        .mask = posix.sigemptyset(),
         .flags = 0,
     };
     _ = posix.sigaction(posix.SIG.INT, &handler, null);
@@ -118,6 +121,35 @@ pub fn main(init: std.process.Init) !void {
     watcher.run();
 
     std.debug.print("\n👋 Goodbye!\n", .{});
+}
+
+const Arguments = struct {
+    watch_paths: []const []const u8,
+    build_command: []const []const u8,
+};
+
+fn parseArguments(args: []const []const u8) ?Arguments {
+    if (args.len < 4) return null;
+    if (args.len > argument_count_max) return null;
+
+    var separator_index: ?usize = null;
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        if (std.mem.eql(u8, args[index], "--")) {
+            separator_index = index;
+            break;
+        }
+    }
+    const separator = separator_index orelse return null;
+    if (separator <= 1) return null;
+    if (separator + 1 >= args.len) return null;
+    if (separator - 1 > watch_root_count_max) return null;
+
+    const watch_paths = args[1..separator];
+    const build_command = args[separator + 1 ..];
+    std.debug.assert(watch_paths.len > 0);
+    std.debug.assert(build_command.len > 0);
+    return .{ .watch_paths = watch_paths, .build_command = build_command };
 }
 
 fn handleSignal(sig: posix.SIG) callconv(.c) void {
@@ -140,18 +172,26 @@ fn handleSignal(sig: posix.SIG) callconv(.c) void {
 const Watcher = struct {
     allocator: std.mem.Allocator,
     io: Io,
-    watch_path: []const u8,
+    watch_paths: []const []const u8,
     build_cmd: []const []const u8,
     file_times: std.StringHashMap(i96),
     child: ?std.process.Child,
     last_change: i64,
     max_files_warning_shown: bool,
 
-    fn init(allocator: std.mem.Allocator, io: Io, watch_path: []const u8, build_cmd: []const []const u8) Watcher {
+    fn init(
+        allocator: std.mem.Allocator,
+        io: Io,
+        watch_paths: []const []const u8,
+        build_cmd: []const []const u8,
+    ) Watcher {
+        std.debug.assert(watch_paths.len > 0);
+        std.debug.assert(watch_paths.len <= watch_root_count_max);
+        std.debug.assert(build_cmd.len > 0);
         return .{
             .allocator = allocator,
             .io = io,
-            .watch_path = watch_path,
+            .watch_paths = watch_paths,
             .build_cmd = build_cmd,
             .file_times = std.StringHashMap(i96).init(allocator),
             .child = null,
@@ -207,9 +247,21 @@ const Watcher = struct {
     }
 
     fn scanForChanges(self: *Watcher) !bool {
+        std.debug.assert(self.watch_paths.len > 0);
+        std.debug.assert(self.watch_paths.len <= watch_root_count_max);
         var changed = false;
-        var dir = Dir.cwd().openDir(self.io, self.watch_path, .{ .iterate = true }) catch |err| {
-            std.debug.print("⚠️  Failed to open {s}: {}\n", .{ self.watch_path, err });
+        for (self.watch_paths) |watch_path| {
+            if (try self.scanRoot(watch_path)) changed = true;
+        }
+        return changed;
+    }
+
+    fn scanRoot(self: *Watcher, watch_path: []const u8) !bool {
+        std.debug.assert(watch_path.len > 0);
+        std.debug.assert(self.watch_paths.len <= watch_root_count_max);
+        var changed = false;
+        var dir = Dir.cwd().openDir(self.io, watch_path, .{ .iterate = true }) catch |err| {
+            std.debug.print("⚠️  Failed to open {s}: {}\n", .{ watch_path, err });
             return false;
         };
         defer dir.close(self.io);
@@ -230,7 +282,11 @@ const Watcher = struct {
                 break;
             }
 
-            const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.watch_path, entry.path });
+            const full_path = try std.fmt.allocPrint(
+                self.allocator,
+                "{s}/{s}",
+                .{ watch_path, entry.path },
+            );
 
             const stat = Dir.cwd().statFile(self.io, full_path, .{}) catch |err| {
                 std.debug.print("⚠️  Failed to stat {s}: {}\n", .{ full_path, err });
@@ -301,3 +357,35 @@ const Watcher = struct {
         }
     }
 };
+
+test "argument parser separates bounded watch roots from the command" {
+    const args = [_][]const u8{
+        "watcher",
+        "src",
+        "components/src",
+        "--",
+        "zig",
+        "build",
+        "run",
+    };
+    const parsed = parseArguments(&args).?;
+    try std.testing.expectEqual(@as(usize, 2), parsed.watch_paths.len);
+    try std.testing.expectEqualStrings("components/src", parsed.watch_paths[1]);
+    try std.testing.expectEqualStrings("zig", parsed.build_command[0]);
+}
+
+test "argument parser accepts the root limit and rejects one past it" {
+    var at_limit: [watch_root_count_max + 3][]const u8 = undefined;
+    at_limit[0] = "watcher";
+    for (at_limit[1 .. watch_root_count_max + 1]) |*root| root.* = "src";
+    at_limit[watch_root_count_max + 1] = "--";
+    at_limit[watch_root_count_max + 2] = "zig";
+    try std.testing.expect(parseArguments(&at_limit) != null);
+
+    var over_limit: [watch_root_count_max + 4][]const u8 = undefined;
+    over_limit[0] = "watcher";
+    for (over_limit[1 .. watch_root_count_max + 2]) |*root| root.* = "src";
+    over_limit[watch_root_count_max + 2] = "--";
+    over_limit[watch_root_count_max + 3] = "zig";
+    try std.testing.expect(parseArguments(&over_limit) == null);
+}

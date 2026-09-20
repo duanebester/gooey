@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 const ui = gooey.ui;
 
 const Color = gooey.Color;
@@ -106,7 +107,7 @@ const SizeItem = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = self.size,
             },
@@ -118,7 +119,7 @@ const SizeItem = struct {
 const CustomSizeItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 200,
                 .height = 80,
@@ -165,7 +166,7 @@ const FitModesRow = struct {
 const FitContainItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
                 .height = 100,
@@ -179,7 +180,7 @@ const FitContainItem = struct {
 const FitCoverItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
                 .height = 100,
@@ -193,7 +194,7 @@ const FitCoverItem = struct {
 const FitFillItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
                 .height = 100,
@@ -207,7 +208,7 @@ const FitFillItem = struct {
 const FitNoneItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .width = 100,
                 .height = 100,
@@ -255,7 +256,7 @@ const CornerRadiusRow = struct {
 const RadiusNoneItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
             },
@@ -267,7 +268,7 @@ const RadiusNoneItem = struct {
 const RadiusSmallItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
@@ -280,7 +281,7 @@ const RadiusSmallItem = struct {
 const RadiusLargeItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 20,
@@ -293,7 +294,7 @@ const RadiusLargeItem = struct {
 const RadiusCircleItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .rounded = true,
@@ -342,7 +343,7 @@ const EffectsRow = struct {
 const EffectNormalItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
@@ -355,7 +356,7 @@ const EffectNormalItem = struct {
 const EffectTintItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
@@ -369,7 +370,7 @@ const EffectTintItem = struct {
 const EffectGrayscaleItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
@@ -383,7 +384,7 @@ const EffectGrayscaleItem = struct {
 const EffectPartialGrayItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
@@ -397,7 +398,7 @@ const EffectPartialGrayItem = struct {
 const EffectOpacityItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .corner_radius = 8,
@@ -411,7 +412,7 @@ const EffectOpacityItem = struct {
 const EffectCombinedItem = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            gooey.components.Image{
+            components.Image{
                 .src = "assets/ziglang_logo.png",
                 .size = 80,
                 .rounded = true,

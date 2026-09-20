@@ -11,6 +11,7 @@
 const std = @import("std");
 
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 
 /// WASM-compatible logging - redirect std.log to console.log via JS imports
 pub const std_options = gooey.std_options;
@@ -20,9 +21,9 @@ const platform = gooey.platform;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Button = gooey.components.Button;
-const Checkbox = gooey.components.Checkbox;
-const TextInput = gooey.components.TextInput;
+const Button = components.Button;
+const Checkbox = components.Checkbox;
+const TextInput = components.TextInput;
 
 /// Colorful flowing plasma effect (MSL - macOS)
 pub const plasma_shader_msl =

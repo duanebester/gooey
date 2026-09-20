@@ -13,31 +13,32 @@
 //!
 //! ## Usage
 //! ```zig
-//! const gooey = @import("gooey");
+//! const components = @import("gooey-components");
 //!
 //! // Simple image from path (works on native AND WASM)
-//! gooey.components.Image{ .src = "assets/logo.png" }
+//! components.Image{ .src = "assets/logo.png" }
 //!
 //! // With explicit sizing
-//! gooey.components.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
+//! components.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
 //!
 //! // Rounded avatar
-//! gooey.components.Image{ .src = "avatar.png", .size = 48, .rounded = true }
+//! components.Image{ .src = "avatar.png", .size = 48, .rounded = true }
 //!
 //! // Cover image (fills container, may crop)
-//! gooey.components.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
+//! components.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
 //!
 //! // Grayscale + tinted
-//! gooey.components.Image{ .src = "icon.png", .grayscale = 1.0, .tint = gooey.Color.blue }
+//! components.Image{ .src = "icon.png", .grayscale = 1.0, .tint = gooey.Color.blue }
 //!
 //! // With placeholder color (shown while loading on WASM)
-//! gooey.components.Image{ .src = "assets/logo.png", .size = 28, .placeholder = theme.surface }
+//! components.Image{ .src = "assets/logo.png", .size = 28, .placeholder = theme.surface }
 //! ```
 
 const std = @import("std");
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
-const layout_mod = @import("../layout/layout.zig");
+const layout_mod = gooey.layout;
 const CornerRadius = layout_mod.CornerRadius;
 
 pub const Image = struct {

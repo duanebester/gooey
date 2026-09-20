@@ -1,5 +1,12 @@
 const std = @import("std");
 
+const ExampleDefinition = struct {
+    name: []const u8,
+    source: []const u8,
+    metal_hud: bool = false,
+    use_llvm: ?bool = null,
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -99,6 +106,17 @@ pub fn build(b: *std.Build) void {
         mod.link_libc = true;
 
         // =========================================================================
+        // Gooey Components Module
+        // =========================================================================
+
+        const components_mod = b.addModule("gooey-components", .{
+            .root_source_file = b.path("components/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        components_mod.addImport("gooey", mod);
+
+        // =========================================================================
         // Gooey Charts Module
         // =========================================================================
 
@@ -119,6 +137,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         genui_mod.addImport("gooey", mod);
+        genui_mod.addImport("gooey-components", components_mod);
 
         // =========================================================================
         // Main Demo (Showcase)
@@ -132,6 +151,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey-components", .module = components_mod },
                     .{ .name = "objc", .module = objc_mod },
                 },
             }),
@@ -154,40 +174,55 @@ pub fn build(b: *std.Build) void {
         // Native Mac Examples
         // =========================================================================
 
-        addNativeExample(b, mod, objc_mod, target, optimize, "pomodoro", "src/examples/pomodoro.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "animation", "src/examples/animation.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "spaceship", "src/examples/spaceship.zig", true);
-        addNativeExample(b, mod, objc_mod, target, optimize, "glass", "src/examples/glass.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "window-features", "src/examples/window_features.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "counter", "src/examples/counter.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "todo", "src/examples/todo.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "layout", "src/examples/layout.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "select", "src/examples/select.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "nested-overlay", "src/examples/nested_overlay.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "dynamic-counters", "src/examples/dynamic_counters.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "actions", "src/examples/actions.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "text-debug", "src/examples/text_debug_example.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "images", "src/examples/images.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "tooltip", "src/examples/tooltip.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "modal", "src/examples/modal.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "context-menu", "src/examples/context_menu.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "file-dialog", "src/examples/file_dialog.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "uniform-list", "src/examples/uniform_list_example.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "virtual-list", "src/examples/virtual_list_example.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "data-table", "src/examples/data_table_example.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "tree-example", "src/examples/tree_example.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "a11y-demo", "src/examples/a11y_demo.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "accessible-form", "src/examples/accessible_form.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "form-validation", "src/examples/form_validation.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "drag-drop", "src/examples/drag_drop.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "canvas-demo", "src/examples/canvas_demo.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "lucide-demo", "src/examples/lucide_demo.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "new-api-demo", "src/examples/new_api_demo.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "code-editor", "src/examples/code_editor.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "multi-window", "src/examples/multi_window.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "ai-canvas-spike", "src/examples/ai_canvas_spike.zig", false);
-        addNativeExample(b, mod, objc_mod, target, optimize, "ai-canvas", "src/examples/ai_canvas.zig", false);
-        addGenuiNativeExample(b, mod, genui_mod, objc_mod, target, optimize);
+        const native_examples = [_]ExampleDefinition{
+            .{ .name = "pomodoro", .source = "src/examples/pomodoro.zig" },
+            .{ .name = "animation", .source = "src/examples/animation.zig" },
+            .{ .name = "spaceship", .source = "src/examples/spaceship.zig", .metal_hud = true },
+            .{ .name = "glass", .source = "src/examples/glass.zig" },
+            .{ .name = "window-features", .source = "src/examples/window_features.zig" },
+            .{ .name = "counter", .source = "src/examples/counter.zig" },
+            .{ .name = "todo", .source = "src/examples/todo.zig" },
+            .{ .name = "layout", .source = "src/examples/layout.zig" },
+            .{ .name = "select", .source = "src/examples/select.zig" },
+            .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
+            .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
+            .{ .name = "actions", .source = "src/examples/actions.zig" },
+            .{ .name = "text-debug", .source = "src/examples/text_debug_example.zig" },
+            .{ .name = "images", .source = "src/examples/images.zig" },
+            .{ .name = "tooltip", .source = "src/examples/tooltip.zig" },
+            .{ .name = "modal", .source = "src/examples/modal.zig" },
+            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
+            .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
+            .{ .name = "uniform-list", .source = "src/examples/uniform_list_example.zig" },
+            .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
+            .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+            .{ .name = "tree-example", .source = "src/examples/tree_example.zig" },
+            .{ .name = "a11y-demo", .source = "src/examples/a11y_demo.zig" },
+            .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+            .{ .name = "form-validation", .source = "src/examples/form_validation.zig" },
+            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+            .{ .name = "canvas-demo", .source = "src/examples/canvas_demo.zig" },
+            .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
+            .{ .name = "new-api-demo", .source = "src/examples/new_api_demo.zig" },
+            .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+            .{ .name = "multi-window", .source = "src/examples/multi_window.zig" },
+            .{ .name = "ai-canvas-spike", .source = "src/examples/ai_canvas_spike.zig" },
+            .{ .name = "ai-canvas", .source = "src/examples/ai_canvas.zig" },
+        };
+        for (native_examples) |example| {
+            addNativeExample(
+                b,
+                mod,
+                components_mod,
+                objc_mod,
+                target,
+                optimize,
+                example.name,
+                example.source,
+                example.metal_hud,
+            );
+        }
+        addGenuiNativeExample(b, mod, components_mod, genui_mod, objc_mod, target, optimize);
 
         // =========================================================================
         // Charts Examples
@@ -206,6 +241,21 @@ pub fn build(b: *std.Build) void {
         });
         const run_mod_tests = b.addRunArtifact(mod_tests);
 
+        const components_tests = b.addTest(.{
+            .root_module = components_mod,
+        });
+        const run_components_tests = b.addRunArtifact(components_tests);
+
+        const watcher_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        const run_watcher_tests = b.addRunArtifact(watcher_tests);
+
         const exe_tests = b.addTest(.{
             .root_module = exe.root_module,
         });
@@ -222,6 +272,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey-components", .module = components_mod },
                     .{ .name = "objc", .module = objc_mod },
                 },
             }),
@@ -241,6 +292,8 @@ pub fn build(b: *std.Build) void {
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_components_tests.step);
+        test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_exe_tests.step);
         test_step.dependOn(&run_todo_example_tests.step);
         test_step.dependOn(&run_charts_tests.step);
@@ -530,10 +583,12 @@ pub fn build(b: *std.Build) void {
 
         b.installArtifact(watcher_exe);
 
-        const hot_step = b.step("hot", "Run with hot reload (watches src/ for changes)");
+        const hot_step = b.step("hot", "Run with hot reload");
 
         const watcher_cmd = b.addRunArtifact(watcher_exe);
         watcher_cmd.addArg("src");
+        watcher_cmd.addArg("components/src");
+        watcher_cmd.addArg("--");
 
         if (b.args) |args| {
             watcher_cmd.addArg("zig");
@@ -625,6 +680,17 @@ pub fn build(b: *std.Build) void {
         mod.link_libc = true;
 
         // =========================================================================
+        // Gooey Components Module
+        // =========================================================================
+
+        const components_mod = b.addModule("gooey-components", .{
+            .root_source_file = b.path("components/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        components_mod.addImport("gooey", mod);
+
+        // =========================================================================
         // Gooey Gen UI Module
         // =========================================================================
 
@@ -634,6 +700,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         genui_mod.addImport("gooey", mod);
+        genui_mod.addImport("gooey-components", components_mod);
 
         // =========================================================================
         // Linux Showcase (Main Demo)
@@ -647,6 +714,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey-components", .module = components_mod },
                 },
             }),
         });
@@ -682,32 +750,62 @@ pub fn build(b: *std.Build) void {
         // Linux Native Examples
         // =========================================================================
 
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "basic", "src/examples/linux_demo.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "text", "src/examples/linux_text_demo.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "file-dialog", "src/examples/linux_file_dialog.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "drag-drop", "src/examples/drag_drop.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "lucide-demo", "src/examples/lucide_demo.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "animation", "src/examples/animation.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "counter", "src/examples/counter.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "todo", "src/examples/todo.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "code-editor", "src/examples/code_editor.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "pomodoro", "src/examples/pomodoro.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "spaceship", "src/examples/spaceship.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "dynamic-counters", "src/examples/dynamic_counters.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "layout", "src/examples/layout.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "actions", "src/examples/actions.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "select", "src/examples/select.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "nested-overlay", "src/examples/nested_overlay.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "tooltip", "src/examples/tooltip.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "modal", "src/examples/modal.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "context-menu", "src/examples/context_menu.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "images", "src/examples/images.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "a11y-demo", "src/examples/a11y_demo.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "accessible-form", "src/examples/accessible_form.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "uniform-list", "src/examples/uniform_list_example.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "virtual-list", "src/examples/virtual_list_example.zig");
-        addLinuxExample(b, mod, target, optimize, compile_shaders_step, skip_shader_compile, "data-table", "src/examples/data_table_example.zig");
-        addLinuxGenuiExample(b, mod, genui_mod, target, optimize, compile_shaders_step, skip_shader_compile);
+        const linux_examples = [_]ExampleDefinition{
+            .{ .name = "basic", .source = "src/examples/linux_demo.zig" },
+            .{ .name = "text", .source = "src/examples/linux_text_demo.zig" },
+            .{ .name = "file-dialog", .source = "src/examples/linux_file_dialog.zig" },
+            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+            .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
+            .{ .name = "animation", .source = "src/examples/animation.zig" },
+            .{ .name = "counter", .source = "src/examples/counter.zig" },
+            .{ .name = "todo", .source = "src/examples/todo.zig" },
+            .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+            .{ .name = "pomodoro", .source = "src/examples/pomodoro.zig" },
+            .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
+            .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
+            .{ .name = "layout", .source = "src/examples/layout.zig" },
+            .{ .name = "actions", .source = "src/examples/actions.zig" },
+            .{ .name = "select", .source = "src/examples/select.zig" },
+            .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
+            .{ .name = "tooltip", .source = "src/examples/tooltip.zig" },
+            .{ .name = "modal", .source = "src/examples/modal.zig" },
+            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
+            .{ .name = "images", .source = "src/examples/images.zig" },
+            .{ .name = "a11y-demo", .source = "src/examples/a11y_demo.zig" },
+            .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+            .{
+                .name = "form-validation",
+                .source = "src/examples/form_validation.zig",
+                .use_llvm = true,
+            },
+            .{ .name = "uniform-list", .source = "src/examples/uniform_list_example.zig" },
+            .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
+            .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+        };
+        for (linux_examples) |example| {
+            addLinuxExample(
+                b,
+                mod,
+                components_mod,
+                target,
+                optimize,
+                compile_shaders_step,
+                skip_shader_compile,
+                example.name,
+                example.source,
+                example.use_llvm,
+            );
+        }
+        addLinuxGenuiExample(
+            b,
+            mod,
+            components_mod,
+            genui_mod,
+            target,
+            optimize,
+            compile_shaders_step,
+            skip_shader_compile,
+        );
 
         // =====================================================================
         // Layout Benchmarks
@@ -992,6 +1090,25 @@ pub fn build(b: *std.Build) void {
 
         const run_mod_tests = b.addRunArtifact(mod_tests);
 
+        const components_tests = b.addTest(.{
+            .root_module = components_mod,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(components_tests);
+        if (!skip_shader_compile) components_tests.step.dependOn(compile_shaders_step);
+        const run_components_tests = b.addRunArtifact(components_tests);
+
+        const watcher_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+            .use_llvm = true,
+        });
+        const run_watcher_tests = b.addRunArtifact(watcher_tests);
+
         const genui_tests = b.addTest(.{
             .root_module = genui_mod,
             .use_llvm = true,
@@ -1004,6 +1121,8 @@ pub fn build(b: *std.Build) void {
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_components_tests.step);
+        test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_genui_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
@@ -1107,6 +1226,7 @@ pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
 fn addNativeExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
     objc_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -1122,6 +1242,7 @@ fn addNativeExample(
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
                 .{ .name = "objc", .module = objc_module },
             },
         }),
@@ -1144,6 +1265,7 @@ fn addNativeExample(
 fn addGenuiNativeExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
     genui_module: *std.Build.Module,
     objc_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
@@ -1157,6 +1279,7 @@ fn addGenuiNativeExample(
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
                 .{ .name = "gooey-genui", .module = genui_module },
                 .{ .name = "objc", .module = objc_module },
             },
@@ -1376,12 +1499,20 @@ fn addLinuxTypecheckRoot(
     const compile = if (root.as_test) b.addTest(.{
         .root_module = gooey_mod,
     }) else blk: {
+        const components_mod = b.createModule(.{
+            .root_source_file = b.path("components/src/root.zig"),
+            .target = target,
+            .optimize = .Debug,
+        });
+        components_mod.addImport("gooey", gooey_mod);
+
         const root_mod = b.createModule(.{
             .root_source_file = b.path(root.source),
             .target = target,
             .optimize = .Debug,
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_mod },
+                .{ .name = "gooey-components", .module = components_mod },
             },
         });
         addLinuxTypecheckIncludes(b, root_mod, vulkan_headers);
@@ -1421,18 +1552,24 @@ fn addWasmBuilds(b: *std.Build) void {
         .optimize = .ReleaseSmall,
     });
     addWasmShaderImports(b, gooey_module);
+    const components_module = b.createModule(.{
+        .root_source_file = b.path("components/src/root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    components_module.addImport("gooey", gooey_module);
 
     std.debug.assert(wasm_target.result.cpu.arch == .wasm32);
     std.debug.assert(wasm_target.result.os.tag == .freestanding);
 
-    addWasmExample(b, gooey_module, wasm_target, .{
+    addWasmExample(b, gooey_module, components_module, wasm_target, .{
         .step_name = "wasm",
         .description = "Build showcase for web",
         .source = "src/examples/showcase.zig",
         .output_dir = "web",
         .copy_showcase_assets = true,
     });
-    addWasmExample(b, gooey_module, wasm_target, .{
+    addWasmExample(b, gooey_module, components_module, wasm_target, .{
         .step_name = "wasm-counter",
         .description = "Build counter example for web",
         .source = "src/examples/counter.zig",
@@ -1464,6 +1601,7 @@ fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
 fn addWasmExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
     wasm_target: std.Build.ResolvedTarget,
     options: struct {
         step_name: []const u8,
@@ -1480,7 +1618,10 @@ fn addWasmExample(
         .root_source_file = b.path(options.source),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
-        .imports = &.{.{ .name = "gooey", .module = gooey_module }},
+        .imports = &.{
+            .{ .name = "gooey", .module = gooey_module },
+            .{ .name = "gooey-components", .module = components_module },
+        },
     });
     const executable = b.addExecutable(.{
         .name = "app",
@@ -1515,12 +1656,14 @@ fn addWasmExample(
 fn addLinuxExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     compile_shaders_step: *std.Build.Step,
     skip_shader_compile: bool,
     name: []const u8,
     source: []const u8,
+    use_llvm: ?bool,
 ) void {
     const exe = b.addExecutable(.{
         .name = b.fmt("gooey-{s}", .{name}),
@@ -1530,8 +1673,10 @@ fn addLinuxExample(
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
             },
         }),
+        .use_llvm = use_llvm,
     });
 
     linkLinuxLibraries(exe);
@@ -1553,6 +1698,7 @@ fn addLinuxExample(
 fn addLinuxGenuiExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
     genui_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -1567,6 +1713,7 @@ fn addLinuxGenuiExample(
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
                 .{ .name = "gooey-genui", .module = genui_module },
             },
         }),

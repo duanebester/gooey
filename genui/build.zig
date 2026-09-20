@@ -4,8 +4,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Create the gooey-genui module. As with gooey-charts, consumers of this
-    // sub-package provide the "gooey" import from the parent Gooey dependency.
+    // Create the gooey-genui module. The parent Gooey build supplies the
+    // "gooey" and "gooey-components" imports so all packages share one Gooey
+    // module instance and therefore one set of public types.
     _ = b.addModule("gooey-genui", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -13,6 +14,6 @@ pub fn build(b: *std.Build) void {
     });
 
     // Tests run from Gooey's parent build, which owns platform linking and
-    // injects the gooey module required by renderer.zig.
+    // injects both modules required by renderer.zig.
     _ = b.step("test", "Run gooey-genui tests (requires parent build)");
 }

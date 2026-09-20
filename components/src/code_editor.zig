@@ -10,9 +10,9 @@
 //! ## Example
 //!
 //! ```zig
-//! const gooey = @import("gooey");
+//! const components = @import("gooey-components");
 //!
-//! gooey.components.CodeEditor{
+//! components.CodeEditor{
 //!     .id = "source",
 //!     .placeholder = "Enter code here...",
 //!     .bind = &state.source_code,
@@ -21,11 +21,12 @@
 //! }
 //! ```
 
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const HandlerRef = ui.HandlerRef;
-const layout_mod = @import("../layout/layout.zig");
+const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
 
 pub const CodeEditor = struct {

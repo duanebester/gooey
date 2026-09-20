@@ -10,24 +10,38 @@
 //!
 //! ## Usage
 //! ```zig
+//! const components = @import("gooey-components");
 //! const star_path = "M12 2l3.09 6.26L22 9.27l-5 4.87...";
 //! const wave_path = "M2 12 Q6 6 12 12 T22 12";
 //!
 //! // Simple filled icon (uses theme text color)
-//! gooey.components.Svg{ .path = star_path, .size = 24 }
+//! components.Svg{ .path = star_path, .size = 24 }
 //!
 //! // Explicit fill color
-//! gooey.components.Svg{ .path = star_path, .size = 24, .color = .gold }
+//! components.Svg{ .path = star_path, .size = 24, .color = .gold }
 //!
 //! // Stroke-only icon (no fill) - use no_fill = true for open paths like curves
-//! gooey.components.Svg{ .path = wave_path, .size = 24, .no_fill = true, .stroke_color = .white, .stroke_width = 2 }
+//! components.Svg{
+//!     .path = wave_path,
+//!     .size = 24,
+//!     .no_fill = true,
+//!     .stroke_color = .white,
+//!     .stroke_width = 2,
+//! }
 //!
 //! // Both fill and stroke
-//! gooey.components.Svg{ .path = star_path, .size = 24, .color = .red, .stroke_color = .black, .stroke_width = 1 }
+//! components.Svg{
+//!     .path = star_path,
+//!     .size = 24,
+//!     .color = .red,
+//!     .stroke_color = .black,
+//!     .stroke_width = 1,
+//! }
 //! ```
 
 const std = @import("std");
-const ui = @import("../ui/mod.zig");
+const gooey = @import("gooey");
+const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 

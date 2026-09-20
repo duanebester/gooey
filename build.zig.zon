@@ -1,6 +1,6 @@
 .{
     .name = .gooey,
-    .version = "0.2.13",
+    .version = "0.2.14",
     .fingerprint = 0xfcad6172ee59f0b8,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
@@ -8,6 +8,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "components",
         "charts",
         "genui",
     },

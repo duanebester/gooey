@@ -3,15 +3,16 @@
 //! Low-level stateful widgets that manage their own internal state
 //! (text buffers, cursor positions, scroll offsets, etc.).
 //!
-//! For most use cases, prefer the high-level components in `gooey.components`:
+//! For most uses, prefer the high-level components in `gooey-components`:
 //!
 //! ```zig
 //! const gooey = @import("gooey");
+//! const components = @import("gooey-components");
 //!
 //! // Components (preferred — declarative, themed). The user-facing
 //! // types `TextInput` / `TextArea` live in `components/`.
-//! gooey.components.TextInput{ .id = "name", .placeholder = "Enter name" }
-//! gooey.components.TextArea{ .id = "bio", .placeholder = "Enter bio" }
+//! components.TextInput{ .id = "name", .placeholder = "Enter name" }
+//! components.TextArea{ .id = "bio", .placeholder = "Enter bio" }
 //!
 //! // Engines (low-level state objects — direct buffer / cursor / IME
 //! // access). These are the heap-allocated structs that the framework
@@ -40,7 +41,7 @@ const interface_verify = @import("../core/interface_verify.zig");
 // Pre-PR-8.4b the engine lived in a `WidgetStore.text_inputs`
 // StringHashMap; PR 8.4b lifted it onto the pool keyed by
 // `(TextInputState, layout_id.id)`. The user-facing declarative
-// component is `gooey.components.TextInput` in `components/text_input.zig`.
+// component is `components.TextInput` in `components/src/text_input.zig`.
 // The two were merged under a single `TextInput` name historically;
 // PR 8.4-prep disambiguates them so PR 8.4b could lift the engine
 // onto the keyed pool without a name clash.
@@ -56,8 +57,8 @@ pub const TextInputStyle = text_input_state.Style;
 // =============================================================================
 //
 // Same engine-vs-component split as `TextInputState` above:
-// `TextAreaState` is the heap-allocated engine; `gooey.components.TextArea` in
-// `components/text_area.zig` is the user-facing declarative component.
+// `TextAreaState` is the heap-allocated engine; `components.TextArea` in
+// `components/src/text_area.zig` is the user-facing declarative component.
 
 pub const text_area_state = @import("text_area_state.zig");
 
