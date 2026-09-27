@@ -371,6 +371,14 @@ pub const Builder = struct {
         self.pending_canvas.append(self.allocator, pending) catch {};
     }
 
+    /// Reserve canvas-registration slots before the first frame.
+    pub fn reserve_pending_canvas(self: *Self, capacity: u32) !void {
+        std.debug.assert(capacity > 0);
+        if (capacity > MAX_PENDING_CANVAS) return error.OutOfMemory;
+        try self.pending_canvas.ensureTotalCapacity(self.allocator, capacity);
+        std.debug.assert(self.pending_canvas.capacity >= capacity);
+    }
+
     /// Get pending canvas elements for rendering
     pub fn getPendingCanvas(self: *const Self) []const canvas_mod.PendingCanvas {
         return self.pending_canvas.items;

@@ -202,6 +202,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "form-validation", .source = "src/examples/form_validation.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "canvas-demo", .source = "src/examples/canvas_demo.zig" },
+            .{ .name = "disktree", .source = "src/examples/disktree.zig" },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "new-api-demo", .source = "src/examples/new_api_demo.zig" },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
@@ -279,6 +280,18 @@ pub fn build(b: *std.Build) void {
         });
         const run_todo_example_tests = b.addRunArtifact(todo_example_tests);
 
+        const disktree_example_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/disktree.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "gooey", .module = mod }},
+            }),
+        });
+        const run_disktree_example_tests = b.addRunArtifact(disktree_example_tests);
+        const test_disktree_step = b.step("test-disktree", "Run Disk Tree MVP tests");
+        test_disktree_step.dependOn(&run_disktree_example_tests.step);
+
         // Charts tests
         const charts_tests = b.addTest(.{
             .root_module = charts_mod,
@@ -296,6 +309,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_exe_tests.step);
         test_step.dependOn(&run_todo_example_tests.step);
+        test_step.dependOn(&run_disktree_example_tests.step);
         test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_genui_tests.step);
         test_step.dependOn(&run_compare_tests.step);
@@ -781,6 +795,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "uniform-list", .source = "src/examples/uniform_list_example.zig" },
             .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+            .{ .name = "disktree", .source = "src/examples/disktree.zig" },
         };
         for (linux_examples) |example| {
             addLinuxExample(
@@ -1119,11 +1134,27 @@ pub fn build(b: *std.Build) void {
         const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
         test_genui_step.dependOn(&run_genui_tests.step);
 
+        const disktree_example_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/disktree.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "gooey", .module = mod }},
+            }),
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(disktree_example_tests);
+        if (!skip_shader_compile) disktree_example_tests.step.dependOn(compile_shaders_step);
+        const run_disktree_example_tests = b.addRunArtifact(disktree_example_tests);
+        const test_disktree_step = b.step("test-disktree", "Run Disk Tree MVP tests");
+        test_disktree_step.dependOn(&run_disktree_example_tests.step);
+
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_components_tests.step);
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_genui_tests.step);
+        test_step.dependOn(&run_disktree_example_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
         test_step.dependOn(&run_scene_bench_tests.step);
@@ -1257,6 +1288,9 @@ fn addNativeExample(
     const run_cmd = b.addRunArtifact(exe);
     if (metal_hud) {
         run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
+    }
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
     }
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1691,6 +1725,9 @@ fn addLinuxExample(
     const step = b.step(step_name, step_desc);
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 }

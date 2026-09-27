@@ -693,6 +693,16 @@ pub const Cx = struct {
     pub fn builder(self: *Self) *Builder {
         return self._builder;
     }
+    /// Reserve the storage needed by bounded immediate-mode canvases.
+    pub fn reserve_canvas(self: *Self, options: struct {
+        canvas_count: u32,
+        quad_count: u32,
+    }) !void {
+        std.debug.assert(options.canvas_count > 0);
+        std.debug.assert(options.quad_count > 0);
+        try self._window.reserve_canvas_quads(options.quad_count);
+        try self._builder.reserve_pending_canvas(options.canvas_count);
+    }
     pub fn allocator(self: *Self) std.mem.Allocator {
         return self._allocator;
     }

@@ -777,6 +777,17 @@ pub const Scene = struct {
         self.mesh_pool.deinit();
     }
 
+    /// Reserve the quad and matching sort-key storage used by ordered canvas
+    /// drawing. Call during initialization, before the first frame can run.
+    pub fn reserve_canvas_quads(self: *Self, capacity: u32) !void {
+        std.debug.assert(capacity > 0);
+        if (capacity > MAX_QUADS_PER_FRAME) return error.OutOfMemory;
+        try self.quads.ensureTotalCapacity(self.allocator, capacity);
+        try self.sort_keys.ensureTotalCapacity(self.allocator, capacity);
+        std.debug.assert(self.quads.capacity >= capacity);
+        std.debug.assert(self.sort_keys.capacity >= capacity);
+    }
+
     pub fn clear(self: *Self) void {
         self.shadows.clearRetainingCapacity();
         self.quads.clearRetainingCapacity();

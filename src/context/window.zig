@@ -1773,6 +1773,15 @@ pub const Window = struct {
         return self.next_frame.scene;
     }
 
+    /// Reserve ordered-canvas quad storage in both frame-buffered scenes.
+    pub fn reserve_canvas_quads(self: *Self, capacity: u32) !void {
+        std.debug.assert(capacity > 0);
+        try self.next_frame.scene.reserve_canvas_quads(capacity);
+        try self.rendered_frame.scene.reserve_canvas_quads(capacity);
+        std.debug.assert(self.next_frame.scene.quads.capacity >= capacity);
+        std.debug.assert(self.rendered_frame.scene.quads.capacity >= capacity);
+    }
+
     pub fn getTextSystem(self: *Self) *TextSystem {
         return self.resources.text_system;
     }
