@@ -26,3 +26,12 @@ types share one Gooey module instance:
     },
 },
 ```
+
+## Development
+
+Run the package tests from this directory. The local manifest resolves Gooey
+from the parent monorepo checkout:
+
+```sh
+zig build test
+```

@@ -4,17 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Create the gooey-charts module
-    // Note: When used as a dependency, the parent build.zig should provide
-    // the "gooey" import via addImport() after getting this module.
-    _ = b.addModule("gooey-charts", .{
+    const gooey_dependency = b.dependency("gooey", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const module = b.addModule("gooey-charts", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    module.addImport("gooey", gooey_dependency.module("gooey"));
 
-    // Tests are run from the parent build.zig which provides the gooey module.
-    // Standalone testing is not supported since this package depends on gooey.
-    const test_step = b.step("test", "Run gooey-charts tests (requires parent build)");
-    _ = test_step;
+    const tests = b.addTest(.{ .root_module = module });
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run gooey-charts tests");
+    test_step.dependOn(&run_tests.step);
 }
