@@ -54,7 +54,7 @@ pub const SemanticToken = enum(u8) {
     border_focus,
 
     /// Number of semantic tokens. Must match Theme color field count.
-    pub const COUNT: usize = @typeInfo(SemanticToken).@"enum".fields.len;
+    pub const COUNT: usize = @typeInfo(SemanticToken).@"enum".field_names.len;
 
     /// Try to parse a string as a semantic token name.
     /// Returns null for strings that don't match any token (e.g. hex colors).
@@ -186,11 +186,11 @@ pub const ThemeColor = union(enum) {
 ///
 /// Output: "bg, surface, overlay, primary, secondary, accent, success, warning, danger, text, subtext, muted, border, border_focus"
 pub const semantic_token_list: []const u8 = blk: {
-    const fields = std.meta.fields(SemanticToken);
+    const names = @typeInfo(SemanticToken).@"enum".field_names;
     var out: []const u8 = "";
-    for (fields, 0..) |f, i| {
-        out = out ++ f.name;
-        if (i < fields.len - 1) {
+    for (names, 0..) |name, i| {
+        out = out ++ name;
+        if (i < names.len - 1) {
             out = out ++ ", ";
         }
     }
@@ -386,9 +386,9 @@ test "SemanticToken.name returns correct strings" {
 }
 
 test "semantic_token_list contains all tokens" {
-    const fields = std.meta.fields(SemanticToken);
-    inline for (fields) |f| {
-        try std.testing.expect(std.mem.indexOf(u8, semantic_token_list, f.name) != null);
+    const names = @typeInfo(SemanticToken).@"enum".field_names;
+    inline for (names) |name| {
+        try std.testing.expect(std.mem.indexOf(u8, semantic_token_list, name) != null);
     }
 }
 

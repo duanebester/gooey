@@ -268,7 +268,7 @@ pub const DrawContext = struct {
         const tolerance = DEFAULT_TOLERANCE / self.scale;
 
         const mesh = p.toMesh(self.scene.allocator, tolerance) catch |err| {
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 std.log.warn("Canvas: path tessellation failed: {}, skipping", .{err});
             }
             return;
@@ -820,7 +820,7 @@ pub const DrawContext = struct {
         const tolerance = DEFAULT_TOLERANCE / self.scale;
 
         const mesh = p.toMesh(self.scene.allocator, tolerance) catch |err| {
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 std.log.warn("Canvas: path tessellation failed: {}, skipping", .{err});
             }
             return;
@@ -875,7 +875,7 @@ pub const DrawContext = struct {
         const tolerance = DEFAULT_TOLERANCE / self.scale;
 
         const mesh = p.toMesh(self.scene.allocator, tolerance) catch |err| {
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 std.log.warn("Canvas: path tessellation failed: {}, skipping", .{err});
             }
             return;
@@ -1033,7 +1033,7 @@ pub const DrawContext = struct {
             join,
             tolerance,
         ) catch |err| {
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 std.log.warn("Canvas: stroke tessellation failed: {}, skipping", .{err});
             }
             return;

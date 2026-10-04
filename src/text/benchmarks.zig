@@ -1579,7 +1579,7 @@ test "validate: atlas set writes pixel data" {
     defer atlas.deinit();
 
     const region = (try atlas.reserve(4, 4)) orelse return error.TestUnexpectedResult;
-    const pixel_data = [_]u8{0xFF} ** 16;
+    const pixel_data: [16]u8 = @splat(0xFF);
     atlas.set(region, &pixel_data);
 
     // set() marks dirty region and increments generation.
@@ -1822,7 +1822,7 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
     }
 
     // Collect batch results using the single-lock path.
-    var subpixel_xs: [MAX_UNIQUE_GLYPHS]u8 = [_]u8{0} ** MAX_UNIQUE_GLYPHS;
+    var subpixel_xs: [MAX_UNIQUE_GLYPHS]u8 = @splat(0);
     var batch: [MAX_UNIQUE_GLYPHS]CachedGlyph = undefined;
     ts.resolveGlyphBatch(
         run.glyphs,
@@ -1922,11 +1922,11 @@ fn printSectionHeader(title: []const u8) void {
     std.debug.assert(title.len > 0);
     std.debug.assert(title.len < TABLE_WIDTH);
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("{s}\n", .{title});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
 }
 
 fn printHeader() void {
@@ -1951,18 +1951,18 @@ fn runAtlasBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) void {
     collect(reporter, benchAtlasReserve(gpa, "reserve_8x12_x100", 8, 12, 100));
     collect(reporter, benchAtlasReserve(gpa, "reserve_16x20_x100", 16, 20, 100));
     collect(reporter, benchAtlasReserveMixed(gpa, "reserve_mixed_x100", 100));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // Atlas Set + Combined — Pixel Copy Bandwidth.
     printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Set + Combined (pixel copy)");
     collect(reporter, benchAtlasSet(gpa, "set_8x12_x100", 8, 12, 100));
     collect(reporter, benchAtlasReserveAndSet(gpa, "reserve_and_set_8x12_x100", 8, 12, 100));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // Atlas Grow — Reallocation Cost.
     printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Grow (512 -> 1024 reallocation)");
     collect(reporter, benchAtlasGrow(gpa, "grow_512_to_1024"));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // Atlas Reserve Scaling — ns/op vs Glyph Count.
     printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Reserve Scaling (8x12, varying count)");
@@ -1970,7 +1970,7 @@ fn runAtlasBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) void {
     collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x100", 8, 12, 100));
     collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x200", 8, 12, 200));
     collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x400", 8, 12, 400));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // Atlas utilization — fill efficiency.
     printAtlasUtilization(gpa);
@@ -2060,15 +2060,15 @@ fn printShapingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void
     collect(reporter, benchShapeWarm(text_sys, "shape_warm_short_13ch_x100", TEXT_SHORT, 100));
     collect(reporter, benchShapeWarm(text_sys, "shape_warm_medium_50ch_x100", TEXT_MEDIUM, 100));
     collect(reporter, benchShapeWarm(text_sys, "shape_warm_long_104ch_x100", TEXT_LONG, 100));
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
     collect(reporter, benchShapeWarmArena(text_sys, "shape_warm_arena_short_13ch_x100", TEXT_SHORT, 100));
     collect(reporter, benchShapeWarmArena(text_sys, "shape_warm_arena_medium_50ch_x100", TEXT_MEDIUM, 100));
     collect(reporter, benchShapeWarmArena(text_sys, "shape_warm_arena_long_104ch_x100", TEXT_LONG, 100));
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
     collect(reporter, benchShapeWarmInto(text_sys, "shape_warm_into_short_13ch_x100", TEXT_SHORT, 100));
     collect(reporter, benchShapeWarmInto(text_sys, "shape_warm_into_medium_50ch_x100", TEXT_MEDIUM, 100));
     collect(reporter, benchShapeWarmInto(text_sys, "shape_warm_into_long_104ch_x100", TEXT_LONG, 100));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
 /// Print text measurement benchmarks (simple width + wrapped with max_width).
@@ -2098,7 +2098,7 @@ fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) 
     std.debug.assert(ShapedRunCache.MAX_TEXT_LEN >= 129);
     collect(reporter, benchMeasureText(text_sys, "measure_at_shape_limit_128ch_x100", SCALING_TEXT_BASE[0..128], 100));
     collect(reporter, benchMeasureText(text_sys, "measure_over_shape_limit_129ch_x100", SCALING_TEXT_BASE[0..129], 100));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
 /// Print glyph rasterization benchmarks (cold = rasterize, warm = cache hit).
@@ -2109,12 +2109,12 @@ fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16, reporter:
     printSectionHeader("Gooey Text Benchmarks \u{2014} Glyph Rasterization (cold = render, warm = cache hit)");
     collect(reporter, benchGlyphRasterCold(text_sys, "glyph_raster_cold_ascii", glyph_ids, BENCH_FONT_SIZE));
     collect(reporter, benchGlyphRasterWarm(text_sys, "glyph_raster_warm_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20));
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
     collect(reporter, benchGlyphRasterWarmPerGlyph(text_sys, "glyph_warm_perglyph_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20));
     collect(reporter, benchGlyphRasterWarmBatch(text_sys, "glyph_warm_batch_ascii_x20", glyph_ids, BENCH_FONT_SIZE, 20));
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
     collect(reporter, benchGlyphRasterWarmSubpixel(text_sys, "glyph_warm_subpixel_ascii_x5", glyph_ids, BENCH_FONT_SIZE, 5));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
 /// Print end-to-end renderText benchmarks at short/medium/long text lengths.
@@ -2128,7 +2128,7 @@ fn printRenderTextBenchmarks(text_sys: *TextSystem, allocator: std.mem.Allocator
     collect(reporter, benchRenderText(text_sys, allocator, "render_text_short_13ch_x50", TEXT_SHORT, BENCH_FONT_SIZE, 50));
     collect(reporter, benchRenderText(text_sys, allocator, "render_text_medium_50ch_x50", TEXT_MEDIUM, BENCH_FONT_SIZE, 50));
     collect(reporter, benchRenderText(text_sys, allocator, "render_text_long_104ch_x50", TEXT_LONG, BENCH_FONT_SIZE, 50));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
 /// Print shaping scaling analysis (cold shaping at increasing text lengths).
@@ -2142,7 +2142,7 @@ fn printScalingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void
     collect(reporter, benchShapeCold(text_sys, "scaling_shape_50ch", SCALING_TEXT_BASE[0..50]));
     collect(reporter, benchShapeCold(text_sys, "scaling_shape_100ch", SCALING_TEXT_BASE[0..100]));
     collect(reporter, benchShapeCold(text_sys, "scaling_shape_200ch", SCALING_TEXT_BASE[0..200]));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
 fn printTextPipelineNotes() void {

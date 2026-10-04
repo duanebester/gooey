@@ -7,7 +7,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const DEBUG_BATCHES = builtin.mode == .Debug and false;
+const DEBUG_BATCHES = builtin.mode == .debug and false;
 
 const vk = @import("vulkan.zig");
 const unified = @import("../unified.zig");
@@ -276,7 +276,7 @@ fn drawShadowBatch(
             pipelines.unified_pipeline_layout,
             0,
             1,
-            &pipelines.unified_descriptor_set,
+            (&pipelines.unified_descriptor_set)[0..1],
             0,
             null,
         );
@@ -326,7 +326,7 @@ fn drawQuadBatch(
             pipelines.unified_pipeline_layout,
             0,
             1,
-            &pipelines.unified_descriptor_set,
+            (&pipelines.unified_descriptor_set)[0..1],
             0,
             null,
         );
@@ -377,7 +377,7 @@ fn drawGlyphBatch(
             pipelines.text_pipeline_layout,
             0,
             1,
-            &pipelines.text_descriptor_set,
+            (&pipelines.text_descriptor_set)[0..1],
             0,
             null,
         );
@@ -428,7 +428,7 @@ fn drawSvgBatch(
             pipelines.svg_pipeline_layout,
             0,
             1,
-            &pipelines.svg_descriptor_set,
+            (&pipelines.svg_descriptor_set)[0..1],
             0,
             null,
         );
@@ -479,7 +479,7 @@ fn drawImageBatch(
             pipelines.image_pipeline_layout,
             0,
             1,
-            &pipelines.image_descriptor_set,
+            (&pipelines.image_descriptor_set)[0..1],
             0,
             null,
         );

@@ -330,7 +330,7 @@ pub fn WindowContext(comptime State: type) type {
             // Sample `.awake` (monotonic) so the elapsed delta can never be negative
             // even if NTP or the sysadmin adjusts the wall clock mid-frame.
             const io = self.window.io;
-            const start_ts = if (builtin.mode == .Debug)
+            const start_ts = if (builtin.mode == .debug)
                 std.Io.Timestamp.now(io, .awake)
             else
                 std.Io.Timestamp.zero;
@@ -340,7 +340,7 @@ pub fn WindowContext(comptime State: type) type {
             };
 
             // Check frame budget in debug builds (skip initialization frames)
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 self.frame_count += 1;
                 if (self.frame_count > FRAME_BUDGET_SKIP_COUNT) {
                     const elapsed_ns: i96 = start_ts.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds();

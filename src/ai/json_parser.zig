@@ -351,7 +351,7 @@ comptime {
     // Guard: tool count must match DrawCommand variant count.
     // If someone adds a variant to DrawCommand, this reminds them to
     // update the parser dispatch table.
-    std.debug.assert(TOOL_COUNT == std.meta.fields(DrawCommand).len);
+    std.debug.assert(TOOL_COUNT == @typeInfo(DrawCommand).@"union".field_names.len);
 
     // Line size limit must be reasonable (not zero, not enormous).
     std.debug.assert(MAX_JSON_LINE_SIZE >= 64);
@@ -891,7 +891,7 @@ test "negative coordinate values" {
 
 test "tool count matches DrawCommand variant count" {
     try std.testing.expectEqual(@as(usize, 11), TOOL_COUNT);
-    try std.testing.expectEqual(TOOL_COUNT, std.meta.fields(DrawCommand).len);
+    try std.testing.expectEqual(TOOL_COUNT, @typeInfo(DrawCommand).@"union".field_names.len);
 }
 
 test "mixed hex and token colors in batch" {

@@ -296,12 +296,12 @@ fn buildNumberIds(storage: *[core.candidates_max][number_bytes_max]u8, ids: *[co
 fn layoutFromPreferences(candidates: *const core.CandidateSet, selection: *const core.Selection, selected: []const u8, parents: []const u8, response: *const codec.Response) !core.Layout {
     std.debug.assert(selected.len > 1);
     std.debug.assert(response.answer_count == (selected.len - 1) * 2);
-    var preferred_parent = [_]u8{0} ** core.candidates_max;
-    var preferred_rank = [_]u8{0} ** core.candidates_max;
+    var preferred_parent: [core.candidates_max]u8 = @splat(0);
+    var preferred_rank: [core.candidates_max]u8 = @splat(0);
     readPreferences(selection, selected, parents, response, &preferred_parent, &preferred_rank);
     var layout = core.Layout{};
-    var attached = [_]bool{false} ** core.candidates_max;
-    var depth = [_]u8{0} ** core.candidates_max;
+    var attached: [core.candidates_max]bool = @splat(false);
+    var depth: [core.candidates_max]u8 = @splat(0);
     attached[selection.root_candidate] = true;
     depth[selection.root_candidate] = 1;
     for (selected) |candidate_index| {

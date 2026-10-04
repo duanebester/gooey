@@ -23,7 +23,7 @@ const MAX_PRESENT_MODES: u32 = vk_types.MAX_PRESENT_MODES;
 
 pub const SwapchainResult = struct {
     swapchain: vk.Swapchain,
-    format: c_uint,
+    format: vk.Format,
     extent: vk.Extent2D,
     images: [MAX_SWAPCHAIN_IMAGES]vk.Image,
     image_views: [MAX_SWAPCHAIN_IMAGES]vk.ImageView,
@@ -77,7 +77,7 @@ pub const FramebufferError = error{
 
 /// Query the maximum usable MSAA sample count for the physical device.
 /// Prefers 4x MSAA for a good quality/performance balance.
-pub fn getMaxUsableSampleCount(physical_device: vk.PhysicalDevice) c_uint {
+pub fn getMaxUsableSampleCount(physical_device: vk.PhysicalDevice) vk.SampleCountFlagBits {
     std.debug.assert(physical_device != null);
 
     var props: vk.PhysicalDeviceProperties = undefined;
@@ -128,9 +128,9 @@ pub fn createSwapchain(
 /// Create MSAA color buffer resources. Returns empty resources if sample_count is 1.
 pub fn createMSAAResources(
     device: vk.Device,
-    format: c_uint,
+    format: vk.Format,
     extent: vk.Extent2D,
-    sample_count: c_uint,
+    sample_count: vk.SampleCountFlagBits,
     mem_properties: *const vk.PhysicalDeviceMemoryProperties,
 ) MSAAError!MSAAResources {
     std.debug.assert(device != null);
@@ -163,8 +163,8 @@ pub fn createMSAAResources(
 /// Create a render pass. Uses MSAA resolve if sample_count > 1.
 pub fn createRenderPass(
     device: vk.Device,
-    format: c_uint,
-    sample_count: c_uint,
+    format: vk.Format,
+    sample_count: vk.SampleCountFlagBits,
 ) RenderPassError!vk.RenderPass {
     std.debug.assert(device != null);
     std.debug.assert(format != vk.VK_FORMAT_UNDEFINED);
@@ -188,7 +188,7 @@ pub fn createFramebuffers(
     image_count: u32,
     msaa_view: vk.ImageView,
     extent: vk.Extent2D,
-    sample_count: c_uint,
+    sample_count: vk.SampleCountFlagBits,
     out_framebuffers: *[MAX_SWAPCHAIN_IMAGES]vk.Framebuffer,
 ) FramebufferError!void {
     std.debug.assert(device != null);
@@ -238,13 +238,13 @@ pub fn destroyFramebuffers(
 // =============================================================================
 
 const SwapchainConfig = struct {
-    format: c_uint,
-    color_space: c_uint,
+    format: vk.Format,
+    color_space: vk.ColorSpaceKHR,
     extent: vk.Extent2D,
     min_image_count: u32,
-    present_mode: c_uint,
-    composite_alpha: c_uint,
-    pre_transform: c_uint,
+    present_mode: vk.PresentModeKHR,
+    composite_alpha: vk.CompositeAlphaFlagBitsKHR,
+    pre_transform: vk.SurfaceTransformFlagBitsKHR,
 };
 
 fn querySwapchainConfig(
@@ -273,7 +273,7 @@ fn querySwapchainConfig(
     };
 }
 
-const FormatChoice = struct { format: c_uint, color_space: c_uint };
+const FormatChoice = struct { format: vk.Format, color_space: vk.ColorSpaceKHR };
 
 fn chooseFormat(physical_device: vk.PhysicalDevice, surface: vk.Surface) FormatChoice {
     var format_count: u32 = 0;
@@ -305,11 +305,11 @@ fn chooseFormat(physical_device: vk.PhysicalDevice, surface: vk.Surface) FormatC
     return .{ .format = formats[0].format, .color_space = formats[0].colorSpace };
 }
 
-fn choosePresentMode(physical_device: vk.PhysicalDevice, surface: vk.Surface) c_uint {
+fn choosePresentMode(physical_device: vk.PhysicalDevice, surface: vk.Surface) vk.PresentModeKHR {
     var present_mode_count: u32 = 0;
     _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, null);
 
-    var present_modes: [MAX_PRESENT_MODES]c_uint = undefined;
+    var present_modes: [MAX_PRESENT_MODES]vk.PresentModeKHR = undefined;
     var pm_count: u32 = @min(present_mode_count, MAX_PRESENT_MODES);
     _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &pm_count, @ptrCast(&present_modes));
 
@@ -322,8 +322,8 @@ fn choosePresentMode(physical_device: vk.PhysicalDevice, surface: vk.Surface) c_
     return @intCast(vk.VK_PRESENT_MODE_FIFO_KHR);
 }
 
-fn chooseCompositeAlpha(capabilities: vk.SurfaceCapabilitiesKHR) c_uint {
-    const preferred = [_]c_uint{
+fn chooseCompositeAlpha(capabilities: vk.SurfaceCapabilitiesKHR) vk.CompositeAlphaFlagBitsKHR {
+    const preferred = [_]vk.CompositeAlphaFlagBitsKHR{
         vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         vk.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
         vk.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
@@ -407,7 +407,7 @@ const ImageArray = struct {
 
 fn getSwapchainImages(device: vk.Device, swapchain: vk.Swapchain) SwapchainError!ImageArray {
     var result: ImageArray = .{
-        .items = [_]vk.Image{null} ** MAX_SWAPCHAIN_IMAGES,
+        .items = @as([MAX_SWAPCHAIN_IMAGES]vk.Image, @splat(null)),
         .count = 0,
     };
 
@@ -426,11 +426,11 @@ fn createImageViews(
     device: vk.Device,
     images: [MAX_SWAPCHAIN_IMAGES]vk.Image,
     count: u32,
-    format: c_uint,
+    format: vk.Format,
 ) SwapchainError![MAX_SWAPCHAIN_IMAGES]vk.ImageView {
     std.debug.assert(count <= MAX_SWAPCHAIN_IMAGES);
 
-    var views: [MAX_SWAPCHAIN_IMAGES]vk.ImageView = [_]vk.ImageView{null} ** MAX_SWAPCHAIN_IMAGES;
+    var views: [MAX_SWAPCHAIN_IMAGES]vk.ImageView = @splat(null);
 
     for (0..count) |i| {
         std.debug.assert(images[i] != null);
@@ -470,9 +470,9 @@ fn createImageViews(
 
 fn createMSAAImage(
     device: vk.Device,
-    format: c_uint,
+    format: vk.Format,
     extent: vk.Extent2D,
-    sample_count: c_uint,
+    sample_count: vk.SampleCountFlagBits,
 ) MSAAError!vk.Image {
     const image_info = vk.ImageCreateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -538,7 +538,7 @@ fn allocateMSAAMemory(
 fn createMSAAView(
     device: vk.Device,
     image: vk.Image,
-    format: c_uint,
+    format: vk.Format,
 ) MSAAError!vk.ImageView {
     std.debug.assert(image != null);
 
@@ -579,8 +579,8 @@ fn createMSAAView(
 /// MSAA render pass: attachment 0 = multisampled color, attachment 1 = resolve target.
 fn createMSAARenderPass(
     device: vk.Device,
-    format: c_uint,
-    sample_count: c_uint,
+    format: vk.Format,
+    sample_count: vk.SampleCountFlagBits,
 ) RenderPassError!vk.RenderPass {
     const attachments = [_]vk.AttachmentDescription{
         // MSAA color attachment
@@ -624,7 +624,7 @@ fn createMSAARenderPass(
 /// Simple render pass: single swapchain image attachment, no MSAA.
 fn createSimpleRenderPass(
     device: vk.Device,
-    format: c_uint,
+    format: vk.Format,
 ) RenderPassError!vk.RenderPass {
     const attachment = [_]vk.AttachmentDescription{.{
         .flags = 0,
@@ -662,8 +662,8 @@ fn buildRenderPass(
         .inputAttachmentCount = 0,
         .pInputAttachments = null,
         .colorAttachmentCount = 1,
-        .pColorAttachments = color_ref,
-        .pResolveAttachments = resolve_ref,
+        .pColorAttachments = color_ref[0..1],
+        .pResolveAttachments = if (resolve_ref) |ref| ref[0..1] else null,
         .pDepthStencilAttachment = null,
         .preserveAttachmentCount = 0,
         .pPreserveAttachments = null,
@@ -686,9 +686,9 @@ fn buildRenderPass(
         .attachmentCount = attachment_count,
         .pAttachments = attachments,
         .subpassCount = 1,
-        .pSubpasses = &subpass,
+        .pSubpasses = (&subpass)[0..1],
         .dependencyCount = 1,
-        .pDependencies = &dependency,
+        .pDependencies = (&dependency)[0..1],
     };
 
     var render_pass: vk.RenderPass = null;

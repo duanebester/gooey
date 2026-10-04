@@ -97,7 +97,7 @@ pub fn verifyFn(
             )),
         };
 
-        if (info.is_var_args) {
+        if (info.attrs.varargs) {
             @compileError(std.fmt.comptimePrint(
                 "{s}.{s} must not be variadic",
                 .{ @typeName(Owner), name },
@@ -111,7 +111,7 @@ pub fn verifyFn(
             ));
         }
 
-        verifyFnParams(Owner, name, sig, info.params);
+        verifyFnParams(Owner, name, sig, info.param_types);
         verifyFnReturn(Owner, name, sig, info.return_type);
     }
 }
@@ -121,7 +121,7 @@ fn verifyFnParams(
     comptime Owner: type,
     comptime name: []const u8,
     comptime sig: Sig,
-    comptime params: []const std.builtin.Type.Fn.Param,
+    comptime params: []const ?type,
 ) void {
     comptime {
         if (params.len != sig.params.len) {
@@ -132,7 +132,7 @@ fn verifyFnParams(
         }
 
         for (params, sig.params, 0..) |actual_param, Expected, index| {
-            const Param = actual_param.type orelse @compileError(std.fmt.comptimePrint(
+            const Param = actual_param orelse @compileError(std.fmt.comptimePrint(
                 "{s}.{s} parameter {d} has no concrete type (comptime or anytype)",
                 .{ @typeName(Owner), name, index },
             ));
@@ -274,21 +274,21 @@ pub fn verifyField(
     comptime Expected: type,
 ) void {
     comptime {
-        const fields = switch (@typeInfo(Owner)) {
-            .@"struct" => |s| s.fields,
+        const info = switch (@typeInfo(Owner)) {
+            .@"struct" => |s| s,
             else => @compileError(std.fmt.comptimePrint(
                 "{s} must be a struct to carry field '{s}'",
                 .{ @typeName(Owner), name },
             )),
         };
 
-        for (fields) |field| {
-            if (!std.mem.eql(u8, field.name, name)) continue;
-            if (field.type != Expected) {
+        for (info.field_names, info.field_types) |field_name, field_type| {
+            if (!std.mem.eql(u8, field_name, name)) continue;
+            if (field_type != Expected) {
                 @compileError(std.fmt.comptimePrint(
                     "{s}.{s} is field type {s}, expected {s}; shared code reads this" ++
                         " field directly, so a differing type is a silent miscompile",
-                    .{ @typeName(Owner), name, @typeName(field.type), @typeName(Expected) },
+                    .{ @typeName(Owner), name, @typeName(field_type), @typeName(Expected) },
                 ));
             }
             return;
@@ -699,15 +699,15 @@ fn verifyUserDataRecovery(comptime Window: type) void {
             else => @compileError(@typeName(Window) ++ ".getUserData must be a function"),
         };
 
-        if (info.params.len != 2) {
+        if (info.param_types.len != 2) {
             @compileError(std.fmt.comptimePrint(
                 "{s}.getUserData takes {d} parameter(s), expected 2:" ++
                     " (self: *Self, comptime T: type)",
-                .{ @typeName(Window), info.params.len },
+                .{ @typeName(Window), info.param_types.len },
             ));
         }
 
-        const Receiver = info.params[0].type orelse @compileError(std.fmt.comptimePrint(
+        const Receiver = info.param_types[0] orelse @compileError(std.fmt.comptimePrint(
             "{s}.getUserData has no concrete receiver type",
             .{@typeName(Window)},
         ));
@@ -721,7 +721,7 @@ fn verifyUserDataRecovery(comptime Window: type) void {
         // Checked before instantiating, so a non-type second parameter fails
         // with this message rather than an argument-coercion error inside the
         // `@TypeOf` below.
-        if (info.params[1].type != type) {
+        if (info.param_types[1] != type) {
             @compileError(std.fmt.comptimePrint(
                 "{s}.getUserData parameter 1 must be 'comptime T: type'",
                 .{@typeName(Window)},

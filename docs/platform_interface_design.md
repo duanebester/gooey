@@ -46,10 +46,8 @@ code; they are listed under [Known gaps](#known-gaps).
 `zig build`, `zig build test` (1263 tests, as reported by `zig build test --summary all` across
 all ten test binaries), `zig build wasm`, and `zig build typecheck-linux` all pass. The Linux
 backend has no native CI on the development host, so the `typecheck-linux` step exists to give
-it real compiler coverage; it needs Vulkan headers supplied through
-`-Dvulkan-headers=<include>`. Without that option the step _skips_ and says so rather than
-checking anything, so CI must pass `-Dtypecheck-linux-required=true`, which turns a missing
-header path into a hard failure.
+it real compiler coverage. Every Linux binding, including Vulkan, is a plain `extern`
+declaration, so the step needs no headers or options and CI runs it on the macOS job.
 
 ### Known gaps
 

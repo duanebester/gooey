@@ -42,11 +42,11 @@ pub const GradientUniforms = extern struct {
 
     // Stops stored as parallel arrays (offset + HSLA components) rather than
     // interleaved float4s, so each component array stays contiguous for the shader.
-    stop_offsets: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    stop_h: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    stop_s: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    stop_l: [GPU_MAX_STOPS]f32 = [_]f32{0} ** GPU_MAX_STOPS,
-    stop_a: [GPU_MAX_STOPS]f32 = [_]f32{1} ** GPU_MAX_STOPS,
+    stop_offsets: [GPU_MAX_STOPS]f32 = @splat(0),
+    stop_h: [GPU_MAX_STOPS]f32 = @splat(0),
+    stop_s: [GPU_MAX_STOPS]f32 = @splat(0),
+    stop_l: [GPU_MAX_STOPS]f32 = @splat(0),
+    stop_a: [GPU_MAX_STOPS]f32 = @splat(1),
 
     const Self = @This();
 
@@ -61,7 +61,7 @@ pub const GradientUniforms = extern struct {
         std.debug.assert(grad.stop_count <= GPU_MAX_STOPS);
 
         var uniforms = Self{
-            .gradient_type = @intFromEnum(GradientType.linear),
+            .gradient_type = @backingInt(GradientType.linear),
             .stop_count = grad.stop_count,
             .param0 = grad.start_x,
             .param1 = grad.start_y,
@@ -87,7 +87,7 @@ pub const GradientUniforms = extern struct {
         std.debug.assert(grad.stop_count <= GPU_MAX_STOPS);
 
         var uniforms = Self{
-            .gradient_type = @intFromEnum(GradientType.radial),
+            .gradient_type = @backingInt(GradientType.radial),
             .stop_count = grad.stop_count,
             .param0 = grad.center_x,
             .param1 = grad.center_y,

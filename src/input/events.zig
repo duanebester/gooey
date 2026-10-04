@@ -137,7 +137,7 @@ pub const KeyCode = enum(u16) {
     _,
 
     pub fn from(code: u16) KeyCode {
-        const result: KeyCode = @enumFromInt(code);
+        const result: KeyCode = @fromBackingInt(@intCast(code));
         if (std.enums.tagName(KeyCode, result) == null) return .unknown;
         return result;
     }

@@ -665,13 +665,13 @@ pub fn maxLengthValidator(comptime max: usize) ValidatorFn {
 /// ```
 pub fn all(value: []const u8, validators: anytype) FieldResult {
     const T = @TypeOf(validators);
-    const fields = @typeInfo(T).@"struct".fields;
+    const field_names = @typeInfo(T).@"struct".field_names;
 
-    std.debug.assert(fields.len > 0);
-    std.debug.assert(fields.len <= 16);
+    std.debug.assert(field_names.len > 0);
+    std.debug.assert(field_names.len <= 16);
 
-    inline for (fields) |field| {
-        const validator = @field(validators, field.name);
+    inline for (field_names) |field_name| {
+        const validator = @field(validators, field_name);
         if (validator(value)) |err| {
             return err;
         }
@@ -715,7 +715,7 @@ pub fn FormErrors(comptime max_fields: usize) type {
         /// Initialize with no errors.
         pub fn init() Self {
             return .{
-                .errors = [_]?[]const u8{null} ** max_fields,
+                .errors = @as([max_fields]?[]const u8, @splat(null)),
             };
         }
 
@@ -741,7 +741,7 @@ pub fn FormErrors(comptime max_fields: usize) type {
 
         /// Clear all errors.
         pub fn clear(self: *Self) void {
-            self.errors = [_]?[]const u8{null} ** max_fields;
+            self.errors = @splat(null);
         }
 
         /// Returns the number of fields with errors.
@@ -777,7 +777,7 @@ pub fn TouchedFields(comptime max_fields: usize) type {
         /// Initialize with no fields touched.
         pub fn init() Self {
             return .{
-                .touched = [_]bool{false} ** max_fields,
+                .touched = @as([max_fields]bool, @splat(false)),
             };
         }
 
@@ -795,12 +795,12 @@ pub fn TouchedFields(comptime max_fields: usize) type {
 
         /// Mark all fields as touched (useful on form submit).
         pub fn touchAll(self: *Self) void {
-            self.touched = [_]bool{true} ** max_fields;
+            self.touched = @splat(true);
         }
 
         /// Reset all fields to untouched.
         pub fn reset(self: *Self) void {
-            self.touched = [_]bool{false} ** max_fields;
+            self.touched = @splat(false);
         }
 
         /// Get error only if field is touched.

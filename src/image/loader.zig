@@ -229,9 +229,9 @@ pub const ImageLoader = struct {
         // that through registers on every init call.
         self.result_buffer = undefined;
         self.fetch_group = .init;
-        self.pending_hashes = [_]u64{0} ** MAX_PENDING_IMAGE_LOADS;
+        self.pending_hashes = @splat(0);
         self.pending_count = 0;
-        self.failed_hashes = [_]u64{0} ** MAX_FAILED_IMAGE_LOADS;
+        self.failed_hashes = @splat(0);
         self.failed_count = 0;
         self.image_atlas = image_atlas;
         self.io = io;
@@ -647,7 +647,7 @@ fn fetchHttpBody(
     //   4xx → client error, deterministic — permanent
     //   5xx → server error, possibly recovering — transient
     //   other (1xx, 3xx leaked through, unknown) → permanent (unexpected)
-    const status_code: u32 = @intFromEnum(response.head.status);
+    const status_code: u32 = @backingInt(response.head.status);
     if (status_code >= 200 and status_code < 300) {
         // Fall through to body read.
     } else if (status_code >= 500 and status_code < 600) {

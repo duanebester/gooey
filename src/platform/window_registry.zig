@@ -46,14 +46,14 @@ pub const WindowId = enum(u32) {
 
     /// Get the raw numeric value (for debugging/logging).
     pub fn raw(self: WindowId) u32 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     /// Create a WindowId from a raw value.
     /// Asserts the value is not the invalid sentinel.
     pub fn fromRaw(value: u32) WindowId {
         std.debug.assert(value != 0); // Cannot create invalid ID via fromRaw
-        return @enumFromInt(value);
+        return @fromBackingInt(@intCast(value));
     }
 };
 
@@ -120,7 +120,7 @@ pub const WindowRegistry = struct {
         std.debug.assert(self.windows.count() < MAX_WINDOWS); // Hard limit
 
         // Generate next ID
-        const id: WindowId = @enumFromInt(self.next_id);
+        const id: WindowId = @fromBackingInt(@intCast(self.next_id));
         std.debug.assert(id.isValid()); // Sanity check
 
         self.next_id += 1;

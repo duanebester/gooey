@@ -48,7 +48,7 @@ pub const AtlasFormat = enum {
     /// Four-channel (SVG/image atlas): 4 bytes per pixel, VK_FORMAT_R8G8B8A8_UNORM.
     rgba8,
 
-    pub fn vkFormat(self: AtlasFormat) c_uint {
+    pub fn vkFormat(self: AtlasFormat) vk.Format {
         return switch (self) {
             .r8 => vk.VK_FORMAT_R8_UNORM,
             .rgba8 => vk.VK_FORMAT_R8G8B8A8_UNORM,
@@ -246,7 +246,7 @@ pub fn recordPartialAtlasTransfer(
     std.debug.assert(staging_buffer != null);
     std.debug.assert(dirty.width > 0 and dirty.height > 0);
 
-    const old_layout: c_uint = if (preserve_contents)
+    const old_layout: vk.ImageLayout = if (preserve_contents)
         vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
     else
         vk.VK_IMAGE_LAYOUT_UNDEFINED;
@@ -279,7 +279,7 @@ pub fn recordPartialAtlasTransfer(
         image,
         vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         1,
-        &region,
+        (&region)[0..1],
     );
 
     // Transition: transfer dst → shader read
@@ -330,7 +330,7 @@ fn createAtlasImage(
     resources.height = height;
 }
 
-fn createImage(device: vk.Device, width: u32, height: u32, format: c_uint) AtlasError!vk.Image {
+fn createImage(device: vk.Device, width: u32, height: u32, format: vk.Format) AtlasError!vk.Image {
     std.debug.assert(device != null);
     std.debug.assert(width > 0 and height > 0);
 
@@ -392,7 +392,7 @@ fn allocateImageMemory(
     return memory;
 }
 
-fn createImageView(device: vk.Device, image: vk.Image, format: c_uint) AtlasError!vk.ImageView {
+fn createImageView(device: vk.Device, image: vk.Image, format: vk.Format) AtlasError!vk.ImageView {
     std.debug.assert(device != null);
     std.debug.assert(image != null);
 
@@ -430,8 +430,8 @@ fn recordBarrier(
     image: vk.Image,
     src_access: u32,
     dst_access: u32,
-    old_layout: c_uint,
-    new_layout: c_uint,
+    old_layout: vk.ImageLayout,
+    new_layout: vk.ImageLayout,
     src_stage: u32,
     dst_stage: u32,
 ) void {
@@ -453,7 +453,7 @@ fn recordBarrier(
             .layerCount = 1,
         },
     };
-    vk.vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, null, 0, null, 1, &barrier);
+    vk.vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, null, 0, null, 1, (&barrier)[0..1]);
 }
 
 // =============================================================================
@@ -481,7 +481,7 @@ fn descriptorWrites(
             .descriptorCount = 1,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .pImageInfo = null,
-            .pBufferInfo = &buffer_infos[0],
+            .pBufferInfo = buffer_infos[0..1],
             .pTexelBufferView = null,
         },
         .{
@@ -493,7 +493,7 @@ fn descriptorWrites(
             .descriptorCount = 1,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .pImageInfo = null,
-            .pBufferInfo = &buffer_infos[1],
+            .pBufferInfo = buffer_infos[1..2],
             .pTexelBufferView = null,
         },
         .{
@@ -504,7 +504,7 @@ fn descriptorWrites(
             .dstArrayElement = 0,
             .descriptorCount = 1,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = image_info,
+            .pImageInfo = image_info[0..1],
             .pBufferInfo = null,
             .pTexelBufferView = null,
         },
@@ -516,7 +516,7 @@ fn descriptorWrites(
             .dstArrayElement = 0,
             .descriptorCount = 1,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-            .pImageInfo = sampler_info,
+            .pImageInfo = sampler_info[0..1],
             .pBufferInfo = null,
             .pTexelBufferView = null,
         },

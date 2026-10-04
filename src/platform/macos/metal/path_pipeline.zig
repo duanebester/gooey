@@ -577,9 +577,9 @@ pub const PathPipeline = struct {
 
         // Draw indexed triangles
         encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
-            @intFromEnum(mtl.MTLPrimitiveType.triangle),
+            @backingInt(mtl.MTLPrimitiveType.triangle),
             @as(c_ulong, index_count),
-            @intFromEnum(mtl.MTLIndexType.uint32),
+            @backingInt(mtl.MTLIndexType.uint32),
             self.index_buffers[idx].value,
             @as(c_ulong, 0),
         });
@@ -751,9 +751,9 @@ pub const PathPipeline = struct {
 
                 // Draw this path's triangles
                 encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
-                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                    @backingInt(mtl.MTLPrimitiveType.triangle),
                     @as(c_ulong, offsets.index_count),
-                    @intFromEnum(mtl.MTLIndexType.uint32),
+                    @backingInt(mtl.MTLIndexType.uint32),
                     self.index_buffers[idx].value,
                     @as(c_ulong, offsets.index_offset * @sizeOf(u32)),
                 });
@@ -924,7 +924,7 @@ pub const PathPipeline = struct {
                 const gradient = if (i < gradients.len) gradients[i] else GradientUniforms.none();
 
                 // Debug: print ALL path data being uploaded
-                if (DEBUG_GRADIENTS and builtin.mode == .Debug) {
+                if (DEBUG_GRADIENTS and builtin.mode == .debug) {
                     // Print PathInstance params (UV-space, sent to vertex shader)
                     std.debug.print("Path[{d}] instance: type={d}, stops={d}, color=({d:.2},{d:.2},{d:.2},{d:.2}), params=({d:.3},{d:.3},{d:.3},{d:.3})\n", .{
                         i,
@@ -972,9 +972,9 @@ pub const PathPipeline = struct {
 
                 // Draw this path's triangles
                 encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
-                    @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                    @backingInt(mtl.MTLPrimitiveType.triangle),
                     @as(c_ulong, offsets.index_count),
-                    @intFromEnum(mtl.MTLIndexType.uint32),
+                    @backingInt(mtl.MTLIndexType.uint32),
                     self.index_buffers[idx].value,
                     @as(c_ulong, offsets.index_offset * @sizeOf(u32)),
                 });
@@ -1120,9 +1120,9 @@ pub const PathPipeline = struct {
 
         // ONE draw call for entire batch - this is the main optimization!
         encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
-            @intFromEnum(mtl.MTLPrimitiveType.triangle),
+            @backingInt(mtl.MTLPrimitiveType.triangle),
             @as(c_ulong, index_offset), // Total indices written
-            @intFromEnum(mtl.MTLIndexType.uint32),
+            @backingInt(mtl.MTLIndexType.uint32),
             self.solid_index_buffers[idx].value,
             @as(c_ulong, 0),
         });
@@ -1298,13 +1298,13 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     const attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
     const attach0 = attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
-    attach0.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.bgra8unorm)});
+    attach0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attach0.msgSend(void, "setBlendingEnabled:", .{true});
     // Path shader outputs premultiplied alpha (rgb already multiplied by alpha), so use ONE
-    attach0.msgSend(void, "setSourceRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-    attach0.msgSend(void, "setDestinationRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
-    attach0.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-    attach0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attach0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+    attach0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attach0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+    attach0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
 
     const pipeline_ptr = device.msgSend(?*anyopaque, "newRenderPipelineStateWithDescriptor:error:", .{
         desc.value, @as(?*anyopaque, null),
@@ -1345,13 +1345,13 @@ fn createSolidPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     const attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
     const attach0 = attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
-    attach0.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.bgra8unorm)});
+    attach0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attach0.msgSend(void, "setBlendingEnabled:", .{true});
     // Solid shader outputs premultiplied alpha (rgb already multiplied by alpha), so use ONE
-    attach0.msgSend(void, "setSourceRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-    attach0.msgSend(void, "setDestinationRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
-    attach0.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-    attach0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attach0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+    attach0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attach0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+    attach0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
 
     const pipeline_ptr = device.msgSend(?*anyopaque, "newRenderPipelineStateWithDescriptor:error:", .{
         desc.value, @as(?*anyopaque, null),

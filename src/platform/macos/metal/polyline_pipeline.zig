@@ -311,9 +311,9 @@ pub const PolylinePipeline = struct {
             });
 
             encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
-                @intFromEnum(mtl.MTLPrimitiveType.triangle),
+                @backingInt(mtl.MTLPrimitiveType.triangle),
                 @as(c_ulong, index_count),
-                @intFromEnum(mtl.MTLIndexType.uint32),
+                @backingInt(mtl.MTLIndexType.uint32),
                 ib.value,
                 @as(c_ulong, self.frame_index_offset * @sizeOf(u32)),
             });
@@ -400,12 +400,12 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
     const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
 
     // Configure blending
-    attachment0.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.bgra8unorm)});
+    attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attachment0.msgSend(void, "setBlendingEnabled:", .{true});
-    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.source_alpha)});
-    attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
-    attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-    attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
+    attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+    attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
 
     var pipeline_error: ?*anyopaque = null;
     const pipeline_ptr = device.msgSend(

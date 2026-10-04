@@ -431,7 +431,7 @@ test "counter with bounds pattern" {
 test "toggle collection pattern" {
     // Common pattern: multi-select with toggles
     const SelectionState = struct {
-        selected: [8]bool = [_]bool{false} ** 8,
+        selected: [8]bool = @splat(false),
         count: usize = 8,
 
         pub fn toggle(self: *@This(), index: usize) void {
@@ -490,15 +490,15 @@ test "DataTableCallbacks type structure" {
 
     // Verify the struct has the expected fields
     const info = @typeInfo(Callbacks);
-    try std.testing.expectEqual(@as(usize, 3), info.@"struct".fields.len);
+    try std.testing.expectEqual(@as(usize, 3), info.@"struct".field_names.len);
 
     // Verify field names
-    try std.testing.expectEqualStrings("render_header", info.@"struct".fields[0].name);
-    try std.testing.expectEqualStrings("render_cell", info.@"struct".fields[1].name);
-    try std.testing.expectEqualStrings("render_row", info.@"struct".fields[2].name);
+    try std.testing.expectEqualStrings("render_header", info.@"struct".field_names[0]);
+    try std.testing.expectEqualStrings("render_cell", info.@"struct".field_names[1]);
+    try std.testing.expectEqualStrings("render_row", info.@"struct".field_names[2]);
 
     // Verify render_row has a default value (is optional)
-    try std.testing.expect(info.@"struct".fields[2].default_value_ptr != null);
+    try std.testing.expect(info.@"struct".field_attrs[2].default_value_ptr != null);
 }
 
 // =============================================================================
@@ -628,22 +628,22 @@ test "cx.element_states: signatures route the right comptime types" {
     // four params after the receiver. Same shape for `withById` but
     // with `u64` in slot 2.
     const with_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.with)).@"fn";
-    try std.testing.expectEqual(@as(usize, 4), with_info.params.len);
+    try std.testing.expectEqual(@as(usize, 4), with_info.param_types.len);
 
     const with_by_id_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.withById)).@"fn";
-    try std.testing.expectEqual(@as(usize, 4), with_by_id_info.params.len);
+    try std.testing.expectEqual(@as(usize, 4), with_by_id_info.param_types.len);
 
     // `get` / `getById` — three params (receiver + S + id).
     const get_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.get)).@"fn";
-    try std.testing.expectEqual(@as(usize, 3), get_info.params.len);
+    try std.testing.expectEqual(@as(usize, 3), get_info.param_types.len);
 
     // `insert` / `insertById` — four params (receiver + S + id + initial).
     const insert_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.insert)).@"fn";
-    try std.testing.expectEqual(@as(usize, 4), insert_info.params.len);
+    try std.testing.expectEqual(@as(usize, 4), insert_info.param_types.len);
 
     // `remove` / `removeById` — three params, returns `bool`.
     const remove_info = @typeInfo(@TypeOf(element_states_ns.ElementStates.remove)).@"fn";
-    try std.testing.expectEqual(@as(usize, 3), remove_info.params.len);
+    try std.testing.expectEqual(@as(usize, 3), remove_info.param_types.len);
     try std.testing.expectEqual(bool, remove_info.return_type.?);
 
     // Probe ensures the test references a non-trivial comptime type.

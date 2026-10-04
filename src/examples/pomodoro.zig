@@ -170,7 +170,7 @@ const AppState = struct {
     is_running: bool = false,
 
     // Tasks
-    tasks: [MaxTasks]gooey.context.Entity(Task) = [_]gooey.context.Entity(Task){gooey.context.Entity(Task).nil()} ** MaxTasks,
+    tasks: [MaxTasks]gooey.context.Entity(Task) = @splat(gooey.context.Entity(Task).nil()),
     task_count: usize = 0,
     input_text: []const u8 = "",
 

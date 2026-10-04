@@ -89,18 +89,18 @@ fn MsgSendFn(
     assert(@sizeOf(Target) == @sizeOf(c.id));
 
     // Build up the parameter types: target, selector, then unwrapped args.
-    var param_types: [argsInfo.fields.len + 2]type = undefined;
+    var param_types: [argsInfo.field_types.len + 2]type = undefined;
     param_types[0] = Target;
     param_types[1] = c.SEL;
-    for (argsInfo.fields, 0..) |field, i| param_types[i + 2] = unwrapType(field.type);
+    for (argsInfo.field_types, 0..) |field_type, i| param_types[i + 2] = unwrapType(field_type);
 
     return @Fn(&param_types, &@splat(.{}), Return, .{ .@"callconv" = .c });
 }
 
 fn UnwrappedArgs(comptime Args: type) type {
-    const fields = @typeInfo(Args).@"struct".fields;
-    var types: [fields.len]type = undefined;
-    for (fields, 0..) |field, i| types[i] = unwrapType(field.type);
+    const field_types = @typeInfo(Args).@"struct".field_types;
+    var types: [field_types.len]type = undefined;
+    for (field_types, 0..) |field_type, i| types[i] = unwrapType(field_type);
     return @Tuple(&types);
 }
 
@@ -115,9 +115,9 @@ fn unwrapType(comptime T: type) type {
     // rather than c.id, since Class and Sel have distinct pointer types.
     if (@typeInfo(T) == .@"struct") {
         const info = @typeInfo(T).@"struct";
-        for (info.fields) |field| {
-            if (std.mem.eql(u8, field.name, "value") and @sizeOf(field.type) == @sizeOf(c.id)) {
-                return field.type;
+        for (info.field_names, info.field_types) |field_name, field_type| {
+            if (std.mem.eql(u8, field_name, "value") and @sizeOf(field_type) == @sizeOf(c.id)) {
+                return field_type;
             }
         }
     }
@@ -149,9 +149,9 @@ fn unwrapType(comptime T: type) type {
 }
 
 inline fn buildUnwrappedArgs(args: anytype) UnwrappedArgs(@TypeOf(args)) {
-    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
+    const field_types = @typeInfo(@TypeOf(args)).@"struct".field_types;
     var result: UnwrappedArgs(@TypeOf(args)) = undefined;
-    inline for (fields, 0..) |_, i| {
+    inline for (field_types, 0..) |_, i| {
         result[i] = if (unwrapType(@TypeOf(args[i])) != @TypeOf(args[i]))
             args[i].value
         else

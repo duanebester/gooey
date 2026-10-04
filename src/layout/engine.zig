@@ -384,7 +384,7 @@ pub const LayoutEngine = struct {
         self.commands.clear();
         self.open_element_stack.len = 0;
         self.floating_roots.len = 0;
-        if (comptime builtin.mode == .Debug) {
+        if (comptime builtin.mode == .debug) {
             self.seen_ids.clearRetainingCapacity();
         }
         self.id_to_index.clearRetainingCapacity();
@@ -503,7 +503,7 @@ pub const LayoutEngine = struct {
         std.debug.assert(self.elements.len() < MAX_ELEMENTS_PER_FRAME); // Prevent unbounded growth
         std.debug.assert(elem_type != .container or self.open_element_stack.len < MAX_OPEN_DEPTH); // Depth check for containers
 
-        if (comptime builtin.mode == .Debug) self.checkIdCollision(decl.id);
+        if (comptime builtin.mode == .debug) self.checkIdCollision(decl.id);
 
         const parent_index = if (self.open_element_stack.len > 0)
             self.open_element_stack.buffer[self.open_element_stack.len - 1]

@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench/compare.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         }),
     });
 
@@ -45,11 +45,7 @@ pub fn build(b: *std.Build) void {
         const threshold_str = std.fmt.bufPrint(&threshold_buf, "{d:.1}", .{threshold}) catch "15.0";
         compare_run.addArgs(&.{ "--threshold", threshold_str });
     }
-    if (b.args) |args| {
-        for (args) |arg| {
-            compare_run.addArg(arg);
-        }
-    }
+    compare_run.addPassthruArgs();
     compare_step.dependOn(&compare_run.step);
 
     // Unit tests for the comparison/gating logic itself.  Built here
@@ -166,9 +162,7 @@ pub fn build(b: *std.Build) void {
         // Enable Metal HUD for FPS/GPU stats
         // run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
 
-        if (b.args) |args| {
-            run_cmd.addArgs(args);
-        }
+        run_cmd.addPassthruArgs();
 
         // =========================================================================
         // Native Mac Examples
@@ -335,7 +329,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         const run_fuzz = b.addRunArtifact(fuzz_tests);
-        if (b.args) |args| run_fuzz.addArgs(args);
+        run_fuzz.addPassthruArgs();
         const fuzz_step = b.step("fuzz", "Run layout-engine fuzz targets (pass --fuzz for infinite mode)");
         fuzz_step.dependOn(&run_fuzz.step);
 
@@ -348,7 +342,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/layout/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -372,7 +366,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/context/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -396,7 +390,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/core/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -420,7 +414,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/text/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -444,7 +438,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/scene/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -479,7 +473,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/animation/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -513,7 +507,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -545,7 +539,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/accessibility/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -591,7 +585,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/runtime/watcher.zig"),
                 .target = target,
-                .optimize = .Debug,
+                .optimize = .debug,
             }),
         });
 
@@ -604,17 +598,11 @@ pub fn build(b: *std.Build) void {
         watcher_cmd.addArg("components/src");
         watcher_cmd.addArg("--");
 
-        if (b.args) |args| {
-            watcher_cmd.addArg("zig");
-            watcher_cmd.addArg("build");
-            for (args) |arg| {
-                watcher_cmd.addArg(arg);
-            }
-        } else {
-            watcher_cmd.addArg("zig");
-            watcher_cmd.addArg("build");
-            watcher_cmd.addArg("run");
-        }
+        // Build scripts can no longer observe passthrough arguments, so the
+        // watcher owns the default: a bare `zig build` becomes `zig build run`.
+        watcher_cmd.addArg("zig");
+        watcher_cmd.addArg("build");
+        watcher_cmd.addPassthruArgs();
 
         hot_step.dependOn(&watcher_cmd.step);
     }
@@ -679,8 +667,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
 
-        // Link Vulkan
-        mod.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+        // Link Vulkan. The bindings are plain externs, so no headers are needed.
         mod.linkSystemLibrary("vulkan", .{});
 
         // Link text rendering libraries (FreeType, HarfBuzz, Fontconfig)
@@ -756,9 +743,7 @@ pub fn build(b: *std.Build) void {
         run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
         run_step.dependOn(&run_cmd.step);
 
-        if (b.args) |args| {
-            run_cmd.addArgs(args);
-        }
+        run_cmd.addPassthruArgs();
 
         // =========================================================================
         // Linux Native Examples
@@ -831,7 +816,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/layout/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -856,7 +841,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/context/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -881,7 +866,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/core/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -906,7 +891,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/text/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -931,7 +916,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/scene/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -969,7 +954,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/animation/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -1006,7 +991,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -1043,7 +1028,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/accessibility/benchmarks.zig"),
                 .target = target,
-                .optimize = .ReleaseFast,
+                .optimize = .fast,
                 .imports = &.{
                     .{ .name = "gooey", .module = mod },
                     .{ .name = "bench", .module = bench_mod },
@@ -1178,7 +1163,7 @@ pub fn build(b: *std.Build) void {
         const valgrind_mod = b.addModule("gooey-valgrind", .{
             .root_source_file = b.path("src/root.zig"),
             .target = valgrind_target,
-            .optimize = .ReleaseSafe, // ReleaseSafe for meaningful stack traces
+            .optimize = .safe, // ReleaseSafe for meaningful stack traces
         });
 
         // Separate test artifact for valgrind with baseline CPU
@@ -1202,9 +1187,9 @@ pub fn build(b: *std.Build) void {
             "--errors-for-leak-kinds=definite,indirect,possible", // Only fail on actual leaks
             "--num-callers=15", // Enough for useful traces without noise
             "--error-exitcode=1",
-            b.fmt("--suppressions={s}", .{b.pathFromRoot("valgrind.supp")}),
             "--max-stackframe=4000000", // Zig's large stack frames for async/coroutines
         });
+        valgrind_run.addFileArg2(b.path("valgrind.supp"), .{ .prefix = "--suppressions=" });
         valgrind_run.addArtifactArg(valgrind_tests);
         test_valgrind_step.dependOn(&valgrind_run.step);
     }
@@ -1260,7 +1245,7 @@ fn addNativeExample(
     components_module: *std.Build.Module,
     objc_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     name: []const u8,
     source: []const u8,
     metal_hud: bool,
@@ -1289,9 +1274,7 @@ fn addNativeExample(
     if (metal_hud) {
         run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
     }
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 }
@@ -1303,7 +1286,7 @@ fn addGenuiNativeExample(
     genui_module: *std.Build.Module,
     objc_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) void {
     const executable = b.addExecutable(.{
         .name = "genui-demo",
@@ -1336,7 +1319,7 @@ fn addChartsExample(
     charts_module: *std.Build.Module,
     objc_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     name: []const u8,
     source: []const u8,
 ) void {
@@ -1374,18 +1357,6 @@ fn addChartsExample(
 /// graph size and worst-case step wall time.
 const typecheck_linux_root_count_max: usize = 8;
 
-/// How to obtain the headers `typecheck-linux` needs. Shared by the skip
-/// notice and the `-Dtypecheck-linux-required=true` failure so the actionable
-/// instructions survive either outcome.
-const typecheck_linux_fetch_help: []const u8 =
-    "  Fetch them (not vendored; see CLAUDE.md §12):\n" ++
-    "    mkdir -p /tmp/vkh && cd /tmp/vkh && curl -sSL -o vh.tar.gz \\\n" ++
-    "      https://github.com/KhronosGroup/Vulkan-Headers/archive/" ++
-    "refs/tags/v1.3.280.tar.gz && tar xzf vh.tar.gz\n" ++
-    "  Then re-run:\n" ++
-    "    zig build typecheck-linux \\\n" ++
-    "      -Dvulkan-headers=/tmp/vkh/Vulkan-Headers-1.3.280/include";
-
 /// A single semantic-analysis root for the `typecheck-linux` step.
 const TypecheckRoot = struct {
     /// Source file analyzed as the root module.
@@ -1396,93 +1367,34 @@ const TypecheckRoot = struct {
     as_test: bool,
 };
 
-/// Adds the opt-in `typecheck-linux` step: full semantic analysis of the
+/// Adds the `typecheck-linux` step: full semantic analysis of the
 /// Linux/Wayland/Vulkan backend from any host, with no linking.
 ///
 /// Why this exists: `src/platform/linux/**` is only reachable by the compiler
-/// when the target is Linux, and the macOS development hosts (and any CI
-/// runner without a Linux job) therefore could not compile it at all. The one
-/// blocker was `src/platform/linux/vulkan.zig`, which `@cImport`s
-/// `vulkan/vulkan.h`; `wayland.zig` and `dbus.zig` use plain `extern`
-/// declarations and need no headers. Supplying the Vulkan headers plus the
-/// four-line Wayland forward-declaration stub in `tools/typecheck/` closes a
-/// permanent verification gap where Linux-only code could only be reviewed by
-/// hand.
+/// when the target is Linux, so macOS development hosts (and any CI runner
+/// without a Linux job) could not compile it at all, and Linux-only code could
+/// only be reviewed by hand. Every Linux binding (`vulkan.zig`, `wayland.zig`,
+/// `dbus.zig`, FreeType, libpng) is a plain `extern` declaration, so analysis
+/// needs no C headers, no options, and no downloads.
 ///
-/// Getting the headers (not vendored — CLAUDE.md §12 forbids third-party
-/// dependencies in-tree, and the Khronos headers are versioned upstream):
-///
-/// ```sh
-/// mkdir -p /tmp/vkh && cd /tmp/vkh
-/// curl -sSL -o vh.tar.gz \
-///     https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.3.280.tar.gz
-/// tar xzf vh.tar.gz
-/// cd -
-/// zig build typecheck-linux \
-///     -Dvulkan-headers=/tmp/vkh/Vulkan-Headers-1.3.280/include
-/// ```
-///
-/// The step is deliberately not wired into `install`, `test`, or any default
-/// step: it needs an operator-supplied path, so making it default would break
-/// `zig build` for everyone who has not fetched the headers. Without the path
-/// the step skips and says so; `-Dtypecheck-linux-required=true` turns that
-/// skip into a failure, which is what CI must use so a green run means the
-/// Linux tree was actually analyzed.
+/// The step is not wired into `install` or `test` because it re-analyzes the
+/// whole library for a second target, which roughly doubles their wall time.
+/// CI runs it as its own job.
 ///
 /// No system libraries are linked. Library resolution happens *before*
 /// semantic analysis, so a single `-lvulkan` would fail on a macOS host and
-/// hide the errors this step exists to find. libc is still enabled because
-/// `@cImport` needs a C translation environment, and Zig ships cross-compiling
-/// glibc stubs. Binary emission is suppressed by never asking for the emitted
-/// binary: `std.Build.Step.Compile` leaves `generated_bin` null until
-/// `getEmittedBin()` is called and then passes `-fno-emit-bin` itself, so
-/// depending on the compile step alone gives exact `-fno-emit-bin` semantics
-/// through the build API. No helper program is needed.
+/// hide the errors this step exists to find. libc stays enabled because the
+/// native Linux build links it, and analysis must see the same `std.c`
+/// surface; Zig ships cross-compiling glibc stubs. Binary emission is
+/// suppressed by never asking for the emitted binary: `std.Build.Step.Compile`
+/// leaves `generated_bin` null until `getEmittedBin()` is called and then
+/// passes `-fno-emit-bin` itself, so depending on the compile step alone gives
+/// exact `-fno-emit-bin` semantics through the build API.
 fn addLinuxTypecheck(b: *std.Build) void {
     const step = b.step(
         "typecheck-linux",
-        "Semantically analyze the Linux backend from any host (needs -Dvulkan-headers)",
+        "Semantically analyze the Linux backend from any host",
     );
-
-    const vulkan_headers = b.option(
-        []const u8,
-        "vulkan-headers",
-        "Path to a Vulkan-Headers `include` directory, for `typecheck-linux`",
-    );
-
-    // A skip that exits 0 is indistinguishable from a pass, so a CI job
-    // wiring up this step would be permanently green while checking nothing.
-    // CI sets `-Dtypecheck-linux-required=true` and gets a hard failure on
-    // missing headers; local developers keep the friendly skip.
-    const required = b.option(
-        bool,
-        "typecheck-linux-required",
-        "Fail `typecheck-linux` instead of skipping when -Dvulkan-headers is absent",
-    ) orelse false;
-
-    const headers_path = vulkan_headers orelse {
-        if (required) {
-            const fail = b.addFail(b.fmt(
-                "typecheck-linux: required but no Vulkan headers supplied.\n{s}",
-                .{typecheck_linux_fetch_help},
-            ));
-            step.dependOn(&fail.step);
-            return;
-        }
-
-        const notice = b.addSystemCommand(&.{
-            "echo",
-            b.fmt(
-                "typecheck-linux: SKIPPED (checked nothing) — no Vulkan headers" ++
-                    " supplied.\n{s}\n" ++
-                    "  CI should pass -Dtypecheck-linux-required=true so this" ++
-                    " skip fails instead.",
-                .{typecheck_linux_fetch_help},
-            ),
-        });
-        step.dependOn(&notice.step);
-        return;
-    };
 
     const linux_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
@@ -1506,29 +1418,27 @@ fn addLinuxTypecheck(b: *std.Build) void {
     comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
 
     for (roots) |root| {
-        addLinuxTypecheckRoot(b, step, linux_target, headers_path, root);
+        addLinuxTypecheckRoot(b, step, linux_target, root);
     }
 }
 
 /// Analyzes one root for the Linux target. Split out so `addLinuxTypecheck`
-/// keeps the option handling and the root list, and this owns per-root module
-/// wiring.
+/// keeps the root list, and this owns per-root module wiring.
 fn addLinuxTypecheckRoot(
     b: *std.Build,
     step: *std.Build.Step,
     target: std.Build.ResolvedTarget,
-    vulkan_headers: []const u8,
     root: TypecheckRoot,
 ) void {
     std.debug.assert(root.source.len > 0);
-    std.debug.assert(vulkan_headers.len > 0);
+    std.debug.assert(target.result.os.tag == .linux);
 
     const gooey_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = .debug,
+        .link_libc = true,
     });
-    addLinuxTypecheckIncludes(b, gooey_mod, vulkan_headers);
 
     const compile = if (root.as_test) b.addTest(.{
         .root_module = gooey_mod,
@@ -1536,20 +1446,20 @@ fn addLinuxTypecheckRoot(
         const components_mod = b.createModule(.{
             .root_source_file = b.path("components/src/root.zig"),
             .target = target,
-            .optimize = .Debug,
+            .optimize = .debug,
         });
         components_mod.addImport("gooey", gooey_mod);
 
         const root_mod = b.createModule(.{
             .root_source_file = b.path(root.source),
             .target = target,
-            .optimize = .Debug,
+            .optimize = .debug,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_mod },
                 .{ .name = "gooey-components", .module = components_mod },
             },
         });
-        addLinuxTypecheckIncludes(b, root_mod, vulkan_headers);
 
         break :blk b.addExecutable(.{
             .name = b.fmt("typecheck-linux-{s}", .{std.fs.path.stem(root.source)}),
@@ -1562,19 +1472,6 @@ fn addLinuxTypecheckRoot(
     step.dependOn(&compile.step);
 }
 
-/// Applies the include paths the Linux `@cImport` needs. Both the `gooey`
-/// module and each importing root need them: include paths are per-module, and
-/// `@cImport` is resolved in the module that contains it.
-fn addLinuxTypecheckIncludes(
-    b: *std.Build,
-    module: *std.Build.Module,
-    vulkan_headers: []const u8,
-) void {
-    module.addIncludePath(.{ .cwd_relative = vulkan_headers });
-    module.addIncludePath(b.path("tools/typecheck"));
-    module.link_libc = true;
-}
-
 fn addWasmBuilds(b: *std.Build) void {
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -1583,13 +1480,13 @@ fn addWasmBuilds(b: *std.Build) void {
     const gooey_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = wasm_target,
-        .optimize = .ReleaseSmall,
+        .optimize = .small,
     });
     addWasmShaderImports(b, gooey_module);
     const components_module = b.createModule(.{
         .root_source_file = b.path("components/src/root.zig"),
         .target = wasm_target,
-        .optimize = .ReleaseSmall,
+        .optimize = .small,
     });
     components_module.addImport("gooey", gooey_module);
 
@@ -1651,7 +1548,7 @@ fn addWasmExample(
     const application_module = b.createModule(.{
         .root_source_file = b.path(options.source),
         .target = wasm_target,
-        .optimize = .ReleaseSmall,
+        .optimize = .small,
         .imports = &.{
             .{ .name = "gooey", .module = gooey_module },
             .{ .name = "gooey-components", .module = components_module },
@@ -1662,7 +1559,7 @@ fn addWasmExample(
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/platform/web/entry.zig"),
             .target = wasm_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .imports = &.{.{ .name = "application", .module = application_module }},
         }),
     });
@@ -1692,7 +1589,7 @@ fn addLinuxExample(
     gooey_module: *std.Build.Module,
     components_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     compile_shaders_step: *std.Build.Step,
     skip_shader_compile: bool,
     name: []const u8,
@@ -1725,9 +1622,7 @@ fn addLinuxExample(
     const step = b.step(step_name, step_desc);
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 }
@@ -1738,7 +1633,7 @@ fn addLinuxGenuiExample(
     components_module: *std.Build.Module,
     genui_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     compile_shaders_step: *std.Build.Step,
     skip_shader_compile: bool,
 ) void {

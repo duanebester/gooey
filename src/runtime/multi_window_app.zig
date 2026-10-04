@@ -1017,8 +1017,8 @@ test "AppWindowOptions forwards to WindowOptions without conversion" {
     // Goal: catch a re-widening of the app-level option fields. Forwarding in
     // `windowOptionsFrom` is a plain copy only while the types match exactly;
     // a mismatch would reintroduce a lossy cast at the boundary.
-    const app_fields = @typeInfo(AppWindowOptions).@"struct".fields;
-    const platform_fields = @typeInfo(WindowOptions).@"struct".fields;
+    const app_fields = @typeInfo(AppWindowOptions).@"struct".field_names;
+    const platform_fields = @typeInfo(WindowOptions).@"struct".field_names;
 
     inline for (.{ "background_opacity", "glass_style", "glass_corner_radius" }) |name| {
         const app_type = @FieldType(AppWindowOptions, name);

@@ -317,11 +317,11 @@ test "GlassStyle tag values are stable across backends" {
     // literals in application code and were previously reinterpreted across
     // three separate enums. Pin them so a reordering is a test failure rather
     // than a silently wrong window appearance.
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(GlassStyle.none));
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(GlassStyle.blur));
-    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(GlassStyle.glass_regular));
-    try std.testing.expectEqual(@as(u8, 3), @intFromEnum(GlassStyle.glass_clear));
-    try std.testing.expectEqual(@as(u8, 4), @intFromEnum(GlassStyle.vibrancy));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(GlassStyle.none));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(GlassStyle.blur));
+    try std.testing.expectEqual(@as(u8, 2), @backingInt(GlassStyle.glass_regular));
+    try std.testing.expectEqual(@as(u8, 3), @backingInt(GlassStyle.glass_clear));
+    try std.testing.expectEqual(@as(u8, 4), @backingInt(GlassStyle.vibrancy));
 }
 
 test "GlassStyle.needsTransparentClear covers every variant" {

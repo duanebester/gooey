@@ -2,7 +2,7 @@
     .name = .gooey,
     .version = "0.2.14",
     .fingerprint = 0xfcad6172ee59f0b8,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",

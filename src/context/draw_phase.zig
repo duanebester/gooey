@@ -74,8 +74,8 @@ pub fn assertPhase(actual: DrawPhase, expected: DrawPhase) void {
 /// in the frame driver — phases advance monotonically and only the
 /// frame-end reset returns to `.none`.
 pub fn assertAdvance(current: DrawPhase, next: DrawPhase) void {
-    const cur: u8 = @intFromEnum(current);
-    const nxt: u8 = @intFromEnum(next);
+    const cur: u8 = @backingInt(current);
+    const nxt: u8 = @backingInt(next);
 
     // Forward step by exactly one phase covers the first three legal
     // transitions; the wrap is split out so the failure mode is clear.
@@ -99,10 +99,10 @@ const testing = std.testing;
 test "DrawPhase tag values are stable" {
     // The ordering is load-bearing for `assertAdvance`. Pin the
     // numeric values so a future reorder fails loudly here.
-    try testing.expectEqual(@as(u8, 0), @intFromEnum(DrawPhase.none));
-    try testing.expectEqual(@as(u8, 1), @intFromEnum(DrawPhase.prepaint));
-    try testing.expectEqual(@as(u8, 2), @intFromEnum(DrawPhase.paint));
-    try testing.expectEqual(@as(u8, 3), @intFromEnum(DrawPhase.focus));
+    try testing.expectEqual(@as(u8, 0), @backingInt(DrawPhase.none));
+    try testing.expectEqual(@as(u8, 1), @backingInt(DrawPhase.prepaint));
+    try testing.expectEqual(@as(u8, 2), @backingInt(DrawPhase.paint));
+    try testing.expectEqual(@as(u8, 3), @backingInt(DrawPhase.focus));
 }
 
 test "DrawPhase fits in a single byte" {

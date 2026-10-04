@@ -203,12 +203,12 @@ pub const TextPipeline = struct {
         // Configure color attachment with alpha blending
         const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
         const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
-        attachment0.msgSend(void, "setPixelFormat:", .{@intFromEnum(pixel_format)});
+        attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(pixel_format)});
         attachment0.msgSend(void, "setBlendingEnabled:", .{true});
-        attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.source_alpha)});
-        attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
-        attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-        attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+        attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
+        attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
+        attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+        attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
 
         // Create pipeline state
         var pipeline_error: ?*anyopaque = null;
@@ -314,8 +314,8 @@ pub const TextPipeline = struct {
             .msgSend(objc.Object, "init", .{});
         defer tex_desc.release();
 
-        tex_desc.msgSend(void, "setTextureType:", .{@intFromEnum(mtl.MTLTextureType.type_2d)});
-        tex_desc.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.r8unorm)});
+        tex_desc.msgSend(void, "setTextureType:", .{@backingInt(mtl.MTLTextureType.type_2d)});
+        tex_desc.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.r8unorm)});
         tex_desc.msgSend(void, "setWidth:", .{@as(c_ulong, atlas.size)});
         tex_desc.msgSend(void, "setHeight:", .{@as(c_ulong, atlas.size)});
         tex_desc.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(mtl.MTLTextureUsage.shader_read_only))});

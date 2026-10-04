@@ -44,12 +44,12 @@ pub const DispatchNodeId = enum(u32) {
     const Self = @This();
 
     pub fn fromIndex(index: u32) Self {
-        return @enumFromInt(index);
+        return @fromBackingInt(@intCast(index));
     }
 
     pub fn toIndex(self: Self) ?u32 {
         if (self == .invalid) return null;
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     pub fn isValid(self: Self) bool {
@@ -434,7 +434,7 @@ pub const DispatchTree = struct {
             } else {
                 // O(1): link directly from last_child.
                 std.debug.assert(parent.last_child.isValid());
-                self.nodes.items[@intFromEnum(parent.last_child)].next_sibling = node_id;
+                self.nodes.items[@backingInt(parent.last_child)].next_sibling = node_id;
             }
             parent.last_child = node_id;
             parent.child_count += 1;

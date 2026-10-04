@@ -39,8 +39,8 @@ pub fn createRenderPass(config: RenderPassConfig) ?objc.Object {
 
     color_attachment_0.msgSend(void, "setTexture:", .{config.msaa_texture.value});
     color_attachment_0.msgSend(void, "setResolveTexture:", .{config.resolve_texture.value});
-    color_attachment_0.msgSend(void, "setLoadAction:", .{@intFromEnum(config.load_action)});
-    color_attachment_0.msgSend(void, "setStoreAction:", .{@intFromEnum(config.store_action)});
+    color_attachment_0.msgSend(void, "setLoadAction:", .{@backingInt(config.load_action)});
+    color_attachment_0.msgSend(void, "setStoreAction:", .{@backingInt(config.store_action)});
     color_attachment_0.msgSend(void, "setClearColor:", .{mtl.MTLClearColor.fromColor(config.clear_color)});
 
     return render_pass;
@@ -59,8 +59,8 @@ pub fn createSimpleRenderPass(config: SimpleRenderPassConfig) ?objc.Object {
     );
 
     color_attachment_0.msgSend(void, "setTexture:", .{config.texture.value});
-    color_attachment_0.msgSend(void, "setLoadAction:", .{@intFromEnum(config.load_action)});
-    color_attachment_0.msgSend(void, "setStoreAction:", .{@intFromEnum(config.store_action)});
+    color_attachment_0.msgSend(void, "setLoadAction:", .{@backingInt(config.load_action)});
+    color_attachment_0.msgSend(void, "setStoreAction:", .{@backingInt(config.store_action)});
 
     if (config.clear_color) |color| {
         color_attachment_0.msgSend(void, "setClearColor:", .{mtl.MTLClearColor.fromColor(color)});

@@ -159,7 +159,7 @@ pub const VirtualListState = struct {
 
     /// Cached item heights. 0.0 means "not yet measured, use default".
     /// Index directly by item index. Memory: 16KB.
-    heights: [MAX_VIRTUAL_LIST_ITEMS]f32 = [_]f32{UNMEASURED_HEIGHT} ** MAX_VIRTUAL_LIST_ITEMS,
+    heights: [MAX_VIRTUAL_LIST_ITEMS]f32 = @splat(UNMEASURED_HEIGHT),
 
     /// Pending programmatic scroll request.
     /// Set by scrollTo*, resolved and consumed by builder each frame.

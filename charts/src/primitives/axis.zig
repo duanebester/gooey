@@ -341,8 +341,8 @@ test "Axis.Options defaults" {
 }
 
 test "Axis orientations" {
-    try std.testing.expectEqual(@intFromEnum(Axis.Orientation.top), 0);
-    try std.testing.expectEqual(@intFromEnum(Axis.Orientation.bottom), 1);
-    try std.testing.expectEqual(@intFromEnum(Axis.Orientation.left), 2);
-    try std.testing.expectEqual(@intFromEnum(Axis.Orientation.right), 3);
+    try std.testing.expectEqual(@backingInt(Axis.Orientation.top), 0);
+    try std.testing.expectEqual(@backingInt(Axis.Orientation.bottom), 1);
+    try std.testing.expectEqual(@backingInt(Axis.Orientation.left), 2);
+    try std.testing.expectEqual(@backingInt(Axis.Orientation.right), 3);
 }

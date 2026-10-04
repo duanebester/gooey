@@ -197,7 +197,7 @@ pub const StdHttpTransport = struct {
 
         var redirect_buffer: [8192]u8 = undefined;
         var response = try http_request.receiveHead(&redirect_buffer);
-        diagnostics.status = @intFromEnum(response.head.status);
+        diagnostics.status = @backingInt(response.head.status);
         diagnostics.classification = classificationForStatus(diagnostics.status.?);
         captureHeaders(response.head, diagnostics);
         const content_length = response.head.content_length;

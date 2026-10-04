@@ -24,7 +24,7 @@ pub const Request = struct {
 pub const Choice = struct {
     selected_index: u8 = 0,
     confidence: f64 = 0,
-    probabilities: [options_max]f64 = [_]f64{0} ** options_max,
+    probabilities: [options_max]f64 = @splat(0),
     probability_count: u8 = 0,
 };
 

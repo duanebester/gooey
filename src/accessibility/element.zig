@@ -104,7 +104,7 @@ pub const Element = struct {
         // Assertion: fingerprint must be valid for accessible elements
         std.debug.assert(self.fingerprint.isValid() or self.role == .presentation or self.role == .none);
         // Assertion: role is within valid enum range
-        std.debug.assert(@intFromEnum(self.role) <= @intFromEnum(types.Role.none));
+        std.debug.assert(@backingInt(self.role) <= @backingInt(types.Role.none));
 
         return self.role != .presentation and
             self.role != .none and
@@ -167,7 +167,7 @@ pub const Element = struct {
 
     /// Check if this element is a container (group, region, dialog, etc.)
     pub fn isContainer(self: *const Self) bool {
-        std.debug.assert(@intFromEnum(self.role) <= @intFromEnum(types.Role.none));
+        std.debug.assert(@backingInt(self.role) <= @backingInt(types.Role.none));
         return switch (self.role) {
             .group,
             .region,
@@ -188,13 +188,13 @@ pub const Element = struct {
 
     /// Check if this element is a live region
     pub fn isLiveRegion(self: *const Self) bool {
-        std.debug.assert(@intFromEnum(self.live) <= @intFromEnum(types.Live.assertive));
+        std.debug.assert(@backingInt(self.live) <= @backingInt(types.Live.assertive));
         return self.live != .off or self.role == .alert or self.role == .status;
     }
 
     /// Get effective live politeness (accounts for role-based defaults)
     pub fn effectiveLive(self: *const Self) types.Live {
-        std.debug.assert(@intFromEnum(self.live) <= @intFromEnum(types.Live.assertive));
+        std.debug.assert(@backingInt(self.live) <= @backingInt(types.Live.assertive));
         if (self.live != .off) return self.live;
         return switch (self.role) {
             .alert => .assertive,
@@ -210,7 +210,7 @@ pub const Element = struct {
         role: types.Role,
     ) Self {
         std.debug.assert(fp.isValid() or role == .presentation or role == .none);
-        std.debug.assert(@intFromEnum(role) <= @intFromEnum(types.Role.none));
+        std.debug.assert(@backingInt(role) <= @backingInt(types.Role.none));
 
         return Self{
             .layout_id = layout_id,

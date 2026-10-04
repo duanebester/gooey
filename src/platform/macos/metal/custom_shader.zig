@@ -252,7 +252,7 @@ pub const CustomShaderPipeline = struct {
         // Configure color attachment (no MSAA for post-process - render to resolve texture)
         const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
         const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
-        attachment0.msgSend(void, "setPixelFormat:", .{@intFromEnum(pixel_format)});
+        attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(pixel_format)});
 
         // No blending - custom shaders fully replace the color
         attachment0.msgSend(void, "setBlendingEnabled:", .{false});
@@ -423,7 +423,7 @@ pub const PostProcessState = struct {
             objc.Object,
             "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
             .{
-                @intFromEnum(mtl.MTLPixelFormat.bgra8unorm),
+                @backingInt(mtl.MTLPixelFormat.bgra8unorm),
                 @as(c_ulong, width),
                 @as(c_ulong, height),
                 false,
@@ -432,7 +432,7 @@ pub const PostProcessState = struct {
 
         const usage = mtl.MTLTextureUsage{ .shader_read = true, .render_target = true };
         desc.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(usage))});
-        desc.msgSend(void, "setStorageMode:", .{@intFromEnum(mtl.MTLStorageMode.private)});
+        desc.msgSend(void, "setStorageMode:", .{@backingInt(mtl.MTLStorageMode.private)});
 
         const texture_ptr = self.device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{desc.value});
         if (texture_ptr == null) return error.TextureCreationFailed;

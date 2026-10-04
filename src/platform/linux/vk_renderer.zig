@@ -173,17 +173,17 @@ pub const VulkanRenderer = struct {
 
     // Swapchain
     swapchain: vk.Swapchain = null,
-    swapchain_images: [8]vk.Image = [_]vk.Image{null} ** 8,
-    swapchain_image_views: [8]vk.ImageView = [_]vk.ImageView{null} ** 8,
+    swapchain_images: [8]vk.Image = @splat(null),
+    swapchain_image_views: [8]vk.ImageView = @splat(null),
     swapchain_image_count: u32 = 0,
-    swapchain_format: c_uint = vk.VK_FORMAT_B8G8R8A8_UNORM,
+    swapchain_format: vk.Format = vk.VK_FORMAT_B8G8R8A8_UNORM,
     swapchain_extent: vk.Extent2D = .{ .width = 0, .height = 0 },
 
     // MSAA resources
     msaa_image: vk.Image = null,
     msaa_memory: vk.DeviceMemory = null,
     msaa_view: vk.ImageView = null,
-    sample_count: c_uint = vk.VK_SAMPLE_COUNT_4_BIT,
+    sample_count: vk.SampleCountFlagBits = vk.VK_SAMPLE_COUNT_4_BIT,
 
     // Scale factor for HiDPI
     scale_factor: f64 = 1.0,
@@ -195,7 +195,7 @@ pub const VulkanRenderer = struct {
 
     // Render pass & framebuffers
     render_pass: vk.RenderPass = null,
-    framebuffers: [8]vk.Framebuffer = [_]vk.Framebuffer{null} ** 8,
+    framebuffers: [8]vk.Framebuffer = @splat(null),
 
     // Pipeline layouts (2 shared — improvement #9: 4 → 2 handles)
     unified_pipeline_layout: vk.PipelineLayout = null,
@@ -218,7 +218,7 @@ pub const VulkanRenderer = struct {
 
     // Per-frame resources: buffers, descriptor sets, sync objects, command buffers.
     // Triple-buffered so CPU can write frame N+1 while GPU reads frame N.
-    frames: [FRAME_COUNT]FrameResources = [_]FrameResources{.{}} ** FRAME_COUNT,
+    frames: [FRAME_COUNT]FrameResources = @splat(.{}),
 
     // Staging buffer for texture uploads (shared across frames)
     staging_buffer: vk.Buffer = null,
@@ -883,7 +883,13 @@ pub const VulkanRenderer = struct {
 
         // Wait only for our frames — not ALL GPU work (improvement #4)
         for (0..FRAME_COUNT) |i| {
-            _ = vk.vkWaitForFences(self.device, 1, &self.frames[i].fence, vk.TRUE, std.math.maxInt(u64));
+            _ = vk.vkWaitForFences(
+                self.device,
+                1,
+                (&self.frames[i].fence)[0..1],
+                vk.TRUE,
+                std.math.maxInt(u64),
+            );
         }
 
         // Update uniform buffer with LOGICAL pixel dimensions
@@ -1102,7 +1108,13 @@ pub const VulkanRenderer = struct {
         std.debug.assert(self.device != null);
         for (0..FRAME_COUNT) |i| {
             if (i != self.current_frame) {
-                _ = vk.vkWaitForFences(self.device, 1, &self.frames[i].fence, vk.TRUE, std.math.maxInt(u64));
+                _ = vk.vkWaitForFences(
+                    self.device,
+                    1,
+                    (&self.frames[i].fence)[0..1],
+                    vk.TRUE,
+                    std.math.maxInt(u64),
+                );
             }
         }
     }
@@ -1161,7 +1173,13 @@ pub const VulkanRenderer = struct {
         if (self.swapchain_needs_recreate) {
             self.swapchain_needs_recreate = false;
             for (0..FRAME_COUNT) |i| {
-                _ = vk.vkWaitForFences(self.device, 1, &self.frames[i].fence, vk.TRUE, std.math.maxInt(u64));
+                _ = vk.vkWaitForFences(
+                    self.device,
+                    1,
+                    (&self.frames[i].fence)[0..1],
+                    vk.TRUE,
+                    std.math.maxInt(u64),
+                );
             }
             self.recreateSwapchain(self.swapchain_extent.width, self.swapchain_extent.height) catch |err| {
                 std.debug.print("Failed to recreate swapchain: {}\n", .{err});
@@ -1173,8 +1191,8 @@ pub const VulkanRenderer = struct {
 
         // Wait only for THIS frame's fence — GPU is done reading this
         // frame's staging lane and command buffer.
-        _ = vk.vkWaitForFences(self.device, 1, &frame.fence, vk.TRUE, std.math.maxInt(u64));
-        _ = vk.vkResetFences(self.device, 1, &frame.fence);
+        _ = vk.vkWaitForFences(self.device, 1, (&frame.fence)[0..1], vk.TRUE, std.math.maxInt(u64));
+        _ = vk.vkResetFences(self.device, 1, (&frame.fence)[0..1]);
 
         // Stage pending atlas dirty rects into per-frame staging lane.
         // MUST happen after frame fence wait — the lane is only safe to
@@ -1278,7 +1296,7 @@ pub const VulkanRenderer = struct {
                 .extent = self.swapchain_extent,
             },
             .clearValueCount = 1,
-            .pClearValues = &clear_value,
+            .pClearValues = (&clear_value)[0..1],
         };
         vk.vkCmdBeginRenderPass(cmd, &render_pass_info, vk.VK_SUBPASS_CONTENTS_INLINE);
 
@@ -1287,9 +1305,9 @@ pub const VulkanRenderer = struct {
             @floatFromInt(self.swapchain_extent.width),
             @floatFromInt(self.swapchain_extent.height),
         );
-        vk.vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vk.vkCmdSetViewport(cmd, 0, 1, (&viewport)[0..1]);
         const scissor = vk.makeScissor(self.swapchain_extent.width, self.swapchain_extent.height);
-        vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vk.vkCmdSetScissor(cmd, 0, 1, (&scissor)[0..1]);
 
         // Draw scene with per-frame descriptor sets and buffer pointers
         const pipelines = scene_renderer.Pipelines{
@@ -1329,23 +1347,23 @@ pub const VulkanRenderer = struct {
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = null,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &frame.image_available_semaphore,
+            .pWaitSemaphores = (&frame.image_available_semaphore)[0..1],
             .pWaitDstStageMask = &wait_stages,
             .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
+            .pCommandBuffers = (&cmd)[0..1],
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &frame.render_finished_semaphore,
+            .pSignalSemaphores = (&frame.render_finished_semaphore)[0..1],
         };
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, &submit_info, frame.fence);
+        _ = vk.vkQueueSubmit(self.graphics_queue, 1, (&submit_info)[0..1], frame.fence);
 
         const present_info = vk.PresentInfoKHR{
             .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = null,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &frame.render_finished_semaphore,
+            .pWaitSemaphores = (&frame.render_finished_semaphore)[0..1],
             .swapchainCount = 1,
-            .pSwapchains = &self.swapchain,
-            .pImageIndices = &image_index,
+            .pSwapchains = (&self.swapchain)[0..1],
+            .pImageIndices = (&image_index)[0..1],
             .pResults = null,
         };
         const present_result = vk.vkQueuePresentKHR(self.present_queue, &present_info);

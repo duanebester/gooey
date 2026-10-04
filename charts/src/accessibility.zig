@@ -147,7 +147,7 @@ pub fn describe(info: *const ChartInfo, buf: []u8) []const u8 {
 /// Write the chart type and overview.
 fn writeChartOverview(writer: anytype, info: *const ChartInfo) !void {
     std.debug.assert(info.series_count <= constants.MAX_SERIES);
-    std.debug.assert(@intFromEnum(info.chart_type) <= @intFromEnum(ChartType.scatter));
+    std.debug.assert(@backingInt(info.chart_type) <= @backingInt(ChartType.scatter));
 
     try writer.print("{s}", .{info.chart_type.defaultTitle()});
 

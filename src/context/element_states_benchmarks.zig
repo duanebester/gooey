@@ -549,7 +549,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, try benchGetByOccupancy(allocator, "get_occupancy_64", 64));
     collect(&reporter, try benchGetByOccupancy(allocator, "get_occupancy_512", 512));
     collect(&reporter, try benchGetByOccupancy(allocator, "get_occupancy_4096", 4096));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Get-or-create Hit (the real per-frame call site, zero-alloc)
@@ -558,7 +558,7 @@ pub fn main(init: std.process.Init) !void {
     printSectionHeader("Gooey Element-State Benchmarks — Get-or-create Hit (withElementState on present keys)");
     collect(&reporter, try benchWithHit(allocator, "with_hit_64", 64));
     collect(&reporter, try benchWithHit(allocator, "with_hit_512", 512));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Insert + Remove (the allocating control-plane churn)
@@ -567,7 +567,7 @@ pub fn main(init: std.process.Init) !void {
     printSectionHeader("Gooey Element-State Benchmarks — Insert + Remove (create/destroy churn)");
     collect(&reporter, try benchInsertRemove(allocator, "insert_remove_64", 64));
     collect(&reporter, try benchInsertRemove(allocator, "insert_remove_512", 512));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     std.debug.print(
         \\
@@ -595,11 +595,11 @@ fn printSectionHeader(comptime title: []const u8) void {
     comptime std.debug.assert(title.len > 0);
     comptime std.debug.assert(title.len < TABLE_WIDTH);
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("{s}\n", .{title});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
 }
 
 fn printHeader() void {

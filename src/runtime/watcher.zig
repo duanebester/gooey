@@ -146,10 +146,24 @@ fn parseArguments(args: []const []const u8) ?Arguments {
     if (separator - 1 > watch_root_count_max) return null;
 
     const watch_paths = args[1..separator];
-    const build_command = args[separator + 1 ..];
+    const build_command_given = args[separator + 1 ..];
+    // `zig build hot` cannot see passthrough arguments at configure time, so it
+    // always forwards `zig build ...`. A bare `zig build` means the showcase.
+    const build_command = if (isBareZigBuild(build_command_given))
+        build_command_default[0..]
+    else
+        build_command_given;
     std.debug.assert(watch_paths.len > 0);
     std.debug.assert(build_command.len > 0);
     return .{ .watch_paths = watch_paths, .build_command = build_command };
+}
+
+const build_command_default = [_][]const u8{ "zig", "build", "run" };
+
+fn isBareZigBuild(command: []const []const u8) bool {
+    std.debug.assert(command.len > 0);
+    if (command.len != 2) return false;
+    return std.mem.eql(u8, command[0], "zig") and std.mem.eql(u8, command[1], "build");
 }
 
 fn handleSignal(sig: posix.SIG) callconv(.c) void {
@@ -372,6 +386,18 @@ test "argument parser separates bounded watch roots from the command" {
     try std.testing.expectEqual(@as(usize, 2), parsed.watch_paths.len);
     try std.testing.expectEqualStrings("components/src", parsed.watch_paths[1]);
     try std.testing.expectEqualStrings("zig", parsed.build_command[0]);
+}
+
+test "argument parser defaults a bare zig build to the run step" {
+    const bare = [_][]const u8{ "watcher", "src", "--", "zig", "build" };
+    const parsed_bare = parseArguments(&bare).?;
+    try std.testing.expectEqual(@as(usize, 3), parsed_bare.build_command.len);
+    try std.testing.expectEqualStrings("run", parsed_bare.build_command[2]);
+
+    const step = [_][]const u8{ "watcher", "src", "--", "zig", "build", "run-counter" };
+    const parsed_step = parseArguments(&step).?;
+    try std.testing.expectEqual(@as(usize, 3), parsed_step.build_command.len);
+    try std.testing.expectEqualStrings("run-counter", parsed_step.build_command[2]);
 }
 
 test "argument parser accepts the root limit and rejects one past it" {

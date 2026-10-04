@@ -213,7 +213,7 @@ pub const PathInstance = extern struct {
         std.debug.assert(!std.math.isNan(end_x) and !std.math.isNan(end_y));
 
         var inst = self;
-        inst.gradient_type = @intFromEnum(GradientType.linear);
+        inst.gradient_type = @backingInt(GradientType.linear);
         inst.gradient_stop_count = stop_count;
         inst.grad_param0 = start_x;
         inst.grad_param1 = start_y;
@@ -236,7 +236,7 @@ pub const PathInstance = extern struct {
         std.debug.assert(radius > 0 and inner_radius >= 0);
 
         var inst = self;
-        inst.gradient_type = @intFromEnum(GradientType.radial);
+        inst.gradient_type = @backingInt(GradientType.radial);
         inst.gradient_stop_count = stop_count;
         inst.grad_param0 = center_x;
         inst.grad_param1 = center_y;

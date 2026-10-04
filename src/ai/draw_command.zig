@@ -195,7 +195,7 @@ comptime {
 
     // Guard against adding variants without updating schema/replay.
     // 11 variants: 5 fills + 3 strokes/lines + 2 text + 1 control.
-    const variant_count = std.meta.fields(DrawCommand).len;
+    const variant_count = @typeInfo(DrawCommand).@"union".field_names.len;
     std.debug.assert(variant_count == 11);
 
     // Alignment should be reasonable for array packing.
@@ -211,7 +211,7 @@ test "DrawCommand size fits in cache line" {
 }
 
 test "DrawCommand has exactly 11 variants" {
-    const variant_count = std.meta.fields(DrawCommand).len;
+    const variant_count = @typeInfo(DrawCommand).@"union".field_names.len;
     try std.testing.expectEqual(@as(usize, 11), variant_count);
 }
 

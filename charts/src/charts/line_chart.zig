@@ -168,7 +168,7 @@ pub const LineChart = struct {
         defer if (ENABLE_PERF_LOGGING) {
             const elapsed = std.time.nanoTimestamp() - start_time;
             if (elapsed > PERF_WARNING_THRESHOLD_NS) {
-                if (builtin.mode == .Debug) {
+                if (builtin.mode == .debug) {
                     std.log.warn("LineChart render: {d:.2}ms exceeds 8ms budget", .{
                         @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
                     });

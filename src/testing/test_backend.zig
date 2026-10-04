@@ -989,7 +989,7 @@ fn zeroWindowStorage(window: *TestWindow) void {
 
 /// Encode an event's union tag as a record detail.
 fn eventTagDetail(event: input.InputEvent) u64 {
-    return @intFromEnum(std.meta.activeTag(event));
+    return @backingInt(std.meta.activeTag(event));
 }
 
 // =============================================================================
@@ -1268,7 +1268,7 @@ pub const TestWindow = struct {
         assert(!self.closed);
 
         self.cursor_shape = shape;
-        self.platform.recordCall(.set_cursor_shape, self.window_id, @intFromEnum(shape));
+        self.platform.recordCall(.set_cursor_shape, self.window_id, @backingInt(shape));
     }
 
     pub fn getClearColor(self: *const Self) geometry.Color {
@@ -1991,7 +1991,7 @@ test "released window slots are zeroed before reuse" {
     const options = makeOptions(32, 32);
     const win = try TestWindow.init(testing.allocator, &plat, &options);
 
-    const long_title = "x" ** title_bytes_max;
+    const long_title = &@as([title_bytes_max]u8, @splat('x'));
     win.setTitle(long_title);
     win.setMarkedText("composing");
     const slot_index = win.slot_index;
@@ -2160,10 +2160,10 @@ test "setTitle stores exactly the bytes given and titleFits bounds the buffer" {
     defer win.deinit();
 
     try testing.expect(TestWindow.titleFits(""));
-    try testing.expect(TestWindow.titleFits("x" ** title_bytes_max));
-    try testing.expect(!TestWindow.titleFits("x" ** (title_bytes_max + 1)));
+    try testing.expect(TestWindow.titleFits(&@as([title_bytes_max]u8, @splat('x'))));
+    try testing.expect(!TestWindow.titleFits(&@as([title_bytes_max + 1]u8, @splat('x'))));
 
-    win.setTitle("x" ** title_bytes_max);
+    win.setTitle(&@as([title_bytes_max]u8, @splat('x')));
     try testing.expectEqual(@as(usize, title_bytes_max), win.title().len);
 
     // A shorter title must not leave the previous title's tail readable.
@@ -2198,9 +2198,9 @@ test "IME state reflects exactly what was set" {
     try testing.expect(!win.hasMarkedText());
     for (win.marked_buffer) |byte| try testing.expectEqual(@as(u8, 0), byte);
 
-    win.setInsertedText("x" ** ime_bytes_max);
+    win.setInsertedText(&@as([ime_bytes_max]u8, @splat('x')));
     try testing.expectEqual(@as(usize, ime_bytes_max), win.insertedText().len);
-    try testing.expect(!TestWindow.imeTextFits("x" ** (ime_bytes_max + 1)));
+    try testing.expect(!TestWindow.imeTextFits(&@as([ime_bytes_max + 1]u8, @splat('x'))));
 
     win.setImeCursorRect(1, 2, 3, 4);
     try testing.expectEqual(@as(f32, 3), win.ime_cursor_rect[2]);
@@ -2353,7 +2353,7 @@ test "drainEvents dispatches empty and maximum batches in order" {
         var count: u32 = 0;
 
         fn onInput(_: *TestWindow, event: input.InputEvent) bool {
-            seen[count] = @intFromEnum(std.meta.activeTag(event));
+            seen[count] = @backingInt(std.meta.activeTag(event));
             count += 1;
             return true;
         }
@@ -2388,8 +2388,8 @@ test "drainEvents dispatches empty and maximum batches in order" {
 
     // The trailing modifier event must arrive last, not be reordered by the
     // compaction step.
-    const mouse_tag: u8 = @intFromEnum(std.meta.activeTag(mouse));
-    const modifiers_tag: u8 = @intFromEnum(std.meta.activeTag(modifiers));
+    const mouse_tag: u8 = @backingInt(std.meta.activeTag(mouse));
+    const modifiers_tag: u8 = @backingInt(std.meta.activeTag(modifiers));
     try testing.expectEqual(event_count_frame_max + 1, Probe.count);
     try testing.expectEqual(mouse_tag, Probe.seen[0]);
     try testing.expectEqual(modifiers_tag, Probe.seen[event_count_frame_max]);
@@ -2418,7 +2418,7 @@ test "recorded calls carry strictly increasing sequence numbers" {
     // Salient arguments are recorded, not just the fact of the call.
     const cursor_index = plat.findCall(.set_cursor_shape).?;
     try testing.expectEqual(
-        @as(u64, @intFromEnum(CursorShape.pointer)),
+        @as(u64, @backingInt(CursorShape.pointer)),
         plat.calls[cursor_index].detail,
     );
     const appearance_index = plat.findCall(.set_appearance).?;

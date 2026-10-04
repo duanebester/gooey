@@ -221,10 +221,10 @@ fn extractState(comptime caller: []const u8, comptime Fn: type) type {
         @compileError(caller ++ "() expects a function, got " ++ @typeName(Fn));
     }
     const fn_info = info.@"fn";
-    if (fn_info.params.len == 0) {
+    if (fn_info.param_types.len == 0) {
         @compileError(caller ++ "() expects a method with at least one parameter (*State), got a function with no parameters");
     }
-    const FirstParam = fn_info.params[0].type orelse {
+    const FirstParam = fn_info.param_types[0] orelse {
         @compileError(caller ++ "() expects a concrete first parameter type (*State), got anytype");
     };
     const ptr_info = @typeInfo(FirstParam);

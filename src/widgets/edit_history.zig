@@ -589,7 +589,7 @@ test "Replace edit creation" {
 
 test "Replace edit - buffer overflow returns null" {
     // Create texts that together exceed MAX_EDIT_BYTES
-    const big_text = "x" ** (MAX_EDIT_BYTES / 2 + 100);
+    const big_text = &@as([(MAX_EDIT_BYTES / 2 + 100)]u8, @splat('x'));
     const edit = Edit.makeReplace(0, big_text, big_text, 0, null, 1000);
     try std.testing.expect(edit == null);
 }

@@ -7,7 +7,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const DEBUG_BATCHES = builtin.mode == .Debug and false; // Set second condition to true to enable batch debug output
+const DEBUG_BATCHES = builtin.mode == .debug and false; // Set second condition to true to enable batch debug output
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const scene_mod = @import("../../../scene/mod.zig");
@@ -209,7 +209,7 @@ fn drawGlyphBatch(
     // Use renderBatch which copies data inline via setVertexBytes,
     // safe for multiple calls per frame (unlike render which uses shared buffer)
     tp.renderBatch(encoder, glyphs, viewport_size) catch |err| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.print("drawGlyphBatch failed: {}\n", .{err});
         }
     };
@@ -234,7 +234,7 @@ fn drawSvgBatch(
     // Use renderBatch which copies data inline via setVertexBytes,
     // safe for multiple calls per frame (unlike render which uses shared buffer)
     sp.renderBatch(encoder, svgs, viewport_size) catch |err| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.print("drawSvgBatch failed: {}\n", .{err});
         }
     };
@@ -259,7 +259,7 @@ fn drawImageBatch(
     // Use renderBatch which copies data inline via setVertexBytes,
     // safe for multiple calls per frame (unlike render which uses shared buffer)
     ip.renderBatch(encoder, images, viewport_size) catch |err| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.print("drawImageBatch failed: {}\n", .{err});
         }
     };
@@ -300,7 +300,7 @@ fn drawPathBatch(
     const gradients = all_gradients[batch_offset..][0..paths.len];
 
     pp.renderBatchWithGradients(encoder, paths, gradients, pool, viewport_size) catch |err| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.print("drawPathBatch failed: {}\n", .{err});
         }
     };
@@ -323,7 +323,7 @@ fn drawPolylineBatch(
     const plp = pipelines.polyline orelse return;
 
     plp.renderBatch(encoder, polylines, viewport_size) catch |err| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.print("drawPolylineBatch failed: {}\n", .{err});
         }
     };
@@ -346,7 +346,7 @@ fn drawPointCloudBatch(
     const pcp = pipelines.point_cloud orelse return;
 
     pcp.renderBatch(encoder, point_clouds, viewport_size) catch |err| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.print("drawPointCloudBatch failed: {}\n", .{err});
         }
     };
@@ -368,7 +368,7 @@ fn drawColoredPointCloudBatch(
     const cpcp = pipelines.colored_point_cloud orelse return;
 
     cpcp.renderBatch(encoder, colored_point_clouds, viewport_size) catch |err| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.print("drawColoredPointCloudBatch failed: {}\n", .{err});
         }
     };
@@ -424,7 +424,7 @@ fn drawUnifiedPrimitives(
             @as(c_ulong, 1),
         });
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-            @intFromEnum(mtl.MTLPrimitiveType.triangle),
+            @backingInt(mtl.MTLPrimitiveType.triangle),
             @as(c_ulong, 0),
             @as(c_ulong, 6),
             @as(c_ulong, chunk_len),
