@@ -270,9 +270,12 @@ jobs:
   # ==========================================================================
   # Benchmarks (macOS)
   # ==========================================================================
+  # bench-macos produces the baseline that bench-gate compares against, so both
+  # jobs MUST run on the same pinned image: comparing across macOS versions (or
+  # a floating `macos-latest`) measures the OS, not the change.
   bench-macos:
     name: Benchmarks (macOS)
-    runs-on: macos-latest
+    runs-on: macos-26
     needs: test-macos
     steps:
       - name: Checkout code
@@ -314,7 +317,7 @@ jobs:
   # runners.  The 15% default threshold (in bench-compare) absorbs CI noise.
   bench-gate:
     name: Benchmark Gate (macOS)
-    runs-on: macos-14
+    runs-on: macos-26 # Must match bench-macos; see the note there.
     if: github.event_name == 'pull_request'
     needs: test-macos
     continue-on-error: true

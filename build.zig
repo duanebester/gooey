@@ -89,17 +89,19 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         mod.addImport("objc", objc_mod);
+        linkMacosFrameworks(mod);
 
-        // Link macOS frameworks to the module (needed for tests too)
-        mod.linkFramework("AppKit", .{});
-        mod.linkFramework("Foundation", .{});
-        mod.linkFramework("Metal", .{});
-        mod.linkFramework("QuartzCore", .{});
-        mod.linkFramework("CoreFoundation", .{});
-        mod.linkFramework("CoreVideo", .{});
-        mod.linkFramework("CoreText", .{});
-        mod.linkFramework("CoreGraphics", .{});
-        mod.link_libc = true;
+        // Benchmarks measure the shipped configuration, so they import a
+        // `gooey` built `.fast` regardless of `-Doptimize`. Safety checks are
+        // emitted per owning module, so importing the default `mod` would time
+        // Debug-checked library code even from a `.fast` benchmark root.
+        const bench_gooey_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .fast,
+        });
+        bench_gooey_mod.addImport("objc", objc_mod);
+        linkMacosFrameworks(bench_gooey_mod);
 
         // =========================================================================
         // Gooey Components Module
@@ -344,7 +346,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -368,7 +370,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -392,7 +394,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -416,7 +418,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -440,7 +442,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -475,7 +477,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -509,7 +511,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -541,7 +543,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -667,18 +669,15 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
 
-        // Link Vulkan. The bindings are plain externs, so no headers are needed.
-        mod.linkSystemLibrary("vulkan", .{});
+        linkLinuxGooeyLibraries(mod);
 
-        // Link text rendering libraries (FreeType, HarfBuzz, Fontconfig)
-        mod.linkSystemLibrary("freetype", .{});
-        mod.linkSystemLibrary("harfbuzz", .{});
-        mod.linkSystemLibrary("fontconfig", .{});
-        // Link image loading library (libpng)
-        mod.linkSystemLibrary("png", .{});
-        // Link D-Bus for XDG portal file dialogs
-        mod.linkSystemLibrary("dbus-1", .{});
-        mod.link_libc = true;
+        // Benchmarks measure the shipped configuration; see the macOS branch.
+        const bench_gooey_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .fast,
+        });
+        linkLinuxGooeyLibraries(bench_gooey_mod);
 
         // =========================================================================
         // Gooey Components Module
@@ -818,7 +817,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -843,7 +842,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -868,7 +867,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -893,7 +892,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -918,7 +917,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -956,7 +955,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -993,7 +992,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -1030,7 +1029,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = .fast,
                 .imports = &.{
-                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey", .module = bench_gooey_mod },
                     .{ .name = "bench", .module = bench_mod },
                 },
             }),
@@ -1661,6 +1660,32 @@ fn addLinuxGenuiExample(
     run.setCwd(b.path("."));
     step.dependOn(&run.step);
     run.step.dependOn(b.getInstallStep());
+}
+
+/// Links the macOS frameworks the `gooey` module needs (tests included).
+fn linkMacosFrameworks(mod: *std.Build.Module) void {
+    mod.linkFramework("AppKit", .{});
+    mod.linkFramework("Foundation", .{});
+    mod.linkFramework("Metal", .{});
+    mod.linkFramework("QuartzCore", .{});
+    mod.linkFramework("CoreFoundation", .{});
+    mod.linkFramework("CoreVideo", .{});
+    mod.linkFramework("CoreText", .{});
+    mod.linkFramework("CoreGraphics", .{});
+    mod.link_libc = true;
+}
+
+/// Links the Linux system libraries the `gooey` module needs: Vulkan (plain
+/// extern bindings, so no headers), FreeType/HarfBuzz/Fontconfig for text,
+/// libpng for images, and D-Bus for XDG portal file dialogs.
+fn linkLinuxGooeyLibraries(mod: *std.Build.Module) void {
+    mod.linkSystemLibrary("vulkan", .{});
+    mod.linkSystemLibrary("freetype", .{});
+    mod.linkSystemLibrary("harfbuzz", .{});
+    mod.linkSystemLibrary("fontconfig", .{});
+    mod.linkSystemLibrary("png", .{});
+    mod.linkSystemLibrary("dbus-1", .{});
+    mod.link_libc = true;
 }
 
 /// Links the standard set of Linux system libraries (Vulkan, Wayland, text rendering, etc.)
