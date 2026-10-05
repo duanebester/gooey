@@ -1990,19 +1990,31 @@ pub fn clearColor(r: f32, g: f32, b: f32, a: f32) ClearValue {
     return .{ .color = .{ .float32 = .{ r, g, b, a } } };
 }
 
-/// Make a simple viewport with Y-flip to match OpenGL/Metal coordinate system.
-/// Vulkan's default clip space has Y going from -1 (top) to +1 (bottom),
-/// which is opposite of OpenGL/Metal. Using negative height flips this.
-/// This requires VK_KHR_maintenance1 (core in Vulkan 1.1+).
+/// Make a full-framebuffer viewport.
+///
+/// Vulkan NDC and framebuffer space are Y-down, matching Gooey's scene pixel
+/// coordinates, so neither the viewport nor the shaders flip Y. The height
+/// must stay positive: the instance requests `API_VERSION_1_0` without
+/// `VK_KHR_maintenance1`, where a negative height violates
+/// VUID-VkViewport-height-01772.
 pub fn makeViewport(width: f32, height: f32) Viewport {
+    assert(width > 0);
+    assert(height > 0);
     return .{
         .x = 0,
-        .y = height, // Start from bottom
+        .y = 0,
         .width = width,
-        .height = -height, // Negative height flips Y axis
+        .height = height,
         .minDepth = 0,
         .maxDepth = 1,
     };
+}
+
+comptime {
+    // Guards against reintroducing a negative-height (Y-flipped) viewport.
+    const viewport = makeViewport(1280, 800);
+    assert(viewport.y == 0);
+    assert(viewport.height == 800);
 }
 
 /// Make a simple scissor rect

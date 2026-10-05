@@ -130,7 +130,8 @@ void main() {
         vec2 origin = vec2(p.bounds_origin_x, p.bounds_origin_y);
         vec2 size = vec2(p.bounds_size_width, p.bounds_size_height);
         vec2 pos = origin + unit * size;
-        vec2 ndc = pos / viewport_size * vec2(2.0, -2.0) + vec2(-1.0, 1.0);
+        // Vulkan NDC is Y-down like scene pixels (unlike Metal/WebGPU), so no flip.
+        vec2 ndc = pos / viewport_size * 2.0 - 1.0;
 
         gl_Position = vec4(ndc, 0.0, 1.0);
         out_quad_coord = unit;
@@ -147,7 +148,8 @@ void main() {
         vec2 shadow_origin = content_origin + offset - expand;
         vec2 shadow_size = content_size + expand * 2.0;
         vec2 pos = shadow_origin + unit * shadow_size;
-        vec2 ndc = pos / viewport_size * vec2(2.0, -2.0) + vec2(-1.0, 1.0);
+        // Vulkan NDC is Y-down like scene pixels (unlike Metal/WebGPU), so no flip.
+        vec2 ndc = pos / viewport_size * 2.0 - 1.0;
         vec2 local = (unit * shadow_size) - (shadow_size / 2.0) - offset;
 
         gl_Position = vec4(ndc, 0.0, 1.0);
