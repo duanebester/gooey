@@ -38,6 +38,8 @@ const runtime_render = @import("runtime/render.zig");
 const window_mod = @import("context/window.zig");
 const input_mod = @import("input/mod.zig");
 const shader_mod = @import("core/shader.zig");
+const ResourceLimits = @import("core/limits.zig").ResourceLimits;
+const SceneLimits = @import("core/limits.zig").SceneLimits;
 const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
 
@@ -102,6 +104,7 @@ pub fn App(
     if (platform.is_wasm) {
         return WebApp(State, state, render, config);
     } else {
+        const resource_limits = comptime resolveLimits(config);
         return struct {
             // PR 7d-framework — `main` accepts `init: std.process.Init`
             // per Zig 0.16's "Juicy Main" contract
@@ -137,6 +140,9 @@ pub fn App(
                         if (@hasField(ConfigType, "custom_shaders")) {
                             cfg.custom_shaders = coerceShaders(config.custom_shaders);
                         }
+                    } else if (comptime std.mem.eql(u8, field_name, "limits")) {
+                        // Resolved and validated at comptime (profile names too).
+                        cfg.limits = resource_limits;
                     } else if (@hasField(ConfigType, field_name)) {
                         @field(cfg, field_name) = @field(config, field_name);
                     }
@@ -183,6 +189,7 @@ pub fn WebApp(
         return struct {};
     }
 
+    const resource_limits = comptime resolveLimits(config);
     const web_imports = @import("platform/web/imports.zig");
     const WebRenderer = @import("platform/web/renderer.zig").WebRenderer;
 
@@ -260,6 +267,7 @@ pub fn WebApp(
                 .title = if (@hasField(@TypeOf(config), "title")) config.title else "Window App",
                 .width = if (@hasField(@TypeOf(config), "width")) config.width else 800,
                 .height = if (@hasField(@TypeOf(config), "height")) config.height else 600,
+                .limits = resource_limits,
             };
 
             // Create window. `PlatformWindow.init` registers itself with the
@@ -299,7 +307,13 @@ pub fn WebApp(
             try app_ptr.initInPlace(allocator, io);
             g_app = app_ptr;
 
-            try window_ptr.initOwnedPtr(allocator, g_platform_window.?, font_cfg, io);
+            try window_ptr.initOwnedPtr(
+                allocator,
+                g_platform_window.?,
+                font_cfg,
+                &resource_limits,
+                io,
+            );
             // PR 7b.3 — wire the borrowed `*App` onto the freshly-
             // initialised `Window`. Mirrors the same pattern in
             // `runtime/window_context.zig::WindowContext.init`;
@@ -548,6 +562,40 @@ pub fn WebApp(
 // =============================================================================
 // Internal: Utilities
 // =============================================================================
+
+/// The app's budget from its comptime config, validated at compile time.
+/// Accepts a `ResourceLimits` value or a profile name (`.limits = .large`);
+/// an absent field selects `ResourceLimits.standard`, the measured default.
+fn resolveLimits(comptime config: anytype) ResourceLimits {
+    comptime {
+        const ConfigType = @TypeOf(config);
+        const resolved: ResourceLimits = if (!@hasField(ConfigType, "limits"))
+            ResourceLimits.standard
+        else if (@TypeOf(config.limits) == @TypeOf(.enum_literal))
+            @field(ResourceLimits, @tagName(config.limits))
+        else
+            .{ .scene = copyFields(SceneLimits, config.limits.scene) };
+        ResourceLimits.validate(resolved);
+        return resolved;
+    }
+}
+
+/// Copy an anonymous `.{ ... }` literal into `T` field by field. Literals passed
+/// through `anytype` keep their own type and do not coerce. A missing field is a
+/// compile error because budget fields deliberately have no defaults.
+fn copyFields(comptime T: type, comptime source: anytype) T {
+    comptime {
+        if (@TypeOf(source) == T) return source;
+        var target: T = undefined;
+        for (@typeInfo(T).@"struct".field_names) |field_name| {
+            if (!@hasField(@TypeOf(source), field_name)) {
+                @compileError("ResourceLimits.scene is missing field '" ++ field_name ++ "'");
+            }
+            @field(target, field_name) = @field(source, field_name);
+        }
+        return target;
+    }
+}
 
 fn coerceShaders(comptime shaders: anytype) []const shader_mod.CustomShader {
     const len = shaders.len;

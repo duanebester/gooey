@@ -42,7 +42,7 @@ const AppState = struct {
     scroll_offset_y: f64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !AppState {
-        var scene = Scene.init(allocator);
+        var scene = try Scene.initCapacity(allocator, &gooey.ResourceLimits.standard.scene);
 
         // Add static background quads
         try addStaticQuads(&scene);

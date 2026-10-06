@@ -19,6 +19,7 @@ const std = @import("std");
 pub const scene = @import("scene.zig");
 
 pub const Scene = scene.Scene;
+pub const SceneLimits = scene.SceneLimits;
 pub const DrawOrder = scene.DrawOrder;
 
 // Hard limits (static memory allocation policy)

@@ -10,6 +10,7 @@
 //! types (Svg, Image, Path, Polyline, point clouds) pulled in below.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const geometry = @import("../core/geometry.zig");
 const limits = @import("../core/limits.zig");
 const svg_instance_mod = @import("svg_instance.zig");
@@ -53,24 +54,13 @@ pub const MAX_CLIP_STACK_DEPTH = limits.MAX_CLIP_STACK_DEPTH;
 
 pub const DrawOrder = u32;
 
-/// Capacity of the draw-order sort scratch (one u64 key per primitive). Sized
-/// to the largest single per-type array so the same buffer can be reused for
-/// every type's sort within a `finish()` call. Pre-allocated by `initCapacity`
-/// so the keyed sort never allocates in steady state (static-allocation, §2).
-pub const MAX_SORT_KEYS: u32 = blk: {
-    var maximum: u32 = 0;
-    for ([_]u32{
-        MAX_SHADOWS_PER_FRAME,
-        MAX_QUADS_PER_FRAME,
-        MAX_GLYPHS_PER_FRAME,
-        MAX_SVGS_PER_FRAME,
-        MAX_IMAGES_PER_FRAME,
-        MAX_POLYLINES_PER_FRAME,
-        MAX_POINT_CLOUDS_PER_FRAME,
-        MAX_COLORED_POINT_CLOUDS_PER_FRAME,
-    }) |capacity| maximum = @max(maximum, capacity);
-    break :blk maximum;
-};
+/// Ceiling of the draw-order sort scratch (one u64 key per primitive). A
+/// scene reserves `SceneLimits.sortKeyCountMax()` keys, the largest sortable
+/// pool in its own budget, so the keyed sort never allocates (§2).
+pub const MAX_SORT_KEYS = limits.MAX_SORT_KEYS;
+
+/// Per-frame scene capacities selected by the application budget.
+pub const SceneLimits = limits.SceneLimits;
 
 // ============================================================================
 // GPU Geometry Types (re-exported from geometry.zig)
@@ -519,16 +509,6 @@ fn ascendingU64(_: void, a: u64, b: u64) bool {
     return a < b;
 }
 
-/// Comparator over a payload type's `.order` field, used only on the no-scratch
-/// fallback path (see `Scene.sortByOrder`).
-fn orderLessThan(comptime T: type) fn (void, T, T) bool {
-    return struct {
-        fn lessThan(_: void, a: T, b: T) bool {
-            return a.order < b.order;
-        }
-    }.lessThan;
-}
-
 /// Reorder `items` in place to `items[j] = old_items[perm[j]]`, where `perm[j]`
 /// is the low 32 bits of `keys[j]` (the original index that belongs in sorted
 /// slot `j`). Walks each permutation cycle once, holding the displaced element
@@ -650,8 +630,13 @@ pub const Scene = struct {
     clip_stack: std.ArrayListUnmanaged(ContentMask.ClipBounds),
     // Scratch buffer of (order, index) keys reused by `finish()` to sort each
     // per-type array indirectly (see the "Draw-order sort" section above).
-    // Pre-allocated by `initCapacity`; grown-and-retained by `init()` scenes.
+    // Reserved by `initCapacity` at `limits.sortKeyCountMax()` keys.
     sort_keys: std.ArrayListUnmanaged(u64),
+    /// This scene's budget. Inserts check against it, never the global ceilings;
+    /// every list above was reserved at exactly this capacity.
+    limits: SceneLimits,
+    /// Frames completed by `finish`; names the frame in overflow reports.
+    frame_count_finished: u64,
     // Per-array dirty flags: track which arrays had out-of-order inserts (requiring sort)
     needs_sort_shadows: bool,
     needs_sort_quads: bool,
@@ -673,9 +658,9 @@ pub const Scene = struct {
 
     const Self = @This();
 
-    /// Initialize scene without pre-allocation (for tests or simple usage).
-    /// For production, prefer initCapacity() to avoid allocations during rendering.
-    pub fn init(allocator: std.mem.Allocator) Self {
+    /// Zero-capacity scene. Allocates nothing; any insert fails fast. For
+    /// callers that only present an empty scene (a clear) and never build one.
+    pub fn initEmpty(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
             .shadows = .empty,
@@ -692,6 +677,8 @@ pub const Scene = struct {
             .next_order = 0,
             .clip_stack = .empty,
             .sort_keys = .empty,
+            .limits = std.mem.zeroes(SceneLimits),
+            .frame_count_finished = 0,
             .needs_sort_shadows = false,
             .needs_sort_quads = false,
             .needs_sort_glyphs = false,
@@ -709,55 +696,38 @@ pub const Scene = struct {
         };
     }
 
-    /// Initialize scene with pre-allocated capacity for all primitive arrays.
-    /// This eliminates dynamic allocation during frame rendering.
-    /// Uses the hard limits defined at module level.
-    pub fn initCapacity(allocator: std.mem.Allocator) !Self {
-        var self = Self{
-            .allocator = allocator,
-            .shadows = .empty,
-            .quads = .empty,
-            .glyphs = .empty,
-            .svg_instances = .empty,
-            .images = .empty,
-            .path_instances = .empty,
-            .path_gradients = .empty,
-            .polylines = .empty,
-            .point_clouds = .empty,
-            .colored_point_clouds = .empty,
-            .mesh_pool = MeshPool.init(allocator),
-            .next_order = 0,
-            .clip_stack = .empty,
-            .sort_keys = .empty,
-            .needs_sort_shadows = false,
-            .needs_sort_quads = false,
-            .needs_sort_glyphs = false,
-            .needs_sort_svgs = false,
-            .needs_sort_images = false,
-            .needs_sort_paths = false,
-            .needs_sort_polylines = false,
-            .needs_sort_point_clouds = false,
-            .needs_sort_colored_point_clouds = false,
-            .viewport_width = 0,
-            .viewport_height = 0,
-            .culling_enabled = false,
-            .stats = null,
-        };
+    /// Initialize a scene that reserves exactly `scene_limits` for every pool.
+    /// This is the only constructor for a scene that is built into: after it
+    /// returns, inserts never allocate, and a full pool fails fast (§2).
+    pub fn initCapacity(allocator: std.mem.Allocator, scene_limits: *const SceneLimits) !Self {
+        assert(scene_limits.check() == null);
 
-        // Pre-allocate all arrays to their maximum capacity
-        try self.shadows.ensureTotalCapacity(allocator, MAX_SHADOWS_PER_FRAME);
-        try self.quads.ensureTotalCapacity(allocator, MAX_QUADS_PER_FRAME);
-        try self.glyphs.ensureTotalCapacity(allocator, MAX_GLYPHS_PER_FRAME);
-        try self.svg_instances.ensureTotalCapacity(allocator, MAX_SVGS_PER_FRAME);
-        try self.images.ensureTotalCapacity(allocator, MAX_IMAGES_PER_FRAME);
-        try self.path_instances.ensureTotalCapacity(allocator, MAX_PATHS_PER_FRAME);
-        try self.path_gradients.ensureTotalCapacity(allocator, MAX_PATHS_PER_FRAME);
-        try self.polylines.ensureTotalCapacity(allocator, MAX_POLYLINES_PER_FRAME);
-        try self.point_clouds.ensureTotalCapacity(allocator, MAX_POINT_CLOUDS_PER_FRAME);
-        try self.colored_point_clouds.ensureTotalCapacity(allocator, MAX_COLORED_POINT_CLOUDS_PER_FRAME);
-        try self.clip_stack.ensureTotalCapacity(allocator, MAX_CLIP_STACK_DEPTH);
-        try self.sort_keys.ensureTotalCapacity(allocator, MAX_SORT_KEYS);
+        var self = initEmpty(allocator);
+        errdefer self.deinit();
+        self.limits = scene_limits.*;
 
+        const budget = &self.limits;
+        try self.shadows.ensureTotalCapacityPrecise(allocator, budget.shadow_count_frame_max);
+        try self.quads.ensureTotalCapacityPrecise(allocator, budget.quad_count_frame_max);
+        try self.glyphs.ensureTotalCapacityPrecise(allocator, budget.glyph_count_frame_max);
+        try self.svg_instances.ensureTotalCapacityPrecise(allocator, budget.svg_count_frame_max);
+        try self.images.ensureTotalCapacityPrecise(allocator, budget.image_count_frame_max);
+        try self.path_instances.ensureTotalCapacityPrecise(allocator, budget.path_count_frame_max);
+        try self.path_gradients.ensureTotalCapacityPrecise(allocator, budget.path_count_frame_max);
+        try self.polylines.ensureTotalCapacityPrecise(allocator, budget.polyline_count_frame_max);
+        try self.point_clouds.ensureTotalCapacityPrecise(
+            allocator,
+            budget.point_cloud_count_frame_max,
+        );
+        try self.colored_point_clouds.ensureTotalCapacityPrecise(
+            allocator,
+            budget.colored_point_cloud_count_frame_max,
+        );
+        try self.clip_stack.ensureTotalCapacityPrecise(allocator, budget.clip_depth_max);
+        try self.sort_keys.ensureTotalCapacityPrecise(allocator, budget.sortKeyCountMax());
+
+        assert(self.quads.capacity == budget.quad_count_frame_max);
+        assert(self.sort_keys.capacity == budget.sortKeyCountMax());
         return self;
     }
 
@@ -814,15 +784,75 @@ pub const Scene = struct {
     }
 
     // ========================================================================
+    // Pool storage (fixed capacity, fail fast)
+    // ========================================================================
+
+    /// The per-frame lists, named by their `Scene` field.
+    const Pool = enum {
+        shadows,
+        quads,
+        glyphs,
+        svg_instances,
+        images,
+        path_instances,
+        path_gradients,
+        polylines,
+        point_clouds,
+        colored_point_clouds,
+        clip_stack,
+    };
+
+    fn poolCapacity(self: *const Self, comptime pool: Pool) u32 {
+        const budget = &self.limits;
+        return switch (pool) {
+            .shadows => budget.shadow_count_frame_max,
+            .quads => budget.quad_count_frame_max,
+            .glyphs => budget.glyph_count_frame_max,
+            .svg_instances => budget.svg_count_frame_max,
+            .images => budget.image_count_frame_max,
+            .path_instances, .path_gradients => budget.path_count_frame_max,
+            .polylines => budget.polyline_count_frame_max,
+            .point_clouds => budget.point_cloud_count_frame_max,
+            .colored_point_clouds => budget.colored_point_cloud_count_frame_max,
+            .clip_stack => budget.clip_depth_max,
+        };
+    }
+
+    /// Append into reserved storage. A full pool is a capacity-planning error:
+    /// it stops the program with the pool, budget, and frame (CLAUDE.md §2)
+    /// instead of growing or dropping the primitive. Callers that ignore insert
+    /// errors (`catch {}`) therefore cannot lose work silently.
+    fn push(self: *Self, comptime pool: Pool, item: anytype) void {
+        const list = &@field(self, @tagName(pool));
+        const capacity = self.poolCapacity(pool);
+        assert(list.capacity >= capacity);
+        assert(list.items.len <= capacity);
+        if (list.items.len < capacity) {
+            list.appendAssumeCapacity(item);
+        } else {
+            self.poolExhausted(@tagName(pool), capacity);
+        }
+    }
+
+    fn poolExhausted(self: *const Self, pool_name: []const u8, capacity: u32) noreturn {
+        @branchHint(.cold);
+        std.debug.panic(
+            "Scene pool '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
+                "{d} in use, 1 requested, frame {d}. Raise the app's ResourceLimits.",
+            .{ pool_name, capacity, capacity, self.frame_count_finished },
+        );
+    }
+
+    // ========================================================================
     // Clip Stack Management
     // ========================================================================
 
     /// Push a clip region onto the stack (intersects with current clip)
     pub fn pushClip(self: *Self, bounds: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.clip_stack.items.len < MAX_CLIP_STACK_DEPTH);
+        std.debug.assert(self.clip_stack.items.len <= self.limits.clip_depth_max);
         const current = self.currentClip();
         const intersected = ContentMask.ClipBounds.intersect(current, bounds);
-        try self.clip_stack.append(self.allocator, intersected);
+        self.push(.clip_stack, intersected);
     }
 
     /// Pop the current clip region from the stack
@@ -859,21 +889,21 @@ pub const Scene = struct {
 
     /// Insert an SVG instance without clipping
     pub fn insertSvg(self: *Self, instance: SvgInstance) !void {
-        std.debug.assert(self.svg_instances.items.len < MAX_SVGS_PER_FRAME);
+        std.debug.assert(self.svg_instances.items.len <= self.limits.svg_count_frame_max);
         var inst = instance;
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.svg_instances.append(self.allocator, inst);
+        self.push(.svg_instances, inst);
     }
 
     /// Insert an SVG instance with the current clip mask applied
     pub fn insertSvgClipped(self: *Self, instance: SvgInstance) !void {
-        std.debug.assert(self.svg_instances.items.len < MAX_SVGS_PER_FRAME);
+        std.debug.assert(self.svg_instances.items.len <= self.limits.svg_count_frame_max);
         const clip = self.currentClip();
         var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.svg_instances.append(self.allocator, inst);
+        self.push(.svg_instances, inst);
     }
 
     pub fn svgCount(self: *const Self) usize {
@@ -890,21 +920,21 @@ pub const Scene = struct {
 
     /// Insert an image instance without clipping
     pub fn insertImage(self: *Self, instance: ImageInstance) !void {
-        std.debug.assert(self.images.items.len < MAX_IMAGES_PER_FRAME);
+        std.debug.assert(self.images.items.len <= self.limits.image_count_frame_max);
         var inst = instance;
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.images.append(self.allocator, inst);
+        self.push(.images, inst);
     }
 
     /// Insert an image instance with the current clip mask applied
     pub fn insertImageClipped(self: *Self, instance: ImageInstance) !void {
-        std.debug.assert(self.images.items.len < MAX_IMAGES_PER_FRAME);
+        std.debug.assert(self.images.items.len <= self.limits.image_count_frame_max);
         const clip = self.currentClip();
         var inst = instance.withClip(clip.x, clip.y, clip.width, clip.height);
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.images.append(self.allocator, inst);
+        self.push(.images, inst);
     }
 
     pub fn imageCount(self: *const Self) usize {
@@ -921,40 +951,40 @@ pub const Scene = struct {
 
     /// Insert a path instance without clipping
     pub fn insertPath(self: *Self, instance: PathInstance) !void {
-        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(self.path_instances.items.len <= self.limits.path_count_frame_max);
         std.debug.assert(instance.index_count > 0);
 
         var inst = instance;
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.path_instances.append(self.allocator, inst);
+        self.push(.path_instances, inst);
         // Append empty gradient (will be populated if instance has gradient)
-        try self.path_gradients.append(self.allocator, GradientUniforms.none());
+        self.push(.path_gradients, GradientUniforms.none());
     }
 
     /// Insert a path instance with the current clip mask applied
     pub fn insertPathClipped(self: *Self, instance: PathInstance) !void {
-        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(self.path_instances.items.len <= self.limits.path_count_frame_max);
         std.debug.assert(instance.index_count > 0);
 
         const clip = self.currentClip();
         var inst = instance.withClipBounds(clip);
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.path_instances.append(self.allocator, inst);
-        try self.path_gradients.append(self.allocator, GradientUniforms.none());
+        self.push(.path_instances, inst);
+        self.push(.path_gradients, GradientUniforms.none());
     }
 
     /// Insert a path instance with a pre-reserved draw order
     pub fn insertPathWithOrder(self: *Self, instance: PathInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(self.path_instances.items.len <= self.limits.path_count_frame_max);
         std.debug.assert(instance.index_count > 0);
 
         var inst = instance.withClipBounds(clip);
         inst.order = order;
         self.needs_sort_paths = true; // Out-of-order insert requires sorting
-        try self.path_instances.append(self.allocator, inst);
-        try self.path_gradients.append(self.allocator, GradientUniforms.none());
+        self.push(.path_instances, inst);
+        self.push(.path_gradients, GradientUniforms.none());
     }
 
     /// Insert a path instance with a linear gradient fill
@@ -963,7 +993,7 @@ pub const Scene = struct {
         instance: PathInstance,
         gradient: LinearGradient,
     ) !void {
-        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(self.path_instances.items.len <= self.limits.path_count_frame_max);
         std.debug.assert(instance.index_count > 0);
         std.debug.assert(gradient.stop_count >= 2);
 
@@ -971,8 +1001,8 @@ pub const Scene = struct {
         var inst = instance.withClipBounds(clip);
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.path_instances.append(self.allocator, inst);
-        try self.path_gradients.append(self.allocator, GradientUniforms.fromLinear(gradient));
+        self.push(.path_instances, inst);
+        self.push(.path_gradients, GradientUniforms.fromLinear(gradient));
     }
 
     /// Insert a path instance with a radial gradient fill
@@ -981,7 +1011,7 @@ pub const Scene = struct {
         instance: PathInstance,
         gradient: RadialGradient,
     ) !void {
-        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
+        std.debug.assert(self.path_instances.items.len <= self.limits.path_count_frame_max);
         std.debug.assert(instance.index_count > 0);
         std.debug.assert(gradient.stop_count >= 2);
 
@@ -989,8 +1019,8 @@ pub const Scene = struct {
         var inst = instance.withClipBounds(clip);
         inst.order = self.next_order;
         self.next_order += 1;
-        try self.path_instances.append(self.allocator, inst);
-        try self.path_gradients.append(self.allocator, GradientUniforms.fromRadial(gradient));
+        self.push(.path_instances, inst);
+        self.push(.path_gradients, GradientUniforms.fromRadial(gradient));
     }
 
     /// Insert a path with a mesh, allocating the mesh in the frame pool
@@ -1238,38 +1268,38 @@ pub const Scene = struct {
     /// Points should be pre-allocated (e.g., from scene.allocator or frame arena).
     pub fn insertPolyline(self: *Self, polyline: Polyline) !void {
         // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
-        std.debug.assert(self.polylines.items.len < MAX_POLYLINES_PER_FRAME);
+        std.debug.assert(self.polylines.items.len <= self.limits.polyline_count_frame_max);
         std.debug.assert(polyline.point_count >= 2); // Need at least 2 points for a line
 
         var pl = polyline;
         pl.order = self.next_order;
         self.next_order += 1;
-        try self.polylines.append(self.allocator, pl);
+        self.push(.polylines, pl);
     }
 
     /// Insert a polyline with the current clip mask applied.
     /// Points should be pre-allocated (e.g., from scene.allocator or frame arena).
     pub fn insertPolylineClipped(self: *Self, polyline: Polyline) !void {
-        std.debug.assert(self.polylines.items.len < MAX_POLYLINES_PER_FRAME);
+        std.debug.assert(self.polylines.items.len <= self.limits.polyline_count_frame_max);
         std.debug.assert(polyline.point_count >= 2);
 
         const clip = self.currentClip();
         var pl = polyline.withClipBounds(clip);
         pl.order = self.next_order;
         self.next_order += 1;
-        try self.polylines.append(self.allocator, pl);
+        self.push(.polylines, pl);
     }
 
     /// Insert a polyline with a pre-reserved draw order.
     /// Use when interleaving polylines with other primitives at specific z-orders.
     pub fn insertPolylineWithOrder(self: *Self, polyline: Polyline, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.polylines.items.len < MAX_POLYLINES_PER_FRAME);
+        std.debug.assert(self.polylines.items.len <= self.limits.polyline_count_frame_max);
         std.debug.assert(polyline.point_count >= 2);
 
         var pl = polyline.withClipBounds(clip);
         pl.order = order;
         self.needs_sort_polylines = true; // Out-of-order insert requires sorting
-        try self.polylines.append(self.allocator, pl);
+        self.push(.polylines, pl);
     }
 
     pub fn polylineCount(self: *const Self) usize {
@@ -1288,38 +1318,38 @@ pub const Scene = struct {
     /// Positions should be pre-allocated (e.g., from scene.allocator or frame arena).
     pub fn insertPointCloud(self: *Self, cloud: PointCloud) !void {
         // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
-        std.debug.assert(self.point_clouds.items.len < MAX_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(self.point_clouds.items.len <= self.limits.point_cloud_count_frame_max);
         std.debug.assert(cloud.count >= 1); // Need at least 1 point
 
         var pc = cloud;
         pc.order = self.next_order;
         self.next_order += 1;
-        try self.point_clouds.append(self.allocator, pc);
+        self.push(.point_clouds, pc);
     }
 
     /// Insert a point cloud with the current clip mask applied.
     /// Positions should be pre-allocated (e.g., from scene.allocator or frame arena).
     pub fn insertPointCloudClipped(self: *Self, cloud: PointCloud) !void {
-        std.debug.assert(self.point_clouds.items.len < MAX_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(self.point_clouds.items.len <= self.limits.point_cloud_count_frame_max);
         std.debug.assert(cloud.count >= 1);
 
         const clip = self.currentClip();
         var pc = cloud.withClipBounds(clip);
         pc.order = self.next_order;
         self.next_order += 1;
-        try self.point_clouds.append(self.allocator, pc);
+        self.push(.point_clouds, pc);
     }
 
     /// Insert a point cloud with a pre-reserved draw order.
     /// Use when interleaving point clouds with other primitives at specific z-orders.
     pub fn insertPointCloudWithOrder(self: *Self, cloud: PointCloud, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.point_clouds.items.len < MAX_POINT_CLOUDS_PER_FRAME);
+        std.debug.assert(self.point_clouds.items.len <= self.limits.point_cloud_count_frame_max);
         std.debug.assert(cloud.count >= 1);
 
         var pc = cloud.withClipBounds(clip);
         pc.order = order;
         self.needs_sort_point_clouds = true; // Out-of-order insert requires sorting
-        try self.point_clouds.append(self.allocator, pc);
+        self.push(.point_clouds, pc);
     }
 
     pub fn pointCloudCount(self: *const Self) usize {
@@ -1338,38 +1368,41 @@ pub const Scene = struct {
     /// Positions and colors should be pre-allocated (e.g., from scene.allocator or frame arena).
     pub fn insertColoredPointCloud(self: *Self, cloud: ColoredPointCloud) !void {
         // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
-        std.debug.assert(self.colored_point_clouds.items.len < MAX_COLORED_POINT_CLOUDS_PER_FRAME);
+        const colored_count_max = self.limits.colored_point_cloud_count_frame_max;
+        std.debug.assert(self.colored_point_clouds.items.len <= colored_count_max);
         std.debug.assert(cloud.count >= 1); // Need at least 1 point
 
         var cpc = cloud;
         cpc.order = self.next_order;
         self.next_order += 1;
-        try self.colored_point_clouds.append(self.allocator, cpc);
+        self.push(.colored_point_clouds, cpc);
     }
 
     /// Insert a colored point cloud with the current clip mask applied.
     /// Positions and colors should be pre-allocated (e.g., from scene.allocator or frame arena).
     pub fn insertColoredPointCloudClipped(self: *Self, cloud: ColoredPointCloud) !void {
-        std.debug.assert(self.colored_point_clouds.items.len < MAX_COLORED_POINT_CLOUDS_PER_FRAME);
+        const colored_count_max = self.limits.colored_point_cloud_count_frame_max;
+        std.debug.assert(self.colored_point_clouds.items.len <= colored_count_max);
         std.debug.assert(cloud.count >= 1);
 
         const clip = self.currentClip();
         var cpc = cloud.withClipBounds(clip);
         cpc.order = self.next_order;
         self.next_order += 1;
-        try self.colored_point_clouds.append(self.allocator, cpc);
+        self.push(.colored_point_clouds, cpc);
     }
 
     /// Insert a colored point cloud with a pre-reserved draw order.
     /// Use when interleaving colored point clouds with other primitives at specific z-orders.
     pub fn insertColoredPointCloudWithOrder(self: *Self, cloud: ColoredPointCloud, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.colored_point_clouds.items.len < MAX_COLORED_POINT_CLOUDS_PER_FRAME);
+        const colored_count_max = self.limits.colored_point_cloud_count_frame_max;
+        std.debug.assert(self.colored_point_clouds.items.len <= colored_count_max);
         std.debug.assert(cloud.count >= 1);
 
         var cpc = cloud.withClipBounds(clip);
         cpc.order = order;
         self.needs_sort_colored_point_clouds = true; // Out-of-order insert requires sorting
-        try self.colored_point_clouds.append(self.allocator, cpc);
+        self.push(.colored_point_clouds, cpc);
     }
 
     pub fn coloredPointCloudCount(self: *const Self) usize {
@@ -1386,11 +1419,11 @@ pub const Scene = struct {
 
     /// Insert a glyph without clipping
     pub fn insertGlyph(self: *Self, glyph: GlyphInstance) !void {
-        std.debug.assert(self.glyphs.items.len < MAX_GLYPHS_PER_FRAME);
+        std.debug.assert(self.glyphs.items.len <= self.limits.glyph_count_frame_max);
         var g = glyph;
         g.order = self.next_order;
         self.next_order += 1;
-        try self.glyphs.append(self.allocator, g);
+        self.push(.glyphs, g);
 
         // Track inserted glyphs for profiler
         if (self.stats) |s| s.recordGlyphs(1);
@@ -1398,12 +1431,12 @@ pub const Scene = struct {
 
     /// Insert a glyph with the current clip mask applied
     pub fn insertGlyphClipped(self: *Self, glyph: GlyphInstance) !void {
-        std.debug.assert(self.glyphs.items.len < MAX_GLYPHS_PER_FRAME);
+        std.debug.assert(self.glyphs.items.len <= self.limits.glyph_count_frame_max);
         const clip = self.currentClip();
         var g = glyph.withClipBounds(clip);
         g.order = self.next_order;
         self.next_order += 1;
-        try self.glyphs.append(self.allocator, g);
+        self.push(.glyphs, g);
 
         // Track inserted glyphs for profiler
         if (self.stats) |s| s.recordGlyphs(1);
@@ -1412,11 +1445,11 @@ pub const Scene = struct {
     /// Insert a glyph with a pre-reserved draw order.
     /// Use this for canvas text rendering where z-order must match layout order.
     pub fn insertGlyphWithOrder(self: *Self, glyph: GlyphInstance, order: DrawOrder, clip: ContentMask.ClipBounds) !void {
-        std.debug.assert(self.glyphs.items.len < MAX_GLYPHS_PER_FRAME);
+        std.debug.assert(self.glyphs.items.len <= self.limits.glyph_count_frame_max);
         var g = glyph.withClipBounds(clip);
         g.order = order;
         self.needs_sort_glyphs = true;
-        try self.glyphs.append(self.allocator, g);
+        self.push(.glyphs, g);
 
         // Track inserted glyphs for profiler
         if (self.stats) |s| s.recordGlyphs(1);
@@ -1432,7 +1465,7 @@ pub const Scene = struct {
 
     /// Insert a shadow (call BEFORE the quad it shadows)
     pub fn insertShadow(self: *Self, shadow: Shadow) !void {
-        std.debug.assert(self.shadows.items.len < MAX_SHADOWS_PER_FRAME);
+        std.debug.assert(self.shadows.items.len <= self.limits.shadow_count_frame_max);
         // Fast viewport cull - account for blur radius and offset
         if (self.culling_enabled) {
             const expand = shadow.blur_radius * 2; // Shadow extends beyond content
@@ -1452,11 +1485,11 @@ pub const Scene = struct {
         var s = shadow;
         s.order = self.next_order;
         self.next_order += 1;
-        try self.shadows.append(self.allocator, s);
+        self.push(.shadows, s);
     }
 
     pub fn insertQuad(self: *Self, quad: Quad) !void {
-        std.debug.assert(self.quads.items.len < MAX_QUADS_PER_FRAME);
+        std.debug.assert(self.quads.items.len <= self.limits.quad_count_frame_max);
         // Fast viewport cull - skip if completely outside viewport
         if (self.culling_enabled) {
             const right = quad.bounds_origin_x + quad.bounds_size_width;
@@ -1474,7 +1507,7 @@ pub const Scene = struct {
         var q = quad;
         q.order = self.next_order;
         self.next_order += 1;
-        try self.quads.append(self.allocator, q);
+        self.push(.quads, q);
 
         // Track inserted quads for profiler
         if (self.stats) |s| s.recordQuads(1);
@@ -1483,7 +1516,7 @@ pub const Scene = struct {
     /// Insert a quad with a caller-specified draw order (for overlays, debug UI, etc.)
     /// This preserves the quad's order field and triggers sorting in finish().
     pub fn insertQuadWithOrder(self: *Self, quad: Quad) !void {
-        std.debug.assert(self.quads.items.len < MAX_QUADS_PER_FRAME);
+        std.debug.assert(self.quads.items.len <= self.limits.quad_count_frame_max);
         // Fast viewport cull - skip if completely outside viewport
         if (self.culling_enabled) {
             const right = quad.bounds_origin_x + quad.bounds_size_width;
@@ -1500,7 +1533,7 @@ pub const Scene = struct {
 
         // Preserve caller's order - this will require sorting
         self.needs_sort_quads = true;
-        try self.quads.append(self.allocator, quad);
+        self.push(.quads, quad);
 
         // Track inserted quads for profiler
         if (self.stats) |s| s.recordQuads(1);
@@ -1513,7 +1546,7 @@ pub const Scene = struct {
 
     /// Insert a quad with the current clip mask applied
     pub fn insertQuadClipped(self: *Self, quad: Quad) !void {
-        std.debug.assert(self.quads.items.len < MAX_QUADS_PER_FRAME);
+        std.debug.assert(self.quads.items.len <= self.limits.quad_count_frame_max);
         const clip = self.currentClip();
 
         // Cull against clip bounds (even tighter than viewport)
@@ -1541,24 +1574,19 @@ pub const Scene = struct {
         var q = quad.withClipBounds(clip);
         q.order = self.next_order;
         self.next_order += 1;
-        try self.quads.append(self.allocator, q);
+        self.push(.quads, q);
 
         // Track inserted quads for profiler
         if (self.stats) |s| s.recordQuads(1);
     }
 
-    /// Acquire the sort-key scratch sized for `count` keys. With `initCapacity`
-    /// the buffer is pre-sized to `MAX_SORT_KEYS`, so this is a no-op there and
-    /// the keyed sort never allocates in steady state. An `init()` scene grows
-    /// the buffer once and retains it, mirroring how its primitive arrays grow.
-    /// Returns null only if growth fails (allocation pressure on an `init()`
-    /// scene); callers then fall back to a direct payload sort so `finish()`
-    /// stays infallible.
-    fn acquireSortKeys(self: *Self, count: u32) ?[]u64 {
-        std.debug.assert(count >= 2); // callers skip the sort for count < 2
-        self.sort_keys.ensureTotalCapacity(self.allocator, count) catch return null;
+    /// The sort-key scratch for `count` keys. Reserved at the largest sortable
+    /// pool's capacity, so no pool can need more keys than it holds.
+    fn acquireSortKeys(self: *Self, count: u32) []u64 {
+        assert(count >= 2); // callers skip the sort for count < 2
         const buffer = self.sort_keys.allocatedSlice();
-        std.debug.assert(buffer.len >= count);
+        assert(buffer.len == self.limits.sortKeyCountMax());
+        assert(count <= buffer.len);
         return buffer[0..count];
     }
 
@@ -1570,10 +1598,7 @@ pub const Scene = struct {
         if (items.len < 2) return; // 0 or 1 element is already ordered
         const count: u32 = @intCast(items.len);
 
-        const keys = self.acquireSortKeys(count) orelse {
-            std.sort.pdq(T, items, {}, orderLessThan(T));
-            return;
-        };
+        const keys = self.acquireSortKeys(count);
         std.debug.assert(keys.len == count);
 
         var i: u32 = 0;
@@ -1588,6 +1613,8 @@ pub const Scene = struct {
     /// inserts. Each array is ordered by an indirect key sort that moves the fat
     /// payload structs at most once (see the "Draw-order sort" section above).
     pub fn finish(self: *Self) void {
+        assert(self.path_instances.items.len == self.path_gradients.items.len);
+        self.frame_count_finished += 1;
         // Only sort arrays that had out-of-order inserts. The shadow, svg, and
         // image flags have no public setter today (no ordered-insert API for
         // those types), but routing them through the same path keeps the nine
@@ -1651,9 +1678,112 @@ pub const Scene = struct {
     }
 };
 
+/// Small budget for tests: every pool holds 4, except glyphs, which must hold
+/// one whole shaped run (`MAX_GLYPHS_PER_RUN`) to pass `SceneLimits.check`.
+const test_limits: SceneLimits = .{
+    .quad_count_frame_max = 4,
+    .shadow_count_frame_max = 4,
+    .glyph_count_frame_max = limits.MAX_GLYPHS_PER_RUN,
+    .svg_count_frame_max = 4,
+    .image_count_frame_max = 4,
+    .path_count_frame_max = 4,
+    .polyline_count_frame_max = 4,
+    .point_cloud_count_frame_max = 4,
+    .colored_point_cloud_count_frame_max = 4,
+    .clip_depth_max = 4,
+};
+
+test "initCapacity reserves exactly the budget and initEmpty reserves nothing" {
+    // Goal: storage is sized from the scene's own budget, not the ceilings, and
+    // the zero-capacity constructor allocates nothing (no leak-check findings).
+    const testing = std.testing;
+    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
+    defer scene.deinit();
+    try testing.expectEqual(@as(usize, 4), scene.quads.capacity);
+    try testing.expectEqual(@as(usize, 4), scene.path_gradients.capacity);
+    try testing.expectEqual(@as(usize, limits.MAX_GLYPHS_PER_RUN), scene.glyphs.capacity);
+    try testing.expectEqual(@as(usize, test_limits.sortKeyCountMax()), scene.sort_keys.capacity);
+
+    var empty = Scene.initEmpty(testing.allocator);
+    defer empty.deinit();
+    try testing.expectEqual(@as(usize, 0), empty.quads.capacity);
+    try testing.expectEqual(@as(u32, 0), empty.poolCapacity(.quads));
+}
+
+test "every scene pool fills exactly to its budget without allocating" {
+    // Goal: the capacity contract for each pool. Fill to exactly the budget,
+    // check the last insert landed, and check the pool is then full, which is
+    // the state where the next insert takes the fail-fast branch in `push`.
+    // That branch panics, which a test cannot catch in-process, so the panic
+    // itself is verified by the `scene-overflow` build step (a child process
+    // whose abort and message are asserted). Inserts run against
+    // `failing_allocator` to prove none of them allocates.
+    const testing = std.testing;
+    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
+    defer scene.deinit();
+    const owner = scene.allocator;
+    scene.allocator = testing.failing_allocator;
+    defer scene.allocator = owner;
+
+    const path = PathInstance{ .index_count = 3 };
+    var i: u32 = 0;
+    while (i < 4) : (i += 1) {
+        try scene.insertShadow(Shadow.drop(0, 0, 10, 10, 2));
+        try scene.insertQuad(Quad.filled(0, 0, 10, 10, Hsla.red));
+        try scene.insertSvg(.{});
+        try scene.insertImage(.{});
+        try scene.insertPath(path);
+        try scene.insertPolyline(.{ .point_count = 2 });
+        try scene.insertPointCloud(.{ .count = 1 });
+        try scene.insertColoredPointCloud(.{ .count = 1 });
+        try scene.pushClip(.{ .x = 0, .y = 0, .width = 100, .height = 100 });
+    }
+    i = 0;
+    while (i < limits.MAX_GLYPHS_PER_RUN) : (i += 1) {
+        try scene.insertGlyph(GlyphInstance.init(0, 0, 6, 12, 0, 0, 1, 1, Hsla.black));
+    }
+
+    // The last insert of each kind landed: orders are assigned in insert order.
+    const order_last: DrawOrder = scene.next_order - 1;
+    try testing.expectEqual(order_last, scene.glyphs.items[scene.glyphs.items.len - 1].order);
+    try testing.expectEqual(@as(usize, 4), scene.clip_stack.items.len);
+
+    const pool_info = @typeInfo(Scene.Pool).@"enum";
+    inline for (pool_info.field_names, pool_info.field_values) |field_name, field_value| {
+        const pool: Scene.Pool = @fromBackingInt(@intCast(field_value));
+        const list = &@field(scene, field_name);
+        // Full: exactly at capacity, and the storage did not grow.
+        try testing.expectEqual(@as(usize, scene.poolCapacity(pool)), list.items.len);
+        try testing.expectEqual(@as(usize, scene.poolCapacity(pool)), list.capacity);
+    }
+
+    // Reuse after clear: the same storage takes a full frame again.
+    scene.clear();
+    scene.clip_stack.clearRetainingCapacity();
+    i = 0;
+    while (i < 4) : (i += 1) try scene.insertQuad(Quad.filled(0, 0, 1, 1, Hsla.red));
+    try testing.expectEqual(@as(usize, 4), scene.quads.items.len);
+    try testing.expectEqual(@as(usize, 4), scene.quads.capacity);
+}
+
+test "culled primitives do not consume budget at a full pool" {
+    // Goal: boundary in the negative space. A quad that viewport culling drops
+    // never reaches `push`, so a full pool must not fail on it.
+    const testing = std.testing;
+    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
+    defer scene.deinit();
+    scene.setViewport(100, 100);
+    scene.enableCulling();
+
+    var i: u32 = 0;
+    while (i < 4) : (i += 1) try scene.insertQuad(Quad.filled(0, 0, 10, 10, Hsla.red));
+    try scene.insertQuad(Quad.filled(500, 500, 10, 10, Hsla.red)); // Off-screen.
+    try testing.expectEqual(@as(usize, 4), scene.quads.items.len);
+}
+
 test "Scene finish skips sort when elements are in order" {
     const testing = std.testing;
-    var scene = Scene.init(testing.allocator);
+    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
     defer scene.deinit();
 
     // Insert elements in order (normal case)
@@ -1675,7 +1805,7 @@ test "Scene finish skips sort when elements are in order" {
 
 test "insertQuadWithOrder preserves draw order and triggers sort" {
     const testing = std.testing;
-    var scene = Scene.init(testing.allocator);
+    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
     defer scene.deinit();
 
     // Insert regular quads first (orders 0, 1, 2)
@@ -1712,7 +1842,7 @@ test "insertQuadWithOrder interleaves correctly with BatchIterator" {
     const testing = std.testing;
     const batch_iter = @import("batch_iterator.zig");
 
-    var scene = Scene.init(testing.allocator);
+    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
     defer scene.deinit();
 
     // Insert: quad(0), glyph(1), quad(2), then overlay quad with high order
@@ -1759,7 +1889,7 @@ test "finish sorts all nine per-type draw-order arrays ascending" {
     // each array directly (white-box) with a descending-ish order permutation so
     // a correct sort must move every element, then assert ascending order.
     const testing = std.testing;
-    var scene = Scene.init(testing.allocator);
+    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
     defer scene.deinit();
 
     // Distinct, non-monotonic orders: a stable ascending sort must reorder them

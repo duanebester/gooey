@@ -288,6 +288,7 @@ pub const Window = struct {
             self.metal_layer,
             self.size,
             self.scale_factor,
+            &options.limits.scene,
         );
 
         self.loadCustomShaders(options.custom_shaders);

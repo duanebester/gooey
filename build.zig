@@ -466,6 +466,24 @@ pub fn build(b: *std.Build) void {
         const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
         test_step.dependOn(&run_scene_bench_tests.step);
 
+        // A full scene pool must abort with the pool, budget, and frame (CLAUDE.md
+        // §2). A panic cannot be caught in-process, so a child process overflows
+        // the quad pool and the run step asserts the abort and its message.
+        const scene_overflow_exe = b.addExecutable(.{
+            .name = "scene-overflow-check",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/scene/overflow_check.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "gooey", .module = mod }},
+            }),
+        });
+        const run_scene_overflow = b.addRunArtifact(scene_overflow_exe);
+        run_scene_overflow.addCheck(.{ .expect_stderr_match = "Scene pool 'quads' exhausted: " ++
+            "capacity 4 (ResourceLimits.scene), 4 in use, 1 requested, frame 1." });
+        run_scene_overflow.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run_scene_overflow.step);
+
         // =====================================================================
         // Animation Benchmarks (per-frame spring physics + store dispatch)
         // =====================================================================

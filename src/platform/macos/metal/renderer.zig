@@ -1,11 +1,13 @@
 //! Metal Renderer - Main GPU rendering coordinator
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 
 const interface_verify = @import("../../../core/interface_verify.zig");
 const geometry = @import("../../../core/geometry.zig");
 const scene_mod = @import("../../../scene/mod.zig");
+const SceneLimits = @import("../../../core/limits.zig").SceneLimits;
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
 const render_pass = @import("render_pass.zig");
@@ -42,6 +44,7 @@ pub const Renderer = struct {
 
     // Single unified pipeline for quads + shadows
     unified_pipeline_state: ?objc.Object,
+    unified_primitive_ring: scene_renderer.UnifiedPrimitiveRing,
     text_pipeline_state: ?text_pipeline.TextPipeline,
     svg_pipeline_state: ?svg_pipeline.SvgPipeline,
     image_pipeline_state: ?image_pipeline.ImagePipeline,
@@ -62,7 +65,15 @@ pub const Renderer = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, layer: objc.Object, size: geometry.Size(f64), scale_factor: f64) !Self {
+    /// `scene_limits` is the window's validated budget; the quad/shadow instance ring
+    /// is reserved from it instead of the framework ceilings.
+    pub fn init(
+        allocator: std.mem.Allocator,
+        layer: objc.Object,
+        size: geometry.Size(f64),
+        scale_factor: f64,
+        scene_limits: *const SceneLimits,
+    ) !Self {
         const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse
             return error.MetalNotAvailable;
         const device = objc.Object.fromId(device_ptr);
@@ -78,12 +89,23 @@ pub const Renderer = struct {
 
         const sample_count: u32 = 4;
 
+        // The ring's in-flight safety proof relies on every frame holding one of at most
+        // `frame_count` drawables (see `UnifiedPrimitiveRing`).
+        const drawable_count_max = layer.msgSend(c_ulong, "maximumDrawableCount", .{});
+        assert(drawable_count_max >= 2);
+        assert(drawable_count_max <= scene_renderer.UnifiedPrimitiveRing.frame_count);
+
+        var unified_primitive_ring =
+            try scene_renderer.UnifiedPrimitiveRing.init(device, scene_limits);
+        errdefer unified_primitive_ring.deinit();
+
         var self = Self{
             .device = device,
             .command_queue = command_queue,
             .layer = layer,
             .unified_memory = unified_memory,
             .unified_pipeline_state = null,
+            .unified_primitive_ring = unified_primitive_ring,
             .text_pipeline_state = null,
             .svg_pipeline_state = null,
             .image_pipeline_state = null,
@@ -112,36 +134,63 @@ pub const Renderer = struct {
         self.unified_pipeline_state = try pipelines.setupUnifiedPipeline(device, sample_count);
         self.quad_unit_vertex_buffer = try pipelines.createUnitVertexBuffer(device, unified_memory);
 
+        self.initOptionalPipelines(sample_count);
+        return self;
+    }
+
+    /// Create the optional pipelines. Each one that fails to build stays null and its
+    /// primitives are skipped, as before this was split out of `init`.
+    fn initOptionalPipelines(self: *Self, sample_count: u32) void {
+        assert(sample_count > 0);
+        assert(self.text_pipeline_state == null);
+        const device = self.device;
+
         self.text_pipeline_state = text_pipeline.TextPipeline.init(
             device,
             mtl.MTLPixelFormat.bgra8unorm,
             sample_count,
         ) catch null;
 
-        // Initialize SVG pipeline
-        self.svg_pipeline_state = svg_pipeline.SvgPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
-
-        // Initialize Image pipeline
-        self.image_pipeline_state = image_pipeline.ImagePipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
-
-        // Initialize Path pipeline
-        self.path_pipeline_state = path_pipeline.PathPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
-
-        // Initialize Polyline pipeline (for efficient chart line rendering)
-        self.polyline_pipeline_state = polyline_pipeline.PolylinePipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
-
-        // Initialize Point Cloud pipeline (for efficient scatter plot rendering)
-        self.point_cloud_pipeline_state = point_cloud_pipeline.PointCloudPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
-
-        // Initialize Colored Point Cloud pipeline (for per-point colored circles)
-        self.colored_point_cloud_pipeline_state = colored_point_cloud_pipeline.ColoredPointCloudPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
-
-        return self;
+        // Instanced pipelines for SVGs, images, paths, chart polylines, and scatter points.
+        const allocator = self.allocator;
+        const samples: u32 = sample_count;
+        self.svg_pipeline_state = svg_pipeline.SvgPipeline.init(
+            allocator,
+            device,
+            @intCast(samples),
+        ) catch null;
+        self.image_pipeline_state = image_pipeline.ImagePipeline.init(
+            allocator,
+            device,
+            @intCast(samples),
+        ) catch null;
+        self.path_pipeline_state = path_pipeline.PathPipeline.init(
+            allocator,
+            device,
+            @intCast(samples),
+        ) catch null;
+        self.polyline_pipeline_state = polyline_pipeline.PolylinePipeline.init(
+            allocator,
+            device,
+            @intCast(samples),
+        ) catch null;
+        self.point_cloud_pipeline_state = point_cloud_pipeline.PointCloudPipeline.init(
+            allocator,
+            device,
+            @intCast(samples),
+        ) catch null;
+        const ColoredPointCloudPipeline = colored_point_cloud_pipeline.ColoredPointCloudPipeline;
+        self.colored_point_cloud_pipeline_state = ColoredPointCloudPipeline.init(
+            allocator,
+            device,
+            @intCast(samples),
+        ) catch null;
     }
 
     pub fn deinit(self: *Self) void {
         if (self.msaa_texture) |tex| tex.release();
         if (self.unified_pipeline_state) |ps| ps.release();
+        self.unified_primitive_ring.deinit();
         if (self.quad_unit_vertex_buffer) |vb| vb.release();
         if (self.text_pipeline_state) |*tp| tp.deinit();
         if (self.svg_pipeline_state) |*sp| sp.deinit();
@@ -190,6 +239,7 @@ pub const Renderer = struct {
             return;
         }
 
+        self.unified_primitive_ring.nextFrame();
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
 
         const width: u32 = @intFromFloat(self.size.width * self.scale_factor);
@@ -208,6 +258,7 @@ pub const Renderer = struct {
             self.msaa_texture.?,
             self.quad_unit_vertex_buffer.?,
             self.unified_pipeline_state,
+            &self.unified_primitive_ring,
             if (self.text_pipeline_state) |*tp| tp else null,
             if (self.svg_pipeline_state) |*sp| sp else null,
             pp,
@@ -310,6 +361,7 @@ pub const Renderer = struct {
     }
 
     fn renderSceneInternal(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color, synchronous: bool) !void {
+        self.unified_primitive_ring.nextFrame();
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
         if (self.polyline_pipeline_state) |*plp| plp.nextFrame();
         if (self.point_cloud_pipeline_state) |*pcp| pcp.nextFrame();
@@ -352,6 +404,7 @@ pub const Renderer = struct {
         // Use batch-based rendering for correct z-ordering
         scene_renderer.drawScene(encoder, scene, .{
             .unified = self.unified_pipeline_state,
+            .unified_ring = &self.unified_primitive_ring,
             .text = if (self.text_pipeline_state) |*tp| tp else null,
             .svg = if (self.svg_pipeline_state) |*sp| sp else null,
             .image = if (self.image_pipeline_state) |*ip| ip else null,
