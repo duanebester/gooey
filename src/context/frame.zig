@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 
 const scene_mod = @import("../scene/scene.zig");
 const Scene = scene_mod.Scene;
+const SceneLimits = scene_mod.SceneLimits;
 
 const dispatch_mod = @import("dispatch.zig");
 const DispatchTree = dispatch_mod.DispatchTree;
@@ -71,11 +72,14 @@ pub const Frame = struct {
     /// Allocate and initialise both subsystems against `allocator`.
     ///
     /// Returns a `Frame` that owns the heap allocations; the caller must
-    /// invoke `deinit` exactly once. The `viewport_width` /
-    /// `viewport_height` parameters drive `scene.setViewport` +
-    /// `scene.enableCulling` inline so callers can't forget the step.
+    /// invoke `deinit` exactly once. The scene reserves exactly
+    /// `scene_limits` (the app's `ResourceLimits.scene`), so building a frame
+    /// never allocates. The `viewport_width` / `viewport_height` parameters
+    /// drive `scene.setViewport` + `scene.enableCulling` inline so callers
+    /// can't forget the step.
     pub fn initOwned(
         allocator: Allocator,
+        scene_limits: *const SceneLimits,
         viewport_width: f32,
         viewport_height: f32,
     ) !Self {
@@ -87,7 +91,7 @@ pub const Frame = struct {
 
         const scene = try allocator.create(Scene);
         errdefer allocator.destroy(scene);
-        scene.* = Scene.init(allocator);
+        scene.* = try Scene.initCapacity(allocator, scene_limits);
         errdefer scene.deinit();
 
         // Viewport culling — folded in here so no caller can forget the
@@ -125,6 +129,7 @@ pub const Frame = struct {
     pub noinline fn initOwnedInPlace(
         self: *Self,
         allocator: Allocator,
+        scene_limits: *const SceneLimits,
         viewport_width: f32,
         viewport_height: f32,
     ) !void {
@@ -135,7 +140,7 @@ pub const Frame = struct {
 
         const scene = try allocator.create(Scene);
         errdefer allocator.destroy(scene);
-        scene.* = Scene.init(allocator);
+        scene.* = try Scene.initCapacity(allocator, scene_limits);
         errdefer scene.deinit();
 
         scene.setViewport(viewport_width, viewport_height);
@@ -224,8 +229,11 @@ pub const Frame = struct {
 
 const testing = std.testing;
 
+/// Tests build real frames; `standard` is the measured app default.
+const test_limits = SceneLimits.standard;
+
 test "Frame: initOwned allocates and frees cleanly" {
-    var frame = try Frame.initOwned(testing.allocator, 800, 600);
+    var frame = try Frame.initOwned(testing.allocator, &test_limits, 800, 600);
     defer frame.deinit();
 
     try testing.expect(frame.owned);
@@ -241,7 +249,7 @@ test "Frame: initOwned allocates and frees cleanly" {
 
 test "Frame: initOwnedInPlace produces an owned instance" {
     var frame: Frame = undefined;
-    try frame.initOwnedInPlace(testing.allocator, 1024, 768);
+    try frame.initOwnedInPlace(testing.allocator, &test_limits, 1024, 768);
     defer frame.deinit();
 
     try testing.expect(frame.owned);
@@ -258,7 +266,7 @@ test "Frame: borrowed deinit is a no-op (no double-free)" {
     // borrowed `deinit` below tore the parent's allocations down
     // again, the parent's own `deinit` at scope exit would
     // double-free and the test allocator would surface it.
-    var parent = try Frame.initOwned(testing.allocator, 640, 480);
+    var parent = try Frame.initOwned(testing.allocator, &test_limits, 640, 480);
     defer parent.deinit();
 
     var view = Frame.borrowed(testing.allocator, parent.scene, parent.dispatch);
@@ -286,7 +294,7 @@ test "Frame: zero viewport is accepted" {
     // layer reports a real surface size; a zero-sized viewport is a
     // legitimate transient state (culling is a no-op until the first
     // resize event), so the bundle must accept it.
-    var frame = try Frame.initOwned(testing.allocator, 0, 0);
+    var frame = try Frame.initOwned(testing.allocator, &test_limits, 0, 0);
     defer frame.deinit();
 
     try testing.expectEqual(@as(f32, 0), frame.scene.viewport_width);
@@ -308,10 +316,10 @@ test "Frame: mem.swap exchanges scene + dispatch between two owning Frames" {
     // Two owning `Frame`s with distinct viewport sizes so we can
     // tell which `Scene` is which post-swap (the pointee
     // identity, not just the pointer value, anchors the test).
-    var a = try Frame.initOwned(testing.allocator, 800, 600);
+    var a = try Frame.initOwned(testing.allocator, &test_limits, 800, 600);
     defer a.deinit();
 
-    var b = try Frame.initOwned(testing.allocator, 1024, 768);
+    var b = try Frame.initOwned(testing.allocator, &test_limits, 1024, 768);
     defer b.deinit();
 
     const a_scene_before = a.scene;
@@ -346,10 +354,10 @@ test "Frame: mem.swap preserves owned=true on both halves" {
     // remain `owned = true` post-swap. `Window.deinit` then
     // tears down both pairs unconditionally regardless of how
     // many swaps have run.
-    var a = try Frame.initOwned(testing.allocator, 640, 480);
+    var a = try Frame.initOwned(testing.allocator, &test_limits, 640, 480);
     defer a.deinit();
 
-    var b = try Frame.initOwned(testing.allocator, 320, 240);
+    var b = try Frame.initOwned(testing.allocator, &test_limits, 320, 240);
     defer b.deinit();
 
     try testing.expect(a.owned);
@@ -376,10 +384,10 @@ test "Frame: mem.swap survives recycle (clear/reset on the post-swap older buffe
     // `dispatch.reset()`. Pin that the recycle calls land on
     // the post-swap pointees and don't disturb the
     // just-rotated-into-rendered_frame pair.
-    var rendered_frame = try Frame.initOwned(testing.allocator, 800, 600);
+    var rendered_frame = try Frame.initOwned(testing.allocator, &test_limits, 800, 600);
     defer rendered_frame.deinit();
 
-    var next_frame = try Frame.initOwned(testing.allocator, 800, 600);
+    var next_frame = try Frame.initOwned(testing.allocator, &test_limits, 800, 600);
     defer next_frame.deinit();
 
     // Capture the pre-swap identities so we can verify the

@@ -1025,7 +1025,8 @@ pub const Window = struct {
             self.renderer.render(scene);
         } else {
             // Create empty scene for clear
-            var empty_scene = scene_mod.Scene.init(self.allocator);
+            // Zero-capacity: presenting a clear needs no primitive storage.
+            var empty_scene = scene_mod.Scene.initEmpty(self.allocator);
             defer empty_scene.deinit();
             self.renderer.render(&empty_scene);
         }

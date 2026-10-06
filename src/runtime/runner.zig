@@ -27,6 +27,7 @@ const platform = @import("../platform/mod.zig");
 const interface_mod = @import("../platform/interface.zig");
 
 // Core imports
+const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const geometry_mod = @import("../core/geometry.zig");
 const input_mod = @import("../input/mod.zig");
 const handler_mod = @import("../context/handler.zig");
@@ -112,7 +113,7 @@ pub fn runCx(
     const win_ctx = try WinCtx.init(allocator, window, state, render, .{
         .font_name = config.font,
         .font_size = config.font_size,
-    }, app_ptr, io);
+    }, &config.limits, app_ptr, io);
     defer if (owned) win_ctx.deinit();
 
     win_ctx.setCallbacks(config.on_event, config.on_close, config.on_resize);
@@ -198,6 +199,9 @@ fn windowOptions(comptime State: type, config: CxConfig(State)) interface_mod.Wi
     // backend derives swapchain and surface extents from these.
     assert(config.width > 0);
     assert(config.height > 0);
+    // `gooey.App` validates the budget at comptime; direct `runCx` callers pass a
+    // runtime value. This runs before the window or any scene is sized from it.
+    config.limits.assertValid();
 
     const bg_color = config.background_color orelse
         geometry_mod.Color.rgba(0.95, 0.95, 0.95, 1.0);
@@ -221,6 +225,7 @@ fn windowOptions(comptime State: type, config: CxConfig(State)) interface_mod.Wi
         .glass_corner_radius = config.glass_corner_radius,
         .titlebar_transparent = config.titlebar_transparent,
         .full_size_content = config.full_size_content,
+        .limits = config.limits,
     };
 }
 
@@ -287,6 +292,14 @@ pub fn CxConfig(comptime State: type) type {
 
         /// Extend content under titlebar
         full_size_content: bool = false,
+
+        /// Per-window resource budget (CLAUDE.md §2). Every scene pool and the
+        /// renderer's instance storage are reserved at exactly these sizes
+        /// before the first frame and never grow; exceeding one fails fast.
+        /// `gooey.App` validates it at comptime and also accepts a profile
+        /// name: `.limits = .large`. The default is the measured `standard`
+        /// profile, the reviewed policy for ordinary UI apps.
+        limits: ResourceLimits = ResourceLimits.standard,
 
         /// IO interface for async work (filesystem, network, concurrency).
         /// When null, falls back to `init.io` (the runtime-selected default

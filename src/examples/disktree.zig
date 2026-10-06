@@ -30,8 +30,13 @@ const frame_quad_count_max: u32 =
     (fixed_text_character_count_max + tile_count_max * (tile_label_character_count_max + 1)) *
     bitmap_quads_character_max + frame_shape_quad_count_max;
 
+// The tile map can emit up to 57,956 quads in one frame, above `.large`, so this
+// app declares the framework ceiling as its budget and proves the bound against
+// exactly the budget it declares.
+const resource_limits = gooey.ResourceLimits.ceiling;
+
 comptime {
-    std.debug.assert(frame_quad_count_max <= gooey.scene.MAX_QUADS_PER_FRAME);
+    std.debug.assert(frame_quad_count_max <= resource_limits.scene.quad_count_frame_max);
 }
 
 const map_x: f32 = 20;
@@ -306,6 +311,7 @@ const App = gooey.App(State, &state, render, .{
     .height = 760,
     .on_init = on_init,
     .on_event = on_event,
+    .limits = resource_limits,
 });
 
 comptime {
@@ -1154,9 +1160,9 @@ test "scanner closes every directory after an iterator error below root" {
 test "reserved canvas paints navigation and resize without allocation" {
     var counting = CountingAllocator{ .backing = std.testing.allocator };
     const allocator = counting.allocator();
-    var scene_a = gooey.scene.Scene.init(allocator);
+    var scene_a = try gooey.scene.Scene.initCapacity(allocator, &resource_limits.scene);
     defer scene_a.deinit();
-    var scene_b = gooey.scene.Scene.init(allocator);
+    var scene_b = try gooey.scene.Scene.initCapacity(allocator, &resource_limits.scene);
     defer scene_b.deinit();
     var dispatch_a = gooey.context.DispatchTree.init(allocator);
     defer dispatch_a.deinit();

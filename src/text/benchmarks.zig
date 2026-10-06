@@ -1479,7 +1479,7 @@ fn benchRenderText(
     const baseline_y: f32 = 20.0;
 
     // Pre-allocate scene capacity so append is a pointer bump, not an alloc.
-    var scene = Scene.initCapacity(allocator) catch |err| {
+    var scene = Scene.initCapacity(allocator, &gooey.scene.SceneLimits.ceiling) catch |err| {
         std.debug.print("  !! {s}: Scene.initCapacity failed: {s} — skipping benchmark\n", .{ name, @errorName(err) });
         return .{
             .name = name,
@@ -1849,7 +1849,7 @@ test "validate: renderText produces glyphs in scene" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    var scene = Scene.init(allocator);
+    var scene = try Scene.initCapacity(allocator, &gooey.scene.SceneLimits.standard);
     defer scene.deinit();
 
     var options = RenderTextOptions{};

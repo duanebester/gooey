@@ -38,6 +38,8 @@
 //! / `window.a11y.*` / etc.
 
 const std = @import("std");
+const assert = std.debug.assert;
+const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const builtin = @import("builtin");
 
 // Enable verbose init logging for debugging stack overflow issues
@@ -569,7 +571,14 @@ pub const Window = struct {
     }
 
     /// Initialize Window creating and owning all resources
-    pub fn initOwned(allocator: std.mem.Allocator, platform_window: *PlatformWindow, font_config: FontConfig, io: std.Io) !Self {
+    pub fn initOwned(
+        allocator: std.mem.Allocator,
+        platform_window: *PlatformWindow,
+        font_config: FontConfig,
+        resource_limits: *const ResourceLimits,
+        io: std.Io,
+    ) !Self {
+        assert(resource_limits.check() == null);
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -588,6 +597,7 @@ pub const Window = struct {
         // `resources`).
         var next_frame = try Frame.initOwned(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
@@ -595,6 +605,7 @@ pub const Window = struct {
 
         var rendered_frame = try Frame.initOwned(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
@@ -715,11 +726,19 @@ pub const Window = struct {
     /// Usage:
     /// ```
     /// const window_ptr = try allocator.create(Window);
-    /// try window_ptr.initOwnedPtr(allocator, window);
+    /// try window_ptr.initOwnedPtr(allocator, window, font_config, &limits, io);
     /// ```
     /// Marked noinline to prevent stack accumulation in WASM builds.
     /// Without this, the compiler inlines all sub-functions creating a 2MB+ stack frame.
-    pub noinline fn initOwnedPtr(self: *Self, allocator: std.mem.Allocator, platform_window: *PlatformWindow, font_config: FontConfig, io: std.Io) !void {
+    pub noinline fn initOwnedPtr(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        platform_window: *PlatformWindow,
+        font_config: FontConfig,
+        resource_limits: *const ResourceLimits,
+        io: std.Io,
+    ) !void {
+        assert(resource_limits.check() == null);
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         layout_engine.* = LayoutEngine.init(allocator);
@@ -737,6 +756,7 @@ pub const Window = struct {
         // both pairs.
         try self.next_frame.initOwnedInPlace(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
@@ -744,6 +764,7 @@ pub const Window = struct {
 
         try self.rendered_frame.initOwnedInPlace(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
@@ -864,8 +885,10 @@ pub const Window = struct {
         allocator: std.mem.Allocator,
         platform_window: *PlatformWindow,
         shared_resources: *const AppResources,
+        resource_limits: *const ResourceLimits,
         io: std.Io,
     ) !Self {
+        assert(resource_limits.check() == null);
         // Assertions: validate inputs through the bundle (every later
         // expression indexes the same three slots).
         std.debug.assert(@intFromPtr(shared_resources) != 0);
@@ -888,6 +911,7 @@ pub const Window = struct {
         // the `owned = false` disarms post-literal mirror `resources.owned`.
         var next_frame = try Frame.initOwned(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
@@ -895,6 +919,7 @@ pub const Window = struct {
 
         var rendered_frame = try Frame.initOwned(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
@@ -994,8 +1019,10 @@ pub const Window = struct {
         allocator: std.mem.Allocator,
         platform_window: *PlatformWindow,
         shared_resources: *const AppResources,
+        resource_limits: *const ResourceLimits,
         io: std.Io,
     ) !void {
+        assert(resource_limits.check() == null);
         // Assertions: validate inputs.
         std.debug.assert(@intFromPtr(shared_resources) != 0);
         std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
@@ -1016,6 +1043,7 @@ pub const Window = struct {
         // slots carry their own owning Scene + DispatchTree pair.
         try self.next_frame.initOwnedInPlace(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );
@@ -1023,6 +1051,7 @@ pub const Window = struct {
 
         try self.rendered_frame.initOwnedInPlace(
             allocator,
+            &resource_limits.scene,
             @floatCast(platform_window.size.width),
             @floatCast(platform_window.size.height),
         );

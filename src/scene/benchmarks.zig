@@ -65,6 +65,8 @@ const time = struct {
 
 const scene_mod = gooey.scene;
 const Scene = scene_mod.Scene;
+/// Benchmarks exercise up to the framework ceilings (16k quads, large dashboards).
+const bench_limits = scene_mod.SceneLimits.ceiling;
 const Quad = scene_mod.Quad;
 const GlyphInstance = scene_mod.GlyphInstance;
 const Shadow = scene_mod.Shadow;
@@ -428,7 +430,7 @@ fn benchSceneBuild(
     comptime name: []const u8,
     comptime build_fn: fn (*Scene) Allocator.Error!u32,
 ) !BenchmarkResult {
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     scene.clear();
@@ -472,7 +474,7 @@ fn benchBatchIterate(
     comptime name: []const u8,
     comptime build_fn: fn (*Scene) Allocator.Error!u32,
 ) !BenchmarkResult {
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     scene.clear();
@@ -557,7 +559,7 @@ fn benchDrawOrderSort(
     std.debug.assert(count > 1);
     std.debug.assert(count <= MAX_QUADS_PER_FRAME);
 
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     const unsorted = try allocator.alloc(Quad, count);
@@ -612,7 +614,7 @@ fn benchDrawOrderSortStruct(
     std.debug.assert(count > 1);
     std.debug.assert(count <= MAX_QUADS_PER_FRAME);
 
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     const unsorted = try allocator.alloc(Quad, count);
@@ -674,7 +676,7 @@ fn benchClipStack(
     std.debug.assert(depth > 0);
     std.debug.assert(depth <= MAX_CLIP_STACK_DEPTH);
 
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     const warmup_iters = getWarmupIterations(depth);
@@ -729,7 +731,7 @@ fn benchFrame(
     comptime name: []const u8,
     comptime build_fn: fn (*Scene) Allocator.Error!u32,
 ) !BenchmarkResult {
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     scene.clear();
@@ -830,7 +832,7 @@ const CountingAllocator = struct {
 
 fn validateBuild(comptime build_fn: fn (*Scene) Allocator.Error!u32, expected: u32) !void {
     const allocator = std.testing.allocator;
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     scene.clear();
@@ -854,7 +856,7 @@ test "validate: build glyphs emits and drains expected count" {
 
 test "validate: interleaved build is the worst case for batching" {
     const allocator = std.testing.allocator;
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     scene.clear();
@@ -869,7 +871,7 @@ test "validate: interleaved build is the worst case for batching" {
 
 test "validate: dashboard emits 1 + panels*(2 + glyphs)" {
     const allocator = std.testing.allocator;
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     scene.clear();
@@ -879,7 +881,7 @@ test "validate: dashboard emits 1 + panels*(2 + glyphs)" {
 
 test "validate: finish sorts an out-of-order quad array ascending" {
     const allocator = std.testing.allocator;
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     const count: u32 = 512;
@@ -900,7 +902,7 @@ test "validate: finish sorts an out-of-order quad array ascending" {
 
 test "validate: clip stack is balanced after push/pop" {
     const allocator = std.testing.allocator;
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     try pushPopClips(&scene, MAX_CLIP_STACK_DEPTH);
@@ -914,7 +916,7 @@ test "validate: steady-state frame performs zero heap allocations" {
     var counter = CountingAllocator{ .backing = gpa.allocator() };
     const allocator = counter.allocator();
 
-    var scene = try Scene.initCapacity(allocator);
+    var scene = try Scene.initCapacity(allocator, &bench_limits);
     defer scene.deinit();
 
     // Warm once so any lazy first-use allocation happens before we measure.

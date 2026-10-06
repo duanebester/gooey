@@ -15,6 +15,7 @@
 //! eliminating the single-window limitation of module-level static variables.
 
 const std = @import("std");
+const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const builtin = @import("builtin");
 
 // Platform
@@ -140,6 +141,7 @@ pub fn WindowContext(comptime State: type) type {
             state: *State,
             render_fn: *const fn (*Cx) void,
             font_config: FontConfig,
+            resource_limits: *const ResourceLimits,
             app: *App,
             io: std.Io,
         ) !*Self {
@@ -155,7 +157,7 @@ pub fn WindowContext(comptime State: type) type {
             // Initialize Window with owned resources (single-window mode).
             const window = try allocator.create(Window);
             errdefer allocator.destroy(window);
-            try window.initOwnedPtr(allocator, platform_window, font_config, io);
+            try window.initOwnedPtr(allocator, platform_window, font_config, resource_limits, io);
             // Wire the borrowed `*App` onto the freshly-initialised `Window`
             // (`initOwnedPtr` left `window.app` undefined). This is the latest
             // safe point; every path that reaches `window.app.*` runs after it.
@@ -219,6 +221,7 @@ pub fn WindowContext(comptime State: type) type {
             state: *State,
             render_fn: *const fn (*Cx) void,
             shared_resources: *const AppResources,
+            resource_limits: *const ResourceLimits,
             app: *App,
             io: std.Io,
         ) !*Self {
@@ -242,6 +245,7 @@ pub fn WindowContext(comptime State: type) type {
                 allocator,
                 platform_window,
                 shared_resources,
+                resource_limits,
                 io,
             );
             // Every window in a multi-window app borrows a pointer to the SAME
