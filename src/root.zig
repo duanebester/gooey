@@ -352,6 +352,10 @@ test {
         // Platform-independent web input buffer logic.
         @import("platform/web/composition_buffer.zig"),
 
+        // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
+        // its capacity tests run on every OS, not only where the renderer builds.
+        @import("platform/linux/vk_types.zig"),
+
         // Scene leaves — path/polyline/svg test-heavy files.
         @import("scene/path.zig"),
         @import("scene/path_instance.zig"),

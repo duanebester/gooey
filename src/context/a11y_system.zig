@@ -106,8 +106,24 @@ pub const A11ySystem = struct {
         self.bridge = a11y.createPlatformBridge(&self.platform_bridge, window, view);
 
         // Write-boundary assertion: the dispatcher must point into our
-        // own storage. Non-zero is enough to catch a missed assignment.
-        std.debug.assert(@intFromPtr(self.bridge.ptr) != 0);
+        // own storage.
+        std.debug.assert(self.bridgeAddressValid());
+    }
+
+    /// Whether `bridge.ptr` points into this system's own `platform_bridge`.
+    ///
+    /// False after a by-value copy or move of an initialized system: the copy's
+    /// dispatcher still points at the original storage, which is a dead stack
+    /// frame if the original was a local (CLAUDE.md §13). That is exactly how a
+    /// `Window` returned by value crashed its second multi-window instance. The
+    /// null bridge has no storage, so it always passes.
+    pub fn bridgeAddressValid(self: *const Self) bool {
+        if (self.platform_bridge == .null_bridge) return true;
+        const storage_start = @intFromPtr(&self.platform_bridge);
+        const storage_end = storage_start + @sizeOf(a11y.PlatformBridge);
+        const bridge_address = @intFromPtr(self.bridge.ptr);
+        if (bridge_address < storage_start) return false;
+        return bridge_address < storage_end;
     }
 
     /// Tear down the platform bridge. Must be called from the parent
@@ -130,6 +146,9 @@ pub const A11ySystem = struct {
         // start; exceeding the interval means a prior frame skipped
         // the reset.
         std.debug.assert(self.check_counter < a11y.constants.SCREEN_READER_CHECK_INTERVAL);
+        // The system must not have moved since `initInPlace`; every bridge call
+        // below would otherwise go through a dangling dispatcher.
+        std.debug.assert(self.bridgeAddressValid());
 
         self.check_counter += 1;
         if (self.check_counter >= a11y.constants.SCREEN_READER_CHECK_INTERVAL) {
@@ -149,6 +168,7 @@ pub const A11ySystem = struct {
     /// platform bridge. Zero cost when `enabled` is false — the entire
     /// body is gated behind the early-out.
     pub fn endFrame(self: *Self, layout: *const LayoutEngine) void {
+        std.debug.assert(self.bridgeAddressValid());
         if (!self.enabled) return;
 
         self.tree.endFrame();
@@ -225,8 +245,33 @@ test "A11ySystem: initInPlace produces a disabled, freshly-counted system" {
     try testing.expectEqual(false, sys.isEnabled());
     try testing.expectEqual(@as(u32, 0), sys.check_counter);
     // The bridge dispatcher must point at the embedded platform
-    // bridge storage — non-zero is enough to catch a missed wiring.
+    // bridge storage.
     try testing.expect(@intFromPtr(sys.bridge.ptr) != 0);
+    try testing.expect(sys.bridgeAddressValid());
+}
+
+test "A11ySystem: a by-value copy is detected as a dangling bridge" {
+    // Goal: the per-frame assertion catches the multi-window crash, where a
+    // `Window` built on the stack was copied to the heap after `initInPlace`.
+    // Methodology: init one system in place, copy it into a second heap slot the
+    // way `window.* = try Window.init...()` did, and check that only the
+    // original passes. Only the original is torn down: the copy shares its
+    // bridge resources.
+    const original = try testing.allocator.create(A11ySystem);
+    defer testing.allocator.destroy(original);
+    original.initInPlace(null, null);
+    defer original.deinit();
+
+    const copy = try testing.allocator.create(A11ySystem);
+    defer testing.allocator.destroy(copy);
+    copy.* = original.*;
+
+    try testing.expect(original.bridgeAddressValid());
+    if (original.platform_bridge == .null_bridge) {
+        try testing.expect(copy.bridgeAddressValid()); // no storage to dangle into
+    } else {
+        try testing.expect(!copy.bridgeAddressValid());
+    }
 }
 
 test "A11ySystem: forceEnable / forceDisable flip the cached flag" {

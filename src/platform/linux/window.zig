@@ -374,6 +374,7 @@ pub const Window = struct {
             self.width_px,
             self.height_px,
             self.scale_factor,
+            &options.limits.scene,
         );
 
         // Final commit after Vulkan initialization
