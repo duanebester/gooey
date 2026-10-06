@@ -237,7 +237,7 @@ fn extractState(comptime caller: []const u8, comptime Fn: type) type {
 }
 
 /// Font configuration for app initialization.
-/// Pass to `initOwned` / `initOwnedPtr` to control the default font.
+/// Pass to `initOwnedPtr` to control the default font.
 pub const FontConfig = struct {
     /// Font family name (e.g., "Inter", "JetBrains Mono").
     /// When null, uses the platform's default sans-serif font.
@@ -369,8 +369,11 @@ pub const Window = struct {
 
     /// Accessibility subsystem (see `a11y_system.zig`). Owns: tree, platform
     /// bridge storage, bridge dispatcher, the "screen reader active" flag,
-    /// and the periodic poll counter. `undefined` until `initOwned` /
-    /// `initOwnedPtr` etc wire it.
+    /// and the periodic poll counter. `undefined` until `initOwnedPtr` /
+    /// `initWithSharedResourcesPtr` wire it. The bridge dispatcher points into
+    /// this field, so a `Window` is never copied or moved after init (both
+    /// initializers run at the final heap address; `A11ySystem.beginFrame`
+    /// asserts it every frame).
     a11y: A11ySystem = undefined,
 
     // Per-window root state for handler callbacks (multi-window support)
@@ -570,158 +573,11 @@ pub const Window = struct {
         return self.deferred_count > 0;
     }
 
-    /// Initialize Window creating and owning all resources
-    pub fn initOwned(
-        allocator: std.mem.Allocator,
-        platform_window: *PlatformWindow,
-        font_config: FontConfig,
-        resource_limits: *const ResourceLimits,
-        io: std.Io,
-    ) !Self {
-        assert(resource_limits.check() == null);
-        // Create layout engine
-        const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
-        layout_engine.* = LayoutEngine.init(allocator);
-        errdefer {
-            layout_engine.deinit();
-            allocator.destroy(layout_engine);
-        }
-
-        // Allocate the two-`Frame` double buffer. Each `Frame.initOwned`
-        // allocates its own heap-backed `Scene` + `DispatchTree` pair;
-        // `mem.swap` between the two slots exchanges which slot points at
-        // which pair. Both pairs are owned by the `Window` for its entire
-        // lifetime; `Window.deinit` tears both down. The two locals are
-        // copied into `result.{next,rendered}_frame` below; the heap
-        // pointers inside survive the by-value copy (same shape as
-        // `resources`).
-        var next_frame = try Frame.initOwned(
-            allocator,
-            &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
-        );
-        errdefer next_frame.deinit();
-
-        var rendered_frame = try Frame.initOwned(
-            allocator,
-            &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
-        );
-        errdefer rendered_frame.deinit();
-
-        // Bundle text + SVG + image resources into one `AppResources`. The
-        // resulting struct is copied into `result.resources` below; the heap
-        // pointers it carries survive the by-value copy.
-        var resources = try AppResources.initOwned(
-            allocator,
-            io,
-            @floatCast(platform_window.scale_factor),
-            .{
-                .font_name = font_config.font_name,
-                .font_size = font_config.font_size,
-            },
-        );
-        errdefer resources.deinit();
-
-        // Set up text measurement callback against the bundled text system.
-        layout_engine.setMeasureTextFn(measureTextCallback, resources.text_system);
-
-        // Heap-allocate the unified element-state pool: the 4096-slot entry
-        // table is 128 KiB, too large to live by-value on `Window`, so we
-        // hold a `*ElementStates` pointer. `initInPlace` zeroes every slot
-        // at the final heap address so no 128 KiB by-value copy crosses a
-        // stack frame. Errdefer pairs the `allocator.create` so any later
-        // `try` (e.g. `globals.setOwned`) unwinds without leaking the pool.
-        const element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
-        element_states.initInPlace(allocator);
-        errdefer {
-            element_states.deinit();
-            allocator.destroy(element_states);
-        }
-
-        var result: Self = .{
-            .allocator = allocator,
-            .io = io,
-            .layout = layout_engine,
-            // Both `Frame` slots are copied by value; each local's `owned`
-            // flag is disarmed post-literal (like `resources.owned`) so a
-            // later errdefer can't tear the pointees down out from under
-            // `result.{next,rendered}_frame`.
-            .next_frame = next_frame,
-            .rendered_frame = rendered_frame,
-            // `app: *App` is left at its `undefined` default; the caller
-            // (`runtime/window_context.zig`) assigns it before any frame
-            // runs. `debugger` registers into `globals` post-literal (so it
-            // can `try` under the `errdefer` cleanup chain); `keymap` lives
-            // on `app.globals`.
-            .focus = FocusManager.init(allocator),
-            // Single owned `resources` field; the heap pointers it carries
-            // come through the by-value copy unchanged.
-            .resources = resources,
-            // `change_tracker` default-initialises (fixed-capacity, no
-            // alloc), so it needs no entry here.
-            .animations = AnimationStore.init(allocator, io),
-            // Borrowed `*ElementStates` view onto the heap allocation above.
-            // Ownership transfers here: `result` is the canonical owner and
-            // `Window.deinit` frees it. The errdefer above is paired by the
-            // disarm post-literal (see below).
-            .element_states = element_states,
-            .platform_window = platform_window,
-            .width = @floatCast(platform_window.size.width),
-            .height = @floatCast(platform_window.size.height),
-            .scale_factor = @floatCast(platform_window.scale_factor),
-            // Hover state — small, by-value default is fine.
-            .hover = HoverState.init(),
-            // Blur handler registry — by-value init is safe (no internal pointers).
-            .blur_handlers = BlurHandlerRegistry.init(),
-            // Cancel registry — same.
-            .cancel_registry = CancelRegistry.init(),
-            // Accessibility: filled in below by `initInPlace`. The bridge
-            // dispatcher embeds a pointer into `result.a11y.platform_bridge`;
-            // see `initOwnedPtr` for the version without the by-value copy
-            // dangling-pointer caveat.
-            .a11y = undefined,
-            // `image_loader` is app-scoped: the caller
-            // (`WindowContext.init`) calls
-            // `app.bindImageLoader(window.resources.image_atlas)` after this
-            // returns and `window.app` is wired.
-        };
-        // `result` is now the canonical owner of the heap atlases, so disarm
-        // the local `resources.owned`: otherwise a later errdefer
-        // (`globals.setOwned` failure) would tear them down out from under
-        // `result` and double-free when the caller drops it.
-        resources.owned = false;
-
-        // Same disarm for both halves of the double buffer:
-        // `result.{next,rendered}_frame` are now the canonical owners of the
-        // four heap allocations, so the local copies' errdefers must not
-        // fire on a later unwind.
-        next_frame.owned = false;
-        rendered_frame.owned = false;
-
-        // Initialize accessibility subsystem in place. On macOS, the
-        // bridge captures the NSWindow / NSView handles passed here; on
-        // other platforms they are ignored.
-        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
-        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
-        result.a11y.initInPlace(window_obj, view_obj);
-
-        // Per-window globals hold `Debugger` only (`Keymap` is on
-        // `App.globals`). The owned `*Debugger` lives in
-        // `result.globals.entries` and points at a stable heap address, so
-        // the by-value copy when `result` moves into the caller is safe. No
-        // `errdefer` follows this last `try`: the next statement is `return
-        // result`, so no unwinding path past this point exists.
-        try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
-
-        return result;
-    }
-
-    /// Initialize Window in-place using out-pointer pattern.
+    /// Initialize Window in-place using out-pointer pattern, owning all resources.
     /// This avoids stack overflow on WASM where the Window struct (~400KB with a11y)
-    /// would exceed the default stack size if returned by value.
+    /// would exceed the default stack size if returned by value, and it is the only
+    /// correct way to build a `Window` on any platform: `a11y.bridge` points into
+    /// `self`, so `self` must already be the final heap address (CLAUDE.md §13).
     ///
     /// Usage:
     /// ```
@@ -873,147 +729,16 @@ pub const Window = struct {
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
-    /// Initialize Window with shared resources (text system, SVG atlas, image atlas).
-    /// Used by MultiWindowApp to share expensive resources across windows.
-    /// The caller retains ownership of the shared resources.
-    ///
-    /// Takes a single `*const AppResources` borrowed-or-owned view from the
-    /// parent. The caller retains ownership of the pointee — every `Window`
-    /// produced this way embeds an `owned = false` borrowed view, so
+    /// Initialize Window in-place with shared resources (text system, SVG atlas,
+    /// image atlas). Used by MultiWindowApp to share expensive resources across
+    /// windows; the caller retains ownership of them. Every `Window` built this
+    /// way embeds an `owned = false` borrowed `AppResources` view, so
     /// `Window.deinit` is a no-op for the shared atlases.
-    pub fn initWithSharedResources(
-        allocator: std.mem.Allocator,
-        platform_window: *PlatformWindow,
-        shared_resources: *const AppResources,
-        resource_limits: *const ResourceLimits,
-        io: std.Io,
-    ) !Self {
-        assert(resource_limits.check() == null);
-        // Assertions: validate inputs through the bundle (every later
-        // expression indexes the same three slots).
-        std.debug.assert(@intFromPtr(shared_resources) != 0);
-        std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
-        std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
-        std.debug.assert(@intFromPtr(shared_resources.image_atlas) != 0);
-
-        // Create layout engine (owned)
-        const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
-        layout_engine.* = LayoutEngine.init(allocator);
-        errdefer {
-            layout_engine.deinit();
-            allocator.destroy(layout_engine);
-        }
-
-        // Allocate the two-`Frame` double buffer (owned per-window even in
-        // multi-window mode: the scene + dispatch tree are per-window state
-        // and cannot be shared without breaking hit-testing). Both slots
-        // stay `owned = true` across the `mem.swap` at the frame boundary;
-        // the `owned = false` disarms post-literal mirror `resources.owned`.
-        var next_frame = try Frame.initOwned(
-            allocator,
-            &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
-        );
-        errdefer next_frame.deinit();
-
-        var rendered_frame = try Frame.initOwned(
-            allocator,
-            &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
-        );
-        errdefer rendered_frame.deinit();
-
-        // Set up text measurement callback using shared text system
-        layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
-
-        // Element-state pool is per-window even in multi-window mode (the
-        // keys are per-window `LayoutId` hashes; sharing one pool across
-        // windows would conflate state for unrelated elements). The
-        // `AppResources` triplet is borrowed, but `element_states` is always
-        // owned by this `Window`.
-        const element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
-        element_states.initInPlace(allocator);
-        errdefer {
-            element_states.deinit();
-            allocator.destroy(element_states);
-        }
-
-        var result: Self = .{
-            .allocator = allocator,
-            .io = io,
-            .layout = layout_engine,
-            // Both `Frame` slots are copied by value; each local's `owned`
-            // flag is disarmed post-literal so a later errdefer can't tear
-            // the pointees down out from under `result.{next,rendered}_frame`.
-            .next_frame = next_frame,
-            .rendered_frame = rendered_frame,
-            // `app: *App` is set by the caller post-init. `debugger`
-            // registers into `globals` below; `keymap` lives on
-            // `app.globals`.
-            .focus = FocusManager.init(allocator),
-            // Borrowed `AppResources` view; the parent owns the pointees, so
-            // `AppResources.deinit` is a no-op for `owned = false`. The three
-            // pointer fields are copied through unchanged (same heap
-            // addresses as `shared_resources.*`).
-            .resources = AppResources.borrowed(
-                allocator,
-                io,
-                shared_resources.text_system,
-                shared_resources.svg_atlas,
-                shared_resources.image_atlas,
-            ),
-            .animations = AnimationStore.init(allocator, io),
-            // Owned `*ElementStates`; see `initOwned` for the heap-allocation
-            // rationale (128 KiB > WASM stack).
-            .element_states = element_states,
-            .platform_window = platform_window,
-            .width = @floatCast(platform_window.size.width),
-            .height = @floatCast(platform_window.size.height),
-            .scale_factor = @floatCast(platform_window.scale_factor),
-            .hover = HoverState.init(),
-            .blur_handlers = BlurHandlerRegistry.init(),
-            .cancel_registry = CancelRegistry.init(),
-            .a11y = undefined,
-            // `image_loader` is app-scoped: in multi-window mode the parent
-            // `multi_window_app::App.init` has already bound it against the
-            // same shared atlas every window's borrowed `AppResources`
-            // points at; this function does NOT re-bind.
-        };
-
-        // Disarm both local `owned` flags now that
-        // `result.{next,rendered}_frame` are the canonical owners (prevents
-        // a double-free if a later `try` unwinds via either local's
-        // errdefer).
-        next_frame.owned = false;
-        rendered_frame.owned = false;
-
-        // Initialize platform-specific accessibility bridge
-        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
-        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
-        result.a11y.initInPlace(window_obj, view_obj);
-
-        // `image_loader` is app-scoped: the shared loader on `App` (bound
-        // once by `multi_window_app::App.init` against this same atlas)
-        // handles every window's URL fetches; this function does NOT bind.
-
-        // Per-window globals hold `Debugger` only (`Keymap` is on
-        // `app.globals`). Every window owns its own debugger so its overlay
-        // quads / frame timing / selected layout id stay scoped to its own
-        // scene. No `errdefer` after this last `try`: the function returns
-        // immediately after.
-        try result.globals.setOwned(allocator, debugger_mod.Debugger, .{});
-
-        return result;
-    }
-
-    /// Initialize Window in-place with shared resources.
-    /// Used by MultiWindowApp on WASM to avoid stack overflow.
-    /// Marked noinline to prevent stack accumulation.
     ///
-    /// Takes `*const AppResources` instead of three separate pointers; see
-    /// `initWithSharedResources` above.
+    /// In place for the same reason as `initOwnedPtr`: `a11y.bridge` points into
+    /// `self`. A by-value variant used to copy the struct after `a11y.initInPlace`,
+    /// leaving the bridge pointing into a dead stack frame and crashing the second
+    /// window on Linux. Marked noinline to prevent stack accumulation in WASM builds.
     pub noinline fn initWithSharedResourcesPtr(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -1084,10 +809,10 @@ pub const Window = struct {
         self.animations = AnimationStore.init(allocator, io);
         self.change_tracker = .{};
 
-        // Element-state pool, per-window even in multi-window mode (see
-        // `initWithSharedResources`). The WASM `*Ptr` paths exist precisely
-        // so 128 KiB structs don't live on the stack; `initInPlace` writes
-        // at the final heap address.
+        // Element-state pool, per-window even in multi-window mode: the keys
+        // are per-window `LayoutId` hashes, so sharing one pool across windows
+        // would conflate state for unrelated elements. 128 KiB structs never
+        // live on the stack; `initInPlace` writes at the final heap address.
         self.element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
         self.element_states.initInPlace(allocator);
         errdefer {
