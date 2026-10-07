@@ -60,7 +60,7 @@ pub const TreeStats = struct {
             .announcement_count = 0,
             .max_depth = 0,
             .focusable_count = 0,
-            .role_counts = [_]usize{0} ** 256,
+            .role_counts = @as([256]usize, @splat(0)),
         };
     }
 };
@@ -128,7 +128,7 @@ pub fn getStats(tree: *const Tree) TreeStats {
     // Analyze elements
     for (tree.elements[0..tree.element_count]) |elem| {
         // Count by role
-        const role_idx = @intFromEnum(elem.role);
+        const role_idx = @backingInt(elem.role);
         stats.role_counts[role_idx] += 1;
 
         // Count focusable
@@ -375,13 +375,13 @@ pub fn formatState(state: State, buf: []u8) []const u8 {
     var writer = std.Io.Writer.fixed(buf);
 
     var first = true;
-    inline for (std.meta.fields(State)) |field| {
-        if (field.type == bool) {
-            if (@field(state, field.name)) {
+    inline for (@typeInfo(State).@"struct".field_names, @typeInfo(State).@"struct".field_types) |field_name, field_type| {
+        if (field_type == bool) {
+            if (@field(state, field_name)) {
                 if (!first) {
                     writer.print(", ", .{}) catch {};
                 }
-                writer.print("{s}", .{field.name}) catch {};
+                writer.print("{s}", .{field_name}) catch {};
                 first = false;
             }
         }
@@ -481,8 +481,8 @@ test "stats collection" {
 
     const stats = getStats(tree);
     try std.testing.expectEqual(@as(usize, 3), stats.element_count);
-    try std.testing.expectEqual(@as(usize, 2), stats.role_counts[@intFromEnum(Role.button)]);
-    try std.testing.expectEqual(@as(usize, 1), stats.role_counts[@intFromEnum(Role.checkbox)]);
+    try std.testing.expectEqual(@as(usize, 2), stats.role_counts[@backingInt(Role.button)]);
+    try std.testing.expectEqual(@as(usize, 1), stats.role_counts[@backingInt(Role.checkbox)]);
 }
 
 test "validation detects missing name" {

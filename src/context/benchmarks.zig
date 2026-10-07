@@ -721,11 +721,11 @@ pub fn main(init: std.process.Init) !void {
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Context Benchmarks — Tree Build (reset + pushNode/popNode)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     // Wide trees: expose O(n²) sibling walk in pushNode.
     collect(&reporter, benchTreeBuild(allocator, "wide_100", buildWide100));
@@ -733,14 +733,14 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchTreeBuild(allocator, "wide_1000", buildWide1000));
     collect(&reporter, benchTreeBuild(allocator, "wide_2000", buildWide2000));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     // Deep trees: linear depth, no sibling walk cost.
     collect(&reporter, benchTreeBuild(allocator, "deep_16", buildDeep16));
     collect(&reporter, benchTreeBuild(allocator, "deep_32", buildDeep32));
     collect(&reporter, benchTreeBuild(allocator, "deep_64", buildDeep64));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     // Realistic trees: mixed width and depth.
     collect(&reporter, benchTreeBuild(allocator, "table_50x10", buildTable50x10));
@@ -749,18 +749,18 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchTreeBuild(allocator, "nested_list_20x50", buildNestedList20x50));
     collect(&reporter, benchTreeBuild(allocator, "nested_list_50x20", buildNestedList50x20));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Hit Testing Benchmarks
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Context Benchmarks — Hit Testing (single hitTest call)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     collect(&reporter, benchHitTest(allocator, "hit_wide_100", buildWide100));
     collect(&reporter, benchHitTest(allocator, "hit_wide_1000", buildWide1000));
@@ -771,48 +771,48 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchHitTest(allocator, "hit_table_200x8", buildTable200x8));
     collect(&reporter, benchHitTest(allocator, "hit_nested_list_20x50", buildNestedList20x50));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Reset Benchmarks
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Context Benchmarks — Reset (per-frame teardown)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     collect(&reporter, benchReset(allocator, "reset_wide_1000", buildWide1000));
     collect(&reporter, benchReset(allocator, "reset_deep_64", buildDeep64));
     collect(&reporter, benchReset(allocator, "reset_table_100x10", buildTable100x10));
     collect(&reporter, benchReset(allocator, "reset_table_200x8", buildTable200x8));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Full Frame Benchmarks
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Context Benchmarks — Full Frame (reset + build + bounds + hitTest)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     collect(&reporter, benchFullFrame(allocator, "frame_wide_100", buildWide100));
     collect(&reporter, benchFullFrame(allocator, "frame_wide_500", buildWide500));
     collect(&reporter, benchFullFrame(allocator, "frame_wide_1000", buildWide1000));
     collect(&reporter, benchFullFrame(allocator, "frame_wide_2000", buildWide2000));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     collect(&reporter, benchFullFrame(allocator, "frame_deep_32", buildDeep32));
     collect(&reporter, benchFullFrame(allocator, "frame_deep_64", buildDeep64));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     collect(&reporter, benchFullFrame(allocator, "frame_table_50x10", buildTable50x10));
     collect(&reporter, benchFullFrame(allocator, "frame_table_100x10", buildTable100x10));
@@ -820,18 +820,18 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchFullFrame(allocator, "frame_nested_list_20x50", buildNestedList20x50));
     collect(&reporter, benchFullFrame(allocator, "frame_nested_list_50x20", buildNestedList50x20));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Entity Benchmarks
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Context Benchmarks — Entity markDirty + processNotifications\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     // Unique dirtying (each entity marked once).
     collect(&reporter, benchMarkDirty(allocator, "dirty_unique_10", 10));
@@ -839,7 +839,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchMarkDirty(allocator, "dirty_unique_200", 200));
     collect(&reporter, benchMarkDirty(allocator, "dirty_unique_1000", 1000));
 
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     // Duplicate dirtying (same entities marked multiple times).
     // Exposes the O(n) linear scan for duplicate detection.
@@ -848,18 +848,18 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchMarkDirtyDuplicates(allocator, "dirty_dupes_200x10", 200, 10));
     collect(&reporter, benchMarkDirtyDuplicates(allocator, "dirty_dupes_1000x5", 1000, 5));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Scaling Analysis
     // =========================================================================
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Context Benchmarks — Scaling Analysis (pushNode ns/op vs width)\n", .{});
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
     // If pushNode is O(n²) via sibling walk, ns/op should grow linearly with width.
     // After fixing to O(1) with last_child, ns/op should be roughly constant.
@@ -870,7 +870,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchTreeBuild(allocator, "scaling_wide_1000", buildWide1000));
     collect(&reporter, benchTreeBuild(allocator, "scaling_wide_2000", buildWide2000));
 
-    std.debug.print("=" ** 105 ++ "\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
     std.debug.print(
         \\

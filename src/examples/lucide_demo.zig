@@ -46,12 +46,12 @@ const IconEntry = struct {
 /// Enables runtime indexing into comptime icon data for virtualized rendering.
 const icon_entries = blk: {
     @setEvalBranchQuota(20000);
-    const decls = @typeInfo(Lucide).@"struct".decls;
-    var entries: [decls.len]IconEntry = undefined;
-    for (decls, 0..) |decl, i| {
+    const decl_names = @typeInfo(Lucide).@"struct".decl_names;
+    var entries: [decl_names.len]IconEntry = undefined;
+    for (decl_names, 0..) |decl_name, i| {
         entries[i] = .{
-            .name = decl.name,
-            .path = @field(Lucide, decl.name),
+            .name = decl_name,
+            .path = @field(Lucide, decl_name),
         };
     }
     break :blk entries;

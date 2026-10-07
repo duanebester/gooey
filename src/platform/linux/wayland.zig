@@ -1438,7 +1438,7 @@ pub fn xdgToplevelResize(toplevel: *XdgToplevel, seat: *Seat, serial: u32, edges
         0,
         seat,
         serial,
-        @intFromEnum(edges),
+        @backingInt(edges),
     );
 }
 
@@ -1497,7 +1497,7 @@ pub fn zxdgToplevelDecorationV1SetMode(decoration: *ZxdgToplevelDecorationV1, mo
         null,
         wl_proxy_get_version(@ptrCast(decoration)),
         0,
-        @intFromEnum(mode),
+        @backingInt(mode),
     );
 }
 
@@ -1599,7 +1599,7 @@ pub fn zwpTextInputV3SetTextChangeCause(text_input: *ZwpTextInputV3, cause: ZwpT
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
-        @intFromEnum(cause),
+        @backingInt(cause),
     );
 }
 
@@ -1612,7 +1612,7 @@ pub fn zwpTextInputV3SetContentType(text_input: *ZwpTextInputV3, hint: ZwpTextIn
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
         @as(u32, @bitCast(hint)),
-        @intFromEnum(purpose),
+        @backingInt(purpose),
     );
 }
 

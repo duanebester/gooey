@@ -1276,11 +1276,11 @@ pub const Builder = struct {
             // with no diagnostic. Make it a hard compile error instead
             // (CLAUDE.md §11: handle the negative space; §17: fail fast rather
             // than silently no-op).
-            if (fn_info.params.len < 2) @compileError(
+            if (fn_info.param_types.len < 2) @compileError(
                 "component `" ++ @typeName(T) ++ ".render` must take `self` and a `*Cx` parameter",
             );
 
-            const CxType = fn_info.params[1].type orelse
+            const CxType = fn_info.param_types[1] orelse
                 @compileError("component `render` must take a typed `*Cx` second parameter");
 
             // Components author against `*Cx` and nothing else. A wrong

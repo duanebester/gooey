@@ -29,7 +29,7 @@ pub const MAX_PATH_INDICES = limits.MAX_PATH_INDICES;
 
 /// Bitset for tracking vertex membership — O(1) lookup, 64 bytes for 512 vertices.
 /// Used for both reflex-vertex tracking and active-vertex tracking.
-pub const ReflexSet = std.bit_set.IntegerBitSet(limits.MAX_PATH_VERTICES);
+pub const ReflexSet = std.bit_set.Integer(limits.MAX_PATH_VERTICES);
 
 // =============================================================================
 // Errors
@@ -59,7 +59,7 @@ pub const Triangulator = struct {
         return .{
             .indices = .{},
             .is_ccw = true,
-            .reflex_vertices = ReflexSet.initEmpty(),
+            .reflex_vertices = ReflexSet.empty,
         };
     }
 
@@ -67,7 +67,7 @@ pub const Triangulator = struct {
     pub fn reset(self: *Self) void {
         self.indices.len = 0;
         self.is_ccw = true;
-        self.reflex_vertices = ReflexSet.initEmpty();
+        self.reflex_vertices = ReflexSet.empty;
     }
 
     /// Triangulate a single polygon (points[polygon.start..polygon.end])
@@ -125,7 +125,7 @@ pub const Triangulator = struct {
         var prev_v: [MAX_PATH_VERTICES]u32 = undefined;
 
         // Active vertex bitset for O(1) membership checks in hasPointInsideReflex.
-        var active_set = ReflexSet.initEmpty();
+        var active_set = ReflexSet.empty;
 
         for (0..n) |i| {
             next_v[i] = if (i == n - 1) 0 else @as(u32, @intCast(i)) + 1;
@@ -134,7 +134,7 @@ pub const Triangulator = struct {
         }
 
         // Pre-compute reflex vertices (O(n)) — only these can block an ear.
-        self.reflex_vertices = ReflexSet.initEmpty();
+        self.reflex_vertices = ReflexSet.empty;
         for (0..n) |i| {
             const p0 = poly_points[prev_v[i]];
             const p1 = poly_points[i];
@@ -160,7 +160,7 @@ pub const Triangulator = struct {
             while (scanned < remaining) : (scanned += 1) {
                 safety_counter += 1;
                 if (safety_counter > max_iterations) {
-                    if (builtin.mode == .Debug) {
+                    if (builtin.mode == .debug) {
                         std.log.warn(
                             "Ear clipping failed: {} vertices remaining after {} iterations. " ++
                                 "Polygon may be self-intersecting or have collinear points.",
@@ -209,7 +209,7 @@ pub const Triangulator = struct {
             }
 
             if (!found_ear) {
-                if (builtin.mode == .Debug) {
+                if (builtin.mode == .debug) {
                     std.log.warn("No ear found with {} vertices remaining", .{remaining});
                 }
                 return error.EarClippingFailed;

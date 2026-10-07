@@ -378,7 +378,7 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     // Calculate fit dimensions and UV adjustments
     const src_w: f32 = @floatFromInt(cached.source_width);
     const src_h: f32 = @floatFromInt(cached.source_height);
-    const fit_mode: image_mod.ObjectFit = @enumFromInt(img_data.fit);
+    const fit_mode: image_mod.ObjectFit = @fromBackingInt(@intCast(img_data.fit));
     const fit = image_mod.ImageAtlas.calculateFitResult(
         src_w,
         src_h,

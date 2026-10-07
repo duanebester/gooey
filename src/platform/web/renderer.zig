@@ -263,11 +263,11 @@ pub const GpuGradientUniforms = extern struct {
     param2: f32 = 0,
     param3: f32 = 0,
     // Each array is 4 vec4s = 16 floats, matching WGSL array<vec4<f32>, 4>
-    stop_offsets: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
-    stop_h: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
-    stop_s: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
-    stop_l: [4][4]f32 = [_][4]f32{[_]f32{0} ** 4} ** 4,
-    stop_a: [4][4]f32 = [_][4]f32{[_]f32{1} ** 4} ** 4,
+    stop_offsets: [4][4]f32 = @splat(@splat(0)),
+    stop_h: [4][4]f32 = @splat(@splat(0)),
+    stop_s: [4][4]f32 = @splat(@splat(0)),
+    stop_l: [4][4]f32 = @splat(@splat(0)),
+    stop_a: [4][4]f32 = @splat(@splat(1)),
 
     /// Create empty gradient uniforms (for solid color fills)
     pub fn none() GpuGradientUniforms {

@@ -42,8 +42,8 @@ pub const MAX_TRACKED_VALUES: u32 = 64;
 // =============================================================================
 
 pub const ChangeTracker = struct {
-    keys: [MAX_TRACKED_VALUES]u32 = [_]u32{0} ** MAX_TRACKED_VALUES,
-    value_hashes: [MAX_TRACKED_VALUES]u64 = [_]u64{0} ** MAX_TRACKED_VALUES,
+    keys: [MAX_TRACKED_VALUES]u32 = @splat(0),
+    value_hashes: [MAX_TRACKED_VALUES]u64 = @splat(0),
     count: u32 = 0,
 
     const Self = @This();
@@ -186,8 +186,8 @@ fn hashInto(hasher: *std.hash.Wyhash, comptime T: type, value: T) void {
         },
         // Structs: hash each field so padding bytes never enter the hash.
         .@"struct" => |info| {
-            inline for (info.fields) |field| {
-                hashInto(hasher, field.type, @field(value, field.name));
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                hashInto(hasher, field_type, @field(value, field_name));
             }
         },
         // Optionals: hash a presence tag, then the payload when present. This
@@ -354,8 +354,8 @@ test "structs with padding hash by field, not raw bytes" {
 
     // Build two instances from differently-initialised backing memory so any
     // padding bytes are likely to differ, then set identical field values.
-    var raw_a: [8]u8 = [_]u8{0xAA} ** 8;
-    var raw_b: [8]u8 = [_]u8{0x55} ** 8;
+    var raw_a: [8]u8 = @splat(0xAA);
+    var raw_b: [8]u8 = @splat(0x55);
     const a: *Padded = @ptrCast(@alignCast(&raw_a));
     const b: *Padded = @ptrCast(@alignCast(&raw_b));
     a.* = .{ .flag = true, .count = 7 };

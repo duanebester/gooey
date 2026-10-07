@@ -32,7 +32,7 @@ const ValueBinding = struct {
 };
 
 const InputScratch = struct {
-    bytes: [core.state_text_bytes_max]u8 = [_]u8{0} ** core.state_text_bytes_max,
+    bytes: [core.state_text_bytes_max]u8 = @splat(0),
     view: []const u8 = "",
     state_index: u8 = 0,
     initialized: bool = false,
@@ -75,10 +75,10 @@ pub const Artifact = struct {
     candidates: ?*const core.CandidateSet = null,
     pinned_address: usize = 0,
     control_ids: [core.candidates_max][control_id_bytes_max]u8 = undefined,
-    control_id_lengths: [core.candidates_max]u8 = [_]u8{0} ** core.candidates_max,
+    control_id_lengths: [core.candidates_max]u8 = @splat(0),
     action_bindings: [core.candidates_max]ActionBinding = undefined,
     value_bindings: [core.candidates_max]ValueBinding = undefined,
-    input_scratch: [core.candidates_max]InputScratch = [_]InputScratch{.{}} ** core.candidates_max,
+    input_scratch: [core.candidates_max]InputScratch = @splat(.{}),
 
     pub fn init(id: []const u8) !Artifact {
         if (id.len == 0) return error.InvalidArtifactId;

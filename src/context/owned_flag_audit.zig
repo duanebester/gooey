@@ -50,9 +50,9 @@ fn assertNoOwnedFlag(comptime T: type) void {
     const info = @typeInfo(T);
     if (info != .@"struct") return;
     const type_name = comptime shortTypeName(@typeName(T));
-    inline for (info.@"struct".fields) |field| {
-        if (field.type != bool) continue;
-        const name = field.name;
+    inline for (info.@"struct".field_names, info.@"struct".field_types) |field_name, field_type| {
+        if (field_type != bool) continue;
+        const name = field_name;
         const matches_pattern = comptime (std.mem.eql(u8, name, "owned") or std.mem.endsWith(u8, name, "_owned"));
         if (!matches_pattern) continue;
         if (comptime isAllowListedField(type_name, name)) continue;
@@ -90,8 +90,8 @@ test "AppResources.owned stays on the allow-list (allow-list still wired up)" {
     // (bad). We assert presence directly.
     const info = @typeInfo(AppResources).@"struct";
     var found = false;
-    inline for (info.fields) |f| {
-        if (std.mem.eql(u8, f.name, "owned") and f.type == bool) {
+    inline for (info.field_names, info.field_types) |field_name, field_type| {
+        if (std.mem.eql(u8, field_name, "owned") and field_type == bool) {
             found = true;
         }
     }
@@ -101,8 +101,8 @@ test "AppResources.owned stays on the allow-list (allow-list still wired up)" {
 test "Frame.owned stays on the allow-list" {
     const info = @typeInfo(Frame).@"struct";
     var found = false;
-    inline for (info.fields) |f| {
-        if (std.mem.eql(u8, f.name, "owned") and f.type == bool) {
+    inline for (info.field_names, info.field_types) |field_name, field_type| {
+        if (std.mem.eql(u8, field_name, "owned") and field_type == bool) {
             found = true;
         }
     }

@@ -39,11 +39,11 @@ const MAX_ITEMS = 8;
 
 const AppState = struct {
     // Left list items (stable storage for drag pointers)
-    left_items: [MAX_ITEMS]?Item = .{null} ** MAX_ITEMS,
+    left_items: [MAX_ITEMS]?Item = @splat(null),
     left_count: usize = 0,
 
     // Right list items
-    right_items: [MAX_ITEMS]?Item = .{null} ** MAX_ITEMS,
+    right_items: [MAX_ITEMS]?Item = @splat(null),
     right_count: usize = 0,
 
     const Self = @This();

@@ -95,14 +95,14 @@ pub fn compute(
     } else 0;
 
     const result = Fingerprint{
-        .role = @intFromEnum(role),
+        .role = @backingInt(role),
         .parent_contrib = parent_contrib,
         .position = position_in_parent,
         .name_hash = name_hash,
     };
 
     // Post-condition: result should not be INVALID unless inputs are pathological
-    std.debug.assert(result.role != 0xFF or @intFromEnum(role) == 0xFF);
+    std.debug.assert(result.role != 0xFF or @backingInt(role) == 0xFF);
 
     return result;
 }
@@ -123,7 +123,7 @@ pub fn computeWithHash(
     } else 0;
 
     return Fingerprint{
-        .role = @intFromEnum(role),
+        .role = @backingInt(role),
         .parent_contrib = parent_contrib,
         .position = position_in_parent,
         .name_hash = name_hash,

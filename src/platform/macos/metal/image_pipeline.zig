@@ -306,7 +306,7 @@ pub const ImagePipeline = struct {
             @as(c_ulong, 0),
         });
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-            @intFromEnum(mtl.MTLPrimitiveType.triangle),
+            @backingInt(mtl.MTLPrimitiveType.triangle),
             @as(c_ulong, 0),
             @as(c_ulong, 6),
             @as(c_ulong, images.len),
@@ -375,7 +375,7 @@ pub const ImagePipeline = struct {
             @as(c_ulong, 0),
         });
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-            @intFromEnum(mtl.MTLPrimitiveType.triangle),
+            @backingInt(mtl.MTLPrimitiveType.triangle),
             @as(c_ulong, 0),
             @as(c_ulong, 6),
             @as(c_ulong, images.len),
@@ -409,7 +409,7 @@ pub const ImagePipeline = struct {
                 objc.Object,
                 "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
                 .{
-                    @intFromEnum(mtl.MTLPixelFormat.rgba8unorm),
+                    @backingInt(mtl.MTLPixelFormat.rgba8unorm),
                     @as(c_ulong, size),
                     @as(c_ulong, size),
                     @as(bool, false),
@@ -493,12 +493,12 @@ fn createPipeline(device: objc.Object, sample_count: u32) ?objc.Object {
     // Color attachment with alpha blending
     const attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
     const attachment0 = attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
-    attachment0.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.bgra8unorm)});
+    attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attachment0.msgSend(void, "setBlendingEnabled:", .{@as(bool, true)});
-    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.source_alpha)});
-    attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
-    attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-    attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
+    attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+    attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
 
     const pipeline_ptr = device.msgSend(?*anyopaque, "newRenderPipelineStateWithDescriptor:error:", .{
         desc.value, @as(?*anyopaque, null),

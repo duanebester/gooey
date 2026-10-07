@@ -538,7 +538,7 @@ fn makeDeinit(
                 const Deinit = @TypeOf(S.deinit);
                 const info = @typeInfo(Deinit);
                 if (info == .@"fn") {
-                    const params = info.@"fn".params;
+                    const params = info.@"fn".param_types;
                     if (params.len == 1) {
                         typed.deinit();
                     } else if (params.len == 2) {

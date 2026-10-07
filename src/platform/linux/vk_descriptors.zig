@@ -188,7 +188,7 @@ pub fn allocateDescriptorSet(
     };
 
     var descriptor_set: vk.DescriptorSet = null;
-    const result = vk.vkAllocateDescriptorSets(device, &alloc_info, &descriptor_set);
+    const result = vk.vkAllocateDescriptorSets(device, &alloc_info, (&descriptor_set)[0..1]);
     if (!vk.succeeded(result)) return AllocError.DescriptorSetAllocationFailed;
 
     std.debug.assert(descriptor_set != null);
@@ -240,7 +240,7 @@ pub fn updateUnifiedDescriptorSet(
             .descriptorCount = 1,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .pImageInfo = null,
-            .pBufferInfo = &buffer_infos[0],
+            .pBufferInfo = buffer_infos[0..1],
             .pTexelBufferView = null,
         },
         .{
@@ -252,7 +252,7 @@ pub fn updateUnifiedDescriptorSet(
             .descriptorCount = 1,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .pImageInfo = null,
-            .pBufferInfo = &buffer_infos[1],
+            .pBufferInfo = buffer_infos[1..2],
             .pTexelBufferView = null,
         },
     };

@@ -592,7 +592,7 @@ fn toSentinelSlice(slice: []const u8, buf: []u8) ?[:0]const u8 {
 
 /// Log error for debugging (only in debug builds)
 fn logError(context: []const u8, err: anyerror) void {
-    if (@import("builtin").mode == .Debug) {
+    if (@import("builtin").mode == .debug) {
         std.log.err("file_dialog: {s}: {}", .{ context, err });
     }
 }

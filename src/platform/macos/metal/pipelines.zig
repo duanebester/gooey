@@ -24,14 +24,14 @@ pub fn createMSAATexture(
         objc.Object,
         "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
         .{
-            @intFromEnum(mtl.MTLPixelFormat.bgra8unorm),
+            @backingInt(mtl.MTLPixelFormat.bgra8unorm),
             @as(c_ulong, @intFromFloat(width * scale_factor)),
             @as(c_ulong, @intFromFloat(height * scale_factor)),
             false,
         },
     );
 
-    desc.msgSend(void, "setTextureType:", .{@intFromEnum(mtl.MTLTextureType.type_2d_multisample)});
+    desc.msgSend(void, "setTextureType:", .{@backingInt(mtl.MTLTextureType.type_2d_multisample)});
     desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
 
     const usage = mtl.MTLTextureUsage.render_target_only;
@@ -43,7 +43,7 @@ pub fn createMSAATexture(
     else
         .private;
 
-    desc.msgSend(void, "setStorageMode:", .{@intFromEnum(storage_mode)});
+    desc.msgSend(void, "setStorageMode:", .{@backingInt(storage_mode)});
 
     const texture_ptr = device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{desc.value});
     if (texture_ptr == null) {
@@ -203,12 +203,12 @@ pub fn createUnitVertexBuffer(device: objc.Object, unified_memory: bool) !objc.O
 
 /// Configure standard alpha blending on a color attachment
 fn configureBlending(attachment: objc.Object) void {
-    attachment.msgSend(void, "setPixelFormat:", .{@intFromEnum(mtl.MTLPixelFormat.bgra8unorm)});
+    attachment.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attachment.msgSend(void, "setBlendingEnabled:", .{true});
-    attachment.msgSend(void, "setSourceRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.source_alpha)});
-    attachment.msgSend(void, "setDestinationRGBBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
-    attachment.msgSend(void, "setSourceAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one)});
-    attachment.msgSend(void, "setDestinationAlphaBlendFactor:", .{@intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attachment.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
+    attachment.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
+    attachment.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
+    attachment.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
 }
 
 /// Setup unified quad+shadow rendering pipeline

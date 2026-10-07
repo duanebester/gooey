@@ -722,7 +722,7 @@ pub const LinuxPlatform = struct {
             // EAGAIN means the write buffer is full, so wait for writability
             // (EAGAIN == EWOULDBLOCK on Linux). Anything else is fatal.
             const errno_val = std.c._errno().*;
-            if (errno_val != @intFromEnum(posix.E.AGAIN)) {
+            if (errno_val != @backingInt(posix.E.AGAIN)) {
                 self.connection_alive = false;
                 return false;
             }
@@ -796,7 +796,7 @@ pub const LinuxPlatform = struct {
             if (flush_result >= 0) break;
             // EAGAIN means write buffer is full (EAGAIN == EWOULDBLOCK on Linux)
             const errno_val = std.c._errno().*;
-            if (errno_val == @intFromEnum(posix.E.AGAIN)) {
+            if (errno_val == @backingInt(posix.E.AGAIN)) {
                 // Poll for writability
                 var pollfds = [_]posix.pollfd{
                     .{ .fd = wayland.displayGetFd(display), .events = posix.POLL.OUT, .revents = 0 },

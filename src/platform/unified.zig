@@ -81,7 +81,7 @@ pub const Primitive = extern struct {
     pub fn fromQuad(quad: scene.Quad) Self {
         return .{
             .order = quad.order,
-            .primitive_type = @intFromEnum(PrimitiveType.quad),
+            .primitive_type = @backingInt(PrimitiveType.quad),
             .bounds_origin_x = quad.bounds_origin_x,
             .bounds_origin_y = quad.bounds_origin_y,
             .bounds_size_width = quad.bounds_size_width,
@@ -116,7 +116,7 @@ pub const Primitive = extern struct {
     pub fn fromShadow(shadow: scene.Shadow) Self {
         return .{
             .order = shadow.order,
-            .primitive_type = @intFromEnum(PrimitiveType.shadow),
+            .primitive_type = @backingInt(PrimitiveType.shadow),
             .bounds_origin_x = shadow.content_origin_x,
             .bounds_origin_y = shadow.content_origin_y,
             .bounds_size_width = shadow.content_size_width,
@@ -150,7 +150,7 @@ pub const Primitive = extern struct {
     /// Create a simple filled quad (for debugging/testing)
     pub fn filledQuad(x: f32, y: f32, w: f32, h: f32, hue: f32, sat: f32, lit: f32, alpha: f32) Self {
         return .{
-            .primitive_type = @intFromEnum(PrimitiveType.quad),
+            .primitive_type = @backingInt(PrimitiveType.quad),
             .bounds_origin_x = x,
             .bounds_origin_y = y,
             .bounds_size_width = w,

@@ -330,6 +330,6 @@ pub const Animations = struct {
 fn computeTriggerHash(comptime T: type, value: T) u64 {
     const info = @typeInfo(T);
     if (info == .bool) return if (value) 1 else 0;
-    if (info == .@"enum") return @intFromEnum(value);
+    if (info == .@"enum") return @backingInt(value);
     return std.hash.Wyhash.hash(0, std.mem.asBytes(&value));
 }

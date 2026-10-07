@@ -25,11 +25,11 @@ pub const Class = struct {
     pub fn addMethod(self: Class, name: [:0]const u8, imp: anytype) bool {
         const Fn = @TypeOf(imp);
         const fn_info = @typeInfo(Fn).@"fn";
-        assert(std.meta.eql(fn_info.calling_convention, std.builtin.CallingConvention.c));
-        assert(fn_info.is_var_args == false);
-        assert(fn_info.params.len >= 2);
-        assert(fn_info.params[0].type == c.id);
-        assert(fn_info.params[1].type == c.SEL);
+        assert(std.meta.eql(fn_info.attrs.@"callconv", std.builtin.CallingConvention.c));
+        assert(fn_info.attrs.varargs == false);
+        assert(fn_info.param_types.len >= 2);
+        assert(fn_info.param_types[0] == c.id);
+        assert(fn_info.param_types[1] == c.SEL);
         const encoding = comptime objc.comptimeEncode(Fn);
         return boolResult(c.class_addMethod(
             self.value,

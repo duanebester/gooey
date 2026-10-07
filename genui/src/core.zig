@@ -12,7 +12,7 @@ pub const prop_text_bytes_max = 256;
 
 pub fn BoundedString(comptime capacity: u16) type {
     return struct {
-        bytes: [capacity]u8 = [_]u8{0} ** capacity,
+        bytes: [capacity]u8 = @splat(0),
         len: u16 = 0,
 
         const Self = @This();
@@ -199,7 +199,7 @@ pub const CandidateSet = struct {
     // Stored slices point into `storage`. The first insertion pins this value;
     // every composition/render entry point rejects a later struct move.
     items: [candidates_max]Candidate = undefined,
-    storage: [candidates_max]CandidateStorage = [_]CandidateStorage{.{}} ** candidates_max,
+    storage: [candidates_max]CandidateStorage = @splat(.{}),
     count: u8 = 0,
     pinned_address: usize = 0,
 
@@ -284,13 +284,13 @@ pub const Spec = struct {
 };
 
 pub const Selection = struct {
-    selected: [candidates_max]bool = [_]bool{false} ** candidates_max,
+    selected: [candidates_max]bool = @splat(false),
     root_candidate: u8 = 0,
 };
 
 pub const Layout = struct {
-    parent_candidate: [candidates_max]?u8 = [_]?u8{null} ** candidates_max,
-    order: [candidates_max]u8 = [_]u8{0} ** candidates_max,
+    parent_candidate: [candidates_max]?u8 = @splat(null),
+    order: [candidates_max]u8 = @splat(0),
 };
 
 pub const EvaluationRequest = union(enum) {
@@ -335,7 +335,7 @@ fn buildSpec(candidates: *const CandidateSet, selection: *const Selection, layou
     if (!selection.selected[selection.root_candidate]) return error.InvalidRoot;
     if (!candidates.items[selection.root_candidate].can_be_root) return error.InvalidRoot;
 
-    var candidate_to_node = [_]?u8{null} ** candidates_max;
+    var candidate_to_node: [candidates_max]?u8 = @splat(null);
     for (0..candidates.count) |candidate_index| {
         if (!selection.selected[candidate_index]) continue;
         if (output.node_count >= nodes_max) return error.NodeCapacityExceeded;
@@ -414,7 +414,7 @@ pub fn validateSpec(candidates: *const CandidateSet, spec: *const Spec) !void {
 fn validateRelationships(candidates: *const CandidateSet, spec: *const Spec) !void {
     std.debug.assert(spec.node_count > 0);
     std.debug.assert(spec.node_count <= nodes_max);
-    var candidate_seen = [_]bool{false} ** candidates_max;
+    var candidate_seen: [candidates_max]bool = @splat(false);
     for (spec.nodes[0..spec.node_count]) |node| {
         if (candidate_seen[node.candidate_index]) return error.DuplicateCandidate;
         candidate_seen[node.candidate_index] = true;
@@ -457,7 +457,7 @@ fn validateStateReference(state_optional: ?*const RuntimeState, id: []const u8, 
 }
 
 pub fn canContainChildren(props: Props) bool {
-    std.debug.assert(@intFromEnum(std.meta.activeTag(props)) <= @intFromEnum(Component.checkbox));
+    std.debug.assert(@backingInt(std.meta.activeTag(props)) <= @backingInt(Component.checkbox));
     std.debug.assert(@sizeOf(Props) > 0);
     return switch (props) {
         .stack, .row, .card => true,
@@ -468,7 +468,7 @@ pub fn canContainChildren(props: Props) bool {
 fn validateDepthAndReachability(spec: *const Spec, root: u8) !void {
     const Entry = struct { node: u8, parent: ?u8, depth: u8 };
     var stack: [nodes_max]Entry = undefined;
-    var seen = [_]bool{false} ** nodes_max;
+    var seen: [nodes_max]bool = @splat(false);
     var count: u8 = 1;
     stack[0] = .{ .node = root, .parent = null, .depth = 1 };
     while (count > 0) {

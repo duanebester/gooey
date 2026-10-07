@@ -86,7 +86,7 @@ pub const Bridge = struct {
     /// Announce message to screen reader
     pub fn announce(self: Bridge, msg: []const u8, live: types.Live) void {
         // Assertion: live level valid
-        std.debug.assert(@intFromEnum(live) <= @intFromEnum(types.Live.assertive));
+        std.debug.assert(@backingInt(live) <= @backingInt(types.Live.assertive));
 
         self.vtable.announce(self.ptr, msg, live);
     }

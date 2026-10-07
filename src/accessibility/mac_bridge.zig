@@ -63,7 +63,7 @@ pub const MacBridge = struct {
     /// Map fingerprint -> wrapper slot for stable identity
     /// Linear search is fine for typical element counts (<500)
     fingerprint_to_slot: [constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint =
-        [_]fingerprint_mod.Fingerprint{fingerprint_mod.Fingerprint.INVALID} ** constants.MAX_ELEMENTS,
+        @as([constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint, @splat(fingerprint_mod.Fingerprint.INVALID)),
 
     /// Root accessibility element (the window)
     root_element: ?objc.Object = null,
@@ -369,7 +369,7 @@ pub const MacBridge = struct {
         // Assertion: message is bounded
         std.debug.assert(message.len <= 65535);
         // Assertion: live level is valid
-        std.debug.assert(@intFromEnum(live) <= @intFromEnum(types.Live.assertive));
+        std.debug.assert(@backingInt(live) <= @backingInt(types.Live.assertive));
 
         if (!self.voiceover_active) return;
         if (live == .off) return;

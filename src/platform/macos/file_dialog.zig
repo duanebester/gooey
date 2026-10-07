@@ -76,7 +76,7 @@ pub fn promptForPaths(
     // Run modal dialog (blocks until user responds)
     const response: isize = panel.msgSend(isize, "runModal", .{});
 
-    if (response != @intFromEnum(appkit.NSModalResponse.OK)) {
+    if (response != @backingInt(appkit.NSModalResponse.OK)) {
         return null; // User cancelled
     }
 
@@ -172,7 +172,7 @@ pub fn promptForNewPath(
     // Run modal dialog (blocks until user responds)
     const response: isize = panel.msgSend(isize, "runModal", .{});
 
-    if (response != @intFromEnum(appkit.NSModalResponse.OK)) {
+    if (response != @backingInt(appkit.NSModalResponse.OK)) {
         return null;
     }
 

@@ -407,16 +407,16 @@ test "Legend.calculateDimensions vertical" {
 }
 
 test "Legend positions" {
-    try std.testing.expectEqual(@intFromEnum(Legend.Position.top), 0);
-    try std.testing.expectEqual(@intFromEnum(Legend.Position.bottom), 1);
-    try std.testing.expectEqual(@intFromEnum(Legend.Position.left), 2);
-    try std.testing.expectEqual(@intFromEnum(Legend.Position.right), 3);
+    try std.testing.expectEqual(@backingInt(Legend.Position.top), 0);
+    try std.testing.expectEqual(@backingInt(Legend.Position.bottom), 1);
+    try std.testing.expectEqual(@backingInt(Legend.Position.left), 2);
+    try std.testing.expectEqual(@backingInt(Legend.Position.right), 3);
 }
 
 test "Legend shapes" {
-    try std.testing.expectEqual(@intFromEnum(Legend.Shape.rect), 0);
-    try std.testing.expectEqual(@intFromEnum(Legend.Shape.circle), 1);
-    try std.testing.expectEqual(@intFromEnum(Legend.Shape.line), 2);
+    try std.testing.expectEqual(@backingInt(Legend.Shape.rect), 0);
+    try std.testing.expectEqual(@backingInt(Legend.Shape.circle), 1);
+    try std.testing.expectEqual(@backingInt(Legend.Shape.line), 2);
 }
 
 test "calculateLayout top position" {

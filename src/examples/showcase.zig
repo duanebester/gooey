@@ -68,13 +68,13 @@ const Section = enum(u8) {
     }
 
     fn next(self: Section) Section {
-        const idx = @intFromEnum(self);
-        return @enumFromInt((idx + 1) % count);
+        const idx = @backingInt(self);
+        return @fromBackingInt(@intCast((idx + 1) % count));
     }
 
     fn prev(self: Section) Section {
-        const idx = @intFromEnum(self);
-        return @enumFromInt((idx + count - 1) % count);
+        const idx = @backingInt(self);
+        return @fromBackingInt(@intCast((idx + count - 1) % count));
     }
 };
 
@@ -134,7 +134,7 @@ const AppState = struct {
 
     pub fn goToSection(self: *AppState, idx: u8) void {
         if (idx < Section.count) {
-            self.section = @enumFromInt(idx);
+            self.section = @fromBackingInt(@intCast(idx));
         }
     }
 
@@ -406,7 +406,7 @@ const NavItem = struct {
         const s = cx.state(AppState);
         const t = cx.theme();
         const is_active = s.section == self.section;
-        const idx = @intFromEnum(self.section);
+        const idx = @backingInt(self.section);
 
         // Push accessible element (role: tab)
         const a11y_pushed = cx.accessible(.{

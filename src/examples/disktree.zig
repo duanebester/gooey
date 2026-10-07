@@ -1078,13 +1078,13 @@ test "display encoding escapes invalid bytes without partial escapes" {
 }
 
 test "root path validation covers both capacity boundaries" {
-    var maximum = [_]u8{'a'} ** path_bytes_max;
+    var maximum: [path_bytes_max]u8 = @splat('a');
     try std.testing.expectError(error.EmptyRootPath, validate_root_path(""));
     try validate_root_path("a");
     try validate_root_path(&maximum);
     try std.testing.expectError(
         error.RootPathTooLong,
-        validate_root_path("a" ** (path_bytes_max + 1)),
+        validate_root_path(&@as([path_bytes_max + 1]u8, @splat('a'))),
     );
 }
 

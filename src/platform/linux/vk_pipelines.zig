@@ -117,7 +117,7 @@ pub fn createPipelineCache(
 pub fn createGraphicsPipeline(
     device: vk.Device,
     render_pass: vk.RenderPass,
-    sample_count: c_uint,
+    sample_count: vk.SampleCountFlagBits,
     config: PipelineConfig,
     pipeline_cache: vk.PipelineCache,
 ) PipelineError!vk.Pipeline {
@@ -142,7 +142,10 @@ pub fn createGraphicsPipeline(
     const multisampling = multisampleState(sample_count);
     const blend_attachment = blendAttachment(config.blend_mode);
     const color_blending = colorBlendState(&blend_attachment);
-    const dynamic_states = [_]c_uint{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
+    const dynamic_states = [_]vk.DynamicState{
+        vk.VK_DYNAMIC_STATE_VIEWPORT,
+        vk.VK_DYNAMIC_STATE_SCISSOR,
+    };
     const dynamic_state = dynamicState(&dynamic_states);
 
     // Create the pipeline
@@ -236,7 +239,14 @@ fn createPipeline(
 
     var pipeline: vk.Pipeline = null;
     // pipeline_cache may be null — Vulkan handles this gracefully (no caching).
-    const result = vk.vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pipeline_info, null, &pipeline);
+    const result = vk.vkCreateGraphicsPipelines(
+        device,
+        pipeline_cache,
+        1,
+        (&pipeline_info)[0..1],
+        null,
+        (&pipeline)[0..1],
+    );
     if (!vk.succeeded(result)) return PipelineError.PipelineCreationFailed;
 
     std.debug.assert(pipeline != null);
@@ -330,7 +340,7 @@ fn rasterizationState() vk.PipelineRasterizationStateCreateInfo {
     };
 }
 
-fn multisampleState(sample_count: c_uint) vk.PipelineMultisampleStateCreateInfo {
+fn multisampleState(sample_count: vk.SampleCountFlagBits) vk.PipelineMultisampleStateCreateInfo {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .pNext = null,
@@ -352,7 +362,7 @@ fn multisampleState(sample_count: c_uint) vk.PipelineMultisampleStateCreateInfo 
 ///
 /// All other blend factors, ops, and write mask are identical.
 fn blendAttachment(mode: BlendMode) vk.PipelineColorBlendAttachmentState {
-    const src_color_factor: c_uint = switch (mode) {
+    const src_color_factor: vk.BlendFactor = switch (mode) {
         .standard => vk.VK_BLEND_FACTOR_SRC_ALPHA,
         .premultiplied => vk.VK_BLEND_FACTOR_ONE,
     };
@@ -381,14 +391,14 @@ fn colorBlendState(
         .logicOpEnable = vk.FALSE,
         .logicOp = 0,
         .attachmentCount = 1,
-        .pAttachments = attachment,
+        .pAttachments = attachment[0..1],
         .blendConstants = .{ 0, 0, 0, 0 },
     };
 }
 
 /// Wraps a dynamic state array pointer into the dynamic state create info.
 /// The caller must ensure `states` outlives the returned struct.
-fn dynamicState(states: *const [2]c_uint) vk.PipelineDynamicStateCreateInfo {
+fn dynamicState(states: *const [2]vk.DynamicState) vk.PipelineDynamicStateCreateInfo {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .pNext = null,

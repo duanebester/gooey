@@ -119,11 +119,11 @@ pub fn App(
                 // `on_resize`, `min_size`, `max_size`, `centered`, or `io`.
                 var cfg: runtime.CxConfig(State) = .{};
                 const ConfigType = @TypeOf(config);
-                inline for (@typeInfo(runtime.CxConfig(State)).@"struct".fields) |field| {
+                inline for (@typeInfo(runtime.CxConfig(State)).@"struct".field_names) |field_name| {
                     // `on_init` and `custom_shaders` need special handling
                     // (name mismatch / MSL-vs-WGSL coercion); everything else
                     // is a straight copy when the caller provided it.
-                    if (comptime std.mem.eql(u8, field.name, "on_init")) {
+                    if (comptime std.mem.eql(u8, field_name, "on_init")) {
                         // Historically `App` read `config.init` while `runCx`
                         // calls the field `on_init`, so `.on_init = ...` on an
                         // `App` config was silently dropped. Accept both spellings
@@ -133,12 +133,12 @@ pub fn App(
                         } else if (@hasField(ConfigType, "init")) {
                             cfg.on_init = config.init;
                         }
-                    } else if (comptime std.mem.eql(u8, field.name, "custom_shaders")) {
+                    } else if (comptime std.mem.eql(u8, field_name, "custom_shaders")) {
                         if (@hasField(ConfigType, "custom_shaders")) {
                             cfg.custom_shaders = coerceShaders(config.custom_shaders);
                         }
-                    } else if (@hasField(ConfigType, field.name)) {
-                        @field(cfg, field.name) = @field(config, field.name);
+                    } else if (@hasField(ConfigType, field_name)) {
+                        @field(cfg, field_name) = @field(config, field_name);
                     }
                 }
                 try runCx(State, state, render, cfg, init);

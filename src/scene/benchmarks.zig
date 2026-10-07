@@ -994,7 +994,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, try benchSceneBuild(allocator, "build_dashboard_small", buildDashboardSmall));
     collect(&reporter, try benchSceneBuild(allocator, "build_dashboard_medium", buildDashboardMedium));
     collect(&reporter, try benchSceneBuild(allocator, "build_dashboard_large", buildDashboardLarge));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Batch Iteration
@@ -1006,7 +1006,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, try benchBatchIterate(allocator, "batch_interleaved_2k", buildInterleaved2k));
     collect(&reporter, try benchBatchIterate(allocator, "batch_dashboard_medium", buildDashboardMedium));
     collect(&reporter, try benchBatchIterate(allocator, "batch_dashboard_large", buildDashboardLarge));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Draw-Order Sort
@@ -1021,7 +1021,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, try benchDrawOrderSortStruct(allocator, "sort_struct_quads_1k", 1000));
     collect(&reporter, try benchDrawOrderSortStruct(allocator, "sort_struct_quads_8k", 8000));
     collect(&reporter, try benchDrawOrderSortStruct(allocator, "sort_struct_quads_32k", 32000));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Clip Stack
@@ -1031,7 +1031,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, try benchClipStack(allocator, "clip_depth_8", 8));
     collect(&reporter, try benchClipStack(allocator, "clip_depth_16", 16));
     collect(&reporter, try benchClipStack(allocator, "clip_depth_32", 32));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Frame e2e (data plane)
@@ -1041,7 +1041,7 @@ pub fn main(init: std.process.Init) !void {
     collectFrame(&reporter, try benchFrame(allocator, "frame_dashboard_small", buildDashboardSmall));
     collectFrame(&reporter, try benchFrame(allocator, "frame_dashboard_medium", buildDashboardMedium));
     collectFrame(&reporter, try benchFrame(allocator, "frame_dashboard_large", buildDashboardLarge));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     std.debug.print(
         \\
@@ -1070,11 +1070,11 @@ fn printSectionHeader(comptime title: []const u8) void {
     comptime std.debug.assert(title.len > 0);
     comptime std.debug.assert(title.len < TABLE_WIDTH);
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("{s}\n", .{title});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
 }
 
 fn printHeader() void {
@@ -1091,9 +1091,9 @@ fn printHeader() void {
 
 fn printFrameHeader() void {
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Scene Benchmarks — Frame e2e (clear -> build -> finish -> drain)\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("| {s:<28} | {s:>6} | {s:>5} | {s:>12} | {s:>12} | {s:>6} | {s:>6} |\n", .{
         "Test",
         "Prims",
@@ -1103,5 +1103,5 @@ fn printFrameHeader() void {
         "60Hz",
         "120Hz",
     });
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
 }

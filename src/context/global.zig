@@ -440,7 +440,7 @@ fn makeOwnedDeinit(
                 const Deinit = @TypeOf(G.deinit);
                 const info = @typeInfo(Deinit);
                 if (info == .@"fn") {
-                    const params = info.@"fn".params;
+                    const params = info.@"fn".param_types;
                     // Two supported shapes — keep the branches
                     // explicit so the compile error for an
                     // unsupported shape is informative.

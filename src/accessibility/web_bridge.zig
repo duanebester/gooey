@@ -86,14 +86,14 @@ pub const WebBridge = struct {
     container_id: u32 = 0,
 
     /// Pool of DOM element IDs (0 = unused)
-    dom_ids: [constants.MAX_ELEMENTS]u32 = [_]u32{0} ** constants.MAX_ELEMENTS,
+    dom_ids: [constants.MAX_ELEMENTS]u32 = @splat(0),
 
     /// Map fingerprint -> slot for stable identity
     fingerprint_to_slot: [constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint =
-        [_]fingerprint_mod.Fingerprint{fingerprint_mod.Fingerprint.INVALID} ** constants.MAX_ELEMENTS,
+        @as([constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint, @splat(fingerprint_mod.Fingerprint.INVALID)),
 
     /// Slot usage tracking
-    slot_active: [constants.MAX_ELEMENTS]bool = [_]bool{false} ** constants.MAX_ELEMENTS,
+    slot_active: [constants.MAX_ELEMENTS]bool = @splat(false),
 
     /// Currently focused slot (to prevent focus loops)
     focused_slot: ?u16 = null,
@@ -225,7 +225,7 @@ pub const WebBridge = struct {
         // Assertion: dom_id must be valid
         std.debug.assert(dom_id != 0);
         // Assertion: role enum value is valid
-        std.debug.assert(@intFromEnum(role) <= @intFromEnum(types.Role.none));
+        std.debug.assert(@backingInt(role) <= @backingInt(types.Role.none));
 
         // aria-disabled
         if (state.disabled) {
@@ -453,7 +453,7 @@ pub const WebBridge = struct {
         // Assertion: message is bounded (reasonable limit)
         std.debug.assert(message.len <= 4096);
         // Assertion: live level is valid
-        std.debug.assert(@intFromEnum(live) <= @intFromEnum(types.Live.assertive));
+        std.debug.assert(@backingInt(live) <= @backingInt(types.Live.assertive));
 
         if (live == .off) return;
 

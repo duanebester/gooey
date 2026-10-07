@@ -96,7 +96,7 @@ pub fn renderFullPipeline(
         });
 
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
-            @intFromEnum(mtl.MTLPrimitiveType.triangle),
+            @backingInt(mtl.MTLPrimitiveType.triangle),
             @as(c_ulong, 0),
             @as(c_ulong, 3),
         });

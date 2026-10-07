@@ -11,7 +11,7 @@ const vk = @import("vulkan.zig");
 // Configuration
 // =============================================================================
 
-pub const enable_validation_layers = @import("builtin").mode == .Debug;
+pub const enable_validation_layers = @import("builtin").mode == .debug;
 
 // =============================================================================
 // Result Types
@@ -83,7 +83,7 @@ pub fn createInstance() InstanceError!InstanceResult {
         .applicationVersion = 1,
         .pEngineName = "Gooey",
         .engineVersion = 1,
-        .apiVersion = vk.c.VK_API_VERSION_1_0,
+        .apiVersion = vk.API_VERSION_1_0,
     };
 
     const use_validation = enable_validation_layers and vk.isValidationLayerAvailable();
@@ -133,12 +133,9 @@ pub fn destroyDebugMessenger(instance: vk.Instance, messenger: vk.DebugUtilsMess
     std.debug.assert(instance != null);
     if (messenger == null) return;
 
-    const func = @as(
-        ?*const fn (vk.Instance, vk.DebugUtilsMessengerEXT, ?*const anyopaque) callconv(.c) void,
-        @ptrCast(vk.vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT")),
-    );
-
-    if (func) |destroy_fn| {
+    const proc = vk.vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (proc) |address| {
+        const destroy_fn: vk.PFN_vkDestroyDebugUtilsMessengerEXT = @ptrCast(address);
         destroy_fn(instance, messenger, null);
     }
 }
@@ -185,7 +182,7 @@ pub fn pickPhysicalDevice(
     }
 
     std.debug.assert(device_count <= MAX_PHYSICAL_DEVICES);
-    var devices: [MAX_PHYSICAL_DEVICES]vk.PhysicalDevice = [_]vk.PhysicalDevice{null} ** MAX_PHYSICAL_DEVICES;
+    var devices: [MAX_PHYSICAL_DEVICES]vk.PhysicalDevice = @splat(null);
     var count: u32 = @min(device_count, MAX_PHYSICAL_DEVICES);
     _ = vk.vkEnumeratePhysicalDevices(instance, &count, &devices);
 
@@ -224,7 +221,7 @@ pub fn createLogicalDevice(
         .flags = 0,
         .queueFamilyIndex = families.graphics,
         .queueCount = 1,
-        .pQueuePriorities = &queue_priority,
+        .pQueuePriorities = (&queue_priority)[0..1],
     };
 
     if (families.graphics != families.present) {
@@ -234,7 +231,7 @@ pub fn createLogicalDevice(
             .flags = 0,
             .queueFamilyIndex = families.present,
             .queueCount = 1,
-            .pQueuePriorities = &queue_priority,
+            .pQueuePriorities = (&queue_priority)[0..1],
         };
         queue_create_count = 2;
     }
@@ -324,14 +321,16 @@ fn findQueueFamilies(device: vk.PhysicalDevice, surface: vk.Surface) ?QueueFamil
 
 /// Debug callback for Vulkan validation layer messages.
 fn debugCallback(
-    severity: c_uint,
-    msg_type: c_uint,
-    callback_data: [*c]const vk.DebugUtilsMessengerCallbackDataEXT,
+    severity: vk.DebugUtilsMessageSeverityFlagBitsEXT,
+    msg_type: vk.DebugUtilsMessageTypeFlagsEXT,
+    callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
     _: ?*anyopaque,
 ) callconv(.c) vk.Bool32 {
     _ = msg_type;
 
-    const message: [*c]const u8 = if (callback_data != null) callback_data.*.pMessage else "unknown";
+    // The loader owns `callback_data`; treat both pointers as untrusted.
+    const data = callback_data orelse return vk.FALSE;
+    const message: [*:0]const u8 = data.pMessage orelse "unknown";
 
     if ((severity & vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
         std.log.err("[Vulkan Validation] {s}", .{message});
@@ -367,12 +366,9 @@ fn createDebugMessenger(
 ) vk.DebugUtilsMessengerEXT {
     std.debug.assert(instance != null);
 
-    const func = @as(
-        ?*const fn (vk.Instance, *const vk.DebugUtilsMessengerCreateInfoEXT, ?*const anyopaque, *vk.DebugUtilsMessengerEXT) callconv(.c) vk.Result,
-        @ptrCast(vk.vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT")),
-    );
-
-    if (func) |create_fn| {
+    const proc = vk.vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (proc) |address| {
+        const create_fn: vk.PFN_vkCreateDebugUtilsMessengerEXT = @ptrCast(address);
         var messenger: vk.DebugUtilsMessengerEXT = null;
         const result = create_fn(instance, create_info, null, &messenger);
         if (vk.succeeded(result)) {

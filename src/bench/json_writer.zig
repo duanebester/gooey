@@ -69,7 +69,7 @@ pub const Sampler = @import("sampler.zig").Sampler;
 /// All fields use explicitly-sized types for cross-platform consistency.
 pub const Entry = struct {
     /// Benchmark name, null-padded to fixed length.
-    name: [MAX_NAME_LENGTH]u8 = [_]u8{0} ** MAX_NAME_LENGTH,
+    name: [MAX_NAME_LENGTH]u8 = @splat(0),
     name_length: u32 = 0,
 
     /// Number of operations per iteration (vertex count, node count, etc.).
@@ -288,10 +288,10 @@ pub const Reporter = struct {
     entries: [MAX_ENTRIES]Entry = undefined,
     count: u32 = 0,
 
-    module_name: [MAX_MODULE_NAME_LENGTH]u8 = [_]u8{0} ** MAX_MODULE_NAME_LENGTH,
+    module_name: [MAX_MODULE_NAME_LENGTH]u8 = @splat(0),
     module_name_length: u32 = 0,
 
-    json_dir: [MAX_PATH_LENGTH]u8 = [_]u8{0} ** MAX_PATH_LENGTH,
+    json_dir: [MAX_PATH_LENGTH]u8 = @splat(0),
     json_dir_length: u32 = 0,
 
     json_enabled: bool = false,

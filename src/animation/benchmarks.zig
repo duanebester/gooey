@@ -692,7 +692,7 @@ pub fn main(init: std.process.Init) !void {
     printSectionHeader("Gooey Animation Benchmarks — Spring Step (stepSpring RK4, fixed dt)");
     collect(&reporter, try benchSpringStep(allocator, "spring_step_256", 256));
     collect(&reporter, try benchSpringStep(allocator, "spring_step_1k", 1024));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Spring Tick (at-rest fast path — the "≈ free" claim)
@@ -701,7 +701,7 @@ pub fn main(init: std.process.Init) !void {
     printSectionHeader("Gooey Animation Benchmarks — Spring Tick (tickSpring on settled springs)");
     collect(&reporter, try benchSpringTickAtRest(allocator, "spring_tick_atrest_256", 256));
     collect(&reporter, try benchSpringTickAtRest(allocator, "spring_tick_atrest_1k", 1024));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     // =========================================================================
     // Store Frame (per-frame dispatch over N pre-registered springs/motions)
@@ -713,7 +713,7 @@ pub fn main(init: std.process.Init) !void {
     collectFrame(&reporter, try benchStoreSpringFrame(allocator, "frame_springs_256", 256));
     collectFrame(&reporter, try benchStoreSpringMotionFrame(allocator, "frame_spring_motions_64", 64));
     collectFrame(&reporter, try benchStoreSpringMotionFrame(allocator, "frame_spring_motions_256", 256));
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
     std.debug.print(
         \\
@@ -743,11 +743,11 @@ fn printSectionHeader(comptime title: []const u8) void {
     comptime std.debug.assert(title.len > 0);
     comptime std.debug.assert(title.len < TABLE_WIDTH);
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("{s}\n", .{title});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     printHeader();
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
 }
 
 fn printHeader() void {
@@ -763,9 +763,9 @@ fn printHeader() void {
 
 fn printFrameHeader() void {
     std.debug.print("\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Animation Benchmarks — Store Frame (beginFrame -> poll N -> endFrame)\n", .{});
-    std.debug.print("=" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("| {s:<28} | {s:>6} | {s:>13} | {s:>13} | {s:>6} | {s:>6} |\n", .{
         "Test",
         "Count",
@@ -774,5 +774,5 @@ fn printFrameHeader() void {
         "60Hz",
         "120Hz",
     });
-    std.debug.print("-" ** TABLE_WIDTH ++ "\n", .{});
+    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('-')) ++ "\n", .{});
 }

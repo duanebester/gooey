@@ -587,7 +587,7 @@ pub const Path = struct {
 
         // Hash commands
         for (self.commands.constSlice()) |cmd| {
-            h ^= @intFromEnum(cmd);
+            h ^= @backingInt(cmd);
             h *%= fnv_prime;
         }
 
@@ -621,7 +621,7 @@ pub const Path = struct {
 
     /// Debug dump path contents (only in Debug mode)
     pub fn debugDump(self: *const Self) void {
-        if (builtin.mode != .Debug) return;
+        if (builtin.mode != .debug) return;
 
         std.log.debug("Path dump: {} commands, {} data floats", .{ self.commands.len, self.data.len });
 

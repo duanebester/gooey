@@ -35,7 +35,7 @@ const semantic_token_list = @import("theme_color.zig").semantic_token_list;
 pub const tool_schema: []const u8 = generateToolSchema(DrawCommand);
 
 /// Number of tools in the generated schema (must match DrawCommand variant count).
-pub const TOOL_COUNT: usize = std.meta.fields(DrawCommand).len;
+pub const TOOL_COUNT: usize = @typeInfo(DrawCommand).@"union".field_names.len;
 
 // =============================================================================
 // Comptime Schema Generator
@@ -47,15 +47,15 @@ pub const TOOL_COUNT: usize = std.meta.fields(DrawCommand).len;
 fn generateToolSchema(comptime Command: type) []const u8 {
     @setEvalBranchQuota(100_000);
     comptime {
-        const fields = std.meta.fields(Command);
+        const variants = @typeInfo(Command).@"union";
 
         // Assert expected variant count — update if DrawCommand evolves.
-        std.debug.assert(fields.len == 11);
+        std.debug.assert(variants.field_names.len == 11);
 
         var schema: []const u8 = "[\n";
-        for (fields, 0..) |variant, i| {
-            schema = schema ++ emitToolObject(variant.name, variant.type);
-            if (i < fields.len - 1) {
+        for (variants.field_names, variants.field_types, 0..) |name, Payload, i| {
+            schema = schema ++ emitToolObject(name, Payload);
+            if (i < variants.field_names.len - 1) {
                 schema = schema ++ ",";
             }
             schema = schema ++ "\n";
@@ -63,7 +63,7 @@ fn generateToolSchema(comptime Command: type) []const u8 {
         schema = schema ++ "]";
 
         // Assert tool count in output matches variant count.
-        std.debug.assert(comptimeCountSubstring(schema, "\"name\":") == fields.len);
+        std.debug.assert(comptimeCountSubstring(schema, "\"name\":") == variants.field_names.len);
 
         return schema;
     }
@@ -90,19 +90,19 @@ fn emitToolObject(comptime name: []const u8, comptime Payload: type) []const u8 
 
 fn emitParameters(comptime Payload: type) []const u8 {
     comptime {
-        const param_fields = std.meta.fields(Payload);
-        std.debug.assert(param_fields.len >= 1); // Every tool has at least one param.
+        const params = @typeInfo(Payload).@"struct";
+        std.debug.assert(params.field_names.len >= 1); // Every tool has at least one param.
 
         var out: []const u8 = "";
-        for (param_fields, 0..) |field, j| {
-            const ext_name = fieldExternalName(field.name);
-            const json_type = fieldJsonType(field.name, field.type);
-            const desc = fieldDescription(field.name);
+        for (params.field_names, params.field_types, 0..) |field_name, field_type, j| {
+            const ext_name = fieldExternalName(field_name);
+            const json_type = fieldJsonType(field_name, field_type);
+            const desc = fieldDescription(field_name);
 
             out = out ++ "      \"" ++ ext_name ++ "\": { ";
             out = out ++ "\"type\": \"" ++ json_type ++ "\", ";
             out = out ++ "\"description\": \"" ++ desc ++ "\" }";
-            if (j < param_fields.len - 1) {
+            if (j < params.field_names.len - 1) {
                 out = out ++ ",";
             }
             out = out ++ "\n";
@@ -433,7 +433,7 @@ test "numeric fields are typed as number in schema" {
 }
 
 test "tool count matches DrawCommand variant count" {
-    const variant_count = std.meta.fields(DrawCommand).len;
+    const variant_count = @typeInfo(DrawCommand).@"union".field_names.len;
     try std.testing.expectEqual(variant_count, TOOL_COUNT);
     try std.testing.expectEqual(@as(usize, 11), TOOL_COUNT);
 }

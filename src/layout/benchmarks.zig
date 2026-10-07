@@ -839,16 +839,16 @@ pub fn main(init: std.process.Init) !void {
     var reporter = bench.Reporter.init("layout", init.io, init.minimal.args.vector);
 
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Layout Engine Benchmarks — Layout Only (endFrame)\n", .{});
-    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
         "Test",
         "Nodes",
         "Avg Time",
         "Time/Node",
     });
-    std.debug.print("-" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
 
     // Smallest first
     collect(&reporter, runBenchmark(allocator, "nested_floating_overlays", buildNestedFloatingOverlays));
@@ -866,20 +866,20 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, runBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights));
     collect(&reporter, runBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights));
 
-    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
 
     // Full frame benchmarks (tree construction + layout)
     std.debug.print("\n", .{});
-    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Layout Engine Benchmarks — Full Frame (build + layout)\n", .{});
-    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
         "Test",
         "Nodes",
         "Avg Time",
         "Time/Node",
     });
-    std.debug.print("-" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
 
     collect(&reporter, runFullFrameBenchmark(allocator, "full_nested_floating_overlays", buildNestedFloatingOverlays));
     collect(&reporter, runFullFrameBenchmark(allocator, "full_wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
@@ -895,7 +895,7 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_equal_weights", buildFlexExpandEqualWeights));
     collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_weights", buildFlexExpandWeights));
 
-    std.debug.print("=" ** 90 ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
 
     std.debug.print("\nLayout Only = endFrame() only. Full Frame = beginFrame + tree build + endFrame.\n", .{});
     std.debug.print("Iterations are adaptive based on node count (fewer for large tests).\n", .{});
