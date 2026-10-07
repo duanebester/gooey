@@ -749,11 +749,16 @@ pub const Scene = struct {
 
     /// Reserve the quad and matching sort-key storage used by ordered canvas
     /// drawing. Call during initialization, before the first frame can run.
-    pub fn reserve_canvas_quads(self: *Self, capacity: u32) !void {
+    /// Check that a canvas's quad requirement fits this scene's declared budget.
+    ///
+    /// `initCapacity` already reserved every pool, so this never allocates: a
+    /// reservation larger than `limits.quad_count_frame_max` is an application
+    /// budget error, reported at initialization instead of growing the pool
+    /// past the budget the app declared (CLAUDE.md §2).
+    pub fn reserve_canvas_quads(self: *Self, capacity: u32) error{ResourceBudgetExceeded}!void {
         std.debug.assert(capacity > 0);
-        if (capacity > MAX_QUADS_PER_FRAME) return error.OutOfMemory;
-        try self.quads.ensureTotalCapacity(self.allocator, capacity);
-        try self.sort_keys.ensureTotalCapacity(self.allocator, capacity);
+        std.debug.assert(self.limits.quad_count_frame_max <= MAX_QUADS_PER_FRAME);
+        if (capacity > self.limits.quad_count_frame_max) return error.ResourceBudgetExceeded;
         std.debug.assert(self.quads.capacity >= capacity);
         std.debug.assert(self.sort_keys.capacity >= capacity);
     }
@@ -1960,4 +1965,17 @@ test "finish sorts all nine per-type draw-order arrays ascending" {
     for (scene.path_instances.items, scene.path_gradients.items) |instance, gradient| {
         try testing.expectEqual(@as(f32, @floatFromInt(instance.order)), gradient.param0);
     }
+}
+
+test "reserve_canvas_quads accepts the budget exactly and rejects one more" {
+    // Canvas reservation must not grow a pool past the app's declared budget.
+    var budget = SceneLimits.standard;
+    budget.quad_count_frame_max = 8;
+    var scene = try Scene.initCapacity(std.testing.allocator, &budget);
+    defer scene.deinit();
+    const capacity_before = scene.quads.capacity;
+
+    try scene.reserve_canvas_quads(8);
+    try std.testing.expectError(error.ResourceBudgetExceeded, scene.reserve_canvas_quads(9));
+    try std.testing.expectEqual(capacity_before, scene.quads.capacity);
 }
