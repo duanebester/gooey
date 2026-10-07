@@ -85,7 +85,8 @@ void main() {
     vec2 viewport_size = vec2(viewport_width, viewport_height);
 
     vec2 pos = vec2(g.pos_x, g.pos_y) + unit * vec2(g.size_x, g.size_y);
-    vec2 ndc = pos / viewport_size * vec2(2.0, -2.0) + vec2(-1.0, 1.0);
+    // Vulkan NDC is Y-down like scene pixels (unlike Metal/WebGPU), so no flip.
+    vec2 ndc = pos / viewport_size * 2.0 - 1.0;
     vec2 uv = vec2(
         mix(g.uv_left, g.uv_right, unit.x),
         mix(g.uv_top, g.uv_bottom, unit.y)  // Match macOS Metal shader - no flip

@@ -801,9 +801,8 @@ pub const Window = struct {
     // =========================================================================
 
     /// Handle an input event and dispatch to callback
-    /// Note: Wayland uses Y-down (0 at top), which matches our scene coordinate system.
-    /// The Vulkan viewport uses negative height to flip Y-axis for OpenGL/Metal-compatible
-    /// NDC coordinates, so no coordinate flipping is needed here.
+    /// Note: Wayland and Vulkan framebuffer space are both Y-down (0 at top), matching
+    /// our scene coordinate system, so no coordinate flipping is needed anywhere.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
         // Track mouse position and inside state
         switch (event) {

@@ -107,8 +107,9 @@ void main() {
     // Calculate screen position
     vec2 pos = vec2(img.pos_x, img.pos_y) + unit * vec2(img.dest_width, img.dest_height);
 
-    // Convert to NDC (Y flipped for Vulkan)
-    vec2 ndc = pos / viewport_size * vec2(2.0, -2.0) + vec2(-1.0, 1.0);
+    // Vulkan NDC is Y-down like scene pixels (unlike Metal/WebGPU), so no flip.
+
+    vec2 ndc = pos / viewport_size * 2.0 - 1.0;
 
     // Interpolate UV coordinates
     vec2 uv = vec2(
