@@ -20,6 +20,7 @@ const frame_mod = @import("../context/frame.zig");
 const Frame = frame_mod.Frame;
 
 const Window = window_mod.Window;
+const App = @import("../context/app.zig").App;
 const Cx = cx_mod.Cx;
 const Builder = ui_mod.Builder;
 
@@ -43,6 +44,10 @@ const CodeEditorState = code_editor_state_mod.CodeEditorState;
 // Limits (per CLAUDE.md: "put a limit on everything")
 // =============================================================================
 const MAX_RENDER_COMMANDS: usize = 65536;
+
+/// While URL images are loading, frames are polled at this interval to drain
+/// finished decodes (about 30 per second; a load takes far longer than this).
+const image_load_poll_interval_ms: u32 = 33;
 
 /// Render a single frame with Cx context (comptime render function)
 pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
@@ -198,11 +203,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 
     window.next_frame.scene.finish();
 
-    // If SVG rasterizations were deferred due to per-frame budget, request
-    // another render so the remaining icons progressively appear.
-    if (window.resources.svg_atlas.hasDeferredWork()) {
-        window.requestRender();
-    }
+    requestAssetFollowUpFrame(window, app);
 
     // Finalize frame timing for profiler
     window.finalizeFrame();
@@ -306,6 +307,23 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
     }
 }
 
+/// Frames are drawn only on demand, so incremental asset work that is still in
+/// progress at the end of a frame must ask for the next one itself.
+fn requestAssetFollowUpFrame(window: *Window, app: *const App) void {
+    // SVG rasterizations deferred by the per-frame budget: draw again next
+    // tick so the remaining icons progressively appear.
+    if (window.resources.svg_atlas.hasDeferredWork()) {
+        window.requestRender();
+    }
+
+    // URL images decode on a worker and land in a queue drained at the start of
+    // a frame. Nothing else wakes the window when one finishes, so keep polling
+    // at a modest rate while any load is in flight.
+    if (app.image_loader_bound and app.image_loader.pending_count > 0) {
+        window.requestRenderAfter(image_load_poll_interval_ms);
+    }
+}
+
 /// Render every pending text widget in one tree-ordered pass over the unified
 /// control queue. Each `{ kind, index }` record selects the matching typed
 /// pool; a comptime `switch (kind)` picks the per-kind render helper (no
@@ -313,20 +331,34 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
 /// different kinds overlap.
 fn renderTextWidgets(window: *Window, builder: *const Builder) !void {
     for (builder.pending_text_widgets.items) |entry| {
-        switch (entry.kind) {
-            .input => {
+        const blink_delay_ms: ?u32 = switch (entry.kind) {
+            .input => blk: {
                 std.debug.assert(entry.index < builder.pending_inputs.items.len);
-                try renderTextInput(window, &builder.pending_inputs.items[entry.index]);
+                const pending = &builder.pending_inputs.items[entry.index];
+                try renderTextInput(window, pending);
+                const id: u64 = pending.layout_id.id;
+                const state = window.element_states.get(TextInputState, id) orelse break :blk null;
+                break :blk state.blinkDelayMs();
             },
-            .text_area => {
+            .text_area => blk: {
                 std.debug.assert(entry.index < builder.pending_text_areas.items.len);
-                try renderTextArea(window, &builder.pending_text_areas.items[entry.index]);
+                const pending = &builder.pending_text_areas.items[entry.index];
+                try renderTextArea(window, pending);
+                const id: u64 = pending.layout_id.id;
+                const state = window.element_states.get(TextAreaState, id) orelse break :blk null;
+                break :blk state.blinkDelayMs();
             },
-            .code_editor => {
+            .code_editor => blk: {
                 std.debug.assert(entry.index < builder.pending_code_editors.items.len);
-                try renderCodeEditor(window, &builder.pending_code_editors.items[entry.index]);
+                const pending = &builder.pending_code_editors.items[entry.index];
+                try renderCodeEditor(window, pending);
+                const id: u64 = pending.layout_id.id;
+                const state = window.element_states.get(CodeEditorState, id) orelse break :blk null;
+                break :blk state.text_area.blinkDelayMs();
             },
-        }
+        };
+        // A focused caret toggles on the clock, so ask to be drawn when it does.
+        if (blink_delay_ms) |delay_ms| window.requestRenderAfter(delay_ms);
     }
 }
 

@@ -2,8 +2,8 @@
 //!
 //! Caches decoded images in a texture atlas, keyed by source hash and size.
 //! Supports PNG, JPEG, and raw pixel data sources.
-//! Thread-safe for multi-window scenarios where multiple DisplayLink threads
-//! may access the atlas concurrently.
+//! Used only on the main thread: background URL loads hand decoded pixels to
+//! the loader's queue, which the frame drains, so the atlas takes no locks.
 
 const std = @import("std");
 const Atlas = @import("../text/atlas.zig").Atlas;
@@ -165,11 +165,6 @@ pub const CachedImage = struct {
 /// Image texture atlas with caching
 pub const ImageAtlas = struct {
     allocator: std.mem.Allocator,
-    /// IO instance for mutex operations. Stored on the struct because lock
-    /// sites run on CVDisplayLink threads that have no access to `*Cx` and
-    /// therefore cannot reach `cx.io()`. Io is a pair of pointers into the
-    /// process-lifetime vtable — safe to copy across threads.
-    io: std.Io,
     /// RGBA texture atlas
     atlas: Atlas,
     /// Cache map
@@ -178,12 +173,6 @@ pub const ImageAtlas = struct {
     scale_factor: f64,
     /// Current frame number (for LRU tracking)
     current_frame: u64 = 0,
-    /// Mutex for thread-safe access in multi-window scenarios.
-    /// Multiple DisplayLink threads may access the atlas concurrently.
-    /// Uses `lockUncancelable` everywhere — none of the atlas call sites
-    /// propagate `std.Io.Cancelable`, and the critical sections are short
-    /// enough that cancelation points would add noise without value.
-    mutex: std.Io.Mutex = .init,
 
     const Self = @This();
 
@@ -193,10 +182,9 @@ pub const ImageAtlas = struct {
     /// Initial atlas size
     const INITIAL_ATLAS_SIZE: u32 = 1024;
 
-    pub fn init(allocator: std.mem.Allocator, scale_factor: f64, io: std.Io) !Self {
+    pub fn init(allocator: std.mem.Allocator, scale_factor: f64) !Self {
         return .{
             .allocator = allocator,
-            .io = io,
             .atlas = try Atlas.initWithSize(allocator, .rgba, INITIAL_ATLAS_SIZE),
             .cache = std.AutoHashMap(ImageKey, CachedImage).init(allocator),
             .scale_factor = scale_factor,
@@ -226,11 +214,7 @@ pub const ImageAtlas = struct {
     }
 
     /// Get cached image if it exists (updates last_accessed for LRU)
-    /// Thread-safe: protected by mutex for multi-window scenarios.
     pub fn get(self: *Self, key: ImageKey) ?CachedImage {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-
         if (self.cache.getPtr(key)) |entry| {
             entry.last_accessed = self.current_frame;
             return entry.*;
@@ -239,14 +223,11 @@ pub const ImageAtlas = struct {
     }
 
     /// Cache decoded image data
-    /// Thread-safe: protected by mutex for multi-window scenarios.
     pub fn cacheImage(
         self: *Self,
         key: ImageKey,
         data: ImageData,
     ) !CachedImage {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
 
         // Check if already cached
         if (self.cache.get(key)) |cached| {
@@ -416,7 +397,6 @@ pub const ImageAtlas = struct {
     }
 
     /// Get the underlying atlas for GPU upload.
-    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
     pub fn getAtlas(self: *const Self) *const Atlas {
         return &self.atlas;
     }
@@ -424,20 +404,6 @@ pub const ImageAtlas = struct {
     /// Get the current generation (for GPU sync)
     pub fn getGeneration(self: *const Self) u32 {
         return self.atlas.generation;
-    }
-
-    /// Thread-safe atlas access for GPU upload.
-    /// Holds the mutex while calling the callback, ensuring no other
-    /// thread can modify the atlas during the upload.
-    pub fn withAtlasLocked(
-        self: *Self,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
-    ) !void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return callback(ctx, &self.atlas);
     }
 
     /// Check if dimensions are suitable for atlasing

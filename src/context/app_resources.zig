@@ -109,12 +109,12 @@ pub const AppResources = struct {
 
         const svg_atlas = try allocator.create(SvgAtlas);
         errdefer allocator.destroy(svg_atlas);
-        svg_atlas.* = try SvgAtlas.init(allocator, scale, io);
+        svg_atlas.* = try SvgAtlas.init(allocator, scale);
         errdefer svg_atlas.deinit();
 
         const image_atlas = try allocator.create(ImageAtlas);
         errdefer allocator.destroy(image_atlas);
-        image_atlas.* = try ImageAtlas.init(allocator, scale, io);
+        image_atlas.* = try ImageAtlas.init(allocator, scale);
         errdefer image_atlas.deinit();
 
         // Pair-assert: the post-init pointers must be non-null and
@@ -168,12 +168,12 @@ pub const AppResources = struct {
 
         const svg_atlas = try allocator.create(SvgAtlas);
         errdefer allocator.destroy(svg_atlas);
-        svg_atlas.* = try SvgAtlas.init(allocator, scale, io);
+        svg_atlas.* = try SvgAtlas.init(allocator, scale);
         errdefer svg_atlas.deinit();
 
         const image_atlas = try allocator.create(ImageAtlas);
         errdefer allocator.destroy(image_atlas);
-        image_atlas.* = try ImageAtlas.init(allocator, scale, io);
+        image_atlas.* = try ImageAtlas.init(allocator, scale);
         errdefer image_atlas.deinit();
 
         // Field-by-field — no struct literal — to avoid a stack temp

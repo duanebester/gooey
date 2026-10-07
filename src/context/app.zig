@@ -473,7 +473,7 @@ test "App: bindImageLoader wires the loader against the atlas" {
     var app = try App.init(testing.allocator, io);
     defer app.deinit();
 
-    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0, io);
+    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0);
     defer image_atlas.deinit();
 
     app.bindImageLoader(&image_atlas);
@@ -491,7 +491,7 @@ test "App: image_loader is shared across simulated windows" {
     var app = try App.init(testing.allocator, io);
     defer app.deinit();
 
-    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0, io);
+    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0);
     defer image_atlas.deinit();
 
     app.bindImageLoader(&image_atlas);
@@ -570,7 +570,7 @@ test "App: beginFrame drains image_loader when bound" {
     var app = try App.init(testing.allocator, io);
     defer app.deinit();
 
-    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0, io);
+    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0);
     defer image_atlas.deinit();
 
     app.bindImageLoader(&image_atlas);

@@ -131,7 +131,7 @@ pub fn renderText(
         subpixel_offsets_x[0..glyph_count],
     );
 
-    // Phase 2: Batch-resolve all glyphs under a single glyph_cache_mutex lock.
+    // Phase 2: Batch-resolve all glyphs in one call.
     // One lock/unlock for the entire run instead of N separate lock/unlock pairs.
     var cached_results: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
 

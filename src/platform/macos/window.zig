@@ -1,11 +1,14 @@
-//! macOS Window implementation with vsync-synchronized rendering
+//! macOS window: AppKit hosting, input, and main-thread frames.
 //!
-//! Simplified version without Entity/View system integration.
-//! Uses simple callbacks for rendering and input handling.
+//! Every frame is built, encoded, and presented on the main thread. A shared
+//! per-display vsync (`display_link.zig`) ticks visible windows through the
+//! main queue; a tick draws only when the window is dirty, a render deadline
+//! has passed, or a custom shader animates. Covered or minimized windows
+//! unsubscribe and receive no ticks at all. Because nothing runs on another
+//! thread, window, scene, and atlas state need no locks.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Mutex = @import("../mutex.zig").Mutex;
 const objc = @import("objc");
 const geometry = @import("../../core/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
@@ -23,6 +26,7 @@ const interface_mod = @import("../interface.zig");
 const WindowId = interface_mod.WindowId;
 const GlassStyle = interface_mod.GlassStyle;
 const WindowOptions = interface_mod.WindowOptions;
+const render_delay_ms_max = interface_mod.render_delay_ms_max;
 
 /// Maximum window title length in bytes, excluding the NUL terminator.
 ///
@@ -33,11 +37,13 @@ pub const title_bytes_max: usize = 255;
 
 const NSRect = appkit.NSRect;
 const NSSize = appkit.NSSize;
-const DisplayLink = display_link.DisplayLink;
 
-/// Uploads a CPU-side atlas into GPU storage while holding the caller's lock.
-/// Named so the three atlas hooks below stay inside the 100-column limit.
-const AtlasUploadFn = *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void;
+/// Minimum gap between frames of an unfocused window, so a background animation
+/// cannot cost as much as the window the user is working in. It targets 30 fps
+/// (33.3 ms) less half a 120 Hz tick: ticks are timed on the main queue and
+/// jitter by a few milliseconds, and a strict 33.3 ms gap would often skip the
+/// 4th tick at 120 Hz (or 2nd at 60 Hz) and drop to about 24 fps.
+const unfocused_frame_gap_ns_min: u64 = 29_166_667;
 
 /// Hard ceiling on application-supplied Metal shaders per window. Each one
 /// costs a pipeline state object and a `custom_{d}` name slot, so the count
@@ -61,7 +67,6 @@ pub const Window = struct {
     /// Borrowed: `+[CAMetalLayer layer]` is autoreleased and the view retains it.
     metal_layer: objc.Object,
     renderer: metal.Renderer,
-    display_link: ?DisplayLink,
     size: geometry.Size(f64),
     scale_factor: f64,
     /// NUL-terminated window title storage.
@@ -75,21 +80,27 @@ pub const Window = struct {
     title_buf: [title_bytes_max + 1]u8,
     title_len: u16,
     background_color: geometry.Color,
-    needs_render: std.atomic.Value(bool),
+    /// Something changed since the last frame. Main thread only.
+    dirty: bool,
+    /// Uptime (ns) at which to redraw even if nothing marks the window dirty,
+    /// for clock-driven UI such as a caret blink; 0 when none is pending.
+    render_deadline_ns: u64,
+    /// Uptime (ns) when the last frame started; paces unfocused windows.
+    frame_last_ns: u64,
+    /// Display whose vsync ticks this window, or null while it is occluded,
+    /// minimized, closed, or created with `use_display_link = false`.
+    display_id: ?u32,
+    /// Whether the window should receive ticks while visible.
+    uses_display_link: bool,
+    /// Key window state; unfocused windows are paced (`unfocused_frame_gap_ns_min`).
+    key_window: bool,
+    /// AppKit is live-resizing; `handleResize` draws synchronously meanwhile.
+    live_resize_active: bool,
     scene: ?*const scene_mod.Scene,
     text_atlas: ?*const Atlas = null,
     svg_atlas: ?*const Atlas = null,
     image_atlas: ?*const Atlas = null,
 
-    /// Thread-safe atlas upload callbacks for multi-window scenarios.
-    /// These are set by WindowContext to hold the appropriate mutex during GPU upload,
-    /// preventing races where another window's DisplayLink modifies the atlas.
-    text_atlas_upload_ctx: ?*anyopaque = null,
-    text_atlas_upload_fn: ?AtlasUploadFn = null,
-    svg_atlas_upload_ctx: ?*anyopaque = null,
-    svg_atlas_upload_fn: ?AtlasUploadFn = null,
-    image_atlas_upload_ctx: ?*anyopaque = null,
-    image_atlas_upload_fn: ?AtlasUploadFn = null,
     /// Owned +1 from `window_delegate.create`, released once in `deinit`.
     delegate: ?objc.Object = null,
     /// Owned +1 from `alloc`/`init`; the view also retains it while installed.
@@ -113,24 +124,6 @@ pub const Window = struct {
     glass_style: GlassStyle = .none,
     background_opacity: f64 = 1.0,
     glass_corner_radius: f64 = 16.0,
-
-    /// Mutex protecting all render-related state accessed from DisplayLink thread.
-    /// This includes: scene, text_atlas, background_color, size, scale_factor, renderer.
-    /// Must be held when:
-    /// - DisplayLink callback reads scene/atlas for rendering
-    /// - Main thread modifies scene/atlas/size
-    render_mutex: Mutex = .{},
-
-    /// Flag indicating we're in a live resize operation.
-    /// During live resize, the main thread handles rendering synchronously,
-    /// and the DisplayLink callback should skip rendering entirely.
-    in_live_resize: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
-    /// Flag indicating the DisplayLink callback is currently rendering.
-    /// Used to prevent the main thread from modifying state mid-render.
-    render_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
-    benchmark_mode: bool = true,
 
     /// Current mouse position (updated on every mouse event)
     mouse_position: geometry.Point(f64) = .{ .x = 0, .y = 0 },
@@ -200,18 +193,12 @@ pub const Window = struct {
     }
 
     pub fn setSvgAtlas(self: *Self, atlas: *const Atlas) void {
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
+        assert(display_link.isMainThread());
         self.svg_atlas = atlas;
     }
 
     pub fn setImageAtlas(self: *Self, atlas: *const Atlas) void {
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
+        assert(display_link.isMainThread());
         self.image_atlas = atlas;
     }
 
@@ -305,7 +292,7 @@ pub const Window = struct {
 
         self.loadCustomShaders(options.custom_shaders);
 
-        if (options.use_display_link) try self.startDisplayLink();
+        if (options.use_display_link) self.startFrameTicks();
 
         // Make window key and visible, then mark for initial render.
         self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
@@ -348,7 +335,6 @@ pub const Window = struct {
             .ns_view = undefined,
             .metal_layer = undefined,
             .renderer = undefined,
-            .display_link = null,
             .size = geometry.Size(f64).init(options.width, options.height),
             .scale_factor = 1.0,
             // Zeroed rather than seeded from `options.title`: `init` calls
@@ -357,7 +343,16 @@ pub const Window = struct {
             .title_buf = @splat(0),
             .title_len = 0,
             .background_color = options.background_color,
-            .needs_render = std.atomic.Value(bool).init(true),
+            .dirty = true,
+            .render_deadline_ns = 0,
+            .frame_last_ns = 0,
+            .display_id = null,
+            .uses_display_link = options.use_display_link,
+            // Unfocused until AppKit says otherwise: the delegate is installed
+            // before `makeKeyAndOrderFront:`, so `windowDidBecomeKey:` reports
+            // focus. A window that never becomes key stays at the unfocused rate.
+            .key_window = false,
+            .live_resize_active = false,
             .scene = null,
             .custom_shader_animation = false,
             .glass_style = options.glass_style,
@@ -470,27 +465,17 @@ pub const Window = struct {
         self.custom_shader_animation = true;
     }
 
-    /// Start the CVDisplayLink that paces rendering to vsync.
-    fn startDisplayLink(self: *Self) !void {
-        assert(self.display_link == null);
+    /// Subscribe to this window's display and mark the process latency
+    /// critical. A display-link failure is logged by `subscribeToDisplay`; the
+    /// window then waits for the next occlusion or screen change to retry.
+    fn startFrameTicks(self: *Self) void {
+        assert(self.display_id == null);
         assert(self.activity_token == null);
-
-        self.display_link = try DisplayLink.init();
-        errdefer {
-            self.display_link.?.deinit();
-            self.display_link = null;
-        }
-
-        try self.display_link.?.setCallback(displayLinkCallback, @ptrCast(self));
-        try self.display_link.?.start();
-
-        const refresh_rate = self.display_link.?.getRefreshRate();
-        std.debug.print("DisplayLink started at {d:.1}Hz\n", .{refresh_rate});
+        self.subscribeToDisplay();
 
         // macOS throttles ProMotion panels from 120Hz to 60Hz unless the
         // process declares that it is latency sensitive.
         self.activity_token = beginHighPerformanceActivity();
-        assert(self.display_link != null);
     }
 
     // =========================================================================
@@ -560,56 +545,19 @@ pub const Window = struct {
         return null;
     }
 
-    /// Set the text atlas for automatic GPU sync (thread-safe)
+    /// Set the text atlas uploaded at the start of each frame.
     pub fn setTextAtlas(self: *Self, atlas: *const Atlas) void {
-        // Only lock if we're not already in a render (which holds the lock)
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
+        assert(display_link.isMainThread());
         self.text_atlas = atlas;
     }
 
-    /// Set thread-safe text atlas upload callback for multi-window scenarios.
-    /// The callback is called with the appropriate mutex held during GPU upload.
-    pub fn setTextAtlasUploadCallback(
-        self: *Self,
-        ctx: *anyopaque,
-        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
-    ) void {
-        self.text_atlas_upload_ctx = ctx;
-        self.text_atlas_upload_fn = callback;
-    }
-
-    /// Set thread-safe SVG atlas upload callback for multi-window scenarios.
-    pub fn setSvgAtlasUploadCallback(
-        self: *Self,
-        ctx: *anyopaque,
-        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
-    ) void {
-        self.svg_atlas_upload_ctx = ctx;
-        self.svg_atlas_upload_fn = callback;
-    }
-
-    /// Set thread-safe image atlas upload callback for multi-window scenarios.
-    pub fn setImageAtlasUploadCallback(
-        self: *Self,
-        ctx: *anyopaque,
-        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
-    ) void {
-        self.image_atlas_upload_ctx = ctx;
-        self.image_atlas_upload_fn = callback;
-    }
-
-    /// Set the scene (thread-safe)
+    /// Point the window at the scene to present. Called by the frame builder
+    /// after it swaps buffers, inside the frame it is about to present, so it
+    /// does not mark the window dirty: that would turn every frame into a
+    /// request for another and keep idle windows drawing forever.
     pub fn setScene(self: *Self, s: *const scene_mod.Scene) void {
-        // Only lock if we're not already in a render (which holds the lock)
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
+        assert(display_link.isMainThread());
         self.scene = s;
-        self.requestRender();
     }
 
     pub fn getSize(self: *const Self) geometry.Size(f64) {
@@ -692,16 +640,11 @@ pub const Window = struct {
 
         var handled = false;
         if (self.on_input) |callback| {
-            // Acquire render mutex to safely access layout/scene data.
-            // The input callback may query layout bounds or scene state (e.g., for hit testing).
-            // Without this lock, the DisplayLink thread could be mid-render, mutating
-            // layout/scene data while we read it, causing torn reads or crashes.
-            self.render_mutex.lock();
             handled = callback(self, event);
-            self.render_mutex.unlock();
 
-            // Call post-input callback AFTER mutex is released.
-            // This is safe for operations that run nested event loops (modal dialogs).
+            // Runs after the input callback has fully returned, so it may enter
+            // nested event loops (modal dialogs). Frames keep drawing inside
+            // them: main-queue ticks are serviced in every common run-loop mode.
             if (self.on_post_input) |post_callback| {
                 post_callback(self);
             }
@@ -743,10 +686,11 @@ pub const Window = struct {
     /// sequence, from the owning app's drain point (never inside this window's
     /// own dispatch).
     ///
-    /// Order matters: stop the vsync thread first so nothing can read the
-    /// window while it is dismantled, then free GPU resources, then release the
-    /// AppKit objects children-first, then free the Zig allocation.
+    /// Order matters: leave the display's subscriber list first so no tick can
+    /// reach the window while it is dismantled, then free GPU resources, then
+    /// release the AppKit objects children-first, then free the Zig allocation.
     pub fn deinit(self: *Self) void {
+        assert(display_link.isMainThread());
         assert(self.ns_window.value != null);
         assert(self.ns_view.value != null);
 
@@ -761,19 +705,10 @@ pub const Window = struct {
 
         self.closed = true;
 
-        // `CVDisplayLinkStop` returns only after an in-flight output callback
-        // has finished, and no callback starts afterwards (measured on macOS 26:
-        // a stop issued 50 ms into a 300 ms callback returned 246 ms later, with
-        // the callback done and none following). The callback holds
-        // `render_mutex` while rendering, so once the link is stopped the mutex
-        // must be free; a caller holding it here would have deadlocked the stop.
-        if (self.display_link) |*dl| {
-            dl.deinit();
-            self.display_link = null;
-        }
-        const render_mutex_free = self.render_mutex.tryLock();
-        assert(render_mutex_free);
-        if (render_mutex_free) self.render_mutex.unlock();
+        // Ticks run on the main thread, as does this, so once the window has
+        // left the subscriber list no tick can observe it again.
+        self.unsubscribeFromDisplay();
+        assert(self.display_id == null);
 
         if (self.activity_token) |token| {
             endHighPerformanceActivity(token);
@@ -794,7 +729,7 @@ pub const Window = struct {
     /// back-pointers are cleared first: a late callback then finds no window
     /// and returns, instead of dereferencing the freed `Window`.
     fn releaseAppKitObjects(self: *Self) void {
-        assert(self.display_link == null); // The vsync thread can no longer reach us.
+        assert(self.display_id == null); // No tick can reach us any more.
         assert(self.ns_window.value != null);
         const nil: objc.Object = .{ .value = null };
 
@@ -850,18 +785,6 @@ pub const Window = struct {
             return;
         }
 
-        // Acquire render mutex to safely modify size/scale while DisplayLink might be reading.
-        self.render_mutex.lock();
-        defer self.render_mutex.unlock();
-
-        // Mark rendering as in progress while the lock is held. The synchronous
-        // render below invokes the user's on_render callback, which calls back
-        // into setScene/setTextAtlas/etc. Those setters re-lock render_mutex
-        // unless this flag tells them the lock is already held. Without it the
-        // re-entrant lock attempt aborts an os_unfair_lock (recursive lock).
-        self.render_in_progress.store(true, .release);
-        defer self.render_in_progress.store(false, .release);
-
         self.size.width = new_width;
         self.size.height = new_height;
         self.scale_factor = new_scale;
@@ -883,45 +806,10 @@ pub const Window = struct {
             }
         }
 
-        // During live resize, render synchronously for smooth visuals
-        if (self.in_live_resize.load(.acquire)) {
-            const pool = objc.AutoreleasePool.init();
-            defer pool.deinit();
-
-            // Call render callback to update scene
-            if (self.on_render) |callback| {
-                callback(self);
-            }
-
-            // Use thread-safe callbacks if available (multi-window scenarios)
-            if (self.text_atlas_upload_fn) |upload_fn| {
-                if (self.text_atlas_upload_ctx) |ctx| {
-                    upload_fn(ctx, &self.renderer) catch {};
-                }
-            } else if (self.text_atlas) |atlas| {
-                self.renderer.updateTextAtlas(atlas) catch {};
-            }
-            if (self.svg_atlas_upload_fn) |upload_fn| {
-                if (self.svg_atlas_upload_ctx) |ctx| {
-                    upload_fn(ctx, &self.renderer) catch {};
-                }
-            } else if (self.svg_atlas) |atlas| {
-                self.renderer.prepareSvgAtlas(atlas);
-            }
-            if (self.image_atlas_upload_fn) |upload_fn| {
-                if (self.image_atlas_upload_ctx) |ctx| {
-                    upload_fn(ctx, &self.renderer) catch {};
-                }
-            } else if (self.image_atlas) |atlas| {
-                self.renderer.prepareImageAtlas(atlas);
-            }
-
-            if (self.scene) |s| {
-                self.renderer.renderSceneSynchronous(s, self.getClearColor()) catch {};
-            } else {
-                self.renderer.clearSynchronous(self.getClearColor());
-            }
-        }
+        // During live resize AppKit is inside its own tracking loop and the
+        // layer presents with the transaction, so draw now, synchronously, at
+        // the new size. Ticks skip the window until the resize ends.
+        if (self.live_resize_active) self.drawFrame(.synchronous);
     }
 
     /// Handle window close. Returns true if close should proceed, false to cancel.
@@ -933,33 +821,59 @@ pub const Window = struct {
             }
         }
 
-        // Proceed with close.
-        if (self.display_link) |*dl| {
-            dl.stop();
-        }
+        // Proceed with close. A closed window never presents again.
+        self.unsubscribeFromDisplay();
         self.closed = true;
         assert(self.isClosed());
         return true;
     }
 
     pub fn handleFocusChange(self: *Self, focused: bool) void {
-        _ = focused;
+        assert(display_link.isMainThread());
+        self.key_window = focused;
         self.requestRender();
     }
 
     pub fn handleLiveResizeStart(self: *Self) void {
-        self.in_live_resize.store(true, .release);
+        assert(!self.live_resize_active);
+        self.live_resize_active = true;
         self.metal_layer.msgSend(void, "setPresentsWithTransaction:", .{true});
     }
 
     pub fn handleLiveResizeEnd(self: *Self) void {
-        self.in_live_resize.store(false, .release);
+        assert(self.live_resize_active);
+        self.live_resize_active = false;
         self.metal_layer.msgSend(void, "setPresentsWithTransaction:", .{false});
         self.requestRender();
     }
 
     pub fn isInLiveResize(self: *const Self) bool {
-        return self.in_live_resize.load(.acquire);
+        return self.live_resize_active;
+    }
+
+    /// The window became fully covered or visible again (including minimize
+    /// and restore). Covered windows leave their display so they get no ticks.
+    pub fn handleOcclusionChange(self: *Self) void {
+        assert(display_link.isMainThread());
+        if (self.closed) return;
+        const occlusion_visible: u64 = 1 << 1; // NSWindowOcclusionStateVisible
+        const state = self.ns_window.msgSend(u64, "occlusionState", .{});
+        if (state & occlusion_visible != 0) {
+            self.subscribeToDisplay();
+            self.requestRender();
+        } else {
+            self.unsubscribeFromDisplay();
+        }
+    }
+
+    /// The window moved to another screen: follow that display's vsync.
+    pub fn handleScreenChange(self: *Self) void {
+        assert(display_link.isMainThread());
+        if (self.display_id == null) return; // Occluded or closed; nothing to move.
+        if (self.display_id.? == display_link.displayIdForWindow(self.ns_window)) return;
+        self.unsubscribeFromDisplay();
+        self.subscribeToDisplay();
+        self.requestRender();
     }
 
     // =========================================================================
@@ -1000,9 +914,25 @@ pub const Window = struct {
     // Rendering
     // =========================================================================
 
-    /// Request a render on the next vsync
+    /// Draw on the next vsync tick. Main thread only: frames, input, and every
+    /// caller of this run there, so a plain flag is enough.
     pub fn requestRender(self: *Self) void {
-        self.needs_render.store(true, .release);
+        assert(display_link.isMainThread());
+        self.dirty = true;
+    }
+
+    /// Draw on the first tick at least `delay_ms` from now, even if nothing
+    /// marks the window dirty. Keeps the earliest pending deadline. Serves
+    /// clock-driven UI (caret blink, timers, polling a worker) without
+    /// redrawing every vsync.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        assert(display_link.isMainThread());
+        assert(delay_ms <= render_delay_ms_max);
+        const deadline_ns = display_link.nowNs() + @as(u64, delay_ms) * std.time.ns_per_ms;
+        if (self.render_deadline_ns == 0 or deadline_ns < self.render_deadline_ns) {
+            self.render_deadline_ns = deadline_ns;
+        }
+        assert(self.render_deadline_ns != 0);
     }
 
     /// Manual render (for when display link is disabled)
@@ -1362,141 +1292,136 @@ pub const Window = struct {
             .name = "Metal",
         };
     }
-};
 
-// =============================================================================
-// Display Link Callback
-// =============================================================================
+    // =========================================================================
+    // Main-thread frames
+    // =========================================================================
 
-/// CVDisplayLink callback - runs on high-priority background thread
-///
-/// THREAD SAFETY: This callback runs on a CVDisplayLink thread, NOT the main thread.
-/// All access to shared Window state must be synchronized via render_mutex.
-///
-/// The render_mutex protects: scene, text_atlas, size, scale_factor, background_color, renderer.
-/// The on_render callback is called WITH the lock held to prevent race conditions.
-fn displayLinkCallback(
-    dl: display_link.CVDisplayLinkRef,
-    in_now: *const display_link.CVTimeStamp,
-    in_output_time: *const display_link.CVTimeStamp,
-    flags_in: u64,
-    flags_out: *u64,
-    user_info: ?*anyopaque,
-) callconv(.c) display_link.CVReturn {
-    _ = dl;
-    _ = in_now;
-    _ = in_output_time;
-    _ = flags_in;
-    _ = flags_out;
-
-    const window: *Window = @ptrCast(@alignCast(user_info orelse return .success));
-
-    // Skip rendering during live resize
-    if (window.in_live_resize.load(.acquire)) {
-        return .success;
-    }
-
-    // Always render if custom shader animation is enabled (for iTime)
-    const explicit_render = window.needs_render.swap(false, .acq_rel);
-    const should_render =
-        window.benchmark_mode or explicit_render or window.custom_shader_animation;
-
-    // DEBUG. CVDisplayLink callbacks run on a dedicated vsync thread that
-    // does not carry a `*Cx`/`Gooey`, so we reach for the single-threaded
-    // global `Io` here — same escape hatch as the render mutex (Phase 5
-    // option 3 in the migration doc). `std.Io` is a pair of pointers into
-    // a process-lifetime vtable, so there's no allocation or cost.
-    const static = struct {
-        var count: u32 = 0;
-        var last_print_ms: i64 = 0;
+    const FrameMode = enum {
+        /// Commit and return; the drawable presents when the GPU finishes.
+        asynchronous,
+        /// Wait until scheduled and present inside the current CATransaction,
+        /// so live-resize frames match the window's new size exactly.
+        synchronous,
     };
-    static.count += 1;
-    const dl_io = std.Io.Threaded.global_single_threaded.io();
-    const now_ms = std.Io.Timestamp.now(dl_io, .awake).toMilliseconds();
-    if (now_ms - static.last_print_ms > 1000) {
-        // Uncomment to trace callback rate:
-        // std.debug.print(
-        //     "DisplayLink callbacks/sec: {}, should_render: {}, explicit: {}\n",
-        //     .{ static.count, should_render, explicit_render },
-        // );
-        static.count = 0;
-        static.last_print_ms = now_ms;
-    }
 
-    if (!should_render) {
-        return .success;
-    }
+    /// Display-link tick, on the main thread, at most once per coalesced vsync.
+    /// Draws only when something asked for it, so an idle visible window costs a
+    /// few branches per tick and builds no frame.
+    fn displayTick(context: *anyopaque, now_ns: u64) void {
+        const self: *Self = @ptrCast(@alignCast(context));
+        assert(self.display_id != null);
+        assert(!self.closed);
+        if (self.live_resize_active) return; // `handleResize` draws meanwhile.
 
-    const pool = objc.AutoreleasePool.init();
-    defer pool.deinit();
-
-    // Acquire render mutex for thread-safe access to all render state
-    window.render_mutex.lock();
-    defer window.render_mutex.unlock();
-
-    // Mark that rendering is in progress
-    window.render_in_progress.store(true, .release);
-    defer window.render_in_progress.store(false, .release);
-
-    // Call render callback to let user rebuild scene
-    // NOTE: This is called with the lock held, so the callback must not
-    // call any Window methods that also try to acquire the lock.
-    if (window.on_render) |callback| {
-        callback(window);
-    }
-
-    // Update text atlas if set - use thread-safe callback if available
-    // The callback holds the glyph_cache_mutex during upload, preventing races
-    // where another window's DisplayLink modifies the atlas concurrently.
-    if (window.text_atlas_upload_fn) |upload_fn| {
-        if (window.text_atlas_upload_ctx) |ctx| {
-            upload_fn(ctx, &window.renderer) catch {};
+        if (self.render_deadline_ns != 0) {
+            if (now_ns >= self.render_deadline_ns) {
+                self.render_deadline_ns = 0;
+                self.dirty = true;
+            }
         }
-    } else if (window.text_atlas) |atlas| {
-        window.renderer.updateTextAtlas(atlas) catch {};
-    }
+        if (!self.dirty and !self.custom_shader_animation) return;
 
-    // Update SVG atlas if set - use thread-safe callback if available
-    if (window.svg_atlas_upload_fn) |upload_fn| {
-        if (window.svg_atlas_upload_ctx) |ctx| {
-            upload_fn(ctx, &window.renderer) catch {};
+        // An unfocused window keeps its pending work and draws at most about
+        // 30 times a second; focus returns it to full rate on the next tick.
+        if (!self.key_window) {
+            if (now_ns - self.frame_last_ns < unfocused_frame_gap_ns_min) return;
         }
-    } else if (window.svg_atlas) |atlas| {
-        window.renderer.prepareSvgAtlas(atlas);
+        self.frame_last_ns = now_ns;
+        self.drawFrame(.asynchronous);
     }
 
-    // Update image atlas if set - use thread-safe callback if available
-    if (window.image_atlas_upload_fn) |upload_fn| {
-        if (window.image_atlas_upload_ctx) |ctx| {
-            upload_fn(ctx, &window.renderer) catch {};
+    /// Build, upload, encode, and present one frame. Main thread only.
+    fn drawFrame(self: *Self, mode: FrameMode) void {
+        assert(display_link.isMainThread());
+        assert(!self.closed);
+        // Cleared first: building the frame may request the next one (an
+        // animation still running), and that request must survive.
+        self.dirty = false;
+
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
+
+        if (self.on_render) |callback| callback(self);
+        self.uploadAtlases();
+
+        const clear_color = self.getClearColor();
+        const scene = self.scene orelse {
+            switch (mode) {
+                .asynchronous => self.renderer.clear(clear_color),
+                .synchronous => self.renderer.clearSynchronous(clear_color),
+            }
+            return;
+        };
+        switch (mode) {
+            .asynchronous => self.renderSceneAsync(scene, clear_color),
+            .synchronous => self.renderer.renderSceneSynchronous(scene, clear_color) catch |err| {
+                std.log.err("renderSceneSynchronous failed: {}", .{err});
+                self.renderer.clearSynchronous(clear_color);
+            },
         }
-    } else if (window.image_atlas) |atlas| {
-        window.renderer.prepareImageAtlas(atlas);
     }
 
-    // Use post-process rendering if shaders are active
-    if (window.scene) |s| {
-        const clear_color = window.getClearColor();
-        if (window.renderer.hasCustomShaders()) {
-            window.renderer.renderSceneWithPostProcess(s, clear_color) catch |err| {
-                std.debug.print("renderSceneWithPostProcess error: {}\n", .{err});
-                // Fall back to normal render
-                window.renderer.renderScene(s, clear_color) catch {
-                    window.renderer.clear(clear_color);
+    fn renderSceneAsync(
+        self: *Self,
+        scene: *const scene_mod.Scene,
+        clear_color: geometry.Color,
+    ) void {
+        assert(display_link.isMainThread());
+        if (self.renderer.hasCustomShaders()) {
+            self.renderer.renderSceneWithPostProcess(scene, clear_color) catch |err| {
+                std.log.err("renderSceneWithPostProcess failed: {}", .{err});
+                self.renderer.renderScene(scene, clear_color) catch {
+                    self.renderer.clear(clear_color);
                 };
             };
         } else {
-            window.renderer.renderScene(s, clear_color) catch |err| {
-                std.debug.print("renderScene error: {}\n", .{err});
-                window.renderer.clear(clear_color);
+            self.renderer.renderScene(scene, clear_color) catch |err| {
+                std.log.err("renderScene failed: {}", .{err});
+                self.renderer.clear(clear_color);
             };
         }
-    } else {
-        window.renderer.clear(window.getClearColor());
     }
 
-    return .success;
-}
+    /// Copy any atlas pages the frame added into GPU textures. Atlases are
+    /// written only on the main thread, during frame building, so they are
+    /// read here without a lock.
+    fn uploadAtlases(self: *Self) void {
+        assert(display_link.isMainThread());
+        if (self.text_atlas) |atlas| {
+            self.renderer.updateTextAtlas(atlas) catch |err| {
+                std.log.err("text atlas upload failed: {}", .{err});
+            };
+        }
+        if (self.svg_atlas) |atlas| self.renderer.prepareSvgAtlas(atlas);
+        if (self.image_atlas) |atlas| self.renderer.prepareImageAtlas(atlas);
+    }
+
+    /// Start receiving ticks from the display the window is on. Idempotent.
+    fn subscribeToDisplay(self: *Self) void {
+        assert(display_link.isMainThread());
+        assert(!self.closed);
+        if (!self.uses_display_link) return;
+        if (self.display_id != null) return;
+
+        const display_id = display_link.displayIdForWindow(self.ns_window);
+        display_link.subscribe(display_id, .{ .context = self, .tick = displayTick }) catch {
+            // Logged by `subscribe`. Without a link the window cannot animate,
+            // but input still marks it dirty and the next occlusion or screen
+            // change retries the subscription.
+            return;
+        };
+        self.display_id = display_id;
+    }
+
+    /// Stop receiving ticks. Idempotent; must run before the window is freed.
+    fn unsubscribeFromDisplay(self: *Self) void {
+        assert(display_link.isMainThread());
+        const display_id = self.display_id orelse return;
+        display_link.unsubscribe(display_id, self);
+        self.display_id = null;
+    }
+};
 
 // =============================================================================
 // Helpers

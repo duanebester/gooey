@@ -359,6 +359,14 @@ pub const WebWindow = struct {
         imports.requestAnimationFrame();
     }
 
+    /// Redraw after `delay_ms`. The web loop requests an animation frame after
+    /// every frame while running, so the deadline is always met by the next
+    /// frame; asking for one more is the whole implementation.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        std.debug.assert(delay_ms <= interface.render_delay_ms_max);
+        self.requestRender();
+    }
+
     /// Truthfulness note: there is exactly one canvas and the browser gives it
     /// focus whenever the tab is active, so there is nothing to raise. Kept as
     /// a no-op because the contract requires the method, not because a host

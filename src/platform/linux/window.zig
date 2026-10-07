@@ -667,6 +667,16 @@ pub const Window = struct {
 
         self.needs_redraw = true;
         self.scheduleFrame();
+    }
+
+    /// Redraw after `delay_ms`. Wayland offers no timed frame callback, so this
+    /// redraws on the next frame instead. That is exact in the default
+    /// continuous mode, which draws every frame anyway; with continuous
+    /// rendering off, a widget that re-requests each frame (caret blink)
+    /// redraws every vsync, as it did before deadlines existed.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
+        self.requestRender();
 
         std.debug.assert(self.needs_redraw);
         std.debug.assert(!self.closed);

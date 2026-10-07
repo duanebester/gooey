@@ -210,6 +210,15 @@ const AppState = struct {
         self.last_tick = getTimestamp();
     }
 
+    /// Milliseconds until `tick` next advances the countdown.
+    pub fn nextTickDelayMs(self: *const AppState) u32 {
+        std.debug.assert(self.is_running);
+        const elapsed = getTimestamp() - self.last_tick;
+        if (elapsed >= 1000) return 0;
+        std.debug.assert(elapsed >= 0);
+        return @intCast(1000 - elapsed);
+    }
+
     pub fn tick(self: *AppState) void {
         if (!self.is_running or self.phase == .idle) return;
 
@@ -523,8 +532,10 @@ pub fn main(init: std.process.Init) !void {
 fn render(cx: *Cx) void {
     const s = cx.state(AppState);
 
-    // Tick the timer
+    // Tick the timer, and come back for the next one-second step: frames are
+    // drawn only on demand, so a running countdown must schedule itself.
     s.tick();
+    if (s.is_running and s.phase != .idle) cx.requestRenderAfter(s.nextTickDelayMs());
 
     const size = cx.windowSize();
 

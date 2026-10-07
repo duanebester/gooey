@@ -65,6 +65,10 @@ const READER_RUNNING: u8 = 1;
 /// Sentinel: reader thread finished (EOF or error).
 const READER_DONE: u8 = 2;
 
+/// How often the render function re-checks the reader's mailbox while the
+/// stream is open.
+const mailbox_poll_interval_ms: u32 = 16;
+
 const is_native = !platform.is_wasm;
 
 // =============================================================================
@@ -165,6 +169,11 @@ fn render(cx: *Cx) void {
     // Acquire the latest committed batch from the mailbox.
     if (is_native) {
         acquireDisplayBatch();
+        // The reader thread cannot touch the window, and frames are drawn only
+        // on demand, so poll the mailbox (about 60 Hz) until the stream ends.
+        if (@atomicLoad(u8, &reader_status, .acquire) != READER_DONE) {
+            cx.requestRenderAfter(mailbox_poll_interval_ms);
+        }
     }
 
     cx.render(ui.box(.{

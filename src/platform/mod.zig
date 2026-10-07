@@ -146,14 +146,6 @@ pub const PlatformWindow = backend.PlatformWindow;
 /// local of that frame. See `docs/platform_interface_design.md`, "Known gaps".
 pub const drive_model: DriveModel = backend.drive_model;
 
-/// DisplayLink for vsync (native only, not available on Linux)
-pub const DisplayLink = if (is_wasm)
-    void // Not applicable on web
-else if (is_linux)
-    void // Linux uses Wayland frame callbacks
-else
-    backend.DisplayLink;
-
 // =============================================================================
 // Platform-specific modules (for advanced usage)
 // =============================================================================

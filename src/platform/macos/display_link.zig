@@ -1,272 +1,298 @@
-//! CVDisplayLink wrapper for vsync-synchronized rendering
+//! Shared per-display vsync that drives main-thread frames (GPUI design).
 //!
-//! CVDisplayLink provides a high-priority thread that fires callbacks
-//! synchronized with the display's refresh rate.
+//! ## Model
 //!
-//! Reference: https://developer.apple.com/documentation/corevideo/cvdisplaylink
+//! - One `CVDisplayLink` per physical display, keyed by `CGDirectDisplayID`,
+//!   stored in a fixed-capacity process-wide table. A display's link runs only
+//!   while at least one visible window on that display is subscribed.
+//! - The CoreVideo callback does no UI work. It calls
+//!   `dispatch_source_merge_data(source, 1)` on the display's
+//!   `DISPATCH_SOURCE_TYPE_DATA_ADD` source, which targets the main queue.
+//!   Ticks that arrive while the main thread is busy merge into one handler
+//!   run, so a slow frame never builds a backlog.
+//! - The main-queue handler walks the display's subscribers and calls each
+//!   window's tick. The window decides whether anything is dirty, then builds,
+//!   encodes, and presents on the main thread.
 //!
-//! ## Why CVDisplayLink and not CADisplayLink?
+//! ## Why one dispatch source per display, not per window
 //!
-//! `CADisplayLink` is the newer Core Animation API (macOS 14+) and is what
-//! Apple nudges you toward in current docs. We deliberately stay on
-//! `CVDisplayLink` for two reasons:
+//! The CV thread reads the source it merges into. If that source belonged to a
+//! window, closing the window would release it on the main thread while the CV
+//! thread could be about to merge into it, which needs a lock to make safe. A
+//! per-display source is created with the link and lives as long as it, so the
+//! CV thread only ever reads an immutable, immortal pointer. Subscriber lists
+//! are touched only on the main thread: by `subscribe` / `unsubscribe` and by
+//! the handler. Unsubscribing before freeing a window therefore guarantees no
+//! tick can reach it.
 //!
-//! 1. **Dedicated vsync thread, not the run loop.** `CVDisplayLink` fires
-//!    on a CoreVideo-managed high-priority thread. `CADisplayLink` on macOS
-//!    dispatches via the main run loop, which also services AppKit events,
-//!    `NSTimer` callbacks, tracking areas, etc. For an immediate-mode
-//!    renderer that wants to sprint on each vsync without run-loop jitter,
-//!    the dedicated thread is the better primitive.
-//! 2. **Direct ProMotion pinning.** `CVDisplayLinkSetCurrentCGDisplay`
-//!    reliably binds the link to a specific display's refresh rate.
-//!    `CADisplayLink`'s `preferredFrameRateRange` is a hint that macOS is
-//!    free to adaptively ignore.
+//! ## Why links and sources are never released
 //!
-//! ## Prior art — Zed's GPUI (`crates/gpui_macos/src/display_link.rs`)
+//! Zed observed crashes from `CVDisplayLinkRelease` racing the CoreVideo timer
+//! thread (zed-industries/zed#32116) and stopped releasing links. Gooey does the
+//! same: each entry is created at most once per display for the process
+//! lifetime. Storage is the fixed `displays` table; CoreVideo and libdispatch
+//! allocate their own objects internally when a display first gains a window.
 //!
-//! Zed (a production GPU-accelerated editor) also uses `CVDisplayLink`
-//! rather than `CADisplayLink`, explicitly citing older-macOS support as
-//! the reason to stay. Two design points worth knowing:
+//! ## Resource sketch (CLAUDE.md §7)
 //!
-//! - **Main-thread bounce.** Zed's CV callback does not render on the
-//!   vsync thread. It posts a GCD `DISPATCH_SOURCE_TYPE_DATA_ADD` source
-//!   targeting `DispatchQueue::main()`, and the user's render callback
-//!   runs on the main thread. Trades one context switch of frame latency
-//!   for zero render-state synchronization and automatic coalescing of
-//!   backed-up vsync ticks. Gooey makes the opposite choice: render
-//!   directly on the vsync thread and synchronize via `Window.render_mutex`
-//!   (see `src/platform/mutex.zig`). Either is defensible; ours is
-//!   lower-latency at the cost of the one mutex.
-//! - **Release-on-drop crash.** Zed observed sporadic segfaults from
-//!   `CVDisplayLinkRelease` racing with the CV timer thread, and their
-//!   fix is to `mem::forget` the display link rather than release it.
-//!   We call `CVDisplayLinkRelease` in `deinit` today; if we ever see
-//!   matching crash reports on window close, leaking the link is the
-//!   known-good workaround (per-window lifetime, bounded cost).
+//! - Displays: at most `display_count_max` (8) entries, each one link and one
+//!   source. Subscribers: at most `subscriber_count_max` (the window registry's
+//!   ceiling) per display.
+//! - Per vsync per display: one CV callback (one merge), at most one main-queue
+//!   handler run, and one tick call per subscribed window. An idle window's tick
+//!   is a few loads and branches and builds no frame.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
+const WindowRegistry = @import("../window_registry.zig").WindowRegistry;
 
-// ============================================================================
-// CoreVideo Types
-// ============================================================================
+/// Physical displays that can hold subscribed windows at once.
+pub const display_count_max: u32 = 8;
 
-/// Opaque reference to a CVDisplayLink
-pub const CVDisplayLinkRef = *opaque {};
+/// Subscribed windows per display. A window subscribes to at most one display,
+/// so the window registry's ceiling bounds every display's list.
+pub const subscriber_count_max: u32 = WindowRegistry.MAX_WINDOWS;
 
-/// CVReturn error codes
-pub const CVReturn = enum(i32) {
-    success = 0,
-    first = -6660,
-    invalid_argument = -6661,
-    allocation_failed = -6662,
-    unsupported = -6663,
-    // Display link specific
-    invalid_display = -6670,
-    display_link_already_running = -6671,
-    display_link_not_running = -6672,
-    display_link_callbacks_not_set = -6673,
-    _,
+/// Called on the main thread once per coalesced vsync tick.
+pub const TickFn = *const fn (context: *anyopaque, now_ns: u64) void;
 
-    pub fn isSuccess(self: CVReturn) bool {
-        return self == .success;
-    }
+pub const Subscriber = struct {
+    context: *anyopaque,
+    tick: TickFn,
 };
 
-/// CVTimeStamp - timing information passed to display link callback
-pub const CVTimeStamp = extern struct {
-    version: u32,
-    video_time_scale: i32,
-    video_time: i64,
-    host_time: u64,
-    rate_scalar: f64,
-    video_refresh_period: i64,
-    smpte_time: SMPTETime,
-    flags: u64,
-    reserved: u64,
-};
-
-/// SMPTE timecode format
-pub const SMPTETime = extern struct {
-    subframes: i16,
-    subframe_divisor: i16,
-    counter: u32,
-    type: u32,
-    flags: u32,
-    hours: i16,
-    minutes: i16,
-    seconds: i16,
-    frames: i16,
-};
-
-/// CVDisplayLink output callback signature
-pub const CVDisplayLinkOutputCallback = *const fn (
-    display_link: CVDisplayLinkRef,
-    in_now: *const CVTimeStamp,
-    in_output_time: *const CVTimeStamp,
-    flags_in: u64,
-    flags_out: *u64,
-    user_info: ?*anyopaque,
-) callconv(.c) CVReturn;
-
-// ============================================================================
-// CoreVideo External Functions
-// ============================================================================
-
-/// Create a display link for the active displays
-pub extern "c" fn CVDisplayLinkCreateWithActiveCGDisplays(
-    display_link_out: *?CVDisplayLinkRef,
-) CVReturn;
-
-/// Set the output callback for the display link
-pub extern "c" fn CVDisplayLinkSetOutputCallback(
-    display_link: CVDisplayLinkRef,
-    callback: CVDisplayLinkOutputCallback,
-    user_info: ?*anyopaque,
-) CVReturn;
-
-/// Start the display link
-pub extern "c" fn CVDisplayLinkStart(display_link: CVDisplayLinkRef) CVReturn;
-
-/// Stop the display link
-pub extern "c" fn CVDisplayLinkStop(display_link: CVDisplayLinkRef) CVReturn;
-
-/// Check if display link is running
-pub extern "c" fn CVDisplayLinkIsRunning(display_link: CVDisplayLinkRef) bool;
-
-/// Release the display link
-pub extern "c" fn CVDisplayLinkRelease(display_link: CVDisplayLinkRef) void;
-
-/// Get the nominal refresh rate
-pub extern "c" fn CVDisplayLinkGetNominalOutputVideoRefreshPeriod(
-    display_link: CVDisplayLinkRef,
-) CVTime;
-
-/// CVTime for refresh period
-pub const CVTime = extern struct {
-    time_value: i64,
-    time_scale: i32,
-    flags: i32,
-};
-
-/// Set the current display for the display link.
-/// This ensures consistent frame rate on ProMotion displays by binding
-/// the display link to a specific display rather than letting macOS
-/// adaptively change the refresh rate based on content.
-pub extern "c" fn CVDisplayLinkSetCurrentCGDisplay(
-    display_link: CVDisplayLinkRef,
+const Display = struct {
     display_id: u32,
-) CVReturn;
-
-/// Get the main display ID (from CoreGraphics)
-pub extern "c" fn CGMainDisplayID() u32;
-
-// ============================================================================
-// DisplayLink Wrapper
-// ============================================================================
-
-/// Render callback type - called on vsync
-pub const RenderCallback = *const fn (user_data: ?*anyopaque) void;
-
-/// High-level wrapper around CVDisplayLink
-pub const DisplayLink = struct {
     link: CVDisplayLinkRef,
-    running: std.atomic.Value(bool),
-
-    const Self = @This();
-
-    /// Create a new display link (callback must be set before starting)
-    pub fn init() !Self {
-        var link: ?CVDisplayLinkRef = null;
-
-        // Create display link for active displays
-        const create_result = CVDisplayLinkCreateWithActiveCGDisplays(&link);
-        if (!create_result.isSuccess() or link == null) {
-            return error.DisplayLinkCreationFailed;
-        }
-
-        // Bind to main display for consistent frame rate on ProMotion displays.
-        // Without this, macOS may adaptively lower the refresh rate (e.g., 120Hz -> 60Hz)
-        // after user interaction when it thinks the app doesn't need high frame rate.
-        const main_display = CGMainDisplayID();
-        _ = CVDisplayLinkSetCurrentCGDisplay(link.?, main_display);
-
-        return Self{
-            .link = link.?,
-            .running = std.atomic.Value(bool).init(false),
-        };
-    }
-
-    /// Set the render callback and user data
-    /// IMPORTANT: user_data must point to memory that outlives the DisplayLink!
-    pub fn setCallback(self: *Self, callback: CVDisplayLinkOutputCallback, user_data: ?*anyopaque) !void {
-        const result = CVDisplayLinkSetOutputCallback(self.link, callback, user_data);
-        if (!result.isSuccess()) {
-            return error.DisplayLinkCallbackFailed;
-        }
-    }
-
-    /// Start the display link (begins vsync callbacks)
-    pub fn start(self: *Self) !void {
-        const result = CVDisplayLinkStart(self.link);
-        if (!result.isSuccess()) {
-            return error.DisplayLinkStartFailed;
-        }
-        self.running.store(true, .release);
-    }
-
-    /// Stop the display link
-    pub fn stop(self: *Self) void {
-        if (self.running.load(.acquire)) {
-            _ = CVDisplayLinkStop(self.link);
-            self.running.store(false, .release);
-        }
-    }
-
-    /// Check if running
-    pub fn isRunning(self: *const Self) bool {
-        return self.running.load(.acquire);
-    }
-
-    /// Clean up resources.
-    ///
-    /// Zed's GPUI (`crates/gpui_macos/src/display_link.rs`) deliberately
-    /// leaks the `CVDisplayLink` here via `mem::forget` to avoid sporadic
-    /// segfaults from `CVDisplayLinkRelease` racing with the CV timer
-    /// thread. We release it cleanly — `stop()` synchronously returns
-    /// before `CVDisplayLinkRelease` runs, so the race window should be
-    /// closed. If we ever see matching crashes on window close, skipping
-    /// the release call is the known-good workaround.
-    pub fn deinit(self: *Self) void {
-        self.stop();
-        CVDisplayLinkRelease(self.link);
-    }
-
-    /// Get refresh rate in Hz
-    pub fn getRefreshRate(self: *const Self) f64 {
-        const period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(self.link);
-        if (period.time_scale > 0 and period.time_value > 0) {
-            return @as(f64, @floatFromInt(period.time_scale)) /
-                @as(f64, @floatFromInt(period.time_value));
-        }
-        return 60.0; // Default fallback
-    }
+    /// Main-queue DATA_ADD source. Written once before the link first starts
+    /// and never changed, so the CV thread can read it without synchronization.
+    source: DispatchSource,
+    /// Main thread only.
+    running: bool,
+    /// Main thread only.
+    subscriber_count: u32,
+    /// Main thread only. Unordered; removal swaps the last entry in.
+    subscribers: [subscriber_count_max]Subscriber,
 };
 
-/// Helper to create a simple callback that just calls a Zig function
-pub fn makeDisplayLinkCallback(
-    display_link: CVDisplayLinkRef,
-    in_now: *const CVTimeStamp,
-    in_output_time: *const CVTimeStamp,
-    flags_in: u64,
-    flags_out: *u64,
+/// Process-lifetime table. Entries are appended and never removed, so a
+/// `*Display` handed to CoreVideo and libdispatch stays valid forever.
+var displays: [display_count_max]Display = undefined;
+var display_count: u32 = 0;
+
+pub const SubscribeError = error{DisplayLinkUnavailable};
+
+/// Subscribe a window to its display's ticks. Main thread only.
+///
+/// Creates and starts the display's link on first use. Fails only if
+/// CoreVideo cannot create a link for `display_id`; the window then simply
+/// receives no ticks until a later subscription succeeds.
+pub fn subscribe(display_id: u32, subscriber: Subscriber) SubscribeError!void {
+    assert(isMainThread());
+    assert(display_count <= display_count_max);
+
+    const display = try displayFor(display_id);
+    assert(display.subscriber_count < subscriber_count_max);
+    assert(!isSubscribed(display, subscriber.context));
+
+    display.subscribers[display.subscriber_count] = subscriber;
+    display.subscriber_count += 1;
+    if (!display.running) {
+        const result = CVDisplayLinkStart(display.link);
+        if (result != .success) {
+            std.log.err("CVDisplayLinkStart failed for display {d}: {d}", .{
+                display_id,
+                @backingInt(result),
+            });
+        }
+        display.running = true;
+    }
+    assert(display.subscriber_count <= subscriber_count_max);
+}
+
+/// Remove a window from its display's subscribers. Main thread only.
+///
+/// Stops the display's link when its last subscriber leaves, so displays with
+/// no visible Gooey window cost nothing. Must run before the window is freed.
+pub fn unsubscribe(display_id: u32, context: *anyopaque) void {
+    assert(isMainThread());
+    const display = findDisplay(display_id).?;
+    assert(display.subscriber_count > 0);
+
+    var index: u32 = 0;
+    while (index < display.subscriber_count) : (index += 1) {
+        if (display.subscribers[index].context == context) break;
+    } else unreachable; // The caller holds a subscription to this display.
+
+    display.subscriber_count -= 1;
+    display.subscribers[index] = display.subscribers[display.subscriber_count];
+    assert(!isSubscribed(display, context));
+
+    if (display.subscriber_count == 0) {
+        // `CVDisplayLinkStop` waits for an in-flight callback, which only merges
+        // into the immortal source, so there is nothing to race. A tick merged
+        // before the stop runs the handler once more and finds no subscribers.
+        _ = CVDisplayLinkStop(display.link);
+        display.running = false;
+    }
+}
+
+/// The `CGDirectDisplayID` of the screen a window is on, or the main display
+/// when the window is off-screen and has no screen.
+pub fn displayIdForWindow(ns_window: objc.Object) u32 {
+    assert(ns_window.value != null);
+    const screen = ns_window.msgSend(objc.Object, "screen", .{});
+    if (screen.value == null) return CGMainDisplayID();
+
+    const description = screen.msgSend(objc.Object, "deviceDescription", .{});
+    const NSString = objc.getClass("NSString").?;
+    const key = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        @as([*:0]const u8, "NSScreenNumber"),
+    });
+    const number = description.msgSend(objc.Object, "objectForKey:", .{key.value});
+    if (number.value == null) return CGMainDisplayID();
+    return number.msgSend(u32, "unsignedIntValue", .{});
+}
+
+/// Monotonic nanoseconds on the clock CoreVideo and `NSEvent.timestamp` use.
+pub fn nowNs() u64 {
+    return clock_gettime_nsec_np(clock_uptime_raw);
+}
+
+fn findDisplay(display_id: u32) ?*Display {
+    assert(display_count <= display_count_max);
+    for (displays[0..display_count]) |*display| {
+        if (display.display_id == display_id) return display;
+    }
+    return null;
+}
+
+fn isSubscribed(display: *const Display, context: *anyopaque) bool {
+    assert(display.subscriber_count <= subscriber_count_max);
+    for (display.subscribers[0..display.subscriber_count]) |subscriber| {
+        if (subscriber.context == context) return true;
+    }
+    return false;
+}
+
+/// Find the display's entry, creating its link and source on first use.
+fn displayFor(display_id: u32) SubscribeError!*Display {
+    if (findDisplay(display_id)) |display| return display;
+    if (display_count == display_count_max) {
+        std.debug.panic(
+            "display link table exhausted: capacity {d} displays, {d} in use, " ++
+                "1 requested for display {d}",
+            .{ display_count_max, display_count, display_id },
+        );
+    }
+
+    var link: ?CVDisplayLinkRef = null;
+    if (CVDisplayLinkCreateWithCGDisplay(display_id, &link) != .success) {
+        std.log.err("CVDisplayLinkCreateWithCGDisplay failed for display {d}", .{display_id});
+        return error.DisplayLinkUnavailable;
+    }
+
+    const display = &displays[display_count];
+    const main_queue: *anyopaque = @ptrCast(&_dispatch_main_q);
+    display.* = .{
+        .display_id = display_id,
+        .link = link.?,
+        .source = dispatch_source_create(&_dispatch_source_type_data_add, 0, 0, main_queue).?,
+        .running = false,
+        .subscriber_count = 0,
+        .subscribers = undefined,
+    };
+    dispatch_set_context(display.source, display);
+    dispatch_source_set_event_handler_f(display.source, sourceHandler);
+    dispatch_resume(display.source);
+
+    // The callback reads only `display.source`, which is final from here on.
+    const set_result = CVDisplayLinkSetOutputCallback(display.link, displayLinkOutput, display);
+    assert(set_result == .success);
+    display_count += 1;
+    return display;
+}
+
+/// CoreVideo thread. Merging is lock-free and never blocks.
+fn displayLinkOutput(
+    _: CVDisplayLinkRef,
+    _: *const anyopaque,
+    _: *const anyopaque,
+    _: u64,
+    _: *u64,
     user_info: ?*anyopaque,
 ) callconv(.c) CVReturn {
-    _ = display_link;
-    _ = in_now;
-    _ = in_output_time;
-    _ = flags_in;
-    _ = flags_out;
-    _ = user_info;
+    const display: *const Display = @ptrCast(@alignCast(user_info.?));
+    dispatch_source_merge_data(display.source, 1);
     return .success;
 }
+
+/// Main queue, at most once per run of coalesced ticks. Walks the live list:
+/// a tick may unsubscribe a window (its own or, via app code, another one).
+/// Swap-removal can then skip one window for this tick, which is harmless,
+/// and can never visit a removed window.
+fn sourceHandler(context: ?*anyopaque) callconv(.c) void {
+    assert(isMainThread());
+    const display: *Display = @ptrCast(@alignCast(context.?));
+    const now_ns = nowNs();
+
+    var index: u32 = 0;
+    while (index < display.subscriber_count) : (index += 1) {
+        assert(display.subscriber_count <= subscriber_count_max);
+        const subscriber = display.subscribers[index];
+        subscriber.tick(subscriber.context, now_ns);
+    }
+}
+
+pub fn isMainThread() bool {
+    return pthread_main_np() != 0;
+}
+
+// =============================================================================
+// CoreVideo, libdispatch, and libc
+// =============================================================================
+
+const CVDisplayLinkRef = *opaque {};
+const DispatchSource = *opaque {};
+
+const CVReturn = enum(i32) { success = 0, _ };
+
+const CVOutputCallback = *const fn (
+    CVDisplayLinkRef,
+    *const anyopaque,
+    *const anyopaque,
+    u64,
+    *u64,
+    ?*anyopaque,
+) callconv(.c) CVReturn;
+
+extern "c" fn CVDisplayLinkCreateWithCGDisplay(display_id: u32, out: *?CVDisplayLinkRef) CVReturn;
+extern "c" fn CVDisplayLinkSetOutputCallback(
+    link: CVDisplayLinkRef,
+    callback: CVOutputCallback,
+    user_info: ?*anyopaque,
+) CVReturn;
+extern "c" fn CVDisplayLinkStart(link: CVDisplayLinkRef) CVReturn;
+extern "c" fn CVDisplayLinkStop(link: CVDisplayLinkRef) CVReturn;
+extern "c" fn CGMainDisplayID() u32;
+
+extern "c" var _dispatch_main_q: u8;
+extern "c" const _dispatch_source_type_data_add: u8;
+extern "c" fn dispatch_source_create(
+    source_type: *const anyopaque,
+    handle: usize,
+    mask: usize,
+    queue: *anyopaque,
+) ?DispatchSource;
+extern "c" fn dispatch_set_context(object: DispatchSource, context: ?*anyopaque) void;
+extern "c" fn dispatch_source_set_event_handler_f(
+    source: DispatchSource,
+    handler: *const fn (?*anyopaque) callconv(.c) void,
+) void;
+extern "c" fn dispatch_resume(object: DispatchSource) void;
+extern "c" fn dispatch_source_merge_data(source: DispatchSource, value: usize) void;
+
+const clock_uptime_raw: u32 = 8;
+extern "c" fn clock_gettime_nsec_np(clock_id: u32) u64;
+extern "c" fn pthread_main_np() c_int;

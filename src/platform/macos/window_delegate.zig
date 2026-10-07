@@ -47,6 +47,12 @@ pub fn registerClass() !void {
     if (!cls.addMethod("windowDidEndLiveResize:", windowDidEndLiveResize)) {
         return error.MethodAddFailed;
     }
+    if (!cls.addMethod("windowDidChangeOcclusionState:", windowDidChangeOcclusionState)) {
+        return error.MethodAddFailed;
+    }
+    if (!cls.addMethod("windowDidChangeScreen:", windowDidChangeScreen)) {
+        return error.MethodAddFailed;
+    }
 
     objc.registerClassPair(cls);
     delegate_class = cls;
@@ -130,4 +136,16 @@ fn windowWillStartLiveResize(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callc
 fn windowDidEndLiveResize(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     window.handleLiveResizeEnd();
+}
+
+fn windowDidChangeOcclusionState(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+    // Covered, minimized, or on another Space: stop ticking; visible: resume.
+    const window = getWindow(self) orelse return;
+    window.handleOcclusionChange();
+}
+
+fn windowDidChangeScreen(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+    // Dragged to another display: follow that display's vsync.
+    const window = getWindow(self) orelse return;
+    window.handleScreenChange();
 }
