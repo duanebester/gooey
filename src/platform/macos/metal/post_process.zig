@@ -19,7 +19,8 @@ const svg_pipeline = @import("svg_pipeline.zig");
 /// This is the main entry point - replaces the old multi-buffer approach.
 pub fn renderFullPipeline(
     command_queue: objc.Object,
-    layer: objc.Object,
+    /// Already acquired (and owned) by the caller; presented by this command buffer.
+    drawable_info: render_pass.Drawable,
     scene: *const scene_mod.Scene,
     clear_color: geometry.Color,
     msaa_texture: objc.Object,
@@ -32,9 +33,6 @@ pub fn renderFullPipeline(
     size: geometry.Size(f64),
     scale_factor: f64,
 ) !void {
-    // Get drawable FIRST - this is the presentation target
-    const drawable_info = render_pass.getNextDrawable(layer) orelse return;
-
     // Single command buffer for entire pipeline
     const command_buffer = command_queue.msgSend(objc.Object, "commandBuffer", .{});
 

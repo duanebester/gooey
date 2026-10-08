@@ -413,6 +413,11 @@ test {
     }) |leaf| {
         std.testing.refAllDecls(leaf);
     }
+
+    // macOS-only leaves: they need AppKit, Metal, and the `objc` module.
+    if (builtin.os.tag == .macos) {
+        std.testing.refAllDecls(@import("platform/macos/metal/drawable_reserve.zig"));
+    }
 }
 
 test {

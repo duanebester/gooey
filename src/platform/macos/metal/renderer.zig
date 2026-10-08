@@ -22,6 +22,7 @@ const path_pipeline = @import("path_pipeline.zig");
 const polyline_pipeline = @import("polyline_pipeline.zig");
 const point_cloud_pipeline = @import("point_cloud_pipeline.zig");
 const colored_point_cloud_pipeline = @import("colored_point_cloud_pipeline.zig");
+const DrawableReserve = @import("drawable_reserve.zig").DrawableReserve;
 const Atlas = @import("../../../text/mod.zig").Atlas;
 
 pub const Vertex = extern struct {
@@ -40,6 +41,9 @@ pub const Renderer = struct {
     device: objc.Object,
     command_queue: objc.Object,
     layer: objc.Object,
+    /// Asynchronous frames take their drawable from here, so the main thread never waits
+    /// in `nextDrawable`. Must not move after the first frame (see `DrawableReserve`).
+    drawable_reserve: DrawableReserve,
     unified_memory: bool,
 
     // Single unified pipeline for quads + shadows
@@ -99,10 +103,16 @@ pub const Renderer = struct {
             try scene_renderer.UnifiedPrimitiveRing.init(device, scene_limits);
         errdefer unified_primitive_ring.deinit();
 
+        // No acquisition is requested before the first frame, so moving this value into
+        // the returned renderer is safe.
+        var drawable_reserve = try DrawableReserve.init(layer);
+        errdefer drawable_reserve.deinit();
+
         var self = Self{
             .device = device,
             .command_queue = command_queue,
             .layer = layer,
+            .drawable_reserve = drawable_reserve,
             .unified_memory = unified_memory,
             .unified_pipeline_state = null,
             .unified_primitive_ring = unified_primitive_ring,
@@ -188,6 +198,8 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // First: waits out an in-flight acquisition that still uses the layer.
+        self.drawable_reserve.deinit();
         if (self.msaa_texture) |tex| tex.release();
         if (self.unified_pipeline_state) |ps| ps.release();
         self.unified_primitive_ring.deinit();
@@ -239,6 +251,11 @@ pub const Renderer = struct {
             return;
         }
 
+        // Before the rings advance: a skipped frame must not consume a ring slot.
+        const drawable = self.acquireDrawable(false) orelse return;
+        defer drawable.release();
+        const drawable_texture = drawableTexture(drawable) orelse return;
+
         self.unified_primitive_ring.nextFrame();
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
 
@@ -252,7 +269,7 @@ pub const Renderer = struct {
         // Use the new unified single-command-buffer pipeline
         try post_process.renderFullPipeline(
             self.command_queue,
-            self.layer,
+            .{ .drawable = drawable, .texture = drawable_texture },
             scene,
             clear_color,
             self.msaa_texture.?,
@@ -337,16 +354,46 @@ pub const Renderer = struct {
         scissor.setScissorFromBounds(encoder, x, y, width, height, @floatCast(self.size.height), self.scale_factor);
     }
 
+    /// Whether the next asynchronous frame has a drawable. False starts acquiring one off
+    /// the main thread; the caller skips this frame and stays dirty. Never waits.
+    pub fn drawableReady(self: *Self) bool {
+        return self.drawable_reserve.ready();
+    }
+
+    /// The frame's drawable, retained +1 for the caller to release. Asynchronous frames take
+    /// the reserve and never wait; null means none is ready, so the frame is skipped.
+    /// Synchronous frames (live resize) acquire on the main thread and may wait.
+    fn acquireDrawable(self: *Self, synchronous: bool) ?objc.Object {
+        if (synchronous) return self.drawable_reserve.acquireWaiting();
+        if (!self.drawable_reserve.ready()) return null;
+        return self.drawable_reserve.take();
+    }
+
     fn renderInternal(self: *Self, clear_color: geometry.Color, synchronous: bool) void {
+        const drawable = self.acquireDrawable(synchronous) orelse return;
+        defer drawable.release();
+
+        // Declared after the drawable so the transaction commits before it is released.
         const ca_scope = if (synchronous) render_pass.CATransactionScope.begin() else null;
         defer if (ca_scope) |scope| scope.commit();
 
-        const drawable_info = render_pass.getNextDrawable(self.layer) orelse return;
+        self.encodeClear(drawable, clear_color, synchronous);
+    }
+
+    /// Clear `drawable` and present it.
+    fn encodeClear(
+        self: *Self,
+        drawable: objc.Object,
+        clear_color: geometry.Color,
+        synchronous: bool,
+    ) void {
+        assert(drawable.value != null);
+        const texture = drawableTexture(drawable) orelse return;
         const msaa_tex = self.msaa_texture orelse return;
 
         const rp = render_pass.createRenderPass(.{
             .msaa_texture = msaa_tex,
-            .resolve_texture = drawable_info.texture,
+            .resolve_texture = texture,
             .clear_color = clear_color,
         }) orelse return;
 
@@ -354,39 +401,49 @@ pub const Renderer = struct {
         const encoder = render_pass.createEncoder(command_buffer, rp) orelse return;
 
         if (synchronous) {
-            render_pass.finishAndPresentSync(encoder, command_buffer, drawable_info.drawable);
+            render_pass.finishAndPresentSync(encoder, command_buffer, drawable);
         } else {
-            render_pass.finishAndPresent(encoder, command_buffer, drawable_info.drawable);
+            render_pass.finishAndPresent(encoder, command_buffer, drawable);
         }
     }
 
-    fn renderSceneInternal(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color, synchronous: bool) !void {
+    fn renderSceneInternal(
+        self: *Self,
+        scene: *const scene_mod.Scene,
+        clear_color: geometry.Color,
+        synchronous: bool,
+    ) !void {
+        // Acquired before the rings advance: every ring slot advance belongs to a frame that
+        // holds a drawable, which is what bounds the frames in flight per slot (see
+        // `UnifiedPrimitiveRing`). A skipped frame advances nothing.
+        const drawable = self.acquireDrawable(synchronous) orelse return;
+        defer drawable.release();
+
+        // Declared after the drawable so the transaction commits before it is released.
+        const ca_scope = if (synchronous) render_pass.CATransactionScope.begin() else null;
+        defer if (ca_scope) |scope| scope.commit();
+
         self.unified_primitive_ring.nextFrame();
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
         if (self.polyline_pipeline_state) |*plp| plp.nextFrame();
         if (self.point_cloud_pipeline_state) |*pcp| pcp.nextFrame();
         if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.nextFrame();
 
-        const shadows = scene.getShadows();
-        const quads = scene.getQuads();
-        const glyphs = scene.getGlyphs();
-        const svg_instances = scene.getSvgInstances();
-        const images = scene.getImages();
-
-        if (shadows.len == 0 and quads.len == 0 and glyphs.len == 0 and svg_instances.len == 0 and images.len == 0) {
-            self.renderInternal(clear_color, synchronous);
+        if (scene.getShadows().len == 0 and scene.getQuads().len == 0 and
+            scene.getGlyphs().len == 0 and scene.getSvgInstances().len == 0 and
+            scene.getImages().len == 0)
+        {
+            self.encodeClear(drawable, clear_color, synchronous);
             return;
         }
 
-        const ca_scope = if (synchronous) render_pass.CATransactionScope.begin() else null;
-        defer if (ca_scope) |scope| scope.commit();
-
-        const drawable_info = render_pass.getNextDrawable(self.layer) orelse return;
+        const texture = drawableTexture(drawable) orelse return;
         const msaa_tex = self.msaa_texture orelse return;
+        const unit_verts = self.quad_unit_vertex_buffer orelse return;
 
         const rp = render_pass.createRenderPass(.{
             .msaa_texture = msaa_tex,
-            .resolve_texture = drawable_info.texture,
+            .resolve_texture = texture,
             .clear_color = clear_color,
         }) orelse return;
 
@@ -394,15 +451,25 @@ pub const Renderer = struct {
         const encoder = render_pass.createEncoder(command_buffer, rp) orelse return;
 
         render_pass.setViewport(encoder, self.size.width, self.size.height, self.scale_factor);
-
         const viewport_size: [2]f32 = .{ @floatCast(self.size.width), @floatCast(self.size.height) };
-        const unit_verts = self.quad_unit_vertex_buffer orelse {
-            encoder.msgSend(void, "endEncoding", .{});
-            return;
-        };
 
         // Use batch-based rendering for correct z-ordering
-        scene_renderer.drawScene(encoder, scene, .{
+        const scene_pipelines = self.scenePipelines(scene, unit_verts);
+        scene_renderer.drawScene(encoder, scene, scene_pipelines, viewport_size);
+
+        if (synchronous) {
+            render_pass.finishAndPresentSync(encoder, command_buffer, drawable);
+        } else {
+            render_pass.finishAndPresent(encoder, command_buffer, drawable);
+        }
+    }
+
+    fn scenePipelines(
+        self: *Self,
+        scene: *const scene_mod.Scene,
+        unit_vertex_buffer: objc.Object,
+    ) scene_renderer.Pipelines {
+        return .{
             .unified = self.unified_pipeline_state,
             .unified_ring = &self.unified_primitive_ring,
             .text = if (self.text_pipeline_state) |*tp| tp else null,
@@ -413,13 +480,13 @@ pub const Renderer = struct {
             .point_cloud = if (self.point_cloud_pipeline_state) |*pcp| pcp else null,
             .colored_point_cloud = if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp else null,
             .mesh_pool = &scene.mesh_pool,
-            .unit_vertex_buffer = unit_verts,
-        }, viewport_size);
-
-        if (synchronous) {
-            render_pass.finishAndPresentSync(encoder, command_buffer, drawable_info.drawable);
-        } else {
-            render_pass.finishAndPresent(encoder, command_buffer, drawable_info.drawable);
-        }
+            .unit_vertex_buffer = unit_vertex_buffer,
+        };
     }
 };
+
+fn drawableTexture(drawable: objc.Object) ?objc.Object {
+    assert(drawable.value != null);
+    const texture = drawable.msgSend(?*anyopaque, "texture", .{}) orelse return null;
+    return objc.Object.fromId(texture);
+}

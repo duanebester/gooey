@@ -6,6 +6,10 @@
 //! has passed, or a custom shader animates. Covered or minimized windows
 //! unsubscribe and receive no ticks at all. Because nothing runs on another
 //! thread, window, scene, and atlas state need no locks.
+//!
+//! The one exception is acquiring the next drawable, which can sleep for most
+//! of a refresh interval: the renderer's `DrawableReserve` does it on a worker
+//! ahead of time, and a dirty tick with no drawable ready yet is skipped.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -473,6 +477,11 @@ pub const Window = struct {
         assert(self.activity_token == null);
         self.subscribeToDisplay();
 
+        // Start acquiring the first frame's drawable now, so the first tick can draw. The
+        // renderer is in its final place, which the reserve's worker requires.
+        const first_drawable_ready = self.renderer.drawableReady();
+        assert(!first_drawable_ready); // Nothing was reserved before this request.
+
         // macOS throttles ProMotion panels from 120Hz to 60Hz unless the
         // process declares that it is latency sensitive.
         self.activity_token = beginHighPerformanceActivity();
@@ -809,7 +818,13 @@ pub const Window = struct {
         // During live resize AppKit is inside its own tracking loop and the
         // layer presents with the transaction, so draw now, synchronously, at
         // the new size. Ticks skip the window until the resize ends.
-        if (self.live_resize_active) self.drawFrame(.synchronous);
+        if (self.live_resize_active) {
+            self.drawFrame(.synchronous);
+        } else {
+            // The reserved drawable has the old size: replace it now rather than on the
+            // next tick, which would then have to skip.
+            _ = self.renderer.drawableReady();
+        }
     }
 
     /// Handle window close. Returns true if close should proceed, false to cancel.
@@ -845,6 +860,8 @@ pub const Window = struct {
         self.live_resize_active = false;
         self.metal_layer.msgSend(void, "setPresentsWithTransaction:", .{false});
         self.requestRender();
+        // Synchronous frames gave the reserve back; acquire the next tick's drawable now.
+        _ = self.renderer.drawableReady();
     }
 
     pub fn isInLiveResize(self: *const Self) bool {
@@ -1327,6 +1344,11 @@ pub const Window = struct {
         if (!self.key_window) {
             if (now_ns - self.frame_last_ns < unfocused_frame_gap_ns_min) return;
         }
+
+        // Acquiring a drawable can sleep for most of a refresh interval, so it happens off
+        // the main thread, ahead of the frame. None ready yet: skip this tick before
+        // building anything and stay dirty; the next tick draws.
+        if (!self.renderer.drawableReady()) return;
         self.frame_last_ns = now_ns;
         self.drawFrame(.asynchronous);
     }
