@@ -51,8 +51,14 @@ pub const Window = struct {
     /// registry without the caller having to remember the pairing.
     plat: *platform.MacPlatform,
 
+    /// Owned +1 from `alloc`/`init`, released once in `deinit`. AppKit's
+    /// release-when-closed is turned off at creation, so this reference alone
+    /// decides the window's lifetime (see `createNSWindow`).
     ns_window: objc.Object,
+    /// Owned +1 from `input_view.create`, released once in `deinit`. The view
+    /// owns `metal_layer` and, through it, the layer's drawables.
     ns_view: objc.Object,
+    /// Borrowed: `+[CAMetalLayer layer]` is autoreleased and the view retains it.
     metal_layer: objc.Object,
     renderer: metal.Renderer,
     display_link: ?DisplayLink,
@@ -84,7 +90,11 @@ pub const Window = struct {
     svg_atlas_upload_fn: ?AtlasUploadFn = null,
     image_atlas_upload_ctx: ?*anyopaque = null,
     image_atlas_upload_fn: ?AtlasUploadFn = null,
+    /// Owned +1 from `window_delegate.create`, released once in `deinit`.
     delegate: ?objc.Object = null,
+    /// Owned +1 from `alloc`/`init`; the view also retains it while installed.
+    /// `deinit` removes it from the view and releases this reference.
+    tracking_area: ?objc.Object = null,
 
     /// Unique identifier for this window in the platform's `WindowRegistry`.
     /// Assigned by `init`; reset to `.invalid` by `deinit` so a second
@@ -97,7 +107,8 @@ pub const Window = struct {
     closed: bool = false,
     // Custom shader animation flag
     custom_shader_animation: bool,
-    // Glass effect support (macOS 26.0+ / fallback blur)
+    // Glass effect support (macOS 26.0+ / fallback blur).
+    /// Owned +1 from `alloc`/`init`; the superview also retains it while installed.
     glass_effect_view: ?objc.Object = null,
     glass_style: GlassStyle = .none,
     background_opacity: f64 = 1.0,
@@ -143,7 +154,8 @@ pub const Window = struct {
         .origin = .{ .x = 0, .y = 0 },
         .size = .{ .width = 1, .height = 20 },
     },
-    /// NSProcessInfo activity token for preventing ProMotion throttling
+    /// NSProcessInfo activity token for preventing ProMotion throttling.
+    /// Owned +1 (explicit retain in `beginHighPerformanceActivity`).
     activity_token: ?objc.Object = null,
 
     // =========================================================================
@@ -288,6 +300,7 @@ pub const Window = struct {
             self.metal_layer,
             self.size,
             self.scale_factor,
+            &options.limits.scene,
         );
 
         self.loadCustomShaders(options.custom_shaders);
@@ -387,6 +400,13 @@ pub const Window = struct {
             },
         );
         if (self.ns_window.value == null) return error.WindowCreationFailed;
+
+        // Own the window's lifetime through the +1 above. With AppKit's default
+        // (released when closed), `-close` frees the window by itself, and
+        // `deinit` runs later, at the owning app's drain point after a titlebar
+        // close, so it would message a freed object. `deinit` releases it once.
+        self.ns_window.msgSend(void, "setReleasedWhenClosed:", .{false});
+        assert(!self.ns_window.msgSend(bool, "isReleasedWhenClosed", .{}));
 
         if (options.titlebar_transparent) {
             self.ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
@@ -719,8 +739,16 @@ pub const Window = struct {
     // Window Lifecycle
     // =========================================================================
 
+    /// Tear down the window. Runs once, on the main thread, after the close
+    /// sequence, from the owning app's drain point (never inside this window's
+    /// own dispatch).
+    ///
+    /// Order matters: stop the vsync thread first so nothing can read the
+    /// window while it is dismantled, then free GPU resources, then release the
+    /// AppKit objects children-first, then free the Zig allocation.
     pub fn deinit(self: *Self) void {
         assert(self.ns_window.value != null);
+        assert(self.ns_view.value != null);
 
         // Withdraw from the registry first so nothing can look this window up
         // while its AppKit objects are being torn down. `.invalid` afterwards
@@ -733,28 +761,71 @@ pub const Window = struct {
 
         self.closed = true;
 
-        if (self.delegate) |d| {
-            self.ns_window.msgSend(void, "setDelegate:", .{@as(?*anyopaque, null)});
-            d.release();
+        // `CVDisplayLinkStop` returns only after an in-flight output callback
+        // has finished, and no callback starts afterwards (measured on macOS 26:
+        // a stop issued 50 ms into a 300 ms callback returned 246 ms later, with
+        // the callback done and none following). The callback holds
+        // `render_mutex` while rendering, so once the link is stopped the mutex
+        // must be free; a caller holding it here would have deadlocked the stop.
+        if (self.display_link) |*dl| {
+            dl.deinit();
+            self.display_link = null;
         }
-        // Clean up glass effect view
-        if (self.glass_effect_view) |glass_view| {
-            glass_view.msgSend(void, "removeFromSuperview", .{});
-            self.glass_effect_view = null;
-        }
+        const render_mutex_free = self.render_mutex.tryLock();
+        assert(render_mutex_free);
+        if (render_mutex_free) self.render_mutex.unlock();
 
-        // End high-performance activity before stopping display link
         if (self.activity_token) |token| {
             endHighPerformanceActivity(token);
             self.activity_token = null;
         }
 
-        if (self.display_link) |*dl| {
-            dl.deinit();
-        }
         self.renderer.deinit();
-        self.ns_window.msgSend(void, "close", .{});
+        self.releaseAppKitObjects();
         self.allocator.destroy(self);
+    }
+
+    /// Release every AppKit object `init` created, exactly once, children
+    /// first. Each optional is cleared as it is released, so a second release
+    /// cannot happen through it.
+    ///
+    /// AppKit may keep a view or window alive briefly after our release (an
+    /// autorelease pool, an event in flight), so the `_gooeyWindow`
+    /// back-pointers are cleared first: a late callback then finds no window
+    /// and returns, instead of dereferencing the freed `Window`.
+    fn releaseAppKitObjects(self: *Self) void {
+        assert(self.display_link == null); // The vsync thread can no longer reach us.
+        assert(self.ns_window.value != null);
+        const nil: objc.Object = .{ .value = null };
+
+        if (self.delegate) |d| {
+            self.ns_window.msgSend(void, "setDelegate:", .{@as(?*anyopaque, null)});
+            d.setInstanceVariable("_gooeyWindow", nil);
+            d.release();
+            self.delegate = null;
+        }
+        if (self.glass_effect_view) |glass_view| {
+            glass_view.msgSend(void, "removeFromSuperview", .{});
+            glass_view.release();
+            self.glass_effect_view = null;
+        }
+        if (self.tracking_area) |area| {
+            self.ns_view.msgSend(void, "removeTrackingArea:", .{area.value});
+            area.release();
+            self.tracking_area = null;
+        }
+
+        self.ns_view.setInstanceVariable("_gooeyWindow", nil);
+        // `-close` is a no-op on an already-closed window. With release-when-
+        // closed off, it never frees the window, so the release below is the
+        // only one. The window drops its content-view retain when it is freed;
+        // the view's own +1 is released after it.
+        self.ns_window.msgSend(void, "close", .{});
+        assert(!self.ns_window.msgSend(bool, "isReleasedWhenClosed", .{}));
+        self.ns_window.release();
+        self.ns_window = nil;
+        self.ns_view.release();
+        self.ns_view = nil;
     }
 
     /// Called by delegate when window is resized
@@ -1033,9 +1104,11 @@ pub const Window = struct {
         assert(opacity >= 0.0 and opacity <= 1.0);
         assert(corner_radius >= 0.0);
 
-        // Remove existing glass effect if any
+        // Remove existing glass effect if any; the superview drops its retain,
+        // this drops ours.
         if (self.glass_effect_view) |glass_view| {
             glass_view.msgSend(void, "removeFromSuperview", .{});
+            glass_view.release();
             self.glass_effect_view = null;
         }
 
@@ -1111,6 +1184,8 @@ pub const Window = struct {
         });
 
         self.ns_view.msgSend(void, "addTrackingArea:", .{tracking_area.value});
+        assert(self.tracking_area == null);
+        self.tracking_area = tracking_area;
     }
 
     fn setupMetalLayer(self: *Self) !void {
@@ -1465,9 +1540,12 @@ fn beginHighPerformanceActivity() ?objc.Object {
     return token;
 }
 
-/// End a high-performance activity
+/// End a high-performance activity and release the token's retain from
+/// `beginHighPerformanceActivity`.
 fn endHighPerformanceActivity(token: objc.Object) void {
+    assert(token.value != null);
     const NSProcessInfo = objc.getClass("NSProcessInfo") orelse return;
     const process_info = NSProcessInfo.msgSend(objc.Object, "processInfo", .{});
     process_info.msgSend(void, "endActivity:", .{token.value});
+    token.release();
 }

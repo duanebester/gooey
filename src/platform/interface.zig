@@ -34,6 +34,7 @@
 
 const std = @import("std");
 const geometry = @import("../core/geometry.zig");
+const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const window_registry = @import("window_registry.zig");
 
 // =============================================================================
@@ -297,6 +298,11 @@ pub const WindowOptions = struct {
 
     /// Extend content under the titlebar (macOS only).
     full_size_content: bool = false,
+
+    /// The application's validated per-window budget. Backends size renderer
+    /// instance storage from it during `PlatformWindow.init` rather than from
+    /// framework ceilings. The runtime always sets it from the app config.
+    limits: ResourceLimits = ResourceLimits.standard,
 
     /// Effective clear color for this configuration.
     ///

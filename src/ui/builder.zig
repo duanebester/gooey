@@ -1891,7 +1891,8 @@ fn testBuilderHarness(
     tree: *DispatchTree,
 ) Builder {
     engine.* = LayoutEngine.init(allocator);
-    scene_ptr.* = Scene.init(allocator);
+    // These tests build trees, never primitives, so the scene needs no storage.
+    scene_ptr.* = Scene.initEmpty(allocator);
     tree.* = DispatchTree.init(allocator);
     return Builder.init(allocator, engine, scene_ptr, tree);
 }
