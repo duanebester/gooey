@@ -532,6 +532,7 @@ fn verifyWindowProperties(comptime Window: type) void {
 fn verifyWindowHostControl(comptime Window: type) void {
     comptime {
         verifyFn(Window, "requestRender", .{ .params = &.{*Window}, .returns = void });
+        verifyFn(Window, "requestRenderAfter", .{ .params = &.{ *Window, u32 }, .returns = void });
         verifyFn(Window, "focus", .{ .params = &.{*Window}, .returns = void });
         verifyFn(Window, "close", .{ .params = &.{*Window}, .returns = void });
         verifyFn(Window, "isClosed", .{ .params = &.{*const Window}, .returns = bool });

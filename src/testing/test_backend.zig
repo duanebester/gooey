@@ -1319,6 +1319,13 @@ pub const TestWindow = struct {
         self.platform.recordCall(.request_render, self.window_id, self.render_request_count);
     }
 
+    /// Recorded as a plain render request: the test backend has no clock to
+    /// honour a deadline against, and every caller only needs a redraw.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        assert(delay_ms <= interface.render_delay_ms_max);
+        self.requestRender();
+    }
+
     pub fn focus(self: *Self) void {
         assert(self.window_id.isValid());
         assert(!self.closed);

@@ -700,21 +700,10 @@ pub const TextSystem = struct {
     /// Cache for text widths (fixed capacity, pre-allocated). Covers the full
     /// MAX_TEXT_LEN range that `shape_cache` cannot -- see `MeasureCache`.
     measure_cache: MeasureCache,
-    /// IO instance for mutex operations. Stored on the struct because lock
-    /// sites run on CVDisplayLink threads that have no access to `*Cx` and
-    /// therefore cannot reach `cx.io()`. Io is a pair of pointers into the
-    /// process-lifetime vtable — safe to copy across threads.
+    /// Clock source for shaping-time stats. The text system is used only on
+    /// the main thread (frames are built there on every backend), so its
+    /// caches and atlas need no locks.
     io: std.Io,
-    /// Mutex for thread-safe shape cache access in multi-window scenarios.
-    /// Multiple DisplayLink threads may call shapeText concurrently.
-    /// Uses `lockUncancelable` everywhere — none of the text call sites
-    /// propagate `std.Io.Cancelable`, and the critical sections are short
-    /// enough that cancelation points would add noise without value.
-    shape_cache_mutex: std.Io.Mutex,
-    /// Mutex for thread-safe glyph cache/atlas access in multi-window scenarios.
-    /// Multiple DisplayLink threads may render glyphs concurrently, and the
-    /// atlas skyline data structure is not thread-safe.
-    glyph_cache_mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -735,8 +724,6 @@ pub const TextSystem = struct {
             .shape_cache = ShapedRunCache.init(),
             .measure_cache = MeasureCache.init(),
             .io = io,
-            .shape_cache_mutex = .init,
-            .glyph_cache_mutex = .init,
         };
     }
 
@@ -758,8 +745,6 @@ pub const TextSystem = struct {
         try self.cache.initInPlace(allocator, scale);
         self.shape_cache.initInPlace();
         self.measure_cache.initInPlace();
-        self.shape_cache_mutex = .init;
-        self.glyph_cache_mutex = .init;
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
@@ -839,16 +824,12 @@ pub const TextSystem = struct {
             undefined;
 
         if (use_cache) {
-            self.shape_cache_mutex.lockUncancelable(self.io);
-            defer self.shape_cache_mutex.unlock(self.io);
-
             self.shape_cache.checkFont(font_ptr);
 
             if (self.shape_cache.get(cache_key)) |cached_run| {
                 if (stats) |s| s.recordShapeCacheHit();
-                // Copy glyphs to owned memory to prevent use-after-free race.
-                // The cache entry may be evicted by another thread after we release
-                // shape_cache_mutex, so we must not return a slice pointing into cache memory.
+                // Copy glyphs to owned memory: a later `put` may evict this entry
+                // while the caller still holds the run.
                 const glyphs_copy = try self.allocator.alloc(types.ShapedGlyph, cached_run.glyphs.len);
                 @memcpy(glyphs_copy, cached_run.glyphs);
                 return types.ShapedRun{
@@ -884,9 +865,6 @@ pub const TextSystem = struct {
 
         // Cache the result for next time (reuse key computed earlier)
         if (use_cache) {
-            // Lock for thread-safe cache write
-            self.shape_cache_mutex.lockUncancelable(self.io);
-            defer self.shape_cache_mutex.unlock(self.io);
             self.shape_cache.put(cache_key, result);
         }
 
@@ -925,9 +903,6 @@ pub const TextSystem = struct {
         if (use_cache) {
             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
 
-            self.shape_cache_mutex.lockUncancelable(self.io);
-            defer self.shape_cache_mutex.unlock(self.io);
-
             self.shape_cache.checkFont(font_ptr);
 
             if (self.shape_cache.get(cache_key)) |cached_run| {
@@ -953,21 +928,16 @@ pub const TextSystem = struct {
     }
 
     /// Get cached glyph with subpixel variant (renders if needed)
-    /// Thread-safe: protected by glyph_cache_mutex for multi-window scenarios.
     pub fn getGlyphSubpixel(self: *Self, glyph_id: u16, font_size: f32, subpixel_x: u8, subpixel_y: u8) !CachedGlyph {
         std.debug.assert(font_size > 0);
         const face = try self.getFontFace();
-
-        // Lock for thread-safe glyph cache/atlas access (multiple DisplayLink threads)
-        self.glyph_cache_mutex.lockUncancelable(self.io);
-        defer self.glyph_cache_mutex.unlock(self.io);
 
         return self.cache.getOrRenderSubpixel(face, glyph_id, font_size, subpixel_x, subpixel_y);
     }
 
     /// Simple width measurement.
     /// Zero-alloc fast path: on a shape cache hit, reads width directly from the
-    /// cache entry under the mutex — no glyph array copy, no allocator call
+    /// cache entry — no glyph array copy, no allocator call
     /// (~200x faster than the alloc+memcpy+free path: ~25 ns vs ~5200 ns warm).
     /// On web, uses a single JS call instead of character-by-character iteration.
     pub fn measureText(self: *Self, text: []const u8) !f32 {
@@ -1002,29 +972,23 @@ pub const TextSystem = struct {
             const font_ptr = @intFromPtr(&self.current_face);
             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
 
-            // Fast path: both caches are read under the same mutex, and only the
-            // scalar `width` is copied out — no slice escapes the lock scope.
-            {
-                self.shape_cache_mutex.lockUncancelable(self.io);
-                defer self.shape_cache_mutex.unlock(self.io);
+            // Fast path: only the scalar `width` is copied out of the caches.
+            self.measure_cache.checkFont(font_ptr);
+            self.shape_cache.checkFont(font_ptr);
 
-                self.measure_cache.checkFont(font_ptr);
-                self.shape_cache.checkFont(font_ptr);
+            if (self.measure_cache.get(cache_key)) |cached_width| {
+                std.debug.assert(cached_width >= 0);
+                render_stats.frame_stats.recordShapeCacheHit();
+                return cached_width;
+            }
 
-                if (self.measure_cache.get(cache_key)) |cached_width| {
-                    std.debug.assert(cached_width >= 0);
-                    render_stats.frame_stats.recordShapeCacheHit();
-                    return cached_width;
-                }
-
-                // The shaped-run cache may already hold this text from a render
-                // pass. Promote the width so later measurements skip it entirely.
-                if (self.shape_cache.get(cache_key)) |cached_run| {
-                    std.debug.assert(cached_run.width >= 0);
-                    self.measure_cache.put(cache_key, cached_run.width);
-                    render_stats.frame_stats.recordShapeCacheHit();
-                    return cached_run.width;
-                }
+            // The shaped-run cache may already hold this text from a render
+            // pass. Promote the width so later measurements skip it entirely.
+            if (self.shape_cache.get(cache_key)) |cached_run| {
+                std.debug.assert(cached_run.width >= 0);
+                self.measure_cache.put(cache_key, cached_run.width);
+                render_stats.frame_stats.recordShapeCacheHit();
+                return cached_run.width;
             }
 
             // Miss: shape once via CoreText/HarfBuzz, then record the width so
@@ -1040,19 +1004,14 @@ pub const TextSystem = struct {
             defer shaped.deinit(self.allocator);
             std.debug.assert(shaped.width >= 0);
 
-            {
-                self.shape_cache_mutex.lockUncancelable(self.io);
-                defer self.shape_cache_mutex.unlock(self.io);
-                self.measure_cache.put(cache_key, shaped.width);
-            }
-
+            self.measure_cache.put(cache_key, shaped.width);
             return shaped.width;
         }
     }
 
     /// Extended text measurement with wrapping support.
     /// Zero-alloc fast path: on a shape cache hit, computes the word-wrapping
-    /// measurement directly over the cached glyph slice under the mutex — no
+    /// measurement directly over the cached glyph slice — no
     /// glyph array copy, no allocator call.  Falls through to `shapeText` on
     /// cache miss.
     pub fn measureTextEx(self: *Self, text: []const u8, max_width: ?f32) !TextMeasurement {
@@ -1060,15 +1019,11 @@ pub const TextSystem = struct {
         const line_height = face.metrics.line_height;
         std.debug.assert(line_height > 0);
 
-        // Fast path: measure directly from shape cache under the lock.
-        // The cache entry is valid while the mutex is held; we iterate the
-        // glyph slice in-place and never let a pointer escape the lock scope.
+        // Fast path: measure directly over the cached glyph slice. Nothing can
+        // evict the entry during the loop, and no pointer to it escapes.
         if (text.len > 0 and text.len <= ShapedRunCache.MAX_TEXT_LEN) {
             const font_ptr = @intFromPtr(&self.current_face);
             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
-
-            self.shape_cache_mutex.lockUncancelable(self.io);
-            defer self.shape_cache_mutex.unlock(self.io);
 
             self.shape_cache.checkFont(font_ptr);
 
@@ -1085,33 +1040,18 @@ pub const TextSystem = struct {
         return measureGlyphRun(run.glyphs, text, run.width, max_width, line_height);
     }
 
-    /// Get the glyph atlas for GPU upload
-    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
+    /// Get the glyph atlas for GPU upload.
     pub inline fn getAtlas(self: *const Self) *const Atlas {
         return self.cache.getAtlas();
     }
 
-    /// Thread-safe atlas access with user data for GPU upload.
-    /// Holds the glyph_cache_mutex while calling the callback.
-    pub fn withAtlasLockedCtx(
-        self: *Self,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
-    ) !void {
-        self.glyph_cache_mutex.lockUncancelable(self.io);
-        defer self.glyph_cache_mutex.unlock(self.io);
-        return callback(ctx, self.cache.getAtlas());
-    }
-
-    /// Batch resolve glyphs under a single glyph_cache_mutex lock.
+    /// Batch resolve glyphs.
     /// Writes CachedGlyph results into `out_cached[0..glyphs.len]`.
     /// For glyphs with font_ref != null, uses the fallback font path;
     /// otherwise uses the primary font face.
     ///
     /// This is the glyph-cache equivalent of `shapeTextInto`: same batch
-    /// pattern, next layer down.  Eliminates N-1 lock/unlock pairs when
-    /// rendering a text run of N glyphs.
+    /// pattern, next layer down: one font lookup for a run of N glyphs.
     pub fn resolveGlyphBatch(
         self: *Self,
         glyphs: []const types.ShapedGlyph,
@@ -1126,9 +1066,6 @@ pub const TextSystem = struct {
         std.debug.assert(font_size < 1000);
 
         const face = try self.getFontFace();
-
-        self.glyph_cache_mutex.lockUncancelable(self.io);
-        defer self.glyph_cache_mutex.unlock(self.io);
 
         for (0..glyphs.len) |i| {
             if (glyphs[i].font_ref) |fallback_font| {

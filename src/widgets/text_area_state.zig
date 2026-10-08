@@ -1081,6 +1081,20 @@ pub const TextAreaState = struct {
         }
     }
 
+    /// Milliseconds until the caret next toggles, or null when unfocused (the
+    /// caret is hidden and nothing needs to redraw). The frame builder passes
+    /// this to `requestRenderAfter`, since frames are drawn only on demand.
+    pub fn blinkDelayMs(self: *const Self) ?u32 {
+        if (!self.focused) return null;
+        const elapsed = getTimestamp() - self.last_blink_time;
+        std.debug.assert(elapsed >= 0);
+        if (elapsed >= BLINK_INTERVAL_MS) return 0;
+        const delay: i64 = BLINK_INTERVAL_MS - elapsed;
+        std.debug.assert(delay > 0);
+        std.debug.assert(delay <= BLINK_INTERVAL_MS);
+        return @intCast(delay);
+    }
+
     fn notifyChange(self: *Self) void {
         if (self.on_change) |callback| {
             callback(self);

@@ -842,7 +842,7 @@ test "ImageLoader: pending and failed bookkeeping" {
     const ImageAtlas = atlas.ImageAtlas;
 
     // Set up a real ImageAtlas — `ImageLoader` borrows it for `drain`.
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0);
     defer image_atlas.deinit();
 
     var loader: ImageLoader = undefined;
@@ -880,7 +880,7 @@ test "ImageLoader: hasRoom flips at capacity" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
 
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0);
     defer image_atlas.deinit();
 
     var loader: ImageLoader = undefined;
@@ -905,7 +905,7 @@ test "ImageLoader: fixupQueue restores the queue pointer after a copy" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
 
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0);
     defer image_atlas.deinit();
 
     // Build a loader at one address …

@@ -66,7 +66,6 @@ pub const drive_model: interface.DriveModel = .blocking_event_loop;
 // Type aliases for convenience
 pub const MacPlatform = platform.MacPlatform;
 pub const Window = window.Window;
-pub const DisplayLink = display_link.DisplayLink;
 pub const Renderer = metal.Renderer;
 
 // Re-export capabilities

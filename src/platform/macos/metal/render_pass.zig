@@ -96,18 +96,11 @@ pub const CATransactionScope = struct {
     }
 };
 
-/// Get the next drawable from a layer
-pub fn getNextDrawable(layer: objc.Object) ?struct { drawable: objc.Object, texture: objc.Object } {
-    const drawable_ptr = layer.msgSend(?*anyopaque, "nextDrawable", .{});
-    if (drawable_ptr == null) return null;
-    const drawable = objc.Object.fromId(drawable_ptr);
-
-    const texture_ptr = drawable.msgSend(?*anyopaque, "texture", .{});
-    if (texture_ptr == null) return null;
-    const texture = objc.Object.fromId(texture_ptr);
-
-    return .{ .drawable = drawable, .texture = texture };
-}
+/// A drawable and its texture, as one frame's presentation target.
+pub const Drawable = struct {
+    drawable: objc.Object,
+    texture: objc.Object,
+};
 
 /// Setup viewport on encoder
 pub fn setViewport(encoder: objc.Object, width: f64, height: f64, scale_factor: f64) void {

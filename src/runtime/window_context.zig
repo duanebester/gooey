@@ -22,7 +22,6 @@ const builtin = @import("builtin");
 const platform = @import("../platform/mod.zig");
 // `PlatformWindow` is the OS-level handle; `Window` is the framework wrapper.
 const PlatformWindow = platform.PlatformWindow;
-const is_mac = !platform.is_wasm and !platform.is_linux and builtin.os.tag == .macos;
 
 // Core imports
 const window_mod = @import("../context/window.zig");
@@ -60,20 +59,6 @@ const FRAME_BUDGET_SKIP_COUNT: u32 = 3;
 // =============================================================================
 // WindowContext
 // =============================================================================
-
-// Text system for shared resources
-const text_mod = @import("../text/mod.zig");
-const TextSystem = text_mod.TextSystem;
-const Atlas = text_mod.Atlas;
-
-// Atlas types for shared resources
-const svg_mod = @import("../svg/mod.zig");
-const SvgAtlas = svg_mod.SvgAtlas;
-const image_mod = @import("../image/mod.zig");
-
-// Metal renderer for macOS thread-safe atlas upload
-const MetalRenderer = if (is_mac) @import("../platform/macos/metal/metal.zig").Renderer else void;
-const ImageAtlas = image_mod.ImageAtlas;
 
 // Shared rendering resources (text system + atlases), owned upstream
 // (typically by `App`) and lent borrowed-shape into every per-window `Window`.
@@ -421,60 +406,6 @@ pub fn WindowContext(comptime State: type) type {
             window.setSvgAtlas(self.window.resources.svg_atlas.*.getAtlas());
             window.setImageAtlas(self.window.resources.image_atlas.*.getAtlas());
             window.setScene(self.window.rendered_frame.scene);
-
-            // Set thread-safe atlas upload callbacks for multi-window scenarios (macOS only).
-            // These callbacks hold the appropriate mutex during GPU upload, preventing races
-            // where another window's DisplayLink thread modifies the atlas concurrently.
-            if (comptime is_mac) {
-                window.setTextAtlasUploadCallback(
-                    @ptrCast(self.window.resources.text_system),
-                    Self.uploadTextAtlasLocked,
-                );
-                window.setSvgAtlasUploadCallback(
-                    @ptrCast(self.window.resources.svg_atlas),
-                    Self.uploadSvgAtlasLocked,
-                );
-                window.setImageAtlasUploadCallback(
-                    @ptrCast(self.window.resources.image_atlas),
-                    Self.uploadImageAtlasLocked,
-                );
-            }
-        }
-
-        /// Thread-safe text atlas upload callback (macOS).
-        /// Holds glyph_cache_mutex while uploading to prevent concurrent modification.
-        fn uploadTextAtlasLocked(ctx: *anyopaque, renderer: *MetalRenderer) anyerror!void {
-            if (comptime !is_mac) return;
-            const text_system: *TextSystem = @ptrCast(@alignCast(ctx));
-            try text_system.withAtlasLockedCtx(*MetalRenderer, renderer, struct {
-                fn upload(r: *MetalRenderer, atlas: *const Atlas) anyerror!void {
-                    try r.updateTextAtlas(atlas);
-                }
-            }.upload);
-        }
-
-        /// Thread-safe SVG atlas upload callback (macOS).
-        /// Holds svg_atlas mutex while uploading to prevent concurrent modification.
-        fn uploadSvgAtlasLocked(ctx: *anyopaque, renderer: *MetalRenderer) anyerror!void {
-            if (comptime !is_mac) return;
-            const svg_atlas: *SvgAtlas = @ptrCast(@alignCast(ctx));
-            try svg_atlas.withAtlasLocked(*MetalRenderer, renderer, struct {
-                fn upload(r: *MetalRenderer, atlas: *const Atlas) anyerror!void {
-                    r.prepareSvgAtlas(atlas);
-                }
-            }.upload);
-        }
-
-        /// Thread-safe image atlas upload callback (macOS).
-        /// Holds image_atlas mutex while uploading to prevent concurrent modification.
-        fn uploadImageAtlasLocked(ctx: *anyopaque, renderer: *MetalRenderer) anyerror!void {
-            if (comptime !is_mac) return;
-            const image_atlas: *ImageAtlas = @ptrCast(@alignCast(ctx));
-            try image_atlas.withAtlasLocked(*MetalRenderer, renderer, struct {
-                fn upload(r: *MetalRenderer, atlas: *const Atlas) anyerror!void {
-                    r.prepareImageAtlas(atlas);
-                }
-            }.upload);
         }
 
         /// Set user callbacks after initialization.

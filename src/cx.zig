@@ -566,6 +566,13 @@ pub const Cx = struct {
         self._window.requestRender();
     }
 
+    /// Request a re-render after `delay_ms`, for UI driven by the clock or by
+    /// polling a worker. Frames are drawn only on demand, so a render function
+    /// that reads the time must ask to be called again.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        self._window.requestRenderAfter(delay_ms);
+    }
+
     // =========================================================================
     // Focus (PR 5 deprecated forwarders deleted in PR 9 — reach for
     // `cx.focus.*` directly. `focusTextField` / `focusTextArea` both

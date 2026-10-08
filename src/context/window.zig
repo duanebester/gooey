@@ -38,6 +38,7 @@
 //! / `window.a11y.*` / etc.
 
 const std = @import("std");
+const render_delay_ms_max = @import("../platform/interface.zig").render_delay_ms_max;
 const assert = std.debug.assert;
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const builtin = @import("builtin");
@@ -1486,6 +1487,16 @@ pub const Window = struct {
         self.needs_render = true;
         if (self.platform_window) |w| {
             w.requestRender();
+        }
+    }
+
+    /// Render again once `delay_ms` has elapsed, even if nothing else changes.
+    /// For clock-driven UI (caret blink, countdowns, polling a worker thread):
+    /// backends that draw only on demand would otherwise never wake for it.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        std.debug.assert(delay_ms <= render_delay_ms_max);
+        if (self.platform_window) |w| {
+            w.requestRenderAfter(delay_ms);
         }
     }
 

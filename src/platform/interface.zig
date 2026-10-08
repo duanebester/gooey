@@ -47,6 +47,10 @@ pub const WindowId = window_registry.WindowId;
 /// Central registry for tracking windows by ID.
 pub const WindowRegistry = window_registry.WindowRegistry;
 
+/// Longest delay `PlatformWindow.requestRenderAfter` accepts. A redraw further
+/// out than this is a timer's job, not the frame scheduler's.
+pub const render_delay_ms_max: u32 = 60_000;
+
 // =============================================================================
 // Host drive model
 // =============================================================================
