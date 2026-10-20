@@ -1735,6 +1735,21 @@ pub const Window = struct {
         }
     }
 
+    /// Request a render no later than `delay_ms` from now.
+    ///
+    /// For views that change with the clock alone, such as a caret blink or a
+    /// countdown, on backends that render on demand. Call it from render
+    /// code: the request belongs to the frame being built and must be renewed
+    /// by every frame that still depends on the clock. Backends that already
+    /// present every vsync treat it as satisfied by their next frame.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        std.debug.assert(delay_ms <= platform.interface.render_delay_ms_max);
+
+        if (self.platform_window) |w| {
+            w.requestRenderAfter(delay_ms);
+        }
+    }
+
     /// Set the window appearance (light or dark mode)
     /// This affects the titlebar text color and other system UI elements (macOS)
     pub fn setAppearance(self: *Self, dark: bool) void {

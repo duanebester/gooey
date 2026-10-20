@@ -21,6 +21,19 @@ const linux_input = @import("input.zig");
 const Allocator = std.mem.Allocator;
 const WindowOptions = interface_mod.WindowOptions;
 
+/// Monotonic milliseconds for timed-redraw deadlines.
+///
+/// `.awake` rather than wall-clock time so deadlines survive NTP and manual
+/// clock changes; it is the same clock the caret blink timer reads. The
+/// event loop carries no `Io`, so this uses the process-lifetime global,
+/// which is a pair of pointers and costs nothing to obtain.
+pub fn awakeTimeMs() i64 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const now_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
+    std.debug.assert(now_ms >= 0);
+    return @intCast(now_ms);
+}
+
 // Static listeners - must persist for lifetime of Wayland objects
 const surface_listener = wayland.SurfaceListener{
     .enter = Window.surfaceEnter,
@@ -109,10 +122,25 @@ pub const Window = struct {
     needs_redraw: bool = true,
     has_presented_frame: bool = false,
 
-    /// Continuously schedule frames at vsync rate for immediate-mode UI.
-    /// Hidden windows are throttled by the platform event loop while their
-    /// compositor frame callback is withheld.
-    continuous_render: bool = true,
+    /// Render every vsync even when nothing changed.
+    ///
+    /// Off by default: frames are drawn on demand, when `requestRender` or a
+    /// due `render_deadline_ms` asks for one. Everything that changes the
+    /// view already asks — input dispatch, animations while active, async
+    /// image loads, deferred SVG rasterization — and views that change with
+    /// the clock alone arm a timed redraw through `requestRenderAfter`, so an
+    /// idle window commits no frames at all. Continuous rendering cost a full
+    /// frame of CPU and GPU work per vsync for unchanged pixels.
+    continuous_render: bool = false,
+
+    /// Earliest time, on the `awakeTimeMs` clock, at which the event loop
+    /// must request a frame for this window. `null` while none is armed.
+    ///
+    /// Frame-scoped: `renderFrame` clears it before running application code,
+    /// and render code re-arms it for the frame it just built. The deadline
+    /// therefore always describes when the latest frame goes stale, and a
+    /// caret that loses focus stops waking the window from its next frame on.
+    render_deadline_ms: ?i64 = null,
 
     // Scene reference (set externally)
     scene: ?*const scene_mod.Scene = null,
@@ -580,6 +608,7 @@ pub const Window = struct {
         self.closed = true;
         self.needs_redraw = false;
         self.continuous_render = false;
+        self.render_deadline_ms = null;
 
         // A closed window stays registered until its owner reclaims it, but it
         // is no longer a legal input target, so focus must move on now rather
@@ -669,6 +698,56 @@ pub const Window = struct {
 
         std.debug.assert(self.needs_redraw);
         std.debug.assert(!self.closed);
+    }
+
+    /// Ask for a frame no later than `delay_ms` from now.
+    ///
+    /// For views that change with the clock alone, such as a caret blink or a
+    /// countdown: no input arrives to request their next frame, and
+    /// rendering every vsync to catch it is what on-demand mode removed. The
+    /// event loop shortens its poll timeout to the earliest armed deadline
+    /// and calls `requestRender` once it passes (`LinuxPlatform.run`).
+    ///
+    /// Only the earliest deadline is kept. That loses nothing because the
+    /// deadline is frame-scoped (see `render_deadline_ms`): the frame drawn at
+    /// the earlier deadline runs every view again, and each one that still
+    /// depends on the clock re-arms its own delay.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
+
+        if (self.closed) return;
+        if (delay_ms == 0) {
+            self.requestRender();
+            return;
+        }
+
+        const deadline_ms = awakeTimeMs() + delay_ms;
+        if (self.render_deadline_ms) |armed_ms| {
+            if (armed_ms <= deadline_ms) return;
+        }
+        self.render_deadline_ms = deadline_ms;
+
+        std.debug.assert(self.render_deadline_ms.? <= deadline_ms);
+    }
+
+    /// Request the frame a passed `render_deadline_ms` asked for.
+    ///
+    /// Called by the event loop once per iteration, before it renders. The
+    /// deadline is disarmed here, not only when the frame renders: a hidden
+    /// window's compositor callback can be withheld indefinitely, and a
+    /// passed deadline left armed would hold the poll timeout at zero and
+    /// spin the loop until the frame finally ran.
+    pub fn fireRenderDeadline(self: *Self, now_ms: i64) void {
+        std.debug.assert(now_ms >= 0);
+
+        const deadline_ms = self.render_deadline_ms orelse return;
+        if (now_ms < deadline_ms) return;
+
+        self.render_deadline_ms = null;
+        self.requestRender();
+
+        std.debug.assert(self.render_deadline_ms == null);
+        if (!self.closed) std.debug.assert(self.needs_redraw);
     }
 
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
@@ -930,6 +1009,61 @@ pub const Window = struct {
         wayland.surfaceCommit(self.wl_surface.?);
     }
 
+    /// Adopt the size from the last `xdg_surface.configure` and rebuild the
+    /// swapchain for it, notifying `on_resize` when the size really changed.
+    fn applyPendingResize(self: *Self) void {
+        std.debug.assert(self.pending_resize);
+        std.debug.assert(!self.closed);
+
+        const old_width = self.size.width;
+        const old_height = self.size.height;
+
+        self.width_px = self.pending_width;
+        self.height_px = self.pending_height;
+        self.size = .{
+            .width = @floatFromInt(self.pending_width),
+            .height = @floatFromInt(self.pending_height),
+        };
+        // Update viewport destination size for HiDPI scaling
+        if (self.viewport) |vp| {
+            wayland.viewportSetDestination(
+                vp,
+                @intCast(self.width_px),
+                @intCast(self.height_px),
+            );
+        } else if (self.wl_surface) |surface| {
+            // Fallback to buffer scale
+            const scale_int: i32 = @intFromFloat(self.scale_factor);
+            wayland.surfaceSetBufferScale(surface, scale_int);
+        }
+        if (self.xdg_surface) |xdg| {
+            wayland.xdgSurfaceSetWindowGeometry(
+                xdg,
+                0,
+                0,
+                @intCast(self.width_px),
+                @intCast(self.height_px),
+            );
+        }
+        // Commit surface state (viewport, geometry) before recreating swapchain
+        // This ensures Wayland compositor picks up the new viewport destination
+        // so pointer coordinates are correctly mapped to logical pixel space
+        if (self.wl_surface) |surface| {
+            wayland.surfaceCommit(surface);
+        }
+        self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
+        self.pending_resize = false;
+        // Notify user of resize if size actually changed
+        const size_changed = (old_width != self.size.width or old_height != self.size.height);
+        if (size_changed) {
+            if (self.on_resize) |callback| {
+                callback(self, self.size.width, self.size.height);
+            }
+        }
+
+        std.debug.assert(!self.pending_resize);
+    }
+
     /// Render the current frame
     pub fn renderFrame(self: *Self) void {
         // A closed window holds its Vulkan resources until its owner reclaims
@@ -941,57 +1075,15 @@ pub const Window = struct {
         if (!self.needs_redraw and !self.pending_resize) return;
 
         // Clear before invoking application code so requestRender() calls made
-        // while building an animation survive for the following frame.
+        // while building an animation survive for the following frame. The
+        // timed-redraw deadline is cleared for the same reason: this frame's
+        // views re-arm whatever they still need (see `render_deadline_ms`).
         self.needs_redraw = false;
+        self.render_deadline_ms = null;
 
-        // Handle pending resize
-        if (self.pending_resize) {
-            const old_width = self.size.width;
-            const old_height = self.size.height;
-
-            self.width_px = self.pending_width;
-            self.height_px = self.pending_height;
-            self.size = .{
-                .width = @floatFromInt(self.pending_width),
-                .height = @floatFromInt(self.pending_height),
-            };
-            // Update viewport destination size for HiDPI scaling
-            if (self.viewport) |vp| {
-                wayland.viewportSetDestination(
-                    vp,
-                    @intCast(self.width_px),
-                    @intCast(self.height_px),
-                );
-            } else if (self.wl_surface) |surface| {
-                // Fallback to buffer scale
-                const scale_int: i32 = @intFromFloat(self.scale_factor);
-                wayland.surfaceSetBufferScale(surface, scale_int);
-            }
-            if (self.xdg_surface) |xdg| {
-                wayland.xdgSurfaceSetWindowGeometry(
-                    xdg,
-                    0,
-                    0,
-                    @intCast(self.width_px),
-                    @intCast(self.height_px),
-                );
-            }
-            // Commit surface state (viewport, geometry) before recreating swapchain
-            // This ensures Wayland compositor picks up the new viewport destination
-            // so pointer coordinates are correctly mapped to logical pixel space
-            if (self.wl_surface) |surface| {
-                wayland.surfaceCommit(surface);
-            }
-            self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
-            self.pending_resize = false;
-            // Notify user of resize if size actually changed
-            const size_changed = (old_width != self.size.width or old_height != self.size.height);
-            if (size_changed) {
-                if (self.on_resize) |callback| {
-                    callback(self, self.size.width, self.size.height);
-                }
-            }
-        }
+        // Apply the configure before the render callback runs, so the
+        // application lays out against the new size.
+        if (self.pending_resize) self.applyPendingResize();
 
         // Call render callback to let app update scene before drawing
         if (self.on_render) |callback| {
@@ -1297,8 +1389,8 @@ pub const Window = struct {
             static.last_print_ms = now_ms;
         }
 
-        // In continuous mode, always render (like macOS benchmark_mode)
-        // This ensures animations run smoothly and the render callback is always invoked
+        // In continuous mode, always render (like macOS benchmark_mode).
+        // On demand, the frame renders only if something requested it.
         if (self.continuous_render) {
             self.needs_redraw = true;
         }

@@ -359,6 +359,18 @@ pub const WebWindow = struct {
         imports.requestAnimationFrame();
     }
 
+    /// Ask for a frame no later than `delay_ms` from now.
+    ///
+    /// Nothing to arm: `WebApp.frame` in `src/app.zig` re-arms
+    /// `requestAnimationFrame` after every frame while the platform runs, so
+    /// the next display refresh already meets any deadline. Forwarding to
+    /// `requestRender` would only add another `requestAnimationFrame`
+    /// registration on every frame a caret or timer is visible.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        std.debug.assert(self.window_id.isValid());
+        std.debug.assert(delay_ms <= interface.render_delay_ms_max);
+    }
+
     /// Truthfulness note: there is exactly one canvas and the browser gives it
     /// focus whenever the tab is active, so there is nothing to raise. Kept as
     /// a no-op because the contract requires the method, not because a host

@@ -372,6 +372,7 @@ fn renderTextInput(window: *Window, pending: *const Builder.PendingInput) !void 
     input_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
     input_widget.secure = pending.style.secure;
     try input_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
+    if (input_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
 }
 
 /// Render a single pending text area.
@@ -404,6 +405,7 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
     ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
     ta_widget.setPlaceholder(pending.style.placeholder);
     try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
+    if (ta_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
 }
 
 /// Render a single pending code editor.
@@ -447,6 +449,8 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) 
 
     ce_widget.setPlaceholder(pending.style.placeholder);
     try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
+    // The editor's caret is its embedded text area's, blink timer included.
+    if (ce_widget.text_area.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
 }
 
 /// Update IME cursor position for the focused text widget. Priority is

@@ -254,6 +254,7 @@ pub const CallTag = enum(u8) {
     set_appearance,
     set_cursor_shape,
     request_render,
+    request_render_after,
     focus,
     close,
     set_scene,
@@ -285,6 +286,7 @@ pub const CallTag = enum(u8) {
 /// | `set_appearance`                  | 1 for dark, 0 for light         |
 /// | `set_cursor_shape`                | `@intFromEnum(CursorShape)`     |
 /// | `request_render`, `focus`         | call count after this call      |
+/// | `request_render_after`            | requested delay in milliseconds |
 /// | `dispatch_input`                  | `@intFromEnum` of the event tag |
 /// | `resize`                          | new width truncated to integer  |
 /// | anything else                     | 0                               |
@@ -1317,6 +1319,16 @@ pub const TestWindow = struct {
 
         self.render_request_count += 1;
         self.platform.recordCall(.request_render, self.window_id, self.render_request_count);
+    }
+
+    /// Record the requested delay. No clock runs here: tests drive frames
+    /// explicitly, so the record is what lets them assert that a view which
+    /// changes with time alone asked to be drawn again.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        assert(self.window_id.isValid());
+        assert(delay_ms <= interface.render_delay_ms_max);
+
+        self.platform.recordCall(.request_render_after, self.window_id, delay_ms);
     }
 
     pub fn focus(self: *Self) void {

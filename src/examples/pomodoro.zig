@@ -229,6 +229,18 @@ const AppState = struct {
         }
     }
 
+    /// Milliseconds until `tick` next advances the countdown.
+    fn tickDelayMs(self: *const AppState) u32 {
+        std.debug.assert(self.is_running);
+
+        const elapsed_ms = getTimestamp() - self.last_tick;
+        if (elapsed_ms < 1000) {
+            return @intCast(1000 - @max(elapsed_ms, 0));
+        } else {
+            return 0;
+        }
+    }
+
     // =========================================================================
     // Command methods - use with cx.command() (need Window access)
     // =========================================================================
@@ -523,8 +535,11 @@ pub fn main(init: std.process.Init) !void {
 fn render(cx: *Cx) void {
     const s = cx.state(AppState);
 
-    // Tick the timer
+    // Tick the timer. The countdown changes with the clock alone, so while it
+    // runs ask for the frame that shows the next second; on-demand backends
+    // would otherwise not draw again until the next input event.
     s.tick();
+    if (s.is_running and s.phase != .idle) cx.notifyAfter(s.tickDelayMs());
 
     const size = cx.windowSize();
 

@@ -934,6 +934,19 @@ pub const Window = struct {
         self.needs_render.store(true, .release);
     }
 
+    /// Request a render no later than `delay_ms` from now.
+    ///
+    /// In `benchmark_mode` (the default) the display link presents every
+    /// vsync, so the next frame already meets any deadline and there is
+    /// nothing to arm. Outside it, rendering on the next vsync is early but
+    /// never late, so the request degrades to `requestRender` rather than
+    /// being dropped.
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
+
+        if (!self.benchmark_mode) self.requestRender();
+    }
+
     /// Manual render (for when display link is disabled)
     pub fn render(self: *Self) void {
         self.renderer.clear(self.getClearColor());
