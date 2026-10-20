@@ -866,6 +866,27 @@ pub const TextInputState = struct {
         }
     }
 
+    /// Milliseconds until the caret's next blink toggle, or `null` while
+    /// unfocused, when the caret does not blink.
+    ///
+    /// The caret changes with the clock alone, so on an on-demand backend no
+    /// event would draw its next phase. The frame driver passes this to
+    /// `Window.requestRenderAfter` after each render, which wakes the window
+    /// about twice a second instead of every vsync.
+    pub fn blinkDelayMs(self: *const Self) ?u32 {
+        if (!self.focused) return null;
+
+        const elapsed_ms = getTimestamp() - self.last_blink_time;
+        std.debug.assert(BLINK_INTERVAL_MS > 0);
+        if (elapsed_ms < BLINK_INTERVAL_MS) {
+            const delay_ms: u32 = @intCast(BLINK_INTERVAL_MS - @max(elapsed_ms, 0));
+            std.debug.assert(delay_ms <= BLINK_INTERVAL_MS);
+            return delay_ms;
+        } else {
+            return 0; // Overdue: the next frame toggles it.
+        }
+    }
+
     fn notifyChange(self: *Self) void {
         if (self.on_change) |callback| {
             callback(self);
@@ -1290,4 +1311,30 @@ test "TextInputState paste rejection preserves text selection and history" {
     try std.testing.expectEqual(history_count, input.edit_history.?.count);
     try std.testing.expectEqual(history_current, input.edit_history.?.current);
     try std.testing.expectEqual(history_start, input.edit_history.?.start);
+}
+
+test "TextInputState caret blink delay wakes only a focused widget" {
+    // The frame driver arms a timed redraw from this value, so it must be
+    // absent while unfocused, within one interval just after focus, and zero
+    // once the toggle is overdue. Elapsed time is simulated by moving
+    // `last_blink_time` back rather than by sleeping, keeping this
+    // deterministic.
+    const bounds: Bounds = .{ .x = 0, .y = 0, .width = 200, .height = 32 };
+    var input = TextInputState.init(std.testing.allocator, bounds);
+    defer input.deinit();
+    try std.testing.expectEqual(@as(?u32, null), input.blinkDelayMs());
+
+    input.focus();
+    const fresh_ms = input.blinkDelayMs().?;
+    try std.testing.expect(fresh_ms > 0);
+    try std.testing.expect(fresh_ms <= 530);
+
+    input.last_blink_time -= 400;
+    try std.testing.expect(input.blinkDelayMs().? <= 130);
+
+    input.last_blink_time -= 130; // Exactly one interval: the toggle is due.
+    try std.testing.expectEqual(@as(?u32, 0), input.blinkDelayMs());
+
+    input.blur();
+    try std.testing.expectEqual(@as(?u32, null), input.blinkDelayMs());
 }

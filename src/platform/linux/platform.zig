@@ -7,7 +7,8 @@ const std = @import("std");
 const posix = std.posix;
 const wayland = @import("wayland.zig");
 const interface_mod = @import("../interface.zig");
-const LinuxWindow = @import("window.zig").Window;
+const linux_window = @import("window.zig");
+const LinuxWindow = linux_window.Window;
 const window_registry = @import("../window_registry.zig");
 const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
@@ -33,6 +34,26 @@ fn eventLoopPollTimeout(has_pending_work: bool, waiting_for_frame: bool, refresh
     return @max(frame_time_ms, 1);
 }
 
+/// Shorten a poll timeout so the loop wakes no later than a timed redraw.
+///
+/// Separate from `eventLoopPollTimeout` because it is a pure clamp over that
+/// result: the deadline can only make the wait shorter, never longer, so the
+/// compositor-pacing decisions above stay exactly as they were. A deadline
+/// at or before `now_ms` is due, and the loop must not sleep at all.
+fn pollTimeoutUntilDeadline(timeout_ms: i32, render_deadline_ms: ?i64, now_ms: i64) i32 {
+    std.debug.assert(timeout_ms >= 0);
+    std.debug.assert(now_ms >= 0);
+
+    const deadline_ms = render_deadline_ms orelse return timeout_ms;
+    if (now_ms < deadline_ms) {
+        const wait_ms = deadline_ms - now_ms;
+        std.debug.assert(wait_ms > 0);
+        return @intCast(@min(wait_ms, timeout_ms));
+    } else {
+        return 0;
+    }
+}
+
 /// One window's contribution to the event loop's exit and pacing decision.
 ///
 /// Sampled out of the window rather than read through it, so the fold below
@@ -44,6 +65,8 @@ const WindowLoopState = struct {
     has_queued_work: bool,
     /// A `wl_callback` is in flight, so the compositor is pacing this window.
     waiting_for_frame: bool,
+    /// The window's armed timed redraw, on the `awakeTimeMs` clock.
+    render_deadline_ms: ?i64,
 };
 
 /// Aggregate of `WindowLoopState` over every registered window.
@@ -51,6 +74,8 @@ const LoopState = struct {
     open_count: u32,
     has_pending_work: bool,
     all_waiting_for_frame: bool,
+    /// Earliest timed redraw across open windows; the poll must wake by then.
+    render_deadline_ms: ?i64,
 };
 
 /// Fold per-window state into the event loop's exit and pacing decision.
@@ -71,21 +96,28 @@ fn foldLoopState(windows: []const WindowLoopState) LoopState {
     var open_count: u32 = 0;
     var has_pending_work = false;
     var all_waiting_for_frame = true;
+    var render_deadline_ms: ?i64 = null;
 
     for (windows) |window| {
         if (!window.open) continue;
         open_count += 1;
         if (window.has_queued_work) has_pending_work = true;
         if (!window.waiting_for_frame) all_waiting_for_frame = false;
+        if (window.render_deadline_ms) |deadline_ms| {
+            const earliest_ms = render_deadline_ms orelse deadline_ms;
+            render_deadline_ms = @min(earliest_ms, deadline_ms);
+        }
     }
 
     std.debug.assert(open_count <= windows.len);
     if (open_count == 0) std.debug.assert(!has_pending_work);
+    if (open_count == 0) std.debug.assert(render_deadline_ms == null);
 
     return .{
         .open_count = open_count,
         .has_pending_work = has_pending_work,
         .all_waiting_for_frame = all_waiting_for_frame,
+        .render_deadline_ms = render_deadline_ms,
     };
 }
 
@@ -579,6 +611,7 @@ pub const LinuxPlatform = struct {
             // and `quit()` remains the owner's way to stop the loop early.
             if (self.collectLoopState().open_count == 0) break;
 
+            self.fireRenderDeadlines(linux_window.awakeTimeMs());
             self.renderOpenWindows();
 
             if (!self.flushDisplay(display, pollfds)) break;
@@ -590,16 +623,7 @@ pub const LinuxPlatform = struct {
                 break;
             }
 
-            // Never spin while a frame callback is outstanding. Compositors
-            // can withhold callbacks for hidden windows, so use the same 20Hz
-            // fallback cadence as other Wayland clients while still waking
-            // immediately when a visible surface receives its callback.
-            const pacing = self.collectLoopState();
-            const timeout_ms = eventLoopPollTimeout(
-                pacing.has_pending_work,
-                pacing.all_waiting_for_frame,
-                self.refresh_rate_mhz,
-            );
+            const timeout_ms = self.pollTimeout();
             // A failed `poll` on the display fd leaves no way to learn when
             // the socket is readable again, so treat it as connection death
             // rather than retrying blind, exactly as a failed dispatch is.
@@ -615,6 +639,36 @@ pub const LinuxPlatform = struct {
                 }
             }
         }
+    }
+
+    /// How long the event loop may sleep in `poll` this iteration.
+    ///
+    /// Never spin while a frame callback is outstanding. Compositors can
+    /// withhold callbacks for hidden windows, so use the same 20Hz fallback
+    /// cadence as other Wayland clients while still waking immediately when a
+    /// visible surface receives its callback.
+    ///
+    /// On demand, an idle window has no callback in flight and nothing
+    /// queued, so the wait is clamped to the earliest timed redraw: the loop
+    /// wakes at its deadline, and the next iteration's `fireRenderDeadlines`
+    /// requests the frame.
+    fn pollTimeout(self: *const Self) i32 {
+        std.debug.assert(self.refresh_rate_mhz > 0);
+
+        const pacing = self.collectLoopState();
+        const timeout_ms = pollTimeoutUntilDeadline(
+            eventLoopPollTimeout(
+                pacing.has_pending_work,
+                pacing.all_waiting_for_frame,
+                self.refresh_rate_mhz,
+            ),
+            pacing.render_deadline_ms,
+            linux_window.awakeTimeMs(),
+        );
+
+        std.debug.assert(timeout_ms >= 0);
+        std.debug.assert(timeout_ms <= HIDDEN_FRAME_POLL_MS or !pacing.all_waiting_for_frame);
+        return timeout_ms;
     }
 
     /// Sample every registered window and fold the event loop's decision.
@@ -638,12 +692,33 @@ pub const LinuxPlatform = struct {
                 .has_queued_work = window.needs_redraw or window.continuous_render or
                     window.pending_resize,
                 .waiting_for_frame = window.frame_callback != null,
+                .render_deadline_ms = window.render_deadline_ms,
             };
             found += 1;
         }
 
         std.debug.assert(found <= self.window_registry.count());
         return foldLoopState(samples[0..found]);
+    }
+
+    /// Request a frame for every open window whose timed redraw is due.
+    ///
+    /// `requestRender` runs no application code, so the registry cannot
+    /// rehash under this pass; ids are still snapshotted to match
+    /// `renderOpenWindows` and keep one iteration pattern for both.
+    fn fireRenderDeadlines(self: *Self, now_ms: i64) void {
+        std.debug.assert(now_ms >= 0);
+
+        var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
+        const found = self.snapshotWindowIds(&ids);
+        std.debug.assert(found <= WindowRegistry.MAX_WINDOWS);
+
+        for (ids[0..found]) |id| {
+            std.debug.assert(id.isValid());
+
+            const window = self.window_registry.getTyped(LinuxWindow, id) orelse continue;
+            window.fireRenderDeadline(now_ms);
+        }
     }
 
     /// Present every open window the compositor is not already pacing.
@@ -2047,9 +2122,64 @@ test "event loop waits instead of spinning for compositor frame" {
     try std.testing.expectEqual(@as(i32, 4), eventLoopPollTimeout(false, false, 240_000));
 }
 
+// The deadline clamp may only shorten the compositor-paced wait. Each row
+// sits on one side of a boundary a plausible off-by-one would cross: no
+// deadline, a deadline beyond the wait, one inside it, exactly now, and past.
+test "poll timeout wakes for the earliest timed redraw" {
+    const now_ms: i64 = 10_000;
+
+    try std.testing.expectEqual(@as(i32, 16), pollTimeoutUntilDeadline(16, null, now_ms));
+    try std.testing.expectEqual(@as(i32, 16), pollTimeoutUntilDeadline(16, now_ms + 17, now_ms));
+    try std.testing.expectEqual(@as(i32, 16), pollTimeoutUntilDeadline(16, now_ms + 16, now_ms));
+    try std.testing.expectEqual(@as(i32, 15), pollTimeoutUntilDeadline(16, now_ms + 15, now_ms));
+    try std.testing.expectEqual(@as(i32, 1), pollTimeoutUntilDeadline(16, now_ms + 1, now_ms));
+    try std.testing.expectEqual(@as(i32, 0), pollTimeoutUntilDeadline(16, now_ms, now_ms));
+    try std.testing.expectEqual(@as(i32, 0), pollTimeoutUntilDeadline(16, now_ms - 1, now_ms));
+
+    // A busy loop stays busy: a far deadline cannot lengthen a zero wait.
+    try std.testing.expectEqual(@as(i32, 0), pollTimeoutUntilDeadline(0, now_ms + 500, now_ms));
+}
+
+// The fold keeps the earliest deadline among open windows only. Ordering the
+// later deadline first catches a fold that keeps the first or last seen, and
+// the closed window's earlier deadline catches one that ignores `open`.
+test "loop state folds the earliest open-window deadline" {
+    const later = WindowLoopState{
+        .open = true,
+        .has_queued_work = false,
+        .waiting_for_frame = false,
+        .render_deadline_ms = 900,
+    };
+    const earlier = WindowLoopState{
+        .open = true,
+        .has_queued_work = false,
+        .waiting_for_frame = false,
+        .render_deadline_ms = 400,
+    };
+    const closed_earliest = WindowLoopState{
+        .open = false,
+        .has_queued_work = false,
+        .waiting_for_frame = false,
+        .render_deadline_ms = 100,
+    };
+
+    const state = foldLoopState(&.{ later, closed_earliest, earlier, idleWindowLoopState(true) });
+    try std.testing.expectEqual(@as(?i64, 400), state.render_deadline_ms);
+    try std.testing.expect(!state.has_pending_work);
+
+    // Idle windows and closed windows alone leave nothing armed.
+    const none = foldLoopState(&.{ idleWindowLoopState(true), closed_earliest });
+    try std.testing.expectEqual(@as(?i64, null), none.render_deadline_ms);
+}
+
 // A window with nothing queued and no callback in flight, open or not.
 fn idleWindowLoopState(open: bool) WindowLoopState {
-    return .{ .open = open, .has_queued_work = false, .waiting_for_frame = false };
+    return .{
+        .open = open,
+        .has_queued_work = false,
+        .waiting_for_frame = false,
+        .render_deadline_ms = null,
+    };
 }
 
 // The loop must survive the loss of a non-last window, which is the whole
@@ -2079,11 +2209,13 @@ test "loop state ignores closed windows when pacing" {
         .open = false,
         .has_queued_work = true,
         .waiting_for_frame = true,
+        .render_deadline_ms = null,
     };
     const open_idle = WindowLoopState{
         .open = true,
         .has_queued_work = false,
         .waiting_for_frame = false,
+        .render_deadline_ms = null,
     };
 
     const state = foldLoopState(&.{ closed_busy, open_idle });
@@ -2101,11 +2233,13 @@ test "loop state pacing across sibling windows" {
         .open = true,
         .has_queued_work = true,
         .waiting_for_frame = true,
+        .render_deadline_ms = null,
     };
     const ready = WindowLoopState{
         .open = true,
         .has_queued_work = true,
         .waiting_for_frame = false,
+        .render_deadline_ms = null,
     };
 
     // One window, waiting: unchanged from the single-window behaviour.
@@ -2143,7 +2277,12 @@ test "loop state pacing across sibling windows" {
 test "loop state folds a full registry" {
     var samples: [WindowRegistry.MAX_WINDOWS]WindowLoopState = undefined;
     for (&samples) |*sample| {
-        sample.* = .{ .open = true, .has_queued_work = false, .waiting_for_frame = true };
+        sample.* = .{
+            .open = true,
+            .has_queued_work = false,
+            .waiting_for_frame = true,
+            .render_deadline_ms = null,
+        };
     }
 
     const full = foldLoopState(&samples);

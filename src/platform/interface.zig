@@ -47,6 +47,18 @@ pub const WindowId = window_registry.WindowId;
 pub const WindowRegistry = window_registry.WindowRegistry;
 
 // =============================================================================
+// Timed redraw
+// =============================================================================
+
+/// Longest delay `Window.requestRenderAfter` accepts.
+///
+/// Timed redraws exist for views that change with the clock alone, such as a
+/// caret blink (530 ms) or a once-per-second countdown. Both re-arm from every
+/// frame they draw, so a minute is far beyond any legitimate single wait, and
+/// the bound keeps deadline arithmetic in the backends trivially overflow-free.
+pub const render_delay_ms_max: u32 = 60_000;
+
+// =============================================================================
 // Host drive model
 // =============================================================================
 
