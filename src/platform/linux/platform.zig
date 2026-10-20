@@ -14,6 +14,7 @@ const WindowRegistry = window_registry.WindowRegistry;
 const linux_input = @import("input.zig");
 const input = @import("../../input/events.zig");
 const clipboard = @import("clipboard.zig");
+const linux_backend = @import("../linux_backend.zig");
 
 const HIDDEN_FRAME_POLL_MS: i32 = 50;
 
@@ -200,6 +201,9 @@ pub const LinuxPlatform = struct {
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
+    /// Shared-memory allocator for CPU-rendered frames. Bound on every build
+    /// because it is a core global, but only `wayland_cpu` windows use it.
+    shm: ?*wayland.Shm = null,
     cursor_shape_manager: ?*wayland.WpCursorShapeManagerV1 = null,
     cursor_shape_device: ?*wayland.WpCursorShapeDeviceV1 = null,
     output: ?*wayland.Output = null,
@@ -251,7 +255,7 @@ pub const LinuxPlatform = struct {
     pub const capabilities = interface_mod.PlatformCapabilities{
         .high_dpi = true,
         .multi_window = true,
-        .gpu_accelerated = true,
+        .gpu_accelerated = !linux_backend.uses_cpu_renderer,
         .display_link = false, // Uses frame callbacks
         .can_close_window = true,
         .glass_effects = false, // Compositor-dependent
@@ -261,7 +265,7 @@ pub const LinuxPlatform = struct {
         .custom_cursors = true,
         .window_drag_by_content = false,
         .name = "Linux/Wayland",
-        .graphics_backend = "Vulkan",
+        .graphics_backend = if (linux_backend.uses_cpu_renderer) "CPU" else "Vulkan",
     };
 
     // =========================================================================
@@ -509,6 +513,10 @@ pub const LinuxPlatform = struct {
         if (self.output) |output| {
             wayland.outputDestroy(output);
             self.output = null;
+        }
+        if (self.shm) |shm| {
+            wayland.shmDestroy(shm);
+            self.shm = null;
         }
         if (self.compositor) |comp| {
             wayland.compositorDestroy(comp);
@@ -896,6 +904,11 @@ pub const LinuxPlatform = struct {
         return self.decoration_manager;
     }
 
+    /// Get the shared-memory allocator used by CPU-rendered windows.
+    pub fn getShm(self: *Self) ?*wayland.Shm {
+        return self.shm;
+    }
+
     /// Get the viewporter (for HiDPI support, may be null)
     pub fn getViewporter(self: *Self) ?*wayland.WpViewporter {
         return self.viewporter;
@@ -1001,6 +1014,8 @@ pub const LinuxPlatform = struct {
             }
         } else if (std.mem.eql(u8, interface_name, wayland.WP_VIEWPORTER_INTERFACE_NAME)) {
             self.viewporter = wayland.bindViewporter(registry, name, version);
+        } else if (std.mem.eql(u8, interface_name, wayland.WL_SHM_INTERFACE_NAME)) {
+            self.shm = wayland.bindShm(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME)) {
             self.cursor_shape_manager = @ptrCast(@alignCast(wayland.registryBind(
                 registry,

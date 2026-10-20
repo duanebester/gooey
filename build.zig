@@ -1,10 +1,24 @@
 const std = @import("std");
 
+/// Linux display and renderer pair, selected with `-Dlinux-backend`.
+/// Mirrored into the source tree through the `gooey_build_options` module
+/// and read by `src/platform/linux_backend.zig`.
+pub const LinuxBackend = enum {
+    /// Wayland window, Vulkan GPU renderer (default).
+    wayland_vulkan,
+    /// Wayland window, CPU renderer presented through `wl_shm`.
+    wayland_cpu,
+    /// No display server: CPU renderer on `/dev/fb0`, evdev input.
+    fbdev,
+};
+
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
     metal_hud: bool = false,
     use_llvm: ?bool = null,
+    /// Drives the Wayland event loop directly, so the fbdev backend skips it.
+    wayland_only: bool = false,
 };
 
 pub fn build(b: *std.Build) void {
@@ -614,6 +628,13 @@ pub fn build(b: *std.Build) void {
     // =============================================================================
 
     if (is_native_linux) {
+        const linux_backend = b.option(
+            LinuxBackend,
+            "linux-backend",
+            "Linux display/renderer: wayland_vulkan (default), wayland_cpu, or fbdev",
+        ) orelse .wayland_vulkan;
+        const gooey_options_mod = gooeyBuildOptionsModule(b, linux_backend);
+
         // =========================================================================
         // Shader Compilation (GLSL -> SPIR-V)
         // =========================================================================
@@ -630,7 +651,12 @@ pub fn build(b: *std.Build) void {
         //   Or install Vulkan SDK from https://vulkan.lunarg.com/
 
         // Option to skip shader compilation (useful for CI where glslc isn't available)
-        const skip_shader_compile = b.option(bool, "skip-shader-compile", "Skip shader compilation (use pre-compiled .spv files)") orelse false;
+        // Only the Vulkan renderer embeds SPIR-V, so CPU builds skip `glslc`.
+        const skip_shader_compile = b.option(
+            bool,
+            "skip-shader-compile",
+            "Skip shader compilation (use pre-compiled .spv files)",
+        ) orelse (linux_backend != .wayland_vulkan);
 
         const compile_shaders_step = b.step("compile-shaders", "Compile GLSL shaders to SPIR-V (requires glslc)");
 
@@ -668,8 +694,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        mod.addImport("gooey_build_options", gooey_options_mod);
 
-        linkLinuxGooeyLibraries(mod);
+        linkLinuxGooeyLibraries(mod, linux_backend);
 
         // Benchmarks measure the shipped configuration; see the macOS branch.
         const bench_gooey_mod = b.createModule(.{
@@ -677,7 +704,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .fast,
         });
-        linkLinuxGooeyLibraries(bench_gooey_mod);
+        bench_gooey_mod.addImport("gooey_build_options", gooey_options_mod);
+        linkLinuxGooeyLibraries(bench_gooey_mod, linux_backend);
 
         // =========================================================================
         // Gooey Components Module
@@ -720,7 +748,7 @@ pub fn build(b: *std.Build) void {
         });
 
         // Link system libraries (Vulkan + Wayland + text rendering)
-        linkLinuxLibraries(exe);
+        linkLinuxLibraries(exe, linux_backend);
 
         const install_showcase = b.addInstallArtifact(exe, .{});
         b.getInstallStep().dependOn(&install_showcase.step);
@@ -749,7 +777,7 @@ pub fn build(b: *std.Build) void {
         // =========================================================================
 
         const linux_examples = [_]ExampleDefinition{
-            .{ .name = "basic", .source = "src/examples/linux_demo.zig" },
+            .{ .name = "basic", .source = "src/examples/linux_demo.zig", .wayland_only = true },
             .{ .name = "text", .source = "src/examples/linux_text_demo.zig" },
             .{ .name = "file-dialog", .source = "src/examples/linux_file_dialog.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
@@ -782,6 +810,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "disktree", .source = "src/examples/disktree.zig" },
         };
         for (linux_examples) |example| {
+            if (example.wayland_only and linux_backend == .fbdev) continue;
             addLinuxExample(
                 b,
                 mod,
@@ -790,6 +819,7 @@ pub fn build(b: *std.Build) void {
                 optimize,
                 compile_shaders_step,
                 skip_shader_compile,
+                linux_backend,
                 example.name,
                 example.source,
                 example.use_llvm,
@@ -804,6 +834,7 @@ pub fn build(b: *std.Build) void {
             optimize,
             compile_shaders_step,
             skip_shader_compile,
+            linux_backend,
         );
 
         // =====================================================================
@@ -822,7 +853,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(bench_exe);
+        linkLinuxLibraries(bench_exe, linux_backend);
 
         const bench_step = b.step("bench", "Run layout engine benchmarks");
         const bench_run = b.addRunArtifact(bench_exe);
@@ -847,7 +878,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(context_bench_exe);
+        linkLinuxLibraries(context_bench_exe, linux_backend);
 
         const context_bench_step = b.step("bench-context", "Run context module benchmarks");
         const context_bench_run = b.addRunArtifact(context_bench_exe);
@@ -872,7 +903,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(core_bench_exe);
+        linkLinuxLibraries(core_bench_exe, linux_backend);
 
         const core_bench_step = b.step("bench-core", "Run core module benchmarks");
         const core_bench_run = b.addRunArtifact(core_bench_exe);
@@ -897,7 +928,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(text_bench_exe);
+        linkLinuxLibraries(text_bench_exe, linux_backend);
 
         const text_bench_step = b.step("bench-text", "Run text module benchmarks");
         const text_bench_run = b.addRunArtifact(text_bench_exe);
@@ -922,7 +953,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(scene_bench_exe);
+        linkLinuxLibraries(scene_bench_exe, linux_backend);
 
         const scene_bench_step = b.step("bench-scene", "Run scene module (data plane) benchmarks");
         const scene_bench_run = b.addRunArtifact(scene_bench_exe);
@@ -938,7 +969,7 @@ pub fn build(b: *std.Build) void {
             .root_module = scene_bench_exe.root_module,
             .use_llvm = true,
         });
-        linkLinuxLibraries(scene_bench_tests);
+        linkLinuxLibraries(scene_bench_tests, linux_backend);
         if (!skip_shader_compile) {
             scene_bench_tests.step.dependOn(compile_shaders_step);
         }
@@ -960,7 +991,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(animation_bench_exe);
+        linkLinuxLibraries(animation_bench_exe, linux_backend);
 
         const animation_bench_step = b.step("bench-animation", "Run animation module benchmarks");
         const animation_bench_run = b.addRunArtifact(animation_bench_exe);
@@ -975,7 +1006,7 @@ pub fn build(b: *std.Build) void {
             .root_module = animation_bench_exe.root_module,
             .use_llvm = true,
         });
-        linkLinuxLibraries(animation_bench_tests);
+        linkLinuxLibraries(animation_bench_tests, linux_backend);
         if (!skip_shader_compile) {
             animation_bench_tests.step.dependOn(compile_shaders_step);
         }
@@ -997,7 +1028,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(element_states_bench_exe);
+        linkLinuxLibraries(element_states_bench_exe, linux_backend);
 
         const element_states_bench_step = b.step("bench-element-states", "Run element-state pool benchmarks");
         const element_states_bench_run = b.addRunArtifact(element_states_bench_exe);
@@ -1012,7 +1043,7 @@ pub fn build(b: *std.Build) void {
             .root_module = element_states_bench_exe.root_module,
             .use_llvm = true,
         });
-        linkLinuxLibraries(element_states_bench_tests);
+        linkLinuxLibraries(element_states_bench_tests, linux_backend);
         if (!skip_shader_compile) {
             element_states_bench_tests.step.dependOn(compile_shaders_step);
         }
@@ -1034,7 +1065,7 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
-        linkLinuxLibraries(accessibility_bench_exe);
+        linkLinuxLibraries(accessibility_bench_exe, linux_backend);
 
         const accessibility_bench_step = b.step("bench-accessibility", "Run accessibility module benchmarks");
         const accessibility_bench_run = b.addRunArtifact(accessibility_bench_exe);
@@ -1049,7 +1080,7 @@ pub fn build(b: *std.Build) void {
             .root_module = accessibility_bench_exe.root_module,
             .use_llvm = true,
         });
-        linkLinuxLibraries(accessibility_bench_tests);
+        linkLinuxLibraries(accessibility_bench_tests, linux_backend);
         if (!skip_shader_compile) {
             accessibility_bench_tests.step.dependOn(compile_shaders_step);
         }
@@ -1082,7 +1113,7 @@ pub fn build(b: *std.Build) void {
             // a bit of compile time for a backend that actually completes.
             .use_llvm = true,
         });
-        linkLinuxLibraries(mod_tests);
+        linkLinuxLibraries(mod_tests, linux_backend);
         if (!skip_shader_compile) {
             mod_tests.step.dependOn(compile_shaders_step);
         }
@@ -1093,7 +1124,7 @@ pub fn build(b: *std.Build) void {
             .root_module = components_mod,
             .use_llvm = true,
         });
-        linkLinuxLibraries(components_tests);
+        linkLinuxLibraries(components_tests, linux_backend);
         if (!skip_shader_compile) components_tests.step.dependOn(compile_shaders_step);
         const run_components_tests = b.addRunArtifact(components_tests);
 
@@ -1112,7 +1143,7 @@ pub fn build(b: *std.Build) void {
             .root_module = genui_mod,
             .use_llvm = true,
         });
-        linkLinuxLibraries(genui_tests);
+        linkLinuxLibraries(genui_tests, linux_backend);
         if (!skip_shader_compile) genui_tests.step.dependOn(compile_shaders_step);
         const run_genui_tests = b.addRunArtifact(genui_tests);
         const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
@@ -1127,7 +1158,7 @@ pub fn build(b: *std.Build) void {
             }),
             .use_llvm = true,
         });
-        linkLinuxLibraries(disktree_example_tests);
+        linkLinuxLibraries(disktree_example_tests, linux_backend);
         if (!skip_shader_compile) disktree_example_tests.step.dependOn(compile_shaders_step);
         const run_disktree_example_tests = b.addRunArtifact(disktree_example_tests);
         const test_disktree_step = b.step("test-disktree", "Run Disk Tree MVP tests");
@@ -1164,6 +1195,7 @@ pub fn build(b: *std.Build) void {
             .target = valgrind_target,
             .optimize = .safe, // ReleaseSafe for meaningful stack traces
         });
+        valgrind_mod.addImport("gooey_build_options", gooey_options_mod);
 
         // Separate test artifact for valgrind with baseline CPU
         const valgrind_tests = b.addTest(.{
@@ -1173,7 +1205,7 @@ pub fn build(b: *std.Build) void {
             // not yet emit completely.
             .use_llvm = true,
         });
-        linkLinuxLibraries(valgrind_tests);
+        linkLinuxLibraries(valgrind_tests, linux_backend);
         if (!skip_shader_compile) {
             valgrind_tests.step.dependOn(compile_shaders_step);
         }
@@ -1233,8 +1265,10 @@ pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
         mod.link_libc = true;
     }
 
+    // The default backend's libraries. Consumers selecting another
+    // `linux-backend` get the right set transitively from the gooey module.
     if (os == .linux) {
-        linkLinuxLibraries(step);
+        linkLinuxLibraries(step, .wayland_vulkan);
     }
 }
 
@@ -1364,6 +1398,12 @@ const TypecheckRoot = struct {
     /// as a test binary so `test {}` blocks are reachable; false when it is an
     /// example that imports `gooey` as a dependency.
     as_test: bool,
+    /// Backend the root is analyzed for. Each non-default backend replaces a
+    /// slice of `src/platform`, so each needs its own root to stay compiling.
+    linux_backend: LinuxBackend = .wayland_vulkan,
+    /// Embedded boards are mostly 64-bit Arm, so the framebuffer backend is
+    /// also analyzed there to catch ABI-dependent `ioctl` and struct layouts.
+    cpu_arch: std.Target.Cpu.Arch = .x86_64,
 };
 
 /// Adds the `typecheck-linux` step: full semantic analysis of the
@@ -1395,14 +1435,6 @@ fn addLinuxTypecheck(b: *std.Build) void {
         "Semantically analyze the Linux backend from any host",
     );
 
-    const linux_target = b.resolveTargetQuery(.{
-        .cpu_arch = .x86_64,
-        .os_tag = .linux,
-        .abi = .gnu,
-    });
-    std.debug.assert(linux_target.result.os.tag == .linux);
-    std.debug.assert(linux_target.result.cpu.arch == .x86_64);
-
     // `src/examples/linux_demo.zig` is the Linux entry point and reaches the
     // window/event/render path. The `src/root.zig` test root covers far more
     // code: every `test {}` block in the library, plus the `refAllDecls`
@@ -1413,10 +1445,31 @@ fn addLinuxTypecheck(b: *std.Build) void {
         .{ .source = "src/root.zig", .as_test = true },
         .{ .source = "src/examples/linux_demo.zig", .as_test = false },
         .{ .source = "src/examples/glass.zig", .as_test = false },
+        .{
+            .source = "src/examples/linux_demo.zig",
+            .as_test = false,
+            .linux_backend = .wayland_cpu,
+        },
+        .{ .source = "src/root.zig", .as_test = true, .linux_backend = .fbdev },
+        // `linux_demo` hand-rolls a Wayland dispatch loop, so the embedded
+        // fbdev backend is checked through the portable `gooey.App` showcase.
+        .{
+            .source = "src/examples/showcase.zig",
+            .as_test = false,
+            .linux_backend = .fbdev,
+            .cpu_arch = .aarch64,
+        },
     };
     comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
 
     for (roots) |root| {
+        const linux_target = b.resolveTargetQuery(.{
+            .cpu_arch = root.cpu_arch,
+            .os_tag = .linux,
+            .abi = .gnu,
+        });
+        std.debug.assert(linux_target.result.os.tag == .linux);
+        std.debug.assert(linux_target.result.cpu.arch == root.cpu_arch);
         addLinuxTypecheckRoot(b, step, linux_target, root);
     }
 }
@@ -1438,6 +1491,7 @@ fn addLinuxTypecheckRoot(
         .optimize = .debug,
         .link_libc = true,
     });
+    gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, root.linux_backend));
 
     const compile = if (root.as_test) b.addTest(.{
         .root_module = gooey_mod,
@@ -1461,7 +1515,11 @@ fn addLinuxTypecheckRoot(
         });
 
         break :blk b.addExecutable(.{
-            .name = b.fmt("typecheck-linux-{s}", .{std.fs.path.stem(root.source)}),
+            .name = b.fmt("typecheck-linux-{s}-{t}-{t}", .{
+                std.fs.path.stem(root.source),
+                root.linux_backend,
+                root.cpu_arch,
+            }),
             .root_module = root_mod,
         });
     };
@@ -1591,6 +1649,7 @@ fn addLinuxExample(
     optimize: std.lang.Optimize,
     compile_shaders_step: *std.Build.Step,
     skip_shader_compile: bool,
+    linux_backend: LinuxBackend,
     name: []const u8,
     source: []const u8,
     use_llvm: ?bool,
@@ -1609,7 +1668,7 @@ fn addLinuxExample(
         .use_llvm = use_llvm,
     });
 
-    linkLinuxLibraries(exe);
+    linkLinuxLibraries(exe, linux_backend);
 
     b.installArtifact(exe);
     if (!skip_shader_compile) {
@@ -1635,6 +1694,7 @@ fn addLinuxGenuiExample(
     optimize: std.lang.Optimize,
     compile_shaders_step: *std.Build.Step,
     skip_shader_compile: bool,
+    linux_backend: LinuxBackend,
 ) void {
     const executable = b.addExecutable(.{
         .name = "gooey-genui-demo",
@@ -1649,7 +1709,7 @@ fn addLinuxGenuiExample(
             },
         }),
     });
-    linkLinuxLibraries(executable);
+    linkLinuxLibraries(executable, linux_backend);
     const install = b.addInstallArtifact(executable, .{});
     b.getInstallStep().dependOn(&install.step);
     if (!skip_shader_compile) executable.step.dependOn(compile_shaders_step);
@@ -1676,10 +1736,11 @@ fn linkMacosFrameworks(mod: *std.Build.Module) void {
 }
 
 /// Links the Linux system libraries the `gooey` module needs: Vulkan (plain
-/// extern bindings, so no headers), FreeType/HarfBuzz/Fontconfig for text,
-/// libpng for images, and D-Bus for XDG portal file dialogs.
-fn linkLinuxGooeyLibraries(mod: *std.Build.Module) void {
-    mod.linkSystemLibrary("vulkan", .{});
+/// extern bindings, so no headers) and Wayland for the selected backend,
+/// FreeType/HarfBuzz/Fontconfig for text, libpng for images, and D-Bus for
+/// XDG portal file dialogs and accessibility.
+fn linkLinuxGooeyLibraries(mod: *std.Build.Module, linux_backend: LinuxBackend) void {
+    linkLinuxBackendLibraries(mod, linux_backend);
     mod.linkSystemLibrary("freetype", .{});
     mod.linkSystemLibrary("harfbuzz", .{});
     mod.linkSystemLibrary("fontconfig", .{});
@@ -1689,14 +1750,36 @@ fn linkLinuxGooeyLibraries(mod: *std.Build.Module) void {
 }
 
 /// Links the standard set of Linux system libraries (Vulkan, Wayland, text rendering, etc.)
-fn linkLinuxLibraries(step: *std.Build.Step.Compile) void {
+fn linkLinuxLibraries(step: *std.Build.Step.Compile, linux_backend: LinuxBackend) void {
     const mod = step.root_module;
-    mod.linkSystemLibrary("vulkan", .{});
-    mod.linkSystemLibrary("wayland-client", .{});
+    linkLinuxBackendLibraries(mod, linux_backend);
     mod.linkSystemLibrary("freetype", .{});
     mod.linkSystemLibrary("harfbuzz", .{});
     mod.linkSystemLibrary("fontconfig", .{});
     mod.linkSystemLibrary("png", .{});
     mod.linkSystemLibrary("dbus-1", .{});
     mod.link_libc = true;
+}
+
+/// Libraries that differ by backend. A CPU build never links Vulkan, and the
+/// fbdev build links no display-server library at all, so an embedded image
+/// needs neither installed.
+fn linkLinuxBackendLibraries(mod: *std.Build.Module, linux_backend: LinuxBackend) void {
+    switch (linux_backend) {
+        .wayland_vulkan => {
+            mod.linkSystemLibrary("vulkan", .{});
+            mod.linkSystemLibrary("wayland-client", .{});
+        },
+        .wayland_cpu => mod.linkSystemLibrary("wayland-client", .{}),
+        .fbdev => {},
+    }
+}
+
+/// The `gooey_build_options` module: build-time choices the source tree reads
+/// at comptime. Every module rooted at `src/root.zig` for a Linux target must
+/// import it.
+fn gooeyBuildOptionsModule(b: *std.Build, linux_backend: LinuxBackend) *std.Build.Module {
+    const options = b.addOptions();
+    options.addOption(LinuxBackend, "linux_backend", linux_backend);
+    return options.createModule();
 }
