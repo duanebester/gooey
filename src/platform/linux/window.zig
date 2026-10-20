@@ -1,11 +1,14 @@
 //! LinuxWindow - Window implementation for Linux/Wayland
 //!
 //! Provides window creation and management using Wayland's XDG shell protocol,
-//! with GPU rendering via Vulkan.
+//! with GPU rendering via Vulkan, or CPU rendering into shared memory when the
+//! build selects `-Dlinux-backend=wayland_cpu`.
 
 const std = @import("std");
 const wayland = @import("wayland.zig");
 const VulkanRenderer = @import("vk_renderer.zig").VulkanRenderer;
+const ShmRenderer = @import("shm_renderer.zig").ShmRenderer;
+const linux_backend = @import("../linux_backend.zig");
 const vk_atlas = @import("vk_atlas.zig");
 const LinuxPlatform = @import("platform.zig").LinuxPlatform;
 const interface_mod = @import("../interface.zig");
@@ -20,6 +23,16 @@ const linux_input = @import("input.zig");
 
 const Allocator = std.mem.Allocator;
 const WindowOptions = interface_mod.WindowOptions;
+
+/// The renderer is fixed per build. Selecting it at comptime keeps the
+/// unselected renderer out of the binary, so a CPU build neither links nor
+/// loads Vulkan.
+const use_cpu_renderer = switch (linux_backend.selected) {
+    .wayland_vulkan => false,
+    .wayland_cpu => true,
+    .fbdev => @compileError("the fbdev backend does not use the Wayland window"),
+};
+const Renderer = if (use_cpu_renderer) ShmRenderer else VulkanRenderer;
 
 // Static listeners - must persist for lifetime of Wayland objects
 const surface_listener = wayland.SurfaceListener{
@@ -91,8 +104,8 @@ pub const Window = struct {
     // Decoration state
     has_server_decorations: bool = false,
 
-    // Rendering (Vulkan)
-    renderer: VulkanRenderer,
+    // Rendering (Vulkan, or CPU into shared memory; see `Renderer`)
+    renderer: Renderer,
     background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
 
     /// Translucent-background style requested by the application.
@@ -112,7 +125,12 @@ pub const Window = struct {
     /// Continuously schedule frames at vsync rate for immediate-mode UI.
     /// Hidden windows are throttled by the platform event loop while their
     /// compositor frame callback is withheld.
-    continuous_render: bool = true,
+    ///
+    /// The CPU renderer draws on demand instead, as macOS does: input,
+    /// animations, and state changes already call `requestRender`, and
+    /// redrawing an unchanged frame every vsync would spend a CPU core on
+    /// nothing.
+    continuous_render: bool = !use_cpu_renderer,
 
     // Scene reference (set externally)
     scene: ?*const scene_mod.Scene = null,
@@ -231,7 +249,7 @@ pub const Window = struct {
             .scale_factor = initial_scale,
             .background_color = options.background_color,
             .glass_style = options.glass_style,
-            .renderer = VulkanRenderer.init(allocator),
+            .renderer = if (use_cpu_renderer) .{} else VulkanRenderer.init(allocator),
         };
 
         // Store title. Same contract as `setTitle`: over-long is a programmer
@@ -365,16 +383,7 @@ pub const Window = struct {
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
-        // Initialize Vulkan renderer with Wayland surface
-        // Swapchain will be created at physical pixel resolution
-        const wl_display = plat.getDisplay() orelse return error.NoDisplay;
-        try self.renderer.initWithWaylandSurface(
-            wl_display,
-            @ptrCast(self.wl_surface),
-            self.width_px,
-            self.height_px,
-            self.scale_factor,
-        );
+        try self.initRenderer(plat);
 
         // Final commit after Vulkan initialization
         wayland.surfaceCommit(self.wl_surface.?);
@@ -392,6 +401,33 @@ pub const Window = struct {
         std.debug.assert(self.window_id.isValid());
         std.debug.assert(self.wl_surface != null);
         return self;
+    }
+
+    /// Bind the renderer to the Wayland surface. Both renderers create their
+    /// frames at physical pixel resolution.
+    fn initRenderer(self: *Self, plat: *LinuxPlatform) !void {
+        std.debug.assert(self.wl_surface != null);
+        std.debug.assert(self.width_px > 0);
+        std.debug.assert(self.height_px > 0);
+        if (use_cpu_renderer) {
+            const shm = plat.getShm() orelse return error.NoShm;
+            try self.renderer.initWithSurface(
+                shm,
+                self.wl_surface.?,
+                self.width_px,
+                self.height_px,
+                self.scale_factor,
+            );
+        } else {
+            const wl_display = plat.getDisplay() orelse return error.NoDisplay;
+            try self.renderer.initWithWaylandSurface(
+                wl_display,
+                @ptrCast(self.wl_surface),
+                self.width_px,
+                self.height_px,
+                self.scale_factor,
+            );
+        }
     }
 
     pub fn deinit(self: *Self) void {
@@ -1006,7 +1042,7 @@ pub const Window = struct {
         // Stage atlas uploads — stores data pointers only, no memcpy.
         // Actual staging + GPU transfer happens inside render() after
         // the frame fence wait, eliminating the synchronous GPU stall.
-        self.stageAtlasUploads();
+        self.syncAtlases();
 
         // Time GPU command recording + atlas transfers + submit + present.
         // Atlas transfers are now folded into the render command buffer,
@@ -1022,12 +1058,12 @@ pub const Window = struct {
 
         // Render scene if available
         if (self.scene) |scene| {
-            self.renderer.render(scene);
+            self.presentScene(scene);
         } else {
             // Create empty scene for clear
             var empty_scene = scene_mod.Scene.init(self.allocator);
             defer empty_scene.deinit();
-            self.renderer.render(&empty_scene);
+            self.presentScene(&empty_scene);
         }
         self.has_presented_frame = true;
 
@@ -1037,6 +1073,30 @@ pub const Window = struct {
         self.last_gpu_submit_ns = @intCast(gpu_ns);
         self.last_atlas_upload_ns = 0; // Atlas transfers are now async (inside render cmd buf)
 
+    }
+
+    /// Hand the atlases to the renderer before drawing. The CPU renderer
+    /// samples them in place and has no upload; Vulkan stages the dirty ones.
+    fn syncAtlases(self: *Self) void {
+        std.debug.assert(!self.closed);
+        std.debug.assert(self.configured);
+        if (use_cpu_renderer) {
+            self.renderer.setAtlases(self.text_atlas, self.svg_atlas, self.image_atlas);
+        } else {
+            self.stageAtlasUploads();
+        }
+    }
+
+    fn presentScene(self: *Self, scene: *const scene_mod.Scene) void {
+        std.debug.assert(!self.closed);
+        std.debug.assert(self.configured);
+        if (use_cpu_renderer) {
+            // Every shared-memory slot still held by the compositor: keep the
+            // request so the next frame callback draws it.
+            if (!self.renderer.render(scene)) self.needs_redraw = true;
+        } else {
+            self.renderer.render(scene);
+        }
     }
 
     // =========================================================================
@@ -1318,6 +1378,15 @@ pub const Window = struct {
     /// Get renderer capabilities
     pub fn getRendererCapabilities(self: *const Self) interface_mod.RendererCapabilities {
         _ = self;
+        if (use_cpu_renderer) {
+            return .{
+                .max_texture_size = text_mod.Atlas.MAX_SIZE,
+                .msaa = false,
+                .msaa_sample_count = 1,
+                .unified_memory = true,
+                .name = "CPU",
+            };
+        }
         return .{
             .max_texture_size = 4096,
             .msaa = true,
