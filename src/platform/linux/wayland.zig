@@ -950,6 +950,25 @@ pub fn compositorDestroy(compositor: *Compositor) void {
 }
 
 // Surface operations
+
+/// wl_surface request opcodes in protocol declaration order. A request's opcode is its
+/// index in the protocol XML, so a bare literal silently names a different request when it
+/// is off by one: `set_buffer_scale` once marshaled 6 (`commit`). Field names match the
+/// protocol's request names so a test can check every opcode against libwayland's table.
+const SurfaceRequest = enum(u32) {
+    destroy = 0,
+    attach = 1,
+    damage = 2,
+    frame = 3,
+    set_opaque_region = 4,
+    set_input_region = 5,
+    commit = 6,
+    set_buffer_transform = 7,
+    set_buffer_scale = 8,
+    damage_buffer = 9,
+    offset = 10,
+};
+
 pub fn surfaceAddListener(surface: *Surface, listener: *const SurfaceListener, data: ?*anyopaque) bool {
     return wl_proxy_add_listener(@ptrCast(surface), @ptrCast(listener), data) == 0;
 }
@@ -957,7 +976,7 @@ pub fn surfaceAddListener(surface: *Surface, listener: *const SurfaceListener, d
 pub fn surfaceDestroy(surface: *Surface) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(surface),
-        0, // WL_SURFACE_DESTROY
+        @backingInt(SurfaceRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(surface)),
         MARSHAL_FLAG_DESTROY,
@@ -967,7 +986,7 @@ pub fn surfaceDestroy(surface: *Surface) void {
 pub fn surfaceCommit(surface: *Surface) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(surface),
-        6, // WL_SURFACE_COMMIT
+        @backingInt(SurfaceRequest.commit),
         null,
         wl_proxy_get_version(@ptrCast(surface)),
         0,
@@ -977,7 +996,7 @@ pub fn surfaceCommit(surface: *Surface) void {
 pub fn surfaceFrame(surface: *Surface) ?*Callback {
     const result = wl_proxy_marshal_flags(
         @ptrCast(surface),
-        3, // WL_SURFACE_FRAME
+        @backingInt(SurfaceRequest.frame),
         &wl_callback_interface,
         wl_proxy_get_version(@ptrCast(surface)),
         0,
@@ -986,10 +1005,11 @@ pub fn surfaceFrame(surface: *Surface) ?*Callback {
     return @ptrCast(@alignCast(result));
 }
 
+/// A null region marks the whole surface as possibly translucent.
 pub fn surfaceSetOpaqueRegion(surface: *Surface, region: ?*Region) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(surface),
-        5, // WL_SURFACE_SET_OPAQUE_REGION
+        @backingInt(SurfaceRequest.set_opaque_region),
         null,
         wl_proxy_get_version(@ptrCast(surface)),
         0,
@@ -998,14 +1018,30 @@ pub fn surfaceSetOpaqueRegion(surface: *Surface, region: ?*Region) void {
 }
 
 pub fn surfaceSetBufferScale(surface: *Surface, scale: i32) void {
+    // The compositor raises the fatal `invalid_scale` protocol error for a scale below one.
+    std.debug.assert(scale >= 1);
     _ = wl_proxy_marshal_flags(
         @ptrCast(surface),
-        6, // WL_SURFACE_SET_BUFFER_SCALE
+        @backingInt(SurfaceRequest.set_buffer_scale),
         null,
         wl_proxy_get_version(@ptrCast(surface)),
         0,
         scale,
     );
+}
+
+test "wl_surface request opcodes match libwayland's protocol table" {
+    // Goal: catch a helper marshaling the wrong wl_surface request. Methodology: the
+    // libwayland-client `wl_surface_interface` table is generated from the protocol XML and
+    // indexed by opcode, so each `SurfaceRequest` name must equal the name at its opcode.
+    const names = @typeInfo(SurfaceRequest).@"enum".field_names;
+    const values = @typeInfo(SurfaceRequest).@"enum".field_values;
+    const method_count: usize = @intCast(wl_surface_interface.method_count);
+    const methods: [*]const Message = @ptrCast(wl_surface_interface.methods.?);
+    inline for (names, values) |name, opcode| {
+        try std.testing.expect(opcode < method_count);
+        try std.testing.expectEqualStrings(name, std.mem.span(methods[opcode].name));
+    }
 }
 
 // =============================================================================
