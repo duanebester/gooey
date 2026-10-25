@@ -40,7 +40,7 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 
 ## Quick Start
 
-**Requirements:** Zig 0.16.0+
+**Requirements:** Zig 0.17.0+
 
 **Dependencies:** None. Gooey has zero external Zig package dependencies — `build.zig.zon` lists no dependencies. It links only against platform system frameworks/libraries (see platform notes below).
 
@@ -55,8 +55,8 @@ Add the current release to your application's `build.zig.zon`:
 ```zig
 .dependencies = .{
     .gooey = .{
-        .url = "https://github.com/duanebester/gooey/archive/refs/tags/v0.2.6.tar.gz",
-        .hash = "gooey-0.2.6-uPBZ7jMhXQAhifhzm8HyurjFUx5S0BrLXq1ZDO0DcwTr",
+        .url = "https://github.com/duanebester/gooey/archive/refs/tags/v0.3.1.tar.gz",
+        .hash = "gooey-0.3.1-uPBZ7oToZgAZzTbY3oH2x3D3X28NDL65T3BRh11HAkr2",
     },
 },
 ```
