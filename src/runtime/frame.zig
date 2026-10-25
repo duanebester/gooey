@@ -43,6 +43,10 @@ const CodeEditorState = code_editor_state_mod.CodeEditorState;
 // Limits (per CLAUDE.md: "put a limit on everything")
 // =============================================================================
 const MAX_RENDER_COMMANDS: usize = 65536;
+/// Widest text-area or code-editor scrollbar an app may request, in logical pixels.
+/// The scrollbar quad is not clipped to its widget, so an unbounded width would paint
+/// over the text, the code-editor gutter, and neighbouring elements.
+const scrollbar_width_max: f32 = 64;
 
 /// Render a single frame with Cx context (comptime render function)
 pub fn renderFrameCx(cx: *Cx, comptime render_fn: fn (*Cx) void) !void {
@@ -403,9 +407,7 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
     ta_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
     ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
     ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
-    ta_widget.scrollbar_style.scrollbar_size = pending.style.scrollbar_width;
-    ta_widget.scrollbar_style.track_color = render_bridge.colorToHsla(pending.style.scrollbar_track_color);
-    ta_widget.scrollbar_style.thumb_color = render_bridge.colorToHsla(pending.style.scrollbar_thumb_color);
+    applyScrollbarStyle(&ta_widget.scrollbar_style, &pending.style);
     ta_widget.setPlaceholder(pending.style.placeholder);
     try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
     if (ta_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
@@ -440,9 +442,7 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) 
     ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
     ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
     ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
-    ce_widget.text_area.scrollbar_style.scrollbar_size = pending.style.scrollbar_width;
-    ce_widget.text_area.scrollbar_style.track_color = render_bridge.colorToHsla(pending.style.scrollbar_track_color);
-    ce_widget.text_area.scrollbar_style.thumb_color = render_bridge.colorToHsla(pending.style.scrollbar_thumb_color);
+    applyScrollbarStyle(&ce_widget.text_area.scrollbar_style, &pending.style);
 
     // Status bar settings
     ce_widget.show_status_bar = pending.style.show_status_bar;
@@ -457,6 +457,20 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) 
     try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
     // The editor's caret is its embedded text area's, blink timer included.
     if (ce_widget.text_area.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
+}
+
+/// Copy the app's scrollbar props into a text area's engine scrollbar style.
+/// `style` is a `*const TextAreaStyle` or `*const CodeEditorStyle`; both expose the same
+/// three scrollbar fields. The width is app-supplied and reaches the GPU unclipped, so it
+/// is asserted finite, non-negative, and bounded before use.
+fn applyScrollbarStyle(target: *text_area_state_mod.ScrollbarStyle, style: anytype) void {
+    std.debug.assert(std.math.isFinite(style.scrollbar_width));
+    std.debug.assert(style.scrollbar_width >= 0);
+    std.debug.assert(style.scrollbar_width <= scrollbar_width_max);
+
+    target.scrollbar_size = style.scrollbar_width;
+    target.track_color = render_bridge.colorToHsla(style.scrollbar_track_color);
+    target.thumb_color = render_bridge.colorToHsla(style.scrollbar_thumb_color);
 }
 
 /// Update IME cursor position for the focused text widget. Priority is
