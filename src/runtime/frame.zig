@@ -403,6 +403,9 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
     ta_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
     ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
     ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
+    ta_widget.scrollbar_style.scrollbar_size = pending.style.scrollbar_width;
+    ta_widget.scrollbar_style.track_color = render_bridge.colorToHsla(pending.style.scrollbar_track_color);
+    ta_widget.scrollbar_style.thumb_color = render_bridge.colorToHsla(pending.style.scrollbar_thumb_color);
     ta_widget.setPlaceholder(pending.style.placeholder);
     try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
     if (ta_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
@@ -437,6 +440,9 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) 
     ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
     ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
     ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
+    ce_widget.text_area.scrollbar_style.scrollbar_size = pending.style.scrollbar_width;
+    ce_widget.text_area.scrollbar_style.track_color = render_bridge.colorToHsla(pending.style.scrollbar_track_color);
+    ce_widget.text_area.scrollbar_style.thumb_color = render_bridge.colorToHsla(pending.style.scrollbar_thumb_color);
 
     // Status bar settings
     ce_widget.show_status_bar = pending.style.show_status_bar;
