@@ -140,7 +140,7 @@ pub const DispatchNode = struct {
     /// Number of children (for iteration)
     child_count: u32 = 0,
 
-    /// Per-parent sibling counter for auto-generated layout ids (PR 11b.2a).
+    /// Per-parent sibling counter for auto-generated layout ids.
     /// `Builder.generateId` reads-and-increments this on the *current* open
     /// node (the parent of the element being opened) so each auto-id'd child
     /// gets a stable, parent-scoped sibling index — `hash(parent_layout_id,
@@ -170,7 +170,7 @@ pub const DispatchNode = struct {
     const Self = @This();
 
     /// Get or lazily allocate the listener block. Panics on OOM — listener
-    /// registration during rendering is unrecoverable (per audit item #10).
+    /// registration during rendering is unrecoverable.
     pub fn getOrCreateListeners(self: *Self, allocator: std.mem.Allocator) *ListenerBlock {
         if (self.listeners) |block| return block;
 
@@ -370,8 +370,8 @@ pub const DispatchTree = struct {
             node.resetListeners();
         }
 
-        // Zig 0.16.0 changed clearRetainingCapacity to @memset(items, undefined)
-        // before zeroing the length. That poisons the backing buffer and breaks
+        // clearRetainingCapacity does @memset(items, undefined) before
+        // zeroing the length. That poisons the backing buffer and breaks
         // the high_water_mark reuse pattern in pushNode, which intentionally
         // reads old node data (especially the `listeners` pointer) from the
         // backing buffer after bumping items.len. Set length to zero directly

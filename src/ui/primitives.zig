@@ -423,7 +423,7 @@ pub fn Each(comptime ItemsType: type, comptime render_fn: anytype) type {
 }
 
 // =============================================================================
-// Container Elements (Phase 1: cx/ui separation)
+// Container Elements
 // =============================================================================
 
 /// Box element descriptor - returns a struct that can be rendered via cx.render()

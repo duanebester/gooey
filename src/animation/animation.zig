@@ -2,9 +2,7 @@
 //!
 //! Provides time-based interpolation for smooth UI transitions.
 //! Integrates with `AnimationStore` (`animation/store.zig`) for
-//! retained per-window state management. (Pre-PR-8.4c this storage
-//! was named `WidgetStore` and lived in `context/`; see PR 8.4c in
-//! `docs/cleanup-implementation-plan.md` for the move rationale.)
+//! retained per-window state management.
 //!
 //! ## Quick Start
 //!
@@ -390,7 +388,7 @@ pub fn calculateProgress(state: *AnimationState, io: std.Io) AnimationHandle {
     }
 
     // Monotonic clock guarantees `elapsed >= 0` — no NTP jumps, no wall-clock rewrites.
-    // `durationTo` returns a `std.Io.Duration`; `toMilliseconds` matches the old i64 math.
+    // `durationTo` returns a `std.Io.Duration`; `toMilliseconds` yields i64 milliseconds.
     const now = std.Io.Timestamp.now(io, .awake);
     const elapsed: i64 = state.start_time.durationTo(now).toMilliseconds();
     std.debug.assert(elapsed >= 0);

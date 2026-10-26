@@ -26,10 +26,9 @@ pub const store = @import("store.zig");
 // =============================================================================
 
 /// `AnimationStore` — retained per-window storage for the four
-/// animation pools (tween, spring, motion, spring_motion). PR 8.4c
-/// lifted this out of the retired `context/widget_store.zig`; the
-/// pools live next to the engines that drive them now. See
-/// `store.zig` for the rationale.
+/// animation pools (tween, spring, motion, spring_motion). The pools
+/// live next to the engines that drive them. See `store.zig` for the
+/// rationale.
 pub const AnimationStore = store.AnimationStore;
 
 // =============================================================================

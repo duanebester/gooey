@@ -7,8 +7,8 @@
 //!   * Rendering    — `cx.render(ui.box(...))`.
 //!   * Handlers     — `cx.update`, `cx.updateWith`, `cx.command`,
 //!                    `cx.commandWith`, `cx.onSelect`, `cx.deferCommand`.
-//!   * Sub-namespaces (PR 5): `cx.lists`, `cx.animations`,
-//!                    `cx.entities`, `cx.focus`. PR 8.3 adds
+//!   * Sub-namespaces: `cx.lists`, `cx.animations`,
+//!                    `cx.entities`, `cx.focus`, and
 //!                    `cx.element_states` (keyed pool of
 //!                    per-element retained state).
 //!
@@ -28,18 +28,17 @@ const std = @import("std");
 
 // Pull in the split-out test file so `zig build test` discovers its
 // tests through the standard reachability graph. The block runs at
-// comptime and produces no runtime cost. PR 5 of the cleanup plan
-// moved the pattern tests out of `cx.zig` to keep this file under
-// the 800-line budget — see `cx_tests.zig` for the bodies.
+// comptime and produces no runtime cost. The pattern tests live
+// outside `cx.zig` to keep this file under the 800-line budget — see
+// `cx_tests.zig` for the bodies.
 comptime {
     _ = @import("cx_tests.zig");
 }
 
 // Core imports
 // The platform module is imported once at file scope rather than inside each
-// method that needs it; `setGlassStyle` and `close` previously each did their
-// own in-body `@import`, which made it easy to miss that they were reaching
-// into backend-specific namespaces.
+// method that needs it; an in-body `@import` makes it easy to miss that a
+// method reaches into backend-specific namespaces.
 const platform_mod = @import("platform/mod.zig");
 const window_mod = @import("context/window.zig");
 const Window = window_mod.Window;
@@ -52,21 +51,18 @@ const handler_mod = @import("context/handler.zig");
 const entity_mod = @import("context/entity.zig");
 // Widget engine-state pools — the `cx.textField` / `cx.textAreaWidget` /
 // `cx.codeEditorWidget` / `cx.scrollView` accessors keyed off these.
-// PR 9 dropped the unused `UniformList*` / `VirtualList*` /
-// `DataTable*` / `TreeList*` aliases along with the deleted deprecated
-// list/table forwarders — callers go through `cx.lists.*` directly now
-// and the list/table state types are imported there.
+// List and table state types are imported by `cx/lists.zig`, since callers
+// go through `cx.lists.*`.
 const text_field_mod = @import("widgets/text_input_state.zig");
 const text_area_mod = @import("widgets/text_area_state.zig");
 const code_editor_mod = @import("widgets/code_editor_state.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
 
-// PR 8.4 — `cx.scrollView(id)` now goes through
-// `Window.element_states.getOrInsert(ScrollContainer, hash, init)`
-// instead of the retired `WidgetStore.scrollContainer` accessor.
+// `cx.scrollView(id)` goes through
+// `Window.element_states.getOrInsert(ScrollContainer, hash, init)`.
 // `LayoutId.fromString(id).id` is the u32 hash key, matching every
 // other element-state path that comes from a string id (`TextInputState` /
-// `TextAreaState` / `CodeEditorState` since PR 8.4b).
+// `TextAreaState` / `CodeEditorState`).
 const layout_id_mod = @import("layout/layout_id.zig");
 const LayoutId = layout_id_mod.LayoutId;
 const Box = ui_mod.Box;
@@ -75,11 +71,9 @@ const Box = ui_mod.Box;
 const text_mod = @import("text/mod.zig");
 pub const TextMeasurement = text_mod.TextMeasurement;
 
-// Animation module — only `hashString` is still needed on `cx.zig`
-// itself (for `cx.changed`'s key hashing). PR 9 dropped the individual
-// `Animation` / `SpringConfig` / `MotionConfig` aliases that the
-// retired animation forwarders used; callers reach those types through
-// `cx.animations.*` or the `animation.*` namespace directly.
+// Animation module — only `hashString` is needed on `cx.zig` itself
+// (for `cx.changed`'s key hashing). Callers reach the animation config
+// types through `cx.animations.*` or the `animation.*` namespace directly.
 const animation_mod = @import("animation/mod.zig");
 
 // Handler types — `cx.update` / `cx.command` / `cx.onSelect` build
@@ -91,7 +85,7 @@ pub const typeId = handler_mod.typeId;
 const packArg = handler_mod.packArg;
 const unpackArg = handler_mod.unpackArg;
 
-// Entity types — only `EntityId` survives PR 9's forwarder deletion;
+// Entity types — only `EntityId` is needed here;
 // the user-facing `Entity` / `EntityMap` / `EntityContext` generics
 // route through `cx.entities.*` (which imports them locally).
 const EntityId = entity_mod.EntityId;
@@ -99,7 +93,7 @@ const EntityId = entity_mod.EntityId;
 // UI types (re-exported from root.zig for users)
 const Theme = ui_mod.Theme;
 
-// Sub-namespace modules (PR 5). Each exposes a zero-sized struct
+// Sub-namespace modules. Each exposes a zero-sized struct
 // that lives as a field on `Cx`; methods on those structs recover
 // `*Cx` via `@fieldParentPtr`, giving the `cx.lists.uniform(...)` /
 // `cx.animations.spring(...)` call shape without extra storage
@@ -129,23 +123,19 @@ pub const Cx = struct {
     /// Internal ID counter for generated IDs
     id_counter: u32 = 0,
 
-    // Sub-namespaces (PR 5). Zero-sized fields default-initialised so
-    // existing call-site struct literals (e.g. in `runtime/window_context.zig`)
-    // keep compiling untouched. `animations` is plural to avoid
-    // colliding with the deprecated `cx.animate(...)` method (PR 9
-    // removes the forwarder and frees up the singular name).
+    // Sub-namespaces. Zero-sized fields default-initialised so
+    // call-site struct literals (e.g. in `runtime/window_context.zig`)
+    // need not mention them.
     lists: lists_mod.Lists = .{},
     animations: animations_mod.Animations = .{},
     entities: entities_mod.Entities = .{},
     focus: focus_mod.Focus = .{},
 
-    // PR 8.3 — surface `Window.element_states` (PR 8.1's keyed pool
-    // of per-element retained state) on `Cx`. Same zero-sized
-    // namespace shape as the sibling fields above. Widgets that
-    // previously reached through `cx._window.element_states` (only
-    // PR 8.2's `Select` so far) can now use the public
-    // `cx.element_states.*` surface; the underlying pool is
-    // unchanged.
+    // Surfaces `Window.element_states` (the keyed pool of per-element
+    // retained state) on `Cx`. Same zero-sized namespace shape as the
+    // sibling fields above, so widgets use the public
+    // `cx.element_states.*` surface instead of reaching through
+    // `cx._window.element_states`.
     element_states: element_states_mod.ElementStates = .{},
 
     /// Paired runtime container operations for validated dynamic trees.
@@ -218,15 +208,13 @@ pub const Cx = struct {
     /// Set the window title.
     ///
     /// The parameter is `[]const u8`, matching the platform contract's
-    /// `setTitle` (see `platform/contract.zig`). It was `[:0]const u8`, which
-    /// no backend required and which forced callers to keep a sentinel they
-    /// could not always produce; every backend copies into its own buffer and
-    /// adds the terminator itself.
+    /// `setTitle` (see `platform/contract.zig`). It is not `[:0]const u8`
+    /// because no backend requires a sentinel and callers cannot always
+    /// produce one; every backend copies into its own buffer and adds the
+    /// terminator itself.
     ///
-    /// The field access was also stale: `_window.window` was renamed to the
-    /// optional `_window.platform_window`, so this method could not compile on
-    /// any platform. Nothing called it, so nothing caught it — which is why
-    /// `root.zig` now forces analysis of `Cx` method bodies.
+    /// Nothing in-tree calls this method, so `root.zig` forces analysis of
+    /// `Cx` method bodies to keep it compiling.
     pub fn setTitle(self: *Self, title: []const u8) void {
         if (self._window.platform_window) |pw| pw.setTitle(title);
     }
@@ -245,12 +233,9 @@ pub const Cx = struct {
     /// translucent backdrop (Wayland has no such protocol; the browser path
     /// needs CSS the host does not yet apply) compile this out entirely.
     ///
-    /// Previously this branched on `is_wasm` and then `@ptrCast` the window to
-    /// the macOS-concrete `Window` type — an unchecked cast that would have
-    /// reinterpreted a Wayland window as an AppKit one — and remapped the
-    /// style through `@enumFromInt(@intFromEnum(...))` between two enums whose
-    /// tag values did not agree. Both are gone: there is one `GlassStyle`, and
-    /// the call goes through the selected `PlatformWindow` directly.
+    /// The call goes through the selected `PlatformWindow` directly, with no
+    /// cast to a backend-concrete window type, and there is one canonical
+    /// `GlassStyle` shared by every backend, so tag values cannot disagree.
     pub fn setGlassStyle(
         self: *Self,
         style: platform_mod.GlassStyle,
@@ -262,9 +247,8 @@ pub const Cx = struct {
         std.debug.assert(opacity >= 0.0 and opacity <= 1.0);
         std.debug.assert(corner_radius >= 0.0);
 
-        // PR 7b.1b — `_gooey.window` was the optional `*PlatformWindow`
-        // field; renamed to `_window.platform_window`. Capture name
-        // disambiguated from the `pub fn window(self: *Self)` accessor.
+        // Capture name `pw` is disambiguated from the
+        // `pub fn window(self: *Self)` accessor.
         if (self._window.platform_window) |pw| {
             pw.setGlassStyle(style, opacity, corner_radius);
         }
@@ -273,14 +257,13 @@ pub const Cx = struct {
     /// Close the window (and exit the application).
     ///
     /// `close` is part of the common window contract on every backend, so this
-    /// no longer needs a web special case. A browser cannot close a tab it did
+    /// needs no web special case. A browser cannot close a tab it did
     /// not open — `capabilities.can_close_window` is `false` there — but the
     /// web window still records the request so `isClosed()` is truthful and
     /// Gooey can stop driving frames.
     pub fn close(self: *Self) void {
-        // PR 7b.1b — capture renamed from `window` to `pw` to avoid shadowing
-        // the `pub fn window(self: *Self)` accessor declared on `Cx`. Field
-        // also renamed (`window → platform_window`) on the framework wrapper.
+        // Capture is `pw`, not `window`, to avoid shadowing the
+        // `pub fn window(self: *Self)` accessor declared on `Cx`.
         if (self._window.platform_window) |pw| {
             pw.close();
         }
@@ -450,8 +433,8 @@ pub const Cx = struct {
     /// Schedule `fn(*State, *Window) void` to run after current event
     /// handling completes. Use for modal dialogs and other operations
     /// that can't safely run mid-event (re-entrancy, heavy work). Mirrors
-    /// `Window.deferCommand`; named to avoid the `defer` keyword — the old
-    /// `cx.@"defer"` needed an escape and could not be spelled `cx.defer()`.
+    /// `Window.deferCommand`; named to avoid the `defer` keyword, which
+    /// would need the `cx.@"defer"` escape and could not be spelled `cx.defer()`.
     pub fn deferCommand(
         self: *Self,
         comptime method: anytype,
@@ -557,8 +540,7 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Entities (PR 5 deprecated forwarders deleted in PR 9 — reach for
-    // `cx.entities.*` directly.)
+    // Entities — reach for `cx.entities.*` directly.
     // =========================================================================
 
     /// Request a UI re-render.
@@ -579,22 +561,17 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Focus (PR 5 deprecated forwarders deleted in PR 9 — reach for
-    // `cx.focus.*` directly. `focusTextField` / `focusTextArea` both
-    // collapsed onto `cx.focus.widget(id)` since the text-field /
-    // text-area distinction merged in PR 4.)
+    // Focus — reach for `cx.focus.*` directly. `cx.focus.widget(id)`
+    // focuses text fields and text areas alike.
     // =========================================================================
 
     // Widget access (for advanced use cases). Each returns `null` if
     // no widget with that id has been registered. The returned types
     // are the *engine* state objects (`TextInputState`, `TextAreaState`,
     // `CodeEditorState`) — not the user-facing `TextInput` / `TextArea`
-    // declarative components in `components/src/`. PR 8.4-prep renamed the
-    // engine types to disambiguate; the accessor verbs (`textField`,
-    // `textAreaWidget`, `codeEditorWidget`) are unchanged.
+    // declarative components in `components/src/`.
     //
-    // PR 8.4b — storage moved off the per-type `WidgetStore`
-    // StringHashMaps onto `Window.element_states`. Each accessor
+    // Storage lives on `Window.element_states`. Each accessor
     // here is a read-only `get` keyed by `LayoutId.id`: the matching
     // `Builder.render*` site is the create-on-touch boundary, so by
     // the time application code reaches for the engine state on a
@@ -611,14 +588,12 @@ pub const Cx = struct {
         return self._window.widgetState(code_editor_mod.CodeEditorState, id);
     }
     pub fn scrollView(self: *Self, id: []const u8) ?*scroll_view_mod.ScrollContainer {
-        // PR 8.4 — storage moved off `WidgetStore.scroll_containers`
-        // onto `Window.element_states`. Hash the string id once at
+        // Storage lives on `Window.element_states`. Hash the string id once at
         // the boundary; subsequent frames hit the cached pointer
         // through `getOrInsertWith`, whose `make` factory runs only on
         // the seeding miss — never on a hit. Failure modes (OOM /
         // `error.ElementStatesAtCapacity`) collapse to `null` so the
-        // public surface stays optional — same shape callers had
-        // pre-PR-8.4 against the `?*ScrollContainer` return.
+        // public surface stays an optional `?*ScrollContainer`.
         const hash: u64 = @as(u64, LayoutId.fromString(id).id);
         const g = self._window;
         return g.element_states.getOrInsertWith(
@@ -636,9 +611,9 @@ pub const Cx = struct {
         self._builder.processChildren(element);
     }
 
-    /// Resolve an element id *once* (PR 11b.2b). An explicit string hashes
+    /// Resolve an element id *once*. An explicit string hashes
     /// through `LayoutId.fromString`; a null id falls back to the
-    /// parent-scoped auto id (`Builder.generateId`, PR 11b.2a).
+    /// parent-scoped auto id (`Builder.generateId`).
     ///
     /// Components resolve identity once and reuse it for accessibility and
     /// `ui.box_with_layout_id`. When `id` is null, this calls `generateId` while
@@ -736,9 +711,7 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Animations (PR 5 deprecated forwarders deleted in PR 9 — reach for
-    // `cx.animations.*` directly.) The verb mapping for callers porting
-    // off the old names is documented in `docs/CHANGELOG.md`.
+    // Animations — reach for `cx.animations.*` directly.
     // =========================================================================
 
     // =========================================================================
@@ -759,17 +732,15 @@ pub const Cx = struct {
     pub fn changed(self: *Self, comptime key: []const u8, value: anytype) bool {
         const key_hash = comptime animation_mod.hashString(key);
         const value_hash = change_tracker_mod.hashValue(@TypeOf(value), value);
-        // PR 8.4c — `change_tracker` is a peer field on `Window` now
-        // (was `Window.widgets.change_tracker` pre-retirement, when
-        // `WidgetStore` was the catch-all retained-storage namespace).
+        // `change_tracker` is a peer field on `Window`, not part of any
+        // catch-all retained-storage namespace.
         return self._window.change_tracker.changed(key_hash, value_hash);
     }
 
     // =========================================================================
-    // Lists / tables (PR 5 deprecated forwarders deleted in PR 9 — reach
-    // for `cx.lists.*` directly. The `DataTableCallbacks(Cx)` generic
-    // type now lives at `cx.lists.Lists.DataTableCallbacks(Cx)` as its
-    // sole canonical home.)
+    // Lists / tables — reach for `cx.lists.*` directly. The
+    // `DataTableCallbacks(Cx)` generic type lives at
+    // `cx.lists.Lists.DataTableCallbacks(Cx)` as its sole canonical home.
     // =========================================================================
 };
 
@@ -805,15 +776,9 @@ fn ExtractState(comptime caller: []const u8, comptime Fn: type) type {
     return ptr_info.pointer.child;
 }
 
-// `computeTriggerHash` used to live here; it now lives next to the
-// `tweenOn` / `tweenOnComptime` callers in `cx/animations.zig`. The
-// deprecated forwarders on `Cx` route through that copy, so a single
-// implementation drives both call paths.
-
 // =============================================================================
 // Tests
 // =============================================================================
 
 // Tests live in `cx_tests.zig` — see the `comptime _ = @import(...)`
-// block near the top of this file for the discovery hook. PR 5 moved
-// them out so this file could shed ~420 lines.
+// block near the top of this file for the discovery hook.

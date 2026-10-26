@@ -1,51 +1,24 @@
 //! `cx.animations` — animation, spring, stagger, and motion APIs.
 //!
-//! This module hosts the bodies of the animation helpers that used to
-//! live directly on `Cx`. They are accessed through the
-//! `cx.animations.<name>(...)` sub-namespace, which is implemented as a
-//! zero-sized field on `Cx` whose methods recover `*Cx` via
-//! `@fieldParentPtr`. That keeps the call shape free of extra
-//! parentheses while moving ~200 lines of animation-specific code out
-//! of `cx.zig`.
+//! This module hosts the bodies of the animation helpers. They are
+//! accessed through the `cx.animations.<name>(...)` sub-namespace,
+//! which is implemented as a zero-sized field on `Cx` whose methods
+//! recover `*Cx` via `@fieldParentPtr`. That keeps the call shape free
+//! of extra parentheses while keeping ~200 lines of animation-specific
+//! code out of `cx.zig`.
 //!
 //! ## Why "animations" and not "animate"?
 //!
-//! Zig fields and decls share a namespace, so a field named `animate`
-//! on `Cx` would collide with the existing `cx.animate(id, config)`
-//! method. The plural `animations` reads naturally as a noun
-//! (CLAUDE.md §9 — "Nouns compose better than adjectives or
-//! participles") and avoids the collision until the deprecated
-//! top-level forwarders are removed in PR 9.
-//!
-//! The original top-level methods (`cx.animate`, `cx.spring`,
-//! `cx.stagger`, `cx.motion`, `cx.springMotion`, and their `*Comptime`
-//! variants) remain as deprecated one-line forwarders into this
-//! module — they will be removed in PR 9.
+//! The plural `animations` reads naturally as a noun (CLAUDE.md §9 —
+//! "Nouns compose better than adjectives or participles").
 //!
 //! ## Naming inside the namespace
 //!
-//! The redundant prefix is dropped now that the namespace carries the
-//! grouping. `cx.animateComptime` becomes `cx.animations.tweenComptime`
-//! / `cx.animations.tween` etc — but to keep the diff small for PR 5,
-//! the names match the originals minus the `animate` prefix where it
-//! was redundant:
-//!
-//! | Old                              | New                                       |
-//! | -------------------------------- | ----------------------------------------- |
-//! | `cx.animate(id, cfg)`            | `cx.animations.tween(id, cfg)`            |
-//! | `cx.animateComptime(id, cfg)`    | `cx.animations.tweenComptime(id, cfg)`    |
-//! | `cx.animateOn(id, t, cfg)`       | `cx.animations.tweenOn(id, t, cfg)`       |
-//! | `cx.animateOnComptime(...)`      | `cx.animations.tweenOnComptime(...)`      |
-//! | `cx.restartAnimation(id, cfg)`   | `cx.animations.restart(id, cfg)`          |
-//! | `cx.restartAnimationComptime(.)` | `cx.animations.restartComptime(...)`      |
-//! | `cx.spring(id, cfg)`             | `cx.animations.spring(id, cfg)`           |
-//! | `cx.springComptime(id, cfg)`     | `cx.animations.springComptime(id, cfg)`   |
-//! | `cx.stagger(...)`                | `cx.animations.stagger(...)`              |
-//! | `cx.staggerComptime(...)`        | `cx.animations.staggerComptime(...)`      |
-//! | `cx.motion(id, show, cfg)`       | `cx.animations.motion(id, show, cfg)`     |
-//! | `cx.motionComptime(...)`         | `cx.animations.motionComptime(...)`       |
-//! | `cx.springMotion(...)`           | `cx.animations.springMotion(...)`         |
-//! | `cx.springMotionComptime(...)`   | `cx.animations.springMotionComptime(...)` |
+//! Names carry no `animate` prefix because the namespace carries the
+//! grouping: time-based tweens are `tween*` / `restart*`, and springs,
+//! staggers, and motions keep their own verbs (`spring`, `stagger`,
+//! `motion`, `springMotion`), each with a `*Comptime` variant that
+//! hashes the id at compile time.
 
 const std = @import("std");
 
@@ -86,7 +59,7 @@ pub const Animations = struct {
     }
 
     // =========================================================================
-    // Tween animations (formerly `cx.animate*`)
+    // Tween animations
     // =========================================================================
 
     /// Tween animation with compile-time string hashing. Most efficient
@@ -324,9 +297,7 @@ pub const Animations = struct {
 /// Compute a hash for any trigger value for use with `tweenOn` /
 /// `tweenOnComptime`. Uses type-specific handling for booleans and
 /// enums so triggers compare structurally rather than via their
-/// underlying byte representation. This must stay in sync with the
-/// implementation in `cx.zig` while the deprecated forwarders exist —
-/// PR 9 will remove the duplicate.
+/// underlying byte representation.
 fn computeTriggerHash(comptime T: type, value: T) u64 {
     const info = @typeInfo(T);
     if (info == .bool) return if (value) 1 else 0;

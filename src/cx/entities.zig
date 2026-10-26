@@ -1,27 +1,17 @@
 //! `cx.entities` — entity creation and access.
 //!
-//! This module hosts the bodies of the entity-related helpers that
-//! used to live directly on `Cx`. They are accessed through the
+//! This module hosts the bodies of the entity-related helpers. They
+//! are accessed through the
 //! `cx.entities.<name>(...)` sub-namespace, which is implemented as a
 //! zero-sized field on `Cx` whose methods recover `*Cx` via
 //! `@fieldParentPtr`. See `lists.zig` for the rationale.
 //!
 //! ## Naming inside the namespace
 //!
-//! The redundant `Entity` suffix is dropped now that the namespace
-//! carries the grouping:
-//!
-//! | Old                                  | New                             |
-//! | ------------------------------------ | ------------------------------- |
-//! | `cx.createEntity(T, value)`          | `cx.entities.create(T, value)`  |
-//! | `cx.readEntity(T, entity)`           | `cx.entities.read(T, entity)`   |
-//! | `cx.writeEntity(T, entity)`          | `cx.entities.write(T, entity)`  |
-//! | `cx.entityCx(T, entity)`             | `cx.entities.context(T, entity)`|
-//! | `cx.attachEntityCancelGroup(id, g)`  | `cx.entities.attachCancel(id, g)` |
-//! | `cx.detachEntityCancelGroup(id)`     | `cx.entities.detachCancel(id)`  |
-//!
-//! The original top-level methods remain as deprecated one-line
-//! forwarders into this module — they will be removed in PR 9.
+//! Names carry no `Entity` suffix because the namespace carries the
+//! grouping. `cx.attachEntityCancelGroup` / `cx.detachEntityCancelGroup`
+//! remain on `Cx` as deprecated one-line forwarders to `attachCancel` /
+//! `detachCancel`.
 //!
 //! Process-wide cancel-group registration (not tied to an entity)
 //! stays on `Cx` itself as `cx.registerCancelGroup` /
@@ -68,7 +58,7 @@ pub const Entities = struct {
         comptime T: type,
         value: T,
     ) !Entity(T) {
-        // PR 7b.3 — entities lifted off `Window` onto `App`. Reach
+        // Entities live on `App`, not `Window`. Reach
         // through `_window.app.entities` — the borrowed `*App`
         // points at app-scope storage shared across windows.
         return self.cx()._window.app.entities.new(T, value);
@@ -110,7 +100,7 @@ pub const Entities = struct {
         entity: Entity(T),
     ) ?EntityContext(T) {
         const c = self.cx();
-        // PR 7b.3 — entities live on `App`. Both the existence
+        // Entities live on `App`. Both the existence
         // check and the borrowed `*EntityMap` handed to the
         // `EntityContext` reach through `_window.app.entities`.
         if (!c._window.app.entities.exists(entity.id)) return null;
@@ -139,7 +129,7 @@ pub const Entities = struct {
         id: EntityId,
         group: *std.Io.Group,
     ) void {
-        // PR 7b.3 — cancel groups attach to entities on the
+        // Cancel groups attach to entities on the
         // shared `App.entities` map.
         self.cx()._window.app.entities.attachCancelGroup(id, group);
     }
@@ -148,7 +138,7 @@ pub const Entities = struct {
     /// it. Use when the async work has completed normally and the
     /// group should no longer be auto-cancelled on entity removal.
     pub fn detachCancel(self: *Entities, id: EntityId) void {
-        // PR 7b.3 — see `attachCancel`.
+        // See `attachCancel`.
         self.cx()._window.app.entities.detachCancelGroup(id);
     }
 };

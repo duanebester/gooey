@@ -120,7 +120,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
     std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
-    // PR 11b.3a — the unified control queue holds one record per
+    // The unified control queue holds one record per
     // text widget, so it cannot exceed the three pools combined.
     std.debug.assert(builder.pending_text_widgets.items.len <= Builder.MAX_PENDING_TEXT_WIDGETS);
     std.debug.assert(builder.pending_scrolls.items.len <= Builder.MAX_PENDING_SCROLLS);
@@ -182,7 +182,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     registerBlurHandlers(window, builder);
 
     // Render the text widgets (inputs / text areas / code editors) in a
-    // single tree-ordered pass over the unified control queue (PR 11b.3a).
+    // single tree-ordered pass over the unified control queue.
     try renderTextWidgets(window, builder);
 
     // Render canvas elements (custom vector graphics)
@@ -527,7 +527,7 @@ fn renderDebugOverlays(window: *Window) !void {
     );
     try window.debugger().renderOverlays(window.next_frame.scene);
 
-    // Render inspector panel (Phase 2)
+    // Render inspector panel
     if (window.debugger().showInspector()) {
         try window.debugger().renderInspectorPanel(
             window.next_frame.scene,

@@ -1,24 +1,19 @@
 //! `cx.lists` — virtualized list and table widget APIs.
 //!
-//! This module hosts the bodies of the list-building helpers that used to
-//! live directly on `Cx`. They are accessed through the
-//! `cx.lists.<name>(...)` sub-namespace, which is implemented as a
-//! zero-sized field on `Cx` whose methods recover `*Cx` via
-//! `@fieldParentPtr`. That keeps the call shape free of extra parentheses
-//! while moving ~400 lines of widget-specific code out of `cx.zig`.
+//! This module hosts the bodies of the list-building helpers. They are
+//! accessed through the `cx.lists.<name>(...)` sub-namespace, which is
+//! implemented as a zero-sized field on `Cx` whose methods recover `*Cx`
+//! via `@fieldParentPtr`. That keeps the call shape free of extra
+//! parentheses while keeping ~400 lines of widget-specific code out of
+//! `cx.zig`.
 //!
 //! ## Why a sub-namespace?
 //!
-//! `cx.zig` previously held every widget-coordination API at the top
-//! level, which crossed the 1,900-line mark and forced unrelated
-//! widget plumbing to share the same namespace as core context
-//! operations. PR 5 of the cleanup plan groups closely-related calls
-//! under explicit sub-namespaces (lists, animations, entities, focus)
-//! so each grouping can be read on its own.
-//!
-//! The original top-level methods (`cx.uniformList`, `cx.treeList`,
-//! `cx.virtualList`, `cx.dataTable`) remain as deprecated one-line
-//! forwarders into this module — they will be removed in PR 9.
+//! Holding every widget-coordination API at the top level of `cx.zig`
+//! would push it past 1,900 lines and force unrelated widget plumbing
+//! to share the same namespace as core context operations. Grouping
+//! closely-related calls under explicit sub-namespaces (lists,
+//! animations, entities, focus) lets each grouping be read on its own.
 
 const std = @import("std");
 

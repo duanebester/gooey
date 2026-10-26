@@ -164,7 +164,7 @@ test "packArg/unpackArg with zero values" {
 }
 
 test "OnSelectHandler preserves the full usize index range" {
-    // The old Select-specific packing truncated indexes to 32 bits. Exercise
+    // A 32-bit packing would truncate indexes. Exercise
     // zero, the first index beyond that boundary where available, and max.
     const callback = struct {
         fn invoke(_: *Window, _: EntityId) void {}

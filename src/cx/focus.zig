@@ -1,30 +1,17 @@
 //! `cx.focus` — focus management.
 //!
-//! This module hosts the bodies of the focus-related helpers that
-//! used to live directly on `Cx`. They are accessed through the
+//! This module hosts the bodies of the focus-related helpers. They
+//! are accessed through the
 //! `cx.focus.<name>(...)` sub-namespace, which is implemented as a
 //! zero-sized field on `Cx` whose methods recover `*Cx` via
 //! `@fieldParentPtr`. See `lists.zig` for the rationale.
 //!
 //! ## Naming inside the namespace
 //!
-//! The redundant `focus` / `Focused` prefix is dropped now that the
-//! namespace carries the grouping. `focusTextField` and
-//! `focusTextArea` collapse onto a single `widget(id)` call because
-//! both routed through `Window.focusWidget` already (the per-type
-//! distinction was vestigial after PR 4 broke the backward edges).
-//!
-//! | Old                          | New                              |
-//! | ---------------------------- | -------------------------------- |
-//! | `cx.focusNext()`             | `cx.focus.next()`                |
-//! | `cx.focusPrev()`             | `cx.focus.prev()`                |
-//! | `cx.blurAll()`               | `cx.focus.blurAll()`             |
-//! | `cx.focusTextField(id)`      | `cx.focus.widget(id)`            |
-//! | `cx.focusTextArea(id)`       | `cx.focus.widget(id)`            |
-//! | `cx.isElementFocused(id)`    | `cx.focus.isElementFocused(id)`  |
-//!
-//! The original top-level methods remain as deprecated one-line
-//! forwarders into this module — they will be removed in PR 9.
+//! Names carry no `focus` / `Focused` prefix because the namespace
+//! carries the grouping. Text fields, text areas, and every other
+//! `Focusable` share a single `widget(id)` call because they all route
+//! through `Window.focusWidget`; there is no per-type distinction.
 
 const std = @import("std");
 
@@ -73,17 +60,16 @@ pub const Focus = struct {
 
     /// Remove focus from all elements. The previously-focused widget
     /// receives a `blur` notification through its `Focusable` vtable
-    /// — no walk over per-type widget maps required (PR 4).
+    /// — no walk over per-type widget maps required.
     pub fn blurAll(self: *Focus) void {
         self.cx()._window.blurAll();
     }
 
     /// Focus a specific widget by string id.
     ///
-    /// Replaces the historical `focusTextField` / `focusTextArea`
-    /// pair: both routed through `Window.focusWidget` already, and the
-    /// per-type distinction was vestigial after PR 4 broke the
-    /// backward edges from `Window` into the widget store. Callers
+    /// One call serves every widget type: all of them route through
+    /// `Window.focusWidget`, and `Window` has no backward edges into
+    /// per-type widget storage. Callers
     /// pass the id they registered the widget with (text input, text
     /// area, code editor, or any other `Focusable`) and the focus
     /// manager dispatches through the trait.

@@ -121,9 +121,9 @@ const ContextTeardownFn = *const fn (*PlatformWindow) void;
 /// `applicationShouldTerminateAfterLastWindowClosed` defaults to `NO`. Linux
 /// and Windows applications exit.
 ///
-/// `App` previously hardcoded `quit_when_last_window_closes = true` on every
-/// target, which made every macOS Gooey application non-native in a way an
-/// author could only discover by reading `checkQuitCondition`.
+/// Hardcoding "quit when the last window closes" on every target would make
+/// every macOS Gooey application non-native in a way an author could only
+/// discover by reading `checkQuitCondition`.
 pub const QuitPolicy = enum {
     /// Follow platform convention: stay alive on macOS, quit elsewhere.
     platform_default,
@@ -409,9 +409,9 @@ pub const App = struct {
     /// Reads through `getScaleFactor()` — the contract-verified accessor — so
     /// this cannot silently bind to a backend field that happens to share the
     /// name. The upper bound matches what the backends themselves accept
-    /// (macOS asserts 8.0, web's `scale_factor_max` is 8.0); the previous 4.0
-    /// here meant a host reporting 5x passed every backend check and then
-    /// panicked in shared code.
+    /// (macOS asserts 8.0, web's `scale_factor_max` is 8.0); a tighter bound
+    /// here would let a host reporting 5x pass every backend check and then
+    /// panic in shared code.
     fn installScaleFactor(self: *Self, window: *PlatformWindow) void {
         const scale_factor = window.getScaleFactor();
         std.debug.assert(scale_factor > 0);
@@ -632,8 +632,8 @@ pub const App = struct {
     /// Resolve a platform-assigned id to the concrete window type.
     ///
     /// The platform boundary deals only in `*anyopaque`, so the cast lives in
-    /// this one helper instead of being repeated — and, previously,
-    /// inconsistently validated — at each call site.
+    /// this one helper instead of being repeated — and inconsistently
+    /// validated — at each call site.
     fn lookupWindow(self: *const Self, id: WindowId) ?*PlatformWindow {
         std.debug.assert(id.isValid());
         std.debug.assert(self.initialized);
@@ -1032,7 +1032,7 @@ test "AppWindowOptions forwards to WindowOptions without conversion" {
 
 test "windowOptionsFrom preserves the canonical glass style" {
     // Positive and negative space: a non-default style must survive the hop
-    // (the old cross-enum cast remapped it), and the default must stay `.none`.
+    // (a cross-enum cast would remap it), and the default must stay `.none`.
     const glass = AppWindowOptions{ .glass_style = .glass_regular };
     try std.testing.expectEqual(GlassStyle.glass_regular, windowOptionsFrom(&glass).glass_style);
 
@@ -1049,10 +1049,9 @@ test "windowOptionsFrom preserves the canonical glass style" {
 // The slot table is pure bookkeeping over ids the platform minted: `trackWindow`,
 // `findWindowSlot`, `removeWindowSlot`, and `untrackWindowId` never touch
 // `platform`, `resources`, or `context_app`. That is what lets the leak-bound be
-// tested on every target without standing up a host, which is the property the
-// close-path regression turned on: before this change a closed window kept its
-// slot forever and an app walked up to `MAX_WINDOWS` and then refused to open
-// anything.
+// tested on every target without standing up a host. The property under test:
+// a closed window must release its slot, or an app walks up to `MAX_WINDOWS`
+// and then refuses to open anything.
 // -----------------------------------------------------------------------------
 
 /// Initialize only the slot-table fields of an otherwise `undefined` `App`.
@@ -1133,8 +1132,8 @@ test "slot table swap-remove keeps surviving entries addressable" {
 }
 
 test "repeated open/close cycles do not walk the slot table toward capacity" {
-    // The regression this guards: `WindowHandle.close` tore nothing down, so
-    // every open/close pair consumed a slot permanently. Cycle far past
+    // The regression this guards: if `WindowHandle.close` tears nothing down,
+    // every open/close pair consumes a slot permanently. Cycle far past
     // `MAX_WINDOWS` with fresh ids and require the table to stay bounded.
     const app = try std.testing.allocator.create(App);
     defer std.testing.allocator.destroy(app);
@@ -1186,9 +1185,9 @@ test "QuitPolicy.platform_default follows the host convention" {
 }
 
 test "a fresh App defaults to the platform convention" {
-    // The default is the whole behaviour change: `initInPlace` used to set an
-    // unconditional "quit on last window", so this guards against a regression
-    // to a hardcoded policy. Only the policy field is exercised — a full
+    // The default must follow platform convention, not an unconditional
+    // "quit on last window", so this guards against a regression to a
+    // hardcoded policy. Only the policy field is exercised — a full
     // `initInPlace` needs a host connection.
     const app = try std.testing.allocator.create(App);
     defer std.testing.allocator.destroy(app);

@@ -12,11 +12,10 @@
 //! flow and multi-window flow share one callback model.
 //!
 //! Backend-specific initialization order is the backend's business: each
-//! `Platform.initInPlace` completes its own host wiring. That replaced a
-//! by-value `Platform.init()` plus a Linux-only `plat.setupListeners()`
-//! follow-up call in `runCx` — Wayland registry listeners retain `&self`, so
-//! they could only be armed once the value had reached its final address, and
-//! shared runtime code should not encode which protocol needs a second phase.
+//! `Platform.initInPlace` completes its own host wiring, with no follow-up
+//! call in `runCx`. Wayland registry listeners retain `&self`, so they can
+//! only be armed once the value has reached its final address, and shared
+//! runtime code should not encode which protocol needs a second phase.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -107,7 +106,7 @@ pub fn runCx(
     try app_ptr.initInPlace(allocator, io);
     defer if (owned) app_ptr.deinit();
 
-    // Create per-window context (replaces static CallbackState)
+    // Create per-window context
     const WinCtx = window_context.WindowContext(State);
     const win_ctx = try WinCtx.init(allocator, window, state, render, .{
         .font_name = config.font,
@@ -163,10 +162,9 @@ fn ownsTeardownAfterRun(model: platform.DriveModel, host_running: bool) bool {
         // the `defer`s already registered do it in the right order.
         //
         // A blocking backend must report a stopped loop by the time `run`
-        // returns. This was previously left unasserted because Linux kept
-        // `running` true when `run` early-returned on a null display; Linux now
-        // raises the flag only after that guard and clears it with a `defer`,
-        // so every backend agrees and the postcondition is checkable.
+        // returns. Linux raises `running` only after its null-display guard
+        // and clears it with a `defer`, so every backend agrees and the
+        // postcondition is checkable.
         .blocking_event_loop => blk: {
             assert(!host_running);
             break :blk true;
@@ -213,9 +211,9 @@ fn windowOptions(comptime State: type, config: CxConfig(State)) interface_mod.Wi
         .max_size = config.max_size,
         .centered = config.centered,
         // Glass/transparency options. `glass_style` is passed straight through:
-        // there is now one canonical `GlassStyle` shared by every backend, so
-        // the previous `@enumFromInt(@intFromEnum(...))` bridge between two
-        // differently ordered enums is gone.
+        // there is one canonical `GlassStyle` shared by every backend, so no
+        // `@enumFromInt(@intFromEnum(...))` bridge between differently ordered
+        // enums is needed.
         .background_opacity = config.background_opacity,
         .glass_style = config.glass_style,
         .glass_corner_radius = config.glass_corner_radius,
@@ -305,7 +303,7 @@ test "ownsTeardownAfterRun keeps teardown only for a blocking event loop" {
     // backends, so a comptime branch would leave the `host_callback` decision
     // unanalyzed everywhere it is built today. Passing the model as a runtime
     // argument is what makes the second prong compiled and executed here.
-    // Each prong now accepts exactly one `host_running` value, so these two
+    // Each prong accepts exactly one `host_running` value, so these two
     // calls cover the whole legal input space. The rejected combinations are
     // contract violations rather than cases with a defined answer, and both
     // prongs assert them: a blocking backend must have stopped its loop before
@@ -317,9 +315,8 @@ test "ownsTeardownAfterRun keeps teardown only for a blocking event loop" {
 }
 
 test "windowOptions carries CxConfig through to the boundary struct" {
-    // Goal: pin the two values `runCx` no longer builds inline — the default
-    // background colour and the straight-through `glass_style` — since the
-    // translation moved into a helper.
+    // Goal: pin the two values `runCx` delegates to this helper — the default
+    // background colour and the straight-through `glass_style`.
     const Empty = struct {};
     const defaults = windowOptions(Empty, .{});
     try std.testing.expectEqual(@as(f64, 800), defaults.width);

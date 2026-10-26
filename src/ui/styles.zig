@@ -486,9 +486,10 @@ pub const CodeEditorStyle = struct {
 ///
 /// A stack is a `Box` with a fixed `.direction`, so it shares `Box`'s
 /// alignment and padding types. This makes a stack a clean subset of box
-/// (and a superset: main-axis distribution is now available on stacks too).
-/// The `.{}` default (main=start, cross=start) preserves prior behavior,
-/// where stack alignment only affected the cross axis.
+/// (and a superset: main-axis distribution is available on stacks too).
+/// The `.{}` default (main=start, cross=start) leaves the main axis packed
+/// at the start, so a stack with default alignment only positions children
+/// on the cross axis.
 pub const StackStyle = struct {
     gap: f32 = 0,
     alignment: Box.Alignment = .{},

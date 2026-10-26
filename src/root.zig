@@ -9,10 +9,8 @@
 //!      source-of-truth home; the curated-core flat names are
 //!      re-exports for ergonomics only.
 //!
-//! Earlier drafts of this layout planned a `src/prelude.zig` file plus
-//! `usingnamespace gooey.prelude;` in example headers. Zig 0.16 removed
-//! `usingnamespace`, so the prelude file collapses into this top-section
-//! comment.
+//! There is no `src/prelude.zig`: Zig has no `usingnamespace` to import
+//! one unprefixed, so this top-section comment serves as the prelude.
 //!
 //! ## Quick start
 //!
@@ -74,7 +72,7 @@ pub const App = @import("app.zig").App;
 /// `cx.element_states` sub-namespaces.
 pub const Cx = @import("app.zig").Cx;
 
-/// Framework-level window wrapper (was `Gooey` pre-PR 7b.1b). Holds
+/// Framework-level window wrapper. Holds
 /// per-window subsystems \u2014 focus, hover, animations, change tracker,
 /// element-state pool, \u2026 \u2014 and the OS-level `PlatformWindow` handle.
 pub const Window = @import("context/mod.zig").Window;
@@ -114,9 +112,8 @@ else
 //
 // Each namespace below is the canonical home for the types underneath
 // it. Examples reach for `gooey.core.Rect`, `gooey.animation.lerp`, etc.
-// PR 9 removed the duplicate flat aliases
-// (`gooey.Button`, `gooey.Rect`, \u2026) that lived next to these
-// namespaces.
+// Their types are not duplicated as flat aliases (`gooey.Button`,
+// `gooey.Rect`, \u2026) next to these namespaces.
 
 /// Core primitives: geometry (`Point` / `Rect` / `Bounds`), color,
 /// element IDs, custom shaders.
@@ -229,19 +226,16 @@ fn wasmLogFn(
 
 test {
     std.testing.refAllDecls(@This());
-    // PR 9 — the previous root.zig had ~120 flat aliases of the form
-    // `pub const Foo = ns.Foo`. `refAllDecls(@This())` referenced each
-    // one, which forced *struct-level* analysis of the underlying
-    // type and pulled in any `test {}` blocks living inside that
-    // struct's body. After the slim, the curated 7 + namespace exports
-    // reach mod.zig files (which have their own `refAllDecls`), but
-    // type-level analysis of every leaf struct is now lazy. Most leaf
-    // structs' tests are still discovered via their own file's
-    // top-level `test {}` blocks; a handful of files keep their tests
-    // *inside* struct bodies and need an explicit comptime touch here
-    // to stay in the discovery set. The list mirrors the demotion
-    // ledger — if any of these later move into a mod.zig with its own
-    // `refAllDecls`, drop the corresponding line here.
+    // `refAllDecls(@This())` reaches only the curated 7 and the namespace
+    // exports. Those reach mod.zig files (which have their own
+    // `refAllDecls`), but type-level analysis of every leaf struct is
+    // lazy, so `test {}` blocks inside a leaf struct's body are not
+    // discovered on their own. Most leaf structs' tests are discovered
+    // via their own file's top-level `test {}` blocks; a handful of files
+    // keep their tests *inside* struct bodies and need an explicit
+    // comptime touch here to stay in the discovery set. If any of these
+    // move into a mod.zig with its own `refAllDecls`, drop the
+    // corresponding line here.
     comptime {
         // Borrow the top-level namespace aliases without shadowing them.
         const anim = animation;
@@ -257,8 +251,7 @@ test {
         const rt = runtime;
         const co = core;
 
-        // Animation leaves (these were `spring_mod` / `stagger_mod` /
-        // `motion_mod` flat aliases pre-PR-9).
+        // Animation leaves.
         _ = anim.SpringConfig;
         _ = anim.SpringHandle;
         _ = anim.StaggerConfig;
@@ -314,25 +307,22 @@ test {
         _ = img.ImageAtlas;
         _ = co.CustomShader;
     }
-    // Leaf files with file-level `test {}` blocks that previously
-    // depended on a flat alias in root.zig for analysis-discovery.
-    // PR 9 removed those aliases, so we anchor the leaves here to
-    // keep the test count stable. `inline for` lets us list paths in
+    // Leaf files with file-level `test {}` blocks that no namespace
+    // export makes reachable, so we anchor the leaves here to keep
+    // them in the test binary. `inline for` lets us list paths in
     // bulk; `std.testing.refAllDecls(@This())` only touches a file's
     // top-level decls, but the file's own `test {}` blocks become
     // part of the test binary once the file is reachable, which the
     // `@import` call below guarantees.
     inline for (.{
-        // Animation leaves — ex-flat-aliased `spring_mod` / `stagger_mod` /
-        // `motion_mod`.
+        // Animation leaves.
         @import("animation/spring.zig"),
         @import("animation/stagger.zig"),
         @import("animation/motion.zig"),
         @import("animation/animation.zig"),
         @import("animation/store.zig"),
 
-        // Widget engines — ex-flat-aliased through `cx.zig`'s direct
-        // file imports.
+        // Widget engines imported directly by `cx.zig`.
         @import("widgets/data_table.zig"),
         @import("widgets/tree_list.zig"),
         @import("widgets/uniform_list.zig"),
@@ -391,15 +381,13 @@ test {
         @import("core/triangulator.zig"),
         @import("validation.zig"),
 
-        // PR 11a — Tier-1 public-API pin list. Lives in the
+        // Tier-1 public-API pin list. Lives in the
         // test-only discovery set (not on the public `gooey.*`
         // surface) so it can't accidentally become a name it is
         // itself meant to guard. The single `test "tier 1 public
         // API surface compiles"` block inside this file runs
         // every Tier-1 reference at comptime and fails the build
-        // with a precise line on accidental rename/deletion. See
-        // `docs/cleanup-implementation-plan.md` PR 11 and
-        // `docs/architectural-cleanup-plan.md` §8.
+        // with a precise line on accidental rename/deletion.
         @import("api_check.zig"),
     }) |leaf| {
         std.testing.refAllDecls(leaf);
@@ -411,10 +399,10 @@ test {
     // reach. `refAllDecls(@This())` references the `Cx` / `Window` aliases,
     // which forces struct-level analysis only: field types and decl
     // signatures. A `pub fn` body is analyzed lazily, on first call. Neither
-    // type has in-tree callers for every method, so several bodies had never
-    // been compiled on any target — `Cx.setTitle` referenced a field renamed
-    // two refactors earlier and `Window.setAccentColor` reached a
-    // macOS-only renderer member. Both were found by inspection, not by CI.
+    // type has in-tree callers for every method, so without this block a
+    // body can go uncompiled on every target and rot unnoticed, for example
+    // by naming a field that does not exist or by reaching a macOS-only
+    // renderer member from shared code.
     //
     // `refAllDecls` takes a pointer to each decl, so naming these two types
     // explicitly makes every method body a hard compile error at test time,
