@@ -5,6 +5,7 @@
 //! that higher-level code composes into application-specific buffer sets.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
 
@@ -189,10 +190,21 @@ pub const MemoryPool = struct {
         const align_mask: vk.DeviceSize = requirements.alignment - 1;
         const aligned: vk.DeviceSize = (self.offset + align_mask) & ~align_mask;
 
-        // Fail fast if pool is exhausted (CLAUDE.md Rule #4)
-        std.debug.assert(aligned + requirements.size <= self.size);
-
-        self.offset = aligned + requirements.size;
+        // Fail fast if the pool is exhausted, in every build mode: the pool is
+        // sized at init from the app's budget, so running out is a sizing bug
+        // that would otherwise bind a buffer past the end of the allocation
+        // (CLAUDE.md §2).
+        assert(aligned >= self.offset);
+        const end = aligned + requirements.size;
+        if (end <= self.size) {
+            self.offset = end;
+        } else {
+            std.debug.panic(
+                "Vulkan host memory pool exhausted: capacity {d} B, {d} B in use, " ++
+                    "{d} B requested at alignment {d}.",
+                .{ self.size, self.offset, requirements.size, requirements.alignment },
+            );
+        }
 
         var mapped_ptr: ?*anyopaque = null;
         if (self.mapped) |base| {

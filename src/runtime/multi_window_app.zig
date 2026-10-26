@@ -34,6 +34,7 @@
 //! ```
 
 const std = @import("std");
+const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const Allocator = std.mem.Allocator;
 
 // Platform
@@ -340,6 +341,9 @@ pub const App = struct {
         // Assertions: validate inputs
         std.debug.assert(self.initialized);
         std.debug.assert(@intFromPtr(state) != 0);
+        // Window budgets are runtime values here, so they are checked before
+        // any storage is sized from them.
+        options.limits.assertValid();
 
         // Reclaim closed windows *before* the bound is checked: an app that
         // only ever closes windows through `WindowHandle.close` would otherwise
@@ -385,7 +389,7 @@ pub const App = struct {
         errdefer self.untrackWindowId(id);
 
         // Create per-window context with shared resources
-        const ctx = try self.createWindowContext(State, window, state, render);
+        const ctx = try self.createWindowContext(State, window, state, render, &options.limits);
         errdefer ctx.deinit();
 
         // Set user callbacks if provided
@@ -768,6 +772,7 @@ pub const App = struct {
         window: *PlatformWindow,
         state: *State,
         comptime render: fn (*Cx) void,
+        resource_limits: *const ResourceLimits,
     ) !*WindowContext(State) {
         // Assertions: validate inputs
         std.debug.assert(@intFromPtr(window) != 0);
@@ -786,6 +791,7 @@ pub const App = struct {
             state,
             render,
             &self.resources,
+            resource_limits,
             &self.context_app,
             self.io,
         );
@@ -851,6 +857,7 @@ fn windowOptionsFrom(options: *const AppWindowOptions) WindowOptions {
         .titlebar_transparent = options.titlebar_transparent,
         .full_size_content = options.full_size_content,
         .custom_shaders = options.custom_shaders,
+        .limits = options.limits,
     };
 }
 
@@ -984,6 +991,12 @@ pub const AppWindowOptions = struct {
 
     /// Custom shaders
     custom_shaders: []const shader_mod.CustomShader = &.{},
+
+    /// This window's resource budget (CLAUDE.md §2): its scenes and renderer
+    /// instance storage are reserved at exactly these sizes when the window
+    /// opens. Checked at `openWindow`; call `ResourceLimits.validate` on a
+    /// comptime value to catch mistakes at compile time instead.
+    limits: ResourceLimits = ResourceLimits.standard,
 };
 
 // =============================================================================
@@ -1020,7 +1033,7 @@ test "AppWindowOptions forwards to WindowOptions without conversion" {
     const app_fields = @typeInfo(AppWindowOptions).@"struct".field_names;
     const platform_fields = @typeInfo(WindowOptions).@"struct".field_names;
 
-    inline for (.{ "background_opacity", "glass_style", "glass_corner_radius" }) |name| {
+    inline for (.{ "background_opacity", "glass_style", "glass_corner_radius", "limits" }) |name| {
         const app_type = @FieldType(AppWindowOptions, name);
         const platform_type = @FieldType(WindowOptions, name);
         try std.testing.expectEqual(platform_type, app_type);

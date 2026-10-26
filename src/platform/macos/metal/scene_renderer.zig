@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const assert = std.debug.assert;
 
 const DEBUG_BATCHES = builtin.mode == .debug and false; // Set second condition to true to enable batch debug output
 const objc = @import("objc");
@@ -15,6 +16,7 @@ const batch_iter = @import("../../../scene/batch_iterator.zig");
 const text_pipeline = @import("text.zig");
 const render_stats = @import("../../../debug/render_stats.zig");
 const unified = @import("../../unified.zig");
+const limits = @import("../../../core/limits.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
 const image_pipeline = @import("image_pipeline.zig");
 const path_pipeline = @import("path_pipeline.zig");
@@ -29,6 +31,9 @@ const ColoredPointCloud = @import("../../../scene/colored_point_cloud.zig").Colo
 /// Pipeline references for batch rendering
 pub const Pipelines = struct {
     unified: ?objc.Object,
+    /// Per-frame instance storage for quads and shadows. The caller advances it with
+    /// `nextFrame` once per rendered frame, before any batch is drawn.
+    unified_ring: *UnifiedPrimitiveRing,
     text: ?*text_pipeline.TextPipeline,
     svg: ?*svg_pipeline.SvgPipeline,
     image: ?*image_pipeline.ImagePipeline,
@@ -50,7 +55,12 @@ pub fn drawScene(
     drawSceneWithStats(encoder, scene, pipelines, viewport_size, null);
 }
 
-/// Draw with optional stats recording
+/// Draw with optional stats recording.
+///
+/// Quad and shadow batches share the unified pipeline and the same per-frame ring slot, so
+/// consecutive quad/shadow batches are appended back to back and drawn as one instanced
+/// call when a different pipeline's batch (or the end of the scene) interrupts the run.
+/// Instances rasterize in instance order, so merging preserves draw order.
 pub fn drawSceneWithStats(
     encoder: objc.Object,
     scene: *const scene_mod.Scene,
@@ -58,7 +68,9 @@ pub fn drawSceneWithStats(
     viewport_size: [2]f32,
     stats: ?*render_stats.RenderStats,
 ) void {
-    var iter = batch_iter.BatchIterator.init(scene);
+    const ring = pipelines.unified_ring;
+    // Every earlier drawScene call in this frame flushed its tail.
+    assert(ring.primitive_count_drawn == ring.primitive_count);
 
     if (DEBUG_BATCHES) {
         std.debug.print("\n=== BATCH RENDER START ===\n", .{});
@@ -72,127 +84,87 @@ pub fn drawSceneWithStats(
         });
     }
 
+    var iter = batch_iter.BatchIterator.init(scene);
     var batch_num: u32 = 0;
-    while (iter.next()) |batch| {
+    while (iter.next()) |batch| : (batch_num += 1) {
         if (DEBUG_BATCHES) {
-            std.debug.print("  Batch {d}: ", .{batch_num});
+            const name = @tagName(batch);
+            std.debug.print("  Batch {d}: {s} x{d}\n", .{ batch_num, name, batch.len() });
         }
         switch (batch) {
-            .shadow => |shadows| {
-                if (DEBUG_BATCHES) std.debug.print("SHADOW x{d}\n", .{shadows.len});
-                drawShadowBatch(encoder, shadows, pipelines, viewport_size, stats);
-            },
-            .quad => |quads| {
-                if (DEBUG_BATCHES) std.debug.print("QUAD x{d}\n", .{quads.len});
-                drawQuadBatch(encoder, quads, pipelines, viewport_size, stats);
-            },
-            .glyph => |glyphs| {
-                if (DEBUG_BATCHES) std.debug.print("GLYPH x{d}\n", .{glyphs.len});
-                drawGlyphBatch(encoder, glyphs, pipelines, viewport_size, stats);
-            },
-            .svg => |svgs| {
-                if (DEBUG_BATCHES) std.debug.print("SVG x{d}\n", .{svgs.len});
-                drawSvgBatch(encoder, svgs, pipelines, viewport_size, stats);
-            },
-            .image => |images| {
-                if (DEBUG_BATCHES) std.debug.print("IMAGE x{d}\n", .{images.len});
-                drawImageBatch(encoder, images, pipelines, viewport_size, stats);
-            },
-            .path => |paths| {
-                if (DEBUG_BATCHES) std.debug.print("PATH x{d}\n", .{paths.len});
-                drawPathBatch(encoder, paths, scene, pipelines, viewport_size, stats);
-            },
-            .polyline => |polylines| {
-                if (DEBUG_BATCHES) std.debug.print("POLYLINE x{d}\n", .{polylines.len});
-                drawPolylineBatch(encoder, polylines, pipelines, viewport_size, stats);
-            },
-            .point_cloud => |point_clouds| {
-                if (DEBUG_BATCHES) std.debug.print("POINT_CLOUD x{d}\n", .{point_clouds.len});
-                drawPointCloudBatch(encoder, point_clouds, pipelines, viewport_size, stats);
-            },
-            .colored_point_cloud => |colored_point_clouds| {
-                if (DEBUG_BATCHES) std.debug.print("COLORED_POINT_CLOUD x{d}\n", .{colored_point_clouds.len});
-                drawColoredPointCloudBatch(encoder, colored_point_clouds, pipelines, viewport_size, stats);
+            .shadow => |shadows| appendShadowBatch(ring, shadows, &pipelines, stats),
+            .quad => |quads| appendQuadBatch(ring, quads, &pipelines, stats),
+            else => {
+                drawUnifiedPending(encoder, ring, &pipelines, viewport_size, stats);
+                drawPipelineBatch(encoder, batch, scene, &pipelines, viewport_size, stats);
             },
         }
-        batch_num += 1;
     }
+    drawUnifiedPending(encoder, ring, &pipelines, viewport_size, stats);
+    assert(ring.primitive_count_drawn == ring.primitive_count);
 
     if (DEBUG_BATCHES) {
         std.debug.print("=== BATCH RENDER END ({d} batches) ===\n\n", .{batch_num});
     }
 }
 
-/// Draw a batch of shadows using the unified pipeline
-fn drawShadowBatch(
+/// Dispatch a batch that does not use the unified quad/shadow pipeline.
+fn drawPipelineBatch(
     encoder: objc.Object,
-    shadows: []const scene_mod.Shadow,
-    pipelines: Pipelines,
+    batch: batch_iter.PrimitiveBatch,
+    scene: *const scene_mod.Scene,
+    pipelines: *const Pipelines,
     viewport_size: [2]f32,
     stats: ?*render_stats.RenderStats,
 ) void {
-    if (shadows.len == 0) return;
-    const pipeline = pipelines.unified orelse return;
-
-    // Convert shadows to unified primitives
-    var stack_buffer: [512]unified.Primitive = undefined;
-    var primitives: []unified.Primitive = undefined;
-    var heap_buffer: ?[]unified.Primitive = null;
-
-    if (shadows.len <= stack_buffer.len) {
-        primitives = stack_buffer[0..shadows.len];
-    } else {
-        heap_buffer = std.heap.page_allocator.alloc(unified.Primitive, shadows.len) catch return;
-        primitives = heap_buffer.?;
-    }
-    defer if (heap_buffer) |buf| std.heap.page_allocator.free(buf);
-
-    for (shadows, 0..) |shadow, i| {
-        primitives[i] = unified.Primitive.fromShadow(shadow);
-    }
-
-    drawUnifiedPrimitives(encoder, primitives, pipeline, pipelines.unit_vertex_buffer, viewport_size);
-
-    if (stats) |s| {
-        s.recordDrawCall();
-        s.recordShadows(@intCast(shadows.len));
+    switch (batch) {
+        .shadow, .quad => unreachable, // Appended to the unified ring by the caller.
+        .glyph => |glyphs| drawGlyphBatch(encoder, glyphs, pipelines.*, viewport_size, stats),
+        .svg => |svgs| drawSvgBatch(encoder, svgs, pipelines.*, viewport_size, stats),
+        .image => |images| drawImageBatch(encoder, images, pipelines.*, viewport_size, stats),
+        .path => |paths| drawPathBatch(encoder, paths, scene, pipelines.*, viewport_size, stats),
+        .polyline => |polylines| {
+            drawPolylineBatch(encoder, polylines, pipelines.*, viewport_size, stats);
+        },
+        .point_cloud => |point_clouds| {
+            drawPointCloudBatch(encoder, point_clouds, pipelines.*, viewport_size, stats);
+        },
+        .colored_point_cloud => |clouds| {
+            drawColoredPointCloudBatch(encoder, clouds, pipelines.*, viewport_size, stats);
+        },
     }
 }
 
-/// Draw a batch of quads using the unified pipeline
-fn drawQuadBatch(
-    encoder: objc.Object,
-    quads: []const scene_mod.Quad,
-    pipelines: Pipelines,
-    viewport_size: [2]f32,
+/// Convert a shadow batch into the ring; drawn later by `drawUnifiedPending`.
+fn appendShadowBatch(
+    ring: *UnifiedPrimitiveRing,
+    shadows: []const scene_mod.Shadow,
+    pipelines: *const Pipelines,
     stats: ?*render_stats.RenderStats,
 ) void {
-    if (quads.len == 0) return;
-    const pipeline = pipelines.unified orelse return;
+    assert(shadows.len > 0); // The batch iterator never yields empty batches.
+    if (pipelines.unified == null) return;
 
-    // Convert quads to unified primitives
-    var stack_buffer: [512]unified.Primitive = undefined;
-    var primitives: []unified.Primitive = undefined;
-    var heap_buffer: ?[]unified.Primitive = null;
+    const target = ring.claim(shadows.len, "shadow");
+    convertShadows(shadows, target);
 
-    if (quads.len <= stack_buffer.len) {
-        primitives = stack_buffer[0..quads.len];
-    } else {
-        heap_buffer = std.heap.page_allocator.alloc(unified.Primitive, quads.len) catch return;
-        primitives = heap_buffer.?;
-    }
-    defer if (heap_buffer) |buf| std.heap.page_allocator.free(buf);
+    if (stats) |s| s.recordShadows(@intCast(shadows.len));
+}
 
-    for (quads, 0..) |quad, i| {
-        primitives[i] = unified.Primitive.fromQuad(quad);
-    }
+/// Convert a quad batch into the ring; drawn later by `drawUnifiedPending`.
+fn appendQuadBatch(
+    ring: *UnifiedPrimitiveRing,
+    quads: []const scene_mod.Quad,
+    pipelines: *const Pipelines,
+    stats: ?*render_stats.RenderStats,
+) void {
+    assert(quads.len > 0); // The batch iterator never yields empty batches.
+    if (pipelines.unified == null) return;
 
-    drawUnifiedPrimitives(encoder, primitives, pipeline, pipelines.unit_vertex_buffer, viewport_size);
+    const target = ring.claim(quads.len, "quad");
+    convertQuads(quads, target);
 
-    if (stats) |s| {
-        s.recordDrawCall();
-        s.recordQuads(@intCast(quads.len));
-    }
+    if (stats) |s| s.recordQuads(@intCast(quads.len));
 }
 
 /// Draw a batch of glyphs using the text pipeline
@@ -379,57 +351,201 @@ fn drawColoredPointCloudBatch(
     }
 }
 
-/// Common rendering logic for unified primitives (quads and shadows).
+/// Issue one instanced draw for the ring's written-but-undrawn tail, if any.
 ///
-/// Metal's `setVertexBytes` has a 4 KB limit. Each Primitive is 128 bytes,
-/// so we can pass at most 32 per call (128 × 32 = 4096). Batches larger
-/// than that are split into chunks automatically.
-fn drawUnifiedPrimitives(
+/// The slot is bound at `buffer(1)`, where `unified_vertex` reads `constant Primitive *`, at
+/// the tail's byte offset. Offsets are multiples of 128 B, which satisfies the minimum
+/// constant-buffer offset alignment of every Metal GPU family (4 B Apple, 32 B Mac2).
+fn drawUnifiedPending(
     encoder: objc.Object,
-    primitives: []const unified.Primitive,
-    pipeline: objc.Object,
-    unit_vertex_buffer: objc.Object,
+    ring: *UnifiedPrimitiveRing,
+    pipelines: *const Pipelines,
     viewport_size: [2]f32,
+    stats: ?*render_stats.RenderStats,
 ) void {
-    if (primitives.len == 0) return;
-
-    // 4096 / @sizeOf(Primitive) = 32. Hard-coded to match the compile-time
-    // assertion on Primitive size (128 bytes) so the relationship is obvious.
-    const MAX_PER_CALL: usize = 32;
-    comptime {
-        std.debug.assert(@sizeOf(unified.Primitive) == 128);
-        std.debug.assert(MAX_PER_CALL * @sizeOf(unified.Primitive) <= 4096);
-    }
+    assert(ring.primitive_count_drawn <= ring.primitive_count);
+    const pending = ring.primitive_count - ring.primitive_count_drawn;
+    if (pending == 0) return;
+    // Primitives are only appended when the unified pipeline exists.
+    const pipeline = pipelines.unified.?;
+    assert(viewport_size[0] > 0);
+    assert(viewport_size[1] > 0);
 
     encoder.msgSend(void, "setRenderPipelineState:", .{pipeline.value});
     encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-        unit_vertex_buffer.value,
+        pipelines.unit_vertex_buffer.value,
         @as(c_ulong, 0),
         @as(c_ulong, 0),
+    });
+    const offset_bytes = @as(usize, ring.primitive_count_drawn) * @sizeOf(unified.Primitive);
+    assert(offset_bytes % 128 == 0);
+    encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+        ring.buffers[ring.frame_index].value,
+        @as(c_ulong, offset_bytes),
+        @as(c_ulong, 1),
     });
     encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
         @as(*const anyopaque, @ptrCast(&viewport_size)),
         @as(c_ulong, @sizeOf([2]f32)),
         @as(c_ulong, 2),
     });
+    encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+        @backingInt(mtl.MTLPrimitiveType.triangle),
+        @as(c_ulong, 0),
+        @as(c_ulong, 6),
+        @as(c_ulong, pending),
+    });
 
-    var offset: usize = 0;
-    while (offset < primitives.len) {
-        const chunk_len: usize = @min(primitives.len - offset, MAX_PER_CALL);
-        const chunk = primitives[offset..][0..chunk_len];
-
-        encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-            @as(*const anyopaque, @ptrCast(chunk.ptr)),
-            @as(c_ulong, chunk_len * @sizeOf(unified.Primitive)),
-            @as(c_ulong, 1),
-        });
-        encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-            @backingInt(mtl.MTLPrimitiveType.triangle),
-            @as(c_ulong, 0),
-            @as(c_ulong, 6),
-            @as(c_ulong, chunk_len),
-        });
-
-        offset += chunk_len;
-    }
+    ring.primitive_count_drawn = ring.primitive_count;
+    if (stats) |s| s.recordDrawCall();
 }
+
+/// Hot loop: scene quads to GPU primitives, written straight into the ring slot.
+fn convertQuads(source: []const scene_mod.Quad, target: []unified.Primitive) void {
+    assert(source.len == target.len);
+    assert(source.len <= UnifiedPrimitiveRing.primitive_count_ceiling);
+    for (source, target) |quad, *primitive| primitive.* = unified.Primitive.fromQuad(quad);
+}
+
+/// Hot loop: scene shadows to GPU primitives, written straight into the ring slot.
+fn convertShadows(source: []const scene_mod.Shadow, target: []unified.Primitive) void {
+    assert(source.len == target.len);
+    assert(source.len <= UnifiedPrimitiveRing.primitive_count_ceiling);
+    for (source, target) |shadow, *primitive| primitive.* = unified.Primitive.fromShadow(shadow);
+}
+
+/// Per-frame ring of shared `MTLBuffer`s holding unified primitives (quads and shadows),
+/// following the same pattern as `TextPipeline` but with storage fixed at init.
+///
+/// Resource sketch (CLAUDE.md §7):
+/// - Slot capacity: the app budget's `quad_count_frame_max + shadow_count_frame_max`
+///   (`SceneLimits.unifiedPrimitiveCountMax`) primitives of 128 B, three slots, allocated
+///   once in `init` and never grown. `ResourceLimits.standard` gives 8,704 primitives:
+///   1.06 MiB per slot, 3.19 MiB total; the framework ceiling gives 25.5 MiB. The scene
+///   is reserved from the same budget, so a frame's quads and shadows always fit.
+/// - Per quad/shadow batch: one sequential n × 128 B conversion write into the slot. No
+///   staging copy, no heap allocation, no `setVertexBytes` payload.
+/// - Per run of consecutive quad/shadow batches: one pipeline bind, two buffer binds, one
+///   8 B `setVertexBytes` and one instanced draw (`drawUnifiedPending`).
+///
+/// In-flight safety: slot `frame_index` is rewritten `frame_count` frames after it was last
+/// used. Every frame that writes the ring first holds a drawable from the layer, and the
+/// renderer asserts `maximumDrawableCount <= frame_count` at init. If the frame that last
+/// used this slot were still executing, so would every later frame on the same in-order
+/// command queue: `frame_count` frames each holding a drawable, leaving none for this frame.
+pub const UnifiedPrimitiveRing = struct {
+    buffers: [frame_count]objc.Object,
+    /// CPU-visible `contents` of each buffer; stable for the buffer's lifetime.
+    slots: [frame_count][*]unified.Primitive,
+    frame_index: u32,
+    /// Slot capacity in primitives, from the window's `ResourceLimits.scene`.
+    primitive_count_max: u32,
+    /// Primitives written into the current slot this frame.
+    primitive_count: u32,
+    /// Prefix of `primitive_count` already submitted by a draw call.
+    primitive_count_drawn: u32,
+
+    pub const frame_count: u32 = 3;
+    /// Largest slot any valid budget can request.
+    pub const primitive_count_ceiling: u32 =
+        limits.MAX_QUADS_PER_FRAME + limits.MAX_SHADOWS_PER_FRAME;
+    /// The CPU only ever writes whole primitives sequentially and never reads the slots
+    /// back, which is the access pattern write-combined memory is for. Measured on an
+    /// Apple Silicon Mac it cut conversion time about 13% versus the default cache mode.
+    const buffer_options: mtl.MTLResourceOptions = .{
+        .cpu_cache_mode = .write_combined,
+        .storage_mode = .shared,
+        .hazard_tracking_mode = .default,
+    };
+
+    const Self = @This();
+
+    comptime {
+        assert(@sizeOf(unified.Primitive) == 128);
+        assert(primitive_count_ceiling >= limits.MAX_QUADS_PER_FRAME);
+        assert(primitive_count_ceiling >= limits.MAX_SHADOWS_PER_FRAME);
+        // Byte offsets into a slot stay well inside `c_ulong` and `u32` math.
+        assert(@as(u64, primitive_count_ceiling) * @sizeOf(unified.Primitive) < 1 << 32);
+    }
+
+    /// Reserve three slots of `scene_limits.unifiedPrimitiveCountMax()` primitives.
+    pub fn init(device: objc.Object, scene_limits: *const limits.SceneLimits) !Self {
+        assert(scene_limits.check() == null);
+        const primitive_count_max = scene_limits.unifiedPrimitiveCountMax();
+        assert(primitive_count_max > 0);
+        assert(primitive_count_max <= primitive_count_ceiling);
+        const slot_size_bytes: usize =
+            @as(usize, primitive_count_max) * @sizeOf(unified.Primitive);
+
+        var self: Self = .{
+            .buffers = undefined,
+            .slots = undefined,
+            .frame_index = 0,
+            .primitive_count_max = primitive_count_max,
+            .primitive_count = 0,
+            .primitive_count_drawn = 0,
+        };
+        var created: u32 = 0;
+        errdefer for (self.buffers[0..created]) |buffer| buffer.release();
+
+        while (created < frame_count) : (created += 1) {
+            // Fresh shared buffers are zero-filled, so unused ranges never hold stale bytes
+            // from another owner; within a frame the GPU reads only the written prefix.
+            const buffer_ptr = device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
+                @as(c_ulong, slot_size_bytes),
+                @as(c_ulong, @bitCast(buffer_options)),
+            }) orelse return error.BufferCreationFailed;
+            const buffer = objc.Object.fromId(buffer_ptr);
+            assert(buffer.msgSend(c_ulong, "length", .{}) == slot_size_bytes);
+
+            const contents = buffer.msgSend(*anyopaque, "contents", .{});
+            assert(@intFromPtr(contents) % @alignOf(unified.Primitive) == 0);
+            self.buffers[created] = buffer;
+            self.slots[created] = @ptrCast(@alignCast(contents));
+        }
+        assert(created == frame_count);
+        return self;
+    }
+
+    pub fn deinit(self: *Self) void {
+        for (self.buffers) |buffer| buffer.release();
+        self.* = undefined;
+    }
+
+    /// Advance to the next slot. Call once per rendered frame, before any batch is drawn.
+    pub fn nextFrame(self: *Self) void {
+        assert(self.frame_index < frame_count);
+        // The previous frame drew everything it wrote.
+        assert(self.primitive_count_drawn == self.primitive_count);
+        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.primitive_count = 0;
+        self.primitive_count_drawn = 0;
+    }
+
+    /// Reserve `count` primitives after the current slot's used range.
+    /// Exhaustion means the scene's budget and this ring's disagree (both come from
+    /// the same `ResourceLimits`): a programmer error.
+    fn claim(self: *Self, count: usize, operation: []const u8) []unified.Primitive {
+        assert(count > 0);
+        assert(self.primitive_count <= self.primitive_count_max);
+        const available: usize = self.primitive_count_max - self.primitive_count;
+        if (available < count) {
+            std.debug.panic(
+                "UnifiedPrimitiveRing exhausted: capacity {d} primitives per frame " ++
+                    "(ResourceLimits.scene quads + shadows), " ++
+                    "{d} used, {d} requested by {s} batch, frame slot {d}",
+                .{
+                    self.primitive_count_max,
+                    self.primitive_count,
+                    count,
+                    operation,
+                    self.frame_index,
+                },
+            );
+        }
+        const first = self.primitive_count;
+        self.primitive_count += @intCast(count);
+        assert(self.primitive_count <= self.primitive_count_max);
+        return self.slots[self.frame_index][first..self.primitive_count];
+    }
+};

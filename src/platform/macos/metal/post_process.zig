@@ -25,6 +25,7 @@ pub fn renderFullPipeline(
     msaa_texture: objc.Object,
     unit_vertex_buffer: objc.Object,
     unified_pipeline: ?objc.Object,
+    unified_ring: *scene_renderer.UnifiedPrimitiveRing,
     tp: ?*text_pipeline.TextPipeline,
     sp: ?*svg_pipeline.SvgPipeline,
     pp: *custom_shader.PostProcessState,
@@ -56,6 +57,7 @@ pub fn renderFullPipeline(
         // Use batch-based rendering for correct z-ordering
         scene_renderer.drawScene(encoder, scene, .{
             .unified = unified_pipeline,
+            .unified_ring = unified_ring,
             .text = tp,
             .svg = sp,
             .image = null,

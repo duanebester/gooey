@@ -32,6 +32,8 @@ const SvgInstance = svg_instance_mod.SvgInstance;
 const ImageInstance = image_instance_mod.ImageInstance;
 
 const Scene = scene_mod.Scene;
+const SceneLimits = scene_mod.SceneLimits;
+const InstanceCapacity = vk_types.InstanceCapacity;
 const Allocator = std.mem.Allocator;
 
 // =============================================================================
@@ -45,20 +47,9 @@ pub const enable_validation_layers = vk_instance.enable_validation_layers;
 // Re-exported types and constants from vk_types.zig
 // =============================================================================
 
-pub const MAX_PRIMITIVES = vk_types.MAX_PRIMITIVES;
-pub const MAX_GLYPHS = vk_types.MAX_GLYPHS;
-pub const MAX_SVGS = vk_types.MAX_SVGS;
-pub const MAX_IMAGES = vk_types.MAX_IMAGES;
 pub const FRAME_COUNT = vk_types.FRAME_COUNT;
 pub const MAX_SURFACE_FORMATS = vk_types.MAX_SURFACE_FORMATS;
 pub const MAX_PRESENT_MODES = vk_types.MAX_PRESENT_MODES;
-
-/// Host-visible memory pool size for all per-frame mapped buffers.
-/// Back-of-envelope (CLAUDE.md Rule #7):
-///   Per frame: 128×4096 + 64×8192 + 80×2048 + 96×1024 + 16 = 1,310,736 bytes
-///   × 3 frames = 3,932,208 bytes + ~4KB alignment slack ≈ 4MB
-///   Using 8MB for generous headroom.
-const HOST_POOL_SIZE: vk.DeviceSize = 8 * 1024 * 1024;
 
 pub const Uniforms = vk_types.Uniforms;
 pub const GpuGlyph = vk_types.GpuGlyph;
@@ -249,11 +240,10 @@ pub const VulkanRenderer = struct {
     // Memory pool for per-frame buffer sub-allocation (1 vkAllocateMemory instead of ~15)
     host_memory_pool: vk_buffers.MemoryPool = .{},
 
-    // CPU-side buffers (fixed capacity, no runtime allocation)
-    primitives: [MAX_PRIMITIVES]unified.Primitive = undefined,
-    gpu_glyphs: [MAX_GLYPHS]GpuGlyph = undefined,
-    gpu_svgs: [MAX_SVGS]GpuSvg = undefined,
-    gpu_images: [MAX_IMAGES]GpuImage = undefined,
+    // Per-frame instance buffer capacities, from the window's `ResourceLimits.scene`.
+    // Set once in `initWithWaylandSurface` before any buffer is created; read-only
+    // afterwards (buffers never grow). Meaningful only while `initialized`.
+    instance_capacity: InstanceCapacity = undefined,
 
     initialized: bool = false,
 
@@ -485,8 +475,14 @@ pub const VulkanRenderer = struct {
         width: u32,
         height: u32,
         scale_factor: f64,
+        scene_limits: *const SceneLimits,
     ) !void {
         std.debug.assert(!self.initialized);
+        std.debug.assert(scene_limits.check() == null);
+
+        // Every per-frame instance buffer is sized from the window's budget here,
+        // once, before the first frame (CLAUDE.md §2).
+        self.instance_capacity = InstanceCapacity.fromSceneLimits(scene_limits);
 
         // Store Wayland display reference for cleanup roundtrips
         self.wl_display = @ptrCast(wl_display);
@@ -613,10 +609,11 @@ pub const VulkanRenderer = struct {
         errdefer self.destroyFrameResources();
 
         // ---- Host memory pool (vk_buffers — 1 vkAllocateMemory instead of ~15) ----
+        // Sized from the budget: every frame's buffers plus alignment headroom.
         self.host_memory_pool = try vk_buffers.MemoryPool.init(
             self.device,
             &self.mem_properties,
-            HOST_POOL_SIZE,
+            self.instance_capacity.hostPoolBytes(),
             vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         );
         errdefer self.host_memory_pool.destroy(self.device);
@@ -673,7 +670,7 @@ pub const VulkanRenderer = struct {
                 self.device,
                 frame.unified_descriptor_set,
                 frame.primitive_buffer,
-                @sizeOf(unified.Primitive) * MAX_PRIMITIVES,
+                self.instance_capacity.bufferBytes(.primitives),
                 frame.uniform_buffer,
                 @sizeOf(Uniforms),
             );
@@ -700,6 +697,8 @@ pub const VulkanRenderer = struct {
     /// allocation happened earlier). Each buffer gets its own VkBuffer handle
     /// but shares the pool's backing VkDeviceMemory at different offsets.
     fn createFrameBuffers(self: *Self) !void {
+        std.debug.assert(self.host_memory_pool.offset == 0);
+        std.debug.assert(self.host_memory_pool.size == self.instance_capacity.hostPoolBytes());
         for (&self.frames) |*frame| {
             const uniform = try vk_buffers.createMappedBufferFromPool(
                 self.device,
@@ -714,7 +713,7 @@ pub const VulkanRenderer = struct {
             const prim = try vk_buffers.createMappedBufferFromPool(
                 self.device,
                 &self.host_memory_pool,
-                @sizeOf(unified.Primitive) * MAX_PRIMITIVES,
+                self.instance_capacity.bufferBytes(.primitives),
                 vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             );
             frame.primitive_buffer = prim.buffer;
@@ -724,7 +723,7 @@ pub const VulkanRenderer = struct {
             const glyph = try vk_buffers.createMappedBufferFromPool(
                 self.device,
                 &self.host_memory_pool,
-                @sizeOf(GpuGlyph) * MAX_GLYPHS,
+                self.instance_capacity.bufferBytes(.glyphs),
                 vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             );
             frame.glyph_buffer = glyph.buffer;
@@ -734,7 +733,7 @@ pub const VulkanRenderer = struct {
             const svg = try vk_buffers.createMappedBufferFromPool(
                 self.device,
                 &self.host_memory_pool,
-                @sizeOf(GpuSvg) * MAX_SVGS,
+                self.instance_capacity.bufferBytes(.svgs),
                 vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             );
             frame.svg_buffer = svg.buffer;
@@ -744,7 +743,7 @@ pub const VulkanRenderer = struct {
             const img = try vk_buffers.createMappedBufferFromPool(
                 self.device,
                 &self.host_memory_pool,
-                @sizeOf(GpuImage) * MAX_IMAGES,
+                self.instance_capacity.bufferBytes(.images),
                 vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             );
             frame.image_buffer = img.buffer;
@@ -1130,7 +1129,7 @@ pub const VulkanRenderer = struct {
                     self.device,
                     frame.text_descriptor_set,
                     frame.glyph_buffer,
-                    @sizeOf(GpuGlyph) * MAX_GLYPHS,
+                    self.instance_capacity.bufferBytes(.glyphs),
                     frame.uniform_buffer,
                     resources.view,
                     self.atlas_sampler,
@@ -1139,7 +1138,7 @@ pub const VulkanRenderer = struct {
                     self.device,
                     frame.svg_descriptor_set,
                     frame.svg_buffer,
-                    @sizeOf(GpuSvg) * MAX_SVGS,
+                    self.instance_capacity.bufferBytes(.svgs),
                     frame.uniform_buffer,
                     resources.view,
                     self.atlas_sampler,
@@ -1148,7 +1147,7 @@ pub const VulkanRenderer = struct {
                     self.device,
                     frame.image_descriptor_set,
                     frame.image_buffer,
-                    @sizeOf(GpuImage) * MAX_IMAGES,
+                    self.instance_capacity.bufferBytes(.images),
                     frame.uniform_buffer,
                     resources.view,
                     self.atlas_sampler,
@@ -1168,6 +1167,7 @@ pub const VulkanRenderer = struct {
     /// fragment shaders read from the atlas textures — no extra fence needed.
     pub fn render(self: *Self, scene: *const Scene) void {
         if (!self.initialized) return;
+        assertSceneFitsCapacity(&scene.limits, &self.instance_capacity);
 
         // Check if swapchain needs recreation from previous frame
         if (self.swapchain_needs_recreate) {
@@ -1217,6 +1217,19 @@ pub const VulkanRenderer = struct {
         self.submitAndPresent(cmd, frame, image_index);
 
         self.current_frame = (self.current_frame + 1) % FRAME_COUNT;
+    }
+
+    /// The renderer never truncates a frame, so the scene it draws must not be
+    /// able to outgrow the buffers sized at init: the window's scenes and its
+    /// renderer share one budget. A larger scene budget is a programmer error.
+    fn assertSceneFitsCapacity(
+        scene_limits: *const SceneLimits,
+        capacity: *const InstanceCapacity,
+    ) void {
+        std.debug.assert(scene_limits.unifiedPrimitiveCountMax() <= capacity.primitive_count_max);
+        std.debug.assert(scene_limits.glyph_count_frame_max <= capacity.glyph_count_max);
+        std.debug.assert(scene_limits.svg_count_frame_max <= capacity.svg_count_max);
+        std.debug.assert(scene_limits.image_count_frame_max <= capacity.image_count_max);
     }
 
     const AcquireResult = enum { ok, out_of_date, fatal };
@@ -1330,6 +1343,8 @@ pub const VulkanRenderer = struct {
             .atlas_view = self.text_atlas.view,
             .svg_atlas_view = self.svg_atlas.view,
             .image_atlas_view = self.image_atlas.view,
+            .capacity = self.instance_capacity,
+            .frame = scene.frame_count_finished,
         };
         _ = scene_renderer.drawScene(cmd, scene, pipelines);
 
