@@ -130,23 +130,19 @@ pub const Selection = struct {
 /// `bounds.x` / `bounds.y` / `bounds.width` / `bounds.height` ~150 times
 /// across hot rendering and hit-testing loops; rewriting every access to
 /// `bounds.origin.x` / `bounds.size.width` would add an indirection that
-/// nobody asked for. This flat shape is the one the widgets always wanted —
-/// promoting it here (alongside the existing UTF-8 / selection / position
-/// helpers shared between the text-widget family) collapses the previous
-/// three-way duplicate `Bounds` definition in `text_input_state.zig`,
-/// `text_area_state.zig`, and `code_editor_state.zig` into a single tested
-/// type without changing memory layout or hot-loop ergonomics.
+/// nobody asked for. Keeping the flat shape here, alongside the UTF-8 /
+/// selection / position helpers shared by the text-widget family, gives
+/// `text_input_state.zig`, `text_area_state.zig`, and
+/// `code_editor_state.zig` one tested `Bounds` type.
 ///
 /// **Half-open `[x, x+w)` hit-test convention.** `contains` matches the
 /// framework-wide convention used by `core/geometry.Rect.contains` and the
 /// layout-engine hit-testing path: a point on the exact right or bottom
 /// edge is *outside* the rectangle. This aligns the text-widget family
-/// with every other hit-test in the framework. Previously, `text_input`
-/// and `text_area` used a closed `[x, x+w]` form (right/bottom edge counted
-/// as inside) while `code_editor` already used the half-open form — the
-/// closed form was an accidental divergence. The unified half-open
-/// semantics are pinned by the test block below; a future refactor that
-/// flips the inequality back to `<=` will fail at build time.
+/// with every other hit-test in the framework, so adjacent rectangles never
+/// both claim a shared edge. The half-open semantics are pinned by the test
+/// block below; a refactor that flips the inequality to `<=` fails the
+/// build.
 pub const Bounds = struct {
     x: f32,
     y: f32,
@@ -240,8 +236,8 @@ test "Bounds.contains: right and bottom edges are exclusive (miss)" {
     // Goal: pin the half-open `[x, x+w) x [y, y+h)` convention on its open
     // edges. The right and bottom edges are *outside* the rectangle. This
     // matches `core/geometry.Rect.contains` and the framework-wide hit-test
-    // convention. A future refactor that flips the inequalities back to
-    // `<=` (the pre-PR-8.4-prep behaviour for `text_input` / `text_area`)
+    // convention. A refactor that flips the inequalities to `<=` (the
+    // closed form, which counts the right and bottom edges as inside)
     // fails this test.
     // Methodology: points on the exact right and bottom edges of a 10x20
     // box at (5, 7) — i.e. x = 15 and y = 27 — must miss.

@@ -82,7 +82,7 @@ pub const Entry = struct {
     iterations: u32 = 0,
 
     /// Whether `min_per_op_ns` contains a recorded value. Every harness emits
-    /// it now, but the flag lets a hand-constructed `Entry` (or a future
+    /// it, but the flag lets a hand-constructed `Entry` (or a future
     /// caller) opt out, and mirrors the tolerant shape `has_percentiles` uses.
     has_min: bool = false,
 
@@ -691,7 +691,7 @@ test "reporter: serializePayload produces valid JSON" {
     // round-trips as `.integer`; read both percentiles tolerantly.
     std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("p50_per_op_ns").?) == 5.0);
     std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("p99_per_op_ns").?) == 15.0);
-    // Min is recorded for every entry now (even the percentile-less "alpha"),
+    // Min is recorded for every entry (even the percentile-less "alpha"),
     // and round-trips as a number for the entry that set it explicitly.
     std.debug.assert(benchmarks.items[0].object.get("min_per_op_ns").? != .null);
     std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("min_per_op_ns").?) == 4.0);

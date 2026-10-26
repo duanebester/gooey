@@ -14,9 +14,8 @@
 //! `components/src/text_area.zig`, which is what application code
 //! constructs as a literal
 //! (`TextArea{ .id = "...", .placeholder = "..." }`). The two types
-//! used to share the name `TextArea`, which only worked as long as no
-//! file imported both — the disambiguation is the prep work for PR 8.4
-//! lifting `TextAreaState` onto the keyed `Window.element_states` pool.
+//! carry distinct names so one file can import both, as the code that
+//! stores `TextAreaState` on the keyed `Window.element_states` pool does.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -41,12 +40,6 @@ else
 const scene_mod = @import("../scene/mod.zig");
 const input_mod = @import("../input/events.zig");
 const text_mod = @import("../text/mod.zig");
-// PR 8.4b — `core/element_id.zig` import retired alongside the
-// `id: ElementId` field and `getId()` method. Same reduction
-// `text_input_state.zig` does post-PR-8.4b: the engine type is
-// keyed by `LayoutId.id` (a u32 hash) on `Window.element_states`,
-// and the only reader of the field (`getId()`) was unused outside
-// its own definition.
 const common = @import("text_common.zig");
 const history_mod = @import("edit_history.zig");
 const focus_mod = @import("../context/focus.zig");
@@ -74,9 +67,7 @@ pub const Position = common.Position;
 /// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
 /// alias preserves existing `text_area_state.Bounds` import paths in
 /// `widgets/mod.zig`, `code_editor_state.zig`, and the
-/// `Builder.DEFAULT_TEXT_AREA_BOUNDS` seed value (post-PR-8.4b:
-/// pre-PR-8.4b the alias was also used by the retired
-/// `WidgetStore.default_text_area_bounds` field). See
+/// `Builder.DEFAULT_TEXT_AREA_BOUNDS` seed value. See
 /// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
 /// hit-test rationale.
 pub const Bounds = common.Bounds;
@@ -117,8 +108,9 @@ pub const ScrollbarStyle = struct {
 pub const TextAreaState = struct {
     allocator: std.mem.Allocator,
 
-    // PR 8.4b — `id: ElementId` field dropped (see file header for
-    // rationale).
+    // The engine carries no id of its own. `Window.element_states` keys
+    // each instance by the framework's `LayoutId.id` u32 hash, so there
+    // is no separate id space to keep in sync.
 
     // Geometry
     bounds: Bounds,
@@ -192,12 +184,8 @@ pub const TextAreaState = struct {
     /// Initialize TextAreaState.
     /// Marked noinline to prevent stack accumulation.
     ///
-    /// PR 8.4b — `init` and `initWithId` collapsed into a single
-    /// constructor now that `id: ElementId` is gone. The pre-PR-8.4b
-    /// `init` ran a counter-derived id only because the field
-    /// existed; with the field retired the counter was dead weight
-    /// and the call sites split (`init` for tests, `initWithId` for
-    /// `WidgetStore`) collapse onto a single shape.
+    /// This is the only constructor: the engine has no id to derive, so
+    /// tests and the element-state pool build instances the same way.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         var line_starts: std.ArrayList(usize) = .empty;
         line_starts.append(allocator, 0) catch {};
@@ -415,8 +403,7 @@ pub const TextAreaState = struct {
 
     /// Build a `Focusable` trait for this widget instance. Called by
     /// the UI builder during render so the framework can drive focus
-    /// without importing the widget type — see PR 4 in
-    /// `docs/cleanup-implementation-plan.md`. The vtable is shared
+    /// without importing the widget type. The vtable is shared
     /// across all `TextAreaState` instances and lives in static storage.
     pub fn focusable(self: *Self) focus_mod.Focusable {
         return focus_mod.Focusable.fromInstance(Self, self);

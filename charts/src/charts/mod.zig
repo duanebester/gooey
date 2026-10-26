@@ -5,7 +5,7 @@
 //! - LineChart: Continuous X/Y data as connected lines
 //! - PieChart: Categorical data as circular slices (pie/donut)
 //!
-//! Additional charts (ScatterChart) will be added in Phase 2C.
+//! ScatterChart lives in `scatter_chart.zig` and is re-exported from `root.zig`.
 
 pub const bar_chart = @import("bar_chart.zig");
 pub const line_chart = @import("line_chart.zig");

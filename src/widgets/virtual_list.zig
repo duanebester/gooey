@@ -33,10 +33,10 @@
 
 const std = @import("std");
 
-// Builder helpers — moved from `src/ui/builder.zig` per PR 4 of
-// `docs/cleanup-implementation-plan.md` to break the `ui → widgets`
-// backward edge. The `Builder` type lives in `src/ui/builder.zig` and is
-// imported here so the helpers can take `*Builder` directly.
+// Builder helpers live with their widget rather than in `src/ui/builder.zig`,
+// so the builder never depends on this module. The `Builder` type lives in
+// `src/ui/builder.zig` and is imported here so the helpers can take
+// `*Builder` directly.
 const builder_mod = @import("../ui/builder.zig");
 const styles_mod = @import("../ui/styles.zig");
 const layout_mod = @import("../layout/layout.zig");
@@ -50,8 +50,7 @@ const Padding = layout_mod.Padding;
 const CornerRadius = layout_mod.CornerRadius;
 const VirtualListStyle = styles_mod.VirtualListStyle;
 
-// PR 8.4 — `ScrollContainer` storage moved off
-// `WidgetStore.scroll_containers` onto `Window.element_states`.
+// `ScrollContainer` state lives on the keyed `Window.element_states` pool.
 const scroll_container_mod = @import("scroll_container.zig");
 const ScrollContainer = scroll_container_mod.ScrollContainer;
 
@@ -492,9 +491,7 @@ pub const VirtualListState = struct {
 };
 
 // =============================================================================
-// Builder Helpers (moved from `src/ui/builder.zig` per PR 4 of
-// `docs/cleanup-implementation-plan.md` to break the `ui → widgets`
-// backward edge.)
+// Builder Helpers (kept here so `src/ui/builder.zig` never imports this module)
 // =============================================================================
 
 /// Layout parameters for virtual list rendering
@@ -512,7 +509,7 @@ pub const Layout = struct {
 /// Sync scroll state between VirtualListState and retained ScrollContainer.
 pub fn syncScroll(b: *Builder, id: []const u8, state: *VirtualListState) void {
     const g = b.window orelse return;
-    // PR 8.4 — keyed pool replaces the StringHashMap.
+    // Read-only `get` against the keyed pool; no slot means nothing to sync.
     const hash: u64 = @as(u64, LayoutId.fromString(id).id);
     const sc = g.element_states.get(ScrollContainer, hash) orelse return;
 

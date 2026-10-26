@@ -1078,12 +1078,11 @@ test "wrapped text re-measures the whole string on every frame" {
     // measurements later in the same frame and overwrites both.
     //
     // That whole-string call is the only one long enough to exceed the shape
-    // cache's 128-glyph insert limit.  It used to re-shape through the platform
-    // shaper every frame because `ShapedRunCache.put` refuses over-limit runs;
-    // `TextSystem.MeasureCache` now absorbs it by caching width without glyphs,
-    // so the call remains but is a hash lookup rather than a full shape.
-    // The count below is therefore still expected to equal the frame count --
-    // the fix removed the cost, not the call.
+    // cache's 128-glyph insert limit, so `ShapedRunCache.put` refuses it.
+    // `TextSystem.MeasureCache` absorbs it by caching width without glyphs,
+    // so the call is a hash lookup rather than a full platform shape every
+    // frame.  The count below is therefore expected to equal the frame count
+    // -- the text layer removes the cost, not the call.
     //
     // Methodology: lay out one long wrapped paragraph across several frames
     // with a recording measure callback, then assert the whole-string call
@@ -1130,7 +1129,7 @@ test "wrapped text re-measures the whole string on every frame" {
     // an optimisation.  The cost is removed in the text layer instead.
     try std.testing.expectEqual(frame_count, recorder.whole_string_calls);
 
-    // Wrapping itself was already cache-friendly: every other measurement is a
+    // Wrapping itself is cache-friendly: every other measurement is a
     // single word, comfortably inside the shaped-run cache's insert limit.
     try std.testing.expect(recorder.longest_word_len > 0);
     try std.testing.expect(recorder.longest_word_len < SHAPE_CACHE_INSERT_LIMIT);

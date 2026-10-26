@@ -16,8 +16,8 @@ const Svg = @import("svg.zig").Svg;
 const Icons = @import("svg.zig").Icons;
 
 pub const Checkbox = struct {
-    // PR 11b.2b — presentational components require no id. When null, the
-    // box gets a stable parent-scoped auto id (PR 11b.2a). Pass an explicit
+    // Presentational components require no id. When null, the box gets a
+    // stable parent-scoped auto id. Pass an explicit
     // id only when you need to address this checkbox from outside its render.
     id: ?[]const u8 = null,
     selected: bool,

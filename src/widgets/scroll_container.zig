@@ -155,13 +155,9 @@ pub const ScrollContainer = struct {
 
     /// Initialize a scroll container.
     ///
-    /// PR 8.4 — the `id: []const u8` constructor parameter was
-    /// dropped alongside the storage migration off `WidgetStore`.
-    /// The `id` field on this struct used to hold the duped key from
-    /// `WidgetStore.scroll_containers`; it was only ever written, never
-    /// read. With `Window.element_states` keyed on the `LayoutId.id`
-    /// hash there's no duped string for this struct to point at, so
-    /// the field is gone too.
+    /// The container takes no id and stores none: `Window.element_states`
+    /// keys it by the `LayoutId.id` hash, so there is no key string for
+    /// this struct to own.
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,

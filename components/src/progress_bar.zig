@@ -14,8 +14,8 @@ pub const ProgressBar = struct {
     /// Progress value from 0.0 to 1.0
     progress: f32,
 
-    /// ID for accessibility / hover correlation (PR 11b.2b). Null ⇒ stable
-    /// parent-scoped auto id (PR 11b.2a). The old default `"progress"` made
+    /// ID for accessibility / hover correlation. Null ⇒ stable
+    /// parent-scoped auto id. A fixed default such as `"progress"` would make
     /// every progress bar on a screen share one id; positional auto-ids keep
     /// them distinct.
     id: ?[]const u8 = null,
@@ -50,8 +50,8 @@ pub const ProgressBar = struct {
         const fill_width = self.width * clamped;
 
         // Resolve identity once and use it for both a11y correlation and the
-        // box. Previously, the visual box generated a different automatic id,
-        // so a11y bounds correlation pointed at an element that did not exist.
+        // box. A separate automatic id for the box would leave a11y bounds
+        // correlation pointing at an element that does not exist.
         const layout_id = cx.idFor(self.id);
 
         // Push accessible element (role: progressbar)

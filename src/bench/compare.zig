@@ -725,11 +725,10 @@ fn populateMatchedComparison(
     }
 
     // Classify central tendency on the most stable estimator available: the
-    // min (best-of-N) when both sides recorded it, otherwise the mean. This
-    // is the one decision that changed when min landed; the same floor,
-    // magnitude-scaling, and noisy/regression rules apply either way, just to
-    // a far less jittery input. The mean fallback keeps an older baseline
-    // (no min) gating exactly as before.
+    // min (best-of-N) when both sides recorded it, otherwise the mean. The
+    // same floor, magnitude-scaling, and noisy/regression rules apply to
+    // either input; the min is just far less jittery. A baseline recorded
+    // without a min still gates, on the mean.
     const central_baseline = if (both_have_min) baseline_entry.min_per_op_ns else baseline_entry.time_per_op_ns;
     const central_current = if (both_have_min) current_entry.min_per_op_ns else current_entry.time_per_op_ns;
     var status = classifyAvgStatus(

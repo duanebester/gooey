@@ -38,10 +38,10 @@
 
 const std = @import("std");
 
-// Builder helpers — moved from `src/ui/builder.zig` per PR 4 of
-// `docs/cleanup-implementation-plan.md` to break the `ui → widgets`
-// backward edge. The `Builder` type lives in `src/ui/builder.zig` and is
-// imported here so the helpers can take `*Builder` directly.
+// Builder helpers live with their widget rather than in `src/ui/builder.zig`,
+// so the builder never depends on this module. The `Builder` type lives in
+// `src/ui/builder.zig` and is imported here so the helpers can take
+// `*Builder` directly.
 const builder_mod = @import("../ui/builder.zig");
 const styles_mod = @import("../ui/styles.zig");
 const layout_mod = @import("../layout/layout.zig");
@@ -55,9 +55,8 @@ const Padding = layout_mod.Padding;
 const CornerRadius = layout_mod.CornerRadius;
 const DataTableStyle = styles_mod.DataTableStyle;
 
-// PR 8.4 — `ScrollContainer` storage moved off
-// `WidgetStore.scroll_containers` onto `Window.element_states`. The
-// data-table sync helper still takes a string `id` from the
+// `ScrollContainer` state lives on the keyed `Window.element_states` pool.
+// The data-table sync helper takes a string `id` from the
 // caller (callers compose ids dynamically), so the hash happens at
 // the boundary here.
 const scroll_container_mod = @import("scroll_container.zig");
@@ -969,9 +968,7 @@ pub const DataTableState = struct {
 };
 
 // =============================================================================
-// Builder Helpers (moved from `src/ui/builder.zig` per PR 4 of
-// `docs/cleanup-implementation-plan.md` to break the `ui → widgets`
-// backward edge.)
+// Builder Helpers (kept here so `src/ui/builder.zig` never imports this module)
 // =============================================================================
 
 /// Layout parameters for data table rendering
@@ -1037,12 +1034,10 @@ fn computePadding(style: DataTableStyle) Padding {
 /// Sync scroll state between DataTableState and retained ScrollContainer
 pub fn syncScroll(b: *Builder, id: []const u8, state: *DataTableState) void {
     const g = b.window orelse return;
-    // PR 8.4 — read-only `get` against the keyed pool. The slot is
-    // seeded by `Builder.scroll` earlier in the frame for any visible
-    // table; if the table hasn't been scrolled yet (e.g. very first
-    // frame), there's no state to sync — the early return matches
-    // the pre-PR-8.4 shape against `widgets.scrollContainer`'s
-    // `?*ScrollContainer`.
+    // Read-only `get` against the keyed pool. The slot is seeded by
+    // `Builder.scroll` earlier in the frame for any visible table; if
+    // the table hasn't been scrolled yet (e.g. very first frame),
+    // there's no state to sync.
     const hash: u64 = @as(u64, LayoutId.fromString(id).id);
     const sc = g.element_states.get(ScrollContainer, hash) orelse return;
 

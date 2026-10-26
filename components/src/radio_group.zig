@@ -32,7 +32,7 @@
 //! }
 //! ```
 //!
-//! A per-option `handlers` array is still supported for the rare case where
+//! A per-option `handlers` array is supported for the rare case where
 //! each option needs a distinct method, but prefer `on_select`: a too-short
 //! `handlers` array silently leaves the trailing radios dead.
 
@@ -80,8 +80,8 @@ pub const RadioButton = struct {
         const label_col = self.label_color orelse t.text;
 
         // Resolve identity once for both a11y and the box. The label is the
-        // radio's identity; previously the visual box generated a different
-        // automatic id, so the two diverged.
+        // radio's identity; a separate automatic id for the box would make
+        // the two diverge.
         const layout_id = cx.idFor(self.label);
 
         // Push accessible element (role: radio)
@@ -163,8 +163,8 @@ const RadioDot = struct {
 /// A radio group container that renders multiple radio buttons.
 /// Each option needs its own handler - use cx.updateWith() to create them.
 pub const RadioGroup = struct {
-    // PR 11b.2b — presentational; null ⇒ stable parent-scoped auto id
-    // (PR 11b.2a). The old `"radio-group"` default collided across groups.
+    // Presentational; null ⇒ stable parent-scoped auto id. A fixed default
+    // such as `"radio-group"` would collide across groups.
     id: ?[]const u8 = null,
     options: []const []const u8,
     // Optional so "no radio selected" is a uniform, first-class state
@@ -173,7 +173,7 @@ pub const RadioGroup = struct {
 
     /// Index-based selection handler (recommended). Typed `?OnSelectHandler`
     /// to match `Select.on_select`: one method receives the chosen option
-    /// index, so callers no longer hand-align a positional handler array.
+    /// index, so callers never hand-align a positional handler array.
     /// Created via `cx.onSelect(State.method)` where `method` is
     /// `fn(*State, usize) void`. RadioGroup keeps no open/close state, so the
     /// handler is generated per option via `forIndex` (like Select's external

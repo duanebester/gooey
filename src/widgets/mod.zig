@@ -36,15 +36,12 @@ const interface_verify = @import("../core/interface_verify.zig");
 // Text Input (single-line) — engine type
 // =============================================================================
 //
-// `TextInputState` is the engine: heap-allocated state owned by
-// `Window.element_states` (the keyed pool introduced in PR 8.1).
-// Pre-PR-8.4b the engine lived in a `WidgetStore.text_inputs`
-// StringHashMap; PR 8.4b lifted it onto the pool keyed by
+// `TextInputState` is the engine: heap-allocated state owned by the
+// keyed pool `Window.element_states` under the key
 // `(TextInputState, layout_id.id)`. The user-facing declarative
 // component is `components.TextInput` in `components/src/text_input.zig`.
-// The two were merged under a single `TextInput` name historically;
-// PR 8.4-prep disambiguates them so PR 8.4b could lift the engine
-// onto the keyed pool without a name clash.
+// The two carry distinct names so code that touches both the pool and
+// the component has no name clash.
 
 pub const text_input_state = @import("text_input_state.zig");
 
@@ -161,14 +158,13 @@ pub const MAX_ROOT_NODES = tree_list.MAX_ROOT_NODES;
 pub const DEFAULT_INDENT_PX = tree_list.DEFAULT_INDENT_PX;
 
 // =============================================================================
-// Compile-time interface checks (PR 4)
+// Compile-time interface checks
 // =============================================================================
 //
 // Pin the `Focusable` trait shape on every focusable widget at the type
-// boundary. Per CLAUDE.md §3 and `docs/cleanup-implementation-plan.md` PR 4,
-// the failure mode for a missing method must be a compile error here, not a
-// silent runtime no-op when the builder skips `withWidget` or the focus
-// manager can't drive `blur()`.
+// boundary. Per CLAUDE.md §3, the failure mode for a missing method must be
+// a compile error here, not a silent runtime no-op when the builder skips
+// `withWidget` or the focus manager can't drive `blur()`.
 //
 // Adding a new focusable widget type means: (1) implement `focus`, `blur`,
 // `isFocused`, and `focusable` on the widget; (2) add a line below. The

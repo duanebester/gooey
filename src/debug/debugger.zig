@@ -31,7 +31,7 @@ const SourceLoc = engine_mod.SourceLoc;
 const SizingType = types_mod.SizingType;
 const LayoutDirection = types_mod.LayoutDirection;
 
-/// Debug rendering modes (removed bounds_only - not useful without inspector)
+/// Debug rendering modes
 pub const DebugMode = enum {
     disabled,
     inspector_panel,

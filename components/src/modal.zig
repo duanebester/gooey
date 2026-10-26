@@ -119,7 +119,6 @@ pub fn Modal(comptime ChildType: type) type {
                 // Hash the trigger value (is_open bool)
                 const trigger_hash: u64 = if (self.is_open) 1 else 0;
 
-                // PR 8.4c — was `g.widgets.animateOn(...)` pre-retirement.
                 break :blk g.animations.animateOn(self.id, trigger_hash, .{
                     .duration_ms = self.animation_duration_ms,
                     .easing = Easing.easeOutCubic,
@@ -129,7 +128,7 @@ pub fn Modal(comptime ChildType: type) type {
             // Only render when open or animating out
             if (!self.is_open and !anim.running) return;
 
-            // Resolve identity once (PR 11b.2b) and thread it into the
+            // Resolve identity once and thread it into the
             // overlay box below, so the dialog id is hashed exactly once.
             // `self.id` stays required: Modal retains animation + dispatch
             // state keyed by it.
@@ -180,7 +179,7 @@ fn ModalOverlay(comptime ChildType: type) type {
 
         pub fn render(self: @This(), cx: *ui.Cx) void {
             // Full viewport overlay. Uses the dialog's pre-resolved layout id
-            // (PR 11b.2b) so the overlay box and the a11y node share one hash.
+            // so the overlay box and the a11y node share one hash.
             cx.render(ui.box_with_layout_id(self.layout_id, .{
                 // Full viewport via floating with no parent attachment
                 .floating = .{

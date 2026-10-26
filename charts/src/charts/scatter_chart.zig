@@ -174,7 +174,7 @@ pub const ScatterChart = struct {
 
     /// Render the scatter chart to a DrawContext.
     pub fn render(self: *const ScatterChart, ctx: *DrawContext) void {
-        // Performance timing (Phase 4 optimization)
+        // Performance timing
         const start_time = if (ENABLE_PERF_LOGGING) std.time.nanoTimestamp() else 0;
         defer if (ENABLE_PERF_LOGGING) {
             const elapsed = std.time.nanoTimestamp() - start_time;
@@ -348,8 +348,8 @@ pub const ScatterChart = struct {
 
         // OPTIMIZATION: Use point cloud batched rendering for circles with uniform radius
         // This renders ALL points across ALL series in ONE GPU draw call using instanced rendering
-        // Before: N series × M points = N×M draw calls, N×M×64 vertices (tessellated circles)
-        // After:  1 draw call, total_points × 4 vertices (quads with SDF)
+        // Per-point drawing: N series × M points = N×M draw calls, N×M×64 vertices (tessellated)
+        // Batched:           1 draw call, total_points × 4 vertices (quads with SDF)
         const can_batch = self.point_shape == .circle and self.size_data == null;
 
         if (can_batch) {

@@ -106,12 +106,11 @@ pub const Button = struct {
         const on_click = if (self.disabled) null else self.on_click;
         const on_click_handler = if (self.disabled) null else self.on_click_handler;
 
-        // Resolve identity once (PR 11b.2b). An explicit id hashes through
-        // `idFor`; a null id now falls back to the parent-scoped auto id
-        // (PR 11b.2a) rather than the label. The old `self.id orelse
-        // self.label` fallback made two same-label buttons collide and
-        // share hover/press state — the exact footgun PR 11b.2 set out to
-        // kill. Positional auto-ids keep sibling buttons distinct.
+        // Resolve identity once. An explicit id hashes through `idFor`; a
+        // null id falls back to the parent-scoped auto id rather than the
+        // label, because a label-derived id would make two same-label
+        // buttons collide and share hover/press state. Positional auto-ids
+        // keep sibling buttons distinct.
         const layout_id = cx.idFor(self.id);
 
         // Push accessible element (role: button)
