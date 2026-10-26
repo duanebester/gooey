@@ -1230,9 +1230,10 @@ pub const Builder = struct {
             return;
         }
 
-        if (type_info != .@"struct") {
-            return;
-        }
+        // Arrays nested in a tuple render element by element, like top-level ones.
+        if (type_info == .array) return self.processChildren(child);
+
+        if (type_info != .@"struct") @compileError(nonRenderableChildMessage(T));
 
         // Check for primitives
         if (@hasDecl(T, "primitive_type")) {
@@ -1296,6 +1297,33 @@ pub const Builder = struct {
             }
             return;
         }
+
+        @compileError(nonRenderableChildMessage(T));
+    }
+
+    /// Compile-error text for a child that `processChild` cannot render. A
+    /// dropped child would leave a hole in the UI with no diagnostic, so every
+    /// unrenderable type is rejected by name. Strings are the common mistake.
+    ///
+    /// Zig cannot test compile errors in-process. Checked by hand by adding
+    /// children to `examples/counter.zig` and building `wasm-counter`: a string
+    /// literal, a `?[]const u8` holding a string, a `u32`, and a plain field-only
+    /// struct each fail with this message; `null` compiles.
+    fn nonRenderableChildMessage(comptime T: type) []const u8 {
+        const prefix = "UI child of type `" ++ @typeName(T) ++ "` is not renderable; ";
+        if (isStringType(T)) return prefix ++ "wrap strings in `ui.text(\"...\", .{})`";
+        return prefix ++ "a child must be a primitive (`ui.text`, `ui.box`, ...), a " ++
+            "component with `render(self, *Cx)`, a tuple, an array, an optional, or null";
+    }
+
+    fn isStringType(comptime T: type) bool {
+        const info = @typeInfo(T);
+        if (info != .pointer) return false;
+        const pointer = info.pointer;
+        if (pointer.size == .slice) return pointer.child == u8;
+        if (pointer.size != .one) return false;
+        const pointee = @typeInfo(pointer.child);
+        return pointee == .array and pointee.array.child == u8;
     }
 
     // =========================================================================
