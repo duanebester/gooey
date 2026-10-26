@@ -96,6 +96,7 @@ pub fn App(
     comptime render: fn (*Cx) void,
     comptime config: anytype,
 ) type {
+    comptime validateConfigFields(State, @TypeOf(config));
     if (platform.is_wasm) {
         return WebApp(State, state, render, config);
     } else {
@@ -115,20 +116,11 @@ pub fn App(
                 var cfg: runtime.CxConfig(State) = .{};
                 const ConfigType = @TypeOf(config);
                 inline for (@typeInfo(runtime.CxConfig(State)).@"struct".field_names) |field_name| {
-                    // `on_init` and `custom_shaders` need special handling
-                    // (name mismatch / MSL-vs-WGSL coercion); everything else
-                    // is a straight copy when the caller provided it.
-                    if (comptime std.mem.eql(u8, field_name, "on_init")) {
-                        // `runCx` calls the field `on_init`, but `App` configs
-                        // may also spell it `init`. Accept both spellings,
-                        // preferring the canonical `on_init`, so neither is
-                        // silently dropped.
-                        if (@hasField(ConfigType, "on_init")) {
-                            cfg.on_init = config.on_init;
-                        } else if (@hasField(ConfigType, "init")) {
-                            cfg.on_init = config.init;
-                        }
-                    } else if (comptime std.mem.eql(u8, field_name, "custom_shaders")) {
+                    // `custom_shaders` (MSL-vs-WGSL coercion) and `limits`
+                    // (profile names) need special handling; everything else
+                    // is a straight copy when the caller provided it. Unknown
+                    // caller fields were already rejected at comptime.
+                    if (comptime std.mem.eql(u8, field_name, "custom_shaders")) {
                         if (@hasField(ConfigType, "custom_shaders")) {
                             cfg.custom_shaders = coerceShaders(config.custom_shaders);
                         }
@@ -181,6 +173,10 @@ pub fn WebApp(
         return struct {};
     }
 
+    // The same `gooey.App` config compiles for native and web, so web accepts
+    // every `CxConfig` field (native-only ones such as `glass_style` have no
+    // effect in a canvas) and rejects anything else, exactly like native.
+    comptime validateConfigFields(State, @TypeOf(config));
     const resource_limits = comptime resolveLimits(config);
     const web_imports = @import("platform/web/imports.zig");
     const WebRenderer = @import("platform/web/renderer.zig").WebRenderer;
@@ -211,13 +207,8 @@ pub fn WebApp(
         else
             null;
 
-        // Accept both `on_init` (canonical, matches `CxConfig`) and the
-        // `init` spelling so neither is silently dropped on the WASM path
-        // (mirrors the native arm).
         const on_init: ?*const fn (*Cx) void = if (@hasField(@TypeOf(config), "on_init"))
             config.on_init
-        else if (@hasField(@TypeOf(config), "init"))
-            config.init
         else
             null;
 
@@ -548,6 +539,41 @@ pub fn WebApp(
 // =============================================================================
 // Internal: Utilities
 // =============================================================================
+
+/// Reject `gooey.App` config fields that `CxConfig` does not define. `App`
+/// copies fields by name, so a typo such as `.tittle` would otherwise be
+/// ignored without a diagnostic. The message lists every valid name.
+///
+/// Zig cannot test compile errors in-process. Checked by hand on
+/// `examples/counter.zig`: `.tittle = "x"` fails on both `run-counter` and
+/// `wasm-counter` and lists the valid fields; `.init = f` fails on
+/// `wasm-counter` and points to `on_init`.
+fn validateConfigFields(comptime State: type, comptime ConfigType: type) void {
+    comptime {
+        const config_info = @typeInfo(ConfigType);
+        if (config_info != .@"struct") @compileError(
+            "gooey.App config must be a struct literal such as `.{ .title = \"App\" }`, got " ++
+                @typeName(ConfigType),
+        );
+        const Valid = runtime.CxConfig(State);
+        for (config_info.@"struct".field_names) |name| {
+            if (@hasField(Valid, name)) continue;
+            const hint = if (std.mem.eql(u8, name, "init")) " (did you mean `on_init`?)" else "";
+            @compileError("gooey.App config has unknown field `" ++ name ++ "`" ++ hint ++
+                "; valid fields: " ++ configFieldList(Valid));
+        }
+    }
+}
+
+fn configFieldList(comptime Valid: type) []const u8 {
+    comptime {
+        var list: []const u8 = "";
+        for (@typeInfo(Valid).@"struct".field_names, 0..) |name, index| {
+            list = list ++ (if (index == 0) "" else ", ") ++ name;
+        }
+        return list;
+    }
+}
 
 /// The app's budget from its comptime config, validated at compile time.
 /// Accepts a `ResourceLimits` value or a profile name (`.limits = .large`);
