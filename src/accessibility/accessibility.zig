@@ -57,7 +57,7 @@ pub const tree = @import("tree.zig");
 pub const bridge = @import("bridge.zig");
 pub const debug = @import("debug.zig");
 
-// Platform bridges (Phase 2+)
+// Platform bridges
 pub const mac_bridge = if (builtin.os.tag == .macos) @import("mac_bridge.zig") else struct {};
 pub const linux_bridge = if (builtin.os.tag == .linux) @import("linux_bridge.zig") else struct {};
 pub const web_bridge = if (builtin.os.tag == .freestanding) @import("web_bridge.zig") else struct {};
@@ -85,7 +85,7 @@ pub const MacBridge = if (builtin.os.tag == .macos) mac_bridge.MacBridge else vo
 pub const LinuxBridge = if (builtin.os.tag == .linux) linux_bridge.LinuxBridge else void;
 pub const WebBridge = if (builtin.os.tag == .freestanding) web_bridge.WebBridge else void;
 
-// Integration tests (Phase 1)
+// Integration tests
 const integration_test = @import("integration_test.zig");
 
 // Constants re-exported for convenience

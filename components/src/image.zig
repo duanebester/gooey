@@ -87,10 +87,9 @@ pub const Image = struct {
     pub fn render(self: Image, cx: *ui.Cx) void {
         // Push accessible element for images with alt text
         // Images without alt are treated as decorative (presentation).
-        // Resolve identity once (PR 11b.2b) and reuse it for both the a11y
-        // node and the box below. Previously a11y referenced
-        // `fromString(self.id orelse self.src)` while the box auto-id'd, so
-        // the two pointed at different elements. Null ⇒ parent-scoped auto id.
+        // Resolve identity once and reuse it for both the a11y node and the
+        // box below, so the two always point at the same element. Null ⇒
+        // parent-scoped auto id.
         const layout_id = cx.idFor(self.id);
         const a11y_pushed = if (self.alt) |alt_text|
             cx.accessible(.{

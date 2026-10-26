@@ -40,7 +40,7 @@ pub const Tab = struct {
     /// Canonical click handler name, matching Button and Checkbox.
     on_click_handler: ?HandlerRef = null,
 
-    /// Compatibility alias for the original Tab API. Prefer
+    /// Compatibility alias for `on_click_handler`. Prefer
     /// `on_click_handler`; setting both fields is invalid.
     on_click: ?HandlerRef = null,
 
@@ -89,8 +89,8 @@ pub const Tab = struct {
         const inactive_text = self.inactive_text_color orelse t.text;
         const radius = self.corner_radius orelse t.radius_md;
 
-        // Resolve identity once for both a11y and the box (PR 11b.2b); the
-        // label was previously hashed for a11y while the box auto-id'd.
+        // Resolve identity once for both a11y and the box, so the label hash
+        // that a11y reports is the box's id too.
         const layout_id = cx.idFor(self.label);
 
         // Push accessible element (role: tab)
@@ -157,8 +157,8 @@ pub const Tab = struct {
 };
 
 test "Tab canonical click handler and compatibility alias resolve identically" {
-    // Both field names remain source compatible, while the canonical path now
-    // matches Button/Checkbox and the primitive Box event field.
+    // Both field names compile and resolve to the same handler; the canonical
+    // field matches Button/Checkbox and the primitive Box event field.
     const handler: HandlerRef = undefined;
     const canonical = Tab{ .label = "One", .selected = false, .on_click_handler = handler };
     const legacy = Tab{ .label = "One", .selected = false, .on_click = handler };
@@ -172,8 +172,8 @@ test "Tab canonical click handler and compatibility alias resolve identically" {
 /// A tab bar container that renders multiple tabs with simple fn callback.
 /// For more control (especially with Cx handlers), render Tab components directly.
 pub const TabBar = struct {
-    // PR 11b.2b — presentational; null ⇒ stable parent-scoped auto id
-    // (PR 11b.2a). The old `"tabs"` default collided across tab bars.
+    // Presentational; null ⇒ stable parent-scoped auto id. A fixed default
+    // such as `"tabs"` would collide across tab bars.
     id: ?[]const u8 = null,
     tabs: []const []const u8,
     // Optional so "no tab active" is a uniform, first-class state (null)
@@ -181,13 +181,12 @@ pub const TabBar = struct {
     selected: ?usize = null,
 
     /// Index-based selection handler. Typed `?OnSelectHandler` to match
-    /// `Select`/`RadioGroup`: one method receives the chosen tab index. This
-    /// replaced the old `?*const fn (usize) void` raw pointer, which (a) was
-    /// the lone index-widget handler that couldn't be built with `cx.*`, and
-    /// (b) forced a per-item static-var wrapper that aliased across tabs — all
-    /// tabs shared one storage slot, so every tab fired the last index.
-    /// Created via `cx.onSelect(State.method)`. TabBar keeps no open/close
-    /// state, so handlers are generated per tab via `forIndex`.
+    /// `Select`/`RadioGroup`: one method receives the chosen tab index. It is
+    /// built with `cx.*` like every other index-widget handler, and needs no
+    /// per-item static-var wrapper; such a wrapper would give all tabs one
+    /// storage slot, so every tab would fire the last index. Created via
+    /// `cx.onSelect(State.method)`. TabBar keeps no open/close state, so
+    /// handlers are generated per tab via `forIndex`.
     on_select: ?OnSelectHandler = null,
 
     // Layout
@@ -376,14 +375,14 @@ const TabBarItem = struct {
 
         // Per-tab handler carrying this tab's index. Generated from the
         // shared `on_select` via `forIndex` — each call produces a distinct
-        // `HandlerRef` with the index packed into its `entity_id`, so tabs no
-        // longer alias through a single static-var wrapper.
+        // `HandlerRef` with the index packed into its `entity_id`, so tabs
+        // never alias through a single static-var wrapper.
         const on_click: ?HandlerRef = if (self.on_select) |os|
             os.forIndex(self.index)
         else
             null;
 
-        // Resolve identity once for both a11y and the box (PR 11b.2b).
+        // Resolve identity once for both a11y and the box.
         const layout_id = cx.idFor(self.label);
 
         // Push accessible element (role: tab)

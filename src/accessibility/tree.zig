@@ -5,7 +5,7 @@
 //! - Fingerprint-based identity for cross-frame correlation
 //! - Dirty tracking to minimize platform sync overhead
 //! - Deferred announcements batched per frame
-//! - Hash map for O(1) fingerprint lookups (Phase 2 optimization)
+//! - Hash map for O(1) fingerprint lookups
 
 const std = @import("std");
 const constants = @import("constants.zig");
@@ -209,7 +209,7 @@ pub const Tree = struct {
         self.prev_focused_fingerprint = self.focused_fingerprint;
 
         // Clear and rebuild previous fingerprint map
-        // Only copy the used portion (Phase 2.2 optimization)
+        // Only copy the used portion
         self.prev_fingerprint_map.clear();
         const elem_count = self.element_count;
         for (0..elem_count) |i| {
@@ -248,7 +248,7 @@ pub const Tree = struct {
 
     /// Find dirty elements (content changed or new)
     /// Uses hash map for O(n) total instead of O(n²)
-    /// Phase 3.3: Auto-announces live region content changes
+    /// Auto-announces live region content changes
     fn computeDirtyElements(self: *Self) void {
         std.debug.assert(self.dirty_count == 0); // Should be reset in beginFrame
         std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
@@ -266,7 +266,7 @@ pub const Tree = struct {
                 if (self.prev_hashes[pi] != current_hash) {
                     self.markDirty(@intCast(i));
 
-                    // Phase 3.3: Auto-announce live region content changes
+                    // Auto-announce live region content changes
                     // When a live region's content changes, automatically announce it
                     self.autoAnnounceLiveRegion(elem);
                 }
@@ -277,7 +277,7 @@ pub const Tree = struct {
         }
     }
 
-    /// Phase 3.3: Auto-announce content changes for live regions
+    /// Auto-announce content changes for live regions
     /// Called when a live region element's content hash changes
     fn autoAnnounceLiveRegion(self: *Self, elem: *const Element) void {
         // Check if this is a live region (explicit live property or role-based)
@@ -957,7 +957,7 @@ test "tree dirty detection uses hash map" {
     // All new = all dirty (51 elements: 1 container + 50 buttons)
     try std.testing.expectEqual(@as(u16, 51), tree.dirty_count);
 
-    // Frame 2: Same content - should be O(n) not O(n²) now
+    // Frame 2: Same content - should be O(n) not O(n²)
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .group, .name = "Container" });
     for (0..50) |i| {

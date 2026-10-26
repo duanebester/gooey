@@ -13,9 +13,8 @@
 //! component is `components.TextInput` in `components/src/text_input.zig`, which
 //! is what application code constructs as a literal
 //! (`TextInput{ .id = "...", .placeholder = "..." }`). The two types
-//! used to share the name `TextInput`, which only worked as long as no
-//! file imported both — the disambiguation is the prep work for PR 8.4
-//! lifting `TextInputState` onto the keyed `Window.element_states` pool.
+//! carry distinct names so one file can import both, as the code that
+//! stores `TextInputState` on the keyed `Window.element_states` pool does.
 //!
 //! Example usage:
 //! ```
@@ -61,12 +60,6 @@ const history_mod = @import("edit_history.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-// PR 8.4b — `core/element_id.zig` import retired alongside the
-// `id: ElementId` field and `getId()` method. The engine type is
-// keyed in the pool by the framework's `LayoutId.id` u32 hash; the
-// pre-PR-8.4b `ElementId` was strictly internal book-keeping that
-// survived from the days when the engine type owned its own id
-// space.
 const geometry = @import("../core/geometry.zig");
 const focus_mod = @import("../context/focus.zig");
 
@@ -86,8 +79,7 @@ const Modifiers = input_mod.Modifiers;
 /// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
 /// alias preserves existing `text_input_state.Bounds` import paths in
 /// `widgets/mod.zig` and the `Builder.DEFAULT_TEXT_INPUT_BOUNDS`
-/// seed value (post-PR-8.4b: pre-PR-8.4b the alias was also used by
-/// the retired `WidgetStore.default_text_input_bounds` field). See
+/// seed value. See
 /// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
 /// hit-test rationale.
 pub const Bounds = common.Bounds;
@@ -112,14 +104,10 @@ pub const Style = struct {
 pub const TextInputState = struct {
     allocator: std.mem.Allocator,
 
-    // PR 8.4b — `id: ElementId` field dropped. Pre-PR-8.4b it held
-    // either a counter-derived `ElementId.int(...)` (for `init`) or a
-    // `ElementId.named(id)` view of the duped key from
-    // `WidgetStore.text_inputs` (for `initWithId`). Post-PR-8.4b the
-    // pool keys on `LayoutId.id` (a u32 hash), there is no duped
-    // string for the field to point at, and the only reader
-    // (`getId()`) was unused outside its own definition. Same
-    // reduction PR 8.4a did to `ScrollContainer.id`.
+    // The engine carries no id of its own. `Window.element_states` keys
+    // each instance by the framework's `LayoutId.id` u32 hash, so there
+    // is no separate id space to keep in sync. `ScrollContainer` follows
+    // the same rule.
 
     // Geometry
     bounds: Bounds,
@@ -186,12 +174,8 @@ pub const TextInputState = struct {
     /// Initialize TextInputState.
     /// Marked noinline to prevent stack accumulation.
     ///
-    /// PR 8.4b — collapsed `init` and `initWithId` into a single
-    /// constructor now that `id: ElementId` is gone. The pre-PR-8.4b
-    /// `init` generated a counter-derived id only because the field
-    /// existed; with the field retired the counter was dead weight
-    /// and the call sites split (`init` for tests, `initWithId` for
-    /// `WidgetStore`) collapse onto a single shape.
+    /// This is the only constructor: the engine has no id to derive, so
+    /// tests and the element-state pool build instances the same way.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         return .{
             .allocator = allocator,
@@ -306,8 +290,7 @@ pub const TextInputState = struct {
 
     /// Build a `Focusable` trait for this widget instance. Called by
     /// the UI builder during render so the framework can drive focus
-    /// without importing the widget type — see PR 4 in
-    /// `docs/cleanup-implementation-plan.md`. The `Focusable.ptr` field
+    /// without importing the widget type. The `Focusable.ptr` field
     /// captures the heap-stable widget pointer; the vtable is shared
     /// across all `TextInputState` instances and lives in static storage.
     pub fn focusable(self: *Self) focus_mod.Focusable {
@@ -941,7 +924,7 @@ pub const TextInputState = struct {
             display_cursor = mask_cursor;
         }
 
-        // Text area is now the full bounds (padding handled by component's box)
+        // Text area is the full bounds (padding handled by component's box)
         const text_x = self.bounds.x;
         const text_y = self.bounds.y;
         const text_width = self.bounds.width;

@@ -91,9 +91,9 @@ pub fn Tooltip(comptime ChildType: type) type {
             const text_col = self.text_color orelse t.text;
             const radius = self.corner_radius orelse t.radius_md;
 
-            // Resolve identity once (PR 11b.2b). Null ⇒ parent-scoped auto id
-            // (PR 11b.2a) rather than the tooltip text, so two same-text
-            // tooltips no longer share one hover area.
+            // Resolve identity once. Null ⇒ parent-scoped auto id rather than
+            // the tooltip text, so two same-text tooltips never share one
+            // hover area.
             const layout_id = cx.idFor(self.id);
 
             // Check if this tooltip's hover area OR any descendant is hovered

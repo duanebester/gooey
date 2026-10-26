@@ -366,10 +366,9 @@ pub const FixedWindowRegistry = struct {
         self.occupied_count += 1;
 
         // Registration deliberately does not elect an active window, matching
-        // `interface.WindowRegistry.register`. The implicit "first window
-        // wins" election was removed there because it made focus policy an
-        // invisible side effect of registration; keeping it here would make
-        // this backend the one place that still disagrees.
+        // `interface.WindowRegistry.register`. An implicit "first window
+        // wins" election would make focus policy an invisible side effect of
+        // registration, and this backend must agree with the real registry.
 
         assert(self.occupied_count <= window_count_max);
         assert(self.contains(id));
@@ -1451,7 +1450,7 @@ pub const TestWindow = struct {
         self.marked_len = 0;
 
         // Cancelling a composition must not disturb text already committed;
-        // the two buffers are independent and were once the same one.
+        // the two buffers are independent, and sharing one would break this.
         assert(self.inserted_len <= ime_bytes_max);
         self.platform.recordCall(.clear_marked_text, self.window_id, 0);
     }
@@ -1699,12 +1698,12 @@ test "a cleared hook leaves the turn a no-op" {
 }
 
 test "a host-initiated close is reclaimed on the next turn" {
-    // Goal: the regression this hook exists for. `close()` is the host route —
+    // Goal: the behaviour this hook exists for. `close()` is the host route —
     // titlebar button, compositor request — and it deliberately does not
     // destroy the window, because it runs inside that window's own dispatch.
-    // Before the hook, nothing polled `isClosed()` until the app happened to
+    // Without the hook, nothing polls `isClosed()` until the app happens to
     // call `openWindow`, `closeWindowById`, or `deinit`, so the window's slot
-    // and its context stayed live indefinitely.
+    // and its context would stay live indefinitely.
     LoopTurnProbe.reset();
 
     var plat: TestPlatform = undefined;
@@ -1738,10 +1737,10 @@ test "a host-initiated close is reclaimed on the next turn" {
 }
 
 test "open and close cycles past capacity do not exhaust the slot pool" {
-    // Goal: the leak's actual failure mode. With `quit_when_last_window_closes`
-    // false, an app opens and closes windows for its whole session. Each
-    // host-initiated close used to retain a slot, so after `window_count_max`
-    // cycles the pool was full and the next open failed — a capacity error
+    // Goal: the failure mode of a slot leak. With `quit_when_last_window_closes`
+    // false, an app opens and closes windows for its whole session. If each
+    // host-initiated close retained a slot, after `window_count_max` cycles
+    // the pool would be full and the next open would fail — a capacity error
     // caused purely by never reclaiming.
     //
     // Runs one full cycle past capacity (CLAUDE.md §24: fill the resource
@@ -1771,7 +1770,7 @@ test "open and close cycles past capacity do not exhaust the slot pool" {
 
     try testing.expectEqual(cycle_count, LoopTurnProbe.reclaimed_count);
 
-    // The pool is still fully usable, which is what the leak destroyed: prove
+    // The pool is still fully usable, which a slot leak would destroy: prove
     // every slot can be claimed at once after all that churn.
     var held: [window_count_max]*TestWindow = undefined;
     var index: u32 = 0;
@@ -2543,7 +2542,7 @@ test "atlas setters store the pointer they were handed" {
     win.setSvgAtlas(&svg_atlas);
     win.setImageAtlas(&image_atlas);
 
-    // The three slots were historically easy to cross-wire, so pin identity.
+    // The three slots are easy to cross-wire, so pin identity.
     try testing.expect(win.text_atlas == &text_atlas);
     try testing.expect(win.svg_atlas == &svg_atlas);
     try testing.expect(win.image_atlas == &image_atlas);

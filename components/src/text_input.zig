@@ -78,7 +78,7 @@ pub const TextInput = struct {
         const layout_id = LayoutId.fromString(self.id);
 
         // Push accessible element (role: textbox)
-        // Phase 3.1: Expose value to screen readers (masked for secure inputs)
+        // Expose value to screen readers (masked for secure inputs)
         const a11y_value: ?[]const u8 = if (self.secure)
             null // Don't expose secure input values
         else if (self.bind) |binding|

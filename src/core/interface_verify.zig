@@ -151,7 +151,7 @@ pub fn verifyFileDialogInterface(comptime T: type) void {
 ///
 /// The compile-time pin (per CLAUDE.md §3): instantiate from `widgets/mod.zig`
 /// so a widget dropping a method fails the build rather than becoming a silent
-/// runtime no-op. See PR 4 in `docs/cleanup-implementation-plan.md`.
+/// runtime no-op.
 pub fn verifyFocusableInterface(comptime T: type) void {
     comptime {
         assertHasDecl(T, "focus", "Focusable");

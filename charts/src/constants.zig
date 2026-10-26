@@ -51,7 +51,7 @@ pub const DEFAULT_GRID_LINE_WIDTH: f32 = 1.0;
 // Performance Tuning
 // =============================================================================
 
-/// Enable render timing debug logs (Phase 4 optimization)
+/// Enable render timing debug logs
 /// When true, warns if chart render exceeds 8ms budget
 pub const ENABLE_PERF_LOGGING: bool = false;
 

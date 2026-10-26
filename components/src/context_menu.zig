@@ -112,7 +112,7 @@ pub const MenuItem = struct {
     /// Named `on_click` (typed `?HandlerRef`), matching Button/Tab/RadioButton:
     /// a menu row triggers one fixed action, exactly like a click. This is the
     /// counterpart to the index-based `on_select: ?OnSelectHandler` used by
-    /// Select/RadioGroup/TabBar. The framework now keeps the two concepts on
+    /// Select/RadioGroup/TabBar. The framework keeps the two concepts on
     /// distinct names — `on_click`/`HandlerRef` for a fixed action,
     /// `on_select`/`OnSelectHandler` for index-based selection — so a field
     /// named `on_select` always has one type and copy-paste can't miscompile.
@@ -145,8 +145,8 @@ pub const MenuItem = struct {
 pub const ContextMenu = struct {
     /// Stable identifier — used for the layout id and a11y bounds correlation.
     /// Required (no default): ContextMenu is controlled/retained like `Modal`,
-    /// and the old shared `"context-menu"` default made two menus on one
-    /// screen collide silently. Matches `Modal`'s required-`id` convention.
+    /// and a shared default such as `"context-menu"` would make two menus on
+    /// one screen collide silently. Matches `Modal`'s required-`id` convention.
     id: []const u8,
 
     /// Whether the menu is currently visible.

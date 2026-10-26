@@ -26,14 +26,6 @@ const Hsla = scene_mod.Hsla;
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
 
-// PR 8.4b — `core/element_id.zig` import retired alongside the
-// `id: ElementId` field, `getId()` method, and atomic-counter
-// `generateUniqueId`. The engine type is keyed by `LayoutId.id`
-// (a u32 hash) on `Window.element_states` post-PR-8.4b, and the
-// only reader of the field (`getId()`) was unused outside its own
-// definition. Same reduction `text_input_state.zig` and
-// `text_area_state.zig` do post-PR-8.4b.
-
 const event = @import("../input/event.zig");
 const EventResult = event.EventResult;
 
@@ -119,12 +111,8 @@ pub const Style = struct {
 /// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
 /// alias preserves existing `code_editor_state.Bounds` import paths in
 /// `widgets/mod.zig` and the `Builder.DEFAULT_CODE_EDITOR_BOUNDS`
-/// seed value (post-PR-8.4b: pre-PR-8.4b the alias was also used by
-/// the retired `WidgetStore.default_code_editor_bounds` field). See
-/// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
-/// hit-test rationale — `CodeEditorState` already used the
-/// half-open form, so this consolidation is a pure
-/// type-deduplication for this widget (no behaviour change).
+/// seed value. See `text_common.Bounds` for the half-open
+/// `[x, x+w) x [y, y+h)` hit-test rationale.
 pub const Bounds = common.Bounds;
 
 // =============================================================================
@@ -134,13 +122,14 @@ pub const Bounds = common.Bounds;
 pub const CodeEditorState = struct {
     allocator: std.mem.Allocator,
 
-    // PR 8.4b — `id: ElementId` field dropped (see file header for
-    // rationale).
+    // The engine carries no id of its own. `Window.element_states` keys
+    // each instance by the framework's `LayoutId.id` u32 hash, so there
+    // is no separate id space to keep in sync.
 
     /// Embedded TextAreaState for text management.
-    /// Field name (`text_area`) preserved — the public-facing widget
-    /// concept is still "a text area embedded in a code editor." Only
-    /// the type is renamed (engine vs. component disambiguation).
+    /// The field is named `text_area` because the widget concept is "a
+    /// text area embedded in a code editor"; the `State` suffix belongs
+    /// only to the engine type, to tell it apart from the component.
     text_area: TextAreaState,
 
     /// Full bounds (including gutter)
@@ -197,10 +186,8 @@ pub const CodeEditorState = struct {
     /// Marked noinline to prevent stack accumulation (struct is >50KB
     /// due to highlight_spans).
     ///
-    /// PR 8.4b — `init` and `initWithId` collapsed onto a single
-    /// constructor (and the atomic-counter `generateUniqueId` is
-    /// gone) now that `id: ElementId` is dropped. Same reduction the
-    /// sibling `TextInputState` / `TextAreaState` did post-PR-8.4b.
+    /// This is the only constructor: the engine has no id to derive, the
+    /// same as the sibling `TextInputState` and `TextAreaState`.
     pub noinline fn init(allocator: std.mem.Allocator, bounds: Bounds) Self {
         std.debug.assert(bounds.width > 0);
         std.debug.assert(bounds.height > 0);
@@ -319,8 +306,8 @@ pub const CodeEditorState = struct {
     /// Opt into raw keyboard-navigation keys: a code editor consumes Tab
     /// (indent) and Shift-Tab itself instead of yielding them to focus
     /// traversal. Read through the `Focusable` vtable by `runtime/input`,
-    /// which folds the former hard-coded CodeEditor Tab carve-out into this
-    /// one general rule. Leaving a focused editor is done with Escape
+    /// so one general rule covers it and no widget needs a hard-coded Tab
+    /// carve-out. Leaving a focused editor is done with Escape
     /// (`handleKeyDownEvent` blurs focused text widgets on Escape).
     pub fn wantsRawKeys(self: *Self) bool {
         _ = self;
@@ -329,8 +316,7 @@ pub const CodeEditorState = struct {
 
     /// Build a `Focusable` trait for this widget instance. Called by
     /// the UI builder during render so the framework can drive focus
-    /// without importing the widget type — see PR 4 in
-    /// `docs/cleanup-implementation-plan.md`. The vtable is shared
+    /// without importing the widget type. The vtable is shared
     /// across all `CodeEditorState` instances and lives in static
     /// storage. `isFocused` delegates through the embedded `TextAreaState`.
     pub fn focusable(self: *Self) focus_mod.Focusable {

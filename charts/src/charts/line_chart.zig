@@ -163,7 +163,7 @@ pub const LineChart = struct {
 
     /// Render the line chart to a DrawContext.
     pub fn render(self: *const LineChart, ctx: *DrawContext) void {
-        // Performance timing (Phase 4 optimization)
+        // Performance timing
         const start_time = if (ENABLE_PERF_LOGGING) std.time.nanoTimestamp() else 0;
         defer if (ENABLE_PERF_LOGGING) {
             const elapsed = std.time.nanoTimestamp() - start_time;
@@ -409,8 +409,8 @@ pub const LineChart = struct {
 
     /// Draw line for a single series using polyline API (single draw call).
     /// This is much more efficient than N strokeLine calls:
-    /// - Before: N draw calls, N tessellations, N GPU uploads
-    /// - After: 1 draw call, 0 tessellations, 1 GPU upload
+    /// - N strokeLine calls: N draw calls, N tessellations, N GPU uploads
+    /// - One polyline: 1 draw call, 0 tessellations, 1 GPU upload
     ///
     /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation to reduce
     /// point count while preserving visual shape.
@@ -475,8 +475,8 @@ pub const LineChart = struct {
     /// Draw point markers for ALL series in a single batched draw call.
     /// OPTIMIZED: Uses pointCloudColoredArrays to render all points across all series
     /// in ONE GPU draw call using instanced rendering.
-    /// Before: N series = N draw calls
-    /// After:  1 draw call for all points with per-point colors
+    /// Per-series drawing: N series = N draw calls
+    /// Batched:            1 draw call for all points with per-point colors
     ///
     /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation per series to reduce
     /// point count while preserving visual shape.

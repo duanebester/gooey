@@ -140,7 +140,7 @@ pub const PieChart = struct {
 
     /// Render the pie chart to a DrawContext.
     pub fn render(self: *const PieChart, ctx: *DrawContext) void {
-        // Performance timing (Phase 4 optimization)
+        // Performance timing
         const start_time = if (ENABLE_PERF_LOGGING) std.time.nanoTimestamp() else 0;
         defer if (ENABLE_PERF_LOGGING) {
             const elapsed = std.time.nanoTimestamp() - start_time;

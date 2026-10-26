@@ -1,11 +1,11 @@
 //! Per-iteration timing accumulator shared by every benchmark harness.
 //!
-//! Each harness times its hot path across many iterations. Historically each
-//! timed loop kept its own `total_time_ns` / `iterations` locals and summed
-//! them by hand, so adding a new statistic meant touching ~30 loops across the
-//! four `*/benchmarks.zig` files. `Sampler` centralizes that bookkeeping: the
-//! loops feed it one `record(elapsed_ns)` per iteration, and a new statistic is
-//! added here once — never threaded through the individual loops again.
+//! Each harness times its hot path across many iterations. `Sampler`
+//! centralizes that bookkeeping so the ~30 timed loops across the four
+//! `*/benchmarks.zig` files do not each keep and sum their own
+//! `total_time_ns` / `iterations` locals: the loops feed it one
+//! `record(elapsed_ns)` per iteration, and a new statistic is added here once
+//! rather than threaded through every loop.
 //!
 //! Why track the minimum: interference on a shared CI runner (scheduler
 //! preemption, CPU migration, cache eviction, thermal throttling) only ever

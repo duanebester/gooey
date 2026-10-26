@@ -46,7 +46,7 @@ const TextConfig = types.TextConfig;
 const Offset2D = types.Offset2D;
 
 // =============================================================================
-// SourceLoc Tests (Phase 5)
+// SourceLoc Tests
 // =============================================================================
 
 test "SourceLoc.none is invalid" {
@@ -121,7 +121,7 @@ test "SourceLoc propagates through createElement" {
 }
 
 // =============================================================================
-// Phase 1 Tests: Fixed Capacity Arrays, UTF-8, Capacity Limits
+// Fixed Capacity Arrays, UTF-8, Capacity Limits
 // =============================================================================
 
 test "FixedCapacityArray basic operations" {
@@ -420,7 +420,7 @@ test "beginFrame clears fixed capacity arrays" {
 }
 
 // ============================================================================
-// Phase 2 Tests: Performance Improvements
+// Word Measurement and Floating Elements
 // ============================================================================
 
 test "word-level measurement measures words not characters" {
@@ -624,7 +624,7 @@ test "floating expand both dimensions" {
 }
 
 // ============================================================================
-// Phase 3 Tests: Code Quality
+// Shared Types and Size Distribution
 // ============================================================================
 
 test "Offset2D shared type works in FloatingConfig" {

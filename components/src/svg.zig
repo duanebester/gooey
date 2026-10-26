@@ -85,9 +85,9 @@ pub const Svg = struct {
 
         // Push accessible element for SVGs with alt text
         // SVGs without alt are treated as decorative (presentation).
-        // Resolve identity once (PR 11b.2b); reused for the a11y node and the
-        // box below, which previously auto-id'd and so diverged from the a11y
-        // id. Null ⇒ parent-scoped auto id (PR 11b.2a).
+        // Resolve identity once and reuse it for the a11y node and the box
+        // below, so both refer to the same element. Null ⇒ parent-scoped
+        // auto id.
         const layout_id = cx.idFor(self.id);
         const a11y_pushed = if (self.alt) |alt_text|
             cx.accessible(.{
