@@ -5,7 +5,7 @@
 //! already ship today:
 //!
 //! - Positioning : `ui.Floating.contextMenu()` (viewport-anchored, clamped).
-//! - Dismissal   : `on_click_outside_handler` (see `context/dispatch.zig`).
+//! - Dismissal   : `on_click_outside` (see `context/dispatch.zig`).
 //! - A11y        : `menu` / `menuitem` roles (see `accessibility/types.zig`).
 //! - Rendering   : a floating column of `Box` rows — no new layout or GPU work.
 //!
@@ -45,17 +45,17 @@
 //!     .is_open = s.menu_open,
 //!     .x = s.menu_x,
 //!     .y = s.menu_y,
-//!     .on_close = cx.update(State.closeMenu),
+//!     .on_close = cx.on(State.closeMenu, .{}),
 //!     .items = &.{
 //!         .{
 //!             .label = "Cut",
 //!             .icon = components.Icons.close,
 //!             .shortcut = "Ctrl+X",
-//!             .on_click = cx.update(State.cut),
+//!             .on_click = cx.on(State.cut, .{}),
 //!         },
-//!         .{ .label = "Copy", .shortcut = "Ctrl+C", .on_click = cx.update(State.copy) },
+//!         .{ .label = "Copy", .shortcut = "Ctrl+C", .on_click = cx.on(State.copy, .{}) },
 //!         .{ .separator = true },
-//!         .{ .label = "Delete", .danger = true, .on_click = cx.update(State.delete) },
+//!         .{ .label = "Delete", .danger = true, .on_click = cx.on(State.delete, .{}) },
 //!     },
 //! }
 //!
@@ -78,7 +78,7 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
-const HandlerRef = ui.HandlerRef;
+const Handler = ui.Handler;
 const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
 const Svg = @import("svg.zig").Svg;
@@ -109,14 +109,9 @@ pub const MenuItem = struct {
     /// convention this method should also set the app's open flag to false.
     /// `null` renders a non-interactive row (e.g. a section header).
     ///
-    /// Named `on_click` (typed `?HandlerRef`), matching Button/Tab/RadioButton:
-    /// a menu row triggers one fixed action, exactly like a click. This is the
-    /// counterpart to the index-based `on_select: ?OnSelectHandler` used by
-    /// Select/RadioGroup/TabBar. The framework keeps the two concepts on
-    /// distinct names — `on_click`/`HandlerRef` for a fixed action,
-    /// `on_select`/`OnSelectHandler` for index-based selection — so a field
-    /// named `on_select` always has one type and copy-paste can't miscompile.
-    on_click: ?HandlerRef = null,
+    /// Named `on_click`, matching Button/Tab/RadioButton: a menu row triggers
+    /// one fixed action, exactly like a click.
+    on_click: ?Handler = null,
 
     /// Optional leading icon as SVG markup (e.g. one of `components.Lucide`),
     /// rendered stroke-based to match the Lucide icon style.
@@ -160,7 +155,7 @@ pub const ContextMenu = struct {
     items: []const MenuItem,
 
     /// Fired on click-outside. Should set the app's open flag to false.
-    on_close: ?HandlerRef = null,
+    on_close: ?Handler = null,
 
     // === Layout ===
 
@@ -316,7 +311,7 @@ const MenuSurface = struct {
     z_index: i16,
     min_width: f32,
     max_width: ?f32,
-    on_close: ?HandlerRef,
+    on_close: ?Handler,
     items: []const MenuItem,
     menuitem_count: u16,
     palette: ContextMenu.Palette,
@@ -350,7 +345,7 @@ const MenuSurface = struct {
                 .color = Color.rgba(0, 0, 0, 0.18),
             },
             .floating = floating,
-            .on_click_outside_handler = self.on_close,
+            .on_click_outside = self.on_close,
         }, .{
             MenuRows{
                 .items = self.items,
@@ -445,7 +440,7 @@ const MenuRow = struct {
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
             .gap = 16,
-            .on_click_handler = if (interactive) self.item.on_click else null,
+            .on_click = if (interactive) self.item.on_click else null,
         }, .{
             MenuRowLabel{
                 .label = self.item.label,

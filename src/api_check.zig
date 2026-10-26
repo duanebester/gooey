@@ -180,6 +180,7 @@ fn pinTier1NamespacedContext() void {
     comptime {
         _ = gooey.context.Window;
         _ = gooey.context.Entity;
+        _ = gooey.context.Handler;
         _ = gooey.context.FocusManager;
         _ = gooey.context.FontConfig;
     }
@@ -238,6 +239,7 @@ fn pinTier1NamespacedUi() void {
         _ = gooey.ui.Builder;
         _ = gooey.ui.Theme;
         _ = gooey.ui.Box;
+        _ = gooey.ui.Handler;
         _ = gooey.ui.StackStyle;
         _ = gooey.ui.Floating;
         _ = gooey.ui.LinearGradient;
@@ -320,7 +322,7 @@ fn pinTier1NamespacedApp() void {
 /// `Cx` carries five sub-namespaces as struct fields: `lists`, `animations`,
 /// `focus`, `entities`, `element_states`. Examples reach into them
 /// as `cx.lists.uniformList(...)` / `cx.animations.tween(...)` /
-/// `cx.focus.request(...)` / `cx.entities.handler(...)` /
+/// `cx.focus.request(...)` / `cx.entities.create(...)` /
 /// `cx.element_states.get(T, id)`. The promise here is that the
 /// **field name** stays — not the inner API surface, which is
 /// audited elsewhere.
@@ -337,13 +339,12 @@ fn pinCxSubNamespaces() void {
         _ = @FieldType(gooey.Cx, "entities");
         _ = @FieldType(gooey.Cx, "element_states");
 
-        // Pin the most-used `Cx` methods. `update` / `notify` /
+        // Pin the most-used `Cx` methods. `on` / `notify` /
         // `render` / `state` / `window` / `theme` / `windowSize`
         // appear in every example's render fn; deleting one would
         // break the example bodies before users hit the namespaced
-        // surface.
-        _ = @TypeOf(gooey.Cx.update);
-        _ = @TypeOf(gooey.Cx.updateWith);
+        // surface. `on` is the one handler constructor.
+        _ = @TypeOf(gooey.Cx.on);
         _ = @TypeOf(gooey.Cx.notify);
         _ = @TypeOf(gooey.Cx.render);
         _ = @TypeOf(gooey.Cx.state);

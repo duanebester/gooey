@@ -141,7 +141,7 @@ const FocusEvent = focus_mod.FocusEvent;
 
 // Handler system
 const handler_mod = @import("handler.zig");
-const HandlerRef = handler_mod.HandlerRef;
+const Handler = handler_mod.Handler;
 
 // Drag & Drop
 const drag_mod = @import("drag.zig");
@@ -205,36 +205,6 @@ const ElementStates = element_states_mod.ElementStates;
 // flag every flush.
 
 const MAX_DEFERRED_COMMANDS = 32;
-
-const DeferredCommand = struct {
-    callback: *const fn (*Window, u64) void,
-    packed_arg: u64,
-};
-
-/// Extract the State type from a handler method's first parameter.
-///
-/// All handler methods follow the pattern `fn(*State, ...) void` where the
-/// first parameter is always a pointer to the state type. This helper uses
-/// `@typeInfo` to pull the pointee type from that first parameter, eliminating
-/// the need to pass the State type explicitly.
-fn extractState(comptime caller: []const u8, comptime Fn: type) type {
-    const info = @typeInfo(Fn);
-    if (info != .@"fn") {
-        @compileError(caller ++ "() expects a function, got " ++ @typeName(Fn));
-    }
-    const fn_info = info.@"fn";
-    if (fn_info.param_types.len == 0) {
-        @compileError(caller ++ "() expects a method with at least one parameter (*State), got a function with no parameters");
-    }
-    const FirstParam = fn_info.param_types[0] orelse {
-        @compileError(caller ++ "() expects a concrete first parameter type (*State), got anytype");
-    };
-    const ptr_info = @typeInfo(FirstParam);
-    if (ptr_info != .pointer or ptr_info.pointer.size != .one) {
-        @compileError(caller ++ "() expects first parameter to be *State (single-item pointer), got " ++ @typeName(FirstParam));
-    }
-    return ptr_info.pointer.child;
-}
 
 /// Font configuration for app initialization.
 /// Pass to `initOwnedPtr` to control the default font.
@@ -383,7 +353,7 @@ pub const Window = struct {
     root_state_type_id: usize = 0,
 
     // Deferred command queue (for operations that must run after event handling)
-    deferred_commands: [MAX_DEFERRED_COMMANDS]DeferredCommand = undefined,
+    deferred_commands: [MAX_DEFERRED_COMMANDS]Handler = undefined,
     deferred_count: u8 = 0,
 
     /// Blur handler registry (see `blur_handlers.zig`). Backed by the
@@ -468,93 +438,25 @@ pub const Window = struct {
         return self.app.image_loader.isFailed(url_hash);
     }
 
-    /// Get the root state pointer with type checking
-    pub fn getRootState(self: *Self, comptime State: type) ?*State {
-        if (self.root_state_ptr) |ptr| {
-            if (self.root_state_type_id == typeId(State)) {
-                return @ptrCast(@alignCast(ptr));
-            }
-        }
-        return null;
-    }
-
     // =========================================================================
     // Deferred Commands
     // =========================================================================
 
-    /// Queue a callback to run after current event handling completes.
-    /// Used internally by Cx.deferCommand().
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The method should be `fn(*State, *Window) void`.
-    pub fn deferCommand(
-        self: *Self,
-        comptime method: anytype,
-    ) void {
-        const State = comptime extractState("deferCommand", @TypeOf(method));
-
+    /// Queue a handler to run after current event handling completes, for work
+    /// that cannot run mid-event, such as a modal dialog. Takes the same method
+    /// shapes and options as `cx.on`, and runs the same safety-mode check.
+    pub fn deferCommand(self: *Self, comptime method: anytype, options: anytype) void {
+        const handler = handler_mod.bind(self, method, options);
+        handler.assertBound();
         if (self.deferred_count >= MAX_DEFERRED_COMMANDS) {
-            std.log.warn("Deferred command queue full ({} commands) - dropping command", .{MAX_DEFERRED_COMMANDS});
+            std.log.warn("Deferred command queue full ({} commands) - dropping command", .{
+                MAX_DEFERRED_COMMANDS,
+            });
             return;
         }
-
-        const Wrapper = struct {
-            fn invoke(g: *Self, _: u64) void {
-                const state_ptr = g.getRootState(State) orelse return;
-                method(state_ptr, g);
-                g.requestRender();
-            }
-        };
-
-        self.deferred_commands[self.deferred_count] = .{
-            .callback = Wrapper.invoke,
-            .packed_arg = 0,
-        };
+        self.deferred_commands[self.deferred_count] = handler;
         self.deferred_count += 1;
-    }
-
-    /// Queue a callback with an argument to run after current event handling completes.
-    /// Used internally by Cx.deferCommandWith().
-    ///
-    /// The State type is inferred from the method's first parameter.
-    /// The argument is stored inline in the command struct (packed into u64),
-    /// so multiple deferred calls with the same signature work correctly.
-    pub fn deferCommandWith(
-        self: *Self,
-        arg: anytype,
-        comptime method: anytype,
-    ) void {
-        const State = comptime extractState("deferCommandWith", @TypeOf(method));
-        const Arg = @TypeOf(arg);
-
-        comptime {
-            if (@sizeOf(Arg) > @sizeOf(u64)) {
-                @compileError("deferWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 8 bytes. Use a pointer or index instead.");
-            }
-        }
-
-        if (self.deferred_count >= MAX_DEFERRED_COMMANDS) {
-            std.log.warn("Deferred command queue full ({} commands) - dropping command", .{MAX_DEFERRED_COMMANDS});
-            return;
-        }
-
-        // Pack arg into u64 using the same pattern as updateWith/commandWith
-        const packed_value = handler_mod.packArg(Arg, arg).id;
-
-        const Wrapper = struct {
-            fn invoke(g: *Self, packed_arg: u64) void {
-                const state_ptr = g.getRootState(State) orelse return;
-                const unpacked = handler_mod.unpackArg(Arg, .{ .id = packed_arg });
-                method(state_ptr, g, unpacked);
-                g.requestRender();
-            }
-        };
-
-        self.deferred_commands[self.deferred_count] = .{
-            .callback = Wrapper.invoke,
-            .packed_arg = packed_value,
-        };
-        self.deferred_count += 1;
+        assert(self.deferred_count <= MAX_DEFERRED_COMMANDS);
     }
 
     /// Execute all queued deferred commands.
@@ -563,8 +465,8 @@ pub const Window = struct {
         const count = self.deferred_count;
         self.deferred_count = 0;
 
-        for (self.deferred_commands[0..count]) |cmd| {
-            cmd.callback(self, cmd.packed_arg);
+        for (self.deferred_commands[0..count]) |handler| {
+            handler.call(self);
         }
     }
 
@@ -1288,7 +1190,7 @@ pub const Window = struct {
     /// Register a blur handler for a text field ID.
     /// Called during frame rendering to register handlers from pending items.
     /// Uses fixed-capacity storage — logs warning if limit exceeded.
-    pub fn registerBlurHandler(self: *Self, id: []const u8, handler: HandlerRef) void {
+    pub fn registerBlurHandler(self: *Self, id: []const u8, handler: Handler) void {
         self.blur_handlers.register(id, handler);
     }
 
@@ -1324,7 +1226,7 @@ pub const Window = struct {
         // widget primitive).
         const handle = self.focus.getFocusedHandle() orelse return;
         if (self.blur_handlers.getHandler(handle.string_id)) |handler| {
-            handler.invoke(self);
+            handler.call(self);
         }
     }
 
@@ -1443,7 +1345,7 @@ pub const Window = struct {
     ///     g.quit();
     /// }
     /// // In render:
-    /// Button{ .on_click_handler = cx.command(AppState.quitApp) }
+    /// Button{ .on_click = cx.on(AppState.quitApp, .{}) }
     /// ```
     pub fn quit(self: *Self) void {
         // Web has no application to quit; see the doc comment above.
@@ -1721,7 +1623,7 @@ test "deferCommand queues command" {
     var g = testWindow();
     g.setRootState(TestState, &state);
 
-    g.deferCommand(TestState.increment);
+    g.deferCommand(TestState.increment, .{});
     try testing.expectEqual(@as(u8, 1), g.deferred_count);
     try testing.expect(g.hasDeferredCommands());
 
@@ -1730,27 +1632,10 @@ test "deferCommand queues command" {
     try testing.expectEqual(@as(u8, 0), g.deferred_count);
 }
 
-test "deferCommandWith passes argument" {
-    const TestState = struct {
-        value: i32 = 0,
-        pub fn setValue(self: *@This(), _: *Window, new_value: i32) void {
-            self.value = new_value;
-        }
-    };
-
-    var state = TestState{};
-    var g = testWindow();
-    g.setRootState(TestState, &state);
-
-    g.deferCommandWith(@as(i32, 42), TestState.setValue);
-    g.flushDeferredCommands();
-    try testing.expectEqual(@as(i32, 42), state.value);
-}
-
-test "multiple deferWith calls preserve their arguments" {
+test "multiple deferred commands preserve their arguments" {
     const TestState = struct {
         sum: i32 = 0,
-        pub fn addValue(self: *@This(), _: *Window, value: i32) void {
+        pub fn addValue(self: *@This(), value: i32, _: *Window) void {
             self.sum += value;
         }
     };
@@ -1759,9 +1644,9 @@ test "multiple deferWith calls preserve their arguments" {
     var g = testWindow();
     g.setRootState(TestState, &state);
 
-    g.deferCommandWith(@as(i32, 1), TestState.addValue);
-    g.deferCommandWith(@as(i32, 10), TestState.addValue);
-    g.deferCommandWith(@as(i32, 100), TestState.addValue);
+    g.deferCommand(TestState.addValue, .{ .arg = 1 });
+    g.deferCommand(TestState.addValue, .{ .arg = 10 });
+    g.deferCommand(TestState.addValue, .{ .arg = 100 });
     try testing.expectEqual(@as(u8, 3), g.deferred_count);
 
     g.flushDeferredCommands();
@@ -1780,13 +1665,13 @@ test "deferred queue overflow is handled gracefully" {
     // Fill queue to capacity.
     var i: u32 = 0;
     while (i < MAX_DEFERRED_COMMANDS) : (i += 1) {
-        g.deferCommand(TestState.noop);
+        g.deferCommand(TestState.noop, .{});
     }
     try testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), g.deferred_count);
 
     // Overflow attempts must not corrupt the queue or the count.
-    g.deferCommand(TestState.noop);
-    g.deferCommand(TestState.noop);
+    g.deferCommand(TestState.noop, .{});
+    g.deferCommand(TestState.noop, .{});
     try testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), g.deferred_count);
 
     g.flushDeferredCommands();
@@ -1804,7 +1689,7 @@ test "hasDeferredCommands returns correct state" {
 
     try testing.expect(!g.hasDeferredCommands());
 
-    g.deferCommand(TestState.noop);
+    g.deferCommand(TestState.noop, .{});
     try testing.expect(g.hasDeferredCommands());
 
     g.flushDeferredCommands();

@@ -8,9 +8,10 @@
 //! Usage with Cx (recommended):
 //! ```zig
 //! cx.render(ui.box(.{ .direction = .row, .gap = 0 }, .{
-//!     Tab{ .label = "Home", .selected = s.page == 0, .on_click_handler = cx.updateWith(@as(u8, 0), State.setPage) },
-//!     Tab{ .label = "Settings", .selected = s.page == 1, .on_click_handler = cx.updateWith(@as(u8, 1), State.setPage) },
-//!     Tab{ .label = "About", .selected = s.page == 2, .on_click_handler = cx.updateWith(@as(u8, 2), State.setPage) },
+//!     Tab{ .label = "Home", .selected = s.page == 0,
+//!         .on_click = cx.on(State.setPage, .{ .arg = 0 }) },
+//!     Tab{ .label = "About", .selected = s.page == 1,
+//!         .on_click = cx.on(State.setPage, .{ .arg = 1 }) },
 //! }));
 //! ```
 //!
@@ -20,7 +21,7 @@
 //! TabBar{
 //!     .tabs = &.{ "Home", "Settings", "About" },
 //!     .selected = s.current_tab, // ?usize
-//!     .on_select = cx.onSelect(State.setTab), // fn(*State, usize) void
+//!     .on_select = cx.on(State.setTab, .{}), // fn(*State, usize) void
 //! }
 //! ```
 
@@ -29,20 +30,14 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
-const HandlerRef = ui.HandlerRef;
-const OnSelectHandler = gooey.context.OnSelectHandler;
+const Handler = ui.Handler;
 
 /// A single tab button. Can be used standalone or composed into a tab bar.
 pub const Tab = struct {
     label: []const u8,
     selected: bool,
 
-    /// Canonical click handler name, matching Button and Checkbox.
-    on_click_handler: ?HandlerRef = null,
-
-    /// Compatibility alias for `on_click_handler`. Prefer
-    /// `on_click_handler`; setting both fields is invalid.
-    on_click: ?HandlerRef = null,
+    on_click: ?Handler = null,
 
     // Styling (null = use theme)
     // Named `variant` (not `style`) to match Button: one word for "visual
@@ -75,8 +70,6 @@ pub const Tab = struct {
 
     pub fn render(self: Tab, cx: *ui.Cx) void {
         const t = cx.theme();
-        if (self.on_click != null) std.debug.assert(self.on_click_handler == null);
-        if (self.on_click_handler != null) std.debug.assert(self.on_click == null);
 
         // Resolve font size: explicit override OR theme base
         const font_size = self.font_size orelse t.font_size_base;
@@ -139,38 +132,25 @@ pub const Tab = struct {
             .border_color = if (self.variant == .underline and self.selected) active_bg else Color.transparent,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
-            .on_click_handler = self.on_click_handler orelse self.on_click,
+            .on_click = self.on_click,
         }, .{
             ui.text(self.label, .{ .color = text_color, .size = font_size }),
         }));
     }
 
     /// Create a tab with a common variant preset
-    pub fn styled(label: []const u8, selected: bool, handler: ?HandlerRef, variant: Variant) Tab {
+    pub fn styled(label: []const u8, selected: bool, handler: ?Handler, variant: Variant) Tab {
         return .{
             .label = label,
             .selected = selected,
-            .on_click_handler = handler,
+            .on_click = handler,
             .variant = variant,
         };
     }
 };
 
-test "Tab canonical click handler and compatibility alias resolve identically" {
-    // Both field names compile and resolve to the same handler; the canonical
-    // field matches Button/Checkbox and the primitive Box event field.
-    const handler: HandlerRef = undefined;
-    const canonical = Tab{ .label = "One", .selected = false, .on_click_handler = handler };
-    const legacy = Tab{ .label = "One", .selected = false, .on_click = handler };
-
-    try std.testing.expect(canonical.on_click_handler != null);
-    try std.testing.expect(canonical.on_click == null);
-    try std.testing.expect(legacy.on_click_handler == null);
-    try std.testing.expect(legacy.on_click != null);
-}
-
-/// A tab bar container that renders multiple tabs with simple fn callback.
-/// For more control (especially with Cx handlers), render Tab components directly.
+/// A tab bar that renders one tab per label and reports the chosen index.
+/// For per-tab handlers, render Tab components directly.
 pub const TabBar = struct {
     // Presentational; null ⇒ stable parent-scoped auto id. A fixed default
     // such as `"tabs"` would collide across tab bars.
@@ -180,14 +160,10 @@ pub const TabBar = struct {
     // rather than a magic sentinel index.
     selected: ?usize = null,
 
-    /// Index-based selection handler. Typed `?OnSelectHandler` to match
-    /// `Select`/`RadioGroup`: one method receives the chosen tab index. It is
-    /// built with `cx.*` like every other index-widget handler, and needs no
-    /// per-item static-var wrapper; such a wrapper would give all tabs one
-    /// storage slot, so every tab would fire the last index. Created via
-    /// `cx.onSelect(State.method)`. TabBar keeps no open/close state, so
-    /// handlers are generated per tab via `forIndex`.
-    on_select: ?OnSelectHandler = null,
+    /// Index selection, matching `Select` and `RadioGroup`: build it with
+    /// `cx.on(State.method, .{})` for a `fn(*State, usize)` method, without
+    /// `.arg`. Each tab binds its own index with `Handler.withArg`.
+    on_select: ?Handler = null,
 
     // Layout
     gap: f32 = 0,
@@ -282,7 +258,7 @@ pub const TabBar = struct {
 const TabBarItems = struct {
     tabs: []const []const u8,
     selected: ?usize,
-    on_select: ?OnSelectHandler,
+    on_select: ?Handler,
     variant: Tab.Variant,
     active_background: Color,
     inactive_background: Color,
@@ -329,7 +305,7 @@ const TabBarItem = struct {
     label: []const u8,
     index: usize,
     selected: bool,
-    on_select: ?OnSelectHandler,
+    on_select: ?Handler,
     variant: Tab.Variant,
     active_background: Color,
     inactive_background: Color,
@@ -373,12 +349,9 @@ const TabBarItem = struct {
             else => bg,
         };
 
-        // Per-tab handler carrying this tab's index. Generated from the
-        // shared `on_select` via `forIndex` — each call produces a distinct
-        // `HandlerRef` with the index packed into its `entity_id`, so tabs
-        // never alias through a single static-var wrapper.
-        const on_click: ?HandlerRef = if (self.on_select) |os|
-            os.forIndex(self.index)
+        // This tab's copy of `on_select`, with its index bound as the argument.
+        const on_click: ?Handler = if (self.on_select) |on_select|
+            on_select.withArg(self.index)
         else
             null;
 
@@ -407,7 +380,7 @@ const TabBarItem = struct {
             .border_color = border_color,
             .alignment = .{ .main = .center, .cross = .center },
             .grow = self.grow,
-            .on_click_handler = on_click,
+            .on_click = on_click,
         }, .{
             ui.text(self.label, .{ .color = text_color, .size = self.font_size }),
         }));

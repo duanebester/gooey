@@ -11,12 +11,12 @@
 //!     RadioButton{
 //!         .label = "Email",
 //!         .selected = s.contact == 0,
-//!         .on_click = cx.updateWith(@as(u8, 0), State.setContact),
+//!         .on_click = cx.on(State.setContact, .{ .arg = 0 }),
 //!     },
 //!     RadioButton{
 //!         .label = "Phone",
 //!         .selected = s.contact == 1,
-//!         .on_click = cx.updateWith(@as(u8, 1), State.setContact),
+//!         .on_click = cx.on(State.setContact, .{ .arg = 1 }),
 //!     },
 //! }));
 //! ```
@@ -28,31 +28,23 @@
 //!     .id = "contact",
 //!     .options = &.{ "Email", "Phone", "Mail" },
 //!     .selected = s.contact, // ?usize
-//!     .on_select = cx.onSelect(State.setContact), // fn(*State, usize) void
+//!     .on_select = cx.on(State.setContact, .{}), // fn(*State, usize) void
 //! }
 //! ```
-//!
-//! A per-option `handlers` array is supported for the rare case where
-//! each option needs a distinct method, but prefer `on_select`: a too-short
-//! `handlers` array silently leaves the trailing radios dead.
 
 const std = @import("std");
 const gooey = @import("gooey");
 const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
-const HandlerRef = ui.HandlerRef;
-const OnSelectHandler = gooey.context.OnSelectHandler;
+const Handler = ui.Handler;
 
 /// A single radio button. Can be used standalone or composed into groups.
 pub const RadioButton = struct {
     label: []const u8,
     selected: bool,
 
-    // Click handler - use with cx.updateWith() for index-based selection.
-    // No `_handler` suffix: RadioButton has no stateless `on_click` variant,
-    // so the base name is free (mirrors the Tab convention).
-    on_click: ?HandlerRef = null,
+    on_click: ?Handler = null,
 
     // Styling (null = use theme)
     size: f32 = 18,
@@ -103,7 +95,7 @@ pub const RadioButton = struct {
             .direction = .row,
             .gap = self.gap,
             .alignment = .{ .cross = .center },
-            .on_click_handler = self.on_click,
+            .on_click = self.on_click,
         }, .{
             RadioCircle{
                 .selected = self.selected,
@@ -160,8 +152,8 @@ const RadioDot = struct {
     }
 };
 
-/// A radio group container that renders multiple radio buttons.
-/// Each option needs its own handler - use cx.updateWith() to create them.
+/// A radio group container that renders one radio button per option and
+/// reports the chosen index through `on_select`.
 pub const RadioGroup = struct {
     // Presentational; null ⇒ stable parent-scoped auto id. A fixed default
     // such as `"radio-group"` would collide across groups.
@@ -171,20 +163,10 @@ pub const RadioGroup = struct {
     // (null) rather than a magic sentinel index.
     selected: ?usize = null,
 
-    /// Index-based selection handler (recommended). Typed `?OnSelectHandler`
-    /// to match `Select.on_select`: one method receives the chosen option
-    /// index, so callers never hand-align a positional handler array.
-    /// Created via `cx.onSelect(State.method)` where `method` is
-    /// `fn(*State, usize) void`. RadioGroup keeps no open/close state, so the
-    /// handler is generated per option via `forIndex` (like Select's external
-    /// path). If both are set, the explicit `handlers` array wins, matching
-    /// Select's resolution order.
-    on_select: ?OnSelectHandler = null,
-
-    /// Legacy per-option handler array. Use `cx.updateWith()` to create these.
-    /// If null or shorter than `options`, the missing handlers are no-ops —
-    /// prefer `on_select`, which cannot silently leave a radio dead.
-    handlers: ?[]const HandlerRef = null,
+    /// Index selection, matching `Select.on_select`: build it with
+    /// `cx.on(State.method, .{})` for a `fn(*State, usize)` method, without
+    /// `.arg`. Each option binds its own index with `Handler.withArg`.
+    on_select: ?Handler = null,
 
     // Layout
     direction: Direction = .column,
@@ -233,7 +215,6 @@ pub const RadioGroup = struct {
                 .options = self.options,
                 .selected = self.selected,
                 .on_select = self.on_select,
-                .handlers = self.handlers,
                 .size = self.size,
                 .selected_color = selected,
                 .unselected_color = unselected,
@@ -249,8 +230,7 @@ pub const RadioGroup = struct {
 const RadioGroupItems = struct {
     options: []const []const u8,
     selected: ?usize,
-    on_select: ?OnSelectHandler,
-    handlers: ?[]const HandlerRef,
+    on_select: ?Handler,
     size: f32,
     selected_color: Color,
     unselected_color: Color,
@@ -261,7 +241,10 @@ const RadioGroupItems = struct {
 
     pub fn render(self: RadioGroupItems, cx: *ui.Cx) void {
         for (self.options, 0..) |label, i| {
-            const handler: ?HandlerRef = self.resolveOptionHandler(i);
+            const handler: ?Handler = if (self.on_select) |on_select|
+                on_select.withArg(i)
+            else
+                null;
 
             // Treat null as "no radio selected": only the item whose index
             // matches the chosen index is selected.
@@ -281,19 +264,5 @@ const RadioGroupItems = struct {
                 .set_size = self.set_size,
             });
         }
-    }
-
-    /// Resolve the click handler for the option at `index`. Prefers the
-    /// explicit `handlers` array (legacy); otherwise generates one from
-    /// `on_select` via `forIndex` (RadioGroup has no internal open/close
-    /// state, so the select-and-close path does not apply).
-    fn resolveOptionHandler(self: RadioGroupItems, index: usize) ?HandlerRef {
-        if (self.handlers) |h| {
-            return if (index < h.len) h[index] else null;
-        }
-        if (self.on_select) |os| {
-            return os.forIndex(index);
-        }
-        return null;
     }
 };

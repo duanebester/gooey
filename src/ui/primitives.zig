@@ -17,7 +17,7 @@ pub const CodeEditorStyle = styles.CodeEditorStyle;
 pub const ButtonStyle = styles.ButtonStyle;
 pub const CornerRadius = styles.CornerRadius;
 pub const ObjectFit = styles.ObjectFit;
-pub const HandlerRef = styles.HandlerRef;
+pub const Handler = styles.Handler;
 
 // Action system
 const action_mod = @import("../input/actions.zig");
@@ -34,11 +34,9 @@ pub const PrimitiveType = enum {
     input,
     spacer,
     button,
-    button_handler,
     empty,
     key_context,
     action_handler,
-    action_handler_ref,
     svg,
     image,
     // Container elements
@@ -134,19 +132,9 @@ pub const Button = struct {
     id: ?[]const u8 = null, // Override ID (defaults to label hash)
     label: []const u8,
     style: ButtonStyle = .{},
-    on_click: ?*const fn () void = null,
+    on_click: ?Handler = null,
 
     pub const primitive_type: PrimitiveType = .button;
-};
-
-/// Button with HandlerRef (new pattern with context access)
-pub const ButtonHandler = struct {
-    id: ?[]const u8 = null, // Override ID (defaults to label hash)
-    label: []const u8,
-    style: ButtonStyle = .{},
-    handler: HandlerRef,
-
-    pub const primitive_type: PrimitiveType = .button_handler;
 };
 
 // =============================================================================
@@ -268,30 +256,16 @@ pub fn keyContext(context: []const u8) KeyContextPrimitive {
 /// Action handler descriptor - registers action handler when rendered
 pub const ActionHandlerPrimitive = struct {
     action_type: usize, // ActionTypeId
-    callback: *const fn () void,
+    handler: Handler,
     pub const primitive_type: PrimitiveType = .action_handler;
 };
 
-/// Action handler with HandlerRef
-pub const ActionHandlerRefPrimitive = struct {
-    action_type: usize,
-    handler: HandlerRef,
-    pub const primitive_type: PrimitiveType = .action_handler_ref;
-};
-
-/// Register an action handler (use inside box children)
-pub fn onAction(comptime Action: type, callback: *const fn () void) ActionHandlerPrimitive {
+/// Register an action handler (use inside box children):
+/// `ui.onAction(Undo, cx.on(AppState.undo, .{}))`.
+pub fn onAction(comptime Action: type, handler: Handler) ActionHandlerPrimitive {
     return .{
         .action_type = actionTypeId(Action),
-        .callback = callback,
-    };
-}
-
-/// Register an action handler using HandlerRef (new pattern)
-pub fn onActionHandler(comptime Action: type, ref: HandlerRef) ActionHandlerRefPrimitive {
-    return .{
-        .action_type = actionTypeId(Action),
-        .handler = ref,
+        .handler = handler,
     };
 }
 

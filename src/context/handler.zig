@@ -1,98 +1,397 @@
-//! Handler - Function pointer storage for UI callbacks
+//! Handler: the one callback type for UI events.
 //!
-//! Handlers are created through Cx methods:
-//! - `cx.update(method)` - pure state mutation
-//! - `cx.updateWith(arg, method)` - mutation with argument
-//! - `cx.command(method)` - needs framework access
-//! - `cx.commandWith(arg, method)` - framework access with argument
+//! Every event field (`on_click`, `on_click_outside`, `on_blur`, `on_select`,
+//! `on_close`, `on_toggle`, ...) takes a `Handler`, and every handler is built
+//! by `cx.on(method, options)`. `method` has one of four shapes, detected at
+//! comptime from its signature:
 //!
-//! Example:
 //! ```zig
-//! const AppState = struct {
-//!     count: i32 = 0,
-//!
-//!     pub fn increment(self: *AppState) void {
-//!         self.count += 1;
-//!     }
-//! };
-//!
-//! fn render(cx: *Cx) void {
-//!     const s = cx.state(AppState);
-//!     cx.render(ui.box(.{}, .{
-//!         Button{ .label = "+", .on_click_handler = cx.update(AppState.increment) },
-//!     }));
-//! }
+//! fn (state: *State) void
+//! fn (state: *State, arg: Arg) void
+//! fn (state: *State, window: *Window) void
+//! fn (state: *State, arg: Arg, window: *Window) void
 //! ```
+//!
+//! `options` accepts only `.arg` and `.entity`:
+//!
+//! ```zig
+//! Button{ .label = "+", .on_click = cx.on(AppState.increment, .{}) }
+//! Button{ .label = "5", .on_click = cx.on(AppState.setStep, .{ .arg = 5 }) }
+//! Button{ .label = "+", .on_click = cx.on(Counter.increment, .{ .entity = counter }) }
+//! ```
+//!
+//! Index widgets (Select, TabBar, RadioGroup) take a handler built without
+//! `.arg` for a `fn(*State, usize)` method and bind each option's index with
+//! `Handler.withArg`. `*Window` stands in for the kernel contract's narrow
+//! `*Effects` until the kernel exists.
+//!
+//! Safety (CLAUDE.md §3, contract "Approved decisions" item 2): in Debug and
+//! ReleaseSafe, building a handler checks that `State` is the window's root
+//! state, or that `.entity` names a live entity, and panics with the method's
+//! qualified name (`app.AppState.increment`) otherwise. In Debug the stack
+//! trace also shows the `cx.on` call's file and line; ReleaseSafe may inline
+//! that frame away, so the name is the reliable locator. ReleaseFast and
+//! ReleaseSmall compile the check out.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const assert = std.debug.assert;
 const Window = @import("window.zig").Window;
 const entity_mod = @import("entity.zig");
 pub const EntityId = entity_mod.EntityId;
+const Entity = entity_mod.Entity;
 
-/// Type-erased handler reference that can be stored and invoked later.
-///
-/// The callback receives a `*Window` pointer and optional entity ID.
-pub const HandlerRef = struct {
-    /// The actual callback function (receives Window and entity ID)
-    callback: *const fn (*Window, EntityId) void,
-
-    /// Entity ID this handler operates on (invalid = use root state)
-    entity_id: EntityId = EntityId.invalid,
-
-    /// Invoke this handler
-    pub fn invoke(self: HandlerRef, window: *Window) void {
-        self.callback(window, self.entity_id);
-    }
-};
-
-/// Handler template for index-based selection (used by Select, TabBar, etc.).
-///
-/// Captures the comptime callback but defers the index argument, allowing
-/// widgets to generate per-option `HandlerRef`s internally.
-///
-/// Created via `cx.onSelect(State.method)`.
-pub const OnSelectHandler = struct {
-    /// Callback that unpacks an index from EntityId.
-    /// Generated at comptime by `Cx.onSelect`.
-    callback: *const fn (*Window, EntityId) void,
-
-    /// Create a HandlerRef for a specific option index.
-    pub fn forIndex(self: OnSelectHandler, index: usize) HandlerRef {
-        const handler = HandlerRef{
-            .callback = self.callback,
-            .entity_id = packArg(usize, index),
-        };
-        std.debug.assert(handler.callback == self.callback);
-        std.debug.assert(unpackArg(usize, handler.entity_id) == index);
-        return handler;
-    }
-};
-
-/// Re-exported from `entity.zig` — single canonical definition.
+/// Re-exported from `entity.zig`, the single canonical definition.
 pub const typeId = entity_mod.typeId;
 
-// =============================================================================
-// Argument Packing (for updateWith/commandWith)
-// =============================================================================
-
-/// Pack an argument into an EntityId for transport through the handler system.
+/// A type-erased method call: which method, on which state, with which argument.
 ///
-/// Arguments must fit in 8 bytes (u64). For larger data, use a pointer or index.
-pub fn packArg(comptime Arg: type, arg: Arg) EntityId {
-    comptime {
-        std.debug.assert(@sizeOf(Arg) <= @sizeOf(u64));
+/// 24 bytes in ReleaseFast and ReleaseSmall. Safety builds add the method's name
+/// and argument metadata so mistakes panic with a message that names the method.
+pub const Handler = struct {
+    /// Generated by `cx.on`. Resolves the state for `target`, unpacks `arg`,
+    /// calls the method, and requests a render.
+    invoke: *const fn (window: *Window, target: EntityId, arg: u64) void,
+    /// Entity the method runs on. `EntityId.invalid` selects the root state.
+    target: EntityId = .invalid,
+    /// The method's argument packed into 8 bytes; zero when it takes none.
+    arg: u64 = 0,
+    safety: Safety = .{},
+
+    /// Argument metadata checked in Debug and ReleaseSafe only.
+    pub const Safety = if (std.debug.runtime_safety) struct {
+        method_name: []const u8 = "(handler)",
+        /// `typeId(Arg)`, or 0 when the method takes no argument.
+        arg_type_id: usize = 0,
+        /// False only for a handler built without `.arg` for a method that
+        /// takes one; an index widget must call `withArg` before it is used.
+        arg_bound: bool = true,
+    } else struct {};
+
+    /// Run the handler. Called by dispatch on the main thread.
+    pub fn call(self: Handler, window: *Window) void {
+        self.assertBound();
+        self.invoke(window, self.target, self.arg);
     }
-    var storage: u64 = 0;
-    const arg_bytes = std.mem.asBytes(&arg);
-    @memcpy(std.mem.asBytes(&storage)[0..@sizeOf(Arg)], arg_bytes);
-    return .{ .id = storage };
+
+    /// Return a copy with `arg` bound. Index widgets call this once per option,
+    /// so `cx.on(State.select, .{})` becomes one handler per option index.
+    pub fn withArg(self: Handler, arg: anytype) Handler {
+        const Arg = @TypeOf(arg);
+        comptime checkArgType(Arg, "Handler.withArg: ");
+        if (comptime std.debug.runtime_safety) {
+            if (self.safety.arg_type_id != typeId(Arg)) {
+                std.debug.panic("handler {s} takes {s}, but a widget bound {s}", .{
+                    self.safety.method_name,
+                    argTypeName(self.safety.arg_type_id),
+                    @typeName(Arg),
+                });
+            }
+            if (self.safety.arg_bound) {
+                std.debug.panic("handler {s} already has .arg; a widget that binds " ++
+                    "the index needs it built without .arg", .{self.safety.method_name});
+            }
+        }
+        var bound = self;
+        bound.arg = packArg(Arg, arg);
+        if (comptime std.debug.runtime_safety) bound.safety.arg_bound = true;
+        assert(bound.invoke == self.invoke);
+        assert(bound.target.id == self.target.id);
+        return bound;
+    }
+
+    /// Panic in safety builds when the method's argument was never bound.
+    /// Dispatch calls this when the handler is registered, during render.
+    pub fn assertBound(self: Handler) void {
+        if (comptime std.debug.runtime_safety) {
+            if (!self.safety.arg_bound) {
+                std.debug.panic("handler {s} takes {s} but has no .arg; only index " ++
+                    "widgets (Select, TabBar, RadioGroup) bind it for you", .{
+                    self.safety.method_name,
+                    argTypeName(self.safety.arg_type_id),
+                });
+            }
+        }
+    }
+};
+
+comptime {
+    // Three words; the safety metadata exists only in Debug and ReleaseSafe.
+    if (!std.debug.runtime_safety) assert(@sizeOf(Handler) == 3 * @sizeOf(u64));
 }
 
-/// Unpack an argument from an EntityId.
-pub fn unpackArg(comptime Arg: type, entity_id: EntityId) Arg {
+/// Build a handler and run the safety-mode state check. Shared by `Cx.on` and
+/// `Window.deferCommand`; application code calls one of those.
+pub fn bind(window: *Window, comptime method: anytype, options: anytype) Handler {
+    const shape = comptime shapeOf(method);
+    const Options = @TypeOf(options);
+    comptime checkOptions(Options, shape);
+    const has_arg = @hasField(Options, "arg");
+    const has_entity = @hasField(Options, "entity");
+    const Generated = Invoker(method, shape);
+
+    var handler = Handler{
+        .invoke = if (has_entity) Generated.invokeEntity else Generated.invokeRoot,
+    };
+    if (has_arg) {
+        const value: shape.Arg = options.arg;
+        handler.arg = packArg(shape.Arg, value);
+    }
+    if (has_entity) handler.target = options.entity.id;
+    if (comptime std.debug.runtime_safety) {
+        handler.safety = .{
+            .method_name = shape.name,
+            .arg_type_id = if (shape.Arg == void) 0 else typeId(shape.Arg),
+            .arg_bound = shape.Arg == void or has_arg,
+        };
+        checkTarget(window, shape.State, handler.target, shape.name);
+    }
+    if (!has_entity) assert(!handler.target.isValid());
+    return handler;
+}
+
+// =============================================================================
+// Shape detection (comptime)
+// =============================================================================
+
+/// What `cx.on` learned from a method's signature.
+const Shape = struct {
+    name: []const u8,
+    State: type,
+    /// `void` when the method takes no argument.
+    Arg: type,
+    takes_window: bool,
+};
+
+const shapes_help =
+    "a handler method has one of these shapes: fn(*State) void, " ++
+    "fn(*State, Arg) void, fn(*State, *Window) void, fn(*State, Arg, *Window) void";
+
+fn shapeOf(comptime method: anytype) Shape {
+    const Method = @TypeOf(method);
+    if (@typeInfo(Method) != .@"fn") {
+        @compileError("cx.on expects a method such as State.increment, found " ++
+            @typeName(Method));
+    }
+    const info = @typeInfo(Method).@"fn";
+    const label = "cx.on(" ++ qualifiedLabel(method, info.param_types) ++ "): ";
+    if (info.return_type != void) {
+        @compileError(label ++ shapes_help ++ "; found " ++ @typeName(Method));
+    }
+    const params = info.param_types;
+    if (params.len < 1 or params.len > 3) {
+        @compileError(label ++ shapes_help ++ "; found " ++ @typeName(Method));
+    }
+    for (params) |param| {
+        if (param == null) @compileError(label ++ "parameters cannot be anytype");
+    }
+    const State = stateOf(params[0].?, label);
+    const name = @typeName(State) ++ "." ++ methodLabel(method);
+    if (params.len == 1) {
+        return .{ .name = name, .State = State, .Arg = void, .takes_window = false };
+    }
+    if (params.len == 2) {
+        if (params[1].? == *Window) {
+            return .{ .name = name, .State = State, .Arg = void, .takes_window = true };
+        }
+        checkArgType(params[1].?, label);
+        return .{ .name = name, .State = State, .Arg = params[1].?, .takes_window = false };
+    }
+    if (params[1].? == *Window) {
+        @compileError(label ++ "put *Window last: fn(*State, Arg, *Window) void");
+    }
+    if (params[2].? != *Window) {
+        @compileError(label ++ shapes_help ++ "; found " ++ @typeName(Method));
+    }
+    checkArgType(params[1].?, label);
+    return .{ .name = name, .State = State, .Arg = params[1].?, .takes_window = true };
+}
+
+fn stateOf(comptime First: type, comptime label: []const u8) type {
+    const info = @typeInfo(First);
+    if (info != .pointer or info.pointer.size != .one or info.pointer.attrs.@"const") {
+        @compileError(label ++ "the first parameter must be *State, found " ++
+            @typeName(First));
+    }
+    if (info.pointer.child == Window) {
+        @compileError(label ++ "the first parameter must be *State, not *Window");
+    }
+    return info.pointer.child;
+}
+
+fn checkArgType(comptime Arg: type, comptime label: []const u8) void {
+    const comptime_only = switch (@typeInfo(Arg)) {
+        .comptime_int, .comptime_float, .enum_literal, .null, .undefined => true,
+        else => false,
+    };
+    if (comptime_only) {
+        @compileError(label ++ "the argument needs a concrete type, found " ++
+            @typeName(Arg));
+    }
+    if (@sizeOf(Arg) > @sizeOf(u64)) {
+        @compileError(label ++ "the argument type " ++ @typeName(Arg) ++
+            " is larger than 8 bytes; pass an index or a pointer instead");
+    }
+}
+
+fn checkOptions(comptime Options: type, comptime shape: Shape) void {
+    const label = "cx.on(" ++ shape.name ++ "): ";
+    if (@typeInfo(Options) != .@"struct") {
+        @compileError(label ++ "options must be a struct literal such as .{} or " ++
+            ".{ .arg = 1 }, found " ++ @typeName(Options));
+    }
+    for (@typeInfo(Options).@"struct".field_names) |field| {
+        const known = std.mem.eql(u8, field, "arg") or std.mem.eql(u8, field, "entity");
+        if (!known) {
+            @compileError(label ++ "unknown option ." ++ field ++
+                "; cx.on accepts only .arg and .entity");
+        }
+    }
+    if (@hasField(Options, "arg") and shape.Arg == void) {
+        @compileError(label ++ "the method takes no argument; remove .arg");
+    }
+    if (@hasField(Options, "entity")) {
+        const Given = @FieldType(Options, "entity");
+        if (Given != Entity(shape.State)) {
+            @compileError(label ++ ".entity must be Entity(" ++ @typeName(shape.State) ++
+                "), found " ++ @typeName(Given));
+        }
+    }
+}
+
+/// `State.method` when the first parameter names the state, else `method`.
+fn qualifiedLabel(comptime method: anytype, comptime params: []const ?type) []const u8 {
+    if (params.len > 0) {
+        if (params[0]) |First| {
+            if (@typeInfo(First) == .pointer) {
+                return @typeName(@typeInfo(First).pointer.child) ++ "." ++ methodLabel(method);
+            }
+        }
+    }
+    return methodLabel(method);
+}
+
+/// The method's declared name, recovered from a generic type's rendered name.
+fn methodLabel(comptime method: anytype) []const u8 {
+    comptime {
+        const rendered = @typeName(NameProbe(method));
+        const prefix = "(function '";
+        const start = std.mem.indexOf(u8, rendered, prefix) orelse
+            return @typeName(@TypeOf(method));
+        const tail = rendered[start + prefix.len ..];
+        const end = std.mem.indexOfScalar(u8, tail, '\'') orelse
+            return @typeName(@TypeOf(method));
+        return tail[0..end];
+    }
+}
+
+fn NameProbe(comptime method: anytype) type {
+    return struct {
+        comptime {
+            _ = method;
+        }
+    };
+}
+
+// =============================================================================
+// Generated invokers
+// =============================================================================
+
+fn Invoker(comptime method: anytype, comptime shape: Shape) type {
+    return struct {
+        fn invokeRoot(window: *Window, target: EntityId, arg: u64) void {
+            assert(!target.isValid());
+            assert(window.root_state_type_id == typeId(shape.State));
+            const state: *shape.State = @ptrCast(@alignCast(window.root_state_ptr.?));
+            callMethod(state, arg, window);
+            window.requestRender();
+        }
+
+        fn invokeEntity(window: *Window, target: EntityId, arg: u64) void {
+            assert(target.isValid());
+            const entities = window.getEntities();
+            // An earlier event in the same batch may have removed the entity.
+            // That is an expected race, not a programmer error, so it is skipped.
+            const state = entities.write(shape.State, .{ .id = target }) orelse return;
+            callMethod(state, arg, window);
+            entities.markDirty(target);
+            window.requestRender();
+        }
+
+        fn callMethod(state: *shape.State, arg: u64, window: *Window) void {
+            if (shape.Arg == void) {
+                assert(arg == 0);
+                if (shape.takes_window) method(state, window) else method(state);
+            } else {
+                const value = unpackArg(shape.Arg, arg);
+                if (shape.takes_window) method(state, value, window) else method(state, value);
+            }
+        }
+    };
+}
+
+// =============================================================================
+// Safety-mode state check
+// =============================================================================
+
+/// Test hook: while nonzero, a failed state check decrements this and returns
+/// instead of panicking, so a test can prove the check runs without aborting
+/// the test runner. Only read in test builds.
+pub var test_mismatches_expected: u32 = 0;
+
+fn checkTarget(window: *Window, comptime State: type, target: EntityId, name: []const u8) void {
+    comptime assert(std.debug.runtime_safety);
+    if (target.isValid()) {
+        if (window.getEntities().read(State, .{ .id = target }) == null) {
+            reportMismatch("cx.on({s}): entity {d} does not exist or is not a {s}", .{
+                name, target.id, @typeName(State),
+            });
+        }
+    } else {
+        if (window.root_state_type_id != typeId(State)) {
+            reportMismatch("cx.on({s}): {s} is not the root state; the root state is {s}", .{
+                name, @typeName(State), argTypeName(window.root_state_type_id),
+            });
+        }
+    }
+}
+
+/// Report a state check failure. Shared by `cx.on` and `cx.state`.
+pub fn reportMismatch(comptime format: []const u8, args: anytype) void {
+    comptime assert(std.debug.runtime_safety);
+    if (builtin.is_test and test_mismatches_expected > 0) {
+        test_mismatches_expected -= 1;
+        return;
+    }
+    std.debug.panic(format ++ " (in Debug, the stack trace shows the call)", args);
+}
+
+/// The type name behind a `typeId`, for safety messages. `typeId` is the
+/// address of the sentinel-terminated `@typeName` string.
+pub fn argTypeName(type_id: usize) []const u8 {
+    if (type_id == 0) return "(none)";
+    const name: [*:0]const u8 = @ptrFromInt(type_id);
+    return std.mem.span(name);
+}
+
+// =============================================================================
+// Argument packing
+// =============================================================================
+
+/// Pack an argument of at most 8 bytes into a `u64`. Unused bytes stay zero
+/// so equal arguments pack to equal values (CLAUDE.md §21).
+pub fn packArg(comptime Arg: type, arg: Arg) u64 {
+    comptime assert(@sizeOf(Arg) <= @sizeOf(u64));
+    var storage: u64 = 0;
+    @memcpy(std.mem.asBytes(&storage)[0..@sizeOf(Arg)], std.mem.asBytes(&arg));
+    return storage;
+}
+
+/// Unpack an argument packed by `packArg`.
+pub fn unpackArg(comptime Arg: type, storage: u64) Arg {
+    comptime assert(@sizeOf(Arg) <= @sizeOf(u64));
     var result: Arg = undefined;
-    const id_bytes = std.mem.asBytes(&entity_id.id);
-    @memcpy(std.mem.asBytes(&result), id_bytes[0..@sizeOf(Arg)]);
+    @memcpy(std.mem.asBytes(&result), std.mem.asBytes(&storage)[0..@sizeOf(Arg)]);
     return result;
 }
 
@@ -100,86 +399,19 @@ pub fn unpackArg(comptime Arg: type, entity_id: EntityId) Arg {
 // Tests
 // =============================================================================
 
-test "typeId returns consistent values" {
-    const TestA = struct { a: i32 };
-    const TestB = struct { b: i32 };
-
-    const id_a1 = typeId(TestA);
-    const id_a2 = typeId(TestA);
-    const id_b = typeId(TestB);
-
-    try std.testing.expectEqual(id_a1, id_a2);
-    try std.testing.expect(id_a1 != id_b);
-}
-
-test "packArg/unpackArg roundtrip" {
-    // Test enum
+test "packArg round-trips every width at its boundaries" {
+    // A narrower packing would truncate wide indexes or sign bits, so check the
+    // extremes of each width and a struct that fills its bytes.
     const Page = enum { home, settings, about };
-    const page_id = packArg(Page, .settings);
-    const unpacked_page = unpackArg(Page, page_id);
-    try std.testing.expectEqual(Page.settings, unpacked_page);
-
-    // Test i32
-    const int_id = packArg(i32, 42);
-    const unpacked_int = unpackArg(i32, int_id);
-    try std.testing.expectEqual(@as(i32, 42), unpacked_int);
-
-    // Test negative i32
-    const neg_id = packArg(i32, -999);
-    const unpacked_neg = unpackArg(i32, neg_id);
-    try std.testing.expectEqual(@as(i32, -999), unpacked_neg);
-
-    // Test struct that fits in 8 bytes
+    try std.testing.expectEqual(Page.about, unpackArg(Page, packArg(Page, .about)));
+    try std.testing.expectEqual(@as(i32, -999), unpackArg(i32, packArg(i32, -999)));
+    try std.testing.expectEqual(@as(u8, 255), unpackArg(u8, packArg(u8, 255)));
+    const max = std.math.maxInt(usize);
+    try std.testing.expectEqual(max, unpackArg(usize, packArg(usize, max)));
     const Point = struct { x: i16, y: i16 };
-    const point_id = packArg(Point, .{ .x = 100, .y = 200 });
-    const unpacked_point = unpackArg(Point, point_id);
-    try std.testing.expectEqual(@as(i16, 100), unpacked_point.x);
-    try std.testing.expectEqual(@as(i16, 200), unpacked_point.y);
-
-    // Test usize (index)
-    const idx_id = packArg(usize, 12345);
-    const unpacked_idx = unpackArg(usize, idx_id);
-    try std.testing.expectEqual(@as(usize, 12345), unpacked_idx);
-
-    // Test bool
-    const bool_id = packArg(bool, true);
-    const unpacked_bool = unpackArg(bool, bool_id);
-    try std.testing.expectEqual(true, unpacked_bool);
-
-    // Test u8
-    const u8_id = packArg(u8, 255);
-    const unpacked_u8 = unpackArg(u8, u8_id);
-    try std.testing.expectEqual(@as(u8, 255), unpacked_u8);
-}
-
-test "packArg/unpackArg with zero values" {
-    const zero_int = packArg(i32, 0);
-    try std.testing.expectEqual(@as(i32, 0), unpackArg(i32, zero_int));
-
-    const zero_usize = packArg(usize, 0);
-    try std.testing.expectEqual(@as(usize, 0), unpackArg(usize, zero_usize));
-
-    const false_bool = packArg(bool, false);
-    try std.testing.expectEqual(false, unpackArg(bool, false_bool));
-}
-
-test "OnSelectHandler preserves the full usize index range" {
-    // A 32-bit packing would truncate indexes. Exercise
-    // zero, the first index beyond that boundary where available, and max.
-    const callback = struct {
-        fn invoke(_: *Window, _: EntityId) void {}
-    }.invoke;
-    const on_select = OnSelectHandler{ .callback = callback };
-
-    const zero = on_select.forIndex(0);
-    try std.testing.expectEqual(@as(usize, 0), unpackArg(usize, zero.entity_id));
-
-    if (@bitSizeOf(usize) > 32) {
-        const beyond_u32 = @as(usize, std.math.maxInt(u32)) + 1;
-        const boundary = on_select.forIndex(beyond_u32);
-        try std.testing.expectEqual(beyond_u32, unpackArg(usize, boundary.entity_id));
-    }
-
-    const maximum = on_select.forIndex(std.math.maxInt(usize));
-    try std.testing.expectEqual(std.math.maxInt(usize), unpackArg(usize, maximum.entity_id));
+    const point = unpackArg(Point, packArg(Point, .{ .x = -100, .y = 200 }));
+    try std.testing.expectEqual(@as(i16, -100), point.x);
+    try std.testing.expectEqual(@as(i16, 200), point.y);
+    // Unused bytes stay zero, so a u8 packs to the same value every time.
+    try std.testing.expectEqual(@as(u64, 7), packArg(u8, 7));
 }

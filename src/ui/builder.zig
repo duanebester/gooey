@@ -20,7 +20,7 @@ const handler_mod = @import("../context/handler.zig");
 const entity_mod = @import("../context/entity.zig");
 const window_mod = @import("../context/window.zig");
 const drag_mod = @import("../context/drag.zig");
-pub const HandlerRef = handler_mod.HandlerRef;
+pub const Handler = handler_mod.Handler;
 pub const EntityId = entity_mod.EntityId;
 pub const Window = window_mod.Window;
 
@@ -121,12 +121,10 @@ const TextAreaPrimitive = primitives.TextAreaPrimitive;
 const CodeEditorPrimitive = primitives.CodeEditorPrimitive;
 const Spacer = primitives.Spacer;
 const Button = primitives.Button;
-const ButtonHandler = primitives.ButtonHandler;
 const SvgPrimitive = primitives.SvgPrimitive;
 const ImagePrimitive = primitives.ImagePrimitive;
 const KeyContextPrimitive = primitives.KeyContextPrimitive;
 const ActionHandlerPrimitive = primitives.ActionHandlerPrimitive;
-const ActionHandlerRefPrimitive = primitives.ActionHandlerRefPrimitive;
 
 // Accessibility config
 pub const AccessibleConfig = struct {
@@ -263,7 +261,7 @@ pub const Builder = struct {
         style: InputStyle,
         inner_width: f32,
         inner_height: f32,
-        on_blur_handler: ?HandlerRef = null,
+        on_blur: ?Handler = null,
     };
 
     pub const PendingTextArea = struct {
@@ -272,7 +270,7 @@ pub const Builder = struct {
         style: TextAreaStyle,
         inner_width: f32,
         inner_height: f32,
-        on_blur_handler: ?HandlerRef = null,
+        on_blur: ?Handler = null,
     };
 
     pub const PendingCodeEditor = struct {
@@ -281,7 +279,7 @@ pub const Builder = struct {
         style: CodeEditorStyle,
         inner_width: f32,
         inner_height: f32,
-        on_blur_handler: ?HandlerRef = null,
+        on_blur: ?Handler = null,
     };
 
     pub const PendingScroll = struct {
@@ -846,19 +844,13 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Register click handlers before popping dispatch node
-        if (props.on_click) |callback| {
-            self.dispatch.onClick(callback);
-        }
-        if (props.on_click_handler) |handler| {
-            self.dispatch.onClickHandler(handler);
+        if (props.on_click) |handler| {
+            self.dispatch.onClick(handler);
         }
 
         // Register click-outside handlers (for dropdowns, modals, etc.)
-        if (props.on_click_outside) |callback| {
-            self.dispatch.onClickOutside(callback);
-        }
-        if (props.on_click_outside_handler) |handler| {
-            self.dispatch.onClickOutsideHandler(handler);
+        if (props.on_click_outside) |handler| {
+            self.dispatch.onClickOutside(handler);
         }
 
         // Register drag source
@@ -1254,8 +1246,6 @@ pub const Builder = struct {
                 .button => self.renderButton(child),
                 .key_context => self.renderKeyContext(child),
                 .action_handler => self.renderActionHandler(child),
-                .button_handler => self.renderButtonHandler(child),
-                .action_handler_ref => self.renderActionHandlerRef(child),
                 .svg => self.renderSvg(child),
                 .image => self.renderImage(child),
                 .empty => {},
@@ -1414,7 +1404,7 @@ pub const Builder = struct {
             .style = inp.style,
             .inner_width = inner_width,
             .inner_height = inner_height,
-            .on_blur_handler = inp.style.on_blur_handler,
+            .on_blur = inp.style.on_blur,
         }) catch {};
         // Mirror into the control queue only on a successful data-plane append,
         // so tree-order replay never indexes a slot that failed to allocate.
@@ -1516,7 +1506,7 @@ pub const Builder = struct {
             .style = ta.style,
             .inner_width = inner_width,
             .inner_height = inner_height,
-            .on_blur_handler = ta.style.on_blur_handler,
+            .on_blur = ta.style.on_blur,
         }) catch {};
         // Mirror into the control queue only on a successful data-plane append.
         if (self.pending_text_areas.items.len > text_area_index) {
@@ -1615,7 +1605,7 @@ pub const Builder = struct {
             .style = ce.style,
             .inner_width = inner_width,
             .inner_height = inner_height,
-            .on_blur_handler = ce.style.on_blur_handler,
+            .on_blur = ce.style.on_blur,
         }) catch {};
         // Mirror into the control queue only on a successful data-plane append.
         if (self.pending_code_editors.items.len > code_editor_index) {
@@ -1706,72 +1696,10 @@ pub const Builder = struct {
         self.layout.closeElement();
 
         // Register click handler with dispatch tree - disabled buttons don't click
-        if (btn.on_click) |callback| {
+        if (btn.on_click) |handler| {
             if (!btn.style.disabled) {
-                self.dispatch.onClick(callback);
+                self.dispatch.onClick(handler);
             }
-        }
-
-        self.dispatch.popNode();
-    }
-
-    fn renderButtonHandler(self: *Self, btn: ButtonHandler) void {
-        // Use explicit ID if provided, otherwise derive from label
-        const layout_id = if (btn.id) |id| LayoutId.fromString(id) else LayoutId.fromString(btn.label);
-
-        // Push dispatch node for this button
-        _ = self.dispatch.pushNode();
-        self.dispatch.setLayoutId(layout_id.id);
-
-        // Check hover state - disabled buttons never hover
-        const is_hovered = !btn.style.disabled and
-            if (self.window) |g| g.isHovered(layout_id.id) else false;
-
-        const bg = switch (btn.style.style) {
-            .primary => if (btn.style.disabled)
-                Color.rgb(0.5, 0.7, 1.0)
-            else if (is_hovered)
-                Color.rgb(0.3, 0.6, 1.0) // Lighter on hover
-            else
-                Color.rgb(0.2, 0.5, 1.0),
-            .secondary => if (is_hovered)
-                Color.rgb(0.82, 0.82, 0.82) // Darker on hover
-            else
-                Color.rgb(0.9, 0.9, 0.9),
-            .danger => if (is_hovered)
-                Color.rgb(1.0, 0.4, 0.4) // Lighter on hover
-            else
-                Color.rgb(0.9, 0.3, 0.3),
-        };
-        const fg = switch (btn.style.style) {
-            .primary, .danger => Color.white,
-            .secondary => Color.rgb(0.3, 0.3, 0.3),
-        };
-
-        self.layout.openElement(.{
-            .id = layout_id,
-            .layout = .{
-                .sizing = Sizing.fitContent(),
-                .padding = Padding.symmetric(24, 10),
-                .child_alignment = .{ .x = .center, .y = .center },
-            },
-            .background_color = bg,
-            .corner_radius = CornerRadius.all(6),
-        }) catch {
-            self.dispatch.popNode();
-            return;
-        };
-
-        self.layout.text(btn.label, .{
-            .color = fg,
-            .font_size = self.theme().font_size_base,
-        }) catch {};
-
-        self.layout.closeElement();
-
-        // Register handler-based click handler - disabled buttons don't click
-        if (!btn.style.disabled) {
-            self.dispatch.onClickHandler(btn.handler);
         }
 
         self.dispatch.popNode();
@@ -1820,22 +1748,12 @@ pub const Builder = struct {
         }) catch return;
     }
 
-    fn renderActionHandlerRef(self: *Self, ah: ActionHandlerRefPrimitive) void {
-        self.dispatch.onActionHandlerRaw(ah.action_type, ah.handler);
-    }
-
     fn renderKeyContext(self: *Self, ctx: KeyContextPrimitive) void {
         self.dispatch.setKeyContext(ctx.context);
     }
 
-    fn renderActionHandler(self: *Self, handler: ActionHandlerPrimitive) void {
-        const node_id = self.dispatch.currentNode();
-        if (self.dispatch.getNode(node_id)) |node| {
-            node.getOrCreateListeners(self.allocator).action_listeners.append(self.allocator, .{
-                .action_type = handler.action_type,
-                .callback = handler.callback,
-            }) catch @panic("dispatch: action listener registration failed (OOM)");
-        }
+    fn renderActionHandler(self: *Self, action: ActionHandlerPrimitive) void {
+        self.dispatch.onAction(action.action_type, action.handler);
     }
 
     // =========================================================================
@@ -1896,7 +1814,7 @@ fn testBuilderHarness(
     return Builder.init(allocator, engine, scene_ptr, tree);
 }
 
-test "onActionHandler primitive registers its pre-resolved action type" {
+test "onAction primitive registers its pre-resolved action type" {
     // Render the public primitive through a real Builder to cover the bridge
     // from its runtime action ID into DispatchTree listener registration.
     const gpa = std.testing.allocator;
@@ -1910,17 +1828,18 @@ test "onActionHandler primitive registers its pre-resolved action type" {
     defer tree.deinit();
 
     const Action = struct {};
-    const callback = struct {
-        fn invoke(_: *Window, _: handler_mod.EntityId) void {}
+    const invoke = struct {
+        fn invoke(_: *Window, _: EntityId, _: u64) void {}
     }.invoke;
-    const handler = HandlerRef{ .callback = callback };
+    const handler = Handler{ .invoke = invoke };
 
-    builder.box(.{}, .{primitives.onActionHandler(Action, handler)});
+    builder.box(.{}, .{primitives.onAction(Action, handler)});
 
     const listeners = tree.getNodeConst(tree.root).?.listeners.?;
-    try std.testing.expectEqual(@as(usize, 1), listeners.action_listeners_handler.items.len);
-    try std.testing.expectEqual(actionTypeId(Action), listeners.action_listeners_handler.items[0].action_type);
-    try std.testing.expectEqual(handler.callback, listeners.action_listeners_handler.items[0].handler.callback);
+    const action_listeners = listeners.action_listeners.items;
+    try std.testing.expectEqual(@as(usize, 1), action_listeners.len);
+    try std.testing.expectEqual(actionTypeId(Action), action_listeners[0].action_type);
+    try std.testing.expectEqual(handler.invoke, action_listeners[0].handler.invoke);
 }
 
 test "dynamic box has layout and dispatch parity with tuple box" {

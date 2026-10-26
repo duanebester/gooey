@@ -10,7 +10,7 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
-const HandlerRef = ui.HandlerRef;
+const Handler = ui.Handler;
 const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
 
@@ -55,7 +55,7 @@ pub const TextArea = struct {
     tab_stop: bool = true,
 
     // Handlers
-    on_blur: ?HandlerRef = null,
+    on_blur: ?Handler = null,
 
     // Accessibility overrides
     accessible_name: ?[]const u8 = null, // Label for screen readers
@@ -112,7 +112,7 @@ pub const TextArea = struct {
                 .scrollbar_thumb_color = scrollbar_thumb_color,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
-                .on_blur_handler = self.on_blur,
+                .on_blur = self.on_blur,
             }),
         }));
     }

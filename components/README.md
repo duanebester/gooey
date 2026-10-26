@@ -9,7 +9,7 @@ const components = @import("gooey-components");
 fn render(cx: *gooey.Cx) void {
     cx.render(components.Button{
         .label = "Save",
-        .on_click_handler = cx.update(State.save),
+        .on_click = cx.on(State.save, .{}),
     });
 }
 ```

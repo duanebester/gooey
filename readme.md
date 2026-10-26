@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
 ## Todo App Example
 
 A small todo app that touches a representative slice of the API: a pure,
-UI-free state model; `cx.update` / `cx.updateWith` / `cx.command` handlers; a
+UI-free state model; handlers built with `cx.on`; a
 bound `TextInput`; `Checkbox` and `Button`; list iteration; and unit tests that
 exercise the state with no UI in play.
 
@@ -299,7 +299,7 @@ fn render(cx: *Cx) void {
         // Input row: TextInput binds to state.draft; Add resets the model.
         ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             TextInput{ .id = draft_input_id, .placeholder = "What needs doing?", .bind = &s.draft, .width = 360 },
-            Button{ .label = "Add", .on_click_handler = cx.update(AppState.addTodo) },
+            Button{ .label = "Add", .on_click = cx.on(AppState.addTodo, .{}) },
         }),
 
         // Filters: each button packs its enum value into the handler arg.
@@ -319,7 +319,7 @@ fn render(cx: *Cx) void {
         ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
             ui.textFmt("{d} left", .{s.remaining()}, .{ .size = 14 }),
             ui.spacer(),
-            Button{ .label = "Clear completed", .variant = .secondary, .size_preset = .small, .on_click_handler = cx.update(AppState.clearCompleted) },
+            Button{ .label = "Clear completed", .variant = .secondary, .size_preset = .small, .on_click = cx.on(AppState.clearCompleted, .{}) },
         }),
     }));
 }
@@ -352,10 +352,10 @@ const TodoRow = struct {
             .background = ui.Color.white,
             .corner_radius = 8,
         }, .{
-            Checkbox{ .selected = self.done, .on_click_handler = cx.updateWith(self.index, AppState.toggle) },
+            Checkbox{ .selected = self.done, .on_click = cx.on(AppState.toggle, .{ .arg = self.index }) },
             ui.text(self.label, .{ .size = 16 }),
             ui.spacer(),
-            Button{ .label = "Delete", .variant = .danger, .size_preset = .small, .on_click_handler = cx.updateWith(self.index, AppState.remove) },
+            Button{ .label = "Delete", .variant = .danger, .size_preset = .small, .on_click = cx.on(AppState.remove, .{ .arg = self.index }) },
         }));
     }
 };
@@ -370,7 +370,7 @@ const FilterButton = struct {
             .label = self.label,
             .size_preset = .small,
             .variant = if (self.active) .primary else .secondary,
-            .on_click_handler = cx.updateWith(self.filter, AppState.setFilter),
+            .on_click = cx.on(AppState.setFilter, .{ .arg = self.filter }),
         });
     }
 };
@@ -405,7 +405,7 @@ Gooey separates concerns between `Cx` (context) and `ui` (layout primitives):
 
 | Module | Purpose                            | Examples                                                                            |
 | ------ | ---------------------------------- | ----------------------------------------------------------------------------------- |
-| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.update()`, `cx.animations.tween()`, `cx.changed()`, `cx.render()` |
+| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.on()`, `cx.animations.tween()`, `cx.changed()`, `cx.render()` |
 | `ui.*` | Layout containers and primitives   | `ui.box()`, `ui.rect()`, `ui.hstack()`, `ui.vstack()`, `ui.text()`, `ui.when()`     |
 
 ```/dev/null/example.zig#L1-19
@@ -462,26 +462,40 @@ cx.render(ui.box_with_layout_id(layout_id, .{}, .{
 - `ui.scroll(id, style, children)` - Scrollable container
 - `ui.spacer()` - Flexible space
 
-## Handler Types
+## Handlers
 
-| Method                  | Signature                       | Use Case                                 |
-| ----------------------- | ------------------------------- | ---------------------------------------- |
-| `cx.update()`           | `fn(*State) void`               | Pure state mutations                     |
-| `cx.updateWith()`       | `fn(*State, Arg) void`          | Mutations with argument                  |
-| `cx.command()`          | `fn(*State, *Window) void`      | Framework access (focus, quit, entities) |
-| `cx.commandWith()`      | `fn(*State, *Window, Arg) void` | Framework access with argument           |
-| `cx.deferCommand()`     | `fn(*State, *Window) void`      | Run after current event completes        |
-| `cx.deferCommandWith()` | `fn(*State, *Window, Arg) void` | Deferred with argument                   |
+Every event field (`on_click`, `on_click_outside`, `on_blur`, `on_select`, `on_close`,
+`on_toggle`, ...) takes one type, `Handler`, built with `cx.on(method, options)`. The method's
+shape is detected from its signature:
 
-> **Note:** The state type is inferred automatically from the method pointer's first parameter — no need to pass it separately.
+| Method shape                          | Use case                                 |
+| ------------------------------------- | ---------------------------------------- |
+| `fn(*State) void`                     | Pure state mutations                     |
+| `fn(*State, Arg) void`                | Mutations with an argument               |
+| `fn(*State, *Window) void`            | Framework access (focus, quit, entities) |
+| `fn(*State, Arg, *Window) void`       | Framework access with an argument        |
+
+`options` accepts only `.arg` and `.entity`; any other field is a compile error, and so is a
+method with another shape.
+
+```zig
+Button{ .label = "+", .on_click = cx.on(State.increment, .{}) },
+Button{ .label = "Quit", .on_click = cx.on(State.quit, .{}) }, // fn(*State, *Window)
+```
+
+> **Note:** The state type is inferred from the method's first parameter. Without `.entity` it
+> must be the app's root state. Debug and ReleaseSafe builds check this when the handler is
+> built and panic naming the method; ReleaseFast and ReleaseSmall compile the check out.
 
 ### Handlers with Arguments
 
-The `*With` variants (`updateWith`, `commandWith`, `deferCommandWith`) let you pass data to your handler. The argument is captured at handler creation time and passed when invoked:
+`.arg` is captured when the handler is built and passed when it runs. It is coerced to the
+method's argument type, so literals need no `@as`:
 
 ```zig
 // In a list render callback - capture the index
-.on_click_handler = cx.updateWith(index, State.selectItem),
+.on_click = cx.on(State.selectItem, .{ .arg = index }),
+.on_click = cx.on(State.setPage, .{ .arg = .settings }), // enum literal
 
 // The handler receives the captured value
 pub fn selectItem(self: *State, index: u32) void {
@@ -489,10 +503,11 @@ pub fn selectItem(self: *State, index: u32) void {
 }
 ```
 
-**The 8-byte limit:** Arguments are packed into a `u64` for zero-allocation storage. This means your argument must be ≤8 bytes. If it exceeds this, you'll get a compile error:
+**The 8-byte limit:** Arguments are packed into a `u64` for zero-allocation storage. This means
+your argument must be ≤8 bytes. If it exceeds this, you'll get a compile error:
 
 ```
-error: updateWith: argument type 'MyLargeStruct' exceeds 8 bytes. Use a pointer or index instead.
+error: cx.on(State.editItem): the argument type 'MyLargeStruct' is larger than 8 bytes; pass an index or a pointer instead
 ```
 
 **What fits in 8 bytes:**
@@ -513,10 +528,10 @@ error: updateWith: argument type 'MyLargeStruct' exceeds 8 bytes. Use a pointer 
 
 ```zig
 // Option 1: Use an index into your data
-.on_click_handler = cx.updateWith(row_index, State.selectRow),
+.on_click = cx.on(State.selectRow, .{ .arg = row_index }),
 
 // Option 2: Use a pointer (if the data outlives the handler)
-.on_click_handler = cx.updateWith(&self.items[i], State.editItem),
+.on_click = cx.on(State.editItem, .{ .arg = &self.items[i] }),
 
 // Option 3: Store data in state, pass an ID
 pub fn openFile(self: *State, file_id: u32) void {
@@ -525,19 +540,46 @@ pub fn openFile(self: *State, file_id: u32) void {
 }
 ```
 
+### Index Selection
+
+`Select`, `TabBar`, and `RadioGroup` take an `on_select` handler for a `fn(*State, usize)`
+method, built **without** `.arg`. The widget binds each option's index with
+`Handler.withArg(index)`:
+
+```zig
+pub fn selectFruit(self: *State, index: usize) void {
+    self.fruit = index;
+}
+
+Select{ .on_select = cx.on(State.selectFruit, .{}), ... }
+```
+
+A handler built without `.arg` for a method that takes one may only go to an index widget; a
+`Button` given one panics on the first frame in Debug and ReleaseSafe.
+
+### Entity Handlers
+
+`.entity` binds the method to an entity's data instead of the root state. Its type must be
+`Entity(State)`, checked at compile time:
+
+```zig
+Button{ .label = "+", .on_click = cx.on(Counter.increment, .{ .entity = counter }) }
+```
+
 ### Deferred Commands
 
-Use `defer` when you need to run code **after** the current event handler completes. This is essential for:
+Use `deferCommand` when you need to run code **after** the current event handler completes.
+It takes the same method shapes and options as `cx.on`. This is essential for:
 
 - **Modal dialogs** - They run their own event loop, which would deadlock if called during event handling
 - **File pickers** - Same reason as modals
 - **Heavy operations** - Defer work to avoid blocking the current frame
 
 ```zig
-// In a command handler, use g.deferCommand():
+// In a handler that takes *Window, use g.deferCommand():
 pub fn openFolder(self: *State, g: *Window) void {
     _ = self;
-    g.deferCommand(State.openFolderDeferred);
+    g.deferCommand(State.openFolderDeferred, .{});
 }
 
 fn openFolderDeferred(self: *State, g: *Window) void {
@@ -552,13 +594,12 @@ fn openFolderDeferred(self: *State, g: *Window) void {
 }
 
 // With an argument (same 8-byte limit applies):
-pub fn deleteItem(self: *State, g: *Window, index: u32) void {
+pub fn deleteItem(self: *State, index: u32, g: *Window) void {
     _ = self;
-    g.deferCommandWith(index, State.confirmDelete);
+    g.deferCommand(State.confirmDelete, .{ .arg = index });
 }
 
-fn confirmDelete(self: *State, g: *Window, index: u32) void {
-    _ = g;
+fn confirmDelete(self: *State, index: u32) void {
     if (dialog.confirm("Delete item?")) {
         self.items.remove(index);
     }
@@ -787,9 +828,9 @@ const TextInput = components.TextInput;
 
 ```zig
 // Button variants
-Button{ .label = "Save", .variant = .primary, .on_click_handler = cx.update(State.save) }
-Button{ .label = "Cancel", .variant = .secondary, .size_preset = .small, .on_click_handler = ... }
-Button{ .label = "Delete", .variant = .danger, .on_click_handler = ... }
+Button{ .label = "Save", .variant = .primary, .on_click = cx.on(State.save, .{}) }
+Button{ .label = "Cancel", .variant = .secondary, .size_preset = .small, .on_click = ... }
+Button{ .label = "Delete", .variant = .danger, .on_click = ... }
 ```
 
 ### TextInput & TextArea
@@ -824,7 +865,7 @@ applied, and valid cursor/selection offsets are preserved.
 Checkbox{
     .id = "terms",
     .selected = s.agreed_to_terms,
-    .on_click_handler = cx.update(State.toggleTerms),
+    .on_click = cx.on(State.toggleTerms, .{}),
 }
 ```
 
@@ -835,7 +876,7 @@ Checkbox{
 RadioButton{
     .label = "Email",
     .selected = s.contact_method == 0,
-    .on_click = cx.updateWith(@as(u8, 0), State.setContactMethod),
+    .on_click = cx.on(State.setContactMethod, .{ .arg = 0 }),
 }
 
 // RadioGroup - grouped buttons with a single index-based handler
@@ -843,7 +884,7 @@ RadioGroup{
     .id = "priority",
     .options = &.{ "Low", "Medium", "High" },
     .selected = s.priority, // ?usize
-    .on_select = cx.onSelect(State.setPriority), // fn(*State, usize) void
+    .on_select = cx.on(State.setPriority, .{}), // fn(*State, usize) void
     .direction = .row,  // or .column
     .gap = 16,
 }
@@ -879,9 +920,9 @@ Select{
     .selected = s.selected_fruit,
     .placeholder = "Choose a fruit...",
     .is_open = s.fruit_select_open,
-    .on_toggle = cx.update(State.toggleFruitSelect),
-    .on_close = cx.update(State.closeFruitSelect),
-    .on_select = cx.onSelect(State.selectFruit),
+    .on_toggle = cx.on(State.toggleFruitSelect, .{}),
+    .on_close = cx.on(State.closeFruitSelect, .{}),
+    .on_select = cx.on(State.selectFruit, .{}),
     .width = 200,
 }
 ```
@@ -906,17 +947,17 @@ const State = struct {
 };
 
 // Trigger button
-Button{ .label = "Delete Item", .variant = .danger, .on_click_handler = cx.update(State.openConfirm) }
+Button{ .label = "Delete Item", .variant = .danger, .on_click = cx.on(State.openConfirm, .{}) }
 
 // Modal with custom content
 Modal(ConfirmContent){
     .id = "confirm-dialog",
     .is_open = s.show_confirm,
-    .on_close = cx.update(State.closeConfirm),
+    .on_close = cx.on(State.closeConfirm, .{}),
     .child = ConfirmContent{
         .message = "Are you sure you want to delete?",
-        .on_confirm = cx.update(State.doDelete),
-        .on_cancel = cx.update(State.closeConfirm),
+        .on_confirm = cx.on(State.doDelete, .{}),
+        .on_cancel = cx.on(State.closeConfirm, .{}),
     },
     .animate = true,
     .close_on_backdrop = true,
@@ -929,7 +970,7 @@ Modal(ConfirmContent){
 // Wrap any component with a tooltip
 Tooltip(Button){
     .text = "Click to save your changes",
-    .child = Button{ .label = "Save", .on_click_handler = ... },
+    .child = Button{ .label = "Save", .on_click = ... },
     .position = .top,  // .top, .bottom, .left, .right
 }
 
@@ -1013,12 +1054,12 @@ cx.render(ui.hstack(.{ .gap = 4 }, .{
     Tab{
         .label = "Home",
         .selected = s.tab == 0,
-        .on_click = cx.updateWith(@as(u8, 0), State.setTab),
+        .on_click = cx.on(State.setTab, .{ .arg = 0 }),
     },
     Tab{
         .label = "Settings",
         .selected = s.tab == 1,
-        .on_click = cx.updateWith(@as(u8, 1), State.setTab),
+        .on_click = cx.on(State.setTab, .{ .arg = 1 }),
         .variant = .underline, // .pills (default), .underline, .segmented
     },
 }))
@@ -1028,7 +1069,7 @@ cx.render(ui.hstack(.{ .gap = 4 }, .{
 TabBar{
     .tabs = &.{ "Home", "Settings", "About" },
     .selected = s.tab, // ?usize
-    .on_select = cx.onSelect(State.selectTab), // fn(*State, usize) void
+    .on_select = cx.on(State.selectTab, .{}), // fn(*State, usize) void
 }
 ```
 
@@ -1076,7 +1117,7 @@ fn renderItem(index: u32, cx: *Cx) void {
         .height = 32,
         .background = if (is_selected) theme.primary else null,
         .hover_background = theme.overlay,
-        .on_click_handler = cx.updateWith(index, State.selectItem),
+        .on_click = cx.on(State.selectItem, .{ .arg = index }),
     }, .{
         ui.text("Item", .{ .color = text_color }),
     }));
@@ -1106,7 +1147,7 @@ fn renderMessage(index: u32, cx: *Cx) f32 {
     cx.render(ui.box(.{
         .fill_width = true,
         .height = height,
-        .on_click_handler = cx.updateWith(index, State.selectMessage),
+        .on_click = cx.on(State.selectMessage, .{ .arg = index }),
     }, .{
         ui.text(msg.text, .{}),
     }));
@@ -1200,7 +1241,7 @@ fn renderHeader(col: u32, cx: *Cx) void {
     cx.render(ui.box(.{
         .fill_width = true,
         .fill_height = true,
-        .on_click_handler = cx.updateWith(col, State.onHeaderClick),
+        .on_click = cx.on(State.onHeaderClick, .{ .arg = col }),
     }, .{
         ui.text(label, .{ .weight = .semibold, .color = theme.text }),
     }));
@@ -1380,7 +1421,7 @@ components.ValidatedTextInput{
     .error_message = s.validateEmail(),  // Simple string error
     .show_error = s.touched_email,       // Only show after interaction
     .help_text = "We'll never share your email",
-    .on_blur = cx.update(State.onEmailBlur),
+    .on_blur = cx.on(State.onEmailBlur, .{}),
     .width = 300,
 }
 
@@ -1545,9 +1586,8 @@ const AppState = struct {
     }
 };
 
-// In render - use cx.entities.context for entity-scoped handlers
-var entity_cx = cx.entities.context(Counter, counter_entity) orelse return;
-Button{ .label = "+", .on_click_handler = entity_cx.update(Counter.increment) }
+// In render - bind the handler to the entity with .entity
+Button{ .label = "+", .on_click = cx.on(Counter.increment, .{ .entity = counter_entity }) }
 
 // Read entity data
 if (cx.window().readEntity(Counter, entity)) |data| {
@@ -1679,20 +1719,20 @@ fn setupKeymap(cx: *Cx) void {
 
 fn render(cx: *Cx) void {
     cx.render(ui.box(.{}, .{
-        ui.onAction(Undo, doUndo),  // Handle action
+        ui.onAction(Undo, cx.on(State.undo, .{})),  // Handle action
 
         // Scoped context
         ui.keyContext("Editor"),
-        ui.onAction(Save, doSave),
+        ui.onAction(Save, cx.on(State.save, .{})),
     }));
 }
 ```
 
 ### Quitting the App
 
-Use `g.quit()` from a `cx.command()` handler to quit portably across macOS, Linux, and WASM (no-op).
+Use `g.quit()` from a handler that takes `*Window` to quit portably across macOS, Linux, and WASM (no-op).
 
-Both `ui.onActionHandler` and `Button.on_click_handler` accept a `HandlerRef`, so the same `cx.command()` handler works for both the keybinding and the button:
+Both `ui.onAction` and `Button.on_click` take a `Handler`, so the same handler works for both the keybinding and the button:
 
 ```zig
 const QuitApp = struct {};
@@ -1716,17 +1756,17 @@ fn setupKeymap(cx: *Cx) void {
 fn render(cx: *Cx) void {
     setupKeymap(cx);
 
-    const quit_handler = cx.command(AppState.quitApp);
+    const quit_handler = cx.on(AppState.quitApp, .{});
 
     cx.render(ui.box(.{ .padding = .{ .all = 24 }, .gap = 16 }, .{
         // cmd+q triggers quitApp via the action system
-        ui.onActionHandler(QuitApp, quit_handler),
+        ui.onAction(QuitApp, quit_handler),
 
         // Button triggers the same handler on click
         Button{
             .label = "Quit",
             .variant = .danger,
-            .on_click_handler = quit_handler,
+            .on_click = quit_handler,
         },
     }));
 }

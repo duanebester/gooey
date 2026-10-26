@@ -53,7 +53,7 @@ const Checkbox = components.Checkbox;
 Button{
     .label = "+",
     .accessible_name = "Increase counter",  // VoiceOver reads this
-    .on_click_handler = handler,
+    .on_click = handler,
 }
 
 // Checkbox - label is used by default
@@ -320,14 +320,14 @@ fn renderForm(cx: *Cx) void {
         .id = "subscribe",
         .selected = s.subscribe,
         .label = "Subscribe to newsletter",
-        .on_click_handler = cx.update(FormState.toggleSubscribe),
+        .on_click = cx.on(FormState.toggleSubscribe, .{}),
     });
 
     cx.render(components.Button{
         .label = "Send",
         .accessible_name = "Submit contact form",
         .disabled = !s.isValid(),
-        .on_click_handler = cx.update(FormState.submit),
+        .on_click = cx.on(FormState.submit, .{}),
     });
 }
 ```
@@ -517,7 +517,7 @@ pub const MyWidget = struct {
     enabled: bool = true,
 
     // Interaction
-    on_click_handler: ?HandlerRef = null,
+    on_click: ?ui.Handler = null,
 
     // Accessibility overrides
     accessible_name: ?[]const u8 = null,
@@ -543,7 +543,7 @@ pub const MyWidget = struct {
 
         // Visual rendering
         cx.render(ui.box_with_layout_id(layout_id, .{
-            .on_click_handler = if (self.enabled) self.on_click_handler else null,
+            .on_click = if (self.enabled) self.on_click else null,
             // ... styling ...
         }, .{
             ui.text(self.label, .{ ... }),

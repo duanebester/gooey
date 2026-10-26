@@ -2,9 +2,9 @@
 //!
 //! Demonstrates:
 //! - Unified, non-generic Cx context
-//! - Pure state methods with cx.update()
-//! - State with arguments via cx.updateWith()
-//! - Command handlers with cx.command() for framework access
+//! - Pure state methods with cx.on(method, .{})
+//! - State with arguments via cx.on(method, .{ .arg = value })
+//! - Methods that take *Window for framework access
 //! - Components receiving *Cx
 //! - WebApp for browser support
 
@@ -143,17 +143,33 @@ const CounterDisplay = struct {
 const ControlButtons = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            // Pure state handlers - cx.update()
-            Button{ .label = "−", .size_preset = .large, .on_click_handler = cx.update(AppState.decrement) },
-            Button{ .label = "+", .size_preset = .large, .on_click_handler = cx.update(AppState.increment) },
+            // Pure state handlers
+            Button{
+                .label = "−",
+                .size_preset = .large,
+                .on_click = cx.on(AppState.decrement, .{}),
+            },
+            Button{
+                .label = "+",
+                .size_preset = .large,
+                .on_click = cx.on(AppState.increment, .{}),
+            },
 
             ui.spacerMin(20),
 
             // Pure reset
-            Button{ .label = "Reset", .variant = .secondary, .on_click_handler = cx.update(AppState.reset) },
+            Button{
+                .label = "Reset",
+                .variant = .secondary,
+                .on_click = cx.on(AppState.reset, .{}),
+            },
 
-            // Command handler - cx.command() for framework access
-            Button{ .label = "Reset & Blur", .variant = .danger, .on_click_handler = cx.command(AppState.resetAndBlur) },
+            // A method that takes *Window for framework access
+            Button{
+                .label = "Reset & Blur",
+                .variant = .danger,
+                .on_click = cx.on(AppState.resetAndBlur, .{}),
+            },
         }));
     }
 };
@@ -165,7 +181,7 @@ const StepSelector = struct {
         cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
             ui.text("Step:", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
 
-            // Using cx.updateWith() to pass arguments
+            // Passing an argument with .arg
             StepButton{ .value = 1, .current = s.step },
             StepButton{ .value = 5, .current = s.step },
             StepButton{ .value = 10, .current = s.step },
@@ -189,7 +205,7 @@ const StepButton = struct {
             },
             .size_preset = .small,
             .variant = if (is_active) .primary else .secondary,
-            .on_click_handler = cx.updateWith(self.value, AppState.setStep),
+            .on_click = cx.on(AppState.setStep, .{ .arg = self.value }),
         });
     }
 };

@@ -209,7 +209,7 @@ pub const Renderer = struct {
         cx.render(components.Button{
             .id = id,
             .label = props.label,
-            .on_click_handler = actionHandler(&artifact.action_bindings[candidate_index]),
+            .on_click = actionHandler(&artifact.action_bindings[candidate_index]),
         });
     }
 
@@ -238,7 +238,7 @@ pub const Renderer = struct {
             .id = id,
             .selected = state.entries[state_index].value.boolean,
             .label = props.label,
-            .on_click_handler = valueHandler(&artifact.value_bindings[candidate_index], toggleBoolean),
+            .on_click = valueHandler(&artifact.value_bindings[candidate_index], toggleBoolean),
         });
     }
 
@@ -293,32 +293,36 @@ fn bindValue(renderer: *Renderer, artifact: *Artifact, state: *core.RuntimeState
     artifact.value_bindings[candidate_index] = .{ .renderer = renderer, .artifact_id = artifact.id, .state = state, .scratch = scratch, .revision = revision, .node_index = node_index, .state_index = state_index };
 }
 
-fn actionHandler(binding: *ActionBinding) gooey.ui.HandlerRef {
+// Bindings live in renderer-owned storage, so the handler carries the binding
+// address as its argument instead of using `cx.on` with app state.
+const BindingInvoke = *const fn (*gooey.Window, gooey.context.EntityId, u64) void;
+
+fn actionHandler(binding: *ActionBinding) gooey.ui.Handler {
     std.debug.assert(@intFromPtr(binding.renderer) != 0);
     std.debug.assert(binding.event.node_index < core.nodes_max);
-    return .{ .callback = emitAction, .entity_id = gooey.context.packArg(*ActionBinding, binding) };
+    return .{ .invoke = emitAction, .arg = @intFromPtr(binding) };
 }
 
-fn valueHandler(binding: *ValueBinding, callback: *const fn (*gooey.Window, gooey.context.EntityId) void) gooey.ui.HandlerRef {
+fn valueHandler(binding: *ValueBinding, invoke: BindingInvoke) gooey.ui.Handler {
     std.debug.assert(@intFromPtr(binding.renderer) != 0);
     std.debug.assert(@intFromPtr(binding.state) != 0);
-    return .{ .callback = callback, .entity_id = gooey.context.packArg(*ValueBinding, binding) };
+    return .{ .invoke = invoke, .arg = @intFromPtr(binding) };
 }
 
-fn emitAction(window: *gooey.Window, entity_id: gooey.context.EntityId) void {
-    const binding = gooey.context.unpackArg(*ActionBinding, entity_id);
+fn emitAction(window: *gooey.Window, _: gooey.context.EntityId, arg: u64) void {
+    const binding: *ActionBinding = @ptrFromInt(arg);
     enqueueAction(binding);
     window.requestRender();
 }
 
-fn emitTextValue(window: *gooey.Window, entity_id: gooey.context.EntityId) void {
-    const binding = gooey.context.unpackArg(*ValueBinding, entity_id);
+fn emitTextValue(window: *gooey.Window, _: gooey.context.EntityId, arg: u64) void {
+    const binding: *ValueBinding = @ptrFromInt(arg);
     commitTextValue(binding);
     window.requestRender();
 }
 
-fn toggleBoolean(window: *gooey.Window, entity_id: gooey.context.EntityId) void {
-    const binding = gooey.context.unpackArg(*ValueBinding, entity_id);
+fn toggleBoolean(window: *gooey.Window, _: gooey.context.EntityId, arg: u64) void {
+    const binding: *ValueBinding = @ptrFromInt(arg);
     toggleBooleanValue(binding);
     window.requestRender();
 }

@@ -104,7 +104,7 @@ pub const Lists = struct {
     ///     const s = cx.stateConst(State);
     ///     cx.render(ui.box(.{
     ///         .height = 32,
-    ///         .on_click_handler = cx.updateWith(index, State.selectItem),
+    ///         .on_click = cx.on(State.selectItem, .{ .arg = index }),
     ///     }, .{ ui.text(s.items[index].name, .{}) }));
     /// }
     /// ```

@@ -107,9 +107,9 @@ const ModalContent = struct {
                 .options = &options,
                 .selected = app_state.selected,
                 .is_open = app_state.select_open,
-                .on_select = cx.onSelect(AppState.selectOption),
-                .on_toggle = cx.update(AppState.toggleSelect),
-                .on_close = cx.update(AppState.closeSelect),
+                .on_select = cx.on(AppState.selectOption, .{}),
+                .on_toggle = cx.on(AppState.toggleSelect, .{}),
+                .on_close = cx.on(AppState.closeSelect, .{}),
                 .width = 280,
             },
             ui.box(.{
