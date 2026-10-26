@@ -631,6 +631,22 @@ pub fn build(b: *std.Build) void {
                 .{ .source = "svg.frag", .output = "svg.frag.spv", .stage = "fragment" },
                 .{ .source = "image.vert", .output = "image.vert.spv", .stage = "vertex" },
                 .{ .source = "image.frag", .output = "image.frag.spv", .stage = "fragment" },
+                .{
+                    .source = "triangles.vert",
+                    .output = "triangles.vert.spv",
+                    .stage = "vertex",
+                },
+                .{
+                    .source = "strip_expanded.vert",
+                    .output = "strip_expanded.vert.spv",
+                    .stage = "vertex",
+                },
+                .{
+                    .source = "point_instanced.vert",
+                    .output = "point_instanced.vert.spv",
+                    .stage = "vertex",
+                },
+                .{ .source = "mesh.frag", .output = "mesh.frag.spv", .stage = "fragment" },
             };
 
             // Create shader compilation commands
@@ -644,6 +660,8 @@ pub fn build(b: *std.Build) void {
                 });
                 // Track input file - triggers recompilation when source changes
                 compile_cmd.addFileArg(b.path(shader_dir ++ "/" ++ shader.source));
+                // All mesh stages share this ABI and colour conversion implementation.
+                compile_cmd.addFileInput(b.path(shader_dir ++ "/mesh.glsl"));
                 compile_shaders_step.dependOn(&compile_cmd.step);
             }
         }
@@ -1319,6 +1337,7 @@ fn addOverflowChecks(
         "capacity 4 (ResourceLimits.scene), 4 in use, 1 requested, frame 1." });
     run_scene.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
     test_step.dependOn(&run_scene.step);
+    add_geometry_overflow_checks(b, exe, test_step);
 
     if (target.result.os.tag == .linux) {
         const run_vulkan = b.addRunArtifact(exe);
@@ -1327,8 +1346,44 @@ fn addOverflowChecks(
             "exhausted: capacity 8 (ResourceLimits.scene), 8 in use, 1 requested, frame 1." });
         run_vulkan.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
         test_step.dependOn(&run_vulkan.step);
+        const mesh_pools = [_][]const u8{
+            "triangles", "strip_expanded", "points", "colored_points",
+        };
+        for (mesh_pools, 1..) |pool, count| {
+            const run_mesh = b.addRunArtifact(exe);
+            run_mesh.addArg(pool);
+            run_mesh.addCheck(.{ .expect_stderr_match = b.fmt(
+                "Vulkan mesh buffer '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
+                    "{d} in use, 1 requested, frame 7.",
+                .{ pool, count, count },
+            ) });
+            run_mesh.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+            test_step.dependOn(&run_mesh.step);
+        }
     }
     return exe;
+}
+
+fn add_geometry_overflow_checks(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    test_step: *std.Build.Step,
+) void {
+    const pools = [_][]const u8{
+        "path_vertices", "path_indices", "polyline_points", "points", "colored_points",
+    };
+    const capacities = [_]u32{ 7, 11, 13, 17, 19 };
+    for (pools, capacities) |pool, capacity| {
+        const run = b.addRunArtifact(exe);
+        run.addArg(b.fmt("geometry-{s}", .{pool}));
+        run.addCheck(.{ .expect_stderr_match = b.fmt(
+            "Scene geometry pool '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
+                "{d} in use, 1 requested, frame 7.",
+            .{ pool, capacity, capacity },
+        ) });
+        run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run.step);
+    }
 }
 
 /// Helper to add a charts example with both gooey and gooey-charts modules.

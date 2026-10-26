@@ -157,6 +157,14 @@ pub const SceneLimits = struct {
     polyline_count_frame_max: u32,
     point_cloud_count_frame_max: u32,
     colored_point_cloud_count_frame_max: u32,
+    /// Aggregate source geometry submitted per frame, summed over draws. Drawing
+    /// a cached mesh twice consumes its vertices and indices twice. These counts
+    /// are independent of draw budgets and of backend expansion or byte layouts.
+    path_vertex_count_frame_max: u32,
+    path_index_count_frame_max: u32,
+    polyline_point_count_frame_max: u32,
+    point_count_frame_max: u32,
+    colored_point_count_frame_max: u32,
     clip_depth_max: u32,
 
     /// Measured default. Peaks recorded across 24 examples while scrolling,
@@ -166,6 +174,11 @@ pub const SceneLimits = struct {
     /// clip depth 2. Headroom is about 10x for quads and glyphs, which also
     /// covers a 5K-class window (about 2.6x the area of the measured one).
     /// Scene storage: about 2.9 MiB per scene, two scenes per window.
+    /// Geometry measurement: dashboard 780 vertices / 804 indices / 24 line
+    /// points / 0 points / 42 colored points; Lucide zero (SVG atlas rendering).
+    /// `platform/linux/tests/mesh_stress.zig` adds 64 polygons, an 8192-point
+    /// line and 4096 points of each kind. Budgets leave >=10x workload headroom;
+    /// 65536 path vertices also matches Metal's existing solid-path batch size.
     pub const standard: SceneLimits = .{
         .quad_count_frame_max = 8_192,
         .shadow_count_frame_max = 512,
@@ -176,6 +189,11 @@ pub const SceneLimits = struct {
         .polyline_count_frame_max = 256,
         .point_cloud_count_frame_max = 256,
         .colored_point_cloud_count_frame_max = 256,
+        .path_vertex_count_frame_max = 65_536,
+        .path_index_count_frame_max = 65_536,
+        .polyline_point_count_frame_max = 131_072,
+        .point_count_frame_max = 65_536,
+        .colored_point_count_frame_max = 65_536,
         .clip_depth_max = 16,
     };
 
@@ -191,6 +209,11 @@ pub const SceneLimits = struct {
         .polyline_count_frame_max = 1_024,
         .point_cloud_count_frame_max = 1_024,
         .colored_point_cloud_count_frame_max = 1_024,
+        .path_vertex_count_frame_max = 262_144,
+        .path_index_count_frame_max = 262_144,
+        .polyline_point_count_frame_max = 524_288,
+        .point_count_frame_max = 262_144,
+        .colored_point_count_frame_max = 262_144,
         .clip_depth_max = 32,
     };
 
@@ -205,6 +228,14 @@ pub const SceneLimits = struct {
         .polyline_count_frame_max = MAX_POLYLINES_PER_FRAME,
         .point_cloud_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME,
         .colored_point_cloud_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME,
+        .path_vertex_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_VERTICES,
+        .path_index_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_INDICES,
+        .polyline_point_count_frame_max = MAX_POLYLINES_PER_FRAME *
+            @import("../scene/polyline.zig").MAX_POLYLINE_POINTS,
+        .point_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME *
+            @import("../scene/point_cloud.zig").MAX_POINTS_PER_CLOUD,
+        .colored_point_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME *
+            @import("../scene/colored_point_cloud.zig").MAX_POINTS_PER_COLORED_CLOUD,
         .clip_depth_max = MAX_CLIP_STACK_DEPTH,
     };
 
@@ -600,6 +631,22 @@ test "check reports each negative case precisely" {
     limits = ResourceLimits.standard;
     limits.scene.clip_depth_max = MAX_CLIP_STACK_DEPTH + 1;
     try std.testing.expectEqualStrings("clip_depth_max", limits.check().?.field);
+
+    inline for (.{
+        "path_vertex_count_frame_max",    "path_index_count_frame_max",
+        "polyline_point_count_frame_max", "point_count_frame_max",
+        "colored_point_count_frame_max",
+    }) |field| {
+        limits = ResourceLimits.standard;
+        @field(limits.scene, field) = 0;
+        try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+        try std.testing.expectEqualStrings(field, limits.check().?.field);
+        @field(limits.scene, field) = @field(SceneLimits.ceiling, field);
+        try std.testing.expect(limits.check() == null);
+        @field(limits.scene, field) += 1;
+        try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+        try std.testing.expectEqualStrings(field, limits.check().?.field);
+    }
 }
 
 test "derived budget quantities" {
