@@ -182,7 +182,7 @@ fn pinTier1NamespacedScene() void {
 
 /// `gooey.context` — framework subsystems reached for when an
 /// example needs to drive focus / entity lookup / accessibility
-/// directly (a11y_demo, focus_test_no_window, drag_drop).
+/// directly (dynamic_counters, spaceship, disktree).
 fn pinTier1NamespacedContext() void {
     comptime {
         _ = gooey.context.Window;

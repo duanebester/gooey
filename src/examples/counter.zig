@@ -1,11 +1,11 @@
-//! Counter Example using the new Cx API
+//! Counter Example using the Cx API
 //!
 //! Demonstrates:
-//! - Unified Cx context (no more Context(T) generic)
+//! - Unified, non-generic Cx context
 //! - Pure state methods with cx.update()
 //! - State with arguments via cx.updateWith()
 //! - Command handlers with cx.command() for framework access
-//! - Components receiving *Cx instead of *Builder
+//! - Components receiving *Cx
 //! - WebApp for browser support
 
 const std = @import("std");
@@ -116,7 +116,7 @@ fn render(cx: *Cx) void {
 }
 
 // =============================================================================
-// Components - Now receive *Cx directly!
+// Components - Receive *Cx directly
 // =============================================================================
 
 const CounterDisplay = struct {

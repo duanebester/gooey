@@ -262,9 +262,7 @@ const AppState = struct {
             } else {
                 self.file_status = .binary_file;
             }
-            // Clear the editor content. PR 8.4b — `g.widgets.codeEditor`
-            // retired alongside the StringHashMap-keyed `code_editors`
-            // map; reach the engine state through
+            // Clear the editor content. The engine state lives in
             // `Window.element_states` keyed by `LayoutId.id`.
             self.source_code = "";
             if (sourceCodeEditor(g)) |editor| {
@@ -273,7 +271,7 @@ const AppState = struct {
             return;
         }
 
-        // Read file contents (Zig 0.16: std.Io.Dir replaces std.fs)
+        // Read file contents through `std.Io.Dir`.
         const io = g.io;
         const content = std.Io.Dir.readFileAlloc(
             .cwd(),
@@ -313,9 +311,7 @@ const AppState = struct {
     }
 
     /// Reach the `"source"` `CodeEditorState` through the string-keyed
-    /// `Window.widgetState` accessor. PR 8.4b — retired the
-    /// `g.widgets.codeEditor(id)` accessor (see
-    /// `docs/cleanup-implementation-plan.md` PR 8.4b).
+    /// `Window.widgetState` accessor.
     fn sourceCodeEditor(g: *gooey.Window) ?*gooey.widgets.CodeEditorState {
         return g.widgetState(gooey.widgets.CodeEditorState, "source");
     }

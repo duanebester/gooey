@@ -18,10 +18,9 @@ const AppState = struct {
     opacity: f32 = 0.7,
     corner_radius: f32 = 10.0,
 
-    // The window style is the framework's canonical `platform.GlassStyle`.
-    // This example used to declare its own four-variant copy and then remap it
-    // to the backend's enum in `cycleStyleCmd`; with one shared enum there is
-    // nothing to remap.
+    // The window style is the framework's canonical `platform.GlassStyle`,
+    // shared with every backend, so `cycleStyleCmd` passes it through without
+    // remapping.
     const GlassStyle = gooey.platform.GlassStyle;
 
     fn styleName(style: GlassStyle) []const u8 {
@@ -64,10 +63,8 @@ const AppState = struct {
 
         self.glass_style = nextStyle(self.glass_style);
 
-        // PR 7b.1b — `g.window` (the OS-level handle field on the
-        // framework wrapper) was renamed to `g.platform_window` so the
-        // wrapper struct itself could claim the name `Window`. The
-        // captured `w` is still a `*PlatformWindow`.
+        // `g.platform_window` is the OS-level handle on the framework
+        // `Window` wrapper; the captured `w` is a `*PlatformWindow`.
         if (g.platform_window) |w| {
             w.setGlassStyle(self.glass_style, self.opacity, self.corner_radius);
         }

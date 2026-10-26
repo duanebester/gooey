@@ -98,7 +98,7 @@ const AppState = struct {
 };
 
 // =============================================================================
-// Components - Now receive *Cx directly!
+// Components - Receive *Cx directly
 // =============================================================================
 
 /// Individual counter card - uses pure methods via EntityContext

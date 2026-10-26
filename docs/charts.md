@@ -213,7 +213,6 @@ gooey/
 │           ├── pie_chart.zig
 │           └── scatter_chart.zig
 └── src/examples/
-    ├── charts_demo.zig        # Chart types showcase
     └── dashboard.zig          # Multi-chart dashboard
 ```
 
@@ -1176,17 +1175,6 @@ pub const DrawContext = gooey.ui.DrawContext;
 
 ## Examples
 
-### Charts Demo
-
-See `src/examples/charts_demo.zig` for a complete showcase of all chart types:
-
-- Bar chart with custom styling
-- Multi-series line chart with legend
-- Pie and donut charts
-- Scatter plot with multiple series
-- Progress ring (thin donut)
-- Themed line chart with palette colors
-
 ### Dashboard Example
 
 See `src/examples/dashboard.zig` for a multi-chart analytics dashboard:
@@ -1199,10 +1187,9 @@ See `src/examples/dashboard.zig` for a multi-chart analytics dashboard:
 - Conversion rate (progress ring)
 - Theme toggle with `[T]` key
 
-Run examples with:
+Run the example with:
 
 ```gooey/docs/charts.md#L1217-1219
-zig build run-charts-demo # Charts demo
 zig build run-dashboard   # Dashboard example
 ```
 

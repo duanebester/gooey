@@ -120,19 +120,14 @@ zig build run              # Showcase demo
 zig build run-counter      # Counter example
 zig build run-todo         # Todo app (state, handlers, TextInput, lists)
 zig build run-animation    # Animation demo
-zig build run-pomodoro     # Pomodoro timer
 zig build run-glass        # Liquid glass effect
 zig build run-spaceship    # Space dashboard with shader
 zig build run-genui-demo      # Generated UI composition and native controls
 zig build run-dynamic-counters  # Entity system demo
 zig build run-layout       # Flexbox, shrink, text wrapping
 zig build run-actions      # Keybindings demo
-zig build run-select       # Dropdown select component
-zig build run-tooltip      # Tooltip component
-zig build run-modal        # Modal dialogs
 zig build run-images       # Image loading and styling
 zig build run-file-dialog  # Native file dialogs
-zig build run-uniform-list # Virtualized list (10k items)
 zig build run-virtual-list # Variable-height list
 zig build run-data-table   # Virtualized table (10k rows)
 zig build run-code-editor  # Code editor with syntax highlighting
@@ -1425,8 +1420,6 @@ touched.touchAll();  // Mark all on submit
 touched.reset();     // Clear on form reset
 ```
 
-Run `zig build run-form-validation` for a complete example.
-
 ## Animation System
 
 Built-in animation support with easing functions:
@@ -1748,21 +1741,15 @@ For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`,
 | Showcase         | `zig build run`                  | Full feature demo with navigation     |
 | Counter          | `zig build run-counter`          | Simple state management               |
 | Animation        | `zig build run-animation`        | Animation system with tweenOn         |
-| Pomodoro         | `zig build run-pomodoro`         | Timer with tasks and custom shader    |
 | Dynamic Counters | `zig build run-dynamic-counters` | Entity creation and deletion          |
 | Layout           | `zig build run-layout`           | Flexbox, shrink, text wrapping        |
 | Glass            | `zig build run-glass`            | Liquid glass transparency effect      |
 | Spaceship        | `zig build run-spaceship`        | Sci-fi dashboard with hologram shader |
 | Actions          | `zig build run-actions`          | Keybindings and action system         |
-| Select           | `zig build run-select`           | Dropdown select component             |
-| Tooltip          | `zig build run-tooltip`          | Tooltip positioning and styling       |
-| Modal            | `zig build run-modal`            | Modal dialogs with animation          |
 | Images           | `zig build run-images`           | Image loading and effects             |
 | File Dialog      | `zig build run-file-dialog`      | Native file open/save dialogs         |
-| A11y Demo        | `zig build run-a11y-demo`        | VoiceOver accessibility demo          |
 | Accessible Form  | `zig build run-accessible-form`  | Complete accessible form example      |
 | Drag & Drop      | `zig build run-drag-drop`        | Draggable items and drop targets      |
-| Uniform List     | `zig build run-uniform-list`     | Virtualized list with 10,000 items    |
 | Virtual List     | `zig build run-virtual-list`     | Variable-height virtualized list      |
 | Data Table       | `zig build run-data-table`       | Virtualized table with 10,000 rows    |
 | Code Editor      | `zig build run-code-editor`      | Code editor with syntax highlighting  |
@@ -1815,7 +1802,6 @@ Simple brute-force hot reload for development:
 ```bash
 zig build hot                    # Showcase (default)
 zig build hot -- run-counter     # Specific example
-zig build hot -- run-pomodoro
 zig build hot -- run-glass
 ```
 
@@ -1931,7 +1917,6 @@ zig build run
 
 # Run specific demos
 zig build run-basic        # Simple Wayland + Vulkan test
-zig build run-text         # Text rendering demo
 zig build run-file-dialog  # XDG portal file dialogs
 
 # Compile shaders (only needed if you modify GLSL sources)

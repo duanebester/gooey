@@ -11,9 +11,8 @@ const gooey = @import("gooey");
 
 const platform = gooey.platform;
 const Platform = platform.Platform;
-// PR 7b.1a — `platform.Window` renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the framework-level wrapper
-// landing in PR 7b.1b. See `src/platform/mod.zig` for the rationale.
+// `PlatformWindow` is the OS-level window; the `Window` name belongs to the
+// framework-level wrapper. See `src/platform/mod.zig` for the rationale.
 const PlatformWindow = platform.PlatformWindow;
 const Scene = gooey.scene.Scene;
 const Quad = gooey.scene.Quad;
@@ -324,7 +323,7 @@ pub fn main() !void {
     };
 
     // `PlatformWindow.init` registers itself with the platform and routes
-    // client-side move/resize input to itself, so the caller no longer makes a
+    // client-side move/resize input to itself, so the caller makes no
     // follow-up activation call.
     var window = try PlatformWindow.init(allocator, &plat, &window_options);
     defer window.deinit();
