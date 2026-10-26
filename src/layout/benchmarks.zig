@@ -116,7 +116,7 @@ fn runBenchmark(
     comptime name: []const u8,
     comptime buildFn: fn (*LayoutEngine) anyerror!u32,
 ) BenchmarkResult {
-    var engine = LayoutEngine.init(allocator);
+    var engine = LayoutEngine.init(allocator) catch @panic("layout-bench: LayoutEngine.init OOM");
     defer engine.deinit();
 
     // First pass to get node count for adaptive iterations
@@ -166,7 +166,7 @@ fn runFullFrameBenchmark(
     comptime name: []const u8,
     comptime buildFn: fn (*LayoutEngine) anyerror!u32,
 ) BenchmarkResult {
-    var engine = LayoutEngine.init(allocator);
+    var engine = LayoutEngine.init(allocator) catch @panic("layout-bench: LayoutEngine.init OOM");
     defer engine.deinit();
 
     // First pass to get node count for adaptive iterations
@@ -215,7 +215,7 @@ fn validateBenchmark(
     comptime buildFn: fn (*LayoutEngine) anyerror!u32,
     expected_count: u32,
 ) !void {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(1000, 1000);

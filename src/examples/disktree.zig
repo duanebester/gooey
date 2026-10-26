@@ -1168,7 +1168,7 @@ test "reserved canvas paints navigation and resize without allocation" {
     defer dispatch_a.deinit();
     var dispatch_b = gooey.context.DispatchTree.init(allocator);
     defer dispatch_b.deinit();
-    var layout = gooey.layout.LayoutEngine.init(allocator);
+    var layout = try gooey.layout.LayoutEngine.init(allocator);
     defer layout.deinit();
     var builder = ui.Builder.init(allocator, &layout, &scene_a, &dispatch_a);
     defer builder.deinit();

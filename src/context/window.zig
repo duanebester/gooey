@@ -507,11 +507,9 @@ pub const Window = struct {
         assert(resource_limits.check() == null);
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
-        layout_engine.* = LayoutEngine.init(allocator);
-        errdefer {
-            layout_engine.deinit();
-            allocator.destroy(layout_engine);
-        }
+        errdefer allocator.destroy(layout_engine);
+        layout_engine.* = try LayoutEngine.init(allocator);
+        errdefer layout_engine.deinit();
 
         // Initialise the two-`Frame` double buffer in place. Each
         // `Frame.initOwnedInPlace` allocates a Scene + DispatchTree pair
@@ -666,11 +664,9 @@ pub const Window = struct {
 
         // Create layout engine (owned)
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
-        layout_engine.* = LayoutEngine.init(allocator);
-        errdefer {
-            layout_engine.deinit();
-            allocator.destroy(layout_engine);
-        }
+        errdefer allocator.destroy(layout_engine);
+        layout_engine.* = try LayoutEngine.init(allocator);
+        errdefer layout_engine.deinit();
 
         // Initialise the two-`Frame` double buffer in place. The scene +
         // dispatch tree are per-window state and remain owned per-window

@@ -1874,8 +1874,8 @@ fn testBuilderHarness(
     engine: *LayoutEngine,
     scene_ptr: *Scene,
     tree: *DispatchTree,
-) Builder {
-    engine.* = LayoutEngine.init(allocator);
+) !Builder {
+    engine.* = try LayoutEngine.init(allocator);
     // These tests build trees, never primitives, so the scene needs no storage.
     scene_ptr.* = Scene.initEmpty(allocator);
     tree.* = DispatchTree.init(allocator);
@@ -1889,7 +1889,7 @@ test "onAction primitive registers its pre-resolved action type" {
     var engine: LayoutEngine = undefined;
     var scene_buf: Scene = undefined;
     var tree: DispatchTree = undefined;
-    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    var builder = try testBuilderHarness(gpa, &engine, &scene_buf, &tree);
     defer builder.deinit();
     defer engine.deinit();
     defer scene_buf.deinit();
@@ -1921,7 +1921,7 @@ test "dynamic box has layout and dispatch parity with tuple box" {
     var static_engine: LayoutEngine = undefined;
     var static_scene: Scene = undefined;
     var static_tree: DispatchTree = undefined;
-    var static_builder = testBuilderHarness(gpa, &static_engine, &static_scene, &static_tree);
+    var static_builder = try testBuilderHarness(gpa, &static_engine, &static_scene, &static_tree);
     defer static_builder.deinit();
     defer static_engine.deinit();
     defer static_scene.deinit();
@@ -1931,7 +1931,12 @@ test "dynamic box has layout and dispatch parity with tuple box" {
     var dynamic_engine: LayoutEngine = undefined;
     var dynamic_scene: Scene = undefined;
     var dynamic_tree: DispatchTree = undefined;
-    var dynamic_builder = testBuilderHarness(gpa, &dynamic_engine, &dynamic_scene, &dynamic_tree);
+    var dynamic_builder = try testBuilderHarness(
+        gpa,
+        &dynamic_engine,
+        &dynamic_scene,
+        &dynamic_tree,
+    );
     defer dynamic_builder.deinit();
     defer dynamic_engine.deinit();
     defer dynamic_scene.deinit();
@@ -1954,7 +1959,7 @@ test "generateId: same-parent siblings never collide" {
     var engine: LayoutEngine = undefined;
     var scene_buf: Scene = undefined;
     var tree: DispatchTree = undefined;
-    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    var builder = try testBuilderHarness(gpa, &engine, &scene_buf, &tree);
     defer engine.deinit();
     defer scene_buf.deinit();
     defer tree.deinit();
@@ -1976,7 +1981,7 @@ test "generateId: stable across frames for the same tree shape" {
     var engine: LayoutEngine = undefined;
     var scene_buf: Scene = undefined;
     var tree: DispatchTree = undefined;
-    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    var builder = try testBuilderHarness(gpa, &engine, &scene_buf, &tree);
     defer engine.deinit();
     defer scene_buf.deinit();
     defer tree.deinit();
@@ -2008,7 +2013,7 @@ test "generateId: same sibling index under different parents does not collide" {
     var engine: LayoutEngine = undefined;
     var scene_buf: Scene = undefined;
     var tree: DispatchTree = undefined;
-    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    var builder = try testBuilderHarness(gpa, &engine, &scene_buf, &tree);
     defer engine.deinit();
     defer scene_buf.deinit();
     defer tree.deinit();
@@ -2040,7 +2045,7 @@ test "default text colour follows the active theme; an explicit colour wins" {
     var engine: LayoutEngine = undefined;
     var scene_buf: Scene = undefined;
     var tree: DispatchTree = undefined;
-    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    var builder = try testBuilderHarness(gpa, &engine, &scene_buf, &tree);
     defer builder.deinit();
     defer engine.deinit();
     defer scene_buf.deinit();

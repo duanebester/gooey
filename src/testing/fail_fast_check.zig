@@ -144,7 +144,9 @@ const BuilderHarness = struct {
     builder: gooey.ui.Builder,
 
     fn init(self: *BuilderHarness, gpa: std.mem.Allocator) void {
-        self.engine = gooey.layout.LayoutEngine.init(gpa);
+        self.engine = gooey.layout.LayoutEngine.init(gpa) catch |err| {
+            std.debug.panic("setup: LayoutEngine.init failed: {s}", .{@errorName(err)});
+        };
         self.scene = gooey.scene.Scene.initEmpty(gpa);
         self.tree = gooey.context.DispatchTree.init(gpa);
         self.builder = gooey.ui.Builder.init(gpa, &self.engine, &self.scene, &self.tree);

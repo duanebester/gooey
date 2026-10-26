@@ -97,7 +97,7 @@ test "SourceLoc stored in ElementDeclaration" {
 }
 
 test "SourceLoc propagates through createElement" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -169,7 +169,7 @@ test "FixedCapacityArray pop on empty returns null" {
 }
 
 test "open_element_stack uses fixed capacity" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -193,7 +193,7 @@ test "open_element_stack uses fixed capacity" {
 }
 
 test "floating_roots uses fixed capacity" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -242,7 +242,7 @@ test "floating_roots uses fixed capacity" {
 }
 
 test "UTF-8 text wrapping handles multi-byte characters" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // Mock text measurement: each codepoint is 10px wide
@@ -293,7 +293,7 @@ test "UTF-8 text wrapping handles multi-byte characters" {
 }
 
 test "UTF-8 text wrapping with emoji" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -349,7 +349,7 @@ test "capacity constants are reasonable" {
 }
 
 test "id_to_index is pre-allocated" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // After init, hashmaps should have capacity (pre-allocated)
@@ -398,7 +398,7 @@ test "id_to_index is pre-allocated" {
 }
 
 test "beginFrame clears fixed capacity arrays" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // First frame
@@ -481,7 +481,7 @@ test "word-level measurement handles newlines" {
 }
 
 test "floating element resolved_floating_parent is cached at creation" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -521,7 +521,7 @@ test "floating element resolved_floating_parent is cached at creation" {
 }
 
 test "floating expand.width makes element match parent width" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -555,7 +555,7 @@ test "floating expand.width makes element match parent width" {
 }
 
 test "floating expand.height makes element match parent height" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -589,7 +589,7 @@ test "floating expand.height makes element match parent height" {
 }
 
 test "floating expand both dimensions" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -677,7 +677,7 @@ test "MAX_WORDS_PER_TEXT constant is reasonable" {
 }
 
 test "distributeGrow gives equal space to grow elements" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(300, 100);
@@ -722,7 +722,7 @@ test "distributeGrow gives equal space to grow elements" {
 }
 
 test "distributeShrink respects minimum constraints" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(100, 100); // Very small viewport
@@ -771,7 +771,7 @@ test "distributeShrink respects minimum constraints" {
 // =============================================================================
 
 test "fast path: single grow child gets full available space" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(400, 300);
@@ -801,7 +801,7 @@ test "fast path: single grow child gets full available space" {
 }
 
 test "fast path: all floating children falls back to slow path" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(400, 300);
@@ -844,7 +844,7 @@ test "fast path: all floating children falls back to slow path" {
 }
 
 test "fast path: mixed sizing children falls back to slow path" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(400, 100);
@@ -901,7 +901,7 @@ test "fast path: mixed sizing children falls back to slow path" {
 }
 
 test "fast path: grow with min constraint falls back to slow path" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(300, 100);

@@ -42,7 +42,7 @@ const Offset2D = types.Offset2D;
 // ============================================================================
 
 test "basic layout" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -61,7 +61,7 @@ test "basic layout" {
 test "root fill follows viewport resize" {
     // Goal: a fill-window root must use fresh viewport dimensions every frame.
     // Methodology: lay out the same root before and after a viewport resize.
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(320, 240);
@@ -96,7 +96,7 @@ test "root fill follows viewport resize" {
 }
 
 test "nested layout" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -123,7 +123,7 @@ test "nested layout" {
 }
 
 test "shrink behavior" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(200, 100); // Small viewport
@@ -163,7 +163,7 @@ test "shrink behavior" {
 }
 
 test "aspect ratio" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -185,7 +185,7 @@ test "aspect ratio" {
 }
 
 test "percent with min/max" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -209,7 +209,7 @@ test "percent with min/max" {
 }
 
 test "floating positioning" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -242,7 +242,7 @@ test "floating positioning" {
 }
 
 test "floating elements don't affect parent sizing or sibling layout" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -302,7 +302,7 @@ test "floating elements don't affect parent sizing or sibling layout" {
 }
 
 test "text wrapping creates multiple lines" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // Mock text measurement: each character is 10px wide, height is font_size
@@ -355,7 +355,7 @@ test "text wrapping creates multiple lines" {
 }
 
 test "text wrapping with newlines" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -398,7 +398,7 @@ test "text wrapping with newlines" {
 }
 
 test "propagateHeightChange updates fit-content parent" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -454,7 +454,7 @@ test "propagateHeightChange updates fit-content parent" {
 }
 
 test "propagateHeightChange stops at fixed-height parent" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -518,7 +518,7 @@ test "propagateHeightChange stops at fixed-height parent" {
 }
 
 test "z-index propagates to render commands" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -575,7 +575,7 @@ test "nested floating z-index composes with its host" {
     // Goal: a dropdown inside a modal must sort above the modal's complete
     // subtree. Methodology: place a normal sibling after the nested dropdown
     // so equal-tier DFS ordering cannot accidentally make the test pass.
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -610,7 +610,7 @@ test "nested floating z-index composes with its host" {
 test "nested floating z-index overflow fails the frame" {
     // Goal: composition must not silently wrap a top overlay behind content.
     // Methodology: exceed i16 by one with two nested floating elements.
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -631,7 +631,7 @@ test "nested floating z-index overflow fails the frame" {
 }
 
 test "getZIndex returns inherited z-index" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -668,7 +668,7 @@ test "getZIndex returns inherited z-index" {
 }
 
 test "text alignment positions wrapped lines correctly" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // Mock: each char is 10px wide
@@ -736,7 +736,7 @@ test "text alignment positions wrapped lines correctly" {
 }
 
 test "text alignment right aligns text" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -790,7 +790,7 @@ test "text alignment right aligns text" {
 }
 
 test "space_between distributes children evenly" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -844,7 +844,7 @@ test "space_between distributes children evenly" {
 }
 
 test "space_around distributes space around children" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -898,7 +898,7 @@ test "space_around distributes space around children" {
 }
 
 test "space_evenly distributes space evenly" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -952,7 +952,7 @@ test "space_evenly distributes space evenly" {
 }
 
 test "space_between with vertical layout" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -996,7 +996,7 @@ test "space_between with vertical layout" {
 }
 
 test "space_between with single child stays at start" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -1099,7 +1099,7 @@ test "wrapped text re-measures the whole string on every frame" {
 
     var recorder = MeasureRecorder{ .whole_string_len = @intCast(message.len) };
 
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);
@@ -1148,7 +1148,7 @@ test "unwrapped text depends on the whole-string measurement" {
 
     var recorder = MeasureRecorder{ .whole_string_len = @intCast(message.len) };
 
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);
@@ -1175,4 +1175,20 @@ test "unwrapped text depends on the whole-string measurement" {
     const expected_width = @as(f32, @floatFromInt(message.len)) * 10.0;
     try std.testing.expectEqual(expected_width, text_data.measured_width);
     try std.testing.expect(text_data.wrapped_lines == null);
+}
+
+test "LayoutEngine.init returns every failed reservation and frees the earlier ones" {
+    // Every per-frame table is reserved at init, so a failed reservation must
+    // surface as an error rather than an engine that allocates per frame.
+    // `checkAllAllocationFailures` fails each allocation in turn and checks
+    // that `init` returns `OutOfMemory` without leaking the tables before it.
+    const init_then_deinit = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var engine = try LayoutEngine.init(allocator);
+            defer engine.deinit();
+            try std.testing.expect(engine.elements.elements.capacity >= MAX_ELEMENTS_PER_FRAME);
+            try std.testing.expect(engine.id_to_index.capacity() >= MAX_TRACKED_IDS);
+        }
+    }.run;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, init_then_deinit, .{});
 }

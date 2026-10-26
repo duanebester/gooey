@@ -159,14 +159,16 @@ pub const RenderCommandList = struct {
     /// Each element may emit multiple commands (shadow, rectangle, border, text, etc.)
     const INITIAL_CAPACITY = 32768;
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    /// Pre-allocates at startup to avoid per-frame allocation, and returns a
+    /// failed reservation instead of ignoring it.
+    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!Self {
         var list = Self{
             .allocator = allocator,
             .commands = .empty,
             .next_order = 0,
         };
-        // Pre-allocate at startup to avoid per-frame allocation
-        list.commands.ensureTotalCapacity(allocator, INITIAL_CAPACITY) catch {};
+        try list.commands.ensureTotalCapacity(allocator, INITIAL_CAPACITY);
+        std.debug.assert(list.commands.capacity >= INITIAL_CAPACITY);
         return list;
     }
 
