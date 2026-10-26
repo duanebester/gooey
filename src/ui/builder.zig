@@ -665,18 +665,22 @@ pub const Builder = struct {
 
     /// Internal: Box implementation with pre-resolved LayoutId
     fn boxWithLayoutIdImpl(self: *Self, layout_id: LayoutId, props: Box, children: anytype, source_loc: SourceLoc, is_canvas: bool) void {
-        if (!self.beginBoxImpl(layout_id, props, source_loc, is_canvas)) return;
+        self.beginBoxImpl(layout_id, props, source_loc, is_canvas);
         self.processChildren(children);
         self.endBoxImpl(props);
     }
 
     /// Open a runtime box. The matching `endDynamicBox` closes the exact same
     /// layout and dispatch path used by compile-time tuple boxes.
-    pub fn beginDynamicBox(self: *Self, layout_id: LayoutId, props: Box) error{ DynamicBoxDepthExceeded, LayoutCapacityExceeded }!void {
+    pub fn beginDynamicBox(
+        self: *Self,
+        layout_id: LayoutId,
+        props: Box,
+    ) error{DynamicBoxDepthExceeded}!void {
         std.debug.assert(layout_id.id != 0);
         std.debug.assert(layout_id.base_id != 0);
         if (self.dynamic_box_count >= MAX_DYNAMIC_BOX_DEPTH) return error.DynamicBoxDepthExceeded;
-        if (!self.beginBoxImpl(layout_id, props, SourceLoc.none, false)) return error.LayoutCapacityExceeded;
+        self.beginBoxImpl(layout_id, props, SourceLoc.none, false);
 
         self.dynamic_boxes[self.dynamic_box_count] = props;
         self.dynamic_box_count += 1;
@@ -689,7 +693,13 @@ pub const Builder = struct {
         self.endBoxImpl(self.dynamic_boxes[self.dynamic_box_count]);
     }
 
-    fn beginBoxImpl(self: *Self, layout_id: LayoutId, props: Box, source_loc: SourceLoc, is_canvas: bool) bool {
+    fn beginBoxImpl(
+        self: *Self,
+        layout_id: LayoutId,
+        props: Box,
+        source_loc: SourceLoc,
+        is_canvas: bool,
+    ) void {
         // Reject bad inputs before they propagate through every layout pass.
         std.debug.assert(props.sizingIsValid());
 
@@ -875,16 +885,12 @@ pub const Builder = struct {
             .opacity = props.opacity,
             .source_location = source_loc,
             .is_canvas = is_canvas,
-        }) catch {
-            self.dispatch.popNode();
-            return false;
-        };
+        }) catch |err| self.layoutFailed(err);
 
         // Mark floating elements for hit testing optimization
         if (floating_config != null) {
             self.dispatch.markFloating();
         }
-        return true;
     }
 
     fn endBoxImpl(self: *Self, props: Box) void {
@@ -1468,10 +1474,7 @@ pub const Builder = struct {
                 if (is_focused) inp.style.border_color_focused else inp.style.border_color,
                 inp.style.border_width,
             ),
-        }) catch {
-            self.dispatch.popNode();
-            return;
-        };
+        }) catch |err| self.layoutFailed(err);
         self.layout.closeElement();
 
         // Store for later text rendering with inner dimensions
@@ -1566,10 +1569,7 @@ pub const Builder = struct {
                 if (is_focused) ta.style.border_color_focused else ta.style.border_color,
                 ta.style.border_width,
             ),
-        }) catch {
-            self.dispatch.popNode();
-            return;
-        };
+        }) catch |err| self.layoutFailed(err);
         self.layout.closeElement();
 
         // Store for later text rendering
@@ -1662,10 +1662,7 @@ pub const Builder = struct {
                 if (is_focused) ce.style.border_color_focused else ce.style.border_color,
                 ce.style.border_width,
             ),
-        }) catch {
-            self.dispatch.popNode();
-            return;
-        };
+        }) catch |err| self.layoutFailed(err);
         self.layout.closeElement();
 
         // Store for later rendering
@@ -1751,10 +1748,7 @@ pub const Builder = struct {
             },
             .background_color = bg,
             .corner_radius = CornerRadius.all(6),
-        }) catch {
-            self.dispatch.popNode();
-            return;
-        };
+        }) catch |err| self.layoutFailed(err);
 
         self.layout.text(btn.label, .{
             .color = fg,
