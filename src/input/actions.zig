@@ -167,19 +167,29 @@ pub const Keymap = struct {
         self.bindings.deinit(self.allocator);
     }
 
-    /// Bind a keystroke to an action type
+    /// Bind a keystroke to an action type. A keystroke that does not parse or a
+    /// binding that cannot be stored panics with the cause: a dropped binding
+    /// leaves a shortcut that silently does nothing (CLAUDE.md §17).
     pub fn bind(
         self: *Self,
         comptime Action: type,
         keystroke_str: []const u8,
         context: ?[]const u8,
     ) void {
-        const keystroke = Keystroke.parse(keystroke_str) orelse return;
+        const keystroke = Keystroke.parse(keystroke_str) orelse std.debug.panic(
+            "Keymap.bind: invalid keystroke \"{s}\" for action {s}; expected optional " ++
+                "modifiers (cmd-, ctrl-, alt-, shift-) and a key name, such as \"cmd-shift-z\"",
+            .{ keystroke_str, @typeName(Action) },
+        );
         self.bindings.append(self.allocator, .{
             .keystroke = keystroke,
             .action_type = actionTypeId(Action),
             .context = context,
-        }) catch {};
+        }) catch std.debug.panic(
+            "Keymap pool 'bindings' could not grow: capacity {d}, {d} in use, 1 requested " ++
+                "(OutOfMemory binding \"{s}\")",
+            .{ self.bindings.capacity, self.bindings.items.len, keystroke_str },
+        );
     }
 
     /// Find a matching binding for a key event given the active contexts

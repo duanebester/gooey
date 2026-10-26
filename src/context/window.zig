@@ -448,15 +448,23 @@ pub const Window = struct {
     pub fn deferCommand(self: *Self, comptime method: anytype, options: anytype) void {
         const handler = handler_mod.bind(self, method, options);
         handler.assertBound();
-        if (self.deferred_count >= MAX_DEFERRED_COMMANDS) {
-            std.log.warn("Deferred command queue full ({} commands) - dropping command", .{
-                MAX_DEFERRED_COMMANDS,
-            });
-            return;
-        }
+        if (self.deferred_count >= MAX_DEFERRED_COMMANDS) self.deferredQueueFull();
         self.deferred_commands[self.deferred_count] = handler;
         self.deferred_count += 1;
         assert(self.deferred_count <= MAX_DEFERRED_COMMANDS);
+    }
+
+    /// The queue is a fixed array. Dropping a command would silently lose a
+    /// state change, so a full queue is a capacity error that fails fast with
+    /// the pool, capacity, and counts (CLAUDE.md §2, §17).
+    fn deferredQueueFull(self: *const Self) noreturn {
+        @branchHint(.cold);
+        std.debug.assert(self.deferred_count == MAX_DEFERRED_COMMANDS);
+        std.debug.panic(
+            "Window pool 'deferred_commands' exhausted: capacity {d}, {d} in use, " ++
+                "1 requested. Defer fewer commands per event or raise MAX_DEFERRED_COMMANDS.",
+            .{ MAX_DEFERRED_COMMANDS, self.deferred_count },
+        );
     }
 
     /// Execute all queued deferred commands.
@@ -1653,28 +1661,29 @@ test "multiple deferred commands preserve their arguments" {
     try testing.expectEqual(@as(i32, 111), state.sum);
 }
 
-test "deferred queue overflow is handled gracefully" {
+test "deferred queue fills exactly to capacity and every command runs" {
+    // Fill the queue exactly and check the last valid claim runs. One more
+    // claim panics by design, which a test cannot catch in-process, so that
+    // path is checked in a child process by `src/testing/fail_fast_check.zig`.
     const TestState = struct {
-        pub fn noop(_: *@This(), _: *Window) void {}
+        runs: u32 = 0,
+        pub fn count(self: *@This(), _: *Window) void {
+            self.runs += 1;
+        }
     };
 
     var state = TestState{};
     var g = testWindow();
     g.setRootState(TestState, &state);
 
-    // Fill queue to capacity.
     var i: u32 = 0;
     while (i < MAX_DEFERRED_COMMANDS) : (i += 1) {
-        g.deferCommand(TestState.noop, .{});
+        g.deferCommand(TestState.count, .{});
     }
     try testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), g.deferred_count);
 
-    // Overflow attempts must not corrupt the queue or the count.
-    g.deferCommand(TestState.noop, .{});
-    g.deferCommand(TestState.noop, .{});
-    try testing.expectEqual(@as(u8, MAX_DEFERRED_COMMANDS), g.deferred_count);
-
     g.flushDeferredCommands();
+    try testing.expectEqual(@as(u32, MAX_DEFERRED_COMMANDS), state.runs);
     try testing.expectEqual(@as(u8, 0), g.deferred_count);
 }
 

@@ -333,20 +333,21 @@ pub const Builder = struct {
     /// landed, so the index always resolves to a live slot later.
     fn enqueuePendingTextWidget(self: *Self, kind: TextWidgetKind, index: usize) void {
         std.debug.assert(index <= std.math.maxInt(u32));
-        // Clamp-and-report rather than silently growing past the cap in release
-        // (CLAUDE.md §4: put a limit on everything / fail fast). A Debug assert
-        // alone let release builds grow the backing ArrayList unbounded.
-        if (self.pending_text_widgets.items.len >= MAX_PENDING_TEXT_WIDGETS) {
-            std.log.warn(
-                "pending text-widget queue limit ({d}) reached - dropping widget",
-                .{MAX_PENDING_TEXT_WIDGETS},
-            );
-            return;
+        // Fail fast at the cap rather than dropping the widget or growing past
+        // it (CLAUDE.md §2, §4).
+        const queue = &self.pending_text_widgets;
+        if (queue.items.len >= MAX_PENDING_TEXT_WIDGETS) {
+            poolFailed(.{
+                .pool_name = "pending_text_widgets",
+                .capacity = MAX_PENDING_TEXT_WIDGETS,
+                .count = queue.items.len,
+                .cause = "per-frame limit",
+            });
         }
-        self.pending_text_widgets.append(self.allocator, .{
+        queue.append(self.allocator, .{
             .kind = kind,
             .index = @intCast(index),
-        }) catch {};
+        }) catch |err| storageFailed("pending_text_widgets", queue, err);
     }
 
     // =========================================================================
@@ -355,18 +356,65 @@ pub const Builder = struct {
 
     /// Register a pending canvas for deferred rendering after layout.
     pub fn registerPendingCanvas(self: *Self, pending: canvas_mod.PendingCanvas) void {
-        // Clamp-and-report rather than silently growing past the cap in release
-        // (CLAUDE.md §4). Terminal-grid / multi-pane workloads are the ones most
-        // likely to find this cap, so surface it instead of leaking frames into
-        // an unbounded ArrayList.
-        if (self.pending_canvas.items.len >= MAX_PENDING_CANVAS) {
-            std.log.warn(
-                "pending canvas limit ({d}) reached - dropping canvas",
-                .{MAX_PENDING_CANVAS},
-            );
-            return;
+        // Fail fast at the cap rather than dropping the canvas or growing past
+        // it (CLAUDE.md §2, §4). Terminal-grid and multi-pane workloads are the
+        // ones most likely to reach it.
+        const list = &self.pending_canvas;
+        if (list.items.len >= MAX_PENDING_CANVAS) {
+            poolFailed(.{
+                .pool_name = "pending_canvas",
+                .capacity = MAX_PENDING_CANVAS,
+                .count = list.items.len,
+                .cause = "per-frame limit",
+            });
         }
-        self.pending_canvas.append(self.allocator, pending) catch {};
+        list.append(self.allocator, pending) catch |err| storageFailed("pending_canvas", list, err);
+    }
+
+    /// Frame-path storage failure. Dropping the entry would render an
+    /// incomplete UI with no diagnostic, so fail fast with the pool, its
+    /// capacity, the count in use, and the cause (CLAUDE.md §2, §17).
+    fn poolFailed(failure: PoolFailure) noreturn {
+        @branchHint(.cold);
+        std.debug.assert(failure.pool_name.len > 0);
+        std.debug.assert(failure.cause.len > 0);
+        std.debug.panic(
+            "Builder pool '{s}' exhausted: capacity {d}, {d} in use, 1 requested ({s}).",
+            .{ failure.pool_name, failure.capacity, failure.count, failure.cause },
+        );
+    }
+
+    const PoolFailure = struct {
+        pool_name: []const u8,
+        capacity: usize,
+        count: usize,
+        cause: []const u8,
+    };
+
+    /// A pending list or map could not grow. `storage` points to an
+    /// unmanaged `ArrayList` or `HashMap`.
+    fn storageFailed(pool_name: []const u8, storage: anytype, err: anyerror) noreturn {
+        @branchHint(.cold);
+        const is_list = @hasField(@TypeOf(storage.*), "items");
+        poolFailed(.{
+            .pool_name = pool_name,
+            .capacity = if (is_list) storage.capacity else storage.capacity(),
+            .count = if (is_list) storage.items.len else storage.count(),
+            .cause = @errorName(err),
+        });
+    }
+
+    /// A layout element or its text could not be stored while rendering.
+    /// The capacity reported is the per-frame element limit the layout
+    /// engine reserves at init.
+    fn layoutFailed(self: *const Self, err: anyerror) noreturn {
+        @branchHint(.cold);
+        poolFailed(.{
+            .pool_name = "layout.elements",
+            .capacity = layout_mod.engine.MAX_ELEMENTS_PER_FRAME,
+            .count = self.layout.elements.len(),
+            .cause = @errorName(err),
+        });
     }
 
     /// Reserve canvas-registration slots before the first frame.
@@ -1055,7 +1103,7 @@ pub const Builder = struct {
                 .horizontal = style.horizontal,
                 .scroll_offset = .{ .x = scroll_offset_x, .y = scroll_offset_y },
             },
-        }) catch return;
+        }) catch |err| self.layoutFailed(err);
 
         // Inner content container (can be taller than viewport)
         const content_id = self.generateId();
@@ -1088,7 +1136,7 @@ pub const Builder = struct {
                 // here exactly as box does with `props.gap`.
                 .child_gap = @intFromFloat(style.gap),
             },
-        }) catch return;
+        }) catch |err| self.layoutFailed(err);
 
         // Process children
         self.processChildren(children);
@@ -1106,10 +1154,12 @@ pub const Builder = struct {
             .layout_id = layout_id,
             .style = style,
             .content_layout_id = content_id,
-        }) catch return;
+        }) catch |err| storageFailed("pending_scrolls", &self.pending_scrolls, err);
 
         // Add to hashmap for O(1) lookup by layout_id
-        self.pending_scrolls_by_layout_id.put(self.allocator, layout_id.id, index) catch {};
+        const by_id = &self.pending_scrolls_by_layout_id;
+        by_id.put(self.allocator, layout_id.id, index) catch |err|
+            storageFailed("pending_scrolls_by_layout_id", by_id, err);
 
         // Pop dispatch node (matches pushNode at function start)
         self.dispatch.popNode();
@@ -1348,7 +1398,7 @@ pub const Builder = struct {
                 .underline = txt.style.underline,
                 .strikethrough = txt.style.strikethrough,
             },
-        }) catch return;
+        }) catch |err| self.layoutFailed(err);
     }
 
     fn renderInput(self: *Self, inp: Input) void {
@@ -1433,12 +1483,8 @@ pub const Builder = struct {
             .inner_width = inner_width,
             .inner_height = inner_height,
             .on_blur = inp.style.on_blur,
-        }) catch {};
-        // Mirror into the control queue only on a successful data-plane append,
-        // so tree-order replay never indexes a slot that failed to allocate.
-        if (self.pending_inputs.items.len > input_index) {
-            self.enqueuePendingTextWidget(.input, input_index);
-        }
+        }) catch |err| storageFailed("pending_inputs", &self.pending_inputs, err);
+        self.enqueuePendingTextWidget(.input, input_index);
 
         // Register focus, attaching the widget's `Focusable` vtable so the
         // focus manager can drive `focus()` / `blur()` without importing the
@@ -1535,11 +1581,8 @@ pub const Builder = struct {
             .inner_width = inner_width,
             .inner_height = inner_height,
             .on_blur = ta.style.on_blur,
-        }) catch {};
-        // Mirror into the control queue only on a successful data-plane append.
-        if (self.pending_text_areas.items.len > text_area_index) {
-            self.enqueuePendingTextWidget(.text_area, text_area_index);
-        }
+        }) catch |err| storageFailed("pending_text_areas", &self.pending_text_areas, err);
+        self.enqueuePendingTextWidget(.text_area, text_area_index);
 
         // Register focus, attaching the widget's `Focusable` vtable (see
         // `renderInput`).
@@ -1634,11 +1677,8 @@ pub const Builder = struct {
             .inner_width = inner_width,
             .inner_height = inner_height,
             .on_blur = ce.style.on_blur,
-        }) catch {};
-        // Mirror into the control queue only on a successful data-plane append.
-        if (self.pending_code_editors.items.len > code_editor_index) {
-            self.enqueuePendingTextWidget(.code_editor, code_editor_index);
-        }
+        }) catch |err| storageFailed("pending_code_editors", &self.pending_code_editors, err);
+        self.enqueuePendingTextWidget(.code_editor, code_editor_index);
 
         // Register focus, attaching the widget's `Focusable` vtable (see
         // `renderInput`).
@@ -1665,7 +1705,7 @@ pub const Builder = struct {
                     .height = SizingAxis.grow(),
                 },
             },
-        }) catch return;
+        }) catch |err| self.layoutFailed(err);
         self.layout.closeElement();
     }
 
@@ -1719,7 +1759,7 @@ pub const Builder = struct {
         self.layout.text(btn.label, .{
             .color = fg,
             .font_size = self.theme().font_size_base,
-        }) catch {};
+        }) catch |err| self.layoutFailed(err);
 
         self.layout.closeElement();
 
@@ -1745,7 +1785,7 @@ pub const Builder = struct {
             .stroke_width = prim.stroke_width,
             .has_fill = prim.has_fill,
             .viewbox = prim.viewbox,
-        }) catch return;
+        }) catch |err| self.layoutFailed(err);
     }
 
     fn renderImage(self: *Self, prim: ImagePrimitive) void {
@@ -1773,7 +1813,7 @@ pub const Builder = struct {
             .grayscale = prim.grayscale,
             .opacity = prim.opacity,
             .placeholder_color = prim.placeholder_color,
-        }) catch return;
+        }) catch |err| self.layoutFailed(err);
     }
 
     fn renderKeyContext(self: *Self, ctx: KeyContextPrimitive) void {
