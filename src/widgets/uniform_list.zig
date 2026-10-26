@@ -34,9 +34,8 @@
 const std = @import("std");
 
 // Builder helpers live with their widget rather than in `src/ui/builder.zig`,
-// so the builder never depends on this module. The `Builder` type lives in
-// `src/ui/builder.zig` and is imported lazily inside the helper functions
-// to avoid a forward-edge import cycle at the top level.
+// so the builder never depends on this module. The import below points one
+// way, from this widget to the builder, so the two files form no cycle.
 const builder_mod = @import("../ui/builder.zig");
 const styles_mod = @import("../ui/styles.zig");
 const layout_mod = @import("../layout/layout.zig");

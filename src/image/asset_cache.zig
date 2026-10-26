@@ -150,40 +150,41 @@ pub fn AssetCache(comptime T: type, comptime options: Options) type {
             _ = self;
             _ = io;
             _ = gpa;
-            @compileError("AssetCache.initInPlace: skeleton only, body lands in PR 2 (SVG consolidation)");
+            @compileError("AssetCache.initInPlace: not implemented; the cache is a skeleton " ++
+                "until the SVG asset consolidation fills it in");
         }
 
         /// Cancel in-flight loads and free cached entries.
         pub fn deinit(self: *Self) void {
             _ = self;
-            @compileError("AssetCache.deinit: skeleton only, body lands in PR 2");
+            @compileError("AssetCache.deinit: not implemented; the cache is a skeleton");
         }
 
         /// `true` iff the keyed asset is currently cached.
         pub fn contains(self: *const Self, key: T.Key) bool {
             _ = self;
             _ = key;
-            @compileError("AssetCache.contains: skeleton only, body lands in PR 2");
+            @compileError("AssetCache.contains: not implemented; the cache is a skeleton");
         }
 
         /// `true` iff a background load for `key` is in flight.
         pub fn isPending(self: *const Self, key_hash: u64) bool {
             _ = self;
             _ = key_hash;
-            @compileError("AssetCache.isPending: skeleton only, body lands in PR 2");
+            @compileError("AssetCache.isPending: not implemented; the cache is a skeleton");
         }
 
         /// `true` iff a previous load for `key` failed this session.
         pub fn isFailed(self: *const Self, key_hash: u64) bool {
             _ = self;
             _ = key_hash;
-            @compileError("AssetCache.isFailed: skeleton only, body lands in PR 2");
+            @compileError("AssetCache.isFailed: not implemented; the cache is a skeleton");
         }
 
         /// Drain completed loads into the cache. Called once per frame.
         pub fn drain(self: *Self) void {
             _ = self;
-            @compileError("AssetCache.drain: skeleton only, body lands in PR 2");
+            @compileError("AssetCache.drain: not implemented; the cache is a skeleton");
         }
     };
 }

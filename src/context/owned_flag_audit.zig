@@ -56,7 +56,12 @@ fn assertNoOwnedFlag(comptime T: type) void {
         const matches_pattern = comptime (std.mem.eql(u8, name, "owned") or std.mem.endsWith(u8, name, "_owned"));
         if (!matches_pattern) continue;
         if (comptime isAllowListedField(type_name, name)) continue;
-        @compileError("PR 9 Task 5: type '" ++ type_name ++ "' has a `" ++ name ++ ": bool` field that is not on the allow-list. Per the cleanup plan, ownership lives on `AppResources.owned` / `Frame.owned`; per-entry cache markers (`DecodedImage.owned`, `ShapedRun.owned`) are also allow-listed. If this field is a deliberate addition, add `(\"" ++ type_name ++ "\", \"" ++ name ++ "\")` to `isAllowListedField`.");
+        @compileError("Ownership flag audit: type '" ++ type_name ++ "' has a `" ++ name ++
+            ": bool` field that is not on the allow-list. Ownership lives on " ++
+            "`AppResources.owned` / `Frame.owned`; per-entry cache markers " ++
+            "(`DecodedImage.owned`, `ShapedRun.owned`) are also allow-listed. If this " ++
+            "field is a deliberate addition, add `(\"" ++ type_name ++ "\", \"" ++ name ++
+            "\")` to `isAllowListedField`.");
     }
 }
 

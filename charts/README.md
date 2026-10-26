@@ -15,27 +15,39 @@ Gooey Charts provides declarative, high-performance chart components that integr
 
 ## Quick Start
 
+Charts draw inside a `ui.canvas` paint callback. Series hold fixed-capacity arrays, so keep
+chart data in static storage (a stack copy is too large for the WASM stack) and fill it once
+at startup. This is the pattern `src/examples/dashboard.zig` uses.
+
 ```zig
 const gooey = @import("gooey");
 const charts = @import("gooey-charts");
 const ui = gooey.ui;
 
-fn render(cx: *gooey.Cx) void {
-    const chart = charts.BarChart{
-        .data = .{charts.CategorySeries.fromSlice("Sales", &.{
-            .{ .label = "Q1", .value = 30 },
-            .{ .label = "Q2", .value = 45 },
-            .{ .label = "Q3", .value = 28 },
-            .{ .label = "Q4", .value = 55 },
-        }, charts.Color.hex(0x4285f4))},
-        .width = 400,
-        .height = 300,
-    };
+var sales_data: [1]charts.CategorySeries = undefined;
 
+fn initSales(_: *gooey.Cx) void {
+    sales_data[0] = charts.CategorySeries.init("Sales", charts.Color.hex(0x4285f4));
+    sales_data[0].addPoint(charts.CategoryPoint.init("Q1", 30));
+    sales_data[0].addPoint(charts.CategoryPoint.init("Q2", 45));
+    sales_data[0].addPoint(charts.CategoryPoint.init("Q3", 28));
+    sales_data[0].addPoint(charts.CategoryPoint.init("Q4", 55));
+}
+
+fn paintSales(ctx: *ui.DrawContext) void {
+    var chart = charts.BarChart.init(&sales_data);
+    chart.width = ctx.width();
+    chart.height = ctx.height();
+    chart.render(ctx);
+}
+
+fn render(cx: *gooey.Cx) void {
     cx.render(ui.box(.{}, .{
-        ui.canvas(400, 300, chart.bindRender()),
+        ui.canvas(400, 300, paintSales),
     }));
 }
+
+// Pass `.on_init = initSales` in the `gooey.App` config.
 ```
 
 ## Design Principles
