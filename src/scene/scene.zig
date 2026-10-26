@@ -1695,6 +1695,11 @@ const test_limits: SceneLimits = .{
     .polyline_count_frame_max = 4,
     .point_cloud_count_frame_max = 4,
     .colored_point_cloud_count_frame_max = 4,
+    .path_vertex_count_frame_max = 16,
+    .path_index_count_frame_max = 24,
+    .polyline_point_count_frame_max = 8,
+    .point_count_frame_max = 4,
+    .colored_point_count_frame_max = 4,
     .clip_depth_max = 4,
 };
 
