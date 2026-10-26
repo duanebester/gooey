@@ -1,11 +1,11 @@
 //! Atlas texture management for Vulkan renderer.
 //!
-//! Replaces three copy-pasted atlas upload paths (text, SVG, image) with a
-//! single generic implementation parameterized by pixel format. Each atlas
+//! One generic implementation, parameterized by pixel format, serves all three
+//! atlas upload paths (text, SVG, image). Each atlas
 //! follows the same lifecycle: create image → stage data → barrier → copy →
 //! barrier → submit → wait → update descriptor set.
 //!
-//! Axes of variation across the three original paths:
+//! Axes of variation across the three atlases:
 //!   1. Pixel format — R8 (text) vs RGBA8 (SVG, image)
 //!   2. Which AtlasResources instance to target
 //!   3. Which descriptor set / storage buffer to bind
@@ -64,7 +64,7 @@ pub const AtlasFormat = enum {
 };
 
 /// All Vulkan resources for a single atlas texture.
-/// Replaces 7 individual fields per atlas (21 total → 3 structs).
+/// Groups the 7 per-atlas fields, so three atlases are 3 structs, not 21 fields.
 pub const AtlasResources = struct {
     image: vk.Image = null,
     memory: vk.DeviceMemory = null,
@@ -114,9 +114,8 @@ pub const STAGING_LANE_SIZE: vk.DeviceSize = MAX_STAGING_BYTES / @import("vk_typ
 
 /// Update a textured pipeline's descriptor set (storage + uniform + atlas + sampler).
 ///
-/// Replaces updateTextDescriptorSet, updateSvgDescriptorSet, and
-/// updateImageDescriptorSet — three identical ~80-line functions whose only
-/// differences were which descriptor set, storage buffer, and atlas view to use.
+/// Serves the text, SVG, and image pipelines, which differ only in which
+/// descriptor set, storage buffer, and atlas view to use.
 pub fn updateAtlasDescriptorSet(
     device: vk.Device,
     descriptor_set: vk.DescriptorSet,

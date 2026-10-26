@@ -64,7 +64,7 @@ pub const GlyphKey = struct {
     /// Compute hash using wyhash-style 2-multiply mix.
     /// Packs non-pointer fields into a single u64 (56 bits: 16+16+8+8+8)
     /// then mixes with the font pointer in two dependent multiplies.
-    /// Replaces a 15-round FNV-1a serial chain with 2 multiplies that
+    /// Two multiplies instead of a 15-round FNV-1a serial chain: they
     /// have excellent avalanche properties and allow instruction-level
     /// parallelism on the pack and pointer loads.
     pub fn hash(self: GlyphKey) u64 {

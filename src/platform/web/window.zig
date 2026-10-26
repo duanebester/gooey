@@ -4,9 +4,9 @@
 //! closed from script, and frames arrive via `requestAnimationFrame`. Every
 //! method below therefore either forwards to a JS import or records state that
 //! Gooey itself can observe. What it must *not* do is accept a caller's intent
-//! and throw it away — the previous revision of this file had thirteen empty
-//! bodies and five `anytype` setters, which let the shared boundary drift until
-//! `getScaleFactor` returned `f32` here and `f64` everywhere else.
+//! and throw it away — empty bodies and `anytype` setters would let the shared
+//! boundary drift unnoticed, for example to a `getScaleFactor` that returns
+//! `f32` here and `f64` everywhere else.
 
 const std = @import("std");
 const imports = @import("imports.zig");
@@ -59,7 +59,7 @@ pub const WebWindow = struct {
     /// Host callbacks. The web frame loop in `app.zig` currently drains the JS
     /// ring buffers and calls `runtime.handleInputCx` directly, so nothing
     /// invokes these today and storing them changes no behavior. They are
-    /// stored anyway because discarding them was a silent lie about a caller's
+    /// stored anyway because discarding them would silently lie about a caller's
     /// intent, and because a unified event path can then reuse the same wiring
     /// as the native backends without changing any call site.
     on_input: ?InputCallback = null,
@@ -138,8 +138,8 @@ pub const WebWindow = struct {
         // The single canvas is always the focused surface, but publish it
         // explicitly anyway: every backend states this policy in one visible
         // line rather than inheriting an implicit "first window wins" from
-        // `WindowRegistry`, which is what previously made the backends
-        // disagree about which window `getActiveWindowId` named.
+        // `WindowRegistry`, so the backends agree about which window
+        // `getActiveWindowId` names.
         plat.setActiveWindowId(self.window_id);
 
         std.debug.assert(self.window_id.isValid());
@@ -275,9 +275,9 @@ pub const WebWindow = struct {
 
     /// Record a glass/blur request.
     ///
-    /// Web-only extra, retyped onto the canonical `interface.GlassStyle`. The
-    /// backend used to declare its own enum with a different tag order, which
-    /// is what made the runtime's `@enumFromInt` bridge unsound. Web *can*
+    /// Web-only extra, typed as the canonical `interface.GlassStyle` so its tag
+    /// order cannot diverge from the other backends and no `@enumFromInt`
+    /// bridge is needed. Web *can*
     /// express `blur` and `vibrancy` through `backdrop-filter`, so this is
     /// stored (and reflected by `getClearColor`) rather than discarded, but
     /// `capabilities.glass_effects` stays `false` until the CSS is applied.
@@ -385,9 +385,8 @@ pub const WebWindow = struct {
     /// Truthfulness note: a page cannot close its own tab unless it opened it,
     /// which is why `capabilities.can_close_window` is `false`. The host
     /// therefore cannot honour this. What it *can* honour is stopping work, so
-    /// the flag is set and `isClosed` reports it — previously this method did
-    /// nothing at all and `isClosed` did not exist, so a caller shutting the
-    /// window down had no way to observe that its request was ignored.
+    /// the flag is set and `isClosed` reports it, so a caller shutting the
+    /// window down can observe that the tab itself stays open.
     pub fn close(self: *Self) void {
         std.debug.assert(self.window_id.isValid());
 
@@ -552,7 +551,7 @@ pub const WebWindow = struct {
     /// Recover the caller's context pointer.
     ///
     /// This is how all five static callbacks reach their owner, which is why
-    /// returning `null` unconditionally (the previous behavior) would silently
+    /// returning `null` unconditionally would silently
     /// disable every one of them the moment the shared event path lands.
     pub fn getUserData(self: *Self, comptime T: type) ?*T {
         comptime std.debug.assert(@sizeOf(T) > 0);
@@ -578,8 +577,7 @@ pub const WebWindow = struct {
     /// `getScaleFactor` asserts the same 8.0, and `runtime`'s shared
     /// `SCALE_FACTOR_MAX` is pinned to the loosest backend bound. A stricter
     /// value here would let a host reporting, say, 5x pass this backend and
-    /// then panic in shared code that never touched the host — which is exactly
-    /// what the 4.0 this comment used to quote did before it was raised.
+    /// then panic in shared code that never touched the host.
     const scale_factor_max: f64 = 8.0;
 
     /// Document titles are host-visible strings, not unbounded data.

@@ -22,8 +22,8 @@ pub const GradientType = enum(u32) {
     radial = 2,
 };
 
-/// Clip bounds for batching paths with matching clip regions
-/// Used for Phase 1 optimization: group consecutive same-clip paths
+/// Clip bounds for batching paths with matching clip regions.
+/// Renderers group consecutive same-clip paths into one batch.
 pub const ClipBounds = struct {
     x: f32,
     y: f32,
@@ -250,8 +250,8 @@ pub const PathInstance = extern struct {
         return self.gradient_type != 0 and self.gradient_stop_count >= 2;
     }
 
-    /// Get clip bounds as a comparable struct for batch grouping
-    /// Used for Phase 1 optimization: group consecutive paths with matching clips
+    /// Get clip bounds as a comparable struct for batch grouping.
+    /// Renderers group consecutive paths with matching clips into one batch.
     pub fn getClipBounds(self: Self) ClipBounds {
         return .{
             .x = self.clip_x,

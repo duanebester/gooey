@@ -98,9 +98,9 @@ fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) 
 }
 
 fn windowWillClose(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    // Deliberately empty. The previous comment claimed "cleanup happens in
-    // handleClose via windowShouldClose", which was never true: `handleClose`
-    // only runs the veto callback and stops the display link.
+    // Deliberately empty. Cleanup does not happen in `handleClose` via
+    // `windowShouldClose` either: `handleClose` only runs the veto callback
+    // and stops the display link.
     //
     // Teardown cannot happen here either. AppKit calls this from inside
     // `-close`, with the NSWindow still live on the stack and the window's

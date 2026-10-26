@@ -418,7 +418,7 @@ fn drawThickLine(
 
     // Clamp all four bounds to [0, size] using floats first.
     // This prevents negative values from ever reaching @intFromFloat → usize,
-    // which was the source of the integer overflow crash.
+    // where they would overflow and crash.
     const min_x_f = @max(@as(f32, 0.0), @floor(@min(x0, x1) - expand));
     const max_x_f = @min(size_f, @ceil(@max(x0, x1) + expand));
     const min_y_f = @max(@as(f32, 0.0), @floor(@min(y0, y1) - expand));

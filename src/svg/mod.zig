@@ -25,10 +25,9 @@ const builtin = @import("builtin");
 // =============================================================================
 //
 // Path parser, element parser (circle/rect/line/polyline/polygon/ellipse),
-// bezier flattening, and arc flattening. Lifted out of `scene/svg.zig` in
-// PR 2 (cleanup plan §"PR 2 — SVG consolidation") so the codebase has
+// bezier flattening, and arc flattening. They live here so the codebase has
 // exactly one SVG module. Vector math reuses `core.Vec2` / `core.IndexSlice`
-// — there is no longer a parallel `Vec2` declaration here.
+// rather than declaring a parallel `Vec2`.
 
 pub const path = @import("path.zig");
 

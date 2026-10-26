@@ -262,7 +262,7 @@ pub const path_shader_source =
 ;
 
 // =============================================================================
-// Phase 2: Solid Path Shader (no gradient support, color baked into vertices)
+// Solid Path Shader (no gradient support, color baked into vertices)
 // =============================================================================
 pub const solid_path_shader_source =
     \\#include <metal_stdlib>
@@ -358,14 +358,14 @@ const INITIAL_INDEX_CAPACITY = 8192;
 // Gradient uniform size (must match GradientUniforms in gradient_uniforms.zig)
 const GRADIENT_UNIFORMS_SIZE = 352;
 
-// Phase 1 batching: max clip regions per frame (per CLAUDE.md: put a limit on everything)
+// Clip batching: max clip regions per frame (per CLAUDE.md: put a limit on everything)
 const MAX_CLIP_BATCHES = 64;
 
-// Phase 2 batching: solid path staging buffer capacity
+// Solid path batching: staging buffer capacity
 const MAX_SOLID_BATCH_VERTICES = path_mesh_mod.MAX_SOLID_BATCH_VERTICES;
 const MAX_SOLID_BATCH_INDICES = MAX_SOLID_BATCH_VERTICES * 3; // Worst case: 3 indices per vertex
 
-// Phase 2: GPU clip bounds struct for solid shader (matches Metal shader)
+// GPU clip bounds struct for solid shader (matches Metal shader)
 const GpuClipBounds = extern struct {
     x: f32,
     y: f32,
@@ -377,7 +377,7 @@ comptime {
     std.debug.assert(@sizeOf(GpuClipBounds) == 16);
 }
 
-/// Clip batch info for Phase 1 optimization
+/// Clip batch info for grouping consecutive same-clip paths
 /// Tracks a contiguous range of paths sharing the same clip bounds
 const ClipBatch = struct {
     clip: ClipBounds,
@@ -392,7 +392,7 @@ const ClipBatch = struct {
 pub const PathPipeline = struct {
     device: objc.Object,
     pipeline_state: objc.Object,
-    solid_pipeline_state: objc.Object, // Phase 2: separate pipeline for solid color paths
+    solid_pipeline_state: objc.Object, // Separate pipeline for solid color paths
 
     // Triple-buffered vertex/index buffers for mesh data
     vertex_buffers: [FRAME_COUNT]objc.Object,
@@ -406,7 +406,7 @@ pub const PathPipeline = struct {
     frame_vertex_offset: usize,
     frame_index_offset: usize,
 
-    // Phase 2: Triple-buffered solid vertex/index buffers (larger capacity, 32-byte vertices)
+    // Triple-buffered solid vertex/index buffers (larger capacity, 32-byte vertices)
     solid_vertex_buffers: [FRAME_COUNT]objc.Object,
     solid_index_buffers: [FRAME_COUNT]objc.Object,
 
@@ -425,14 +425,14 @@ pub const PathPipeline = struct {
         var vertex_capacities: [FRAME_COUNT]usize = undefined;
         var index_capacities: [FRAME_COUNT]usize = undefined;
 
-        // Phase 2: Solid path buffers (static allocation per CLAUDE.md)
+        // Solid path buffers (static allocation per CLAUDE.md)
         var solid_vertex_buffers: [FRAME_COUNT]objc.Object = undefined;
         var solid_index_buffers: [FRAME_COUNT]objc.Object = undefined;
 
         const vertex_size = INITIAL_VERTEX_CAPACITY * @sizeOf(PathVertex);
         const index_size = INITIAL_INDEX_CAPACITY * @sizeOf(u32);
 
-        // Phase 2: Static allocation for solid path buffers
+        // Static allocation for solid path buffers
         const solid_vertex_size = MAX_SOLID_BATCH_VERTICES * @sizeOf(SolidPathVertex);
         const solid_index_size = MAX_SOLID_BATCH_INDICES * @sizeOf(u32);
 
@@ -460,14 +460,14 @@ pub const PathPipeline = struct {
             }) orelse return error.BufferCreationFailed;
             gradient_buffers[i] = objc.Object.fromId(gbuf_ptr);
 
-            // Phase 2: Solid vertex buffer (32-byte vertices, static capacity)
+            // Solid vertex buffer (32-byte vertices, static capacity)
             const svbuf_ptr = device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
                 @as(c_ulong, solid_vertex_size),
                 @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
             }) orelse return error.BufferCreationFailed;
             solid_vertex_buffers[i] = objc.Object.fromId(svbuf_ptr);
 
-            // Phase 2: Solid index buffer
+            // Solid index buffer
             const sibuf_ptr = device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
                 @as(c_ulong, solid_index_size),
                 @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
@@ -587,7 +587,7 @@ pub const PathPipeline = struct {
 
     /// Render a batch of path instances
     /// Uploads all meshes to shared buffers first, then draws with proper offsets
-    /// Phase 1 optimization: Groups consecutive paths by clip bounds to reduce state changes
+    /// Groups consecutive paths by clip bounds to reduce state changes
     pub fn renderBatch(
         self: *Self,
         encoder: objc.Object,
@@ -604,7 +604,7 @@ pub const PathPipeline = struct {
         const idx = self.frame_index;
 
         // =====================================================================
-        // Phase 1: Build clip batches (group consecutive same-clip paths)
+        // Build clip batches (group consecutive same-clip paths)
         // Important: We group consecutive paths, NOT sort, to preserve draw order
         // =====================================================================
         var clip_batches: [MAX_CLIP_BATCHES]ClipBatch = undefined;
@@ -732,7 +732,7 @@ pub const PathPipeline = struct {
         });
 
         // =====================================================================
-        // Phase 1: Draw grouped by clip batches
+        // Draw grouped by clip batches
         // Each clip batch shares the same clip bounds - draw paths within each batch
         // This reduces state transitions when many paths share the same clip region
         // =====================================================================
@@ -780,7 +780,7 @@ pub const PathPipeline = struct {
         const idx = self.frame_index;
 
         // =====================================================================
-        // Phase 1: Build clip batches (group consecutive same-clip paths)
+        // Build clip batches (group consecutive same-clip paths)
         // Important: We group consecutive paths, NOT sort, to preserve draw order
         // =====================================================================
         var clip_batches: [MAX_CLIP_BATCHES]ClipBatch = undefined;
@@ -903,7 +903,7 @@ pub const PathPipeline = struct {
         });
 
         // =====================================================================
-        // Phase 1: Draw grouped by clip batches
+        // Draw grouped by clip batches
         // Each clip batch shares the same clip bounds - draw paths within each batch
         // This reduces state transitions when many paths share the same clip region
         // =====================================================================
@@ -986,7 +986,7 @@ pub const PathPipeline = struct {
         self.frame_index_offset += total_indices;
     }
 
-    /// Phase 2: Render solid-color paths with single draw call per clip region
+    /// Render solid-color paths with single draw call per clip region
     /// Transform and color are baked into vertices at upload time
     /// This is the main optimization - reduces N draw calls to 1 for solid paths sharing a clip
     pub fn renderBatchSolid(
@@ -1128,7 +1128,7 @@ pub const PathPipeline = struct {
         });
     }
 
-    /// Phase 2+3: Optimized batch rendering with solid/gradient partitioning
+    /// Optimized batch rendering with solid/gradient partitioning
     /// Partitions paths by gradient type, then renders:
     ///   - Solid paths: batched by clip region (1 draw call per clip)
     ///   - Gradient paths: individual draw calls (existing approach)
@@ -1148,7 +1148,7 @@ pub const PathPipeline = struct {
         std.debug.assert(viewport_size[0] > 0 and viewport_size[1] > 0);
 
         // =====================================================================
-        // Phase 3a: Partition paths into solid vs gradient
+        // Partition paths into solid vs gradient
         // Use existing hasGradient() method from PathInstance
         // =====================================================================
         var solid_instances: [256]PathInstance = undefined;
@@ -1172,7 +1172,7 @@ pub const PathPipeline = struct {
         std.debug.assert(solid_count + gradient_count == instances.len);
 
         // =====================================================================
-        // Phase 3b: Render solid paths (batched by clip region)
+        // Render solid paths (batched by clip region)
         // Group consecutive same-clip paths for single draw call each
         // =====================================================================
         if (solid_count > 0) {
@@ -1224,7 +1224,7 @@ pub const PathPipeline = struct {
         }
 
         // =====================================================================
-        // Phase 3c: Render gradient paths (individual draw calls)
+        // Render gradient paths (individual draw calls)
         // Uses existing renderBatchWithGradients approach
         // =====================================================================
         if (gradient_count > 0) {
@@ -1313,7 +1313,7 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
     return objc.Object.fromId(pipeline_ptr);
 }
 
-/// Create the Phase 2 solid path pipeline (no gradient support, baked colors)
+/// Create the solid path pipeline (no gradient support, baked colors)
 fn createSolidPipeline(device: objc.Object, sample_count: u32) !objc.Object {
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{solid_path_shader_source.ptr});

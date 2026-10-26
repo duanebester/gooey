@@ -49,8 +49,8 @@ pub const WebPlatform = struct {
         .ime = true, // Via beforeinput/compositionend events
         // CSS could express every `CursorShape`, but `imports.zig` has no
         // cursor binding, so `WebWindow.setCursorShape` only records the
-        // request and the JS host never applies it. Flip back to `true` in the
-        // same change that lands the import (design decision 7: unsupported
+        // request and the JS host never applies it. Set this to `true` in the
+        // same change that adds the import (design decision 7: unsupported
         // operations must be explicit, and this is the mechanism).
         .custom_cursors = false,
         .window_drag_by_content = false,

@@ -992,7 +992,7 @@ pub const TextSystem = struct {
 
             // Text past MAX_TEXT_LEN cannot even be keyed -- `hashText` asserts
             // that bound -- so it shapes uncached on every call.  Accepted: it is
-            // far rarer than the 129..512 band this function used to mishandle.
+            // far rarer than the 129..512 band that `MeasureCache` covers.
             if (text.len > ShapedRunCache.MAX_TEXT_LEN) {
                 var shaped_long = try self.shapeText(text, &render_stats.frame_stats);
                 defer shaped_long.deinit(self.allocator);
@@ -1547,7 +1547,7 @@ test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
     // This asymmetry is intentional and still holds: an entry embeds its glyph
     // array inline, so raising the insert limit to MAX_TEXT_LEN would blow the
     // 2MB comptime budget.  `MeasureCache` is what compensates -- it stores width
-    // without glyphs, so `measureText` no longer pays for this refusal.  The test
+    // without glyphs, so `measureText` does not pay for this refusal.  The test
     // pins the refusal itself so that compensation stays necessary and visible.
     //
     // Methodology: drive the cache at exactly the limit and one past it, using
@@ -1662,7 +1662,7 @@ test "MeasureCache stores widths the shape cache refuses" {
 }
 
 test "MeasureCache converges after a single miss for over-limit text" {
-    // Goal: this is the fix, stated as a test.  The shape-cache test above runs
+    // Goal: prove `MeasureCache` covers that band.  The shape-cache test above runs
     // the same put-then-get cycle and never converges; here the second frame
     // onward must hit.  Methodology: replay 8 frames of an unchanged string and
     // count how many of them would have had to shape.

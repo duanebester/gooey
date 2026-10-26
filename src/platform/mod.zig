@@ -28,18 +28,15 @@ pub const interface = @import("interface.zig");
 /// Exact compile-time verification of the platform boundary.
 pub const contract = @import("contract.zig");
 
-// PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the upcoming `Gooey → Window` rename
-// in PR 7b.1b. The two are very different things — `PlatformWindow` is
-// the OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas
-// on web); the framework-level `Window` will hold per-window frame
-// state. Keeping them under one name was always going to bite once the
-// `Gooey` god object split landed; this PR pre-empts the collision.
+// `platform.PlatformWindow` and the framework-level `Window` are distinct
+// names because they are very different things — `PlatformWindow` is the
+// OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas on web);
+// the framework-level `Window` holds per-window frame state. One name for
+// both would collide.
 //
-// See `docs/cleanup-implementation-plan.md` PR 7b for the broader
-// App/Window split, and `architectural-cleanup-plan.md` §10 for the
-// GPUI mapping where `platform_window: PlatformWindow` is the pattern
-// being adopted.
+// See `docs/cleanup-implementation-plan.md` for the broader App/Window
+// split, and `architectural-cleanup-plan.md` §10 for the GPUI mapping where
+// `platform_window: PlatformWindow` is the adopted pattern.
 
 /// Platform capabilities
 pub const PlatformCapabilities = interface.PlatformCapabilities;
@@ -84,10 +81,8 @@ pub const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 // Backend Selection
 // =============================================================================
 //
-// Note: Time utilities previously lived here as `platform.time`. As of the
-// Zig 0.16 `std.Io` migration, callers sample timestamps via
-// `std.Io.Timestamp.now(io, .awake)` directly (see `docs/zig-0.16-io-migration.md`,
-// phase 5.4/5.6). The `platform/time.zig` shim has been retired.
+// Note: There are no platform time utilities. Callers sample timestamps via
+// `std.Io.Timestamp.now(io, .awake)` directly (see `docs/zig-0.16-io-migration.md`).
 
 pub const is_linux = builtin.os.tag == .linux;
 
@@ -108,7 +103,7 @@ else switch (builtin.os.tag) {
 // public aliases from those canonical names — rather than switching on each
 // backend's own spelling (`MacPlatform`, `LinuxPlatform`, `WebPlatform`) —
 // means adding a backend cannot silently skip the contract, and the selection
-// logic no longer has to know what any backend calls its own types.
+// logic does not have to know what any backend calls its own types.
 
 /// Platform type for the current target (compile-time selected).
 pub const Platform = backend.Platform;
@@ -122,8 +117,8 @@ pub const Platform = backend.Platform;
 /// (the framework-level wrapper, see `context/gooey.zig`) rather than
 /// here.
 ///
-/// Renamed from `Window` in PR 7b.1a so the framework wrapper can
-/// claim that name in PR 7b.1b without a `platform.Window` collision.
+/// Named `PlatformWindow` so the framework wrapper can own the name `Window`
+/// without a `platform.Window` collision.
 pub const PlatformWindow = backend.PlatformWindow;
 
 /// Host drive model of the selected backend.
@@ -160,7 +155,7 @@ else
 
 pub const macos = if (!is_wasm and !is_linux) @import("macos/mod.zig") else struct {};
 
-// Legacy alias for backwards compatibility
+// Short alias for `macos`, kept so existing callers compile.
 pub const mac = macos;
 
 pub const linux = if (is_linux) struct {
@@ -179,13 +174,11 @@ pub const linux = if (is_linux) struct {
     pub const VulkanRenderer = vk_renderer.VulkanRenderer;
 } else struct {};
 
-// PR 9 Task 2.5 — `image_loader` moved from `root.wasm_image_loader`
-// (and the duplicate private `runtime/render.zig::wasm_loader` shim) into
-// `platform.web.image_loader`. The conditional-stub lived in two places
-// historically; consolidating it here puts the platform-conditional logic
-// next to the rest of the `web` namespace (`platform`, `window`,
-// `imports`, `file_dialog`) and lets non-WASM callers resolve through the
-// same path without each call site rolling its own stub.
+// `image_loader` lives in `platform.web` with a single conditional stub.
+// That puts the platform-conditional logic next to the rest of the `web`
+// namespace (`platform`, `window`, `imports`, `file_dialog`) and lets
+// non-WASM callers resolve through the same path without each call site
+// rolling its own stub.
 pub const web = if (is_wasm) struct {
     pub const platform = @import("web/platform.zig");
     pub const window = @import("web/window.zig");
@@ -196,9 +189,9 @@ pub const web = if (is_wasm) struct {
     // Stub mirroring `web/image_loader.zig`'s public surface so non-WASM
     // call sites compile against the same names. All entry points are
     // no-ops on native — runtime image loading on native goes through
-    // `image.ImageLoader` instead (the native-only async loader landed
-    // in PR 1; the WASM async path remains separate because browser
-    // `createImageBitmap` requires a JS round-trip).
+    // `image.ImageLoader` instead (the native-only async loader; the WASM
+    // async path is separate because browser `createImageBitmap` requires
+    // a JS round-trip).
     pub const image_loader = struct {
         pub const DecodedImage = struct {
             width: u32,

@@ -567,9 +567,9 @@ pub const LinuxPlatform = struct {
     /// drive rendering at vsync rate without blocking on input.
     ///
     /// The loop lives while *any* registered window is open, and services
-    /// *every* open window. It used to render, pace, and exit from
-    /// `active_window` alone, which meant a non-active window never drew and
-    /// closing the active one ended the process.
+    /// *every* open window. Rendering, pacing, and exiting from
+    /// `active_window` alone would mean a non-active window never draws and
+    /// closing the active one ends the process.
     ///
     /// `running` is raised *after* the display guard, not before it: with no
     /// connection there is no loop, and a host that samples `isRunning` would
@@ -1813,11 +1813,11 @@ pub const LinuxPlatform = struct {
 
                 // Handle built-in shortcuts only if not handled by app
                 // Both shortcuts close the focused window rather than clearing
-                // `running`, which is what their messages always claimed and
-                // what `Window.close` already does for `xdg_toplevel.close`.
-                // Stopping the loop here would resurrect the single-window
-                // assumption `run` and `Window.close` were just rid of, and
-                // would skip the application's close veto.
+                // `running`, matching their messages and what `Window.close`
+                // does for `xdg_toplevel.close`. Stopping the loop here would
+                // reintroduce a single-window assumption that `run` and
+                // `Window.close` avoid, and would skip the application's close
+                // veto.
                 if (!handled) {
                     // Alt+F4 to close
                     if (key == linux_input.evdev.KEY_F4 and self.modifier_alt) {
@@ -2092,11 +2092,11 @@ test "isRunning is false before run and stays false across quit" {
     try std.testing.expect(!plat.isRunning());
 }
 
-// The bug this change fixes: one `running` flag answered both "the blocking
-// loop is live" and "the socket works", so a caller hand-rolling a loop out of
-// `dispatch` saw every call refused. Pin the state that used to be
-// unrepresentable — connected while not running — since that is what every
-// iteration of such a loop looks like.
+// Liveness and loop state are separate facts: if one `running` flag answered
+// both "the blocking loop is live" and "the socket works", a caller
+// hand-rolling a loop out of `dispatch` would see every call refused. Pin the
+// state that a single flag cannot represent — connected while not running —
+// since that is what every iteration of such a loop looks like.
 test "connection liveness is independent of loop state" {
     var plat = disconnectedPlatform();
     defer plat.window_registry.deinit();
@@ -2182,9 +2182,9 @@ fn idleWindowLoopState(open: bool) WindowLoopState {
     };
 }
 
-// The loop must survive the loss of a non-last window, which is the whole
-// point of the fix: `open_count` is what `run()` tests, so drive it directly
-// with the two-window case that used to terminate the process.
+// The loop must survive the loss of a non-last window: `open_count` is what
+// `run()` tests, so drive it directly with the two-window case where closing
+// one window must not terminate the process.
 test "loop state counts open windows, not registry entries" {
     const open = idleWindowLoopState(true);
     const closed = idleWindowLoopState(false);

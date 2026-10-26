@@ -1,27 +1,25 @@
 //! Render-thread blocking mutex for Gooey.
 //!
-//! ## Why this shim still exists (Phase 5, option 3)
+//! ## Why this shim exists (option 3 in the migration doc)
 //!
-//! Zig 0.16 introduced `std.Io.Mutex`, which requires threading an `Io`
-//! instance into every `.lock()` / `.unlock()` call. Phase 5 of the
-//! `std.Io` migration (see `docs/zig-0.16-io-migration.md`) migrated every
-//! non-render mutex in the framework to `std.Io.Mutex`:
+//! `std.Io.Mutex` requires threading an `Io` instance into every
+//! `.lock()` / `.unlock()` call. Every non-render mutex in the framework
+//! uses `std.Io.Mutex` (see `docs/zig-0.16-io-migration.md`):
 //!
 //!   • `ImageAtlas.mutex` — stores `io` on the struct
 //!   • `SvgAtlas.mutex`   — stores `io` on the struct
 //!   • `TextSystem.shape_cache_mutex` / `glyph_cache_mutex` — ditto
-//!   • `CodeEditorState.generateUniqueId` counter — now a plain atomic
+//!   • `CodeEditorState.generateUniqueId` counter — a plain atomic
 //!
-//! The one remaining holdout is `Window.render_mutex` on macOS. It is
+//! The one exception is `Window.render_mutex` on macOS. It is
 //! locked from the CVDisplayLink callback thread, which is spawned and
 //! owned by CoreVideo — not by Gooey — and therefore has no natural path
-//! to an `Io` instance. Option 3 from the migration doc is to keep the
-//! platform mutex exclusively for render synchronisation, which is what
-//! this file provides.
+//! to an `Io` instance. This file provides a platform mutex used
+//! exclusively for render synchronisation.
 //!
 //! ## Backing primitives
 //!
-//!   • macOS / Darwin  — `os_unfair_lock`  (what the old std.Thread.Mutex used)
+//!   • macOS / Darwin  — `os_unfair_lock`  (the primitive behind Zig 0.15's `std.Thread.Mutex`)
 //!   • Linux / POSIX   — `pthread_mutex_t` (libc is always linked on Linux)
 //!   • WASM            — no-op (single-threaded; no render thread at all)
 //!
@@ -42,8 +40,8 @@ const builtin = @import("builtin");
 /// because the CVDisplayLink thread on macOS has no `Io` instance. See
 /// the module-level docs above for the full rationale.
 ///
-/// Default-initialised to the unlocked state (API-compatible with the
-/// former `std.Thread.Mutex`).
+/// Default-initialised to the unlocked state (API-compatible with Zig
+/// 0.15's `std.Thread.Mutex`).
 pub const Mutex = switch (builtin.os.tag) {
     .macos => DarwinMutex,
     .linux => PosixMutex,

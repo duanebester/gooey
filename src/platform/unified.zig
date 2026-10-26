@@ -418,7 +418,7 @@ pub const metal_shader_source =
     \\}
 ;
 
-// Legacy alias for backwards compatibility during migration
+// Alias for `metal_shader_source`, kept so existing callers compile.
 pub const unified_shader_source = metal_shader_source;
 
 // =============================================================================
