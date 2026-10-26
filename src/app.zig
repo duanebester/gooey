@@ -41,14 +41,13 @@ const shader_mod = @import("core/shader.zig");
 const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
 
-// PR 7b.3 — `App` owns application-lifetime state shared across
-// windows (currently `entities`; later 7b slices add `keymap` /
-// `globals` / `image_loader`). The WASM bootstrap heap-allocates
-// one `App` here and hands `*App` to the single `Window` it
-// creates. Single-window flow on WASM mirrors the native runner
-// (`runtime/runner.zig`) — both go through `App` even though
-// there is only one borrower today, so the future runner
-// consolidation is a no-op for entity ownership.
+// `App` owns application-lifetime state shared across windows
+// (`entities`, `globals` including the `Keymap`, `image_loader`). The WASM
+// bootstrap heap-allocates one `App` here and hands `*App` to the
+// single `Window` it creates. Single-window flow on WASM mirrors the
+// native runner (`runtime/runner.zig`) — both go through `App` even
+// though there is only one borrower, so entity ownership is the same
+// on every runner.
 const context_app_mod = @import("context/app.zig");
 const ContextApp = context_app_mod.App;
 
@@ -60,16 +59,12 @@ pub const handleInputCx = runtime.handleInputCx;
 
 // Re-export types
 pub const Cx = cx_mod.Cx;
-// PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the upcoming `Window → Window` rename
-// in PR 7b.1b. The local `PlatformWindow` alias is used everywhere
-// below where the OS-level handle (vs. the framework wrapper) is meant.
+// The local `PlatformWindow` alias is used everywhere below where the
+// OS-level handle (vs. the framework `Window` wrapper) is meant.
 // `GlassStyle` is one canonical enum shared by every backend
-// (`platform/interface.zig`). It used to be read off the selected
-// `PlatformWindow`, which meant each backend declared its own variant list
-// with its own tag values — and the runtime bridged them with
-// `@enumFromInt(@intFromEnum(...))`, silently producing the wrong style
-// wherever the orderings disagreed. They did.
+// (`platform/interface.zig`), so tag values cannot disagree and no
+// `@enumFromInt(@intFromEnum(...))` bridge can silently produce the
+// wrong style.
 pub const GlassStyle = platform.GlassStyle;
 const Platform = platform.Platform;
 const PlatformWindow = platform.PlatformWindow;
@@ -103,18 +98,15 @@ pub fn App(
         return WebApp(State, state, render, config);
     } else {
         return struct {
-            // PR 7d-framework — `main` accepts `init: std.process.Init`
-            // per Zig 0.16's "Juicy Main" contract
-            // (`docs/zig-0.16-changes.md#9-juicy-main`). The value is
-            // forwarded to `runCx` as the trailing argument; every
-            // other field in the `.{...}` config literal below is
-            // identical to the pre-7d-framework shape.
+            // `main` accepts `init: std.process.Init` per Zig 0.16's
+            // "Juicy Main" contract. The value is forwarded to `runCx`
+            // as the trailing argument.
             pub fn main(init: std.process.Init) !void {
                 // Build a fully-defaulted `CxConfig(State)` and overwrite only
                 // the fields the caller supplied. Enumerating every `CxConfig`
                 // field (rather than a hand-picked subset) means `App` and
                 // `runCx` can never silently drift: a new `CxConfig` field is
-                // forwarded here for free, and callers no longer have to fall
+                // forwarded here for free, and callers never have to fall
                 // back to `gooey.run(...)` just to reach `on_close`,
                 // `on_resize`, `min_size`, `max_size`, `centered`, or `io`.
                 var cfg: runtime.CxConfig(State) = .{};
@@ -124,10 +116,10 @@ pub fn App(
                     // (name mismatch / MSL-vs-WGSL coercion); everything else
                     // is a straight copy when the caller provided it.
                     if (comptime std.mem.eql(u8, field_name, "on_init")) {
-                        // Historically `App` read `config.init` while `runCx`
-                        // calls the field `on_init`, so `.on_init = ...` on an
-                        // `App` config was silently dropped. Accept both spellings
-                        // now, preferring the canonical `on_init`.
+                        // `runCx` calls the field `on_init`, but `App` configs
+                        // may also spell it `init`. Accept both spellings,
+                        // preferring the canonical `on_init`, so neither is
+                        // silently dropped.
                         if (@hasField(ConfigType, "on_init")) {
                             cfg.on_init = config.on_init;
                         } else if (@hasField(ConfigType, "init")) {
@@ -192,14 +184,12 @@ pub fn WebApp(
         // Global state (WASM exports can't capture closures)
         var g_initialized: bool = false;
         var g_platform: ?Platform = null;
-        // PR 7b.1b — `g_window` (OS-level handle) renamed to
-        // `g_platform_window` so the framework wrapper rename
-        // (`Window → Window`) can claim `g_window` for itself in the
-        // sweep below. Mirrors the field rename on `Window` itself
-        // (`window → platform_window`) and the §10 GPUI sketch.
+        // `g_platform_window` is the OS-level handle; `g_window` is the
+        // framework wrapper. Mirrors the `platform_window` field on
+        // `Window` itself.
         var g_platform_window: ?*PlatformWindow = null;
         var g_window: ?*Window = null;
-        // PR 7b.3 — heap-allocated `App` owning the shared
+        // Heap-allocated `App` owning the shared
         // `EntityMap`. WASM has no `defer` analog at file
         // scope, so this leaks at process exit — same lifecycle
         // as every other `g_*` global in this struct (the
@@ -215,8 +205,8 @@ pub fn WebApp(
             null;
 
         // Accept both `on_init` (canonical, matches `CxConfig`) and the
-        // legacy `init` spelling so `.on_init = ...` is no longer silently
-        // dropped on the WASM path either (mirrors the native fix).
+        // `init` spelling so neither is silently dropped on the WASM path
+        // (mirrors the native arm).
         const on_init: ?*const fn (*Cx) void = if (@hasField(@TypeOf(config), "on_init"))
             config.on_init
         else if (@hasField(@TypeOf(config), "init"))
@@ -226,12 +216,11 @@ pub fn WebApp(
 
         /// Initialize the application (called from JavaScript).
         ///
-        /// PR 7d-framework — renamed from `init` to `wasmInit` so it
-        /// doesn't shadow the `init: std.process.Init` parameter on
-        /// `WebApp.main` below. The JS-visible export name is still
-        /// `"init"` (the `@export` call at the bottom of this struct
-        /// names the symbol independently of the Zig identifier),
-        /// so no JS-side change is required.
+        /// Named `wasmInit` rather than `init` so it doesn't shadow the
+        /// `init: std.process.Init` parameter on `WebApp.main` below.
+        /// The JS-visible export name is `"init"` (the `@export` call at
+        /// the bottom of this struct names the symbol independently of
+        /// the Zig identifier).
         pub fn wasmInit() callconv(.c) void {
             initImpl() catch |err| {
                 web_imports.err("Init failed: {}", .{err});
@@ -279,7 +268,7 @@ pub fn WebApp(
             // and interaction timing require a monotonic source.
             const io = platform.backend.io.browser;
 
-            // PR 7b.3 — allocate the shared `App` before the
+            // Allocate the shared `App` before the
             // `Window` so it can be wired in immediately after
             // `initOwnedPtr`. `initOwnedPtr` leaves
             // `window_ptr.app` at its `undefined` default; the
@@ -287,9 +276,8 @@ pub fn WebApp(
             // safe to install the borrowed pointer (any earlier
             // and the `Window` does not exist yet).
             const app_ptr = try allocator.create(ContextApp);
-            // PR 7b.4 — `ContextApp.initInPlace` returns `!void`
-            // now (was `void`) because it registers an owned
-            // `Keymap` in `app.globals`, and `Globals.setOwned`
+            // `ContextApp.initInPlace` returns `!void` because it
+            // registers an owned `Keymap` in `app.globals`, and `Globals.setOwned`
             // may fail with `OutOfMemory`. On WASM the bootstrap
             // has no `defer` analog, so a failure here leaves the
             // `allocator.create(ContextApp)` allocation orphaned
@@ -300,13 +288,13 @@ pub fn WebApp(
             g_app = app_ptr;
 
             try window_ptr.initOwnedPtr(allocator, g_platform_window.?, font_cfg, io);
-            // PR 7b.3 — wire the borrowed `*App` onto the freshly-
+            // Wire the borrowed `*App` onto the freshly-
             // initialised `Window`. Mirrors the same pattern in
             // `runtime/window_context.zig::WindowContext.init`;
             // every `cx.entities.*` access reaches through this
             // pointer.
             window_ptr.app = app_ptr;
-            // PR 7b.5 — bind the app-scoped `ImageLoader` against
+            // Bind the app-scoped `ImageLoader` against
             // the window's owning `image_atlas`. Mirrors the
             // single-window native path in
             // `runtime/window_context.zig::WindowContext.init`:
@@ -325,7 +313,7 @@ pub fn WebApp(
 
             // Initialize Builder
             g_builder = try allocator.create(Builder);
-            // PR 7c.3c — build target is `next_frame.*`. The
+            // Build target is `next_frame.*`. The
             // per-tick reset block in
             // `runtime/frame.zig::renderFrameImpl` re-fetches
             // both pointers from the post-swap `next_frame.*`
@@ -477,13 +465,11 @@ pub fn WebApp(
 
             // Render to GPU.
             //
-            // PR 7c.3c — the GPU presents `rendered_frame.scene`
+            // The GPU presents `rendered_frame.scene`
             // (the post-swap display buffer set up by the
             // end-of-frame `mem.swap` in
-            // `runtime/frame.zig::renderFrameImpl`). Pre-7c.3c
-            // this read through the single-buffer
-            // `g_window.?.frame.scene`; with the double buffer,
-            // the just-built scene rotates through
+            // `runtime/frame.zig::renderFrameImpl`). With the
+            // double buffer, the just-built scene rotates through
             // `rendered_frame.scene` after every tick. Web's
             // platform layer doesn't cache a scene pointer, so
             // the read happens fresh each `frame()` call — no
@@ -523,7 +509,7 @@ pub fn WebApp(
         /// On WASM, JavaScript calls init() directly via the exported function.
         /// This exists so `App.main(init)` compiles on both native and web targets.
         ///
-        /// PR 7d-framework — takes `init` for signature parity with the
+        /// Takes `init` for signature parity with the
         /// native arm. The value is discarded because WASM initialization
         /// is driven by JavaScript calling the `callconv(.c)` exports
         /// directly (`init` / `frame` / `resize`), not by the Zig
@@ -536,8 +522,8 @@ pub fn WebApp(
 
         // Export functions for WASM - this comptime block runs when the type is analyzed
         comptime {
-            // PR 7d-framework — Zig identifier is `wasmInit`, but the
-            // JS-visible export name stays `"init"`.
+            // Zig identifier is `wasmInit`, but the JS-visible export
+            // name is `"init"`.
             @export(&Self.wasmInit, .{ .name = "init" });
             @export(&Self.frame, .{ .name = "frame" });
             @export(&Self.resize, .{ .name = "resize" });

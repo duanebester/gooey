@@ -251,7 +251,7 @@ pub const FontConfig = struct {
 /// Window - unified UI context
 pub const Window = struct {
     allocator: std.mem.Allocator,
-    // IO interface (Zig 0.16 std.Io — replaces ad-hoc global_single_threaded calls).
+    // IO interface (Zig 0.16 std.Io).
     // Threaded through the framework from main(); see cx.io() accessor.
     io: std.Io,
 
@@ -1267,7 +1267,7 @@ pub const Window = struct {
             self.next_frame.scene.setViewport(self.width, self.height);
         }
 
-        // Begin layout pass (timer moved to endFrame to cover only actual layout compute)
+        // Begin layout pass (the timer lives in endFrame to cover only actual layout compute)
         self.layout.beginFrame(self.width, self.height);
 
         // Hover: clear hover_changed latch so a downstream observer
@@ -1696,20 +1696,18 @@ pub const Window = struct {
         if (comptime platform.is_wasm) return;
 
         // Unreachable from a real application: `quit` is invoked from a command
-        // or input handler, which can only run while this window is live. The
-        // previous revision called `std.process.exit(0)` here, skipping every
-        // teardown path for a state it could not actually be in.
+        // or input handler, which can only run while this window is live.
+        // Assert rather than `std.process.exit(0)`, which would skip every
+        // teardown path for a state the window cannot actually be in.
         std.debug.assert(self.platform_window != null);
         const platform_window = self.platform_window orelse return;
 
-        // One path for both native backends. This used to be a three-way
-        // target branch whose Linux arm also wrote `w.closed = true` directly
-        // — conflating "stop the application" with "close this window", and
-        // bypassing the backend's own close bookkeeping (on Linux,
-        // `markClosed`, which hands the active role to a surviving window). It
-        // also reached for `NSApplication` itself on macOS instead of going
-        // through the platform, so `Platform.running` was left set while the
-        // host tore the process down.
+        // One path for both native backends, through the platform. Writing
+        // `w.closed = true` here would conflate "stop the application" with
+        // "close this window" and bypass the backend's own close bookkeeping
+        // (on Linux, `markClosed`, which hands the active role to a surviving
+        // window). Reaching for `NSApplication` directly on macOS would leave
+        // `Platform.running` set while the host tears the process down.
         platform_window.getPlatform().quit();
     }
 
@@ -1816,12 +1814,12 @@ pub const Window = struct {
     ///
     /// Gated on the backend's comptime `capabilities.has_post_process`. The
     /// accent tint is consumed by the post-process pass, so reaching
-    /// `renderer.getPostProcess()` unconditionally made this method
+    /// `renderer.getPostProcess()` unconditionally would make this method
     /// uncompilable on Linux (`VulkanRenderer` has no such member) and on web.
-    /// Because nothing called it, the drift went unnoticed until
-    /// `zig build typecheck-linux` started analyzing the Linux tree.
+    /// Nothing in-tree calls it, so `zig build typecheck-linux` is what keeps
+    /// the Linux tree honest.
     ///
-    /// The gate used to be `glass_effects`, which happens to be true on
+    /// The gate is not `glass_effects`, even though that happens to be true on
     /// exactly the backend that has the pass. That is a coincidence of the
     /// current backend set, not a rule: a Wayland blur protocol would flip
     /// `glass_effects` true on Linux and break this body, which has nothing to

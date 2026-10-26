@@ -29,14 +29,7 @@
 //!    list; new entries must be added explicitly when an example
 //!    starts depending on a new name.
 //!
-//! ## Architecture reference
-//!
-//! See `docs/architectural-cleanup-plan.md` §8 "Public-API
-//! verification" for the rationale, and `docs/cleanup-implementation-
-//! plan.md` PR 11 (section "API check + three-phase Element
-//! lifecycle") for the task framing. This file is the PR-11a half of
-//! that PR — the structural Element-lifecycle work ships separately
-//! and is **not** gated by this file.
+//! The Element lifecycle is **not** gated by this file; it pins names only.
 //!
 //! ## Adding / removing pins
 //!
@@ -324,8 +317,7 @@ fn pinTier1NamespacedApp() void {
 // Cx sub-namespaces
 // =============================================================================
 
-/// `Cx` carries five sub-namespaces as struct fields (set up in PR
-/// 8.3 and pre-existing cleanup work): `lists`, `animations`,
+/// `Cx` carries five sub-namespaces as struct fields: `lists`, `animations`,
 /// `focus`, `entities`, `element_states`. Examples reach into them
 /// as `cx.lists.uniformList(...)` / `cx.animations.tween(...)` /
 /// `cx.focus.request(...)` / `cx.entities.handler(...)` /
@@ -369,10 +361,9 @@ fn pinCxSubNamespaces() void {
 // test step. Failure mode: a Tier-1 deletion compiles `root.zig`
 // fine but breaks here with a precise pointer at the missing decl.
 //
-// Per `docs/cleanup-implementation-plan.md` PR 11, this test is what
-// makes the PR's "`api_check.zig` compiled into the test binary"
-// definition-of-done observable: `zig build test` will touch this
-// comptime block and fail loudly on regression.
+// Compiling `api_check.zig` into the test binary is what makes the pin
+// list enforceable: `zig build test` touches this comptime block and
+// fails loudly on regression.
 //
 // Note: doc comments (`///`) cannot attach to `test` blocks per Zig's
 // grammar, so the rationale lives here as line comments instead.

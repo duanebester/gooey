@@ -10,28 +10,20 @@
 //!
 //! ## Why this exists (and why it lives here, not in `context/`)
 //!
-//! Pre-PR-8.4c the four pools lived on `context/widget_store.zig`'s
-//! `WidgetStore`, sharing space with the per-widget retained-state maps
-//! (`select_states`, `scroll_containers`, `text_inputs`, `text_areas`,
-//! `code_editors`). PR 8.1-8.4b peeled every per-widget map off
-//! `WidgetStore` onto `Window.element_states` (the unified
-//! `(type_id, id_hash) -> *S` keyed pool). What was left fit the
-//! "cross-cutting per-window animation storage" shape — one widget
-//! can drive multiple concurrent animations against different ids,
-//! so they can't go on the per-element pool — and is owned naturally
-//! by `animation/`, not `context/`. PR 8.4c lifts them here and
-//! retires the `WidgetStore` namespace entirely. See
-//! `docs/cleanup-implementation-plan.md` PR 8.4c.
+//! Per-widget retained state (select, scroll, text input, text area,
+//! code editor) lives on `Window.element_states`, the unified
+//! `(type_id, id_hash) -> *S` keyed pool. Animation storage has a
+//! different shape: one widget can drive multiple concurrent animations
+//! against different ids, so it cannot go on the per-element pool. It
+//! is cross-cutting per-window animation storage and is owned naturally
+//! by `animation/`, not `context/`.
 //!
 //! ## What's NOT here
 //!
-//! `ChangeTracker` (the `cx.changed(key, value)` backing storage)
-//! lived alongside the animation pools on `WidgetStore` pre-PR-8.4c
-//! but is unrelated to animation lifecycle — it's per-frame value-
-//! diffing across arbitrary keys. PR 8.4c promotes it to a direct
-//! `Window.change_tracker: ChangeTracker` field. The two subsystems
-//! were only colocated because `WidgetStore` was the historical
-//! "miscellaneous retained-storage" bucket.
+//! `ChangeTracker` (the `cx.changed(key, value)` backing storage) is
+//! unrelated to animation lifecycle — it's per-frame value-diffing
+//! across arbitrary keys — so it is a direct
+//! `Window.change_tracker: ChangeTracker` field instead.
 //!
 //! ## Frame-driven eviction (deferred)
 //!
@@ -41,12 +33,10 @@
 //! heuristics to detect "completed AND not queried last frame"
 //! (component was hidden) and restart on re-mount, but that is not
 //! the same shape as GPUI's two-frame swap-discipline eviction
-//! against `next_frame` / `rendered_frame`. Lifting these pools onto
-//! `Frame` with carry-forward fall-through is tracked alongside the
-//! rest of the per-frame transients (`focus`, `mouse_listeners`,
-//! `tab_stops`) that PR 7c.3 deferred for the same reason. See
-//! `context/frame.zig` for the existing double buffer that anchors
-//! the future migration.
+//! against `next_frame` / `rendered_frame`. These pools stay off
+//! `Frame` for the same reason as the other per-frame transients
+//! (`focus`, `mouse_listeners`, `tab_stops`). See `context/frame.zig`
+//! for the double buffer that carry-forward eviction would build on.
 
 const std = @import("std");
 const animation = @import("animation.zig");
@@ -173,7 +163,7 @@ pub const AnimationStore = struct {
     }
 
     /// OPTIMIZED animateOn - single HashMap lookup!
-    /// Trigger hash is now stored IN the AnimationState
+    /// Trigger hash is stored IN the AnimationState
     pub fn animateOnById(self: *Self, anim_id: u32, trigger_hash: u64, config: AnimationConfig) AnimationHandle {
         const gop = self.animations.getOrPut(self.allocator, anim_id) catch {
             return AnimationHandle.complete;

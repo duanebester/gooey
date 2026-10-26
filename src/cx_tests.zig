@@ -1,10 +1,10 @@
 //! Tests for `cx.zig`.
 //!
-//! Split out of `cx.zig` in PR 5 — the bulk of the file's line budget
-//! was demo / pattern tests illustrating that pure state methods are
-//! testable without any framework scaffolding. Keeping them here lets
-//! `cx.zig` stay focused on the runtime API surface, and lets the
-//! tests grow without pushing `cx.zig` back over the size budget.
+//! Most of these are demo / pattern tests illustrating that pure state
+//! methods are testable without any framework scaffolding. Keeping them
+//! outside `cx.zig` lets `cx.zig` stay focused on the runtime API
+//! surface, and lets the tests grow without pushing `cx.zig` over the
+//! size budget.
 //!
 //! These tests are picked up by the standard `zig build test` graph
 //! via a `comptime _ = @import("cx_tests.zig")` reference at the top
@@ -481,10 +481,8 @@ test "toggle collection pattern" {
 }
 
 test "DataTableCallbacks type structure" {
-    // PR 9 deleted the deprecated `Cx.DataTableCallbacks(Cx)` alias
-    // alongside the rest of the `cx.lists.*` forwarders; the canonical
-    // generic lives at `cx.lists.Lists.DataTableCallbacks(Cx)` now.
-    // The struct shape itself is unchanged.
+    // The canonical generic lives at `cx.lists.Lists.DataTableCallbacks(Cx)`;
+    // this pins its field layout.
     const lists = @import("cx/lists.zig");
     const Callbacks = lists.Lists.DataTableCallbacks(Cx);
 
@@ -502,18 +500,12 @@ test "DataTableCallbacks type structure" {
 }
 
 // =============================================================================
-// PR 5 — sub-namespacing equivalence tests.
-//
-// The cleanup plan's PR 5 definition-of-done states:
-//   "Both `cx.uniformList(…)` and `cx.lists.uniform(…)` work and
-//    produce identical output."
+// Sub-namespace surface tests.
 //
 // We can't run the full render pipeline from a unit test (it needs a
-// live `Window` + `Builder`), but we can pin the equivalence at the
-// type / decl level: the deprecated forwarders on `Cx` and the new
-// sub-namespace methods must share argument types and return types,
-// and `DataTableCallbacks` must be the *same* type from both
-// namespaces. If a future change breaks the forwarder shape, these
+// live `Window` + `Builder`), but we can pin the sub-namespaces at the
+// type / decl level: each namespace marker stays zero-sized and each
+// public method stays addressable. If a change breaks that shape, these
 // tests fail at compile time rather than at the call site of every
 // downstream caller.
 
@@ -533,27 +525,16 @@ test "sub-namespace fields are zero-sized (no Cx layout growth)" {
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(animations_ns.Animations));
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(entities_ns.Entities));
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(focus_ns.Focus));
-    // PR 8.3 — same zero-size invariant for the new namespace. If
+    // Same zero-size invariant for `element_states`. If
     // it ever grows, every `Cx` instance pays for it (Cx is the
     // hot per-frame context struct handed to every render fn).
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(element_states_ns.ElementStates));
 }
 
-// PR 9 deleted the `Cx.DataTableCallbacks(Cx)` deprecated-alias test
-// alongside the alias itself — the canonical generic lives at
-// `cx.lists.Lists.DataTableCallbacks(Cx)` now. The remaining
-// `DataTableCallbacks type structure` test above pins the struct's
-// field layout against that canonical name.
-
 test "sub-namespace methods are reachable as decls" {
-    // The deprecated forwarders on `Cx` and the namespace methods
-    // necessarily differ in receiver type (`*Cx` vs `*Lists` etc.),
-    // so we can't assert `@TypeOf(...) == @TypeOf(...)`. Instead pin
-    // the *existence* of each new-namespace decl. If a refactor
-    // renames one side of the pair, this test fails compilation
-    // before any downstream caller does. The forwarder bodies in
-    // `cx.zig` provide the runtime equivalence — they're literally
-    // one-line calls into these decls.
+    // Pin the *existence* of each namespace decl. If a refactor
+    // renames one, this test fails compilation before any downstream
+    // caller does.
     _ = lists_ns.Lists.uniform;
     _ = lists_ns.Lists.tree;
     _ = lists_ns.Lists.virtual;
@@ -587,7 +568,7 @@ test "sub-namespace methods are reachable as decls" {
     _ = animations_ns.Animations.springMotion;
     _ = animations_ns.Animations.springMotionComptime;
 
-    // PR 8.3 — element_states namespace surface. Pin every public
+    // element_states namespace surface. Pin every public
     // method so a rename on either the namespace side or the
     // underlying `Window.element_states` pool fails compilation
     // here rather than silently in a downstream widget.

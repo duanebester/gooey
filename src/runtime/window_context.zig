@@ -1,7 +1,7 @@
 //! WindowContext - Per-window state for multi-window support
 //!
-//! This module replaces the static CallbackState in runner.zig, enabling
-//! multiple windows to each have their own context. The WindowContext is
+//! Each window has its own context rather than sharing module-level static
+//! callback state, which enables multiple windows. The WindowContext is
 //! stored in the window's user_data pointer and retrieved in callbacks.
 //!
 //! ## Architecture
@@ -12,7 +12,7 @@
 //! - Frame state: building flag, frame counter
 //!
 //! Callbacks retrieve the WindowContext from the window via getUserData(),
-//! eliminating the single-window limitation of module-level static variables.
+//! avoiding the single-window limitation of module-level static variables.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -79,7 +79,7 @@ const ImageAtlas = image_mod.ImageAtlas;
 const app_resources_mod = @import("../context/app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
-/// Per-window context that replaces static CallbackState.
+/// Per-window context, in place of module-level static callback state.
 /// Stored in window.user_data for callback access.
 pub fn WindowContext(comptime State: type) type {
     return struct {

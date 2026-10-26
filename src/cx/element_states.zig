@@ -1,23 +1,22 @@
 //! `cx.element_states` — keyed pool of per-element retained state.
 //!
-//! This module surfaces `Window.element_states` (PR 8.1's
+//! This module surfaces `Window.element_states` (the
 //! generic `(id_hash, TypeId) -> *S` slot map) on `Cx` so widgets can
 //! reach for retained state through the standard frame-context handle
 //! instead of digging through `cx._window`. It mirrors GPUI's
-//! [§19 `with_element_state` pattern](../../docs/architectural-cleanup-plan.md#19-with_element_stateglobal_id-fnstate---r-state)
-//! adapted to Zig idioms — see "Shape delta from GPUI" below.
+//! `with_element_state` pattern adapted to Zig idioms — see "Shape delta
+//! from GPUI" below.
 //!
 //! ## Why a sub-namespace
 //!
 //! Same rationale as the other `cx/<group>.zig` files (CLAUDE.md §10
 //! — don't take aliases). A zero-sized field marker on `Cx` recovers
 //! `*Cx` via `@fieldParentPtr`, giving a `cx.element_states.with(...)`
-//! call shape with no extra storage and no aliasing. PR 8.2 only had
-//! the underlying pool reachable through `cx._window.element_states`,
-//! which forced widgets that wanted a retained-state pointer to thread
-//! the framework-private `_window` through every helper. PR 8.3 lifts
-//! that to the public `cx.*` surface — same shape callers already use
-//! for `cx.entities.*`, `cx.focus.*`, `cx.lists.*`.
+//! call shape with no extra storage and no aliasing. Widgets that want a
+//! retained-state pointer use this public `cx.*` surface — the same
+//! shape callers use for `cx.entities.*`, `cx.focus.*`, `cx.lists.*` —
+//! instead of threading the framework-private `_window` through every
+//! helper.
 //!
 //! ## API surface
 //!
@@ -231,11 +230,10 @@ pub const ElementStates = struct {
     /// `deinit_fn` and frees the payload. Returns `true` iff an
     /// entry was actually removed (i.e. the `(S, id)` pair existed).
     ///
-    /// Today's widget lifecycle keeps state forever — no widget
-    /// currently calls `remove`. The path is here for the
-    /// frame-driven eviction work tracked in PR 8.4+ and for
+    /// The widget lifecycle keeps state forever — no widget calls
+    /// `remove`. The path exists for frame-driven eviction and for
     /// widgets that want explicit "drop my retained state on unmount"
-    /// semantics ahead of that landing.
+    /// semantics.
     pub fn remove(
         self: *ElementStates,
         comptime S: type,

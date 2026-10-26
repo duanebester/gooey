@@ -156,7 +156,7 @@ pub const AttachPoint = styles.AttachPoint;
 pub const Theme = theme_mod.Theme;
 
 // =============================================================================
-// Accessibility (Phase 1)
+// Accessibility
 // =============================================================================
 
 pub const AccessibleConfig = builder_mod.AccessibleConfig;

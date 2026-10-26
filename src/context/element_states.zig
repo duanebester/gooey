@@ -803,10 +803,10 @@ test "ElementStates: getOrInsertWith runs make only on miss" {
 }
 
 test "ElementStates: getOrInsertWith does not build a throwaway payload on hit" {
-    // Direct regression for the builder leak: `renderInput` seeded the
-    // pool with `getOrInsert(TextInputState.init(...))`, which built
-    // (and heap-allocated a ~512KB `EditHistory` inside) a fresh state
-    // every frame and leaked it on the cache hit. `getOrInsertWith`
+    // Guards against the builder leak: seeding the pool with
+    // `getOrInsert(TextInputState.init(...))` builds (and heap-allocates a
+    // ~512KB `EditHistory` inside) a fresh state every frame and leaks it on
+    // the cache hit. `getOrInsertWith`
     // defers construction to the miss path. An `Owned` payload whose
     // factory allocates lets the testing allocator catch a stray
     // on-hit build: a second, unstored buffer would be reported as a

@@ -89,7 +89,7 @@ const DEFAULT_CODE_EDITOR_BOUNDS: CodeEditorBounds = .{ .x = 0, .y = 0, .width =
 
 // Miss-path factories for `ElementStates.getOrInsertWith`. These run only
 // when a widget's pool slot is first seeded — never on a cache hit — so the
-// heap-allocating `init` calls (each owns a ~512KB `EditHistory`) no longer
+// heap-allocating `init` calls (each owns a ~512KB `EditHistory`) do not
 // fire every frame and leak on the discard. The bounds are the comptime
 // seed constants above; only the allocator varies, so it is the `ctx`.
 fn makeTextInputState(allocator: std.mem.Allocator) TextInputState {
@@ -146,7 +146,7 @@ pub const AccessibleConfig = struct {
     layout_id: LayoutId = LayoutId.none,
 
     // =========================================================================
-    // Relationships (Phase 3.2) - string IDs that will be resolved to indices
+    // Relationships - string IDs that will be resolved to indices
     // =========================================================================
 
     /// ID of element that labels this one (for aria-labelledby)
@@ -327,7 +327,7 @@ pub const Builder = struct {
     }
 
     // =========================================================================
-    // Text-widget control queue (PR 11b.3a)
+    // Text-widget control queue
     // =========================================================================
 
     /// Record a `{ kind, index }` entry pointing at the slot a render*
@@ -473,7 +473,7 @@ pub const Builder = struct {
     }
 
     // =========================================================================
-    // Accessibility (Phase 1)
+    // Accessibility
     // =========================================================================
 
     /// Begin an accessible element. Call before the visual element.
@@ -494,7 +494,7 @@ pub const Builder = struct {
         const g = self.window orelse return false;
         if (!g.a11y.isEnabled()) return false;
 
-        // Phase 3: Auto-inject focus state from FocusManager
+        // Auto-inject focus state from FocusManager.
         // This centralizes focus tracking - components don't need to know about it
         var state = config.state;
         if (config.layout_id.id != 0) {
@@ -589,7 +589,7 @@ pub const Builder = struct {
         self.boxWithIdTracked(null, props, .{}, SourceLoc.none);
     }
 
-    /// Box with source location tracking (Phase 5)
+    /// Box with source location tracking
     /// Call as: b.boxTracked(props, children, @src())
     pub fn boxTracked(self: *Self, props: Box, children: anytype, src: std.builtin.SourceLocation) void {
         self.boxWithIdTracked(null, props, children, SourceLoc.from(src));
@@ -610,7 +610,7 @@ pub const Builder = struct {
         self.boxWithLayoutIdImpl(layout_id, props, children, SourceLoc.none, true);
     }
 
-    /// Box with explicit ID and source location tracking (Phase 5)
+    /// Box with explicit ID and source location tracking
     /// Call as: b.boxWithIdTracked("my-id", props, children, @src())
     pub fn boxWithIdTracked(self: *Self, id: ?[]const u8, props: Box, children: anytype, source_loc: SourceLoc) void {
         const layout_id = if (id) |i| LayoutId.fromString(i) else self.generateId();
@@ -900,7 +900,7 @@ pub const Builder = struct {
         self.vstackImpl(style, children, SourceLoc.none);
     }
 
-    /// Vertical stack with source location tracking (Phase 5)
+    /// Vertical stack with source location tracking
     /// Call as: b.vstackTracked(style, children, @src())
     pub fn vstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
         self.vstackImpl(style, children, SourceLoc.from(src));
@@ -908,7 +908,7 @@ pub const Builder = struct {
 
     fn vstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
         // A vstack is a box fixed to column direction; alignment and padding
-        // pass straight through now that they share Box's types.
+        // pass straight through because they share Box's types.
         self.boxWithIdTracked(null, .{
             .direction = .column,
             .gap = style.gap,
@@ -922,7 +922,7 @@ pub const Builder = struct {
         self.hstackImpl(style, children, SourceLoc.none);
     }
 
-    /// Horizontal stack with source location tracking (Phase 5)
+    /// Horizontal stack with source location tracking
     /// Call as: b.hstackTracked(style, children, @src())
     pub fn hstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
         self.hstackImpl(style, children, SourceLoc.from(src));
@@ -930,7 +930,7 @@ pub const Builder = struct {
 
     fn hstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
         // A hstack is a box fixed to row direction; alignment and padding
-        // pass straight through now that they share Box's types.
+        // pass straight through because they share Box's types.
         self.boxWithIdTracked(null, .{
             .direction = .row,
             .gap = style.gap,
@@ -1272,10 +1272,9 @@ pub const Builder = struct {
 
             // A struct reaching here with a `render` decl is a UI component, so
             // its signature must be `render(self, *Cx)`. Too few parameters
-            // used to be silently dropped — the child simply never rendered,
-            // with no diagnostic. Make it a hard compile error instead
-            // (CLAUDE.md §11: handle the negative space; §17: fail fast rather
-            // than silently no-op).
+            // would otherwise leave the child silently unrendered with no
+            // diagnostic, so it is a hard compile error (CLAUDE.md §11: handle
+            // the negative space; §17: fail fast rather than silently no-op).
             if (fn_info.param_types.len < 2) @compileError(
                 "component `" ++ @typeName(T) ++ ".render` must take `self` and a `*Cx` parameter",
             );
@@ -1284,7 +1283,7 @@ pub const Builder = struct {
                 @compileError("component `render` must take a typed `*Cx` second parameter");
 
             // Components author against `*Cx` and nothing else. A wrong
-            // signature (e.g. the old `*Builder`) is a compile error here
+            // signature (e.g. `*Builder`) is a compile error here
             // rather than a blind reinterpret of `cx_ptr` that segfaults at
             // frame time (CLAUDE.md §11: handle the negative space; §17:
             // fail fast — don't silently mis-cast).

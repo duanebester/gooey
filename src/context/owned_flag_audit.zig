@@ -8,7 +8,7 @@
 //! No other `_owned: bool` field should live on `Window` or any type
 //! composed onto it.
 //!
-//! The compile-time tests below pin that: re-adding an `_owned`-suffixed
+//! The compile-time tests below pin that: adding an `_owned`-suffixed
 //! field to one of the audited types fails the build with a precise
 //! `@compileError`. The allow-list lives in `isAllowListedField`.
 

@@ -139,7 +139,7 @@ pub const DrawContext = struct {
     /// Opaque state pointer supplied at canvas construction. A stateful
     /// canvas recovers its state with
     /// `@as(*T, @ptrCast(@alignCast(ctx.user_data.?)))`, so N independent
-    /// canvases no longer have to share one module global. Null when the
+    /// canvases do not have to share one module global. Null when the
     /// canvas was created without state.
     user_data: ?*anyopaque = null,
 
@@ -999,7 +999,7 @@ pub const DrawContext = struct {
     }
 
     // =========================================================================
-    // Stroke API (Phase 4)
+    // Stroke API
     // =========================================================================
 
     /// Stroke a path outline with solid color.

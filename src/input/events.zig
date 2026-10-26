@@ -226,12 +226,12 @@ pub const InputEvent = union(enum) {
 
 // Goal: `KeyCode.from` must resolve every named virtual keycode to its tag and
 // collapse only genuinely unnamed codes to `.unknown`. Keypad, punctuation,
-// and extended function keys were historically absent from the enum and were
-// destroyed here before any consumer could see them; these cases pin the fix.
+// and extended function keys are named tags, so they must survive this
+// mapping rather than be destroyed before any consumer can see them.
 test "KeyCode.from resolves named codes and collapses unnamed ones" {
     const testing = std.testing;
 
-    // Writing keys, one per historical group.
+    // Writing keys, one per group.
     try testing.expectEqual(KeyCode.a, KeyCode.from(0x00));
     try testing.expectEqual(KeyCode.@"5", KeyCode.from(0x17));
     try testing.expectEqual(KeyCode.@"return", KeyCode.from(0x24));

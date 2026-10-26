@@ -25,7 +25,7 @@
 //! - Linear scan for lookup (cache-friendly for expected entry counts <64)
 //! - Value identity via `std.hash.Wyhash`, fed *structurally* (field-by-field
 //!   for structs, by content for slices) rather than over the raw value bytes.
-//!   See `hashValue` for why raw-byte hashing was a correctness bug.
+//!   See `hashValue` for why raw-byte hashing is a correctness bug.
 
 const std = @import("std");
 
@@ -114,7 +114,7 @@ pub const ChangeTracker = struct {
 /// Hash a value into a u64 for change detection.
 ///
 /// The hash is fed *structurally*, not from the value's raw bytes, because
-/// raw-byte hashing had two correctness bugs that read as the opposite of
+/// raw-byte hashing has two correctness bugs that read as the opposite of
 /// what a function named `changed` implies (rules 3 and 21):
 ///
 ///   1. **Struct padding.** `std.mem.asBytes(&value)` includes a struct's
@@ -125,7 +125,7 @@ pub const ChangeTracker = struct {
 ///   2. **Slices compared by address.** A `[]const u8` fat pointer hashed
 ///      by its (ptr, len) bytes tracks the *address*, not the *content* —
 ///      so an in-place string edit could be missed, and an identical string
-///      at a new address could spuriously fire. Slices are now hashed by
+///      at a new address could spuriously fire. Slices are hashed by
 ///      content, which is what change detection actually wants.
 ///
 /// Type support: ints, floats, bools, enums, optionals, arrays, slices, and
