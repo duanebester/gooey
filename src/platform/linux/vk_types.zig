@@ -42,9 +42,8 @@ pub const storage_buffer_range_guaranteed_bytes: u64 = 1 << 27;
 /// The four per-frame instance storage buffers, named in pool-exhaustion reports.
 pub const InstancePool = enum { primitives, glyphs, svgs, images };
 
-/// Geometry pools preserve the Scene's independent draw budgets; the two point
-/// pools use one point-instanced pipeline. No aggregate geometry budget exists
-/// yet, so reserve the maximum legal payload for every budgeted draw.
+/// Geometry pools preserve the Scene's independent draw and aggregate geometry
+/// budgets; the two point pools use one point-instanced pipeline.
 pub const MeshPool = enum(u8) { triangles, strip_expanded, points, colored_points };
 
 pub const MeshHeader = extern struct {
@@ -70,19 +69,46 @@ pub const MeshHeader = extern struct {
 
 pub const MeshCapacity = struct {
     counts: [4]u32,
+    geometry: scene_mod.GeometryCounts,
 
     // Vulkan guarantees minStorageBufferOffsetAlignment <= 256. Each descriptor
     // addresses only one draw, never the whole (potentially >128 MiB) buffer.
     pub const alignment_bytes: u64 = 256;
+    // Header plus worst-case padding, rounded so each complete pool is aligned.
+    pub const draw_overhead_bytes: u64 = std.mem.alignForward(
+        u64,
+        @sizeOf(MeshHeader) + alignment_bytes - 1,
+        alignment_bytes,
+    );
 
     pub fn from_scene_limits(limits: *const SceneLimits) MeshCapacity {
         assert(limits.check() == null);
-        return .{ .counts = .{
-            limits.path_count_frame_max,
-            limits.polyline_count_frame_max,
-            limits.point_cloud_count_frame_max,
-            limits.colored_point_cloud_count_frame_max,
-        } };
+        return .{
+            .counts = .{
+                limits.path_count_frame_max,
+                limits.polyline_count_frame_max,
+                limits.point_cloud_count_frame_max,
+                limits.colored_point_cloud_count_frame_max,
+            },
+            .geometry = scene_mod.GeometryCounts.from_limits(limits),
+        };
+    }
+
+    pub fn geometry_pool(pool: MeshPool) scene_mod.GeometryPool {
+        return switch (pool) {
+            .triangles => .path_indices,
+            .strip_expanded => .polyline_points,
+            .points => .points,
+            .colored_points => .colored_points,
+        };
+    }
+
+    pub fn element_bytes(pool: MeshPool) u32 {
+        return switch (pool) {
+            .triangles => 16, // Deindexed PathVertex, one per source index.
+            .strip_expanded, .points => 8,
+            .colored_points => 24,
+        };
     }
 
     pub fn stride_bytes(pool: MeshPool) u64 {
@@ -102,7 +128,11 @@ pub const MeshCapacity = struct {
     }
 
     pub fn buffer_bytes(self: *const MeshCapacity, pool: MeshPool) u64 {
-        return @as(u64, self.counts[@backingInt(pool)]) * stride_bytes(pool);
+        const elements = self.geometry.counts[@backingInt(geometry_pool(pool))];
+        const payload = @as(u64, elements) * element_bytes(pool);
+        const overhead = @as(u64, self.counts[@backingInt(pool)]) * draw_overhead_bytes;
+        assert(overhead > 0);
+        return std.mem.alignForward(u64, payload + overhead, alignment_bytes);
     }
 
     pub fn frame_bytes(self: *const MeshCapacity) u64 {
@@ -456,11 +486,11 @@ pub const GpuImage = extern struct {
 
 const testing = std.testing;
 
-test "MeshCapacity reserves every legal draw payload, including alignment" {
+test "MeshCapacity sizes aggregate geometry plus bounded draw overhead" {
     // Independent byte totals catch swapped budgets, expansion on the CPU, and
     // missing header/alignment space. No GPU or large allocations are needed.
     const standard = MeshCapacity.from_scene_limits(&SceneLimits.standard);
-    const expected = [_]u64{ 25_690_112, 16_908_288, 134_348_800, 402_784_256 };
+    const expected = [_]u64{ 1_835_008, 1_245_184, 720_896, 1_769_472 };
     for (std.enums.values(MeshPool), expected) |pool, bytes| {
         try testing.expectEqual(bytes, standard.buffer_bytes(pool));
         try testing.expectEqual(0, MeshCapacity.stride_bytes(pool) % 256);
@@ -468,11 +498,12 @@ test "MeshCapacity reserves every legal draw payload, including alignment" {
             MeshCapacity.stride_bytes(pool) <= storage_buffer_range_guaranteed_bytes,
         );
     }
-    try testing.expectEqual(@as(u64, 579_731_456), standard.frame_bytes());
+    try testing.expectEqual(@as(u64, 5_570_560), standard.frame_bytes());
     const large = MeshCapacity.from_scene_limits(&SceneLimits.large);
     try testing.expectEqual(4 * standard.frame_bytes(), large.frame_bytes());
     const ceiling = MeshCapacity.from_scene_limits(&SceneLimits.ceiling);
-    try testing.expectEqual(@as(u64, 8_967_421_952), ceiling.frame_bytes());
+    // Each maximal path has (512 - 2) * 3 = 1530 source indices.
+    try testing.expectEqual(@as(u64, 8_971_223_040), ceiling.frame_bytes());
 }
 
 test "InstanceCapacity mirrors the scene budget and sizes the host pool from it" {
@@ -516,6 +547,11 @@ test "InstanceCapacity.fits accepts a full pool and rejects one more instance" {
         .polyline_count_frame_max = 4,
         .point_cloud_count_frame_max = 4,
         .colored_point_cloud_count_frame_max = 4,
+        .path_vertex_count_frame_max = 16,
+        .path_index_count_frame_max = 24,
+        .polyline_point_count_frame_max = 8,
+        .point_count_frame_max = 4,
+        .colored_point_count_frame_max = 4,
         .clip_depth_max = 4,
     };
     const capacity = InstanceCapacity.fromSceneLimits(&tiny);

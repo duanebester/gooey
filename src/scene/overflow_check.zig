@@ -33,6 +33,11 @@ const overflow_limits: gooey.scene.SceneLimits = .{
     .polyline_count_frame_max = 4,
     .point_cloud_count_frame_max = 4,
     .colored_point_cloud_count_frame_max = 4,
+    .path_vertex_count_frame_max = 7,
+    .path_index_count_frame_max = 11,
+    .polyline_point_count_frame_max = 13,
+    .point_count_frame_max = 17,
+    .colored_point_count_frame_max = 19,
     .clip_depth_max = 4,
 };
 
@@ -43,6 +48,11 @@ const Mode = enum {
     strip_expanded,
     points,
     colored_points,
+    @"geometry-path_vertices",
+    @"geometry-path_indices",
+    @"geometry-polyline_points",
+    @"geometry-points",
+    @"geometry-colored_points",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -58,6 +68,7 @@ pub fn main(init: std.process.Init) !void {
         .scene => try overflowScene(init.gpa),
         .@"vulkan-instances" => overflowVulkanInstances(),
         .triangles, .strip_expanded, .points, .colored_points => overflow_vulkan_mesh(mode),
+        else => overflow_geometry(mode),
     }
     std.debug.print("unreachable: {s} accepted a claim past its budget\n", .{@tagName(mode)});
 }
@@ -119,4 +130,19 @@ fn overflow_vulkan_mesh(mode: Mode) void {
     } else {
         std.debug.panic("Vulkan mesh overflow checks exist only on Linux", .{});
     }
+}
+
+fn overflow_geometry(mode: Mode) void {
+    // Two claims fill each aggregate exactly; the next element must abort even
+    // though the draw count is still below its independently configured limit.
+    const name = @tagName(mode)["geometry-".len..];
+    const pool = std.meta.stringToEnum(gooey.scene.GeometryPool, name).?;
+    const budget = gooey.scene.GeometryCounts.from_limits(&overflow_limits);
+    const capacity = budget.counts[@backingInt(pool)];
+    std.debug.assert(capacity >= 7);
+    std.debug.assert(capacity <= 19);
+    var usage = gooey.scene.GeometryCounts{};
+    usage.claim(&budget, .{ .pool = pool, .requested = capacity - 2, .frame = 7 });
+    usage.claim(&budget, .{ .pool = pool, .requested = 2, .frame = 7 });
+    usage.claim(&budget, .{ .pool = pool, .requested = 1, .frame = 7 });
 }

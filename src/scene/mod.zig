@@ -21,6 +21,8 @@ pub const scene = @import("scene.zig");
 pub const Scene = scene.Scene;
 pub const SceneLimits = scene.SceneLimits;
 pub const DrawOrder = scene.DrawOrder;
+pub const GeometryCounts = @import("geometry_budget.zig").GeometryCounts;
+pub const GeometryPool = @import("geometry_budget.zig").GeometryPool;
 
 // Hard limits (static memory allocation policy)
 pub const MAX_QUADS_PER_FRAME = scene.MAX_QUADS_PER_FRAME;

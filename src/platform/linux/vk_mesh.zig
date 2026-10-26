@@ -1,7 +1,8 @@
 //! Three topology pipelines, four independently budgeted Scene pools.
 //!
-//! Resource sketch: each pool reserves draw_count × aligned(maximum payload +
-//! 400-byte header), for three frames. At .standard this is 579,731,456 B/frame.
+//! Resource sketch: each pool reserves aggregate geometry bytes plus bounded
+//! header/alignment space per draw. At .standard this is 5,570,560 B/frame,
+//! 16,760,832 B/window for three frames including host-pool alignment slack.
 //! Worst-case upload is bounded by that reservation; normal uploads pack only
 //! live data contiguously. Descriptors expose only initialized bytes. No network,
 //! disk, texture uploads, tessellation, queues, or runtime allocations are needed.
@@ -24,8 +25,10 @@ const pool_kinds = [_]Pool{ .triangles, .strip_expanded, .points, .colored_point
 
 pub const Frame = struct {
     pools: [4]DrawPool = @splat(.{}),
+    geometry: scene_mod.GeometryCounts = .{},
 
     pub fn reset(self: *Frame) void {
+        self.geometry = .{};
         for (&self.pools) |*pool| {
             assert(pool.buffer != null);
             assert(pool.sets.len > 0);
@@ -173,6 +176,11 @@ pub const Draw = struct {
             const indices = mesh.indices.constSlice();
             if (indices.len == 0) continue;
             assert(indices.len % 3 == 0);
+            self.frame.geometry.claim(&self.renderer.capacity.geometry, .{
+                .pool = .path_vertices,
+                .requested = @intCast(mesh.vertices.len),
+                .frame = self.scene.frame_count_finished,
+            });
             var header = Header{
                 .transform = .{ path.offset_x, path.offset_y, path.scale_x, path.scale_y },
                 .color = path.fill_color,
@@ -256,6 +264,11 @@ pub const Draw = struct {
     fn prepare(self: *const Draw, kind: Pool, header: *const Header, payload_bytes: usize) [*]u8 {
         const pool = &self.frame.pools[@backingInt(kind)];
         self.renderer.capacity.reserve(kind, pool.draw_count, self.scene.frame_count_finished);
+        self.frame.geometry.claim(&self.renderer.capacity.geometry, .{
+            .pool = Capacity.geometry_pool(kind),
+            .requested = @intCast(@divExact(payload_bytes, Capacity.element_bytes(kind))),
+            .frame = self.scene.frame_count_finished,
+        });
         const bytes = @sizeOf(Header) + payload_bytes;
         assert(bytes <= Capacity.stride_bytes(kind));
         const offset = pool.bytes_used;

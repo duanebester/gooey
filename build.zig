@@ -1337,6 +1337,7 @@ fn addOverflowChecks(
         "capacity 4 (ResourceLimits.scene), 4 in use, 1 requested, frame 1." });
     run_scene.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
     test_step.dependOn(&run_scene.step);
+    add_geometry_overflow_checks(b, exe, test_step);
 
     if (target.result.os.tag == .linux) {
         const run_vulkan = b.addRunArtifact(exe);
@@ -1361,6 +1362,28 @@ fn addOverflowChecks(
         }
     }
     return exe;
+}
+
+fn add_geometry_overflow_checks(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    test_step: *std.Build.Step,
+) void {
+    const pools = [_][]const u8{
+        "path_vertices", "path_indices", "polyline_points", "points", "colored_points",
+    };
+    const capacities = [_]u32{ 7, 11, 13, 17, 19 };
+    for (pools, capacities) |pool, capacity| {
+        const run = b.addRunArtifact(exe);
+        run.addArg(b.fmt("geometry-{s}", .{pool}));
+        run.addCheck(.{ .expect_stderr_match = b.fmt(
+            "Scene geometry pool '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
+                "{d} in use, 1 requested, frame 7.",
+            .{ pool, capacity, capacity },
+        ) });
+        run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run.step);
+    }
 }
 
 /// Helper to add a charts example with both gooey and gooey-charts modules.
