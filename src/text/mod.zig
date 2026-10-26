@@ -67,9 +67,6 @@ pub const TextSystem = text_system.TextSystem;
 pub const ShapedRunCache = text_system.ShapedRunCache;
 pub const SUBPIXEL_VARIANTS_X = text_system.SUBPIXEL_VARIANTS_X;
 
-// Debug utilities (for diagnosing native vs web differences)
-pub const text_debug = @import("text_debug.zig");
-
 // Platform backends
 const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;

@@ -262,13 +262,16 @@ pub const ElementList = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    /// Reserves the full per-frame element budget. A failed reservation is
+    /// returned rather than ignored: an engine without it would allocate on
+    /// the frame path (CLAUDE.md §2).
+    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!Self {
         var list = Self{
             .allocator = allocator,
             .elements = .empty,
         };
-        // Pre-allocate at startup to avoid per-frame allocation
-        list.elements.ensureTotalCapacity(allocator, MAX_ELEMENTS_PER_FRAME) catch {};
+        try list.elements.ensureTotalCapacity(allocator, MAX_ELEMENTS_PER_FRAME);
+        std.debug.assert(list.elements.capacity >= MAX_ELEMENTS_PER_FRAME);
         return list;
     }
 
@@ -347,19 +350,29 @@ pub const LayoutEngine = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    /// Reserves every per-frame table at initialization and returns a failed
+    /// reservation instead of ignoring it, so the frame path never allocates
+    /// to make up for it (CLAUDE.md §2, §17).
+    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!Self {
         var seen_ids = std.AutoHashMap(u32, ?[]const u8).init(allocator);
+        errdefer seen_ids.deinit();
+        try seen_ids.ensureTotalCapacity(MAX_TRACKED_IDS);
+
         var id_to_index = std.AutoHashMap(u32, u32).init(allocator);
+        errdefer id_to_index.deinit();
+        try id_to_index.ensureTotalCapacity(MAX_TRACKED_IDS);
 
-        // Pre-allocate hash maps to avoid per-frame allocation
-        seen_ids.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
-        id_to_index.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
+        var elements = try ElementList.init(allocator);
+        errdefer elements.deinit();
 
+        const commands = try RenderCommandList.init(allocator);
+        std.debug.assert(seen_ids.capacity() >= MAX_TRACKED_IDS);
+        std.debug.assert(id_to_index.capacity() >= MAX_TRACKED_IDS);
         return .{
             .allocator = allocator,
             .arena = LayoutArena.init(allocator),
-            .elements = ElementList.init(allocator),
-            .commands = RenderCommandList.init(allocator),
+            .elements = elements,
+            .commands = commands,
             .seen_ids = seen_ids,
             .id_to_index = id_to_index,
         };

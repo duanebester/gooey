@@ -150,7 +150,9 @@ pub const Floating = struct {
 /// Text styling options
 pub const TextStyle = struct {
     size: u16 = 14,
-    color: Color = Color.black,
+    /// `null` resolves to the active theme's `text` colour at render time, so
+    /// default text stays readable in light and dark themes.
+    color: ?Color = null,
     weight: Weight = .regular,
     italic: bool = false,
     wrap: WrapMode = .none,

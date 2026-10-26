@@ -687,7 +687,7 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     if (focusedTextInput(window, builder)) |input| {
         if (isControlKey(k.key, k.modifiers)) {
             const binding_deferred = reconcileTextInputBinding(cx, input);
-            input.handleKey(k) catch {};
+            input.handleKey(k) catch |err| textEditFailed("TextInput.handleKey", err);
             if (!binding_deferred) writeTextInputBinding(cx, input);
             cx.notify();
             return true;
@@ -698,7 +698,7 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     if (focusedTextArea(window, builder)) |ta| {
         if (isControlKey(k.key, k.modifiers)) {
             const binding_deferred = reconcileTextAreaBinding(cx, ta);
-            ta.handleKey(k) catch {};
+            ta.handleKey(k) catch |err| textEditFailed("TextArea.handleKey", err);
             if (!binding_deferred) writeTextAreaBinding(cx, ta);
             cx.notify();
             return true;
@@ -753,19 +753,40 @@ fn handleFocusedKeyAction(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool 
     return false;
 }
 
+/// Handle a failed edit on a focused text widget. `TextLimitExceeded` is an
+/// operating error: the field is at its `max_bytes`, the widget left its
+/// buffer unchanged, and rejecting the edit is the documented behaviour.
+/// `OutOfMemory` means the widget's buffer could not grow; dropping the edit
+/// would lose typed input without a trace, so it fails fast (CLAUDE.md §17).
+/// Public so `src/testing/fail_fast_check.zig` can check the panic.
+pub fn textEditFailed(comptime operation: []const u8, err: TextEditError) void {
+    std.debug.assert(operation.len > 0);
+    switch (err) {
+        error.TextLimitExceeded => {},
+        error.OutOfMemory => std.debug.panic(
+            "{s}: text buffer could not grow (OutOfMemory); the edit was not applied",
+            .{operation},
+        ),
+    }
+}
+
+/// Every error a focused text widget's edit can return. Each call site coerces
+/// the widget's error set to this one, so a new widget error is a compile error.
+pub const TextEditError = error{ TextLimitExceeded, OutOfMemory };
+
 /// Handle text input events (character insertion).
 fn handleTextInputEvent(cx: *Cx, window: *Window, text: []const u8) bool {
     const builder = cx.builder();
     if (focusedTextInput(window, builder)) |input| {
         const binding_deferred = reconcileTextInputBinding(cx, input);
-        input.insertText(text) catch {};
+        input.insertText(text) catch |err| textEditFailed("TextInput.insertText", err);
         if (!binding_deferred) writeTextInputBinding(cx, input);
         cx.notify();
         return true;
     }
     if (focusedTextArea(window, builder)) |ta| {
         const binding_deferred = reconcileTextAreaBinding(cx, ta);
-        ta.insertText(text) catch {};
+        ta.insertText(text) catch |err| textEditFailed("TextArea.insertText", err);
         if (!binding_deferred) writeTextAreaBinding(cx, ta);
         cx.notify();
         return true;
@@ -784,13 +805,13 @@ fn handleCompositionEvent(cx: *Cx, window: *Window, text: []const u8) bool {
     const builder = cx.builder();
     if (focusedTextInput(window, builder)) |input| {
         _ = reconcileTextInputBinding(cx, input);
-        input.setComposition(text) catch {};
+        input.setComposition(text) catch |err| textEditFailed("TextInput.setComposition", err);
         cx.notify();
         return true;
     }
     if (focusedTextArea(window, builder)) |ta| {
         _ = reconcileTextAreaBinding(cx, ta);
-        ta.setComposition(text) catch {};
+        ta.setComposition(text) catch |err| textEditFailed("TextArea.setComposition", err);
         cx.notify();
         return true;
     }

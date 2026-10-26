@@ -451,6 +451,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_scene_bench_tests.step);
 
         _ = addOverflowChecks(b, mod, target, optimize, test_step);
+        _ = addFailFastChecks(b, mod, target, optimize, test_step);
 
         // =====================================================================
         // Animation Benchmarks (per-frame spring physics + store dispatch)
@@ -1140,6 +1141,11 @@ pub fn build(b: *std.Build) void {
         if (!skip_shader_compile) {
             overflow_exe.step.dependOn(compile_shaders_step);
         }
+        const fail_fast_exe = addFailFastChecks(b, mod, target, optimize, test_step);
+        linkLinuxLibraries(fail_fast_exe);
+        if (!skip_shader_compile) {
+            fail_fast_exe.step.dependOn(compile_shaders_step);
+        }
 
         // =====================================================================
         // Valgrind Memory Leak Detection
@@ -1360,6 +1366,58 @@ fn addOverflowChecks(
             run_mesh.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
             test_step.dependOn(&run_mesh.step);
         }
+    }
+    return exe;
+}
+
+/// Adds the fail-fast checks for frame- and input-path failures to `test_step`.
+///
+/// Each mode of `src/testing/fail_fast_check.zig` drives one path that panics
+/// instead of dropping work, and each run step asserts the abort and the named
+/// message (CLAUDE.md §17, §24). A panic cannot be caught in-process, so every
+/// mode runs in its own child process. Returns the executable so the caller can
+/// add platform link steps.
+fn addFailFastChecks(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    test_step: *std.Build.Step,
+) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{
+        .name = "fail-fast-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/fail_fast_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "gooey", .module = gooey_module }},
+        }),
+    });
+
+    const checks = [_]struct { mode: []const u8, stderr: []const u8 }{
+        .{ .mode = "deferred-queue", .stderr = "Window pool 'deferred_commands' exhausted: " ++
+            "capacity 32, 32 in use, 1 requested." },
+        .{ .mode = "keymap-keystroke", .stderr = "Keymap.bind: invalid keystroke \"cmd-zz\" " ++
+            "for action fail_fast_check.Noop;" },
+        .{ .mode = "keymap-oom", .stderr = "Keymap pool 'bindings' could not grow: capacity 0, " ++
+            "0 in use, 1 requested (OutOfMemory binding \"cmd-z\")" },
+        .{ .mode = "dispatch-nodes", .stderr = "DispatchTree pool 'nodes' could not grow: " ++
+            "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
+        .{ .mode = "focus-order", .stderr = "FocusManager pool 'focus_order' could not grow: " ++
+            "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
+        .{ .mode = "text-edit", .stderr = "TextInput.insertText: text buffer could not grow " ++
+            "(OutOfMemory); the edit was not applied" },
+        .{ .mode = "builder-canvas", .stderr = "Builder pool 'pending_canvas' exhausted: " ++
+            "capacity 64, 64 in use, 1 requested (per-frame limit)." },
+        .{ .mode = "builder-layout", .stderr = "Builder pool 'layout.elements' exhausted: " ++
+            "capacity 16384, 2 in use, 1 requested (OutOfMemory)." },
+    };
+    for (checks) |check| {
+        const run = b.addRunArtifact(exe);
+        run.addArg(check.mode);
+        run.addCheck(.{ .expect_stderr_match = check.stderr });
+        run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run.step);
     }
     return exe;
 }

@@ -390,9 +390,15 @@ pub const DispatchTree = struct {
             // Listeners already cleared by resetListeners() in reset()
         } else {
             // Beyond high water mark - append new node (either growing or first use of this slot)
+            // A dropped node would detach the element's handlers, focus, and
+            // hit testing for the whole subtree, so fail fast (CLAUDE.md §17).
             self.nodes.append(self.allocator, .{
                 .parent = parent_id,
-            }) catch return .invalid;
+            }) catch std.debug.panic(
+                "DispatchTree pool 'nodes' could not grow: capacity {d}, {d} in use, " ++
+                    "1 requested (OutOfMemory during render)",
+                .{ self.nodes.capacity, self.nodes.items.len },
+            );
         }
 
         // Link to parent

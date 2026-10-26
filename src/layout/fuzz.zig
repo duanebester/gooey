@@ -68,7 +68,7 @@ pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
     defer arena.deinit();
     const gpa = std.testing.allocator;
 
-    var engine = LayoutEngine.init(gpa);
+    var engine = try LayoutEngine.init(gpa);
     defer engine.deinit();
     engine.setMeasureTextFn(fuzzMeasureText, null);
 
@@ -94,7 +94,7 @@ pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
 pub fn fuzzTextWrapping(_: void, smith: *std.testing.Smith) anyerror!void {
     const gpa = std.testing.allocator;
 
-    var engine = LayoutEngine.init(gpa);
+    var engine = try LayoutEngine.init(gpa);
     defer engine.deinit();
     engine.setMeasureTextFn(fuzzMeasureText, null);
 

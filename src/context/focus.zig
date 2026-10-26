@@ -398,8 +398,14 @@ pub const FocusManager = struct {
 
     /// Register a focusable element for this frame.
     /// Called during render pass to build tab order.
+    /// A dropped handle would silently remove the element from tab order, so
+    /// a failed append panics with the pool and counts (CLAUDE.md §17).
     pub fn register(self: *Self, handle: FocusHandle) void {
-        self.focus_order.append(self.allocator, handle) catch return;
+        self.focus_order.append(self.allocator, handle) catch std.debug.panic(
+            "FocusManager pool 'focus_order' could not grow: capacity {d}, {d} in use, " ++
+                "1 requested (OutOfMemory during render)",
+            .{ self.focus_order.capacity, self.focus_order.items.len },
+        );
     }
 
     // =========================================================================

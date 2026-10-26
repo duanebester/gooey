@@ -338,11 +338,9 @@ pub const ScatterChart = struct {
         );
     }
 
-    /// Draw all series points.
-    /// TODO: Investigate using drawSeriesPointsBatched for circle shapes without size encoding.
-    /// The pointCloud API should work (LineChart uses it successfully), but when enabled here
-    /// the points don't render. Likely a z-ordering or clip bounds issue to investigate.
-    /// For now, use individual fillCircleAdaptive calls which work correctly.
+    /// Draw all series points. Uniform-radius circles go through the batched
+    /// point-cloud path in one draw call; other shapes and size-encoded series
+    /// draw point by point.
     fn drawAllPoints(self: *const ScatterChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
         std.debug.assert(self.data.len > 0);
 
