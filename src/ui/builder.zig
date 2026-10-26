@@ -1332,7 +1332,7 @@ pub const Builder = struct {
 
     fn renderText(self: *Self, txt: Text) void {
         self.layout.text(txt.content, .{
-            .color = txt.style.color,
+            .color = txt.style.color orelse self.theme().text,
             .font_size = txt.style.size,
             .wrap_mode = switch (txt.style.wrap) {
                 .none => .none,
@@ -1987,4 +1987,46 @@ test "generateId: same sibling index under different parents does not collide" {
     tree.popNode();
 
     try std.testing.expect(a0.id != b0.id);
+}
+
+test "default text colour follows the active theme; an explicit colour wins" {
+    // Goal: text without a colour must use the theme's text colour rather than a
+    // fixed black that vanishes on dark backgrounds. Method: wire a real `App` so
+    // `setTheme` writes app globals, render one default and one explicit text
+    // inside a bare layout element, and compare the colours recorded on the
+    // layout's text elements. The stub `Window` sets only `app` because
+    // `theme`, `setTheme`, and `renderText` read nothing else from it.
+    const gpa = std.testing.allocator;
+    var engine: LayoutEngine = undefined;
+    var scene_buf: Scene = undefined;
+    var tree: DispatchTree = undefined;
+    var builder = testBuilderHarness(gpa, &engine, &scene_buf, &tree);
+    defer builder.deinit();
+    defer engine.deinit();
+    defer scene_buf.deinit();
+    defer tree.deinit();
+
+    var app = try @import("../context/app.zig").App.init(gpa, undefined);
+    defer app.deinit();
+    var window: Window = undefined;
+    window.app = &app;
+    builder.window = &window;
+
+    // Without a theme the light fallback applies, and it is not plain black.
+    try engine.openElement(.{});
+    builder.processChildren(primitives.text("light", .{}));
+    try std.testing.expect(!std.meta.eql(Theme.light.text, Color.black));
+    const light_color = engine.elements.getConst(1).text_data.?.config.color;
+    try std.testing.expectEqual(Theme.light.text, light_color);
+
+    builder.setTheme(&Theme.dark);
+    builder.processChildren(.{
+        primitives.text("default", .{}),
+        primitives.text("explicit", .{ .color = Color.red }),
+    });
+    engine.closeElement();
+    const dark_color = engine.elements.getConst(2).text_data.?.config.color;
+    const explicit_color = engine.elements.getConst(3).text_data.?.config.color;
+    try std.testing.expectEqual(Theme.dark.text, dark_color);
+    try std.testing.expectEqual(Color.red, explicit_color);
 }
