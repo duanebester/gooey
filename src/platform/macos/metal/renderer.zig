@@ -367,17 +367,10 @@ pub const Renderer = struct {
         if (self.point_cloud_pipeline_state) |*pcp| pcp.nextFrame();
         if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.nextFrame();
 
-        const shadows = scene.getShadows();
-        const quads = scene.getQuads();
-        const glyphs = scene.getGlyphs();
-        const svg_instances = scene.getSvgInstances();
-        const images = scene.getImages();
-
-        if (shadows.len == 0 and quads.len == 0 and glyphs.len == 0 and svg_instances.len == 0 and images.len == 0) {
-            self.renderInternal(clear_color, synchronous);
-            return;
-        }
-
+        // No empty-scene shortcut: `drawScene` draws exactly what the scene's
+        // BatchIterator yields, so an empty scene already presents a plain
+        // clear. A shortcut keyed on a list of primitive kinds blanks every
+        // frame whose kinds the list omits, such as a paths-only frame.
         const ca_scope = if (synchronous) render_pass.CATransactionScope.begin() else null;
         defer if (ca_scope) |scope| scope.commit();
 
