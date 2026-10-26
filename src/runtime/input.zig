@@ -588,7 +588,7 @@ fn handleMouseUpEvent(
                 if (window.rendered_frame.dispatch.findDropTarget(path, drag.type_id)) |target| {
                     // Execute drop handler
                     if (target.handler) |handler| {
-                        handler.invoke(window);
+                        handler.call(window);
                     }
                     cx.notify();
                     return true;

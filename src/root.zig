@@ -298,8 +298,7 @@ test {
 
         // Context.
         _ = ctx.Entity;
-        _ = ctx.HandlerRef;
-        _ = ctx.OnSelectHandler;
+        _ = ctx.Handler;
         _ = ctx.FocusManager;
         _ = ctx.FontConfig;
 

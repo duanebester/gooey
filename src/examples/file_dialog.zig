@@ -186,22 +186,22 @@ const ButtonRow = struct {
             Button{
                 .label = "Open File",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState.openSingleFile),
+                .on_click = cx.on(AppState.openSingleFile, .{}),
             },
             Button{
                 .label = "Open Multiple",
                 .variant = .primary,
-                .on_click_handler = cx.update(AppState.openMultipleFiles),
+                .on_click = cx.on(AppState.openMultipleFiles, .{}),
             },
             Button{
                 .label = "Open Directory",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState.openDirectory),
+                .on_click = cx.on(AppState.openDirectory, .{}),
             },
             Button{
                 .label = "Save As...",
                 .variant = .secondary,
-                .on_click_handler = cx.update(AppState.saveFile),
+                .on_click = cx.on(AppState.saveFile, .{}),
             },
         }));
     }

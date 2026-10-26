@@ -66,14 +66,12 @@ pub const DispatchNodeId = enum(u32) {
 /// nodes carry zero listeners. Allocated lazily via `DispatchNode.getOrCreateListeners`
 /// on first listener registration. Retained across frames (cleared, not freed).
 pub const ListenerBlock = struct {
-    click_listeners: std.ArrayListUnmanaged(ClickListener) = .empty,
+    click_listeners: std.ArrayListUnmanaged(Handler) = .empty,
     mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .empty,
     key_down_listeners: std.ArrayListUnmanaged(KeyListener) = .empty,
     simple_key_listeners: std.ArrayListUnmanaged(SimpleKeyListener) = .empty,
     action_listeners: std.ArrayListUnmanaged(ActionListener) = .empty,
-    click_listeners_handler: std.ArrayListUnmanaged(ClickListenerHandler) = .empty,
-    action_listeners_handler: std.ArrayListUnmanaged(ActionListenerHandler) = .empty,
-    click_outside_listeners: std.ArrayListUnmanaged(ClickOutsideListener) = .empty,
+    click_outside_listeners: std.ArrayListUnmanaged(Handler) = .empty,
 
     pub fn deinit(self: *ListenerBlock, allocator: std.mem.Allocator) void {
         self.click_listeners.deinit(allocator);
@@ -81,8 +79,6 @@ pub const ListenerBlock = struct {
         self.key_down_listeners.deinit(allocator);
         self.simple_key_listeners.deinit(allocator);
         self.action_listeners.deinit(allocator);
-        self.click_listeners_handler.deinit(allocator);
-        self.action_listeners_handler.deinit(allocator);
         self.click_outside_listeners.deinit(allocator);
     }
 
@@ -93,8 +89,6 @@ pub const ListenerBlock = struct {
         self.key_down_listeners.clearRetainingCapacity();
         self.simple_key_listeners.clearRetainingCapacity();
         self.action_listeners.clearRetainingCapacity();
-        self.click_listeners_handler.clearRetainingCapacity();
-        self.action_listeners_handler.clearRetainingCapacity();
         self.click_outside_listeners.clearRetainingCapacity();
     }
 };
@@ -229,11 +223,6 @@ pub const MouseListener = struct {
     context: *anyopaque,
 };
 
-/// Simple click handler (no phase/event access needed)
-pub const ClickListener = struct {
-    callback: *const fn () void,
-};
-
 pub const KeyEvent = input_mod.KeyEvent;
 
 /// Key event listener callback
@@ -252,32 +241,12 @@ pub const ActionTypeId = action_mod.ActionTypeId;
 pub const actionTypeId = action_mod.actionTypeId;
 
 const handler_mod = @import("handler.zig");
-pub const HandlerRef = handler_mod.HandlerRef;
+pub const Handler = handler_mod.Handler;
 
 /// Action listener - handles a specific action type
 pub const ActionListener = struct {
     action_type: ActionTypeId,
-    callback: *const fn () void,
-};
-
-/// Click listener using HandlerRef (new pattern with context)
-pub const ClickListenerHandler = struct {
-    handler: HandlerRef,
-};
-
-/// Action listener using HandlerRef (new pattern with context)
-pub const ActionListenerHandler = struct {
-    action_type: ActionTypeId,
-    handler: HandlerRef,
-};
-
-/// Click-outside listener - fires when a click occurs outside this node's bounds
-/// Used for closing dropdowns, modals, popups, etc.
-pub const ClickOutsideListener = struct {
-    /// Simple callback (no context)
-    callback: ?*const fn () void = null,
-    /// Handler-based callback (with context)
-    handler: ?HandlerRef = null,
+    handler: Handler,
 };
 
 /// Drag source configuration on a dispatch node
@@ -289,7 +258,7 @@ pub const DragSource = struct {
 /// Drop target configuration on a dispatch node
 pub const DropTargetListener = struct {
     type_id: DragTypeId,
-    handler: ?HandlerRef,
+    handler: ?Handler,
 };
 
 // =============================================================================
@@ -685,23 +654,15 @@ pub const DispatchTree = struct {
     // Listener Registration (called during render)
     // =========================================================================
 
-    /// Register a simple click handler on the current node
-    pub fn onClick(self: *Self, callback: *const fn () void) void {
+    /// Register a click handler on the current node.
+    pub fn onClick(self: *Self, handler: Handler) void {
+        handler.assertBound();
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
-            node.getOrCreateListeners(self.allocator).click_listeners.append(self.allocator, .{
-                .callback = callback,
-            }) catch @panic("dispatch: click listener registration failed (OOM)");
-        }
-    }
-
-    /// Register a click handler using HandlerRef (new pattern)
-    pub fn onClickHandler(self: *Self, ref: HandlerRef) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.getOrCreateListeners(self.allocator).click_listeners_handler.append(self.allocator, .{
-                .handler = ref,
-            }) catch @panic("dispatch: click handler registration failed (OOM)");
+            node.getOrCreateListeners(self.allocator).click_listeners.append(
+                self.allocator,
+                handler,
+            ) catch @panic("dispatch: click listener registration failed (OOM)");
         }
     }
 
@@ -715,9 +676,10 @@ pub const DispatchTree = struct {
     }
 
     /// Register a click-outside listener on the current node.
-    /// The callback fires when a mouse click occurs outside this node's bounds.
+    /// The handler fires when a mouse click occurs outside this node's bounds.
     /// Useful for closing dropdowns, modals, popups, etc.
-    pub fn onClickOutside(self: *Self, callback: *const fn () void) void {
+    pub fn onClickOutside(self: *Self, handler: Handler) void {
+        handler.assertBound();
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
             const lb = node.getOrCreateListeners(self.allocator);
@@ -726,25 +688,8 @@ pub const DispatchTree = struct {
                 self.click_outside_nodes.append(self.allocator, node_id) catch
                     @panic("dispatch: click_outside_nodes tracking failed (OOM)");
             }
-            lb.click_outside_listeners.append(self.allocator, .{
-                .callback = callback,
-            }) catch @panic("dispatch: click outside listener registration failed (OOM)");
-        }
-    }
-
-    /// Register a click-outside listener using HandlerRef (new pattern with context)
-    pub fn onClickOutsideHandler(self: *Self, ref: HandlerRef) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            const lb = node.getOrCreateListeners(self.allocator);
-            // Track this node for fast iteration (only if first listener).
-            if (lb.click_outside_listeners.items.len == 0) {
-                self.click_outside_nodes.append(self.allocator, node_id) catch
-                    @panic("dispatch: click_outside_nodes tracking failed (OOM)");
-            }
-            lb.click_outside_listeners.append(self.allocator, .{
-                .handler = ref,
-            }) catch @panic("dispatch: click outside handler registration failed (OOM)");
+            lb.click_outside_listeners.append(self.allocator, handler) catch
+                @panic("dispatch: click outside listener registration failed (OOM)");
         }
     }
 
@@ -770,13 +715,8 @@ pub const DispatchTree = struct {
             // while handling nodes with multiple listener types correctly.
             var handled = false;
 
-            for (lb.click_listeners.items) |listener| {
-                listener.callback();
-                handled = true;
-            }
-
-            for (lb.click_listeners_handler.items) |listener| {
-                listener.handler.invoke(window);
+            for (lb.click_listeners.items) |handler| {
+                handler.call(window);
                 handled = true;
             }
 
@@ -864,15 +804,9 @@ pub const DispatchTree = struct {
             // Only fire if click is outside bounds AND not on a descendant
             if (is_outside_bounds and !is_on_descendant) {
                 const lb = node.listeners orelse continue;
-                for (lb.click_outside_listeners.items) |listener| {
-                    if (listener.callback) |cb| {
-                        cb();
-                        any_fired = true;
-                    }
-                    if (listener.handler) |handler| {
-                        handler.invoke(window);
-                        any_fired = true;
-                    }
+                for (lb.click_outside_listeners.items) |handler| {
+                    handler.call(window);
+                    any_fired = true;
                 }
             }
         }
@@ -960,30 +894,16 @@ pub const DispatchTree = struct {
         return false;
     }
 
-    /// Register an action handler on the current node
-    pub fn onAction(self: *Self, comptime Action: type, callback: *const fn () void) void {
+    /// Register an action handler on the current node. UI primitives resolve
+    /// `action_type` with `actionTypeId(Action)` before rendering.
+    pub fn onAction(self: *Self, action_type: ActionTypeId, handler: Handler) void {
+        handler.assertBound();
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
             node.getOrCreateListeners(self.allocator).action_listeners.append(self.allocator, .{
-                .action_type = actionTypeId(Action),
-                .callback = callback,
-            }) catch @panic("dispatch: action listener registration failed (OOM)");
-        }
-    }
-
-    /// Register an action handler using HandlerRef (new pattern)
-    pub fn onActionHandler(self: *Self, comptime Action: type, ref: HandlerRef) void {
-        self.onActionHandlerRaw(actionTypeId(Action), ref);
-    }
-
-    /// Register an action handler whose type ID was resolved by a UI primitive.
-    pub fn onActionHandlerRaw(self: *Self, action_type: ActionTypeId, ref: HandlerRef) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.getOrCreateListeners(self.allocator).action_listeners_handler.append(self.allocator, .{
                 .action_type = action_type,
-                .handler = ref,
-            }) catch @panic("dispatch: action handler registration failed (OOM)");
+                .handler = handler,
+            }) catch @panic("dispatch: action listener registration failed (OOM)");
         }
     }
 
@@ -1003,7 +923,7 @@ pub const DispatchTree = struct {
     }
 
     /// Register a drop target on the current node
-    pub fn setDropTarget(self: *Self, comptime T: type, handler: ?HandlerRef) void {
+    pub fn setDropTarget(self: *Self, comptime T: type, handler: ?Handler) void {
         const node_id = self.currentNode();
         if (self.getNode(node_id)) |node| {
             node.drop_target = .{
@@ -1014,7 +934,11 @@ pub const DispatchTree = struct {
     }
 
     /// Find drop target in dispatch path (walks from hit node to root)
-    pub fn findDropTarget(self: *Self, path: []const DispatchNodeId, type_id: DragTypeId) ?struct { node_id: DispatchNodeId, handler: ?HandlerRef } {
+    pub fn findDropTarget(
+        self: *Self,
+        path: []const DispatchNodeId,
+        type_id: DragTypeId,
+    ) ?struct { node_id: DispatchNodeId, handler: ?Handler } {
         for (path) |node_id| {
             if (self.getNodeConst(node_id)) |node| {
                 if (node.drop_target) |target| {
@@ -1056,18 +980,9 @@ pub const DispatchTree = struct {
             const node = self.getNodeConst(path[i]) orelse continue;
             const lb = node.listeners orelse continue;
 
-            // Check action listeners
             for (lb.action_listeners.items) |listener| {
                 if (listener.action_type == action_type) {
-                    listener.callback();
-                    return true;
-                }
-            }
-
-            // Check handler-based action listeners (new pattern)
-            for (lb.action_listeners_handler.items) |listener| {
-                if (listener.action_type == action_type) {
-                    listener.handler.invoke(window);
+                    listener.handler.call(window);
                     return true;
                 }
             }
@@ -1129,6 +1044,15 @@ test "DispatchTree construction" {
     try std.testing.expectEqual(child2, grandchild_node.parent);
 }
 
+/// Wrap a test function as a `Handler`. The window is unused by these tests.
+fn testHandler(comptime callback: fn () void) Handler {
+    return .{ .invoke = struct {
+        fn invoke(_: *Window, _: handler_mod.EntityId, _: u64) void {
+            callback();
+        }
+    }.invoke };
+}
+
 test "DispatchTree registers a pre-resolved action handler" {
     // The UI builder resolves action types before rendering, so verify the raw
     // registration path preserves both that ID and its handler reference.
@@ -1136,20 +1060,20 @@ test "DispatchTree registers a pre-resolved action handler" {
     var tree = DispatchTree.init(allocator);
     defer tree.deinit();
 
-    const callback = struct {
-        fn invoke(_: *Window, _: handler_mod.EntityId) void {}
-    }.invoke;
-    const handler = HandlerRef{ .callback = callback };
+    const noop = struct {
+        fn callback() void {}
+    }.callback;
+    const handler = testHandler(noop);
     const action_type: ActionTypeId = 42;
 
     const root = tree.pushNode();
-    tree.onActionHandlerRaw(action_type, handler);
+    tree.onAction(action_type, handler);
     tree.popNode();
 
     const listeners = tree.getNodeConst(root).?.listeners.?;
-    try std.testing.expectEqual(@as(usize, 1), listeners.action_listeners_handler.items.len);
-    try std.testing.expectEqual(action_type, listeners.action_listeners_handler.items[0].action_type);
-    try std.testing.expectEqual(handler.callback, listeners.action_listeners_handler.items[0].handler.callback);
+    try std.testing.expectEqual(@as(usize, 1), listeners.action_listeners.items.len);
+    try std.testing.expectEqual(action_type, listeners.action_listeners.items[0].action_type);
+    try std.testing.expectEqual(handler.invoke, listeners.action_listeners.items[0].handler.invoke);
 }
 
 test "DispatchTree hit testing" {
@@ -1328,7 +1252,7 @@ test "DispatchTree click-outside listener fires when click is outside bounds" {
 
     const dropdown = tree.pushNode();
     tree.setBounds(dropdown, .{ .x = 100, .y = 100, .width = 100, .height = 50 });
-    tree.onClickOutside(State.callback);
+    tree.onClickOutside(testHandler(State.callback));
     tree.popNode();
 
     tree.popNode();
@@ -1357,7 +1281,7 @@ test "DispatchTree click-outside does not fire when click is inside bounds" {
 
     const root = tree.pushNode();
     tree.setBounds(root, .{ .x = 0, .y = 0, .width = 200, .height = 200 });
-    tree.onClickOutside(State.callback);
+    tree.onClickOutside(testHandler(State.callback));
     tree.popNode();
 
     // Click inside - should NOT fire
@@ -1399,16 +1323,16 @@ test "DispatchTree controlled select treats trigger and popup as inside" {
 
     const outer = tree.pushNode();
     tree.setBounds(outer, .{ .x = 100, .y = 100, .width = 100, .height = 40 });
-    tree.onClickOutside(State.close);
+    tree.onClickOutside(testHandler(State.close));
     const trigger = tree.pushNode();
     tree.setBounds(trigger, .{ .x = 100, .y = 100, .width = 100, .height = 40 });
-    tree.onClick(State.toggle);
+    tree.onClick(testHandler(State.toggle));
     tree.popNode();
     const popup = tree.pushNode();
     tree.setBounds(popup, .{ .x = 100, .y = 140, .width = 100, .height = 120 });
     const option = tree.pushNode();
     tree.setBounds(option, .{ .x = 100, .y = 140, .width = 100, .height = 30 });
-    tree.onClick(State.select);
+    tree.onClick(testHandler(State.select));
     tree.popNode();
     tree.popNode();
     tree.popNode();
@@ -1456,13 +1380,13 @@ test "DispatchTree multiple click-outside listeners" {
     // Dropdown 1 at left
     const dropdown1 = tree.pushNode();
     tree.setBounds(dropdown1, .{ .x = 10, .y = 10, .width = 80, .height = 50 });
-    tree.onClickOutside(State.closeDropdown1);
+    tree.onClickOutside(testHandler(State.closeDropdown1));
     tree.popNode();
 
     // Dropdown 2 at right
     const dropdown2 = tree.pushNode();
     tree.setBounds(dropdown2, .{ .x = 200, .y = 10, .width = 80, .height = 50 });
-    tree.onClickOutside(State.closeDropdown2);
+    tree.onClickOutside(testHandler(State.closeDropdown2));
     tree.popNode();
 
     tree.popNode();
@@ -1584,7 +1508,7 @@ test "DispatchTree click_outside_nodes tracks only nodes with listeners" {
     // No listener on root
 
     const child1 = tree.pushNode();
-    tree.onClickOutside(noop); // First listener
+    tree.onClickOutside(testHandler(noop)); // First listener
     tree.popNode();
 
     const child2 = tree.pushNode();
@@ -1592,7 +1516,7 @@ test "DispatchTree click_outside_nodes tracks only nodes with listeners" {
     tree.popNode();
 
     const child3 = tree.pushNode();
-    tree.onClickOutside(noop); // Second listener
+    tree.onClickOutside(testHandler(noop)); // Second listener
     tree.popNode();
 
     tree.popNode();

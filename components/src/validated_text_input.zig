@@ -19,7 +19,7 @@
 //!     .required_indicator = true,
 //!     .bind = &state.email,
 //!     .error_message = if (state.touched.email) validation.email(state.email) else null,
-//!     .on_blur = cx.update(State.onEmailBlur),
+//!     .on_blur = cx.on(State.onEmailBlur, .{}),
 //! }
 //! ```
 
@@ -28,7 +28,7 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
-const HandlerRef = ui.HandlerRef;
+const Handler = ui.Handler;
 const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
 const a11y = gooey.accessibility.types;
@@ -95,7 +95,7 @@ pub const ValidatedTextInput = struct {
     // =========================================================================
 
     /// Handler called when input loses focus
-    on_blur: ?HandlerRef = null,
+    on_blur: ?Handler = null,
 
     // =========================================================================
     // Input Options
@@ -264,7 +264,7 @@ pub const ValidatedTextInput = struct {
                 .cursor_color = self.cursor_color orelse t.text,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
-                .on_blur_handler = self.on_blur,
+                .on_blur = self.on_blur,
             }),
 
             // Error or help text
@@ -370,7 +370,7 @@ const InputField = struct {
     cursor_color: Color,
     tab_index: i32,
     tab_stop: bool,
-    on_blur: ?HandlerRef,
+    on_blur: ?Handler,
     accessible_name: ?[]const u8,
     accessible_description: ?[]const u8,
     // Accessibility state
@@ -440,7 +440,7 @@ const InputField = struct {
                 .cursor_color = self.cursor_color,
                 .tab_index = self.tab_index,
                 .tab_stop = self.tab_stop,
-                .on_blur_handler = self.on_blur,
+                .on_blur = self.on_blur,
             }),
         }));
     }

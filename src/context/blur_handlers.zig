@@ -1,7 +1,7 @@
 //! `BlurHandlerRegistry` — fixed-capacity store of "fire this handler
 //! when the named focusable is about to be blurred."
 //!
-//! Backed by `SubscriberSet([]const u8, HandlerRef, ...)`. The slice
+//! Backed by `SubscriberSet([]const u8, Handler, ...)`. The slice
 //! key uses a content-equality comparator (`std.mem.eql`) so
 //! re-registering the same `id` on consecutive frames replaces in
 //! place rather than leaking a slot per frame. Past the cap the
@@ -18,7 +18,7 @@
 const std = @import("std");
 
 const handler_mod = @import("handler.zig");
-const HandlerRef = handler_mod.HandlerRef;
+const Handler = handler_mod.Handler;
 
 const subscriber_set_mod = @import("subscriber_set.zig");
 const SubscriberSet = subscriber_set_mod.SubscriberSet;
@@ -47,7 +47,7 @@ pub const MAX_BLUR_HANDLER_ID_LENGTH: usize = 256;
 // where two identical IDs come in via different backing storage
 // (e.g. one from the layout arena, one from a heap-duped string).
 
-const Set = SubscriberSet([]const u8, HandlerRef, .{
+const Set = SubscriberSet([]const u8, Handler, .{
     .capacity = MAX_BLUR_HANDLERS,
     .keysEqual = struct {
         fn eq(a: []const u8, b: []const u8) bool {
@@ -104,7 +104,7 @@ pub const BlurHandlerRegistry = struct {
     /// failure — UI rendering should not crash on a degenerate widget
     /// tree, and the limit is high enough that hitting it indicates a
     /// real bug elsewhere worth surfacing in logs.
-    pub fn register(self: *Self, id: []const u8, handler: HandlerRef) void {
+    pub fn register(self: *Self, id: []const u8, handler: Handler) void {
         // Write-boundary pair-assertions: ID is non-empty (empty IDs
         // collide and signal a caller that forgot to set one) and
         // bounded (a 4 GB slice as an ID is heap garbage).
@@ -137,10 +137,10 @@ pub const BlurHandlerRegistry = struct {
     // -------------------------------------------------------------------------
 
     /// Look up the handler for `id`, or `null` if none is registered.
-    /// Returns the handler by value — `HandlerRef` is two words and
+    /// Returns the handler by value — `Handler` is a few words and
     /// always cheaper to copy than to indirect through a pointer that
     /// can be invalidated by `clearAll`.
-    pub fn getHandler(self: *const Self, id: []const u8) ?HandlerRef {
+    pub fn getHandler(self: *const Self, id: []const u8) ?Handler {
         std.debug.assert(id.len > 0);
         std.debug.assert(id.len <= MAX_BLUR_HANDLER_ID_LENGTH);
 
@@ -201,13 +201,10 @@ pub const BlurHandlerRegistry = struct {
 const testing = std.testing;
 
 // A trivial no-op handler — we only care about identity, not effects.
-fn noopCallback(_: *@import("window.zig").Window, _: handler_mod.EntityId) void {}
+fn noopCallback(_: *@import("window.zig").Window, _: handler_mod.EntityId, _: u64) void {}
 
-fn makeHandler() HandlerRef {
-    return .{
-        .callback = noopCallback,
-        .entity_id = handler_mod.EntityId.invalid,
-    };
+fn makeHandler() Handler {
+    return .{ .invoke = noopCallback };
 }
 
 test "BlurHandlerRegistry: init produces an empty registry" {

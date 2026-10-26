@@ -231,12 +231,12 @@ fn renderMain(cx: *Cx) void {
                 Button{
                     .label = "−",
                     .size_preset = .large,
-                    .on_click_handler = cx.update(MainState.decrement),
+                    .on_click = cx.on(MainState.decrement, .{}),
                 },
                 Button{
                     .label = "+",
                     .size_preset = .large,
-                    .on_click_handler = cx.update(MainState.increment),
+                    .on_click = cx.on(MainState.increment, .{}),
                 },
             }),
         }),
@@ -246,7 +246,7 @@ fn renderMain(cx: *Cx) void {
             .label = if (s.dialog_open.load(.seq_cst)) "Dialog Open..." else "Open Settings Dialog",
             .variant = if (s.dialog_open.load(.seq_cst)) .secondary else .primary,
             .size_preset = .large,
-            .on_click_handler = cx.update(MainState.openDialog),
+            .on_click = cx.on(MainState.openDialog, .{}),
         },
 
         // Window count info
@@ -345,19 +345,19 @@ fn renderDialog(cx: *Cx) void {
                 Button{
                     .label = "−",
                     .size_preset = .medium,
-                    .on_click_handler = cx.update(DialogState.decrementNew),
+                    .on_click = cx.on(DialogState.decrementNew, .{}),
                 },
                 Button{
                     .label = "+",
                     .size_preset = .medium,
-                    .on_click_handler = cx.update(DialogState.incrementNew),
+                    .on_click = cx.on(DialogState.incrementNew, .{}),
                 },
                 ui.spacerMin(8),
                 Button{
                     .label = "Reset",
                     .variant = .secondary,
                     .size_preset = .small,
-                    .on_click_handler = cx.update(DialogState.reset),
+                    .on_click = cx.on(DialogState.reset, .{}),
                 },
             }),
         }),
@@ -371,13 +371,13 @@ fn renderDialog(cx: *Cx) void {
                 .label = "Cancel",
                 .variant = .secondary,
                 .size_preset = .medium,
-                .on_click_handler = cx.update(DialogState.cancel),
+                .on_click = cx.on(DialogState.cancel, .{}),
             },
             Button{
                 .label = if (has_changes) "Apply Changes" else "Apply",
                 .variant = if (has_changes) .primary else .secondary,
                 .size_preset = .medium,
-                .on_click_handler = cx.update(DialogState.applyAndClose),
+                .on_click = cx.on(DialogState.applyAndClose, .{}),
             },
         }),
 

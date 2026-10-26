@@ -19,12 +19,6 @@ const typeId = cx_mod.typeId;
 const window_mod = @import("context/window.zig");
 const Window = window_mod.Window;
 
-const handler_mod = @import("context/handler.zig");
-const EntityId = handler_mod.EntityId;
-const unpackArg = handler_mod.unpackArg;
-
-// Note: Tests for typeId, packArg, unpackArg are in core/handler.zig
-
 test "pure state methods are fully testable" {
     // This demonstrates the key benefit of the Cx pattern:
     // State methods have no framework dependencies!
@@ -70,7 +64,7 @@ test "pure state methods are fully testable" {
     s.decrement();
     try std.testing.expectEqual(@as(i32, 1), s.count);
 
-    // Test addAmount (simulates updateWith pattern)
+    // Test addAmount (a method that takes an argument)
     s.addAmount(100);
     try std.testing.expectEqual(@as(i32, 101), s.count);
 
@@ -80,189 +74,174 @@ test "pure state methods are fully testable" {
     try std.testing.expectEqualStrings("Reset!", s.message);
 }
 
-test "command method signatures are valid" {
-    // Verify that command method signatures compile correctly
-    const AppState = struct {
-        value: i32 = 0,
-        focused: bool = false,
+// =============================================================================
+// `cx.on` contract tests
+// =============================================================================
 
-        // Command: fn(*State, *Window) void
-        pub fn doSomethingWithFramework(self: *@This(), g: *Window) void {
-            _ = g; // Would call g.blurAll(), g.focusTextInput(), etc.
-            self.value += 1;
-        }
+const dispatch_mod = @import("context/dispatch.zig");
 
-        // CommandWith: fn(*State, *Window, Arg) void
-        pub fn setValueWithFramework(self: *@This(), g: *Window, value: i32) void {
-            _ = g;
-            self.value = value;
-        }
-
-        pub fn focusAndSet(self: *@This(), g: *Window, field_id: usize) void {
-            _ = g; // Would call g.focusTextInput(...)
-            _ = field_id;
-            self.focused = true;
-        }
-    };
-
-    // Just verify the types compile - actual invocation needs Window instance
-    const s = AppState{};
-    try std.testing.expectEqual(@as(i32, 0), s.value);
-
-    // We can still test the logic by calling directly (without Window)
-    // This shows the pattern encourages testable code
-    const MockWindow = Window;
-    _ = MockWindow;
-}
-
-test "root state registration via Window instance" {
-    const StateA = struct {
-        a: i32 = 10,
-        pub fn inc(self: *@This()) void {
-            self.a += 1;
-        }
-    };
-
-    const StateB = struct {
-        b: []const u8 = "hello",
-    };
-
-    // Heap-allocate Window (>400KB — too large for stack per CLAUDE.md).
+/// A heap `Window` (too large for the stack) with only the fields the handler
+/// path reads: root state, render flag, and platform window.
+fn handlerTestWindow(comptime State: type, state: *State) !*Window {
     const window = try std.testing.allocator.create(Window);
-    defer std.testing.allocator.destroy(window);
-
-    window.root_state_ptr = null;
-    window.root_state_type_id = 0;
-
-    var state_a = StateA{};
-
-    // Set root state on the Window instance.
-    window.setRootState(StateA, &state_a);
-    defer window.clearRootState();
-
-    // Retrieve with correct type.
-    const retrieved = window.getRootState(StateA);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqual(@as(i32, 10), retrieved.?.a);
-
-    // Modify through pointer.
-    retrieved.?.inc();
-    try std.testing.expectEqual(@as(i32, 11), state_a.a);
-
-    // Wrong type returns null.
-    const wrong = window.getRootState(StateB);
-    try std.testing.expect(wrong == null);
-}
-
-test "Cx.update creates valid HandlerRef" {
-    const TestState = struct {
-        count: i32 = 0,
-
-        pub fn increment(self: *@This()) void {
-            self.count += 1;
-        }
-    };
-
-    var state = TestState{};
-
-    // Create a minimal Cx (we only need it for the update() method).
-    // No root state registration needed — the handler is not invoked here.
-    var cx = Cx{
-        ._allocator = undefined, // Not used by update()
-        ._window = undefined, // Not used by update()
-        ._builder = undefined, // Not used by update()
-        .state_ptr = @ptrCast(&state),
-        .state_type_id = typeId(TestState),
-    };
-
-    // Create handler
-    const handler = cx.update(TestState.increment);
-
-    // update() handlers use EntityId.invalid (they operate on root state, not an entity)
-    try std.testing.expectEqual(EntityId.invalid, handler.entity_id);
-}
-
-test "Cx.updateWith creates handler with packed argument" {
-    const TestState = struct {
-        value: i32 = 0,
-
-        pub fn setValue(self: *@This(), new_value: i32) void {
-            self.value = new_value;
-        }
-    };
-
-    var state = TestState{};
-
-    // No root state registration needed — the handler is not invoked here.
-    var cx = Cx{
-        ._allocator = undefined,
-        ._window = undefined,
-        ._builder = undefined,
-        .state_ptr = @ptrCast(&state),
-        .state_type_id = typeId(TestState),
-    };
-
-    // Create handler with argument 42
-    const handler = cx.updateWith(@as(i32, 42), TestState.setValue);
-
-    // The argument (42) is packed into entity_id for transport
-    const unpacked = unpackArg(i32, handler.entity_id);
-    try std.testing.expectEqual(@as(i32, 42), unpacked);
-}
-
-test "Cx.onSelect preserves indexes and only invokes application selection" {
-    // Exercise the generated decoding callback at every packing boundary and
-    // verify framework dispatch does not mutate application-owned open state.
-    const TestState = struct {
-        selected: usize = 0,
-        invocation_count: u8 = 0,
-        is_open: bool = true,
-
-        pub fn select(self: *@This(), index: usize) void {
-            std.debug.assert(self.invocation_count < 4);
-            std.debug.assert(self.is_open);
-            self.selected = index;
-            self.invocation_count += 1;
-        }
-    };
-    const indexes = if (@bitSizeOf(usize) > 32)
-        [_]usize{
-            0,
-            std.math.maxInt(u32),
-            @as(usize, std.math.maxInt(u32)) + 1,
-            std.math.maxInt(usize),
-        }
-    else
-        [_]usize{ 0, std.math.maxInt(usize) };
-
-    const window = try std.testing.allocator.create(Window);
-    defer std.testing.allocator.destroy(window);
-
-    var state = TestState{};
     window.root_state_ptr = null;
     window.root_state_type_id = 0;
     window.platform_window = null;
     window.needs_render = false;
-    window.setRootState(TestState, &state);
-    defer window.clearRootState();
+    window.setRootState(State, state);
+    return window;
+}
 
-    var cx = Cx{
-        ._allocator = undefined,
+fn handlerTestCx(comptime State: type, window: *Window, state: *State) Cx {
+    return .{
+        ._allocator = std.testing.allocator,
         ._window = window,
         ._builder = undefined,
-        .state_ptr = @ptrCast(&state),
-        .state_type_id = typeId(TestState),
+        .state_ptr = @ptrCast(state),
+        .state_type_id = typeId(State),
     };
-    const on_select = cx.onSelect(TestState.select);
+}
 
-    for (indexes, 1..) |index, expected_count| {
-        window.needs_render = false;
-        on_select.forIndex(index).invoke(window);
-        try std.testing.expectEqual(index, state.selected);
-        try std.testing.expectEqual(expected_count, state.invocation_count);
-        try std.testing.expect(state.is_open);
-        try std.testing.expect(window.checkAndClearRenderFlag());
+const ShapeState = struct {
+    plain_count: u32 = 0,
+    last_arg: i32 = 0,
+    window_seen: ?*Window = null,
+    arg_with_window: u8 = 0,
+
+    pub fn plain(self: *ShapeState) void {
+        self.plain_count += 1;
     }
+    pub fn withArg(self: *ShapeState, value: i32) void {
+        self.last_arg = value;
+    }
+    pub fn withWindow(self: *ShapeState, window: *Window) void {
+        self.window_seen = window;
+    }
+    pub fn withBoth(self: *ShapeState, value: u8, window: *Window) void {
+        self.arg_with_window = value;
+        self.window_seen = window;
+    }
+};
+
+test "cx.on detects all four method shapes" {
+    // Build one handler per shape and invoke each. Each method writes a
+    // different field, so a shape misdetected as another (for example an
+    // argument passed where the window belongs) shows up as a wrong field.
+    var state = ShapeState{};
+    const window = try handlerTestWindow(ShapeState, &state);
+    defer std.testing.allocator.destroy(window);
+    var cx = handlerTestCx(ShapeState, window, &state);
+
+    cx.on(ShapeState.plain, .{}).call(window);
+    try std.testing.expectEqual(@as(u32, 1), state.plain_count);
+    try std.testing.expect(state.window_seen == null);
+    try std.testing.expect(window.checkAndClearRenderFlag());
+
+    cx.on(ShapeState.withArg, .{ .arg = -7 }).call(window);
+    try std.testing.expectEqual(@as(i32, -7), state.last_arg);
+    try std.testing.expect(state.window_seen == null);
+
+    cx.on(ShapeState.withWindow, .{}).call(window);
+    try std.testing.expectEqual(window, state.window_seen.?);
+
+    state.window_seen = null;
+    cx.on(ShapeState.withBoth, .{ .arg = 200 }).call(window);
+    try std.testing.expectEqual(@as(u8, 200), state.arg_with_window);
+    try std.testing.expectEqual(window, state.window_seen.?);
+    try std.testing.expectEqual(@as(u32, 1), state.plain_count);
+}
+
+test "cx.on coerces .arg to the method's argument type" {
+    // Literals carry no type. An integer literal must become the method's
+    // `u8` at its maximum and an enum literal the method's enum, without
+    // `@as`. `withArg` is the index widgets' path and must keep a full usize.
+    const Page = enum { home, settings, about };
+    const State = struct {
+        small: u8 = 0,
+        page: Page = .home,
+        index: usize = 0,
+        pub fn setSmall(self: *@This(), value: u8) void {
+            self.small = value;
+        }
+        pub fn setPage(self: *@This(), page: Page) void {
+            self.page = page;
+        }
+        pub fn select(self: *@This(), index: usize) void {
+            self.index = index;
+        }
+    };
+    var state = State{};
+    const window = try handlerTestWindow(State, &state);
+    defer std.testing.allocator.destroy(window);
+    var cx = handlerTestCx(State, window, &state);
+
+    cx.on(State.setSmall, .{ .arg = 255 }).call(window);
+    try std.testing.expectEqual(@as(u8, 255), state.small);
+    cx.on(State.setPage, .{ .arg = .about }).call(window);
+    try std.testing.expectEqual(Page.about, state.page);
+
+    const on_select = cx.on(State.select, .{});
+    const index_max: usize = std.math.maxInt(usize);
+    on_select.withArg(index_max).call(window);
+    try std.testing.expectEqual(index_max, state.index);
+    on_select.withArg(@as(usize, 0)).call(window);
+    try std.testing.expectEqual(@as(usize, 0), state.index);
+}
+
+test "state type check runs in safe modes for cx.on and cx.state" {
+    // A handler or state access for a type that is not the root state panics
+    // in Debug and ReleaseSafe. The test hook turns the panic into a counted
+    // return, proving each check runs without aborting the test runner.
+    if (!std.debug.runtime_safety) return error.SkipZigTest;
+    const Other = struct {
+        pub fn touch(_: *@This()) void {}
+    };
+    var state = ShapeState{};
+    const window = try handlerTestWindow(ShapeState, &state);
+    defer std.testing.allocator.destroy(window);
+    var cx = handlerTestCx(ShapeState, window, &state);
+    const handler_mod = @import("context/handler.zig");
+    defer handler_mod.test_mismatches_expected = 0;
+
+    // The matching type passes without consuming an expected mismatch.
+    handler_mod.test_mismatches_expected = 1;
+    _ = cx.on(ShapeState.plain, .{});
+    _ = cx.state(ShapeState);
+    try std.testing.expectEqual(@as(u32, 1), handler_mod.test_mismatches_expected);
+
+    _ = cx.on(Other.touch, .{});
+    try std.testing.expectEqual(@as(u32, 0), handler_mod.test_mismatches_expected);
+
+    handler_mod.test_mismatches_expected = 1;
+    _ = cx.state(Other);
+    try std.testing.expectEqual(@as(u32, 0), handler_mod.test_mismatches_expected);
+}
+
+test "a click through dispatch reaches a handler with its argument" {
+    // Register the handler the way `Box.on_click` does, hit-test a point
+    // inside the clickable child, and dispatch the click. The parent has its
+    // own handler, so bubbling past the child would show up as a wrong value.
+    var state = ShapeState{};
+    const window = try handlerTestWindow(ShapeState, &state);
+    defer std.testing.allocator.destroy(window);
+    var cx = handlerTestCx(ShapeState, window, &state);
+
+    var tree = dispatch_mod.DispatchTree.init(std.testing.allocator);
+    defer tree.deinit();
+    const root = tree.pushNode();
+    tree.setBounds(root, .{ .x = 0, .y = 0, .width = 200, .height = 200 });
+    tree.onClick(cx.on(ShapeState.withArg, .{ .arg = -1 }));
+    const child = tree.pushNode();
+    tree.setBounds(child, .{ .x = 50, .y = 50, .width = 40, .height = 20 });
+    tree.onClick(cx.on(ShapeState.withArg, .{ .arg = 42 }));
+    tree.popNode();
+    tree.popNode();
+
+    const target = tree.hitTest(60, 55).?;
+    try std.testing.expectEqual(child, target);
+    try std.testing.expect(tree.dispatchClick(target, window));
+    try std.testing.expectEqual(@as(i32, 42), state.last_arg);
+    try std.testing.expect(window.checkAndClearRenderFlag());
 }
 
 test "navigation state pattern" {

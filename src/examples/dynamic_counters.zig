@@ -1,10 +1,9 @@
 //! Dynamic Counters Example (Cx API)
 //!
 //! Demonstrates:
-//! - Pure state methods with cx.update() for simple mutations
-//! - Command methods with cx.command() when entity ops needed
+//! - Pure entity methods bound with cx.on(method, .{ .entity = counter })
+//! - Methods that take *Window when entity ops are needed
 //! - Dynamic entity creation and deletion
-//! - Entity-scoped operations with cx.entities.context()
 //! - Auto-cleanup when entities are removed
 
 const std = @import("std");
@@ -53,7 +52,7 @@ const AppState = struct {
     next_label: u8 = 'A',
 
     // =========================================================================
-    // Command methods - use with cx.command() (need Window access)
+    // Methods that take *Window (they create and remove entities)
     // =========================================================================
 
     pub fn addCounter(self: *AppState, g: *gooey.Window) void {
@@ -101,7 +100,7 @@ const AppState = struct {
 // Components - Receive *Cx directly
 // =============================================================================
 
-/// Individual counter card - uses pure methods via EntityContext
+/// Individual counter card - binds pure methods to its entity with `.entity`
 const CounterCard = struct {
     counter: gooey.context.Entity(Counter),
 
@@ -129,16 +128,24 @@ const CounterButtons = struct {
     counter: gooey.context.Entity(Counter),
 
     pub fn render(self: @This(), cx: *Cx) void {
-        var entity_cx = cx.entities.context(Counter, self.counter) orelse return;
-
         var dec_id_buf: [32]u8 = undefined;
         var inc_id_buf: [32]u8 = undefined;
         const dec_id = std.fmt.bufPrint(&dec_id_buf, "dec_{d}", .{self.counter.id.id}) catch "-";
         const inc_id = std.fmt.bufPrint(&inc_id_buf, "inc_{d}", .{self.counter.id.id}) catch "+";
 
         cx.render(ui.hstack(.{ .gap = 8 }, .{
-            Button{ .id = dec_id, .label = "-", .size_preset = .small, .on_click_handler = entity_cx.update(Counter.decrement) },
-            Button{ .id = inc_id, .label = "+", .size_preset = .small, .on_click_handler = entity_cx.update(Counter.increment) },
+            Button{
+                .id = dec_id,
+                .label = "-",
+                .size_preset = .small,
+                .on_click = cx.on(Counter.decrement, .{ .entity = self.counter }),
+            },
+            Button{
+                .id = inc_id,
+                .label = "+",
+                .size_preset = .small,
+                .on_click = cx.on(Counter.increment, .{ .entity = self.counter }),
+            },
         }));
     }
 };
@@ -166,15 +173,19 @@ const TotalDisplay = struct {
     }
 };
 
-/// Control buttons - uses command() because addCounter needs entity creation
+/// Control buttons - addCounter takes *Window because it creates entities
 const ControlPanel = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.stateConst(AppState);
 
         cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            // These need command() because they create/remove entities
-            Button{ .label = "+ Add Counter", .on_click_handler = cx.command(AppState.addCounter) },
-            Button{ .label = "- Remove Counter", .variant = .secondary, .on_click_handler = cx.command(AppState.removeCounter) },
+            // These take *Window because they create/remove entities
+            Button{ .label = "+ Add Counter", .on_click = cx.on(AppState.addCounter, .{}) },
+            Button{
+                .label = "- Remove Counter",
+                .variant = .secondary,
+                .on_click = cx.on(AppState.removeCounter, .{}),
+            },
             ui.textFmt("({}/10)", .{s.countersSlice().len}, .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
         }));
     }
@@ -236,7 +247,10 @@ fn render(cx: *Cx) void {
         .direction = .column,
     }, .{
         ui.text("Dynamic Counters", .{ .size = 24 }),
-        ui.text("Pure state: Counter.increment/decrement use entity cx.update()", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
+        ui.text("Pure state: Counter.increment/decrement bind to their entity with .entity", .{
+            .size = 14,
+            .color = ui.Color.rgb(0.5, 0.5, 0.5),
+        }),
 
         ControlPanel{},
         CounterGrid{},

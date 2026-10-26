@@ -227,7 +227,7 @@ const AppState = struct {
         self.tree_state.toggleExpand(entry_index);
     }
 
-    pub fn onItemClick(self: *AppState, g: *gooey.Window, entry_index: u32) void {
+    pub fn onItemClick(self: *AppState, entry_index: u32, g: *gooey.Window) void {
         self.tree_state.selectIndex(entry_index);
 
         // Get the selected entry
@@ -322,7 +322,7 @@ const AppState = struct {
 
     pub fn openDirectory(self: *AppState, g: *gooey.Window) void {
         _ = self;
-        g.deferCommand(AppState.openDialogDeferred);
+        g.deferCommand(AppState.openDialogDeferred, .{});
     }
 
     fn openDialogDeferred(self: *AppState, g: *gooey.Window) void {
@@ -605,7 +605,7 @@ const FileSidebar = struct {
                 Button{
                     .label = "📂 Open",
                     .variant = .secondary,
-                    .on_click_handler = cx.command(AppState.openDirectory),
+                    .on_click = cx.on(AppState.openDirectory, .{}),
                 },
                 ui.spacer(),
                 ui.when(s.dir_path_len > 0, .{
@@ -615,7 +615,7 @@ const FileSidebar = struct {
                         .corner_radius = 4,
                         .alignment = .{ .main = .center, .cross = .center },
                         .hover_background = Color.rgba(1, 1, 1, 0.1),
-                        .on_click_handler = cx.update(AppState.expandAll),
+                        .on_click = cx.on(AppState.expandAll, .{}),
                     }, .{
                         Svg{ .path = Lucide.folder_open, .size = 16, .no_fill = true, .stroke_color = text_muted, .stroke_width = 1.5 },
                     }),
@@ -625,7 +625,7 @@ const FileSidebar = struct {
                         .corner_radius = 4,
                         .alignment = .{ .main = .center, .cross = .center },
                         .hover_background = Color.rgba(1, 1, 1, 0.1),
-                        .on_click_handler = cx.update(AppState.collapseAll),
+                        .on_click = cx.on(AppState.collapseAll, .{}),
                     }, .{
                         Svg{ .path = Lucide.folder, .size = 16, .no_fill = true, .stroke_color = text_muted, .stroke_width = 1.5 },
                     }),
@@ -703,7 +703,7 @@ const TreeListContent = struct {
             .direction = .row,
             .alignment = .{ .main = .start, .cross = .center },
             .gap = 0,
-            .on_click_handler = cx.commandWith(entry_index, AppState.onItemClick),
+            .on_click = cx.on(AppState.onItemClick, .{ .arg = entry_index }),
         }, .{
             // Indent spacer
             ui.rect(.{ .width = indent, .height = FILE_ITEM_HEIGHT }),

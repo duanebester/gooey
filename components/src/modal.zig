@@ -17,10 +17,10 @@
 //! Modal(ConfirmDialogContent){
 //!     .id = "confirm-dialog",
 //!     .is_open = s.show_confirm,
-//!     .on_close = cx.update(State.closeConfirm),
+//!     .on_close = cx.on(State.closeConfirm, .{}),
 //!     .child = ConfirmDialogContent{
 //!         .message = "Are you sure?",
-//!         .on_confirm = cx.update(State.doConfirm),
+//!         .on_confirm = cx.on(State.doConfirm, .{}),
 //!     },
 //! }
 //! ```
@@ -29,7 +29,7 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
-const HandlerRef = ui.HandlerRef;
+const Handler = ui.Handler;
 const ShadowConfig = ui.ShadowConfig;
 const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
@@ -48,7 +48,7 @@ pub fn Modal(comptime ChildType: type) type {
         is_open: bool,
 
         /// Handler called when modal should close (backdrop click, escape key)
-        on_close: ?HandlerRef = null,
+        on_close: ?Handler = null,
 
         /// The content to display inside the modal
         child: ChildType,
@@ -169,7 +169,7 @@ fn ModalOverlay(comptime ChildType: type) type {
         layout_id: LayoutId,
         progress: f32,
         backdrop_color: Color,
-        on_backdrop_click: ?HandlerRef,
+        on_backdrop_click: ?Handler,
         child: ChildType,
         max_width: ?f32,
         padding: f32,
@@ -195,7 +195,7 @@ fn ModalOverlay(comptime ChildType: type) type {
                 // Center the content
                 .alignment = .{ .main = .center, .cross = .center },
                 // Backdrop click handler
-                .on_click_handler = self.on_backdrop_click,
+                .on_click = self.on_backdrop_click,
             }, .{
                 ModalContent(ChildType){
                     .child = self.child,

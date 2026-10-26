@@ -7,7 +7,7 @@
 //! - `FocusManager` - Focus management and keyboard navigation
 //! - `DispatchTree` - Event routing through element hierarchy
 //! - `Entity` / `EntityMap` - Reactive entity system for component state
-//! - `HandlerRef` - Type-erased callback storage for UI events
+//! - `Handler` - The one callback type for UI events, built by `cx.on`
 //! - `ElementStates` - Unified keyed pool for per-element retained state
 //! - `ChangeTracker` - Per-frame value-diffing storage (backs `cx.changed`)
 
@@ -87,13 +87,9 @@ pub const KeyEvent = dispatch.KeyEvent;
 
 // Listener types
 pub const MouseListener = dispatch.MouseListener;
-pub const ClickListener = dispatch.ClickListener;
-pub const ClickListenerHandler = dispatch.ClickListenerHandler;
 pub const KeyListener = dispatch.KeyListener;
 pub const SimpleKeyListener = dispatch.SimpleKeyListener;
 pub const ActionListener = dispatch.ActionListener;
-pub const ActionListenerHandler = dispatch.ActionListenerHandler;
-pub const ClickOutsideListener = dispatch.ClickOutsideListener;
 
 // Action type ID
 pub const ActionTypeId = dispatch.ActionTypeId;
@@ -203,12 +199,7 @@ pub const App = app.App;
 // Handler System
 // =============================================================================
 
-pub const handler = @import("handler.zig");
-
-pub const HandlerRef = handler.HandlerRef;
-pub const OnSelectHandler = handler.OnSelectHandler;
-pub const packArg = handler.packArg;
-pub const unpackArg = handler.unpackArg;
+pub const Handler = @import("handler.zig").Handler;
 
 // Retained-state storage lives on the surviving subsystems directly:
 //   - per-element state → `window.element_states.*`

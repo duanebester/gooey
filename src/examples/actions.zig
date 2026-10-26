@@ -14,6 +14,19 @@ const Cancel = struct {};
 const AppState = struct {
     message: []const u8 = "",
     initialized: bool = false,
+
+    fn undo(self: *AppState) void {
+        self.message = "Undo!";
+    }
+    fn redo(self: *AppState) void {
+        self.message = "Redo!";
+    }
+    fn cancel(self: *AppState) void {
+        self.message = "Cancelled!";
+    }
+    fn save(self: *AppState) void {
+        self.message = "Saved!";
+    }
 };
 
 var state = AppState{};
@@ -40,9 +53,9 @@ fn render(cx: *Cx) void {
     setupKeymap(cx);
 
     cx.render(ui.box(.{ .padding = .{ .all = 24 }, .gap = 16, .direction = .column }, .{
-        ui.onAction(Undo, doUndo),
-        ui.onAction(Redo, doRedo),
-        ui.onAction(Cancel, doCancel),
+        ui.onAction(Undo, cx.on(AppState.undo, .{})),
+        ui.onAction(Redo, cx.on(AppState.redo, .{})),
+        ui.onAction(Cancel, cx.on(AppState.cancel, .{})),
 
         ui.text("Actions Demo", .{ .size = 24 }),
         ui.text(cx.state(AppState).message, .{}),
@@ -58,7 +71,7 @@ const EditorPanel = struct {
             .background = ui.Color.rgb(0.95, 0.95, 0.95),
         }, .{
             ui.keyContext("Editor"),
-            ui.onAction(Save, save),
+            ui.onAction(Save, cx.on(AppState.save, .{})),
 
             ui.input("editor", .{ .placeholder = "Type here... (cmd+s to save)" }),
         }));
@@ -70,21 +83,8 @@ const ButtonRow = struct {
         cx.render(ui.hstack(.{
             .gap = 8,
         }, .{
-            Button{ .label = "Undo (cmd+z)", .on_click = doUndo },
-            Button{ .label = "Redo (cmd+shift+z)", .on_click = doRedo },
+            Button{ .label = "Undo (cmd+z)", .on_click = cx.on(AppState.undo, .{}) },
+            Button{ .label = "Redo (cmd+shift+z)", .on_click = cx.on(AppState.redo, .{}) },
         }));
     }
 };
-
-fn doUndo() void {
-    state.message = "Undo!";
-}
-fn doRedo() void {
-    state.message = "Redo!";
-}
-fn doCancel() void {
-    state.message = "Cancelled!";
-}
-fn save() void {
-    state.message = "Saved!";
-}

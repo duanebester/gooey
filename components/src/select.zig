@@ -33,9 +33,9 @@
 //!     .options = &.{ "Apple", "Banana", "Cherry" },
 //!     .selected = s.selected_option,
 //!     .is_open = s.select_open,
-//!     .on_toggle = cx.update(State.toggleSelect),
-//!     .on_close = cx.update(State.closeSelect),
-//!     .on_select = cx.onSelect(State.selectOption),
+//!     .on_toggle = cx.on(State.toggleSelect, .{}),
+//!     .on_close = cx.on(State.closeSelect, .{}),
+//!     .on_select = cx.on(State.selectOption, .{}),
 //! }
 //! ```
 
@@ -44,14 +44,11 @@ const gooey = @import("gooey");
 const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
-const HandlerRef = ui.HandlerRef;
+const Handler = ui.Handler;
 const layout_mod = gooey.layout;
 const LayoutId = layout_mod.LayoutId;
 const Svg = @import("svg.zig").Svg;
 const Icons = @import("svg.zig").Icons;
-
-const handler_mod = gooey.context;
-const OnSelectHandler = handler_mod.OnSelectHandler;
 
 /// Hard cap on option count to prevent runaway loops.
 const MAX_SELECT_OPTIONS: usize = 4096;
@@ -91,21 +88,16 @@ pub const Select = struct {
     /// Whether the dropdown is currently open. Owned by the application.
     is_open: bool,
 
-    /// Index-based selection handler, typed `OnSelectHandler` (not a plain
-    /// `?HandlerRef`) because it must carry the chosen option index through to
-    /// the state method. `RadioGroup` and `TabBar` share this exact shape, so
-    /// index-based selection reads identically across all three widgets.
-    /// Fixed, index-free actions (Button, Tab, `context_menu.MenuItem`) use
-    /// `on_click: ?HandlerRef` instead — the framework keeps the two concepts
-    /// on distinct names so a field named `on_select` always has one type.
-    /// Created via `cx.onSelect(State.method)`.
-    on_select: OnSelectHandler,
+    /// Index selection, shared with `RadioGroup` and `TabBar`: build it with
+    /// `cx.on(State.method, .{})` for a `fn(*State, usize)` method, without
+    /// `.arg`. Each option binds its own index with `Handler.withArg`.
+    on_select: Handler,
 
     /// Handler that toggles application-owned open state.
-    on_toggle: HandlerRef,
+    on_toggle: Handler,
 
     /// Handler that closes application-owned open state on click-outside.
-    on_close: HandlerRef,
+    on_close: Handler,
 
     // === Layout ===
 
@@ -202,7 +194,7 @@ pub const Select = struct {
         // hashed exactly once.
         cx.render(ui.box_with_layout_id(layout_id, .{
             .width = self.width,
-            .on_click_outside_handler = if (self.is_open) self.on_close else null,
+            .on_click_outside = if (self.is_open) self.on_close else null,
         }, .{
             SelectTrigger{
                 .text = self.getDisplayText(),
@@ -302,7 +294,7 @@ const SelectTrigger = struct {
     text: []const u8,
     is_placeholder: bool,
     is_open: bool,
-    on_click: ?HandlerRef,
+    on_click: ?Handler,
     background: Color,
     hover_background: Color,
     border_color: Color,
@@ -329,7 +321,7 @@ const SelectTrigger = struct {
             .corner_radius = self.corner_radius,
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
-            .on_click_handler = self.on_click,
+            .on_click = self.on_click,
         }, .{
             // Selected text
             ui.text(self.text, .{
@@ -386,7 +378,7 @@ const SelectDropdown = struct {
     option_icon_size: f32,
     option_icon_color: Color,
     selected: ?usize,
-    on_select: OnSelectHandler,
+    on_select: Handler,
     min_width: ?f32,
     background: Color,
     selected_background: Color,
@@ -448,7 +440,7 @@ const SelectOptions = struct {
     option_icon_size: f32,
     option_icon_color: Color,
     selected: ?usize,
-    on_select: OnSelectHandler,
+    on_select: Handler,
     selected_background: Color,
     hover_background: Color,
     text_color: Color,
@@ -461,7 +453,7 @@ const SelectOptions = struct {
         std.debug.assert(self.options.len <= MAX_SELECT_OPTIONS);
 
         for (self.options, 0..) |label, i| {
-            const handler = self.on_select.forIndex(i);
+            const handler = self.on_select.withArg(i);
             // `self.selected` is the chosen index (?usize); this derives the
             // per-option boolean for the item at index `i`.
             const option_selected = if (self.selected) |sel| sel == i else false;
@@ -493,7 +485,7 @@ const SelectOption = struct {
     icon_size: f32,
     icon_color: Color,
     selected: bool,
-    on_click: ?HandlerRef,
+    on_click: ?Handler,
     selected_background: Color,
     hover_background: Color,
     text_color: Color,
@@ -516,7 +508,7 @@ const SelectOption = struct {
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
             .gap = 8,
-            .on_click_handler = self.on_click,
+            .on_click = self.on_click,
         }, .{
             // Icon + label grouped together so `space_between` still puts
             // exactly one leading group against the trailing checkmark.

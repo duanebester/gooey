@@ -16,14 +16,10 @@
 //!     pub fn increment(self: *Counter) void {
 //!         self.count += 1;
 //!     }
-//!
-//!     pub fn render(self: *Counter, cx: *EntityContext(Counter), b: *Builder) void {
-//!         b.vstack(.{}, .{
-//!             ui.textFmt("Count: {}", .{self.count}, .{}),
-//!             ui.buttonHandler("+", cx.update(Counter.increment)),
-//!         });
-//!     }
 //! };
+//!
+//! // In render, with `counter: Entity(Counter)`:
+//! Button{ .label = "+", .on_click = cx.on(Counter.increment, .{ .entity = counter }) }
 //! ```
 
 const std = @import("std");
@@ -93,21 +89,6 @@ pub fn Entity(comptime T: type) type {
         /// This is a convenience method that eliminates boilerplate when
         /// working with entities in component render methods.
         ///
-        /// ## Example
-        ///
-        /// ```zig
-        /// const CounterButtons = struct {
-        ///     counter: gooey.context.Entity(Counter),
-        ///
-        ///     pub fn render(self: @This(), b: *ui.Builder) void {
-        ///         var cx = self.counter.context(g_window);
-        ///         b.hstack(.{ .gap = 8 }, .{
-        ///             ui.buttonHandler("-", cx.handler(Counter.decrement)),
-        ///             ui.buttonHandler("+", cx.handler(Counter.increment)),
-        ///         });
-        ///     }
-        /// };
-        /// ```
         pub fn context(self: Self, window: *Window) EntityContext(T) {
             return .{
                 .window = window,
@@ -496,9 +477,6 @@ pub const EntityMap = struct {
 /// EntityContext(T) provides typed access to an entity and operations
 /// for reading/updating other entities, creating new entities, etc.
 pub fn EntityContext(comptime T: type) type {
-    const handler_mod = @import("handler.zig");
-    const HandlerRef = handler_mod.HandlerRef;
-
     return struct {
         const Self = @This();
 
@@ -544,122 +522,6 @@ pub fn EntityContext(comptime T: type) type {
         }
 
         // =====================================================================
-        // Pure State Handlers (Option B - Recommended)
-        // =====================================================================
-
-        /// Create a handler from a pure entity method.
-        ///
-        /// The method should be `fn(*T) void` - no context parameter.
-        /// After the method is called, the entity is marked dirty and UI re-renders.
-        ///
-        /// ## Example
-        ///
-        /// ```zig
-        /// const Counter = struct {
-        ///     count: i32 = 0,
-        ///
-        ///     pub fn increment(self: *Counter) void {
-        ///         self.count += 1;
-        ///     }
-        /// };
-        ///
-        /// // In render:
-        /// ui.buttonHandler("+", cx.update(Counter.increment));
-        /// ```
-        pub fn update(
-            self: *Self,
-            comptime method: fn (*T) void,
-        ) HandlerRef {
-            const entity_id = self.entity_id;
-
-            const Wrapper = struct {
-                fn invoke(window: *Window, eid: EntityId) void {
-                    const ents = window.getEntities();
-                    const data = ents.write(T, .{ .id = eid }) orelse {
-                        return;
-                    };
-
-                    // Call the pure method
-                    method(data);
-
-                    // Mark dirty and request render
-                    ents.markDirty(eid);
-                    window.requestRender();
-                }
-            };
-
-            return .{
-                .callback = Wrapper.invoke,
-                .entity_id = entity_id,
-            };
-        }
-
-        /// Create a handler from a pure entity method that takes an argument.
-        ///
-        /// Packs entity_id (lower 32 bits) and arg (upper 32 bits) into
-        /// `HandlerRef.entity_id`, so each handler carries its own argument
-        /// without shared mutable state. Args are limited to ≤4 bytes
-        /// (`bool`, `i32`, `u32`, `enum`, small structs).
-        pub fn updateWith(
-            self: *Self,
-            arg: anytype,
-            comptime method: fn (*T, @TypeOf(arg)) void,
-        ) HandlerRef {
-            const Arg = @TypeOf(arg);
-            comptime {
-                // Structural limit: the packed u64 stores entity_id in the lower
-                // 32 bits and the arg in the upper 32, so the arg must fit in 4
-                // bytes here — half of root cx.updateWith's 8-byte budget, which
-                // has the whole u64 for the arg. Use @compileError (not a comptime
-                // std.debug.assert, whose failure is a cryptic "reached unreachable
-                // code") to match the clear message root updateWith gives.
-                if (@sizeOf(Arg) > 4) {
-                    @compileError("entity updateWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 4 bytes (entity_id takes the other 4). Use a pointer or index instead.");
-                }
-            }
-            // Data integrity: truncation to u32 must be lossless. Runtime check
-            // because std.debug.assert is stripped in ReleaseFast and silent
-            // corruption of the packed ID would target the wrong entity.
-            if (self.entity_id.id > std.math.maxInt(u32))
-                @panic("entity_id exceeds u32 range for updateWith packing");
-
-            // Pack: lower 32 = entity_id, upper 32 = arg.
-            var arg_bits: u32 = 0;
-            @memcpy(std.mem.asBytes(&arg_bits)[0..@sizeOf(Arg)], std.mem.asBytes(&arg));
-            const combined: u64 = @as(u64, arg_bits) << 32 | @as(u64, @as(u32, @truncate(self.entity_id.id)));
-
-            const Wrapper = struct {
-                fn invoke(window: *Window, packed_id: EntityId) void {
-                    // Unpack entity_id from lower 32 bits.
-                    const eid_raw: u32 = @truncate(packed_id.id);
-                    const eid = EntityId{ .id = @as(u64, eid_raw) };
-
-                    // Unpack arg from upper 32 bits.
-                    var raw: u32 = @truncate(packed_id.id >> 32);
-                    var unpacked_arg: Arg = undefined;
-                    @memcpy(std.mem.asBytes(&unpacked_arg), std.mem.asBytes(&raw)[0..@sizeOf(Arg)]);
-
-                    const ents = window.getEntities();
-                    const data = ents.write(T, .{ .id = eid }) orelse {
-                        return;
-                    };
-
-                    // Call the pure method with the unpacked argument.
-                    method(data, unpacked_arg);
-
-                    // Mark dirty and request render.
-                    ents.markDirty(eid);
-                    window.requestRender();
-                }
-            };
-
-            return .{
-                .callback = Wrapper.invoke,
-                .entity_id = .{ .id = combined },
-            };
-        }
-
-        // =====================================================================
         // Entity Creation
         // =====================================================================
 
@@ -671,49 +533,6 @@ pub fn EntityContext(comptime T: type) type {
         /// Remove an entity
         pub fn remove(self: *Self, id: EntityId) void {
             self.entities.remove(id);
-        }
-
-        // =====================================================================
-        // Handler Creation
-        // =====================================================================
-
-        /// Create a handler from a method on this entity type.
-        ///
-        /// The entity ID is embedded in the HandlerRef, so each handler
-        /// correctly references its own entity.
-        ///
-        /// Usage:
-        /// ```zig
-        /// ui.buttonHandler("+", cx.handler(MyView.increment))
-        /// ```
-        pub fn handler(
-            self: *Self,
-            comptime method: fn (*T, *Self) void,
-        ) HandlerRef {
-            // Create a wrapper that uses the entity_id from HandlerRef
-            const Wrapper = struct {
-                fn invoke(window: *Window, eid: EntityId) void {
-                    // Get entities from the framework window
-                    const ents = window.getEntities();
-                    const data = ents.write(T, .{ .id = eid }) orelse {
-                        return;
-                    };
-
-                    var cx = Self{
-                        .window = window,
-                        .entities = ents,
-                        .entity_id = eid,
-                    };
-
-                    method(data, &cx);
-                }
-            };
-
-            // Return handler with entity_id embedded
-            return .{
-                .callback = Wrapper.invoke,
-                .entity_id = self.entity_id,
-            };
         }
     };
 }

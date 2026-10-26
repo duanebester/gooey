@@ -99,7 +99,7 @@ const DropdownTrigger = struct {
         cx.render(ui.box(.{}, .{
             Button{
                 .label = if (s.show_dropdown) "Close ▲" else "Menu ▼",
-                .on_click_handler = cx.update(AppState.toggleDropdown),
+                .on_click = cx.on(AppState.toggleDropdown, .{}),
             },
             DropdownMenu{},
         }));
@@ -120,7 +120,7 @@ const DropdownMenu = struct {
             .gap = 2,
             .shadow = .{ .blur_radius = 12, .offset_y = 4, .color = ui.Color.rgba(0, 0, 0, 0.15) },
             .floating = ui.Floating.dropdown(),
-            .on_click_outside_handler = cx.update(AppState.closeDropdown),
+            .on_click_outside = cx.on(AppState.closeDropdown, .{}),
         }, .{
             MenuItem{ .label = "Profile" },
             MenuItem{ .label = "Settings" },

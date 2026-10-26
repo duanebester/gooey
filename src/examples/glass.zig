@@ -173,7 +173,7 @@ const StyleControls = struct {
         cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Cycle Style",
-                .on_click_handler = cx.command(AppState.cycleStyleCmd),
+                .on_click = cx.on(AppState.cycleStyleCmd, .{}),
             },
         }));
     }

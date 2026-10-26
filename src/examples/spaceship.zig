@@ -737,7 +737,7 @@ const JumpButtons = struct {
                     .label = "INITIATE JUMP",
                     .color = Colors.green,
                     .icon = SpaceIcons.jump_drive,
-                    .handler = cx.update(AppState.initiateJump),
+                    .on_click = cx.on(AppState.initiateJump, .{}),
                 },
             }));
         } else if (!s.destination_locked) {
@@ -746,7 +746,7 @@ const JumpButtons = struct {
                     .label = "LOCK DESTINATION",
                     .color = Colors.magenta,
                     .icon = SpaceIcons.target,
-                    .handler = cx.update(AppState.lockDestination),
+                    .on_click = cx.on(AppState.lockDestination, .{}),
                 },
             }));
         } else {
@@ -1129,7 +1129,7 @@ const AutopilotToggle = struct {
             .corner_radius = 4,
             .direction = .row,
             .alignment = .{ .cross = .center },
-            .on_click_handler = cx.update(AppState.toggleAutopilot),
+            .on_click = cx.on(AppState.toggleAutopilot, .{}),
         }, .{
             ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
@@ -1165,7 +1165,7 @@ const ShieldsToggle = struct {
             .corner_radius = 4,
             .direction = .row,
             .alignment = .{ .cross = .center },
-            .on_click_handler = cx.update(AppState.toggleShields),
+            .on_click = cx.on(AppState.toggleShields, .{}),
         }, .{
             ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
                 Svg{
@@ -1198,7 +1198,7 @@ const NeonButton = struct {
     label: []const u8,
     color: ui.Color = Colors.cyan,
     icon: ?[]const u8 = null,
-    handler: ?gooey.context.handler.HandlerRef = null,
+    on_click: ?ui.Handler = null,
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Subtle idle pulse for interactive buttons
@@ -1220,7 +1220,7 @@ const NeonButton = struct {
                 .direction = .row,
                 .gap = 6,
                 .alignment = .{ .main = .center, .cross = .center },
-                .on_click_handler = self.handler,
+                .on_click = self.on_click,
             }, .{
                 Svg{
                     .path = icon_path,
@@ -1239,7 +1239,7 @@ const NeonButton = struct {
                 .background = self.color.withAlpha(bg_alpha),
                 .corner_radius = 4,
                 .alignment = .{ .main = .center, .cross = .center },
-                .on_click_handler = self.handler,
+                .on_click = self.on_click,
             }, .{
                 ui.text(self.label, .{ .size = 11, .color = self.color }),
             }));
@@ -1258,13 +1258,13 @@ const QuickActions = struct {
                 .label = "BOOST SHIELDS",
                 .color = Colors.cyan,
                 .icon = SpaceIcons.boost,
-                .handler = cx.update(AppState.boostShields),
+                .on_click = cx.on(AppState.boostShields, .{}),
             },
             NeonButton{
                 .label = "EMERGENCY STOP",
                 .color = Colors.red,
                 .icon = SpaceIcons.emergency,
-                .handler = cx.update(AppState.emergencyStop),
+                .on_click = cx.on(AppState.emergencyStop, .{}),
             },
         }));
     }

@@ -18,7 +18,7 @@ pub const ShadowConfig = layout_types.ShadowConfig;
 pub const AttachPoint = layout_types.AttachPoint;
 pub const CornerRadius = layout_mod.CornerRadius;
 pub const ObjectFit = @import("../image/atlas.zig").ObjectFit;
-pub const HandlerRef = @import("../context/handler.zig").HandlerRef;
+pub const Handler = @import("../context/handler.zig").Handler;
 pub const CursorShape = @import("../platform/interface.zig").CursorShape;
 
 // Drag & Drop
@@ -52,10 +52,10 @@ pub const DropTarget = struct {
     /// Type ID of accepted drag payload
     type_id: DragTypeId,
     /// Handler invoked on drop (receives entity notification)
-    handler: ?HandlerRef = null,
+    handler: ?Handler = null,
 
     /// Create a typed DropTarget config
-    pub fn init(comptime T: type, handler: ?HandlerRef) DropTarget {
+    pub fn init(comptime T: type, handler: ?Handler) DropTarget {
         return .{
             .type_id = drag_mod.dragTypeId(T),
             .handler = handler,
@@ -225,10 +225,8 @@ pub const Box = struct {
     alignment: Alignment = .{ .main = .start, .cross = .start },
 
     // Interaction
-    on_click: ?*const fn () void = null,
-    on_click_handler: ?HandlerRef = null,
-    on_click_outside: ?*const fn () void = null,
-    on_click_outside_handler: ?HandlerRef = null,
+    on_click: ?Handler = null,
+    on_click_outside: ?Handler = null,
     /// Control pointer event behavior (like CSS pointer-events)
     /// When set to .none, this element won't receive mouse events or block elements below
     pointer_events: PointerEvents = .auto,
@@ -351,7 +349,7 @@ pub const InputStyle = struct {
     bind: ?*[]const u8 = null,
 
     // Handlers
-    on_blur_handler: ?HandlerRef = null,
+    on_blur: ?Handler = null,
 
     // Focus navigation
     tab_index: i32 = 0,
@@ -383,7 +381,7 @@ pub const TextAreaStyle = struct {
     bind: ?*[]const u8 = null,
 
     // Handlers
-    on_blur_handler: ?HandlerRef = null,
+    on_blur: ?Handler = null,
 
     // Focus
     tab_index: i32 = 0,
@@ -421,7 +419,7 @@ pub const CodeEditorStyle = struct {
     bind: ?*[]const u8 = null,
 
     // Handlers
-    on_blur_handler: ?HandlerRef = null,
+    on_blur: ?Handler = null,
 
     // Focus
     tab_index: i32 = 0,
@@ -698,7 +696,7 @@ pub const ButtonStyle = struct {
 pub const CheckboxStyle = struct {
     label: []const u8 = "",
     bind: ?*bool = null,
-    on_change: ?*const fn (bool) void = null,
+    on_change: ?Handler = null,
 
     // Theme-aware colors (optional - uses defaults if not set)
     background: ?Color = null, // Unchecked background

@@ -469,7 +469,7 @@ const ContactPreferencesSection = struct {
                 .label = "Subscribe to our newsletter",
                 .accessible_name = "Subscribe to newsletter",
                 .accessible_description = "Receive weekly updates about our products and services",
-                .on_click_handler = cx.update(FormState.toggleNewsletter),
+                .on_click = cx.on(FormState.toggleNewsletter, .{}),
             },
         }));
     }
@@ -501,21 +501,21 @@ const RadioGroupSection = struct {
                     .selected = self.contact_method == .email,
                     .pos_in_set = 1,
                     .set_size = 3,
-                    .on_select = cx.update(FormState.setContactEmail),
+                    .on_select = cx.on(FormState.setContactEmail, .{}),
                 },
                 RadioOption{
                     .label = "Phone",
                     .selected = self.contact_method == .phone,
                     .pos_in_set = 2,
                     .set_size = 3,
-                    .on_select = cx.update(FormState.setContactPhone),
+                    .on_select = cx.on(FormState.setContactPhone, .{}),
                 },
                 RadioOption{
                     .label = "Postal Mail",
                     .selected = self.contact_method == .mail,
                     .pos_in_set = 3,
                     .set_size = 3,
-                    .on_select = cx.update(FormState.setContactMail),
+                    .on_select = cx.on(FormState.setContactMail, .{}),
                 },
             }),
         }));
@@ -527,7 +527,7 @@ const RadioOption = struct {
     selected: bool,
     pos_in_set: u16,
     set_size: u16,
-    on_select: ui.HandlerRef,
+    on_select: ui.Handler,
 
     pub fn render(self: @This(), cx: *Cx) void {
         // Accessible radio button
@@ -548,7 +548,7 @@ const RadioOption = struct {
             .direction = .row,
             .gap = 8,
             .alignment = .{ .cross = .center },
-            .on_click_handler = self.on_select,
+            .on_click = self.on_select,
         }, .{
             // Radio circle
             ui.box(.{
@@ -620,9 +620,9 @@ const ExperienceSection = struct {
                 .selected = self.experience_level,
                 .placeholder = "Select your experience level",
                 .is_open = self.experience_open,
-                .on_toggle = cx.update(FormState.toggleExperience),
-                .on_close = cx.update(FormState.closeExperience),
-                .on_select = cx.onSelect(FormState.selectExperience),
+                .on_toggle = cx.on(FormState.toggleExperience, .{}),
+                .on_close = cx.on(FormState.closeExperience, .{}),
+                .on_select = cx.on(FormState.selectExperience, .{}),
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
             },
@@ -666,7 +666,7 @@ const TermsSection = struct {
                     "Error: You must accept the terms to continue"
                 else
                     "Required to submit the form",
-                .on_click_handler = cx.update(FormState.toggleTerms),
+                .on_click = cx.on(FormState.toggleTerms, .{}),
             },
 
             ui.when(self.has_error, .{
@@ -694,7 +694,7 @@ const FormActions = struct {
                 .accessible_name = "Submit registration form",
                 .variant = .primary,
                 .size_preset = .large,
-                .on_click_handler = cx.update(FormState.submit),
+                .on_click = cx.on(FormState.submit, .{}),
             },
 
             Button{
@@ -702,7 +702,7 @@ const FormActions = struct {
                 .accessible_name = "Reset form to default values",
                 .variant = .secondary,
                 .size_preset = .large,
-                .on_click_handler = cx.update(FormState.reset),
+                .on_click = cx.on(FormState.reset, .{}),
             },
         }));
     }
@@ -797,7 +797,7 @@ const SuccessMessage = struct {
                 .label = "Submit Another Response",
                 .accessible_name = "Start a new registration",
                 .variant = .primary,
-                .on_click_handler = cx.update(FormState.dismissSuccess),
+                .on_click = cx.on(FormState.dismissSuccess, .{}),
             },
         }));
     }

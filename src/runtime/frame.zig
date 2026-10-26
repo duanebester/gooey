@@ -250,19 +250,19 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
 fn registerBlurHandlers(window: *Window, builder: *const Builder) void {
     // Register handlers from pending text inputs
     for (builder.pending_inputs.items) |pending| {
-        if (pending.on_blur_handler) |handler| {
+        if (pending.on_blur) |handler| {
             window.registerBlurHandler(pending.id, handler);
         }
     }
     // Register handlers from pending text areas
     for (builder.pending_text_areas.items) |pending| {
-        if (pending.on_blur_handler) |handler| {
+        if (pending.on_blur) |handler| {
             window.registerBlurHandler(pending.id, handler);
         }
     }
     // Register handlers from pending code editors
     for (builder.pending_code_editors.items) |pending| {
-        if (pending.on_blur_handler) |handler| {
+        if (pending.on_blur) |handler| {
             window.registerBlurHandler(pending.id, handler);
         }
     }

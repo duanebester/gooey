@@ -301,24 +301,24 @@ const Controls = struct {
         cx.render(ui.hstack(.{ .gap = 8 }, .{
             Button{
                 .label = "Top",
-                .on_click_handler = cx.update(State.scrollToTop),
+                .on_click = cx.on(State.scrollToTop, .{}),
             },
             Button{
                 .label = "Bottom",
-                .on_click_handler = cx.update(State.scrollToBottom),
+                .on_click = cx.on(State.scrollToBottom, .{}),
             },
             Button{
                 .label = "Jump to #500",
-                .on_click_handler = cx.update(State.jumpToMiddle),
+                .on_click = cx.on(State.jumpToMiddle, .{}),
             },
             ui.spacer(),
             Button{
                 .label = "↑ Prev",
-                .on_click_handler = cx.update(State.selectPrevious),
+                .on_click = cx.on(State.selectPrevious, .{}),
             },
             Button{
                 .label = "↓ Next",
-                .on_click_handler = cx.update(State.selectNext),
+                .on_click = cx.on(State.selectNext, .{}),
             },
         }));
     }

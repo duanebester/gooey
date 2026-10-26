@@ -5,21 +5,15 @@
 //!
 //!   * State access — `cx.state(AppState)` / `cx.stateConst(AppState)`.
 //!   * Rendering    — `cx.render(ui.box(...))`.
-//!   * Handlers     — `cx.update`, `cx.updateWith`, `cx.command`,
-//!                    `cx.commandWith`, `cx.onSelect`, `cx.deferCommand`.
+//!   * Handlers     — `cx.on(method, options)` and `cx.deferCommand`.
 //!   * Sub-namespaces: `cx.lists`, `cx.animations`,
 //!                    `cx.entities`, `cx.focus`, and
 //!                    `cx.element_states` (keyed pool of
 //!                    per-element retained state).
 //!
-//! Handler signatures, in order of "purity":
-//!
-//!   | API                          | Method shape                |
-//!   | ---------------------------- | --------------------------- |
-//!   | `cx.update(M)`               | `fn(*State) void`           |
-//!   | `cx.updateWith(arg, M)`      | `fn(*State, Arg) void`      |
-//!   | `cx.command(M)`              | `fn(*State, *Window) void`   |
-//!   | `cx.commandWith(arg, M)`     | `fn(*State, *Window, A) void`|
+//! `cx.on` accepts four method shapes, detected from the signature:
+//! `fn(*State)`, `fn(*State, Arg)`, `fn(*State, *Window)`, and
+//! `fn(*State, Arg, *Window)`. See `context/handler.zig`.
 //!
 //! Examples live in `examples/` and the integration tests under
 //! `cx_tests.zig`.
@@ -76,14 +70,8 @@ pub const TextMeasurement = text_mod.TextMeasurement;
 // types through `cx.animations.*` or the `animation.*` namespace directly.
 const animation_mod = @import("animation/mod.zig");
 
-// Handler types — `cx.update` / `cx.command` / `cx.onSelect` build
-// `HandlerRef`s; `OnSelectHandler` is the multi-entry variant for
-// `Select`.
-const HandlerRef = handler_mod.HandlerRef;
-const OnSelectHandler = handler_mod.OnSelectHandler;
+const Handler = handler_mod.Handler;
 pub const typeId = handler_mod.typeId;
-const packArg = handler_mod.packArg;
-const unpackArg = handler_mod.unpackArg;
 
 // Entity types — only `EntityId` is needed here;
 // the user-facing `Entity` / `EntityMap` / `EntityContext` generics
@@ -169,16 +157,17 @@ pub const Cx = struct {
     // State Access
     // =========================================================================
 
-    /// Mutable access to the application state. The type must match
-    /// the one passed to `runCx`; the check below enforces that.
+    /// Mutable access to the application state. `T` must be the type passed
+    /// to `run()` / `App()`. Debug and ReleaseSafe check this and panic with
+    /// both type names; ReleaseFast and ReleaseSmall compile the check out,
+    /// matching `cx.on` (contract "Approved decisions" item 2).
     pub fn state(self: *Self, comptime T: type) *T {
-        // Unconditional runtime guard, NOT std.debug.assert: the assert strips in
-        // ReleaseFast/ReleaseSmall, and the @ptrCast below would then reinterpret
-        // the state pointer as an unrelated type — silent type-confusion / memory
-        // corruption in the builds users ship (rules 2, 17). This costs one integer
-        // compare per call (~once per handler), so keeping it in release is free.
-        if (self.state_type_id != typeId(T)) {
-            @panic("cx.state(T): T does not match the app state type passed to run()/App()");
+        if (comptime std.debug.runtime_safety) {
+            if (self.state_type_id != typeId(T)) {
+                handler_mod.reportMismatch("cx.state({s}): the root state is {s}", .{
+                    @typeName(T), handler_mod.argTypeName(self.state_type_id),
+                });
+            }
         }
         return @ptrCast(@alignCast(self.state_ptr));
     }
@@ -275,182 +264,32 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Pure state handlers — `update` / `updateWith`
+    // Handlers — `on` / `deferCommand`
     // =========================================================================
 
-    /// Handler from a pure state method `fn(*State) void`. The State
-    /// type is inferred from the method's first parameter; the UI
-    /// re-renders after the method returns.
-    pub fn update(
-        self: *Self,
-        comptime method: anytype,
-    ) HandlerRef {
-        _ = self;
-        const State = comptime ExtractState("update", @TypeOf(method));
-
-        const Wrapper = struct {
-            fn invoke(g: *Window, _: EntityId) void {
-                const state_ptr = g.getRootState(State) orelse return;
-                method(state_ptr);
-                g.requestRender();
-            }
-        };
-
-        return .{
-            .callback = Wrapper.invoke,
-            .entity_id = EntityId.invalid,
-        };
+    /// Build a `Handler` from a method. The method's shape is detected at
+    /// comptime: `fn(*State)`, `fn(*State, Arg)`, `fn(*State, *Window)`, or
+    /// `fn(*State, Arg, *Window)`. `options` accepts only `.arg`, coerced to
+    /// the method's `Arg` (8 bytes at most), and `.entity`, an `Entity(State)`
+    /// whose data the method runs on. Without `.entity`, `State` must be the
+    /// root state; Debug and ReleaseSafe check this here and panic naming the
+    /// method. The UI re-renders after the method returns.
+    ///
+    /// ```zig
+    /// Button{ .label = "+", .on_click = cx.on(AppState.increment, .{}) }
+    /// Button{ .label = "5", .on_click = cx.on(AppState.setStep, .{ .arg = 5 }) }
+    /// Select{ .on_select = cx.on(AppState.selectFruit, .{}), ... } // index bound per option
+    /// ```
+    pub fn on(self: *Self, comptime method: anytype, options: anytype) Handler {
+        return handler_mod.bind(self._window, method, options);
     }
 
-    /// Handler from `fn(*State, Arg) void`. `arg` is captured at
-    /// handler-creation time and must fit in 8 bytes (use a pointer
-    /// or index for larger payloads — the comptime check enforces it).
-    pub fn updateWith(
-        self: *Self,
-        arg: anytype,
-        comptime method: anytype,
-    ) HandlerRef {
-        _ = self;
-        const State = comptime ExtractState("updateWith", @TypeOf(method));
-        const Arg = @TypeOf(arg);
-
-        comptime {
-            if (@sizeOf(Arg) > @sizeOf(u64)) {
-                @compileError("updateWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 8 bytes. Use a pointer or index instead.");
-            }
-        }
-
-        const packed_entity_id = packArg(Arg, arg);
-
-        const Wrapper = struct {
-            fn invoke(g: *Window, packed_arg: EntityId) void {
-                const state_ptr = g.getRootState(State) orelse return;
-                const unpacked = unpackArg(Arg, packed_arg);
-                method(state_ptr, unpacked);
-                g.requestRender();
-            }
-        };
-
-        return .{
-            .callback = Wrapper.invoke,
-            .entity_id = packed_entity_id,
-        };
-    }
-
-    // =========================================================================
-    // Index-based select handler — `onSelect`
-    // =========================================================================
-
-    /// Index-based selection handler from `fn(*State, usize) void`.
-    /// Used by `Select`, `TabBar`, etc — the widget generates
-    /// per-option `HandlerRef`s internally so callers don't have to
-    /// build a handler array.
-    pub fn onSelect(
-        self: *Self,
-        comptime method: anytype,
-    ) OnSelectHandler {
-        _ = self;
-        const State = comptime ExtractState("onSelect", @TypeOf(method));
-
-        const Wrapper = struct {
-            fn invoke(g: *Window, packed_arg: EntityId) void {
-                const index = unpackArg(usize, packed_arg);
-                const state_ptr = g.getRootState(State) orelse return;
-                method(state_ptr, index);
-
-                g.requestRender();
-            }
-        };
-
-        return .{ .callback = Wrapper.invoke };
-    }
-
-    // =========================================================================
-    // Command handlers — `command` / `commandWith`
-    // =========================================================================
-
-    /// Handler from `fn(*State, *Window) void`. Use when the method
-    /// needs framework access — focus, window ops, entity churn.
-    pub fn command(
-        self: *Self,
-        comptime method: anytype,
-    ) HandlerRef {
-        _ = self;
-        const State = comptime ExtractState("command", @TypeOf(method));
-
-        const Wrapper = struct {
-            fn invoke(g: *Window, _: EntityId) void {
-                const state_ptr = g.getRootState(State) orelse return;
-                method(state_ptr, g);
-                g.requestRender();
-            }
-        };
-
-        return .{
-            .callback = Wrapper.invoke,
-            .entity_id = EntityId.invalid,
-        };
-    }
-
-    /// Handler from `fn(*State, *Window, Arg) void`. `arg` follows the
-    /// same 8-byte capture rule as `updateWith`.
-    pub fn commandWith(
-        self: *Self,
-        arg: anytype,
-        comptime method: anytype,
-    ) HandlerRef {
-        _ = self;
-        const State = comptime ExtractState("commandWith", @TypeOf(method));
-        const Arg = @TypeOf(arg);
-
-        comptime {
-            if (@sizeOf(Arg) > @sizeOf(u64)) {
-                @compileError("commandWith: argument type '" ++ @typeName(Arg) ++ "' exceeds 8 bytes. Use a pointer or index instead.");
-            }
-        }
-
-        const packed_entity_id = packArg(Arg, arg);
-
-        const Wrapper = struct {
-            fn invoke(g: *Window, packed_arg: EntityId) void {
-                const state_ptr = g.getRootState(State) orelse return;
-                const unpacked = unpackArg(Arg, packed_arg);
-                method(state_ptr, g, unpacked);
-                g.requestRender();
-            }
-        };
-
-        return .{
-            .callback = Wrapper.invoke,
-            .entity_id = packed_entity_id,
-        };
-    }
-
-    // =========================================================================
-    // Deferred commands — `deferCommand` / `deferCommandWith`
-    // =========================================================================
-
-    /// Schedule `fn(*State, *Window) void` to run after current event
-    /// handling completes. Use for modal dialogs and other operations
-    /// that can't safely run mid-event (re-entrancy, heavy work). Mirrors
-    /// `Window.deferCommand`; named to avoid the `defer` keyword, which
-    /// would need the `cx.@"defer"` escape and could not be spelled `cx.defer()`.
-    pub fn deferCommand(
-        self: *Self,
-        comptime method: anytype,
-    ) void {
-        self._window.deferCommand(method);
-    }
-
-    /// Schedule `fn(*State, *Window, Arg) void` for after-event
-    /// execution. `arg` follows the 8-byte capture rule. Mirrors
-    /// `Window.deferCommandWith`.
-    pub fn deferCommandWith(
-        self: *Self,
-        arg: anytype,
-        comptime method: anytype,
-    ) void {
-        self._window.deferCommandWith(arg, method);
+    /// Schedule a method to run after current event handling completes. Use
+    /// for modal dialogs and other operations that cannot run mid-event.
+    /// Takes the same method shapes and options as `cx.on`. Named to avoid
+    /// the `defer` keyword.
+    pub fn deferCommand(self: *Self, comptime method: anytype, options: anytype) void {
+        self._window.deferCommand(method, options);
     }
 
     // =========================================================================
@@ -743,38 +582,6 @@ pub const Cx = struct {
     // `cx.lists.Lists.DataTableCallbacks(Cx)` as its sole canonical home.
     // =========================================================================
 };
-
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-/// Extract the State type from a handler method's first parameter.
-///
-/// All handler methods follow the pattern `fn(*State, ...) void` where the
-/// first parameter is always a pointer to the state type. This helper uses
-/// `@typeInfo` to pull the pointee type from that first parameter, eliminating
-/// the need to pass the State type explicitly.
-///
-/// Produces clear compile errors if the function signature doesn't match
-/// the expected pattern (not a function, no parameters, first param not a pointer).
-fn ExtractState(comptime caller: []const u8, comptime Fn: type) type {
-    const info = @typeInfo(Fn);
-    if (info != .@"fn") {
-        @compileError(caller ++ "() expects a function, got " ++ @typeName(Fn));
-    }
-    const fn_info = info.@"fn";
-    if (fn_info.param_types.len == 0) {
-        @compileError(caller ++ "() expects a method with at least one parameter (*State), got a function with no parameters");
-    }
-    const FirstParam = fn_info.param_types[0] orelse {
-        @compileError(caller ++ "() expects a concrete first parameter type (*State), got anytype");
-    };
-    const ptr_info = @typeInfo(FirstParam);
-    if (ptr_info != .pointer or ptr_info.pointer.size != .one) {
-        @compileError(caller ++ "() expects first parameter to be *State (single-item pointer), got " ++ @typeName(FirstParam));
-    }
-    return ptr_info.pointer.child;
-}
 
 // =============================================================================
 // Tests

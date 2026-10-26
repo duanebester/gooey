@@ -8,8 +8,8 @@
 //! const components = @import("gooey-components");
 //!
 //! // Components (preferred)
-//! components.Button{ .label = "Click", .on_click_handler = cx.update(State.onClick) }
-//! components.Checkbox{ .selected = state.agreed, .on_click_handler = cx.update(State.toggle) }
+//! components.Button{ .label = "Click", .on_click = cx.on(State.onClick, .{}) }
+//! components.Checkbox{ .selected = state.agreed, .on_click = cx.on(State.toggle, .{}) }
 //! components.TextInput{ .id = "name", .placeholder = "Enter name", .bind = &state.name }
 //!
 //! // Primitives (for text, spacers, etc.)
@@ -54,7 +54,6 @@ pub const svgIcon = primitives.svgIcon;
 pub const empty = primitives.empty;
 pub const keyContext = primitives.keyContext;
 pub const onAction = primitives.onAction;
-pub const onActionHandler = primitives.onActionHandler;
 pub const when = primitives.when;
 pub const whenFn = primitives.whenFn;
 pub const maybe = primitives.maybe;
@@ -87,15 +86,13 @@ pub const TextAreaPrimitive = primitives.TextAreaPrimitive;
 pub const CodeEditorPrimitive = primitives.CodeEditorPrimitive;
 pub const Spacer = primitives.Spacer;
 pub const Button = primitives.Button;
-pub const ButtonHandler = primitives.ButtonHandler;
 pub const Empty = primitives.Empty;
 pub const SvgPrimitive = primitives.SvgPrimitive;
 pub const ImagePrimitive = primitives.ImagePrimitive;
 pub const KeyContextPrimitive = primitives.KeyContextPrimitive;
 pub const ActionHandlerPrimitive = primitives.ActionHandlerPrimitive;
-pub const ActionHandlerRefPrimitive = primitives.ActionHandlerRefPrimitive;
 pub const PrimitiveType = primitives.PrimitiveType;
-pub const HandlerRef = primitives.HandlerRef;
+pub const Handler = primitives.Handler;
 pub const ObjectFit = primitives.ObjectFit;
 
 // =============================================================================

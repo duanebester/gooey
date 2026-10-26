@@ -5,9 +5,9 @@
 //! mirrors, so keep the two in sync.
 //!
 //! Demonstrates:
-//! - Pure state methods + `cx.update` (toggle-free mutations like clearCompleted)
-//! - `cx.updateWith` with a packed index argument (toggle / remove a row)
-//! - `cx.updateWith` with a packed enum argument (filter switch)
+//! - Pure state methods + `cx.on` (toggle-free mutations like clearCompleted)
+//! - `cx.on` with an index `.arg` (toggle / remove a row)
+//! - `cx.on` with an enum `.arg` (filter switch)
 //! - `TextInput` two-way binding via `.bind`
 //! - `Checkbox`, `Button` variants/sizes
 //! - Layout with `ui.box` (backgrounds, `{ .main, .cross }` alignment) vs
@@ -204,7 +204,7 @@ const InputRow = struct {
                 .bind = &s.draft,
                 .width = 360,
             },
-            Button{ .label = "Add", .on_click_handler = cx.update(AppState.addTodo) },
+            Button{ .label = "Add", .on_click = cx.on(AppState.addTodo, .{}) },
         }));
     }
 };
@@ -232,7 +232,7 @@ const FilterButton = struct {
             .label = self.label,
             .size_preset = .small,
             .variant = if (self.active) .primary else .secondary,
-            .on_click_handler = cx.updateWith(self.filter, AppState.setFilter),
+            .on_click = cx.on(AppState.setFilter, .{ .arg = self.filter }),
         });
     }
 };
@@ -287,7 +287,7 @@ const TodoRow = struct {
         }, .{
             Checkbox{
                 .selected = self.done,
-                .on_click_handler = cx.updateWith(self.index, AppState.toggle),
+                .on_click = cx.on(AppState.toggle, .{ .arg = self.index }),
             },
             ui.text(self.label, .{
                 .size = 16,
@@ -301,7 +301,7 @@ const TodoRow = struct {
                 .label = "Delete",
                 .variant = .danger,
                 .size_preset = .small,
-                .on_click_handler = cx.updateWith(self.index, AppState.remove),
+                .on_click = cx.on(AppState.remove, .{ .arg = self.index }),
             },
         }));
     }
@@ -322,7 +322,7 @@ const Footer = struct {
                 .label = "Clear completed",
                 .variant = .secondary,
                 .size_preset = .small,
-                .on_click_handler = cx.update(AppState.clearCompleted),
+                .on_click = cx.on(AppState.clearCompleted, .{}),
             },
         }));
     }

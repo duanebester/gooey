@@ -245,9 +245,9 @@ const ItemList = struct {
         const count = if (self.side == .left) s.left_count else s.right_count;
 
         const drop_handler = if (self.side == .left)
-            cx.command(AppState.onDropLeft)
+            cx.on(AppState.onDropLeft, .{})
         else
-            cx.command(AppState.onDropRight);
+            cx.on(AppState.onDropRight, .{});
 
         // List container (drop target)
         cx.render(ui.box(.{

@@ -1,7 +1,7 @@
 //! Button Component
 //!
-//! A clickable button built on Box. Supports variants, sizes, and both
-//! simple callbacks and HandlerRef for entity methods.
+//! A clickable button built on Box. Supports variants and sizes; `on_click`
+//! takes a `Handler` built with `cx.on`.
 //!
 //! Colors default to null, which means "use the current theme".
 //! Set explicit colors to override theme defaults.
@@ -13,7 +13,7 @@ const ui = gooey.ui;
 const Color = ui.Color;
 const Theme = ui.Theme;
 const Box = ui.Box;
-const HandlerRef = ui.HandlerRef;
+const Handler = ui.Handler;
 
 pub const Button = struct {
     label: []const u8,
@@ -32,13 +32,7 @@ pub const Button = struct {
     // means"interactive".
     disabled: bool = false,
 
-    // Interaction - one or the other, never both (enforced in `render`).
-    // The stateless `on_click` callback and the state-bound `on_click_handler`
-    // are mutually exclusive. Unlike the other components in this pass, the
-    // `_handler` suffix is retained here because the base name `on_click` is
-    // already taken by the stateless variant directly above it.
-    on_click: ?*const fn () void = null,
-    on_click_handler: ?HandlerRef = null,
+    on_click: ?Handler = null,
 
     // Optional color overrides (null = use theme-based variant colors)
     background: ?Color = null,
@@ -79,13 +73,6 @@ pub const Button = struct {
     };
 
     pub fn render(self: Button, cx: *ui.Cx) void {
-        // Enforce the "one or the other" contract documented on the fields.
-        // `render` forwards both to the box unconditionally, so a caller that
-        // set both would silently wire up two competing click paths; assert
-        // the invariant here where we can still catch it in debug builds.
-        if (self.on_click != null) assert(self.on_click_handler == null);
-        if (self.on_click_handler != null) assert(self.on_click == null);
-
         const t = cx.theme();
 
         // Get theme-based colors for variant
@@ -102,9 +89,8 @@ pub const Button = struct {
         const final_hover = if (self.disabled) null else hover_bg;
         const final_fg = if (self.disabled) fg.withAlpha(0.7) else fg;
 
-        // Resolve click handler: disabled buttons drop both click paths.
+        // Disabled buttons do not click.
         const on_click = if (self.disabled) null else self.on_click;
-        const on_click_handler = if (self.disabled) null else self.on_click_handler;
 
         // Resolve identity once. An explicit id hashes through `idFor`; a
         // null id falls back to the parent-scoped auto id rather than the
@@ -132,7 +118,6 @@ pub const Button = struct {
             .corner_radius = radius,
             .alignment = .{ .main = .center, .cross = .center },
             .on_click = on_click,
-            .on_click_handler = on_click_handler,
         }, .{
             ui.text(self.label, .{
                 .color = final_fg,
