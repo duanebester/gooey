@@ -4,7 +4,6 @@ const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
     metal_hud: bool = false,
-    use_llvm: ?bool = null,
 };
 
 pub fn build(b: *std.Build) void {
@@ -171,36 +170,23 @@ pub fn build(b: *std.Build) void {
         // =========================================================================
 
         const native_examples = [_]ExampleDefinition{
-            .{ .name = "pomodoro", .source = "src/examples/pomodoro.zig" },
             .{ .name = "animation", .source = "src/examples/animation.zig" },
             .{ .name = "spaceship", .source = "src/examples/spaceship.zig", .metal_hud = true },
             .{ .name = "glass", .source = "src/examples/glass.zig" },
-            .{ .name = "window-features", .source = "src/examples/window_features.zig" },
             .{ .name = "counter", .source = "src/examples/counter.zig" },
             .{ .name = "todo", .source = "src/examples/todo.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
-            .{ .name = "select", .source = "src/examples/select.zig" },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "actions", .source = "src/examples/actions.zig" },
-            .{ .name = "text-debug", .source = "src/examples/text_debug_example.zig" },
             .{ .name = "images", .source = "src/examples/images.zig" },
-            .{ .name = "tooltip", .source = "src/examples/tooltip.zig" },
-            .{ .name = "modal", .source = "src/examples/modal.zig" },
-            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
             .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
-            .{ .name = "uniform-list", .source = "src/examples/uniform_list_example.zig" },
             .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
-            .{ .name = "tree-example", .source = "src/examples/tree_example.zig" },
-            .{ .name = "a11y-demo", .source = "src/examples/a11y_demo.zig" },
             .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
-            .{ .name = "form-validation", .source = "src/examples/form_validation.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
-            .{ .name = "canvas-demo", .source = "src/examples/canvas_demo.zig" },
             .{ .name = "disktree", .source = "src/examples/disktree.zig" },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
-            .{ .name = "new-api-demo", .source = "src/examples/new_api_demo.zig" },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
             .{ .name = "multi-window", .source = "src/examples/multi_window.zig" },
             .{ .name = "ai-canvas-spike", .source = "src/examples/ai_canvas_spike.zig" },
@@ -225,9 +211,7 @@ pub fn build(b: *std.Build) void {
         // Charts Examples
         // =========================================================================
 
-        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "charts-demo", "src/examples/charts_demo.zig");
         addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "dashboard", "src/examples/dashboard.zig");
-        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "two-line-charts", "src/examples/two_line_charts.zig");
 
         // =====================================================================
         // Tests
@@ -750,7 +734,6 @@ pub fn build(b: *std.Build) void {
 
         const linux_examples = [_]ExampleDefinition{
             .{ .name = "basic", .source = "src/examples/linux_demo.zig" },
-            .{ .name = "text", .source = "src/examples/linux_text_demo.zig" },
             .{ .name = "file-dialog", .source = "src/examples/linux_file_dialog.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
@@ -758,25 +741,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "counter", .source = "src/examples/counter.zig" },
             .{ .name = "todo", .source = "src/examples/todo.zig" },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
-            .{ .name = "pomodoro", .source = "src/examples/pomodoro.zig" },
             .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
             .{ .name = "actions", .source = "src/examples/actions.zig" },
-            .{ .name = "select", .source = "src/examples/select.zig" },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
-            .{ .name = "tooltip", .source = "src/examples/tooltip.zig" },
-            .{ .name = "modal", .source = "src/examples/modal.zig" },
-            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
             .{ .name = "images", .source = "src/examples/images.zig" },
-            .{ .name = "a11y-demo", .source = "src/examples/a11y_demo.zig" },
             .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
-            .{
-                .name = "form-validation",
-                .source = "src/examples/form_validation.zig",
-                .use_llvm = true,
-            },
-            .{ .name = "uniform-list", .source = "src/examples/uniform_list_example.zig" },
             .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
             .{ .name = "disktree", .source = "src/examples/disktree.zig" },
@@ -792,7 +763,6 @@ pub fn build(b: *std.Build) void {
                 skip_shader_compile,
                 example.name,
                 example.source,
-                example.use_llvm,
             );
         }
         addLinuxGenuiExample(
@@ -1593,7 +1563,6 @@ fn addLinuxExample(
     skip_shader_compile: bool,
     name: []const u8,
     source: []const u8,
-    use_llvm: ?bool,
 ) void {
     const exe = b.addExecutable(.{
         .name = b.fmt("gooey-{s}", .{name}),
@@ -1606,7 +1575,6 @@ fn addLinuxExample(
                 .{ .name = "gooey-components", .module = components_module },
             },
         }),
-        .use_llvm = use_llvm,
     });
 
     linkLinuxLibraries(exe);

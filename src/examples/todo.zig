@@ -73,7 +73,7 @@ const AppState = struct {
     // -------------------------------------------------------------------------
 
     /// Append `value` as a new todo. No-op when blank or at capacity, so the
-    /// caller never has to pre-check. Split out from `addTodo` so the append
+    /// caller never has to pre-check. Kept separate from `addTodo` so the append
     /// path is testable without a live widget.
     fn pushTodo(self: *AppState, value: []const u8) void {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
