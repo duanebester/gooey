@@ -68,6 +68,11 @@ pub const run = @import("app.zig").runCx;
 /// only when you explicitly want the native-only shortcut.
 pub const App = @import("app.zig").App;
 
+/// The application's resource budget, declared once at `App` (`.limits = ...`)
+/// and validated at comptime. Named profiles: `standard` (measured default),
+/// `large` (dense content), `ceiling` (framework maxima, for stress tests).
+pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
+
 /// The unified rendering context handed to every `render` callback.
 /// Holds the state pointer, layout builder, animation pools, and the
 /// `cx.lists` / `cx.animations` / `cx.focus` / `cx.entities` /
@@ -346,6 +351,10 @@ test {
 
         // Platform-independent web input buffer logic.
         @import("platform/web/composition_buffer.zig"),
+
+        // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
+        // its capacity tests run on every OS, not only where the renderer builds.
+        @import("platform/linux/vk_types.zig"),
 
         // Scene leaves — path/polyline/svg test-heavy files.
         @import("scene/path.zig"),

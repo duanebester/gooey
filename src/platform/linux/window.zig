@@ -402,6 +402,7 @@ pub const Window = struct {
             self.width_px,
             self.height_px,
             self.scale_factor,
+            &options.limits.scene,
         );
 
         // Final commit after Vulkan initialization
@@ -1116,7 +1117,8 @@ pub const Window = struct {
             self.renderer.render(scene);
         } else {
             // Create empty scene for clear
-            var empty_scene = scene_mod.Scene.init(self.allocator);
+            // Zero-capacity: presenting a clear needs no primitive storage.
+            var empty_scene = scene_mod.Scene.initEmpty(self.allocator);
             defer empty_scene.deinit();
             self.renderer.render(&empty_scene);
         }

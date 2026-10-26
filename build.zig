@@ -466,6 +466,8 @@ pub fn build(b: *std.Build) void {
         const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
         test_step.dependOn(&run_scene_bench_tests.step);
 
+        _ = addOverflowChecks(b, mod, target, optimize, test_step);
+
         // =====================================================================
         // Animation Benchmarks (per-frame spring physics + store dispatch)
         // =====================================================================
@@ -1145,6 +1147,11 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_animation_bench_tests.step);
         test_step.dependOn(&run_element_states_bench_tests.step);
         test_step.dependOn(&run_accessibility_bench_tests.step);
+        const overflow_exe = addOverflowChecks(b, mod, target, optimize, test_step);
+        linkLinuxLibraries(overflow_exe);
+        if (!skip_shader_compile) {
+            overflow_exe.step.dependOn(compile_shaders_step);
+        }
 
         // =====================================================================
         // Valgrind Memory Leak Detection
@@ -1309,6 +1316,49 @@ fn addGenuiNativeExample(
     const run = b.addRunArtifact(executable);
     step.dependOn(&run.step);
     run.step.dependOn(b.getInstallStep());
+}
+
+/// Adds the fail-fast overflow checks to `test_step` on every native OS.
+///
+/// A full pool must abort with the pool, capacity, counts, and frame (CLAUDE.md
+/// §2). A panic cannot be caught in-process, so `src/scene/overflow_check.zig`
+/// overflows a pool in a child process and each run step asserts the abort and
+/// its exact message (CLAUDE.md §24). The scene pool is checked everywhere; the
+/// Vulkan instance buffers, sized from the same budget, are checked on Linux.
+/// Returns the executable so the caller can add platform link steps.
+fn addOverflowChecks(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    test_step: *std.Build.Step,
+) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{
+        .name = "scene-overflow-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/scene/overflow_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "gooey", .module = gooey_module }},
+        }),
+    });
+
+    const run_scene = b.addRunArtifact(exe);
+    run_scene.addArg("scene");
+    run_scene.addCheck(.{ .expect_stderr_match = "Scene pool 'quads' exhausted: " ++
+        "capacity 4 (ResourceLimits.scene), 4 in use, 1 requested, frame 1." });
+    run_scene.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+    test_step.dependOn(&run_scene.step);
+
+    if (target.result.os.tag == .linux) {
+        const run_vulkan = b.addRunArtifact(exe);
+        run_vulkan.addArg("vulkan-instances");
+        run_vulkan.addCheck(.{ .expect_stderr_match = "Vulkan instance buffer 'primitives' " ++
+            "exhausted: capacity 8 (ResourceLimits.scene), 8 in use, 1 requested, frame 1." });
+        run_vulkan.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run_vulkan.step);
+    }
+    return exe;
 }
 
 /// Helper to add a charts example with both gooey and gooey-charts modules.

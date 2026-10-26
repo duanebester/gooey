@@ -21,15 +21,11 @@ pub const BatchIterator = batch_iter.BatchIterator;
 pub const PrimitiveBatch = batch_iter.PrimitiveBatch;
 
 /// GPU types from vk_types (canonical source)
-const GpuGlyph = @import("vk_types.zig").GpuGlyph;
-const GpuSvg = @import("vk_types.zig").GpuSvg;
-const GpuImage = @import("vk_types.zig").GpuImage;
-
-/// Maximum batch sizes (must match vk_renderer limits)
-pub const MAX_PRIMITIVES_PER_BATCH = 4096;
-pub const MAX_GLYPHS_PER_BATCH = 8192;
-pub const MAX_SVGS_PER_BATCH = 2048;
-pub const MAX_IMAGES_PER_BATCH = 1024;
+const vk_types = @import("vk_types.zig");
+const GpuGlyph = vk_types.GpuGlyph;
+const GpuSvg = vk_types.GpuSvg;
+const GpuImage = vk_types.GpuImage;
+const InstanceCapacity = vk_types.InstanceCapacity;
 
 /// Vulkan pipeline references for batch rendering
 pub const Pipelines = struct {
@@ -59,6 +55,12 @@ pub const Pipelines = struct {
     atlas_view: ?vk.ImageView,
     svg_atlas_view: ?vk.ImageView,
     image_atlas_view: ?vk.ImageView,
+
+    // Per-frame capacity of each mapped buffer above, from the window's budget.
+    // Offsets accumulate across every batch of a frame, so these bound the frame.
+    capacity: InstanceCapacity,
+    // The scene's finished-frame count, reported if a buffer is exhausted.
+    frame: u64,
 };
 
 /// Batch counts output from scene rendering
@@ -249,17 +251,17 @@ fn drawShadowBatch(
 ) u32 {
     // Assertions: validate inputs
     std.debug.assert(cmd != null);
-    std.debug.assert(buffer_offset <= MAX_PRIMITIVES_PER_BATCH);
+    std.debug.assert(buffer_offset <= pipelines.capacity.primitive_count_max);
 
     if (shadows.len == 0) return 0;
     if (pipelines.unified_pipeline == null) return 0;
     if (pipelines.primitive_mapped == null) return 0;
 
-    const count: u32 = @intCast(@min(shadows.len, MAX_PRIMITIVES_PER_BATCH - buffer_offset));
-    if (count == 0) return 0;
-
-    // Assert buffer bounds before GPU write
-    std.debug.assert(buffer_offset + count <= MAX_PRIMITIVES_PER_BATCH);
+    // A frame within the budget always fits; anything else fails fast instead
+    // of drawing a truncated frame (CLAUDE.md §2).
+    const count: u32 = @intCast(shadows.len);
+    pipelines.capacity.reserve(.primitives, buffer_offset, count, pipelines.frame);
+    std.debug.assert(buffer_offset + count <= pipelines.capacity.primitive_count_max);
 
     // Upload shadow data to GPU buffer
     const dest: [*]unified.Primitive = @ptrCast(@alignCast(pipelines.primitive_mapped));
@@ -299,17 +301,17 @@ fn drawQuadBatch(
 ) u32 {
     // Assertions: validate inputs
     std.debug.assert(cmd != null);
-    std.debug.assert(buffer_offset <= MAX_PRIMITIVES_PER_BATCH);
+    std.debug.assert(buffer_offset <= pipelines.capacity.primitive_count_max);
 
     if (quads.len == 0) return 0;
     if (pipelines.unified_pipeline == null) return 0;
     if (pipelines.primitive_mapped == null) return 0;
 
-    const count: u32 = @intCast(@min(quads.len, MAX_PRIMITIVES_PER_BATCH - buffer_offset));
-    if (count == 0) return 0;
-
-    // Assert buffer bounds before GPU write
-    std.debug.assert(buffer_offset + count <= MAX_PRIMITIVES_PER_BATCH);
+    // A frame within the budget always fits; anything else fails fast instead
+    // of drawing a truncated frame (CLAUDE.md §2).
+    const count: u32 = @intCast(quads.len);
+    pipelines.capacity.reserve(.primitives, buffer_offset, count, pipelines.frame);
+    std.debug.assert(buffer_offset + count <= pipelines.capacity.primitive_count_max);
 
     // Upload quad data to GPU buffer
     const dest: [*]unified.Primitive = @ptrCast(@alignCast(pipelines.primitive_mapped));
@@ -349,18 +351,18 @@ fn drawGlyphBatch(
 ) u32 {
     // Assertions: validate inputs
     std.debug.assert(cmd != null);
-    std.debug.assert(buffer_offset <= MAX_GLYPHS_PER_BATCH);
+    std.debug.assert(buffer_offset <= pipelines.capacity.glyph_count_max);
 
     if (glyphs.len == 0) return 0;
     if (pipelines.text_pipeline == null) return 0;
     if (pipelines.atlas_view == null) return 0;
     if (pipelines.glyph_mapped == null) return 0;
 
-    const count: u32 = @intCast(@min(glyphs.len, MAX_GLYPHS_PER_BATCH - buffer_offset));
-    if (count == 0) return 0;
-
-    // Assert buffer bounds before GPU write
-    std.debug.assert(buffer_offset + count <= MAX_GLYPHS_PER_BATCH);
+    // A frame within the budget always fits; anything else fails fast instead
+    // of drawing a truncated frame (CLAUDE.md §2).
+    const count: u32 = @intCast(glyphs.len);
+    pipelines.capacity.reserve(.glyphs, buffer_offset, count, pipelines.frame);
+    std.debug.assert(buffer_offset + count <= pipelines.capacity.glyph_count_max);
 
     // Upload glyph data to GPU buffer
     const dest: [*]GpuGlyph = @ptrCast(@alignCast(pipelines.glyph_mapped));
@@ -400,18 +402,18 @@ fn drawSvgBatch(
 ) u32 {
     // Assertions: validate inputs
     std.debug.assert(cmd != null);
-    std.debug.assert(buffer_offset <= MAX_SVGS_PER_BATCH);
+    std.debug.assert(buffer_offset <= pipelines.capacity.svg_count_max);
 
     if (svgs.len == 0) return 0;
     if (pipelines.svg_pipeline == null) return 0;
     if (pipelines.svg_atlas_view == null) return 0;
     if (pipelines.svg_mapped == null) return 0;
 
-    const count: u32 = @intCast(@min(svgs.len, MAX_SVGS_PER_BATCH - buffer_offset));
-    if (count == 0) return 0;
-
-    // Assert buffer bounds before GPU write
-    std.debug.assert(buffer_offset + count <= MAX_SVGS_PER_BATCH);
+    // A frame within the budget always fits; anything else fails fast instead
+    // of drawing a truncated frame (CLAUDE.md §2).
+    const count: u32 = @intCast(svgs.len);
+    pipelines.capacity.reserve(.svgs, buffer_offset, count, pipelines.frame);
+    std.debug.assert(buffer_offset + count <= pipelines.capacity.svg_count_max);
 
     // Upload SVG data to GPU buffer
     const dest: [*]GpuSvg = @ptrCast(@alignCast(pipelines.svg_mapped));
@@ -451,18 +453,18 @@ fn drawImageBatch(
 ) u32 {
     // Assertions: validate inputs
     std.debug.assert(cmd != null);
-    std.debug.assert(buffer_offset <= MAX_IMAGES_PER_BATCH);
+    std.debug.assert(buffer_offset <= pipelines.capacity.image_count_max);
 
     if (images.len == 0) return 0;
     if (pipelines.image_pipeline == null) return 0;
     if (pipelines.image_atlas_view == null) return 0;
     if (pipelines.image_mapped == null) return 0;
 
-    const count: u32 = @intCast(@min(images.len, MAX_IMAGES_PER_BATCH - buffer_offset));
-    if (count == 0) return 0;
-
-    // Assert buffer bounds before GPU write
-    std.debug.assert(buffer_offset + count <= MAX_IMAGES_PER_BATCH);
+    // A frame within the budget always fits; anything else fails fast instead
+    // of drawing a truncated frame (CLAUDE.md §2).
+    const count: u32 = @intCast(images.len);
+    pipelines.capacity.reserve(.images, buffer_offset, count, pipelines.frame);
+    std.debug.assert(buffer_offset + count <= pipelines.capacity.image_count_max);
 
     // Upload image data to GPU buffer
     const dest: [*]GpuImage = @ptrCast(@alignCast(pipelines.image_mapped));

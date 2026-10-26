@@ -287,8 +287,10 @@ pub const BatchIterator = struct {
 // Tests
 // =============================================================================
 
+const test_limits = scene_mod.SceneLimits.standard;
+
 test "BatchIterator - empty scene" {
-    var scene = scene_mod.Scene.init(std.testing.allocator);
+    var scene = try scene_mod.Scene.initCapacity(std.testing.allocator, &test_limits);
     defer scene.deinit();
 
     var iter = BatchIterator.init(&scene);
@@ -297,7 +299,7 @@ test "BatchIterator - empty scene" {
 }
 
 test "BatchIterator - single type" {
-    var scene = scene_mod.Scene.init(std.testing.allocator);
+    var scene = try scene_mod.Scene.initCapacity(std.testing.allocator, &test_limits);
     defer scene.deinit();
 
     // Insert 3 quads
@@ -317,7 +319,7 @@ test "BatchIterator - single type" {
 }
 
 test "BatchIterator - interleaved types" {
-    var scene = scene_mod.Scene.init(std.testing.allocator);
+    var scene = try scene_mod.Scene.initCapacity(std.testing.allocator, &test_limits);
     defer scene.deinit();
 
     // Insert: shadow(0), quad(1), glyph(2), quad(3)
@@ -353,7 +355,7 @@ test "BatchIterator - interleaved types" {
 }
 
 test "BatchIterator - coalesces consecutive same type" {
-    var scene = scene_mod.Scene.init(std.testing.allocator);
+    var scene = try scene_mod.Scene.initCapacity(std.testing.allocator, &test_limits);
     defer scene.deinit();
 
     // Insert: quad(0), quad(1), quad(2), glyph(3), quad(4), quad(5)
