@@ -201,6 +201,8 @@ pub const VulkanRenderer = struct {
     svg_pipeline: vk.Pipeline = null,
     image_pipeline: vk.Pipeline = null,
 
+    mesh: @import("vk_mesh.zig").Renderer = .{},
+
     // Command pool (shared — frees all command buffers on destruction)
     command_pool: vk.CommandPool = null,
 
@@ -294,6 +296,7 @@ pub const VulkanRenderer = struct {
         self.destroyDescriptorLayouts();
 
         // Pipelines
+        self.mesh.deinit();
         self.destroyAllPipelines();
 
         // Framebuffers + render pass
@@ -658,6 +661,13 @@ pub const VulkanRenderer = struct {
         // ---- Pipelines (vk_pipelines) ----
         try self.createAllPipelines();
         errdefer self.destroyAllPipelines();
+
+        try self.mesh.init(self.allocator, self.device, &self.mem_properties, scene_limits, &.{
+            .render_pass = self.render_pass,
+            .sample_count = self.sample_count,
+            .cache = self.pipeline_cache,
+        });
+        errdefer self.mesh.deinit();
 
         // ---- Initial descriptor writes ----
         // Uniform buffer with LOGICAL pixel dimensions
@@ -1324,6 +1334,9 @@ pub const VulkanRenderer = struct {
 
         // Draw scene with per-frame descriptor sets and buffer pointers
         const pipelines = scene_renderer.Pipelines{
+            .mesh = &self.mesh,
+            .mesh_frame = &self.mesh.frames[self.current_frame],
+            .uniform_buffer = frame.uniform_buffer,
             .unified_pipeline = self.unified_pipeline,
             .unified_pipeline_layout = self.unified_pipeline_layout,
             .text_pipeline = self.text_pipeline,
@@ -1346,7 +1359,7 @@ pub const VulkanRenderer = struct {
             .capacity = self.instance_capacity,
             .frame = scene.frame_count_finished,
         };
-        _ = scene_renderer.drawScene(cmd, scene, pipelines);
+        _ = scene_renderer.drawScene(cmd, scene, &pipelines);
 
         vk.vkCmdEndRenderPass(cmd);
         _ = vk.vkEndCommandBuffer(cmd);

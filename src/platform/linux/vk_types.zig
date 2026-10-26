@@ -10,6 +10,7 @@ const scene_mod = @import("../../scene/mod.zig");
 const svg_instance_mod = @import("../../scene/svg_instance.zig");
 const image_instance_mod = @import("../../scene/image_instance.zig");
 const unified = @import("../unified.zig");
+const colored_cloud = @import("../../scene/colored_point_cloud.zig");
 
 const SceneLimits = scene_mod.SceneLimits;
 const SvgInstance = svg_instance_mod.SvgInstance;
@@ -40,6 +41,87 @@ pub const storage_buffer_range_guaranteed_bytes: u64 = 1 << 27;
 
 /// The four per-frame instance storage buffers, named in pool-exhaustion reports.
 pub const InstancePool = enum { primitives, glyphs, svgs, images };
+
+/// Geometry pools preserve the Scene's independent draw budgets; the two point
+/// pools use one point-instanced pipeline. No aggregate geometry budget exists
+/// yet, so reserve the maximum legal payload for every budgeted draw.
+pub const MeshPool = enum(u8) { triangles, strip_expanded, points, colored_points };
+
+pub const MeshHeader = extern struct {
+    transform: [4]f32 = .{ 0, 0, 1, 1 },
+    color: scene_mod.Hsla = scene_mod.Hsla.black,
+    clip: [4]f32 = .{ 0, 0, 99999, 99999 },
+    params: [4]f32 = @splat(0),
+    gradient_type: u32 = 0,
+    stop_count: u32 = 0,
+    radius: f32 = 0,
+    colored: u32 = 0,
+    stop_offsets: [16]f32 = @splat(0),
+    stop_h: [16]f32 = @splat(0),
+    stop_s: [16]f32 = @splat(0),
+    stop_l: [16]f32 = @splat(0),
+    stop_a: [16]f32 = @splat(0),
+
+    comptime {
+        assert(@sizeOf(MeshHeader) == 400);
+        assert(@offsetOf(MeshHeader, "stop_offsets") == 80);
+    }
+};
+
+pub const MeshCapacity = struct {
+    counts: [4]u32,
+
+    // Vulkan guarantees minStorageBufferOffsetAlignment <= 256. Each descriptor
+    // addresses only one draw, never the whole (potentially >128 MiB) buffer.
+    pub const alignment_bytes: u64 = 256;
+
+    pub fn from_scene_limits(limits: *const SceneLimits) MeshCapacity {
+        assert(limits.check() == null);
+        return .{ .counts = .{
+            limits.path_count_frame_max,
+            limits.polyline_count_frame_max,
+            limits.point_cloud_count_frame_max,
+            limits.colored_point_cloud_count_frame_max,
+        } };
+    }
+
+    pub fn stride_bytes(pool: MeshPool) u64 {
+        const payload_bytes: u64 = switch (pool) {
+            .triangles => @import("../../scene/path_mesh.zig").MAX_MESH_INDICES * 16,
+            .strip_expanded => @import("../../scene/polyline.zig").MAX_POLYLINE_POINTS * 8,
+            .points => @import("../../scene/point_cloud.zig").MAX_POINTS_PER_CLOUD * 8,
+            .colored_points => colored_cloud.MAX_POINTS_PER_COLORED_CLOUD * 24,
+        };
+        const bytes = std.mem.alignForward(
+            u64,
+            @sizeOf(MeshHeader) + payload_bytes,
+            alignment_bytes,
+        );
+        assert(bytes <= storage_buffer_range_guaranteed_bytes);
+        return bytes;
+    }
+
+    pub fn buffer_bytes(self: *const MeshCapacity, pool: MeshPool) u64 {
+        return @as(u64, self.counts[@backingInt(pool)]) * stride_bytes(pool);
+    }
+
+    pub fn frame_bytes(self: *const MeshCapacity) u64 {
+        var bytes: u64 = 0;
+        inline for (std.enums.values(MeshPool)) |pool| bytes += self.buffer_bytes(pool);
+        assert(bytes > 0);
+        return bytes;
+    }
+
+    pub fn reserve(self: *const MeshCapacity, pool: MeshPool, in_use: u32, frame: u64) void {
+        const capacity = self.counts[@backingInt(pool)];
+        if (in_use < capacity) return;
+        std.debug.panic(
+            "Vulkan mesh buffer '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
+                "{d} in use, 1 requested, frame {d}.",
+            .{ @tagName(pool), capacity, in_use, frame },
+        );
+    }
+};
 
 /// Per-frame instance capacities of the Vulkan storage buffers.
 ///
@@ -373,6 +455,25 @@ pub const GpuImage = extern struct {
 // =============================================================================
 
 const testing = std.testing;
+
+test "MeshCapacity reserves every legal draw payload, including alignment" {
+    // Independent byte totals catch swapped budgets, expansion on the CPU, and
+    // missing header/alignment space. No GPU or large allocations are needed.
+    const standard = MeshCapacity.from_scene_limits(&SceneLimits.standard);
+    const expected = [_]u64{ 25_690_112, 16_908_288, 134_348_800, 402_784_256 };
+    for (std.enums.values(MeshPool), expected) |pool, bytes| {
+        try testing.expectEqual(bytes, standard.buffer_bytes(pool));
+        try testing.expectEqual(0, MeshCapacity.stride_bytes(pool) % 256);
+        try testing.expect(
+            MeshCapacity.stride_bytes(pool) <= storage_buffer_range_guaranteed_bytes,
+        );
+    }
+    try testing.expectEqual(@as(u64, 579_731_456), standard.frame_bytes());
+    const large = MeshCapacity.from_scene_limits(&SceneLimits.large);
+    try testing.expectEqual(4 * standard.frame_bytes(), large.frame_bytes());
+    const ceiling = MeshCapacity.from_scene_limits(&SceneLimits.ceiling);
+    try testing.expectEqual(@as(u64, 8_967_421_952), ceiling.frame_bytes());
+}
 
 test "InstanceCapacity mirrors the scene budget and sizes the host pool from it" {
     // Goal: the renderer's per-frame buffers hold exactly what the window's scene

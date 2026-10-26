@@ -36,7 +36,14 @@ const overflow_limits: gooey.scene.SceneLimits = .{
     .clip_depth_max = 4,
 };
 
-const Mode = enum { scene, @"vulkan-instances" };
+const Mode = enum {
+    scene,
+    @"vulkan-instances",
+    triangles,
+    strip_expanded,
+    points,
+    colored_points,
+};
 
 pub fn main(init: std.process.Init) !void {
     const args = init.minimal.args.vector;
@@ -50,6 +57,7 @@ pub fn main(init: std.process.Init) !void {
     switch (mode) {
         .scene => try overflowScene(init.gpa),
         .@"vulkan-instances" => overflowVulkanInstances(),
+        .triangles, .strip_expanded, .points, .colored_points => overflow_vulkan_mesh(mode),
     }
     std.debug.print("unreachable: {s} accepted a claim past its budget\n", .{@tagName(mode)});
 }
@@ -89,5 +97,26 @@ fn overflowVulkanInstances() void {
         capacity.reserve(.primitives, quad_count + shadow_count, 1, frame);
     } else {
         std.debug.panic("vulkan-instances mode exists only on Linux", .{});
+    }
+}
+
+fn overflow_vulkan_mesh(mode: Mode) void {
+    // Fill every slot, including the last valid one, before the extra claim.
+    // Distinct capacities catch accidental sharing of the two point draw pools.
+    if (builtin.os.tag == .linux) {
+        const types = gooey.platform.linux.vk_renderer.vk_types;
+        var limits = overflow_limits;
+        limits.path_count_frame_max = 1;
+        limits.polyline_count_frame_max = 2;
+        limits.point_cloud_count_frame_max = 3;
+        const capacity = types.MeshCapacity.from_scene_limits(&limits);
+        const pool = std.meta.stringToEnum(types.MeshPool, @tagName(mode)).?;
+        const count = capacity.counts[@backingInt(pool)];
+        std.debug.assert(count >= 1);
+        std.debug.assert(count <= 4);
+        for (0..count) |index| capacity.reserve(pool, @intCast(index), 7);
+        capacity.reserve(pool, count, 7);
+    } else {
+        std.debug.panic("Vulkan mesh overflow checks exist only on Linux", .{});
     }
 }
