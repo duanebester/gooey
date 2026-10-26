@@ -54,12 +54,12 @@ pub const MAX_PATHS = 256;
 pub const MAX_PATH_VERTICES = 16384;
 pub const MAX_PATH_INDICES = 49152;
 
-// Phase 4: Gradient path batching - storage buffer for instance + gradient data
+// Gradient path batching - storage buffer for instance + gradient data
 pub const MAX_GRADIENT_BATCH_PATHS = 64;
 pub const MAX_GRADIENT_BATCH_VERTICES = 8192;
 pub const MAX_GRADIENT_BATCH_INDICES = MAX_GRADIENT_BATCH_VERTICES * 3;
 
-// Phase 2: Solid path batching limits (static allocation per CLAUDE.md)
+// Solid path batching limits (static allocation per CLAUDE.md)
 pub const MAX_SOLID_BATCH_VERTICES: u32 = path_mesh_mod.MAX_SOLID_BATCH_VERTICES;
 pub const MAX_SOLID_BATCH_INDICES: u32 = MAX_SOLID_BATCH_VERTICES * 3; // Worst case: 3 indices per vertex
 
@@ -321,7 +321,7 @@ pub const DrawCallInfo = struct {
 };
 
 // =============================================================================
-// Phase 2: Solid Path Batching GPU Types
+// Solid Path Batching GPU Types
 // =============================================================================
 
 /// GPU-ready solid path vertex for batched rendering (32 bytes)
@@ -480,10 +480,10 @@ const BatchDesc = struct {
 
 const MAX_BATCHES: u32 = 256;
 
-// Phase 1 batching: max clip regions per frame (per CLAUDE.md: put a limit on everything)
+// Clip batching: max clip regions per frame (per CLAUDE.md: put a limit on everything)
 const MAX_CLIP_BATCHES: u32 = 64;
 
-/// Clip batch info for Phase 1 optimization
+/// Clip batch info for grouping consecutive same-clip paths
 /// Tracks a contiguous range of paths sharing the same clip bounds
 const ClipBatch = struct {
     clip: ClipBounds,
@@ -548,7 +548,7 @@ pub const WebRenderer = struct {
     path_gradient_buffer: u32 = 0,
     path_bind_group: u32 = 0,
 
-    // Phase 2: Solid path rendering (batched, no gradients)
+    // Solid path rendering (batched, no gradients)
     solid_path_pipeline: u32 = 0,
     solid_path_vertex_buffer: u32 = 0,
     solid_path_index_buffer: u32 = 0,
@@ -601,7 +601,7 @@ pub const WebRenderer = struct {
     staging_draw_calls: [MAX_PATHS]DrawCallInfo = undefined,
 
     // =========================================================================
-    // Phase 2: Solid Path Batching - Staging Buffers
+    // Solid Path Batching - Staging Buffers
     // =========================================================================
     // These staging buffers hold baked (transformed + colored) vertices for
     // solid paths, enabling single draw call per clip region.
@@ -711,7 +711,7 @@ pub const WebRenderer = struct {
             self.image_pipeline = imports.createMSAARenderPipeline(image_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             // Path shader outputs premultiplied alpha
             self.path_pipeline = imports.createPathPipeline(path_module, "vs_main", 7, "fs_main", 7, self.sample_count);
-            // Phase 2: Solid path shader outputs premultiplied alpha
+            // Solid path shader outputs premultiplied alpha
             self.solid_path_pipeline = imports.createPathPipeline(solid_path_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             // Polyline and point cloud shaders output premultiplied alpha
             self.polyline_pipeline = imports.createPathPipeline(polyline_module, "vs_main", 7, "fs_main", 7, self.sample_count);
@@ -725,7 +725,7 @@ pub const WebRenderer = struct {
             self.image_pipeline = imports.createRenderPipeline(image_module, "vs_main", 7, "fs_main", 7);
             // Path shader outputs premultiplied alpha (fallback non-MSAA)
             self.path_pipeline = imports.createPremultipliedAlphaPipeline(path_module, "vs_main", 7, "fs_main", 7);
-            // Phase 2: Solid path shader outputs premultiplied alpha (fallback non-MSAA)
+            // Solid path shader outputs premultiplied alpha (fallback non-MSAA)
             self.solid_path_pipeline = imports.createPremultipliedAlphaPipeline(solid_path_module, "vs_main", 7, "fs_main", 7);
             // Polyline and point cloud shaders output premultiplied alpha (fallback non-MSAA)
             self.polyline_pipeline = imports.createPremultipliedAlphaPipeline(polyline_module, "vs_main", 7, "fs_main", 7);
@@ -748,7 +748,7 @@ pub const WebRenderer = struct {
         self.path_instance_buffer = imports.createBuffer(@sizeOf(GpuPathInstance), uniform_copy);
         self.path_gradient_buffer = imports.createBuffer(@sizeOf(GpuGradientUniforms), uniform_copy);
 
-        // Phase 2: Solid path buffers - larger capacity, 32-byte vertices with baked transform/color
+        // Solid path buffers - larger capacity, 32-byte vertices with baked transform/color
         self.solid_path_vertex_buffer = imports.createBuffer(@sizeOf(GpuSolidPathVertex) * MAX_SOLID_BATCH_VERTICES, storage_copy);
         self.solid_path_index_buffer = imports.createBuffer(@sizeOf(u32) * MAX_SOLID_BATCH_INDICES, storage_copy);
         self.solid_path_clip_buffer = imports.createBuffer(@sizeOf(GpuClipBounds), uniform_copy);
@@ -778,7 +778,7 @@ pub const WebRenderer = struct {
             self.path_gradient_buffer,
         );
 
-        // Phase 2: Solid path bind group: vertex buffer, clip buffer, uniform buffer
+        // Solid path bind group: vertex buffer, clip buffer, uniform buffer
         self.solid_path_bind_group = imports.createPathBindGroup(
             self.solid_path_pipeline,
             0,
@@ -1579,7 +1579,7 @@ pub const WebRenderer = struct {
             total_indices * @sizeOf(u32),
         );
 
-        // Draw grouped by clip batches (Phase 1 optimization)
+        // Draw grouped by clip batches
         for (clip_batches[0..clip_batch_count]) |batch| {
             // Draw all paths in this clip batch
             for (batch.start_index..batch.end_index) |i| {
@@ -1656,7 +1656,7 @@ pub const WebRenderer = struct {
     }
 
     /// Fallback: render paths without batching (used for overflow)
-    /// This is the original per-path upload approach, used when batch limits are exceeded
+    /// Uploads each path separately; used when batch limits are exceeded
     fn renderPathsUnbatched(
         self: *Self,
         paths: []const PathInstance,
@@ -1713,7 +1713,7 @@ pub const WebRenderer = struct {
         }
     }
 
-    /// Phase 2: Render solid-color paths with single draw call per clip region
+    /// Render solid-color paths with single draw call per clip region
     /// Transform and color are baked into vertices at upload time
     /// This is the main optimization - reduces N draw calls to 1 for solid paths sharing a clip
     fn renderSolidPathBatch(
@@ -1847,7 +1847,7 @@ pub const WebRenderer = struct {
         imports.drawIndexed(index_offset, 1, 0, 0, 0);
     }
 
-    /// Phase 2+3: Optimized batch rendering with solid/gradient partitioning
+    /// Optimized batch rendering with solid/gradient partitioning
     /// Partitions paths by gradient type, then renders:
     ///   - Solid paths: batched by clip region (1 draw call per clip)
     ///   - Gradient paths: individual draw calls (existing approach)
@@ -1871,7 +1871,7 @@ pub const WebRenderer = struct {
         std.debug.assert(paths.len <= MAX_PATHS);
 
         // =====================================================================
-        // Phase 3a: Partition paths into solid vs gradient
+        // Partition paths into solid vs gradient
         // Use existing hasGradient() method from PathInstance
         // =====================================================================
         var solid_instances: [256]PathInstance = undefined;
@@ -1895,7 +1895,7 @@ pub const WebRenderer = struct {
         std.debug.assert(solid_count + gradient_count == paths.len);
 
         // =====================================================================
-        // Phase 3b: Render solid paths (batched by clip region)
+        // Render solid paths (batched by clip region)
         // Group consecutive same-clip paths for single draw call each
         // =====================================================================
         if (solid_count > 0) {
@@ -1945,7 +1945,7 @@ pub const WebRenderer = struct {
         }
 
         // =====================================================================
-        // Phase 3c: Render gradient paths (individual draw calls)
+        // Render gradient paths (individual draw calls)
         // Uses existing renderPathBatch approach for gradient paths
         // =====================================================================
         if (gradient_count > 0) {
@@ -1954,7 +1954,7 @@ pub const WebRenderer = struct {
         }
     }
 
-    /// Phase 4: Batched gradient path rendering
+    /// Batched gradient path rendering
     /// Uploads all vertices and indices ONCE, then issues draws with offset tracking.
     /// This reduces writeBuffer calls from 4×N to 2 + 2×N (eliminating per-path vertex/index uploads).
     fn renderGradientPathsOnly(

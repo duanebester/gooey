@@ -3,8 +3,9 @@
 //! Gooey's platform abstraction is compile-time monomorphic: `platform/mod.zig`
 //! selects exactly one backend namespace per target and every call site binds
 //! directly to its concrete types. There is deliberately no runtime vtable —
-//! see `docs/platform_interface_design.md` decision 2. Runtime type erasure was
-//! removed because it created a second, drifting contract with zero consumers.
+//! see `docs/platform_interface_design.md` decision 2. There is no runtime type
+//! erasure either, because it would create a second, drifting contract with no
+//! consumers.
 //!
 //! This module owns the types both sides of the boundary agree on. The exact
 //! signature checks that enforce the agreement live in `contract.zig`.
@@ -96,11 +97,10 @@ pub const CursorShape = enum(u8) {
 
 /// Translucent-background style for a window.
 ///
-/// One canonical enum shared by every backend. Previously macOS, web, and the
-/// shared options each declared their own variant list with *different tag
-/// values*, and `runtime/runner.zig` bridged them with
-/// `@enumFromInt(@intFromEnum(...))` — a cast that silently produced the wrong
-/// style the moment the orderings diverged, which they had. Backends that
+/// One canonical enum shared by every backend, so tag values cannot disagree.
+/// Per-backend variant lists bridged with `@enumFromInt(@intFromEnum(...))`
+/// would silently produce the wrong style the moment their orderings
+/// diverged. Backends that
 /// cannot honour a given style must degrade visibly (see `glass_effects` in
 /// `PlatformCapabilities`) rather than remap tags.
 pub const GlassStyle = enum(u8) {
@@ -152,8 +152,8 @@ pub const PlatformCapabilities = struct {
     /// style; `contract.verifyPlatformWindow` checks that conditionally.
     ///
     /// This says nothing about the renderer. See `has_post_process` for the
-    /// renderer-side fact; the two were conflated until a caller that needed
-    /// only the latter started gating on this one.
+    /// renderer-side fact; conflating the two would let a caller that needs
+    /// only the latter gate on this one.
     glass_effects: bool = false,
 
     /// The backend's `PlatformWindow.renderer` exposes
@@ -326,9 +326,9 @@ pub const WindowOptions = struct {
 
 test "GlassStyle tag values are stable across backends" {
     // These tag values are load-bearing: they are persisted in `WindowOptions`
-    // literals in application code and were previously reinterpreted across
-    // three separate enums. Pin them so a reordering is a test failure rather
-    // than a silently wrong window appearance.
+    // literals in application code and read by every backend. Pin them so a
+    // reordering is a test failure rather than a silently wrong window
+    // appearance.
     try std.testing.expectEqual(@as(u8, 0), @backingInt(GlassStyle.none));
     try std.testing.expectEqual(@as(u8, 1), @backingInt(GlassStyle.blur));
     try std.testing.expectEqual(@as(u8, 2), @backingInt(GlassStyle.glass_regular));

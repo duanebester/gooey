@@ -2085,15 +2085,16 @@ fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) 
 
     // Regression guard for the shape-cache insert boundary.  `ShapedRunCache.put`
     // refuses runs longer than MAX_GLYPHS_PER_ENTRY, while the `measureText`
-    // lookup gate admits anything up to MAX_TEXT_LEN.  Text in between used to
-    // shape through CoreText on *every* call and never warm up -- a permanent
-    // miss that cost ~35us per measurement versus ~160ns for a hit (~220x).
-    // `MeasureCache` closes that gap by caching width without glyphs.
+    // lookup gate admits anything up to MAX_TEXT_LEN.  Text in between is never
+    // stored, so without another cache it would shape through CoreText on *every*
+    // call -- a permanent miss that costs ~35us per measurement versus ~160ns for
+    // a hit (~220x).  `MeasureCache` closes that gap by caching width without
+    // glyphs.
     //
     // These two cases straddle the boundary with otherwise-identical ASCII text
-    // (1 byte = 1 glyph), so they should now report the *same* cost.  If the
-    // 129ch row ever diverges sharply from the 128ch row again, the width cache
-    // has stopped covering the over-limit band.
+    // (1 byte = 1 glyph), so they should report the *same* cost.  If the 129ch
+    // row diverges sharply from the 128ch row, the width cache has stopped
+    // covering the over-limit band.
     std.debug.assert(ShapedRunCache.MAX_GLYPHS_PER_ENTRY == 128);
     std.debug.assert(ShapedRunCache.MAX_TEXT_LEN >= 129);
     collect(reporter, benchMeasureText(text_sys, "measure_at_shape_limit_128ch_x100", SCALING_TEXT_BASE[0..128], 100));
@@ -2195,9 +2196,9 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     const text_sys = try gpa.create(TextSystem);
     defer gpa.destroy(text_sys);
 
-    // `TextSystem.initInPlace` now requires an `Io` so the embedded
-    // shape/glyph cache mutexes (migrated to `std.Io.Mutex` in Phase 5)
-    // have a process-lifetime vtable to lock against.  Forward the `Io`
+    // `TextSystem.initInPlace` requires an `Io` so the embedded
+    // shape/glyph cache mutexes (`std.Io.Mutex`) have a process-lifetime
+    // vtable to lock against.  Forward the `Io`
     // supplied by the process entry point.
     try text_sys.initInPlace(gpa, 1.0, reporter.io);
     defer text_sys.deinit();

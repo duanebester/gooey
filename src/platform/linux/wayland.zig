@@ -953,7 +953,7 @@ pub fn compositorDestroy(compositor: *Compositor) void {
 
 /// wl_surface request opcodes in protocol declaration order. A request's opcode is its
 /// index in the protocol XML, so a bare literal silently names a different request when it
-/// is off by one: `set_buffer_scale` once marshaled 6 (`commit`). Field names match the
+/// is off by one: `set_buffer_scale` written as 6 would marshal `commit`. Field names match the
 /// protocol's request names so a test can check every opcode against libwayland's table.
 const SurfaceRequest = enum(u32) {
     destroy = 0,

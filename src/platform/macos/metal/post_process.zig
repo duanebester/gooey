@@ -16,7 +16,7 @@ const text_pipeline = @import("text.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
 
 /// Render the complete post-process pipeline in a single command buffer.
-/// This is the main entry point - replaces the old multi-buffer approach.
+/// This is the main entry point - one command buffer rather than one per pass.
 pub fn renderFullPipeline(
     command_queue: objc.Object,
     layer: objc.Object,

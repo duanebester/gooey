@@ -1,7 +1,8 @@
 //! Hand-written `extern "c"` declarations for the slice of the Objective-C
-//! runtime that Gooey actually calls. This replaces the upstream `zig-objc`
-//! dependency's `translate-c` of `<objc/runtime.h>` + `<objc/message.h>`,
-//! removing the xcrun / Apple-SDK-path build plumbing entirely. The system
+//! runtime that Gooey actually calls. Declaring them by hand, rather than
+//! depending on `zig-objc`'s `translate-c` of `<objc/runtime.h>` +
+//! `<objc/message.h>`, keeps xcrun / Apple-SDK-path plumbing out of the
+//! build entirely. The system
 //! `objc` library and the `Foundation` framework are still linked by
 //! `build.zig`, which is where these symbols resolve.
 //!

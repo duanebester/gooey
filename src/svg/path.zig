@@ -4,9 +4,8 @@
 //! Adapted from cosmic graphics for the gooey rendering pipeline.
 //!
 //! Vector math types live in `core.vec2` so the SVG, scene-path, and
-//! triangulation pipelines all share one `Vec2` / `IndexSlice` (cleanup
-//! plan PR 2 — eliminates the `scene/svg.zig` ↔ `core/vec2.zig` Vec2
-//! collision).
+//! triangulation pipelines all share one `Vec2` / `IndexSlice`, so no two
+//! modules can declare conflicting `Vec2` types.
 
 const std = @import("std");
 const vec2_mod = @import("../core/vec2.zig");
@@ -883,7 +882,7 @@ pub const SvgElementParser = struct {
         var path_parser = PathParser.init(self.allocator);
         path_parser.appendPath(path, d_attr) catch {};
 
-        // Fix: Each <path> element starts a new subpath, so the first command
+        // Each <path> element starts a new subpath, so the first command
         // should always be absolute. If it's a relative moveTo, convert to absolute.
         // In SVG, a standalone <path d="m5 12..."> treats 'm' as relative to origin (0,0).
         if (path.commands.items.len > cmd_count_before) {

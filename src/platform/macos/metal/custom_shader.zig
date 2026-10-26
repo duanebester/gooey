@@ -28,7 +28,7 @@ pub const Uniforms = extern struct {
     // Shadertoy standard uniforms
     resolution: [3]f32 align(16), // iResolution - viewport resolution (width, height, 1.0)
     _pad_resolution: f32 = 0, // Padding to match Metal float3 alignment
-    time: f32, // iTime - shader playback time in seconds (now at offset 16)
+    time: f32, // iTime - shader playback time in seconds (at offset 16)
     time_delta: f32, // iTimeDelta - render time in seconds
     frame_rate: f32, // iFrameRate - frames per second
     frame: i32, // iFrame - frame counter

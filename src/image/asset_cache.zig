@@ -1,8 +1,8 @@
-//! Generic asset cache skeleton — PR 1 seed for the future `Asset(T)` system.
+//! Generic asset cache skeleton for the future `Asset(T)` system.
 //!
-//! Rationale: PR 1 extracts `ImageLoader` as the prototype shape for every
-//! subsequent subsystem extraction (SVG in PR 2, fonts after that, audio,
-//! shaders, …). All of those subsystems share the same architecture:
+//! Rationale: `ImageLoader` is the prototype shape for every asset
+//! subsystem (images, SVG, fonts, audio, shaders, …). All of those
+//! subsystems share the same architecture:
 //!
 //!   1. A fixed-capacity slot map keyed by a hash.
 //!   2. A producer-consumer `Io.Queue` for completed loads.
@@ -11,36 +11,34 @@
 //!
 //! Rather than copy-paste this shape across N modules, the long-term plan
 //! (cleanup item #9, see `docs/architectural-cleanup-plan.md` and
-//! `docs/cleanup-implementation-plan.md` PR 1) is a generic
+//! `docs/cleanup-implementation-plan.md`) is a generic
 //! `AssetCache(T, cap)` that each subsystem composes once.
 //!
 //! This file is intentionally a **skeleton**: it pins down the type shape
-//! and the public surface so PR 2 onwards can fill in the body without
+//! and the public surface so the body can be filled in without
 //! redesigning. `ImageLoader` (in `loader.zig`) is the working
-//! implementation; once SVG migrates onto this skeleton in PR 2 the
-//! pattern is validated against two callers and we can fold `ImageLoader`
+//! implementation; once a second subsystem uses this skeleton the
+//! pattern is validated against two callers and `ImageLoader` can fold
 //! down to a thin wrapper around `AssetCache(DecodedImage, ...)`.
 //!
-//! Why ship a skeleton now instead of waiting?
+//! Why a skeleton instead of nothing?
 //!
 //! - The shape of the type (in particular the comptime parameters and the
 //!   trait the inner `T` must satisfy) is the load-bearing decision. Pinning
-//!   it here forces the SVG and image extractions to converge instead of
+//!   it here forces the SVG and image subsystems to converge instead of
 //!   each inventing its own slightly-different shape.
-//! - PR 1 must respect the "no public-API regressions" rule
-//!   (`docs/cleanup-implementation-plan.md` §1). A future swap from a
-//!   bespoke `ImageLoader` to `AssetCache(Image, ...)` is a public-API
-//!   change in spirit; documenting the target up front lets reviewers
-//!   spot drift early.
+//! - A swap from a bespoke `ImageLoader` to `AssetCache(Image, ...)` is a
+//!   public-API change in spirit (`docs/cleanup-implementation-plan.md` §1);
+//!   documenting the target up front lets reviewers spot drift early.
 //! - It costs almost nothing — no runtime code, no behaviour change.
 //!
-//! Non-goals for this PR:
+//! Non-goals for the skeleton:
 //!
-//! - Wiring `ImageLoader` through `AssetCache`. That is PR 2's job, after
-//!   the SVG callsite proves the trait shape on a second consumer.
+//! - Wiring `ImageLoader` through `AssetCache`. That waits until a second
+//!   consumer proves the trait shape.
 //! - Eviction / LRU. Cleanup item #9 explicitly defers that to the
-//!   follow-up "asset retention policy" issue. The skeleton documents
-//!   the hook but does not implement it.
+//!   "asset retention policy" issue. The skeleton documents the hook but
+//!   does not implement it.
 
 const std = @import("std");
 
@@ -56,8 +54,8 @@ const std = @import("std");
 //   3. Be safely move-constructible — the cache stores `T` by value in a
 //      fixed-capacity backing array and may swap-remove on eviction.
 //
-// `verifyAssetType` is a comptime check that PR 2 will call from
-// `AssetCache(T, cap)` to surface trait violations at the point of
+// `verifyAssetType` is a comptime check that `AssetCache(T, cap)` calls
+// to surface trait violations at the point of
 // instantiation rather than deep inside the cache body. Keeping it as a
 // free function (not buried inside the generic) makes the diagnostic
 // readable: the error message points at the trait, not at line 437 of a
@@ -110,9 +108,9 @@ pub const Options = struct {
     failed_capacity: u32,
 };
 
-/// Generic asset cache — **skeleton only** in PR 1.
+/// Generic asset cache — **skeleton only**.
 ///
-/// PR 2 (SVG consolidation) will fill this in by:
+/// The implementation fills this in by:
 ///
 ///   1. Lifting the slot-map / pending-set / failed-set / `Io.Queue` /
 ///      `Io.Group` body out of `ImageLoader`.
@@ -120,8 +118,8 @@ pub const Options = struct {
 ///      `AssetCache(DecodedImage, .{ ... })`.
 ///   3. Replacing the bespoke `SvgRasterCache` storage similarly.
 ///
-/// In the meantime this stub documents the public surface so the two
-/// consumers (image, svg) cannot drift before the merge.
+/// Until then this stub documents the public surface so the two
+/// consumers (image, svg) cannot drift apart.
 pub fn AssetCache(comptime T: type, comptime options: Options) type {
     comptime verifyAssetType(T);
     comptime std.debug.assert(options.capacity > 0);
@@ -139,7 +137,7 @@ pub fn AssetCache(comptime T: type, comptime options: Options) type {
         }
 
         // ---------------------------------------------------------------------
-        // Public API surface — bodies arrive in PR 2
+        // Public API surface — bodies are not implemented yet
         // ---------------------------------------------------------------------
 
         /// Initialize in place at the struct's final heap address.
@@ -196,7 +194,7 @@ pub fn AssetCache(comptime T: type, comptime options: Options) type {
 //
 // Skeleton-level tests only: confirm the trait validator behaves as
 // advertised. Body-level tests (slot map, drain semantics, cancellation
-// propagation) ship with PR 2.
+// propagation) belong with the implementation.
 
 test "verifyAssetType accepts a well-formed asset" {
     const Good = struct {

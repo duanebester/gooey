@@ -24,7 +24,7 @@ pub const MAX_MESH_VERTICES: u32 = limits.MAX_PATH_VERTICES;
 /// Maximum indices per mesh — sourced from limits.zig (single source of truth)
 pub const MAX_MESH_INDICES: u32 = limits.MAX_PATH_INDICES;
 
-/// Maximum vertices in a single solid-path batch (Phase 2 batching)
+/// Maximum vertices in a single solid-path batch.
 /// This bounds the staging buffer size for baked vertices
 pub const MAX_SOLID_BATCH_VERTICES: u32 = 65536;
 
@@ -85,7 +85,7 @@ comptime {
 // SolidPathVertex - Batched solid color vertex format (32 bytes)
 // =============================================================================
 
-/// GPU-ready vertex for batched solid color path rendering (Phase 2)
+/// GPU-ready vertex for batched solid color path rendering.
 /// Layout: transformed position (x, y) + UV (u, v) + baked HSLA color (h, s, l, a)
 /// Transform and color are baked in at upload time, enabling single draw call per clip region
 pub const SolidPathVertex = extern struct {

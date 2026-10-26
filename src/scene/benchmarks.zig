@@ -599,11 +599,11 @@ fn benchDrawOrderSort(
     return makeResult(name, count, total_time_ns, iterations, percentiles, 0);
 }
 
-/// Direct payload sort over the same shuffled quads: the pre-optimization
-/// baseline that moves whole 128-byte `Quad` structs on every swap. Paired with
-/// `benchDrawOrderSort` (the indirect key sort that `finish()` now uses) so
+/// Direct payload sort over the same shuffled quads: the baseline that moves
+/// whole 128-byte `Quad` structs on every swap. Paired with
+/// `benchDrawOrderSort` (the indirect key sort that `finish()` uses) so
 /// `bench-compare` can size the payload-move tax on this hardware — the concrete
-/// before/after for Ericson's "sort keys, not payloads".
+/// comparison for Ericson's "sort keys, not payloads".
 fn benchDrawOrderSortStruct(
     allocator: Allocator,
     comptime name: []const u8,
@@ -652,9 +652,9 @@ fn benchDrawOrderSortStruct(
     return makeResult(name, count, total_time_ns, iterations, percentiles, 0);
 }
 
-/// The legacy sort: `std.sort.pdq` straight over the `Quad` payload array, so
+/// The payload sort: `std.sort.pdq` straight over the `Quad` payload array, so
 /// every swap shuffles 128 bytes. Isolated here purely as the benchmark
-/// baseline; production `finish()` no longer does this.
+/// baseline; production `finish()` sorts keys instead.
 fn pdqQuadsByOrder(items: []Quad) void {
     std.sort.pdq(Quad, items, {}, struct {
         fn lessThan(_: void, a: Quad, b: Quad) bool {
@@ -1013,7 +1013,7 @@ pub fn main(init: std.process.Init) !void {
     // =========================================================================
 
     printSectionHeader("Gooey Scene Benchmarks — Draw-Order Sort (finish() over shuffled quads)");
-    // Indirect key sort (what finish() now does) vs. the legacy payload sort, on
+    // Indirect key sort (what finish() does) vs. the direct payload sort, on
     // identical shuffled inputs, so bench-compare can lock in the win.
     collect(&reporter, try benchDrawOrderSort(allocator, "sort_quads_1k", 1000));
     collect(&reporter, try benchDrawOrderSort(allocator, "sort_quads_8k", 8000));

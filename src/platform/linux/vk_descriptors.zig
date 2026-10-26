@@ -6,8 +6,8 @@
 //!   - **Unified**: storage buffer (binding 0) + uniform buffer (binding 1)
 //!   - **Textured**: storage + uniform + sampled image (binding 2) + sampler (binding 3)
 //!
-//! Text, SVG, and image pipelines all share a single textured layout handle
-//! (Phase 5 complete). The renderer stores exactly 2 layout handles:
+//! Text, SVG, and image pipelines all share a single textured layout handle.
+//! The renderer stores exactly 2 layout handles:
 //! `unified_descriptor_layout` and `textured_descriptor_layout`.
 
 const std = @import("std");
@@ -80,7 +80,7 @@ pub fn createUnifiedLayout(device: vk.Device) LayoutError!vk.DescriptorSetLayout
 /// Create the textured descriptor set layout: storage + uniform + image + sampler.
 ///
 /// Used by text, SVG, and image pipelines — all three share this identical layout.
-/// The caller creates one handle per pipeline (Phase 5 will share a single handle).
+/// The renderer creates one handle and shares it across all three pipelines.
 ///
 ///   binding 0: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER   (vertex stage)
 ///   binding 1: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER   (vertex stage)

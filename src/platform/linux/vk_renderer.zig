@@ -1,13 +1,13 @@
 //! VulkanRenderer — Vulkan rendering coordinator for Linux.
 //!
 //! Takes a gooey Scene and renders it using Vulkan directly.
-//! Delegates to extracted modules for each subsystem:
+//! Delegates to one module per subsystem:
 //!   - `vk_instance`    : Instance, device, surface, debug messenger
 //!   - `vk_swapchain`   : Swapchain lifecycle, MSAA, render pass, framebuffers
 //!   - `vk_buffers`     : Buffer, command pool, command buffer, sync object creation
 //!   - `vk_descriptors` : Descriptor layouts, pool, sets, sampler, updates
-//!   - `vk_pipelines`   : Generic pipeline creation (Phase 2)
-//!   - `vk_atlas`       : Atlas texture upload (Phase 3)
+//!   - `vk_pipelines`   : Generic pipeline creation
+//!   - `vk_atlas`       : Atlas texture upload
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
@@ -197,11 +197,11 @@ pub const VulkanRenderer = struct {
     render_pass: vk.RenderPass = null,
     framebuffers: [8]vk.Framebuffer = @splat(null),
 
-    // Pipeline layouts (2 shared — improvement #9: 4 → 2 handles)
+    // Pipeline layouts (2 handles; text, SVG, and image share one)
     unified_pipeline_layout: vk.PipelineLayout = null,
     textured_pipeline_layout: vk.PipelineLayout = null, // shared by text, SVG, image
 
-    // Pipeline cache (improvement #8 — amortizes shader compilation)
+    // Pipeline cache (amortizes shader compilation)
     pipeline_cache: vk.PipelineCache = null,
 
     // Pipelines
@@ -461,13 +461,13 @@ pub const VulkanRenderer = struct {
         vk_pipelines.destroyPipeline(self.device, self.image_pipeline);
         self.image_pipeline = null;
 
-        // Destroy shared pipeline layouts (improvement #9: 2 instead of 4)
+        // Destroy shared pipeline layouts (2 handles)
         if (self.unified_pipeline_layout) |l| vk.vkDestroyPipelineLayout(self.device, l, null);
         self.unified_pipeline_layout = null;
         if (self.textured_pipeline_layout) |l| vk.vkDestroyPipelineLayout(self.device, l, null);
         self.textured_pipeline_layout = null;
 
-        // Destroy pipeline cache (improvement #8)
+        // Destroy pipeline cache
         // TODO: serialize cache to $XDG_CACHE_HOME/gooey/pipeline_cache.bin
         // before destroying for cross-session shader compilation reuse.
         if (self.pipeline_cache) |cache| vk.vkDestroyPipelineCache(self.device, cache, null);
@@ -621,7 +621,7 @@ pub const VulkanRenderer = struct {
         );
         errdefer self.host_memory_pool.destroy(self.device);
 
-        // ---- Pre-allocate staging buffer (improvement #3 — zero mid-frame allocations) ----
+        // ---- Pre-allocate staging buffer (zero mid-frame allocations) ----
         const staging_result = try vk_buffers.createMappedBuffer(
             self.device,
             &self.mem_properties,
@@ -761,7 +761,7 @@ pub const VulkanRenderer = struct {
             self.unified_descriptor_layout = null;
         }
 
-        // Single textured layout shared by text, SVG, and image pipelines (Phase 5).
+        // Single textured layout shared by text, SVG, and image pipelines.
         self.textured_descriptor_layout = try vk_descriptors.createTexturedLayout(self.device);
     }
 
@@ -798,12 +798,12 @@ pub const VulkanRenderer = struct {
         std.debug.assert(self.unified_descriptor_layout != null);
         std.debug.assert(self.textured_descriptor_layout != null);
 
-        // Create pipeline cache (improvement #8 — in-memory for now).
+        // Create pipeline cache (in-memory only).
         // TODO: load initial data from $XDG_CACHE_HOME/gooey/pipeline_cache.bin
         // for cross-session shader compilation reuse.
         self.pipeline_cache = try vk_pipelines.createPipelineCache(self.device, null);
 
-        // Create shared pipeline layouts (improvement #9: 4 → 2 handles).
+        // Create shared pipeline layouts (2 handles).
         // Unified pipeline uses its own layout; text/SVG/image share one.
         self.unified_pipeline_layout = try vk_pipelines.createPipelineLayout(
             self.device,
@@ -881,7 +881,7 @@ pub const VulkanRenderer = struct {
         const physical_width: u32 = @intFromFloat(@as(f64, @floatFromInt(width)) * scale_factor);
         const physical_height: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) * scale_factor);
 
-        // Wait only for our frames — not ALL GPU work (improvement #4)
+        // Wait only for our frames — not ALL GPU work
         for (0..FRAME_COUNT) |i| {
             _ = vk.vkWaitForFences(
                 self.device,
@@ -946,7 +946,7 @@ pub const VulkanRenderer = struct {
         self.msaa_memory = msaa.memory;
         self.msaa_view = msaa.view;
 
-        // Recreate framebuffers — single call replaces 45 lines of inlined copy-paste
+        // Recreate framebuffers through the shared helper rather than inline copies
         try vk_swapchain.createFramebuffers(
             self.device,
             self.render_pass,
@@ -966,7 +966,7 @@ pub const VulkanRenderer = struct {
     // → processAtlasUploads() stages dirty rects into per-frame lane →
     // recordAtlasTransfers() records barriers+copies into the render cmd buf.
     //
-    // Eliminates the synchronous GPU round-trip that was the #1 perf bottleneck.
+    // Avoids a synchronous GPU round-trip per upload, the largest frame stall.
     // Per-frame staging lanes (48MB each) prevent CPU/GPU races without extra
     // fences. Partial uploads (dirty rects only) reduce transfer bandwidth
     // from 64MB to typically <1MB per atlas-dirty frame.

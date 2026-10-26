@@ -135,13 +135,12 @@ pub const WindowRegistry = struct {
 
         // Registration deliberately does NOT elect an active window.
         //
-        // This used to auto-activate the first registered window, which made
-        // focus policy an invisible side effect of registration: Linux
-        // additionally published focus explicitly from `Window.init` while
-        // macOS and web relied on this branch, so the three backends disagreed
-        // about which window `getActiveWindowId` named for the same program.
-        // Each backend now calls `setActiveWindowId` itself, so the policy is
-        // one readable line per backend and the registry stays a pure map.
+        // Auto-activating the first registered window would make focus policy
+        // an invisible side effect of registration, and backends that also
+        // publish focus explicitly would disagree about which window
+        // `getActiveWindowId` names for the same program. Each backend calls
+        // `setActiveWindowId` itself, so the policy is one readable line per
+        // backend and the registry stays a pure map.
 
         return id;
     }
@@ -296,8 +295,8 @@ test "WindowRegistry - unregister" {
 
 test "WindowRegistry - registration does not elect an active window" {
     // Focus policy belongs to the backend, not to registration. Electing here
-    // made registration silently change focus, and the three backends then
-    // disagreed about which window was active. Registration must leave the
+    // would make registration silently change focus, and the backends would
+    // disagree about which window is active. Registration must leave the
     // active slot untouched.
     var registry = WindowRegistry.init(std.testing.allocator);
     defer registry.deinit();

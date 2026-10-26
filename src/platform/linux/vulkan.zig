@@ -1,8 +1,8 @@
 //! Hand-written Vulkan bindings for Linux GPU rendering.
 //!
 //! These declarations cover only the subset of the Vulkan C API that Gooey's
-//! 2D renderer uses on native Linux with Wayland. They replace an `@cImport`
-//! of `vulkan/vulkan.h`, which Zig 0.17 removed from the language.
+//! 2D renderer uses on native Linux with Wayland. They stand in for an
+//! `@cImport` of `vulkan/vulkan.h`, which Zig 0.17 does not support.
 //!
 //! Why hand-written rather than generated at build time: every other native
 //! backend (Wayland, D-Bus, FreeType, libpng, CoreText, Metal) is declared the

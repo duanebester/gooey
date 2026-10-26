@@ -60,12 +60,11 @@ pub const Window = struct {
     scale_factor: f64,
     /// NUL-terminated window title storage.
     ///
-    /// This was a borrowed `[]const u8` whose `.ptr` was handed straight to
-    /// `-[NSString stringWithUTF8String:]`. That API requires a NUL-terminated
-    /// C string, so it read past the end of any slice that was not incidentally
-    /// terminated. The slice was also only borrowed, so a caller passing a
-    /// stack buffer left the field dangling. Owning fixed storage fixes both,
-    /// and matches Linux and the test backend.
+    /// `-[NSString stringWithUTF8String:]` requires a NUL-terminated C string,
+    /// so handing it a borrowed slice's `.ptr` would read past the end of any
+    /// slice that is not incidentally terminated, and a caller passing a stack
+    /// buffer would leave a borrowed field dangling. Owning fixed storage rules
+    /// out both, and matches Linux and the test backend.
     title_buf: [title_bytes_max + 1]u8,
     title_len: u16,
     background_color: geometry.Color,
@@ -300,9 +299,8 @@ pub const Window = struct {
 
         // A newly ordered-front window claims focus. Every backend publishes
         // this explicitly so the policy is one visible line per backend rather
-        // than an implicit "first window wins" buried in `WindowRegistry`,
-        // which is what previously made macOS and Linux disagree about which
-        // window `getActiveWindowId` named.
+        // than an implicit "first window wins" buried in `WindowRegistry`, so
+        // every backend agrees about which window `getActiveWindowId` names.
         plat.setActiveWindowId(self.window_id);
 
         assert(!self.closed);
@@ -598,8 +596,8 @@ pub const Window = struct {
 
     /// Backing scale factor of the display this window is on.
     ///
-    /// `f64` across every backend: web previously narrowed this to `f32` and
-    /// silently lost precision for shared callers.
+    /// `f64` across every backend, so no target narrows it to `f32` and
+    /// silently loses precision for shared callers.
     pub fn getScaleFactor(self: *const Self) f64 {
         assert(self.scale_factor > 0.0);
         assert(self.scale_factor <= 8.0);

@@ -510,7 +510,7 @@ const PERM_DONE: u64 = std.math.maxInt(u64);
 /// Pack a draw order and array index into a single sortable u64. The order
 /// occupies the high 32 bits (primary key) and the index the low 32 bits, so an
 /// ascending u64 sort breaks ties by insertion order — a stable, deterministic
-/// result, unlike the old unstable payload pdq.
+/// result, unlike an unstable payload pdq.
 inline fn makeOrderKey(order: DrawOrder, index: u32) u64 {
     return (@as(u64, order) << 32) | @as(u64, index);
 }
@@ -564,8 +564,8 @@ fn applyPermutation(comptime T: type, items: []T, keys: []u64) void {
 
 /// Parallel-array variant of `applyPermutation`: gathers `instances` and
 /// `gradients` with the same permutation so the two stay index-aligned. This is
-/// what lets the paths arrays be sorted together without the old O(n²) selection
-/// sort that hand-swapped both arrays per comparison.
+/// what lets the paths arrays be sorted together without an O(n²) selection
+/// sort that hand-swaps both arrays per comparison.
 fn applyPermutationPaths(
     instances: []PathInstance,
     gradients: []GradientUniforms,
@@ -1599,14 +1599,14 @@ pub const Scene = struct {
         if (self.needs_sort_images) self.sortByOrder(ImageInstance, self.images.items);
         if (self.needs_sort_paths) {
             // Paths carry a parallel gradient array; gather both with one
-            // permutation (retires the former O(n²) selection sort).
+            // permutation in O(n log n).
             sortPathsByOrder(self.path_instances.items, self.path_gradients.items);
         }
         if (self.needs_sort_polylines) self.sortByOrder(Polyline, self.polylines.items);
         if (self.needs_sort_point_clouds) self.sortByOrder(PointCloud, self.point_clouds.items);
-        // Previously missing: the flag was set on out-of-order inserts but never
-        // consumed, so colored point clouds rendered in insertion order. Wiring
-        // the branch in fixes that dead-invariant bug (§11, negative space).
+        // Every flag set on out-of-order inserts must be consumed here; an
+        // unconsumed flag would render colored point clouds in insertion order
+        // (§11, negative space).
         if (self.needs_sort_colored_point_clouds) {
             self.sortByOrder(ColoredPointCloud, self.colored_point_clouds.items);
         }
@@ -1754,7 +1754,7 @@ test "insertQuadWithOrder interleaves correctly with BatchIterator" {
 test "finish sorts all nine per-type draw-order arrays ascending" {
     // Goal: prove every per-type array that can be flagged out-of-order is
     // actually re-sorted by `finish()` — including `colored_point_clouds`, whose
-    // sort branch was previously missing (write-only flag), and the parallel
+    // flag is easy to leave write-only, and the parallel
     // path arrays, whose gradients must travel with their instances. We seed
     // each array directly (white-box) with a descending-ish order permutation so
     // a correct sort must move every element, then assert ascending order.

@@ -506,9 +506,9 @@ pub const Window = struct {
     /// compositor.
     ///
     /// An over-long title is a programmer error here, exactly as it is on web
-    /// (`title.len <= title_bytes_max`) and in the test backend. This used to
-    /// truncate silently, so the same call that trips an assertion on two
-    /// targets quietly produced a different window title on the third.
+    /// (`title.len <= title_bytes_max`) and in the test backend. Truncating
+    /// silently would let the same call that trips an assertion on two
+    /// targets quietly produce a different window title on the third.
     ///
     /// The clamp is kept as well, and is not a second policy: with assertions
     /// elided in release builds it is what keeps the `@memcpy` inside
@@ -542,9 +542,8 @@ pub const Window = struct {
     /// request is declined. Without `xdg-activation-v1` there is nothing to
     /// send, so this schedules a redraw and nothing more.
     ///
-    /// The previous comment claimed it "request[s] a render", but the body was
-    /// `_ = self;` and did not. Callers such as `WindowHandle.focus` publish a
-    /// new active window id immediately afterwards, so a silent no-op here left
+    /// Callers such as `WindowHandle.focus` publish a new active window id
+    /// immediately afterwards, so a silent no-op here would leave
     /// `getActiveWindowId()` reporting a window the compositor had never been
     /// asked about. Redrawing is the only honest action available, and
     /// `capabilities` carries no `can_raise_window` flag yet to express the
@@ -570,10 +569,10 @@ pub const Window = struct {
     /// `isClosed()`), and `App.checkQuitCondition` decides whether losing the
     /// last window should quit.
     ///
-    /// This used to end with `platform.quit()`, which made closing any single
-    /// window terminate the whole application — Linux multi-window was
-    /// effectively single-window. macOS has always routed through the delegate
-    /// to the owning `App` instead; this now matches.
+    /// It does not call `platform.quit()`: that would make closing any single
+    /// window terminate the whole application, reducing Linux multi-window to
+    /// single-window. This matches macOS, which routes through the delegate
+    /// to the owning `App`.
     pub fn close(self: *Self) void {
         std.debug.assert(@intFromPtr(self) != 0);
 
@@ -1100,7 +1099,7 @@ pub const Window = struct {
         self.stageAtlasUploads();
 
         // Time GPU command recording + atlas transfers + submit + present.
-        // Atlas transfers are now folded into the render command buffer,
+        // Atlas transfers are folded into the render command buffer,
         // so this timing covers everything.
         //
         // `render_io` is intentionally the process-lifetime single-threaded
@@ -1126,7 +1125,7 @@ pub const Window = struct {
         const gpu_ns: i96 = gpu_start.durationTo(gpu_end).toNanoseconds();
         std.debug.assert(gpu_ns >= 0);
         self.last_gpu_submit_ns = @intCast(gpu_ns);
-        self.last_atlas_upload_ns = 0; // Atlas transfers are now async (inside render cmd buf)
+        self.last_atlas_upload_ns = 0; // Atlas transfers are async (inside render cmd buf)
 
     }
 

@@ -1320,7 +1320,7 @@ test "Path star shape" {
 }
 
 // =============================================================================
-// Stroke Mesh Tests (Phase 4)
+// Stroke Mesh Tests
 // =============================================================================
 
 test "toStrokeMesh simple line" {
@@ -1372,7 +1372,7 @@ test "toStrokeMesh empty path error" {
     try std.testing.expectError(error.EmptyPath, result);
 }
 
-// Complex stroke tests - these now work with direct triangulation (bypasses ear-clipper)
+// Complex stroke tests - these use direct triangulation (bypasses ear-clipper)
 
 test "toStrokeMesh open path with corner miter join" {
     var path = Path.init();
@@ -1444,7 +1444,7 @@ test "toStrokeMesh closed rectangle stroke" {
 }
 
 // =============================================================================
-// Additional Comprehensive Tests (migrated from path_test.zig)
+// Additional Comprehensive Tests
 // =============================================================================
 
 test "moveTo sets current point" {

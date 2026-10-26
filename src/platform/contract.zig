@@ -1,14 +1,12 @@
 //! Exact compile-time verification of the platform boundary.
 //!
 //! Gooey binds to one backend per target (`platform/mod.zig`). Zig only
-//! analyzes the selected backend, so nothing previously proved that the *other*
-//! backends could still satisfy the calls shared runtime code makes. The old
-//! `core/interface_verify.zig` platform checks used `@hasDecl` and inspected
-//! two declarations (`init`, `deinit`) out of roughly thirty, which let real
-//! drift accumulate: `getScaleFactor` returned `f32` on web and `f64`
-//! elsewhere, size getters were `width`/`height` on macOS but
-//! `getWidth`/`getHeight` on Linux, and `setActiveWindow` took a `?WindowId`
-//! on macOS but a `*Window` on Linux.
+//! analyzes the selected backend, so without this module nothing proves that the
+//! *other* backends still satisfy the calls shared runtime code makes. Presence
+//! checks with `@hasDecl` on a few declarations let real drift accumulate
+//! unnoticed: a getter returning `f32` on one backend and `f64` on another,
+//! size getters spelled differently per backend, or a setter taking a
+//! `?WindowId` on one backend and a `*Window` on another.
 //!
 //! This module checks complete function types — parameter types and order,
 //! receiver mutability, numeric widths, error-union presence, and payload
@@ -258,12 +256,11 @@ pub fn verifyType(
 ///
 /// Zig makes the two interact rather than merely coexist: declarations and
 /// fields share one namespace per container, so a method named `width` and a
-/// field named `width` cannot both exist. That collision already fired in
-/// this refactor — Linux had to rename its `width`/`height` fields to
-/// `width_px`/`height_px` because the contract claimed those names as
-/// methods. Had `size` collided the same way, a backend would have renamed
-/// it, shared code would have stopped compiling, and the contract would have
-/// stayed green because it never mentioned the field.
+/// field named `width` cannot both exist. That is why Linux's fields are
+/// `width_px`/`height_px`: the contract claims `width`/`height` as methods.
+/// If a method name collided with `size`, a backend would rename the field,
+/// shared code would stop compiling, and a contract that never mentions the
+/// field would stay green.
 ///
 /// `@hasField` answers presence but not type, so this destructures
 /// `@typeInfo` to compare the declared type and name both containers in the
@@ -354,8 +351,8 @@ pub fn verifyPlatform(comptime Platform: type) void {
         // `verifyBackend`): answering true before `run` would let a host that
         // polls during initialization start a frame chain against a
         // half-built application, and answering true after `quit` would never
-        // let the chain stop. Backends previously disagreed — web reported
-        // true from `initInPlace` — which made the one required use unusable.
+        // let the chain stop. A backend that reports true from `initInPlace`
+        // makes the one required use unusable.
         //
         // A comptime check cannot prove behaviour, so the three transitions
         // are pinned by tests in `src/testing/test_backend.zig`.
@@ -393,9 +390,9 @@ pub fn verifyPlatform(comptime Platform: type) void {
         // `isClosed()` from inside its own teardown, where destroying its
         // `WindowContext` would free the `Cx` the host is still unwinding
         // through. Without a hook the owner never learns, so
-        // `App.drainClosedWindows` was only reachable from `openWindow`,
-        // `closeWindowById`, and `deinit` — and a host-initiated close leaked
-        // the context until one of those happened to run.
+        // `App.drainClosedWindows` would only be reachable from `openWindow`,
+        // `closeWindowById`, and `deinit` — and a host-initiated close would
+        // leak the context until one of those happened to run.
         //
         // "Turn" is deliberately not "frame": a backend must fire this once
         // per iteration of its host cycle whether or not anything rendered,
@@ -457,14 +454,13 @@ fn verifyWindowLifecycle(comptime Platform: type, comptime Window: type) void {
             .returns = WindowId,
         });
 
-        // Every backend already retains its owning platform so `deinit` can
-        // unregister without the caller tracking the pairing — but under three
-        // different field names (`plat` on macOS, `platform` on Linux and web).
-        // Shared code that needed the platform therefore had to branch on the
-        // target to spell the field, which is how `context/window.zig`'s
-        // `Window.quit()` ended up with a three-way `is_wasm`/`is_linux`/macOS
-        // split whose arms had drifted apart. Publishing the back-pointer as a
-        // method puts it under the verifier and lets shared code ask once.
+        // Every backend retains its owning platform so `deinit` can unregister
+        // without the caller tracking the pairing — but under different field
+        // names (`plat` on macOS, `platform` on Linux and web). Shared code
+        // reading the field would have to branch on the target to spell it,
+        // and the arms of such a three-way `is_wasm`/`is_linux`/macOS split
+        // drift apart. Publishing the back-pointer as a method puts it under
+        // the verifier and lets shared code ask once.
         verifyFn(Window, "getPlatform", .{
             .params = &.{*Window},
             .returns = *Platform,
@@ -474,9 +470,9 @@ fn verifyWindowLifecycle(comptime Platform: type, comptime Window: type) void {
 
 /// Verify the size and scale surface, both fields and getters.
 ///
-/// Widths are pinned because web previously returned `f32` from
-/// `getScaleFactor` while native returned `f64`, so a shared caller silently
-/// lost precision on one target. The two fields are pinned for the reason
+/// Widths are pinned because a backend returning `f32` from `getScaleFactor`
+/// while others return `f64` would make a shared caller silently lose
+/// precision on one target. The two fields are pinned for the reason
 /// documented on `verifyField`: shared code reads them directly and never
 /// calls the getters, so the getters alone verify the wrong thing.
 fn verifyWindowGeometry(comptime Window: type) void {
@@ -544,9 +540,9 @@ fn verifyWindowHostControl(comptime Window: type) void {
 /// `capabilities.glass_effects` advertises that the host can composite a
 /// translucent backdrop; `setGlassStyle` is how a caller selects which one.
 /// `src/cx.zig` and `src/examples/glass.zig` each gate on the flag and then
-/// call the method, so setting the flag already obliged a backend to declare
-/// it — the obligation was simply unchecked, and a signature drift there would
-/// have surfaced as an error inside an example rather than at the boundary.
+/// call the method, so setting the flag obliges a backend to declare it.
+/// Checking that obligation here makes a signature drift fail at the boundary
+/// rather than as an error inside an example.
 ///
 /// Conditional rather than unconditional because Wayland has no portable blur
 /// protocol: Linux has no style to select and declares no such method, and
@@ -622,8 +618,8 @@ fn verifyImeBridge(comptime Window: type) void {
 /// Verify the callback types and their setters.
 ///
 /// Setters take optionals on every backend so `null` can clear a callback.
-/// macOS previously took them non-optional and web took `anytype`, meaning
-/// `WindowContext.setupWindow` compiled against three different contracts.
+/// Pinning the exact type keeps `WindowContext.setupWindow` compiling against
+/// one contract rather than a non-optional or `anytype` variant per backend.
 fn verifyCallbacks(comptime Window: type) void {
     comptime {
         const self_mut: type = *Window;
@@ -676,11 +672,11 @@ const UserDataProbe = struct { tag: u32 };
 ///
 /// `verifyFn` cannot describe this declaration: a `comptime T: type` parameter
 /// makes the `fn` type generic, so `@typeInfo` reports `return_type = null`
-/// and there is no concrete signature to compare. That previously left the
-/// declaration checked by a bare `@hasDecl` — the weakest possible check on
-/// the one method all five static callbacks recover their context through, so
-/// a backend returning `?T`, `*T`, or `?*anyopaque` would miscompile at the
-/// call site instead of failing the contract.
+/// and there is no concrete signature to compare. A bare `@hasDecl` would be
+/// the weakest possible check on the one method all five static callbacks
+/// recover their context through, so a backend returning `?T`, `*T`, or
+/// `?*anyopaque` would miscompile at the call site instead of failing the
+/// contract.
 ///
 /// The generic is instead *instantiated* here at `UserDataProbe` and the
 /// resulting type compared exactly. `@TypeOf` analyzes the call for its type
@@ -750,7 +746,7 @@ fn verifyUserDataRecovery(comptime Window: type) void {
 ///
 /// A backend namespace must expose `Platform`, `PlatformWindow`, and
 /// `drive_model`. `mod.zig` derives its public aliases from exactly these, so
-/// backends no longer invent parallel names.
+/// backends cannot invent parallel names.
 pub fn verifyBackend(comptime Backend: type) void {
     comptime {
         if (!@hasDecl(Backend, "Platform")) {
@@ -939,8 +935,8 @@ test "describe renders a readable signature" {
 }
 
 test "production backend satisfies the platform contract" {
-    // This is the check that previously did not exist: the backend selected for
-    // this target is verified against the full contract rather than two names.
+    // The backend selected for this target is verified against the full
+    // contract rather than a few declaration names.
     const platform_mod = @import("mod.zig");
     comptime verifyBackend(platform_mod.backend);
     _ = builtin;
