@@ -9,11 +9,11 @@ const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
-const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
 const InstanceCounts = scene.InstanceCounts;
 const InstancePool = scene.InstancePool;
 const SceneLimits = scene.SceneLimits;
+const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const SvgInstance = @import("../../../scene/svg_instance.zig").SvgInstance;
 const Atlas = @import("../../../text/atlas.zig").Atlas;
 
@@ -147,14 +147,14 @@ comptime {
 /// Resource sketch (CLAUDE.md §7): each frame in flight owns one instance buffer
 /// of `svg_count_frame_max` × 96 B SVG instances, sized in `init` from
 /// `ResourceLimits.scene` and never replaced. `.standard`: 98,304 B per frame,
-/// 294,912 B per window. Per batch: one claim, one sequential copy and one
+/// 294,912 B per window for three frames. Per batch: one claim, one sequential copy and one
 /// instanced draw. The scene holds at most the same number of SVGs, so a claim
 /// past the budget is a programmer error and panics with the pool name.
 pub const SvgPipeline = struct {
     device: objc.Object,
     pipeline_state: objc.Object,
     unit_vertex_buffer: objc.Object,
-    instance_buffers: [frame_count]objc.Object,
+    instance_buffers: pipelines.FrameBuffers,
     frame_index: u32,
     /// The window's instance budget (`ResourceLimits.scene`).
     instance_budget: InstanceCounts,
@@ -174,8 +174,9 @@ pub const SvgPipeline = struct {
         allocator: std.mem.Allocator,
         device: objc.Object,
         sample_count: u32,
-        scene_limits: *const SceneLimits,
+        limits: *const ResourceLimits,
     ) !SvgPipeline {
+        const scene_limits = &limits.scene;
         assert(sample_count > 0);
         assert(scene_limits.check() == null);
         const budget = InstanceCounts.from_limits(scene_limits);
@@ -197,6 +198,7 @@ pub const SvgPipeline = struct {
             device,
             svg_count_max * @sizeOf(SvgInstance),
             "svg_instances",
+            limits.frame.in_flight_count,
         );
         return .{
             .device = device,
@@ -216,15 +218,14 @@ pub const SvgPipeline = struct {
     pub fn deinit(self: *SvgPipeline) void {
         self.pipeline_state.release();
         self.unit_vertex_buffer.release();
-        for (&self.instance_buffers) |buf| buf.release();
+        self.instance_buffers.release();
         if (self.atlas_texture) |tex| tex.release();
     }
 
     /// Advance to the next frame-in-flight slot and release the previous frame's
     /// claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *SvgPipeline) void {
-        assert(self.frame_index < frame_count);
-        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_index = self.instance_buffers.nextIndex(self.frame_index);
         self.instance_usage = .{};
     }
 
@@ -256,9 +257,8 @@ pub const SvgPipeline = struct {
         try self.updateAtlasTexture(atlas);
 
         const idx = self.frame_index;
-        assert(idx < frame_count);
         const byte_offset = @as(c_ulong, first) * @sizeOf(SvgInstance);
-        const base = pipelines.frameBufferContents(SvgInstance, self.instance_buffers[idx]);
+        const base = pipelines.frameBufferContents(SvgInstance, self.instance_buffers.at(idx));
         @memcpy(base[first..][0..instances.len], instances);
         const viewport_size = options.viewport_size;
 
@@ -274,7 +274,7 @@ pub const SvgPipeline = struct {
 
         // Set instance buffer with offset for this batch
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            self.instance_buffers[idx].value,
+            self.instance_buffers.at(idx).value,
             byte_offset,
             @as(c_ulong, 1),
         });

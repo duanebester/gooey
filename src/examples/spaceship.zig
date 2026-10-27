@@ -1338,6 +1338,7 @@ const FooterTick = struct {
 var app_state = AppState{};
 
 const App = gooey.App(AppState, &app_state, render, .{
+    .limits = .standard,
     .title = "Spaceship Dashboard",
     .width = 900,
     .height = 650,

@@ -30,6 +30,7 @@
 //!
 //! const App = gooey.App(AppState, &state, render, .{
 //!     .title = "Counter",
+//!     .limits = .nano, // Resource and font budget; see `ResourceLimits`.
 //! });
 //!
 //! pub fn main(init: std.process.Init) !void {
@@ -67,13 +68,17 @@ pub const run = @import("app.zig").runCx;
 pub const App = @import("app.zig").App;
 
 /// The application's resource budget, declared once at `App` (`.limits = ...`)
-/// and validated at comptime. Named profiles: `standard` (measured default),
-/// `large` (dense content), `ceiling` (framework maxima, for stress tests).
+/// and validated at comptime. There is no default; pick one of five rungs,
+/// smallest first: `nano` (counter-class), `small` (single-screen forms),
+/// `standard` (multi-panel apps), `large` (dense content, many icons or
+/// images), `ceiling` (framework maxima, for stress tests).
 pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 
-/// The font faces every text system loads at init, declared at `App`
-/// (`.font_limits = ...`). Profiles: `standard` (regular, medium, semibold,
-/// bold, italic, bold italic), `minimal` (regular only), `ceiling` (all 14).
+/// The font faces every text system loads at init. `App`'s `.limits` profile
+/// name selects the `FontLimits` profile of the same name; `.font_limits = ...`
+/// overrides it. Profiles: `nano` (regular only), `small` (regular, medium,
+/// semibold, bold), `standard` and `large` (those plus italic and bold italic),
+/// `ceiling` (all 14).
 pub const FontLimits = @import("core/limits.zig").FontLimits;
 
 /// The unified rendering context handed to every `render` callback.

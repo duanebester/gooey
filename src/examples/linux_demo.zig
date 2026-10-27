@@ -41,7 +41,7 @@ const AppState = struct {
     scroll_offset_y: f64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !AppState {
-        var scene = try Scene.initCapacity(allocator, &gooey.ResourceLimits.standard.scene);
+        var scene = try Scene.initCapacity(allocator, &gooey.ResourceLimits.nano.scene);
 
         // Add static background quads
         try addStaticQuads(&scene);
@@ -320,6 +320,7 @@ pub fn main() !void {
         .width = 800,
         .height = 600,
         .background_color = Color.rgba(0.1, 0.1, 0.15, 1.0),
+        .limits = gooey.ResourceLimits.nano,
     };
 
     // `PlatformWindow.init` registers itself with the platform and routes

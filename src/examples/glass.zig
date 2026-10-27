@@ -88,6 +88,8 @@ pub fn main(init: std.process.Init) !void {
     var state = AppState{};
 
     try gooey.run(AppState, &state, render, .{
+        .limits = .small,
+        .font_limits = .small,
         .title = "Glass Demo",
         .width = 600,
         .height = 400,

@@ -275,10 +275,10 @@ pub fn CxConfig(comptime State: type) type {
 
         /// Font faces loaded during initialization (CLAUDE.md §2), one per
         /// (weight, italic) variant; text requesting any other variant panics.
-        /// `gooey.App` validates it at comptime and also accepts a profile name:
-        /// `.font_limits = .ceiling`. The default `standard` profile loads
-        /// regular, medium, semibold, bold, italic, and bold italic.
-        font_limits: FontLimits = FontLimits.standard,
+        /// There is no default (CLAUDE.md §2). A profile name coerces:
+        /// `.font_limits = .nano`. `gooey.App` validates it at comptime and,
+        /// when omitted there, follows the `.limits` profile name.
+        font_limits: FontLimits,
 
         /// Custom shaders (cross-platform - MSL for macOS, WGSL for web)
         custom_shaders: []const shader_mod.CustomShader = &.{},
@@ -303,10 +303,11 @@ pub fn CxConfig(comptime State: type) type {
         /// Per-window resource budget (CLAUDE.md §2). Every scene pool and the
         /// renderer's instance storage are reserved at exactly these sizes
         /// before the first frame and never grow; exceeding one fails fast.
-        /// `gooey.App` validates it at comptime and also accepts a profile
-        /// name: `.limits = .large`. The default is the measured `standard`
-        /// profile, the reviewed policy for ordinary UI apps.
-        limits: ResourceLimits = ResourceLimits.standard,
+        /// There is no default (CLAUDE.md §2): pick one of the five rungs,
+        /// `.limits = .nano` through `.ceiling`, or spell out every budget.
+        /// `gooey.App` validates it at comptime; `runCx` checks it at window
+        /// creation.
+        limits: ResourceLimits,
 
         /// IO interface for async work (filesystem, network, concurrency).
         /// When null, falls back to `init.io` (the runtime-selected default
@@ -340,12 +341,14 @@ test "windowOptions carries CxConfig through to the boundary struct" {
     // Goal: pin the two values `runCx` delegates to this helper — the default
     // background colour and the straight-through `glass_style`.
     const Empty = struct {};
-    const defaults = windowOptions(Empty, .{});
+    const defaults = windowOptions(Empty, .{ .limits = .nano, .font_limits = .nano });
     try std.testing.expectEqual(@as(f64, 800), defaults.width);
     try std.testing.expectEqual(interface_mod.GlassStyle.none, defaults.glass_style);
     try std.testing.expectEqual(@as(f32, 0.95), defaults.background_color.r);
 
     const custom = windowOptions(Empty, .{
+        .limits = .small,
+        .font_limits = .small,
         .width = 320,
         .height = 240,
         .glass_style = .blur,

@@ -6,6 +6,7 @@
 //! code into a single module.
 
 const std = @import("std");
+const limits_mod = @import("../../core/limits.zig");
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
 
@@ -102,13 +103,17 @@ pub fn createSwapchain(
     surface: vk.Surface,
     width: u32,
     height: u32,
+    /// The window budget's `ResourceLimits.frame.in_flight_count`.
+    frame_count: u32,
     old_swapchain: vk.Swapchain,
 ) SwapchainError!SwapchainResult {
     std.debug.assert(device != null);
     std.debug.assert(physical_device != null);
     std.debug.assert(surface != null);
+    std.debug.assert(frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
+    std.debug.assert(frame_count <= limits_mod.MAX_FRAMES_IN_FLIGHT);
 
-    const config = querySwapchainConfig(physical_device, surface, width, height);
+    const config = querySwapchainConfig(physical_device, surface, width, height, frame_count);
     const swapchain = try createSwapchainHandle(device, surface, config, old_swapchain);
     errdefer vk.vkDestroySwapchainKHR(device, swapchain, null);
 
@@ -252,6 +257,7 @@ fn querySwapchainConfig(
     surface: vk.Surface,
     width: u32,
     height: u32,
+    frame_count: u32,
 ) SwapchainConfig {
     var capabilities: vk.SurfaceCapabilitiesKHR = undefined;
     _ = vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
@@ -260,7 +266,7 @@ fn querySwapchainConfig(
     const present_mode = choosePresentMode(physical_device, surface);
     const composite_alpha = chooseCompositeAlpha(capabilities);
     const extent = chooseExtent(capabilities, width, height);
-    const image_count = chooseImageCount(capabilities);
+    const image_count = chooseImageCount(capabilities, frame_count);
 
     return .{
         .format = format_result.format,
@@ -352,8 +358,13 @@ fn chooseExtent(
     };
 }
 
-fn chooseImageCount(capabilities: vk.SurfaceCapabilitiesKHR) u32 {
-    var count = capabilities.minImageCount + 1;
+/// The driver's minimum image count plus one spare image per frame in flight
+/// above `MIN_FRAMES_IN_FLIGHT`: the minimum at two frames (`nano`, `small`),
+/// and the minimum plus one at three, the count every budget used before
+/// frames in flight became a budget field.
+fn chooseImageCount(capabilities: vk.SurfaceCapabilitiesKHR, frame_count: u32) u32 {
+    std.debug.assert(frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
+    var count = capabilities.minImageCount + (frame_count - limits_mod.MIN_FRAMES_IN_FLIGHT);
     if (capabilities.maxImageCount > 0 and count > capabilities.maxImageCount) {
         count = capabilities.maxImageCount;
     }

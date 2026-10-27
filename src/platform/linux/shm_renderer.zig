@@ -45,8 +45,11 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Atlas = text_mod.Atlas;
 
-/// One slot the compositor may still be reading, one being drawn.
-pub const buffer_count: u32 = 2;
+/// One slot the compositor may still be reading, one being drawn. The CPU
+/// renderer draws synchronously and has no GPU frames in flight, so it keeps
+/// the minimum presentation depth at every rung; `ResourceLimits.frame` sizes
+/// the GPU renderers' rings (see `FrameLimits`).
+pub const buffer_count: u32 = limits_mod.MIN_FRAMES_IN_FLIGHT;
 
 const bytes_per_pixel: u32 = 4;
 

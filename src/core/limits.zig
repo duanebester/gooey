@@ -96,6 +96,14 @@ pub const MAX_FRAMEBUFFER_WIDTH: u32 = 7680;
 /// Tallest framebuffer, in physical pixels, any window budget may declare (8K UHD).
 pub const MAX_FRAMEBUFFER_HEIGHT: u32 = 4320;
 
+/// Most frames a renderer may have in flight. Every per-frame GPU ring, pool and
+/// command buffer is reserved once per frame in flight, so this bounds them all.
+pub const MAX_FRAMES_IN_FLIGHT: u32 = 3;
+
+/// Fewest frames in flight: one the GPU reads while the CPU records the next.
+/// Metal's `maximumDrawableCount` accepts only 2 or 3, which the range matches.
+pub const MIN_FRAMES_IN_FLIGHT: u32 = 2;
+
 // =============================================================================
 // Application Resource Budget
 // =============================================================================
@@ -105,23 +113,52 @@ pub const MAX_FRAMEBUFFER_HEIGHT: u32 = 4320;
 /// storage from this value during initialization and never grows afterwards.
 ///
 /// Each subsystem owns one nested struct so later budgets (layout, a11y, text,
-/// widgets) are added as new fields beside `scene` and `window` without
-/// reshaping the type. Fields have no defaults: callers pick a named profile or
-/// spell out every capacity, so no capacity hides in a leaf default.
+/// widgets) are added as new fields beside `scene`, `window` and `frame` without
+/// reshaping the type. Fields have no defaults and there is no default profile:
+/// callers pick one of the five named rungs or spell out every capacity, so no
+/// capacity hides in a leaf default.
+///
+/// The rungs, smallest first, and the example class each was sized from
+/// (docs/v0.4.0-memory-budget.md §4, measured peaks with their headroom):
+/// `nano` (counter, actions, animation), `small` (todo, layout, accessible-form),
+/// `standard` (showcase, data-table, spaceship, dashboard), `large` (lucide-demo,
+/// images, mesh stress) and `ceiling` (every framework maximum).
 pub const ResourceLimits = struct {
     scene: SceneLimits,
     window: WindowLimits,
+    frame: FrameLimits,
 
-    /// Measured default for ordinary UI apps. See `SceneLimits.standard`.
+    /// Every profile name `gooey.App(.., .{ .limits = ... })` accepts, smallest first.
+    /// `FontLimits` has a profile of each name, so one name selects both budgets.
+    pub const profile_names = [_][]const u8{ "nano", "small", "standard", "large", "ceiling" };
+
+    /// Counter-class apps: a few dozen elements and one face, two frames in flight.
+    pub const nano: ResourceLimits = .{
+        .scene = SceneLimits.nano,
+        .window = WindowLimits.nano,
+        .frame = FrameLimits.nano,
+    };
+
+    /// Single-screen forms and lists, two frames in flight.
+    pub const small: ResourceLimits = .{
+        .scene = SceneLimits.small,
+        .window = WindowLimits.small,
+        .frame = FrameLimits.small,
+    };
+
+    /// Ordinary multi-panel UI apps. See `SceneLimits.standard`.
     pub const standard: ResourceLimits = .{
         .scene = SceneLimits.standard,
         .window = WindowLimits.standard,
+        .frame = FrameLimits.standard,
     };
 
-    /// Dense-content apps: big tables, treemaps, full-screen editors, charts.
+    /// Dense-content apps: big tables, treemaps, full-screen editors, charts,
+    /// hundreds of icons, large image atlases.
     pub const large: ResourceLimits = .{
         .scene = SceneLimits.large,
         .window = WindowLimits.large,
+        .frame = FrameLimits.large,
     };
 
     /// Every capacity at its framework ceiling. For stress tests and benchmarks;
@@ -132,13 +169,15 @@ pub const ResourceLimits = struct {
     pub const ceiling: ResourceLimits = .{
         .scene = SceneLimits.ceiling,
         .window = WindowLimits.ceiling,
+        .frame = FrameLimits.ceiling,
     };
 
     /// First violated rule, or null when the budget is valid. Shared by the
     /// comptime `validate` and the runtime initialization checks.
     pub fn check(self: *const ResourceLimits) ?Violation {
         if (self.scene.check()) |violation| return violation;
-        return self.window.check();
+        if (self.window.check()) |violation| return violation;
+        return self.frame.check();
     }
 
     /// Runtime counterpart of `validate` for budgets that are not comptime-known
@@ -190,37 +229,81 @@ pub const SceneLimits = struct {
     colored_point_count_frame_max: u32,
     clip_depth_max: u32,
 
-    /// Measured default. Peaks recorded across 24 examples while scrolling,
-    /// hovering, and switching tabs, at 800x600-class and 1512x945 windows:
-    /// quads 780 (lucide-demo), shadows 3, glyphs 1370 (showcase), SVGs 480,
-    /// images 18, paths 256, polylines 5, point clouds 0, colored point clouds 3,
-    /// clip depth 2. Headroom is about 10x for quads and glyphs, which also
-    /// covers a 5K-class window (about 2.6x the area of the measured one).
-    /// Scene storage: about 2.9 MiB per scene, two scenes per window.
-    /// Geometry measurement: dashboard 780 vertices / 804 indices / 24 line
-    /// points / 0 points / 42 colored points; Lucide zero (SVG atlas rendering).
-    /// `platform/linux/tests/mesh_stress.zig` adds 64 polygons, an 8192-point
-    /// line and 4096 points of each kind. Budgets leave >=10x workload headroom;
-    /// 65536 path vertices also matches Metal's existing solid-path batch size.
+    /// Counter-class apps. Largest measured peaks in the class (counter,
+    /// dynamic-counters, actions, animation, file-dialog): quads 11, glyphs 118,
+    /// no shadows, SVGs, images, paths or geometry. Headroom about 23x for quads;
+    /// 1,024 glyphs is the floor because one shaped run is inserted whole. Mesh
+    /// geometry allows a few small icons or one sparkline. About 127 KiB per scene.
+    pub const nano: SceneLimits = .{
+        .quad_count_frame_max = 256,
+        .shadow_count_frame_max = 16,
+        .glyph_count_frame_max = 1_024,
+        .svg_count_frame_max = 16,
+        .image_count_frame_max = 4,
+        .path_count_frame_max = 16,
+        .polyline_count_frame_max = 4,
+        .point_cloud_count_frame_max = 4,
+        .colored_point_cloud_count_frame_max = 4,
+        .path_vertex_count_frame_max = 1_024,
+        .path_index_count_frame_max = 2_048,
+        .polyline_point_count_frame_max = 1_024,
+        .point_count_frame_max = 1_024,
+        .colored_point_count_frame_max = 1_024,
+        .clip_depth_max = 8,
+    };
+
+    /// Single-screen apps. Largest measured peaks in the class (todo, layout,
+    /// nested-overlay, drag-drop, accessible-form, code-editor): quads 40,
+    /// shadows 2, glyphs 358, SVGs 2, no images, paths or geometry. Headroom
+    /// about 25x for quads and 11x for glyphs. About 0.55 MiB per scene.
+    pub const small: SceneLimits = .{
+        .quad_count_frame_max = 1_024,
+        .shadow_count_frame_max = 64,
+        .glyph_count_frame_max = 4_096,
+        .svg_count_frame_max = 128,
+        .image_count_frame_max = 32,
+        .path_count_frame_max = 128,
+        .polyline_count_frame_max = 32,
+        .point_cloud_count_frame_max = 32,
+        .colored_point_cloud_count_frame_max = 32,
+        .path_vertex_count_frame_max = 8_192,
+        .path_index_count_frame_max = 8_192,
+        .polyline_point_count_frame_max = 8_192,
+        .point_count_frame_max = 8_192,
+        .colored_point_count_frame_max = 8_192,
+        .clip_depth_max = 16,
+    };
+
+    /// Ordinary multi-panel apps. Largest measured peaks in the class (showcase,
+    /// data-table, spaceship, dashboard) while scrolling, hovering and switching
+    /// tabs: quads 102 (spaceship), shadows 3, glyphs 1,370 (showcase), SVGs 26,
+    /// images 1, paths 256, polylines 5, colored point clouds 3, clip depth 2.
+    /// Quads and glyphs keep 40x and 6x headroom (decision 10 of the memory
+    /// budget review); lucide-demo's 780 quads and 480 SVGs are on `large`.
+    /// Geometry: dashboard needs 780 path vertices, 804 indices, 24 line points
+    /// and 42 colored points, so the 4x cut (decision 3) still leaves at least
+    /// 20x; `platform/linux/tests/mesh_stress.zig` (an 8,192-point line, 4,096
+    /// points of each kind) runs on `large`. About 1.8 MiB per scene.
     pub const standard: SceneLimits = .{
-        .quad_count_frame_max = 8_192,
+        .quad_count_frame_max = 4_096,
         .shadow_count_frame_max = 512,
-        .glyph_count_frame_max = 16_384,
+        .glyph_count_frame_max = 8_192,
         .svg_count_frame_max = 1_024,
         .image_count_frame_max = 256,
         .path_count_frame_max = 1_024,
         .polyline_count_frame_max = 256,
         .point_cloud_count_frame_max = 256,
         .colored_point_cloud_count_frame_max = 256,
-        .path_vertex_count_frame_max = 65_536,
-        .path_index_count_frame_max = 65_536,
-        .polyline_point_count_frame_max = 131_072,
-        .point_count_frame_max = 65_536,
-        .colored_point_count_frame_max = 65_536,
+        .path_vertex_count_frame_max = 16_384,
+        .path_index_count_frame_max = 16_384,
+        .polyline_point_count_frame_max = 32_768,
+        .point_count_frame_max = 16_384,
+        .colored_point_count_frame_max = 16_384,
         .clip_depth_max = 16,
     };
 
-    /// Heavy apps: about 4x `standard` for geometry and the glyph ceiling for
+    /// Heavy apps: lucide-demo (780 quads, 480 SVGs), the images example, and the
+    /// mesh stress fixtures. 16x `standard` for geometry and the glyph ceiling for
     /// full-screen text. Scene storage: about 11.6 MiB per scene.
     pub const large: SceneLimits = .{
         .quad_count_frame_max = 32_768,
@@ -356,6 +439,8 @@ pub const SceneLimits = struct {
     }
 
     comptime {
+        assert(nano.check() == null);
+        assert(small.check() == null);
         assert(standard.check() == null);
         assert(large.check() == null);
         assert(ceiling.check() == null);
@@ -375,8 +460,23 @@ pub const WindowLimits = struct {
     framebuffer_width_max: u32,
     framebuffer_height_max: u32,
 
-    /// 4K UHD. Two `wl_shm` frames of this size map 63.3 MiB per window; pages
-    /// are touched, and so resident, only for the window's actual size.
+    /// Counter-class windows: counter at 2x is 1,000 x 700 physical pixels.
+    /// Two `wl_shm` frames map 7.8 MiB.
+    pub const nano: WindowLimits = .{
+        .framebuffer_width_max = 1280,
+        .framebuffer_height_max = 800,
+    };
+
+    /// Single-screen windows: todo at 2x is 960 x 1,120. Two `wl_shm` frames map
+    /// 17.6 MiB.
+    pub const small: WindowLimits = .{
+        .framebuffer_width_max = 1920,
+        .framebuffer_height_max = 1200,
+    };
+
+    /// 4K UHD, kept so a full-screen 4K window renders at full scale (memory budget
+    /// decision 2 kept it). Two `wl_shm` frames of this size map 63.3 MiB per
+    /// window; pages are touched, and so resident, only for the window's actual size.
     pub const standard: WindowLimits = .{
         .framebuffer_width_max = 3840,
         .framebuffer_height_max = 2160,
@@ -429,6 +529,65 @@ pub const WindowLimits = struct {
     }
 
     comptime {
+        assert(nano.check() == null);
+        assert(small.check() == null);
+        assert(standard.check() == null);
+        assert(large.check() == null);
+        assert(ceiling.check() == null);
+    }
+};
+
+/// Frames a window's renderer keeps in flight. Every per-frame GPU resource is
+/// reserved once per frame in flight at init: the Vulkan host and mesh pools,
+/// descriptor sets, command buffers and fences, and the Metal instance and mesh
+/// rings. It also sets the presentation image count: Metal's
+/// `maximumDrawableCount` equals it, and the Vulkan swapchain asks for the
+/// driver's minimum plus one image per frame in flight above two (the driver
+/// minimum plus one, as before, at three). The CPU renderer draws synchronously,
+/// so its two `wl_shm` slots, one the compositor reads and one being drawn, are
+/// the minimum here and do not change with the budget.
+///
+/// Two frames halve the bound rings at `nano` and `small`, whose apps are not
+/// GPU-bound, at the cost of less CPU/GPU overlap (memory budget decision 4).
+/// `standard` and above keep three until frame pacing with two drawables has
+/// been measured on a Mac.
+pub const FrameLimits = struct {
+    in_flight_count: u32,
+
+    pub const nano: FrameLimits = .{ .in_flight_count = 2 };
+    pub const small: FrameLimits = .{ .in_flight_count = 2 };
+    pub const standard: FrameLimits = .{ .in_flight_count = 3 };
+    pub const large: FrameLimits = .{ .in_flight_count = 3 };
+    pub const ceiling: FrameLimits = .{ .in_flight_count = MAX_FRAMES_IN_FLIGHT };
+
+    /// First violated rule, or null. The count must be in
+    /// `MIN_FRAMES_IN_FLIGHT..=MAX_FRAMES_IN_FLIGHT`.
+    pub fn check(self: *const FrameLimits) ?Violation {
+        if (self.in_flight_count < MIN_FRAMES_IN_FLIGHT) {
+            return .{
+                .budget = .frame,
+                .field = "in_flight_count",
+                .rule = .below_relationship,
+                .value = self.in_flight_count,
+                .bound = MIN_FRAMES_IN_FLIGHT,
+            };
+        }
+        if (self.in_flight_count > MAX_FRAMES_IN_FLIGHT) {
+            return .{
+                .budget = .frame,
+                .field = "in_flight_count",
+                .rule = .above_ceiling,
+                .value = self.in_flight_count,
+                .bound = MAX_FRAMES_IN_FLIGHT,
+            };
+        }
+        return null;
+    }
+
+    comptime {
+        assert(MIN_FRAMES_IN_FLIGHT <= MAX_FRAMES_IN_FLIGHT);
+        assert(nano.check() == null);
+        assert(small.check() == null);
         assert(standard.check() == null);
         assert(large.check() == null);
         assert(ceiling.check() == null);
@@ -444,7 +603,7 @@ pub const Violation = struct {
     bound: u32,
 
     /// The `ResourceLimits` field holding the broken rule.
-    pub const Budget = enum { scene, window };
+    pub const Budget = enum { scene, window, frame };
     pub const Rule = enum { zero, above_ceiling, below_relationship };
 
     /// Human-readable message. Comptime only: used by `ResourceLimits.validate`.
@@ -515,8 +674,10 @@ pub const MAX_TEXT_LEN: u32 = 512;
 ///
 /// Shaped like `SceneLimits` (named profiles, `check`, `assertValid`,
 /// `validate`) so it moves into the planned `ResourceLimits.text` unchanged.
-/// Until then the app selects it with `gooey.App(..., .{ .font_limits = ... })`,
-/// which forwards it through `FontConfig.limits` to every text system it creates.
+/// Every `ResourceLimits` profile name has a `FontLimits` profile of the same
+/// name, so `gooey.App(..., .{ .limits = .nano })` selects both. An explicit
+/// `.font_limits = ...` overrides the font half; the app forwards the result
+/// through `FontConfig.limits` to every text system it creates.
 ///
 /// Gooey-owned cost per face, allocated at init: FreeType 16,976 B (mostly a
 /// 4,096-entry advance cache), web 1,460 B, CoreText 56 B. The platform library
@@ -534,7 +695,14 @@ pub const FontLimits = struct {
     };
 
     /// Regular only, for apps whose text never sets a weight or italic.
-    pub const minimal: FontLimits = .{ .variants = &.{.regular} };
+    pub const nano: FontLimits = .{ .variants = &.{.regular} };
+
+    /// The four upright weights Gooey's components use. accessible-form, the
+    /// widest `small` example, requests exactly these.
+    pub const small: FontLimits = .{ .variants = &.{ .regular, .medium, .semibold, .bold } };
+
+    /// The same six faces as `standard`: dense apps need more glyphs, not more faces.
+    pub const large: FontLimits = standard;
 
     /// Every weight, upright and italic: the framework ceiling.
     pub const ceiling: FontLimits = .{ .variants = &all_variants };
@@ -581,8 +749,10 @@ pub const FontLimits = struct {
     }
 
     comptime {
+        assert(nano.check() == null);
+        assert(small.check() == null);
         assert(standard.check() == null);
-        assert(minimal.check() == null);
+        assert(large.check() == null);
         assert(ceiling.check() == null);
     }
 };
@@ -776,23 +946,34 @@ test "memory estimates are reasonable" {
 }
 
 test "named profiles are valid and ordered" {
-    // Goal: every shipped profile passes the same rules `validate` applies, and
-    // `large` never offers less than `standard` for any capacity.
-    try std.testing.expect(ResourceLimits.standard.check() == null);
-    try std.testing.expect(ResourceLimits.large.check() == null);
-    try std.testing.expect(ResourceLimits.ceiling.check() == null);
-    inline for (@typeInfo(SceneLimits).@"struct".field_names) |field_name| {
-        const standard_value = @field(SceneLimits.standard, field_name);
-        const large_value = @field(SceneLimits.large, field_name);
-        try std.testing.expect(standard_value <= large_value);
-        try std.testing.expect(large_value <= @field(SceneLimits.ceiling, field_name));
+    // Goal: every shipped rung passes the same rules `validate` applies, every
+    // budget has a profile of each name, and no rung offers less than the rung
+    // below it for any capacity. Walking the rungs in pairs checks every field
+    // of every budget against its neighbour, ending at the ceiling.
+    const rungs = ResourceLimits.profile_names;
+    inline for (rungs) |name| {
+        try std.testing.expect(@field(ResourceLimits, name).check() == null);
+        try std.testing.expect(@field(FontLimits, name).check() == null);
     }
-    inline for (@typeInfo(WindowLimits).@"struct".field_names) |field_name| {
-        const standard_value = @field(WindowLimits.standard, field_name);
-        const large_value = @field(WindowLimits.large, field_name);
-        try std.testing.expect(standard_value <= large_value);
-        try std.testing.expect(large_value <= @field(WindowLimits.ceiling, field_name));
+    inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
+        const lower = @field(ResourceLimits, lower_name);
+        const upper = @field(ResourceLimits, upper_name);
+        inline for (.{ "scene", "window", "frame" }) |budget| {
+            const Budget = @TypeOf(@field(lower, budget));
+            inline for (@typeInfo(Budget).@"struct".field_names) |field_name| {
+                const lower_value = @field(@field(lower, budget), field_name);
+                const upper_value = @field(@field(upper, budget), field_name);
+                try std.testing.expect(lower_value <= upper_value);
+            }
+        }
+        const lower_faces = @field(FontLimits, lower_name).variants.len;
+        try std.testing.expect(lower_faces <= @field(FontLimits, upper_name).variants.len);
     }
+    // Two frames in flight below `standard`, three from it up (decision 4).
+    try std.testing.expectEqual(@as(u32, 2), ResourceLimits.small.frame.in_flight_count);
+    try std.testing.expectEqual(@as(u32, 3), ResourceLimits.standard.frame.in_flight_count);
+    try std.testing.expectEqual(@as(usize, 1), FontLimits.nano.variants.len);
+    try std.testing.expectEqual(@as(usize, 4), FontLimits.small.variants.len);
 }
 
 test "check reports each negative case precisely" {
@@ -841,6 +1022,19 @@ test "check reports each negative case precisely" {
         try std.testing.expectEqualStrings(field, limits.check().?.field);
     }
 
+    // The frame budget reports under its own name at both ends of its range.
+    limits = ResourceLimits.standard;
+    limits.frame.in_flight_count = MIN_FRAMES_IN_FLIGHT - 1;
+    try std.testing.expectEqual(Violation.Budget.frame, limits.check().?.budget);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, limits.check().?.rule);
+    limits.frame.in_flight_count = MIN_FRAMES_IN_FLIGHT;
+    try std.testing.expect(limits.check() == null);
+    limits.frame.in_flight_count = MAX_FRAMES_IN_FLIGHT;
+    try std.testing.expect(limits.check() == null);
+    limits.frame.in_flight_count = MAX_FRAMES_IN_FLIGHT + 1;
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+    try std.testing.expectEqualStrings("in_flight_count", limits.check().?.field);
+
     // The window budget reports under its own name, at both ends of each range.
     inline for (.{ "framebuffer_width_max", "framebuffer_height_max" }) |field| {
         limits = ResourceLimits.standard;
@@ -857,14 +1051,20 @@ test "check reports each negative case precisely" {
 }
 
 test "derived budget quantities" {
-    // Goal: pin the relationships other subsystems size from.
+    // Goal: pin the relationships other subsystems size from, and keep the
+    // per-scene sizes documented on each rung honest.
     const scene = SceneLimits.standard;
-    try std.testing.expectEqual(@as(u32, 16_384), scene.sortKeyCountMax());
-    try std.testing.expectEqual(@as(u32, 8_704), scene.unifiedPrimitiveCountMax());
+    try std.testing.expectEqual(@as(u32, 8_192), scene.sortKeyCountMax());
+    try std.testing.expectEqual(@as(u32, 4_608), scene.unifiedPrimitiveCountMax());
+    try std.testing.expectEqual(@as(u32, 272), SceneLimits.nano.unifiedPrimitiveCountMax());
     try std.testing.expectEqual(MAX_SORT_KEYS, SceneLimits.ceiling.sortKeyCountMax());
-    try std.testing.expect(scene.sceneBytes() < SceneLimits.large.sceneBytes());
-    try std.testing.expect(SceneLimits.large.sceneBytes() < SceneLimits.ceiling.sceneBytes());
-    // The documented sizes stay honest.
-    try std.testing.expect(scene.sceneBytes() < 3 * 1024 * 1024);
+    const rungs = ResourceLimits.profile_names;
+    inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
+        const lower_bytes = @field(SceneLimits, lower_name).sceneBytes();
+        try std.testing.expect(lower_bytes < @field(SceneLimits, upper_name).sceneBytes());
+    }
+    try std.testing.expect(SceneLimits.nano.sceneBytes() < 128 * 1024);
+    try std.testing.expect(SceneLimits.small.sceneBytes() < 576 * 1024);
+    try std.testing.expect(scene.sceneBytes() < 1_843 * 1024);
     try std.testing.expect(SceneLimits.large.sceneBytes() < 12 * 1024 * 1024);
 }

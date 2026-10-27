@@ -31,14 +31,15 @@ const frame_quad_count_max: u32 =
     bitmap_quads_character_max + frame_shape_quad_count_max;
 
 // The tile map can emit up to 57,956 quads in one frame, above `.large`, so this
-// app declares the framework ceiling as its budget and proves the bound against
-// exactly the budget it declares. It draws no paths, polylines or point clouds,
-// so its aggregate mesh geometry stays at `.standard`: renderers reserve that
-// geometry per frame in flight, and the ceiling would ask for tens of GiB.
+// app declares `.large` with the framework's quad ceiling and proves the bound
+// against exactly the budget it declares. It draws no paths, polylines or point
+// clouds, so its aggregate mesh geometry stays at `.standard`: renderers reserve
+// that geometry per frame in flight, and `.large` would reserve 16x as much.
 const resource_limits: gooey.ResourceLimits = .{
     .scene = scene_limits: {
         const standard = gooey.ResourceLimits.standard.scene;
-        var scene = gooey.ResourceLimits.ceiling.scene;
+        var scene = gooey.ResourceLimits.large.scene;
+        scene.quad_count_frame_max = gooey.ResourceLimits.ceiling.scene.quad_count_frame_max;
         scene.path_vertex_count_frame_max = standard.path_vertex_count_frame_max;
         scene.path_index_count_frame_max = standard.path_index_count_frame_max;
         scene.polyline_point_count_frame_max = standard.polyline_point_count_frame_max;
@@ -46,7 +47,8 @@ const resource_limits: gooey.ResourceLimits = .{
         scene.colored_point_count_frame_max = standard.colored_point_count_frame_max;
         break :scene_limits scene;
     },
-    .window = gooey.ResourceLimits.ceiling.window,
+    .window = gooey.ResourceLimits.large.window,
+    .frame = gooey.ResourceLimits.large.frame,
 };
 
 comptime {
@@ -326,6 +328,7 @@ const App = gooey.App(State, &state, render, .{
     .on_init = on_init,
     .on_event = on_event,
     .limits = resource_limits,
+    .font_limits = .large,
 });
 
 comptime {

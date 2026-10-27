@@ -376,10 +376,12 @@ fn convertShadows(source: []const scene_mod.Shadow, target: []unified.Primitive)
 ///
 /// Resource sketch (CLAUDE.md §7):
 /// - Slot capacity: the app budget's `quad_count_frame_max + shadow_count_frame_max`
-///   (`SceneLimits.unifiedPrimitiveCountMax`) primitives of 128 B, three slots, allocated
-///   once in `init` and never grown. `ResourceLimits.standard` gives 8,704 primitives:
-///   1.06 MiB per slot, 3.19 MiB total; the framework ceiling gives 25.5 MiB. The scene
-///   is reserved from the same budget, so a frame's quads and shadows always fit.
+///   (`SceneLimits.unifiedPrimitiveCountMax`) primitives of 128 B, one slot per frame in
+///   flight (`ResourceLimits.frame`), allocated once in `init` and never grown.
+///   `ResourceLimits.standard` gives 4,608 primitives: 576 KiB per slot, 1.69 MiB for
+///   three slots; `.nano` gives 272 primitives, 68 KiB for two; the framework ceiling
+///   gives 25.5 MiB. The scene is reserved from the same budget, so a frame's quads and
+///   shadows always fit.
 /// - Per quad/shadow batch: one sequential n × 128 B conversion write into the slot. No
 ///   staging copy, no heap allocation, no `setVertexBytes` payload.
 /// - Per run of consecutive quad/shadow batches: one pipeline bind, two buffer binds, one
@@ -387,13 +389,17 @@ fn convertShadows(source: []const scene_mod.Shadow, target: []unified.Primitive)
 ///
 /// In-flight safety: slot `frame_index` is rewritten `frame_count` frames after it was last
 /// used. Every frame that writes the ring first holds a drawable from the layer, and the
-/// renderer asserts `maximumDrawableCount <= frame_count` at init. If the frame that last
-/// used this slot were still executing, so would every later frame on the same in-order
-/// command queue: `frame_count` frames each holding a drawable, leaving none for this frame.
+/// renderer sets `maximumDrawableCount` to `frame_count` at init and asserts it took. If
+/// the frame that last used this slot were still executing, so would every later frame on
+/// the same in-order command queue: `frame_count` frames each holding a drawable, leaving
+/// none for this frame.
 pub const UnifiedPrimitiveRing = struct {
-    buffers: [frame_count]objc.Object,
+    /// Declared at the ceiling; entries past `frame_count` are never created.
+    buffers: [frame_count_max]objc.Object,
     /// CPU-visible `contents` of each buffer; stable for the buffer's lifetime.
-    slots: [frame_count][*]unified.Primitive,
+    slots: [frame_count_max][*]unified.Primitive,
+    /// The window budget's `ResourceLimits.frame.in_flight_count`.
+    frame_count: u32,
     frame_index: u32,
     /// Slot capacity in primitives, from the window's `ResourceLimits.scene`.
     primitive_count_max: u32,
@@ -402,7 +408,7 @@ pub const UnifiedPrimitiveRing = struct {
     /// Prefix of `primitive_count` already submitted by a draw call.
     primitive_count_drawn: u32,
 
-    pub const frame_count: u32 = 3;
+    pub const frame_count_max: u32 = limits.MAX_FRAMES_IN_FLIGHT;
     /// Largest slot any valid budget can request.
     pub const primitive_count_ceiling: u32 =
         limits.MAX_QUADS_PER_FRAME + limits.MAX_SHADOWS_PER_FRAME;
@@ -425,9 +431,12 @@ pub const UnifiedPrimitiveRing = struct {
         assert(@as(u64, primitive_count_ceiling) * @sizeOf(unified.Primitive) < 1 << 32);
     }
 
-    /// Reserve three slots of `scene_limits.unifiedPrimitiveCountMax()` primitives.
-    pub fn init(device: objc.Object, scene_limits: *const limits.SceneLimits) !Self {
-        assert(scene_limits.check() == null);
+    /// Reserve one slot of `unifiedPrimitiveCountMax()` primitives per frame in flight.
+    pub fn init(device: objc.Object, resource_limits: *const limits.ResourceLimits) !Self {
+        assert(resource_limits.check() == null);
+        const scene_limits = &resource_limits.scene;
+        const frame_count = resource_limits.frame.in_flight_count;
+        assert(frame_count <= frame_count_max);
         const primitive_count_max = scene_limits.unifiedPrimitiveCountMax();
         assert(primitive_count_max > 0);
         assert(primitive_count_max <= primitive_count_ceiling);
@@ -437,6 +446,7 @@ pub const UnifiedPrimitiveRing = struct {
         var self: Self = .{
             .buffers = undefined,
             .slots = undefined,
+            .frame_count = frame_count,
             .frame_index = 0,
             .primitive_count_max = primitive_count_max,
             .primitive_count = 0,
@@ -465,16 +475,16 @@ pub const UnifiedPrimitiveRing = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.buffers) |buffer| buffer.release();
+        for (self.buffers[0..self.frame_count]) |buffer| buffer.release();
         self.* = undefined;
     }
 
     /// Advance to the next slot. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        assert(self.frame_index < frame_count);
+        assert(self.frame_index < self.frame_count);
         // The previous frame drew everything it wrote.
         assert(self.primitive_count_drawn == self.primitive_count);
-        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_index = (self.frame_index + 1) % self.frame_count;
         self.primitive_count = 0;
         self.primitive_count_drawn = 0;
     }

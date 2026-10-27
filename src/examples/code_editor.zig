@@ -879,6 +879,7 @@ fn render(cx: *Cx) void {
 // =============================================================================
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .small,
     .title = "Code Editor",
     .width = 1000,
     .height = 700,

@@ -102,11 +102,14 @@ pub const DirtyRegion = struct {
 };
 
 /// Per-frame staging lane size. The shared staging buffer is partitioned into
-/// FRAME_COUNT lanes so each in-flight frame writes to its own region,
-/// eliminating CPU/GPU races without extra fences.
+/// `frame_count_max` lanes so each in-flight frame writes to its own region,
+/// eliminating CPU/GPU races without extra fences. A budget with fewer frames
+/// in flight uses only its first lanes; sizing staging from the budget is the
+/// Vulkan render-targets workstream's change.
 /// Back-of-envelope (CLAUDE.md Rule #7): 144MB / 3 = 48MB per lane.
 /// Partial dirty-rect uploads use <1MB per frame in practice.
-pub const STAGING_LANE_SIZE: vk.DeviceSize = MAX_STAGING_BYTES / @import("vk_types.zig").FRAME_COUNT;
+pub const STAGING_LANE_SIZE: vk.DeviceSize =
+    MAX_STAGING_BYTES / @import("vk_types.zig").frame_count_max;
 
 // =============================================================================
 // Public API

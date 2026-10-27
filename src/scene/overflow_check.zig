@@ -9,6 +9,8 @@
 //! Modes (first argument; default `scene`):
 //! - `scene`: fills the scene's quad pool, finishes one frame so the reported
 //!   frame number is non-trivial, and inserts one more quad. Every OS.
+//! - `scene-<profile>`: the same at a named rung (`nano` through `ceiling`), so
+//!   every profile's quad capacity is exact: 256 at `nano` up to 65,536.
 //! - `vulkan-instances`: sizes the Vulkan renderer's instance buffers from the
 //!   same budget, fills the shared quad + shadow primitive buffer exactly with a
 //!   quad batch and a shadow batch (as `drawScene` does), and claims one more.
@@ -48,6 +50,11 @@ const overflow_limits: gooey.scene.SceneLimits = .{
 
 const Mode = enum {
     scene,
+    @"scene-nano",
+    @"scene-small",
+    @"scene-standard",
+    @"scene-large",
+    @"scene-ceiling",
     @"vulkan-instances",
     triangles,
     strip_expanded,
@@ -74,7 +81,16 @@ pub fn main(init: std.process.Init) !void {
     else
         .scene;
     switch (mode) {
-        .scene => try overflowScene(init.gpa),
+        .scene => try overflowScene(init.gpa, &overflow_limits),
+        inline .@"scene-nano",
+        .@"scene-small",
+        .@"scene-standard",
+        .@"scene-large",
+        .@"scene-ceiling",
+        => |profile| {
+            const name = comptime @tagName(profile)["scene-".len..];
+            try overflowScene(init.gpa, &@field(gooey.ResourceLimits, name).scene);
+        },
         .@"vulkan-instances" => overflowVulkanInstances(),
         .triangles, .strip_expanded, .points, .colored_points => overflow_vulkan_mesh(mode),
         .@"cpu-atlas" => try cpuMissingAtlas(init.gpa),
@@ -84,18 +100,18 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("unreachable: {s} accepted a claim past its budget\n", .{@tagName(mode)});
 }
 
-fn overflowScene(gpa: std.mem.Allocator) !void {
-    var scene = try Scene.initCapacity(gpa, &overflow_limits);
+fn overflowScene(gpa: std.mem.Allocator, limits: *const gooey.scene.SceneLimits) !void {
+    var scene = try Scene.initCapacity(gpa, limits);
     defer scene.deinit();
 
     scene.finish();
     scene.clear();
 
     var count: u32 = 0;
-    while (count < overflow_limits.quad_count_frame_max) : (count += 1) {
+    while (count < limits.quad_count_frame_max) : (count += 1) {
         try scene.insertQuad(Quad.filled(0, 0, 10, 10, Hsla.red));
     }
-    std.debug.assert(scene.quads.items.len == overflow_limits.quad_count_frame_max);
+    std.debug.assert(scene.quads.items.len == limits.quad_count_frame_max);
 
     // One past the budget: must panic inside `insertQuad`.
     try scene.insertQuad(Quad.filled(0, 0, 10, 10, Hsla.red));
@@ -128,6 +144,7 @@ fn cpuMissingAtlas(gpa: std.mem.Allocator) !void {
         const limits = gooey.ResourceLimits{
             .scene = overflow_limits,
             .window = .{ .framebuffer_width_max = 8, .framebuffer_height_max = 8 },
+            .frame = gooey.ResourceLimits.nano.frame,
         };
         var scene = try Scene.initCapacity(gpa, &limits.scene);
         defer scene.deinit();

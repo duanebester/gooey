@@ -11,6 +11,7 @@ const svg_instance_mod = @import("../../scene/svg_instance.zig");
 const image_instance_mod = @import("../../scene/image_instance.zig");
 const unified = @import("../unified.zig");
 const colored_cloud = @import("../../scene/colored_point_cloud.zig");
+const limits_mod = @import("../../core/limits.zig");
 
 const SceneLimits = scene_mod.SceneLimits;
 const SvgInstance = svg_instance_mod.SvgInstance;
@@ -20,13 +21,20 @@ const ImageInstance = image_instance_mod.ImageInstance;
 // Capacity Limits (CLAUDE.md §2 and §4)
 // =============================================================================
 
-pub const FRAME_COUNT: u32 = 3;
+/// Storage for per-frame resources is declared at the framework ceiling; a
+/// renderer creates and rotates through only the window budget's
+/// `ResourceLimits.frame.in_flight_count` of them.
+pub const frame_count_max: u32 = limits_mod.MAX_FRAMES_IN_FLIGHT;
 pub const MAX_SURFACE_FORMATS: u32 = 128;
 pub const MAX_PRESENT_MODES: u32 = 16;
 
 /// Host-pool sub-allocations: one uniform buffer plus the four instance buffers
 /// of `InstancePool`, for each frame in flight.
-pub const host_pool_allocation_count: u32 = FRAME_COUNT * (1 + instance_pool_count);
+pub fn hostPoolAllocationCount(frame_count: u32) u32 {
+    assert(frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
+    assert(frame_count <= frame_count_max);
+    return frame_count * (1 + instance_pool_count);
+}
 const instance_pool_count: u32 = @typeInfo(InstancePool).@"enum".field_names.len;
 
 /// Bytes reserved per host-pool sub-allocation for `VkMemoryRequirements.alignment`
@@ -162,12 +170,16 @@ pub const MeshCapacity = struct {
 /// glyphs, SVGs and images map one to one onto their scene pools.
 ///
 /// Resource sketch (CLAUDE.md §7), host-visible bytes per frame in flight:
-/// - `.standard`: 8,704×128 + 16,384×64 + 1,024×80 + 256×96 + 16 = 2,269,200 B,
-///   so 6.49 MiB for three frames (previously a fixed 3.75 MiB in an 8 MiB pool).
+/// - `.nano`: 272×128 + 1,024×64 + 16×80 + 4×96 + 16 = 102,032 B, 0.19 MiB for
+///   its two frames.
+/// - `.small`: 1,088×128 + 4,096×64 + 128×80 + 32×96 + 16 = 414,736 B, 0.79 MiB
+///   for its two frames.
+/// - `.standard`: 4,608×128 + 8,192×64 + 1,024×80 + 256×96 + 16 = 1,220,624 B,
+///   so 3.49 MiB for three frames.
 /// - `.large`: 9,076,752 B per frame, 25.97 MiB for three frames.
 /// - `.ceiling`: 14,155,792 B per frame, 40.50 MiB for three frames.
-/// The host pool adds `host_pool_allocation_count × host_pool_alignment_slack_bytes`
-/// (60 KiB) of alignment headroom on top.
+/// The host pool adds `hostPoolAllocationCount × host_pool_alignment_slack_bytes`
+/// (40 KiB for two frames, 60 KiB for three) of alignment headroom on top.
 pub const InstanceCapacity = struct {
     primitive_count_max: u32,
     glyph_count_max: u32,
@@ -226,10 +238,11 @@ pub const InstanceCapacity = struct {
     }
 
     /// Size of the single host-visible allocation that backs every per-frame
-    /// buffer: all frames in flight plus worst-case alignment padding.
-    pub fn hostPoolBytes(self: *const InstanceCapacity) u64 {
-        const slack_bytes = @as(u64, host_pool_allocation_count) * host_pool_alignment_slack_bytes;
-        const bytes = @as(u64, FRAME_COUNT) * self.frameBytes() + slack_bytes;
+    /// buffer: all `frame_count` frames in flight plus worst-case alignment padding.
+    pub fn hostPoolBytes(self: *const InstanceCapacity, frame_count: u32) u64 {
+        const allocation_count = hostPoolAllocationCount(frame_count);
+        const slack_bytes = @as(u64, allocation_count) * host_pool_alignment_slack_bytes;
+        const bytes = @as(u64, frame_count) * self.frameBytes() + slack_bytes;
         assert(bytes > slack_bytes);
         return bytes;
     }
@@ -490,7 +503,7 @@ test "MeshCapacity sizes aggregate geometry plus bounded draw overhead" {
     // Independent byte totals catch swapped budgets, expansion on the CPU, and
     // missing header/alignment space. No GPU or large allocations are needed.
     const standard = MeshCapacity.from_scene_limits(&SceneLimits.standard);
-    const expected = [_]u64{ 1_835_008, 1_245_184, 720_896, 1_769_472 };
+    const expected = [_]u64{ 1_048_576, 458_752, 327_680, 589_824 };
     for (std.enums.values(MeshPool), expected) |pool, bytes| {
         try testing.expectEqual(bytes, standard.buffer_bytes(pool));
         try testing.expectEqual(0, MeshCapacity.stride_bytes(pool) % 256);
@@ -498,9 +511,10 @@ test "MeshCapacity sizes aggregate geometry plus bounded draw overhead" {
             MeshCapacity.stride_bytes(pool) <= storage_buffer_range_guaranteed_bytes,
         );
     }
-    try testing.expectEqual(@as(u64, 5_570_560), standard.frame_bytes());
+    try testing.expectEqual(@as(u64, 2_424_832), standard.frame_bytes());
+    // `large` keeps the geometry `standard` had before its 4x cut, 16x today's.
     const large = MeshCapacity.from_scene_limits(&SceneLimits.large);
-    try testing.expectEqual(4 * standard.frame_bytes(), large.frame_bytes());
+    try testing.expectEqual(@as(u64, 22_282_240), large.frame_bytes());
     const ceiling = MeshCapacity.from_scene_limits(&SceneLimits.ceiling);
     // Each maximal path has (512 - 2) * 3 = 1530 source indices.
     try testing.expectEqual(@as(u64, 8_971_223_040), ceiling.frame_bytes());
@@ -511,11 +525,16 @@ test "InstanceCapacity mirrors the scene budget and sizes the host pool from it"
     // can hold. Methodology: derive capacities from each named profile and check
     // counts and byte sizes against the hand-computed resource sketch above.
     const standard = InstanceCapacity.fromSceneLimits(&SceneLimits.standard);
-    try testing.expectEqual(@as(u32, 8_192 + 512), standard.primitive_count_max);
-    try testing.expectEqual(@as(u32, 16_384), standard.glyph_count_max);
+    try testing.expectEqual(@as(u32, 4_096 + 512), standard.primitive_count_max);
+    try testing.expectEqual(@as(u32, 8_192), standard.glyph_count_max);
     try testing.expectEqual(@as(u32, 1_024), standard.svg_count_max);
     try testing.expectEqual(@as(u32, 256), standard.image_count_max);
-    try testing.expectEqual(@as(u64, 2_269_200), standard.frameBytes());
+    try testing.expectEqual(@as(u64, 1_220_624), standard.frameBytes());
+
+    const nano = InstanceCapacity.fromSceneLimits(&SceneLimits.nano);
+    try testing.expectEqual(@as(u64, 102_032), nano.frameBytes());
+    const small = InstanceCapacity.fromSceneLimits(&SceneLimits.small);
+    try testing.expectEqual(@as(u64, 414_736), small.frameBytes());
 
     const large = InstanceCapacity.fromSceneLimits(&SceneLimits.large);
     try testing.expectEqual(@as(u64, 9_076_752), large.frameBytes());
@@ -523,12 +542,17 @@ test "InstanceCapacity mirrors the scene budget and sizes the host pool from it"
     const ceiling = InstanceCapacity.fromSceneLimits(&SceneLimits.ceiling);
     try testing.expectEqual(@as(u64, 14_155_792), ceiling.frameBytes());
 
-    // The pool always covers every frame plus the alignment headroom, so the
-    // fixed 8 MiB pool it replaced could not have held `.large` or `.ceiling`.
-    const slack_bytes: u64 = host_pool_allocation_count * host_pool_alignment_slack_bytes;
-    try testing.expectEqual(3 * standard.frameBytes() + slack_bytes, standard.hostPoolBytes());
-    try testing.expect(large.hostPoolBytes() > 8 * 1024 * 1024);
-    try testing.expect(ceiling.hostPoolBytes() > large.hostPoolBytes());
+    // The pool covers each of the budget's frames in flight plus five
+    // allocations' alignment headroom per frame, and nothing for frames the
+    // budget does not keep: two frames at `nano`, three at `standard`.
+    const slack_bytes: u64 = 5 * host_pool_alignment_slack_bytes;
+    try testing.expectEqual(2 * (nano.frameBytes() + slack_bytes), nano.hostPoolBytes(2));
+    try testing.expectEqual(
+        3 * (standard.frameBytes() + slack_bytes),
+        standard.hostPoolBytes(limits_mod.ResourceLimits.standard.frame.in_flight_count),
+    );
+    try testing.expect(large.hostPoolBytes(3) > 8 * 1024 * 1024);
+    try testing.expect(ceiling.hostPoolBytes(3) > large.hostPoolBytes(3));
 }
 
 test "InstanceCapacity.fits accepts a full pool and rejects one more instance" {

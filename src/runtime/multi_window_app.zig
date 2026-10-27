@@ -996,8 +996,9 @@ pub const AppWindowOptions = struct {
     /// This window's resource budget (CLAUDE.md §2): its scenes and renderer
     /// instance storage are reserved at exactly these sizes when the window
     /// opens. Checked at `openWindow`; call `ResourceLimits.validate` on a
-    /// comptime value to catch mistakes at compile time instead.
-    limits: ResourceLimits = ResourceLimits.standard,
+    /// comptime value to catch mistakes at compile time instead. There is no
+    /// default profile (CLAUDE.md §2): `.limits = .small`, for example.
+    limits: ResourceLimits,
 };
 
 // =============================================================================
@@ -1011,7 +1012,7 @@ test "App type instantiation" {
 }
 
 test "AppWindowOptions defaults" {
-    const opts = AppWindowOptions{};
+    const opts = AppWindowOptions{ .limits = .nano };
 
     std.debug.assert(opts.width == DEFAULT_WIDTH);
     std.debug.assert(opts.height == DEFAULT_HEIGHT);
@@ -1047,10 +1048,10 @@ test "AppWindowOptions forwards to WindowOptions without conversion" {
 test "windowOptionsFrom preserves the canonical glass style" {
     // Positive and negative space: a non-default style must survive the hop
     // (a cross-enum cast would remap it), and the default must stay `.none`.
-    const glass = AppWindowOptions{ .glass_style = .glass_regular };
+    const glass = AppWindowOptions{ .limits = .nano, .glass_style = .glass_regular };
     try std.testing.expectEqual(GlassStyle.glass_regular, windowOptionsFrom(&glass).glass_style);
 
-    const plain = AppWindowOptions{};
+    const plain = AppWindowOptions{ .limits = .nano };
     try std.testing.expectEqual(GlassStyle.none, windowOptionsFrom(&plain).glass_style);
 
     // A null background color resolves to the app default, not transparent.

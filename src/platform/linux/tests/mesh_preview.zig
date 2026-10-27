@@ -5,6 +5,7 @@ pub const std_options = gooey.std_options;
 const State = struct {};
 var state = State{};
 const App = gooey.App(State, &state, render, .{
+    .limits = .large,
     .title = "Vulkan mesh contract",
     .width = 760,
     .height = 480,

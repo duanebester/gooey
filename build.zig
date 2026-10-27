@@ -1377,6 +1377,20 @@ fn addOverflowChecks(
         "capacity 4 (ResourceLimits.scene), 4 in use, 1 requested, frame 1." });
     run_scene.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
     test_step.dependOn(&run_scene.step);
+    // Every profile rung's quad pool holds exactly its budget and no more.
+    const profiles = [_][]const u8{ "nano", "small", "standard", "large", "ceiling" };
+    const quad_capacities = [_]u32{ 256, 1024, 4096, 32768, 65536 };
+    for (profiles, quad_capacities) |profile, capacity| {
+        const run_profile = b.addRunArtifact(exe);
+        run_profile.addArg(b.fmt("scene-{s}", .{profile}));
+        run_profile.addCheck(.{ .expect_stderr_match = b.fmt(
+            "Scene pool 'quads' exhausted: capacity {d} (ResourceLimits.scene), " ++
+                "{d} in use, 1 requested, frame 1.",
+            .{ capacity, capacity },
+        ) });
+        run_profile.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run_profile.step);
+    }
     add_geometry_overflow_checks(b, exe, test_step);
 
     if (target.result.os.tag == .linux) {

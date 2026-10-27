@@ -1570,7 +1570,7 @@ fn initPlatform(plat: *TestPlatform) !void {
 }
 
 fn makeOptions(w: f64, h: f64) WindowOptions {
-    return .{ .title = "t", .width = w, .height = h };
+    return .{ .title = "t", .width = w, .height = h, .limits = .nano };
 }
 
 test "TestBackend satisfies the compile-time platform contract" {
@@ -1654,7 +1654,12 @@ const LoopTurnProbe = struct {
 };
 
 fn openProbeWindow(plat: *TestPlatform) !*TestWindow {
-    const options = WindowOptions{ .title = "turn", .width = 64, .height = 48 };
+    const options = WindowOptions{
+        .title = "turn",
+        .width = 64,
+        .height = 48,
+        .limits = .nano,
+    };
     return TestWindow.init(testing.allocator, plat, &options);
 }
 
@@ -2239,6 +2244,7 @@ test "window state getters report what was actually set" {
         .width = 100,
         .height = 50,
         .glass_style = .blur,
+        .limits = .nano,
     };
     const win = try TestWindow.init(testing.allocator, &plat, &options);
     defer win.deinit();

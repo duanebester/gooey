@@ -86,6 +86,7 @@ const AppState = struct {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .large,
     .title = "Lucide Icons — All " ++ std.fmt.comptimePrint("{d}", .{TOTAL_ICONS}) ++ " Icons",
     .width = 700,
     .height = 850,

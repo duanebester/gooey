@@ -299,7 +299,7 @@ pub const Window = struct {
             self.metal_layer,
             self.size,
             self.scale_factor,
-            &options.limits.scene,
+            &options.limits,
         );
 
         self.loadCustomShaders(options.custom_shaders);
@@ -1208,7 +1208,8 @@ pub const Window = struct {
         self.metal_layer.msgSend(void, "setPixelFormat:", .{@as(u64, 80)});
         self.metal_layer.msgSend(void, "setContentsScale:", .{self.scale_factor});
         self.metal_layer.msgSend(void, "setDisplaySyncEnabled:", .{false});
-        self.metal_layer.msgSend(void, "setMaximumDrawableCount:", .{@as(u64, 3)});
+        // `metal.Renderer.init` sets `maximumDrawableCount` from the window budget's
+        // frames in flight; its rings' in-flight proof depends on that count.
 
         // Allow transparency through the Metal layer
         self.metal_layer.msgSend(void, "setOpaque:", .{false});

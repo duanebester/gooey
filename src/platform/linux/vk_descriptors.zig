@@ -14,15 +14,14 @@ const std = @import("std");
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
 
-const FRAME_COUNT = vk_types.FRAME_COUNT;
-
 // =============================================================================
 // Limits (CLAUDE.md Rule #4 — put a limit on everything)
 // =============================================================================
 
-/// Maximum descriptor sets the pool can allocate.
-/// 4 pipelines × FRAME_COUNT frames = 12 sets for triple-buffering.
-const MAX_DESCRIPTOR_SETS: u32 = 4 * FRAME_COUNT;
+/// Descriptor sets each frame in flight allocates: one per pipeline (unified,
+/// text, SVG, image). The pool holds this many per frame of the window budget,
+/// at most 12 at three frames.
+const descriptor_set_count_frame: u32 = 4;
 
 // =============================================================================
 // Error Types
@@ -130,25 +129,27 @@ pub fn createTexturedLayout(device: vk.Device) LayoutError!vk.DescriptorSetLayou
 /// Create a descriptor pool sized for all pipelines.
 ///
 /// Pool sizes are budgeted for 4 pipelines (unified + text + SVG + image),
-/// each with their own descriptor set. Enough headroom for the current
-/// architecture; triple-buffering (future Phase) will require resizing.
-pub fn createDescriptorPool(device: vk.Device) PoolError!vk.DescriptorPool {
+/// each with their own descriptor set, for each of `frame_count` frames in
+/// flight (the window budget's `ResourceLimits.frame.in_flight_count`).
+pub fn createDescriptorPool(device: vk.Device, frame_count: u32) PoolError!vk.DescriptorPool {
     std.debug.assert(device != null);
+    std.debug.assert(frame_count >= 1);
+    std.debug.assert(frame_count <= vk_types.frame_count_max);
 
-    // 4 pipelines × FRAME_COUNT frames for storage + uniform;
-    // 3 textured pipelines × FRAME_COUNT frames for image + sampler.
+    // 4 pipelines × frame_count frames for storage + uniform;
+    // 3 textured pipelines × frame_count frames for image + sampler.
     const pool_sizes = [_]vk.DescriptorPoolSize{
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4 * FRAME_COUNT },
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4 * FRAME_COUNT },
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 3 * FRAME_COUNT },
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 3 * FRAME_COUNT },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4 * frame_count },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4 * frame_count },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 3 * frame_count },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 3 * frame_count },
     };
 
     const pool_info = vk.DescriptorPoolCreateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .pNext = null,
         .flags = 0,
-        .maxSets = MAX_DESCRIPTOR_SETS,
+        .maxSets = descriptor_set_count_frame * frame_count,
         .poolSizeCount = pool_sizes.len,
         .pPoolSizes = &pool_sizes,
     };

@@ -9,11 +9,11 @@ const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
-const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
 const GeometryCounts = scene.GeometryCounts;
 const GeometryPool = scene.GeometryPool;
 const SceneLimits = scene.SceneLimits;
+const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const PathInstance = @import("../../../scene/path_instance.zig").PathInstance;
 const path_mesh_mod = @import("../../../scene/path_mesh.zig");
 const PathVertex = path_mesh_mod.PathVertex;
@@ -266,15 +266,15 @@ pub const path_shader_source =
 /// Resource sketch (CLAUDE.md §7): each frame in flight owns a vertex buffer of
 /// `path_vertex_count_frame_max` × 16 B and an index buffer of
 /// `path_index_count_frame_max` × 4 B, sized in `init` from `ResourceLimits.scene`
-/// and never replaced. `.standard`: 1,048,576 + 262,144 = 1,310,720 B per frame,
-/// 3,932,160 B per window. Per draw: one mesh copy, one index rebase, a 112 B
+/// and never replaced. `.standard`: 262,144 + 65,536 = 327,680 B per frame,
+/// 983,040 B per window for three frames. Per draw: one mesh copy, one index rebase, a 112 B
 /// `setVertexBytes`, a 352 B `setFragmentBytes` and one indexed draw. Every mesh
 /// is claimed against the same `GeometryCounts` as the Vulkan and CPU renderers
 /// before it is written, so an over-budget frame panics with the pool name.
 pub const PathPipeline = struct {
     pipeline_state: objc.Object,
-    vertex_buffers: [frame_count]objc.Object,
-    index_buffers: [frame_count]objc.Object,
+    vertex_buffers: pipelines.FrameBuffers,
+    index_buffers: pipelines.FrameBuffers,
     frame_index: u32,
     /// The window's aggregate geometry budget (`ResourceLimits.scene`).
     geometry_budget: GeometryCounts,
@@ -299,7 +299,8 @@ pub const PathPipeline = struct {
         return vertexFrameBytes(scene_limits) + indexFrameBytes(scene_limits);
     }
 
-    pub fn init(device: objc.Object, sample_count: u32, scene_limits: *const SceneLimits) !Self {
+    pub fn init(device: objc.Object, sample_count: u32, limits: *const ResourceLimits) !Self {
+        const scene_limits = &limits.scene;
         assert(sample_count > 0);
         assert(scene_limits.check() == null);
         const pipeline_state = try createPipeline(device, sample_count);
@@ -309,15 +310,17 @@ pub const PathPipeline = struct {
             device,
             vertexFrameBytes(scene_limits),
             "path_vertices",
+            limits.frame.in_flight_count,
         );
-        errdefer for (vertex_buffers) |buffer| buffer.release();
+        errdefer vertex_buffers.release();
 
         const index_buffers = try pipelines.createFrameBuffers(
             device,
             indexFrameBytes(scene_limits),
             "path_indices",
+            limits.frame.in_flight_count,
         );
-        errdefer for (index_buffers) |buffer| buffer.release();
+        errdefer index_buffers.release();
 
         return .{
             .pipeline_state = pipeline_state,
@@ -331,16 +334,15 @@ pub const PathPipeline = struct {
 
     pub fn deinit(self: *Self) void {
         self.pipeline_state.release();
-        for (self.vertex_buffers) |buffer| buffer.release();
-        for (self.index_buffers) |buffer| buffer.release();
+        self.vertex_buffers.release();
+        self.index_buffers.release();
         self.* = undefined;
     }
 
     /// Advance to the next frame-in-flight slot and release the previous frame's
     /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        assert(self.frame_index < frame_count);
-        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_index = self.vertex_buffers.nextIndex(self.frame_index);
         self.geometry_usage = .{};
     }
 
@@ -358,10 +360,9 @@ pub const PathPipeline = struct {
         assert(options.viewport_size[0] > 0);
         assert(options.viewport_size[1] > 0);
         const slot = self.frame_index;
-        assert(slot < frame_count);
-        const vertex_buffer = self.vertex_buffers[slot];
+        const vertex_buffer = self.vertex_buffers.at(slot);
         const vertices_target = pipelines.frameBufferContents(PathVertex, vertex_buffer);
-        const indices_target = pipelines.frameBufferContents(u32, self.index_buffers[slot]);
+        const indices_target = pipelines.frameBufferContents(u32, self.index_buffers.at(slot));
 
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
         // Indices are rebased onto the whole slot, so the buffer binds at offset 0.
@@ -398,7 +399,7 @@ pub const PathPipeline = struct {
                 @backingInt(mtl.MTLPrimitiveType.triangle),
                 @as(c_ulong, mesh.indices.len),
                 @backingInt(mtl.MTLIndexType.uint32),
-                self.index_buffers[slot].value,
+                self.index_buffers.at(slot).value,
                 @as(c_ulong, index_first) * @sizeOf(u32),
             });
         }

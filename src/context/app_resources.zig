@@ -44,12 +44,9 @@ pub const FontConfig = struct {
     font_name: ?[]const u8 = null,
     /// Font size in points. Asserted `> 0` and `< 1000` at load time.
     font_size: f32 = 16.0,
-    /// The faces loaded at init, one per variant. `FontLimits.standard`
-    /// (regular, medium, semibold, bold, italic, bold italic) is the default.
-    limits: FontLimits = FontLimits.standard,
-
-    /// Default config — system sans-serif at 16pt.
-    pub const default = FontConfig{};
+    /// The faces loaded at init, one per variant. No default (CLAUDE.md §2):
+    /// the app's `FontLimits` profile, such as `FontLimits.nano`.
+    limits: FontLimits,
 };
 
 /// Bundle of shared, app-lifetime rendering resources.
@@ -274,12 +271,15 @@ pub const AppResources = struct {
 
 const testing = std.testing;
 
+/// System sans-serif at 16 pt with one face: the tests only check ownership.
+const test_font_config: FontConfig = .{ .limits = FontLimits.nano };
+
 test "AppResources: initOwned allocates and frees cleanly" {
     var resources = try AppResources.initOwned(
         testing.allocator,
         testing.io,
         1.0,
-        FontConfig.default,
+        test_font_config,
     );
     defer resources.deinit();
 
@@ -295,7 +295,7 @@ test "AppResources: borrowed deinit is a no-op (no double-free)" {
         testing.allocator,
         testing.io,
         1.0,
-        FontConfig.default,
+        test_font_config,
     );
     defer owner.deinit();
 
@@ -336,7 +336,7 @@ test "AppResources: initOwnedInPlace produces an owned instance" {
         testing.allocator,
         testing.io,
         1.0,
-        FontConfig.default,
+        test_font_config,
     );
     defer slot.deinit();
 
@@ -351,7 +351,7 @@ test "AppResources: custom font config loads named font" {
         testing.allocator,
         testing.io,
         1.0,
-        .{ .font_name = null, .font_size = 14.0 },
+        .{ .font_name = null, .font_size = 14.0, .limits = FontLimits.nano },
     );
     defer resources.deinit();
 

@@ -153,6 +153,7 @@ const AppState = struct {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .small,
     .title = "Todos",
     .width = 480,
     .height = 560,

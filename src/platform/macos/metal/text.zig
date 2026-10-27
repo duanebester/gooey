@@ -9,11 +9,11 @@ const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
-const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
 const InstanceCounts = scene.InstanceCounts;
 const InstancePool = scene.InstancePool;
 const SceneLimits = scene.SceneLimits;
+const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const Atlas = @import("../../../text/mod.zig").Atlas;
 
 /// Metal shader for text rendering
@@ -137,8 +137,9 @@ comptime {
 ///
 /// Resource sketch (CLAUDE.md §7): each frame in flight owns one instance buffer
 /// of `glyph_count_frame_max` × 80 B glyph instances, sized in `init` from
-/// `ResourceLimits.scene` and never replaced. `.standard`: 1,310,720 B per frame,
-/// 3,932,160 B per window. Per batch: one claim, one sequential copy and one
+/// `ResourceLimits.scene` and never replaced. `.standard`: 655,360 B per frame,
+/// 1,966,080 B per window for three frames; `.nano`: 81,920 B per frame, 163,840 B
+/// for two. Per batch: one claim, one sequential copy and one
 /// instanced draw. The scene holds at most the same number of glyphs, so a claim
 /// past the budget is a programmer error and panics with the pool name.
 pub const TextPipeline = struct {
@@ -146,7 +147,7 @@ pub const TextPipeline = struct {
     pipeline_state: objc.Object,
     unit_vertex_buffer: objc.Object,
 
-    instance_buffers: [frame_count]objc.Object,
+    instance_buffers: pipelines.FrameBuffers,
     frame_index: u32,
     /// The window's instance budget (`ResourceLimits.scene`).
     instance_budget: InstanceCounts,
@@ -163,8 +164,9 @@ pub const TextPipeline = struct {
         device: objc.Object,
         pixel_format: mtl.MTLPixelFormat,
         sample_count: u32,
-        scene_limits: *const SceneLimits,
+        limits: *const ResourceLimits,
     ) !Self {
+        const scene_limits = &limits.scene;
         assert(sample_count > 0);
         assert(scene_limits.check() == null);
         const budget = InstanceCounts.from_limits(scene_limits);
@@ -189,8 +191,9 @@ pub const TextPipeline = struct {
             device,
             glyph_count_max * @sizeOf(scene.GlyphInstance),
             "glyph_instances",
+            limits.frame.in_flight_count,
         );
-        errdefer for (instance_buffers) |buffer| buffer.release();
+        errdefer instance_buffers.release();
 
         const sampler_state = try createSampler(device);
         return .{
@@ -210,9 +213,7 @@ pub const TextPipeline = struct {
     pub fn deinit(self: *Self) void {
         self.pipeline_state.release();
         self.unit_vertex_buffer.release();
-        for (self.instance_buffers) |buf| {
-            buf.release();
-        }
+        self.instance_buffers.release();
         self.sampler_state.release();
         if (self.atlas_texture) |tex| tex.release();
         self.* = undefined;
@@ -221,8 +222,7 @@ pub const TextPipeline = struct {
     /// Advance to the next frame-in-flight slot and release the previous frame's
     /// claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        assert(self.frame_index < frame_count);
-        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_index = self.instance_buffers.nextIndex(self.frame_index);
         self.instance_usage = .{};
     }
 
@@ -297,9 +297,9 @@ pub const TextPipeline = struct {
         if (self.atlas_texture == null) return;
 
         const idx = self.frame_index;
-        assert(idx < frame_count);
         const byte_offset = @as(c_ulong, first) * @sizeOf(scene.GlyphInstance);
-        const base = pipelines.frameBufferContents(scene.GlyphInstance, self.instance_buffers[idx]);
+        const buffer = self.instance_buffers.at(idx);
+        const base = pipelines.frameBufferContents(scene.GlyphInstance, buffer);
         @memcpy(base[first..][0..glyphs.len], glyphs);
         const viewport_size = options.viewport_size;
 
@@ -315,7 +315,7 @@ pub const TextPipeline = struct {
 
         // Set instance buffer with offset for this batch
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            self.instance_buffers[idx],
+            buffer,
             @as(c_ulong, byte_offset),
             @as(c_ulong, 1),
         });

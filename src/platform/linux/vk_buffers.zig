@@ -13,7 +13,8 @@ const vk_types = @import("vk_types.zig");
 // Limits (CLAUDE.md Rule #4 — put a limit on everything)
 // =============================================================================
 
-pub const FRAME_COUNT: u32 = vk_types.FRAME_COUNT;
+/// Per-frame arrays are declared at the ceiling; only the budget's count is created.
+pub const frame_count_max: u32 = vk_types.frame_count_max;
 
 // =============================================================================
 // Result Types
@@ -39,14 +40,14 @@ pub const SubAllocation = struct {
 };
 
 pub const SyncObjects = struct {
-    image_available_semaphores: [FRAME_COUNT]vk.Semaphore,
-    render_finished_semaphores: [FRAME_COUNT]vk.Semaphore,
-    in_flight_fences: [FRAME_COUNT]vk.Fence,
+    image_available_semaphores: [frame_count_max]vk.Semaphore,
+    render_finished_semaphores: [frame_count_max]vk.Semaphore,
+    in_flight_fences: [frame_count_max]vk.Fence,
 
     /// Destroy all sync objects. Safe to call with null entries.
     pub fn destroy(self: *SyncObjects, device: vk.Device) void {
         std.debug.assert(device != null);
-        for (0..FRAME_COUNT) |i| {
+        for (0..frame_count_max) |i| {
             if (self.image_available_semaphores[i]) |sem| vk.vkDestroySemaphore(device, sem, null);
             self.image_available_semaphores[i] = null;
             if (self.render_finished_semaphores[i]) |sem| vk.vkDestroySemaphore(device, sem, null);
@@ -58,7 +59,7 @@ pub const SyncObjects = struct {
 };
 
 pub const CommandBuffers = struct {
-    render: [FRAME_COUNT]vk.CommandBuffer,
+    render: [frame_count_max]vk.CommandBuffer,
 };
 
 // =============================================================================
@@ -400,12 +401,15 @@ pub fn createCommandPool(
 pub fn allocateCommandBuffers(
     device: vk.Device,
     command_pool: vk.CommandPool,
+    frame_count: u32,
 ) CommandBufferError!CommandBuffers {
     std.debug.assert(device != null);
     std.debug.assert(command_pool != null);
+    std.debug.assert(frame_count >= 1);
+    std.debug.assert(frame_count <= frame_count_max);
 
     var result: CommandBuffers = .{
-        .render = @as([FRAME_COUNT]vk.CommandBuffer, @splat(null)),
+        .render = @as([frame_count_max]vk.CommandBuffer, @splat(null)),
     };
 
     // Allocate render command buffers (one per frame in flight)
@@ -414,7 +418,7 @@ pub fn allocateCommandBuffers(
         .pNext = null,
         .commandPool = command_pool,
         .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = FRAME_COUNT,
+        .commandBufferCount = frame_count,
     };
 
     const render_res = vk.vkAllocateCommandBuffers(device, &render_alloc, &result.render);
@@ -432,13 +436,15 @@ pub fn allocateCommandBuffers(
 ///
 /// All fences are created in the signaled state so the first vkWaitForFences
 /// call succeeds immediately.
-pub fn createSyncObjects(device: vk.Device) SyncError!SyncObjects {
+pub fn createSyncObjects(device: vk.Device, frame_count: u32) SyncError!SyncObjects {
     std.debug.assert(device != null);
+    std.debug.assert(frame_count >= 1);
+    std.debug.assert(frame_count <= frame_count_max);
 
     var result: SyncObjects = .{
-        .image_available_semaphores = @as([FRAME_COUNT]vk.Semaphore, @splat(null)),
-        .render_finished_semaphores = @as([FRAME_COUNT]vk.Semaphore, @splat(null)),
-        .in_flight_fences = @as([FRAME_COUNT]vk.Fence, @splat(null)),
+        .image_available_semaphores = @as([frame_count_max]vk.Semaphore, @splat(null)),
+        .render_finished_semaphores = @as([frame_count_max]vk.Semaphore, @splat(null)),
+        .in_flight_fences = @as([frame_count_max]vk.Fence, @splat(null)),
     };
     errdefer result.destroy(device);
 
@@ -454,7 +460,7 @@ pub fn createSyncObjects(device: vk.Device) SyncError!SyncObjects {
         .flags = vk.VK_FENCE_CREATE_SIGNALED_BIT,
     };
 
-    for (0..FRAME_COUNT) |i| {
+    for (0..frame_count) |i| {
         var res = vk.vkCreateSemaphore(device, &semaphore_info, null, &result.image_available_semaphores[i]);
         if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
 

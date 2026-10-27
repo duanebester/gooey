@@ -15,6 +15,8 @@
 //! pub fn main(init: std.process.Init) !void {
 //!     try gooey.run(@TypeOf(state), &state, render, .{
 //!         .title = "Counter",
+//!         .limits = .nano,
+//!         .font_limits = .nano,
 //!     }, init);
 //! }
 //!
@@ -88,6 +90,7 @@ const InputEvent = input_mod.InputEvent;
 ///     .title = "My App",
 ///     .width = 800,
 ///     .height = 600,
+///     .limits = .small,
 /// });
 /// ```
 pub fn App(
@@ -114,7 +117,10 @@ pub fn App(
                 // forwarded here for free, and callers never have to fall
                 // back to `gooey.run(...)` just to reach `on_close`,
                 // `on_resize`, `min_size`, `max_size`, `centered`, or `io`.
-                var cfg: runtime.CxConfig(State) = .{};
+                var cfg: runtime.CxConfig(State) = .{
+                    .limits = resource_limits,
+                    .font_limits = font_limits,
+                };
                 const ConfigType = @TypeOf(config);
                 inline for (@typeInfo(runtime.CxConfig(State)).@"struct".field_names) |field_name| {
                     // `custom_shaders` (MSL-vs-WGSL coercion), `limits`, and
@@ -125,11 +131,10 @@ pub fn App(
                         if (@hasField(ConfigType, "custom_shaders")) {
                             cfg.custom_shaders = coerceShaders(config.custom_shaders);
                         }
-                    } else if (comptime std.mem.eql(u8, field_name, "limits")) {
-                        // Resolved and validated at comptime (profile names too).
-                        cfg.limits = resource_limits;
-                    } else if (comptime std.mem.eql(u8, field_name, "font_limits")) {
-                        cfg.font_limits = font_limits;
+                    } else if (comptime std.mem.eql(u8, field_name, "limits") or
+                        std.mem.eql(u8, field_name, "font_limits"))
+                    {
+                        // Resolved and validated at comptime above (profile names too).
                     } else if (@hasField(ConfigType, field_name)) {
                         @field(cfg, field_name) = @field(config, field_name);
                     }
@@ -159,6 +164,7 @@ pub fn App(
 ///     .title = "My App",
 ///     .width = 800,
 ///     .height = 600,
+///     .limits = .small,
 /// });
 ///
 /// pub fn main(init: std.process.Init) !void {
@@ -581,19 +587,56 @@ fn configFieldList(comptime Valid: type) []const u8 {
 }
 
 /// The app's budget from its comptime config, validated at compile time.
-/// Accepts a `ResourceLimits` value or a profile name (`.limits = .large`);
-/// an absent field selects `ResourceLimits.standard`, the measured default.
+/// Accepts a profile name (`.limits = .nano`), a `ResourceLimits` value, or a
+/// complete literal. There is no default: CLAUDE.md §2 makes the budget part of
+/// every app's operational contract, so an absent `.limits` is a compile error
+/// that lists the profiles, and so is a name that is not one of them.
+///
+/// Zig cannot test compile errors in-process. Checked by hand on
+/// `examples/counter.zig`, natively and with `wasm-counter`: no `.limits`,
+/// `.limits = .tiny`, `.font_limits = .tiny`, a literal missing `.frame`, a
+/// literal without `.font_limits`, and `in_flight_count = 4` each fail with a
+/// message naming the problem.
 fn resolveLimits(comptime config: anytype) ResourceLimits {
     comptime {
         const ConfigType = @TypeOf(config);
-        const resolved: ResourceLimits = if (!@hasField(ConfigType, "limits"))
-            ResourceLimits.standard
-        else if (@TypeOf(config.limits) == @TypeOf(.enum_literal))
-            @field(ResourceLimits, @tagName(config.limits))
+        if (!@hasField(ConfigType, "limits")) @compileError(
+            "gooey.App needs .limits: a profile (" ++ profileList() ++
+                ") or a ResourceLimits literal",
+        );
+        const resolved: ResourceLimits = if (@TypeOf(config.limits) == @TypeOf(.enum_literal))
+            @field(ResourceLimits, profileName("limits", config.limits))
         else
             copyBudgets(config.limits);
         ResourceLimits.validate(resolved);
         return resolved;
+    }
+}
+
+/// The tag of a profile-name enum literal, rejected with the list of profiles
+/// when it names none of them. Checked before `@field` so a typo reports the
+/// valid names instead of a generic "no member named" error.
+fn profileName(comptime field: []const u8, comptime profile: @TypeOf(.enum_literal)) []const u8 {
+    comptime {
+        const name = @tagName(profile);
+        for (ResourceLimits.profile_names) |profile_name| {
+            if (std.mem.eql(u8, name, profile_name)) return name;
+        }
+        @compileError("gooey.App ." ++ field ++ " = ." ++ name ++ " is not a profile; use " ++
+            profileList());
+    }
+}
+
+/// ".nano, .small, .standard, .large or .ceiling", from `profile_names`.
+fn profileList() []const u8 {
+    comptime {
+        const names = ResourceLimits.profile_names;
+        var list: []const u8 = "";
+        for (names, 0..) |name, index| {
+            const separator = if (index == 0) "" else if (index + 1 == names.len) " or " else ", ";
+            list = list ++ separator ++ "." ++ name;
+        }
+        return list;
     }
 }
 
@@ -613,7 +656,7 @@ fn copyBudgets(comptime source: anytype) ResourceLimits {
         const Source = @TypeOf(source);
         if (Source == ResourceLimits) return source;
         if (@typeInfo(Source) != .@"struct") @compileError(
-            "gooey.App .limits must be a profile such as `.standard` or a ResourceLimits " ++
+            "gooey.App .limits must be a profile such as `.nano` or a ResourceLimits " ++
                 "literal, got " ++ @typeName(Source),
         );
         for (@typeInfo(Source).@"struct".field_names) |name| {
@@ -625,7 +668,7 @@ fn copyBudgets(comptime source: anytype) ResourceLimits {
         for (@typeInfo(ResourceLimits).@"struct".field_names) |name| {
             if (!@hasField(Source, name)) {
                 @compileError("ResourceLimits." ++ name ++ " is missing; pass ." ++ name ++
-                    " or a profile such as .limits = .standard");
+                    " or a profile such as .limits = .nano");
             }
             @field(resolved, name) = copyFields(
                 @FieldType(ResourceLimits, name),
@@ -638,16 +681,23 @@ fn copyBudgets(comptime source: anytype) ResourceLimits {
 }
 
 /// The app's font face set from its comptime config, validated at compile
-/// time. Accepts a `FontLimits` value, an anonymous literal such as
-/// `.{ .variants = &.{ .regular, .bold } }`, or a profile name
-/// (`.font_limits = .ceiling`); an absent field selects `FontLimits.standard`.
+/// time. An explicit `.font_limits` wins: a `FontLimits` value, an anonymous
+/// literal such as `.{ .variants = &.{ .regular, .bold } }`, or a profile name
+/// (`.font_limits = .ceiling`). Without it, the `.limits` profile name selects
+/// the `FontLimits` profile of the same name. A `.limits` literal has no name
+/// to follow, so it then requires `.font_limits`.
 fn resolveFontLimits(comptime config: anytype) FontLimits {
     comptime {
         const ConfigType = @TypeOf(config);
-        const resolved: FontLimits = if (!@hasField(ConfigType, "font_limits"))
-            FontLimits.standard
-        else if (@TypeOf(config.font_limits) == @TypeOf(.enum_literal))
-            @field(FontLimits, @tagName(config.font_limits))
+        const resolved: FontLimits = if (!@hasField(ConfigType, "font_limits")) blk: {
+            // `resolveLimits` already rejected an absent or unknown `.limits`.
+            if (@TypeOf(config.limits) != @TypeOf(.enum_literal)) @compileError(
+                "gooey.App .limits is a literal, so .font_limits must be given too: " ++
+                    "a profile such as .nano or a FontLimits literal",
+            );
+            break :blk @field(FontLimits, profileName("limits", config.limits));
+        } else if (@TypeOf(config.font_limits) == @TypeOf(.enum_literal))
+            @field(FontLimits, profileName("font_limits", config.font_limits))
         else if (@TypeOf(config.font_limits) == FontLimits)
             config.font_limits
         else

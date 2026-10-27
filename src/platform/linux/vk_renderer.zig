@@ -33,6 +33,7 @@ const ImageInstance = image_instance_mod.ImageInstance;
 
 const Scene = scene_mod.Scene;
 const SceneLimits = scene_mod.SceneLimits;
+const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
 const InstanceCapacity = vk_types.InstanceCapacity;
 const Allocator = std.mem.Allocator;
 
@@ -47,7 +48,7 @@ pub const enable_validation_layers = vk_instance.enable_validation_layers;
 // Re-exported types and constants from vk_types.zig
 // =============================================================================
 
-pub const FRAME_COUNT = vk_types.FRAME_COUNT;
+pub const frame_count_max = vk_types.frame_count_max;
 pub const MAX_SURFACE_FORMATS = vk_types.MAX_SURFACE_FORMATS;
 pub const MAX_PRESENT_MODES = vk_types.MAX_PRESENT_MODES;
 
@@ -88,10 +89,11 @@ const AtlasTransferRecord = struct {
 const MAX_ATLAS_TRANSFERS: u32 = 3;
 
 // =============================================================================
-// Per-Frame Resources (triple-buffered)
+// Per-Frame Resources (one set per frame in flight)
 // =============================================================================
 
-/// Per-frame GPU resources for triple-buffering.
+/// Per-frame GPU resources, one set per frame in flight (two or three, from
+/// the window budget's `ResourceLimits.frame`).
 ///
 /// Each frame in flight gets its own buffers, descriptor sets, sync objects,
 /// and command buffer. This eliminates CPU/GPU contention: the CPU writes to
@@ -210,8 +212,12 @@ pub const VulkanRenderer = struct {
     swapchain_needs_recreate: bool = false,
 
     // Per-frame resources: buffers, descriptor sets, sync objects, command buffers.
-    // Triple-buffered so CPU can write frame N+1 while GPU reads frame N.
-    frames: [FRAME_COUNT]FrameResources = @splat(.{}),
+    // One set per frame in flight so the CPU can write frame N+1 while the GPU
+    // reads frame N. Declared at the ceiling; only `frame_count` are created.
+    frames: [frame_count_max]FrameResources = @splat(.{}),
+    // The window budget's `ResourceLimits.frame.in_flight_count`, set once in
+    // `initWithWaylandSurface` before any per-frame resource is created.
+    frame_count: u32 = 0,
 
     // Staging buffer for texture uploads (shared across frames)
     staging_buffer: vk.Buffer = null,
@@ -478,14 +484,17 @@ pub const VulkanRenderer = struct {
         width: u32,
         height: u32,
         scale_factor: f64,
-        scene_limits: *const SceneLimits,
+        limits: *const ResourceLimits,
     ) !void {
         std.debug.assert(!self.initialized);
-        std.debug.assert(scene_limits.check() == null);
+        std.debug.assert(limits.check() == null);
+        const scene_limits = &limits.scene;
 
         // Every per-frame instance buffer is sized from the window's budget here,
-        // once, before the first frame (CLAUDE.md §2).
+        // once, before the first frame (CLAUDE.md §2), for each frame in flight.
         self.instance_capacity = InstanceCapacity.fromSceneLimits(scene_limits);
+        self.frame_count = limits.frame.in_flight_count;
+        std.debug.assert(self.frame_count <= frame_count_max);
 
         // Store Wayland display reference for cleanup roundtrips
         self.wl_display = @ptrCast(wl_display);
@@ -544,6 +553,7 @@ pub const VulkanRenderer = struct {
             self.surface,
             physical_width,
             physical_height,
+            self.frame_count,
             null,
         );
         self.swapchain = sc.swapchain;
@@ -597,13 +607,17 @@ pub const VulkanRenderer = struct {
             if (self.command_pool) |pool| vk.vkDestroyCommandPool(self.device, pool, null);
             self.command_pool = null;
         }
-        const cmd_bufs = try vk_buffers.allocateCommandBuffers(self.device, self.command_pool);
+        const cmd_bufs = try vk_buffers.allocateCommandBuffers(
+            self.device,
+            self.command_pool,
+            self.frame_count,
+        );
 
         // ---- Synchronization objects (vk_buffers) ----
-        const sync = try vk_buffers.createSyncObjects(self.device);
+        const sync = try vk_buffers.createSyncObjects(self.device, self.frame_count);
 
         // Distribute per-frame sync objects and command buffers
-        for (0..FRAME_COUNT) |i| {
+        for (0..self.frame_count) |i| {
             self.frames[i].fence = sync.in_flight_fences[i];
             self.frames[i].image_available_semaphore = sync.image_available_semaphores[i];
             self.frames[i].render_finished_semaphore = sync.render_finished_semaphores[i];
@@ -616,7 +630,7 @@ pub const VulkanRenderer = struct {
         self.host_memory_pool = try vk_buffers.MemoryPool.init(
             self.device,
             &self.mem_properties,
-            self.instance_capacity.hostPoolBytes(),
+            self.instance_capacity.hostPoolBytes(self.frame_count),
             vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         );
         errdefer self.host_memory_pool.destroy(self.device);
@@ -642,7 +656,10 @@ pub const VulkanRenderer = struct {
         errdefer self.destroyDescriptorLayouts();
 
         // ---- Descriptor pool (vk_descriptors) ----
-        self.descriptor_pool = try vk_descriptors.createDescriptorPool(self.device);
+        self.descriptor_pool = try vk_descriptors.createDescriptorPool(
+            self.device,
+            self.frame_count,
+        );
         errdefer {
             if (self.descriptor_pool) |pool| vk.vkDestroyDescriptorPool(self.device, pool, null);
             self.descriptor_pool = null;
@@ -666,6 +683,7 @@ pub const VulkanRenderer = struct {
             .render_pass = self.render_pass,
             .sample_count = self.sample_count,
             .cache = self.pipeline_cache,
+            .frame_count = self.frame_count,
         });
         errdefer self.mesh.deinit();
 
@@ -675,7 +693,7 @@ pub const VulkanRenderer = struct {
         // to correctly normalize to NDC. The swapchain/framebuffers use physical pixels.
         self.updateUniformBuffer(width, height);
 
-        for (&self.frames) |*frame| {
+        for (self.frames[0..self.frame_count]) |*frame| {
             vk_descriptors.updateUnifiedDescriptorSet(
                 self.device,
                 frame.unified_descriptor_set,
@@ -689,8 +707,18 @@ pub const VulkanRenderer = struct {
         self.initialized = true;
 
         std.log.info(
-            "VulkanRenderer initialized: {}x{} logical, {}x{} physical (scale: {d:.2}, MSAA: {}x)",
-            .{ width, height, physical_width, physical_height, scale_factor, self.sample_count },
+            "VulkanRenderer initialized: {}x{} logical, {}x{} physical (scale: {d:.2}, " ++
+                "MSAA: {}x, frames in flight: {d}, swapchain images: {d})",
+            .{
+                width,
+                height,
+                physical_width,
+                physical_height,
+                scale_factor,
+                self.sample_count,
+                self.frame_count,
+                self.swapchain_image_count,
+            },
         );
     }
 
@@ -700,7 +728,7 @@ pub const VulkanRenderer = struct {
 
     /// Create per-frame GPU buffers (uniform, primitive, glyph, SVG, image) for all frames.
     /// Each is host-visible + host-coherent for direct CPU writes.
-    /// Triple-buffered: each frame gets its own set so CPU and GPU don't contend.
+    /// One set per frame in flight so CPU and GPU don't contend.
     /// Create per-frame GPU buffers, sub-allocated from the host memory pool.
     ///
     /// Reduces ~15 individual `vkAllocateMemory` calls to 0 (the pool's single
@@ -708,8 +736,10 @@ pub const VulkanRenderer = struct {
     /// but shares the pool's backing VkDeviceMemory at different offsets.
     fn createFrameBuffers(self: *Self) !void {
         std.debug.assert(self.host_memory_pool.offset == 0);
-        std.debug.assert(self.host_memory_pool.size == self.instance_capacity.hostPoolBytes());
-        for (&self.frames) |*frame| {
+        std.debug.assert(
+            self.host_memory_pool.size == self.instance_capacity.hostPoolBytes(self.frame_count),
+        );
+        for (self.frames[0..self.frame_count]) |*frame| {
             const uniform = try vk_buffers.createMappedBufferFromPool(
                 self.device,
                 &self.host_memory_pool,
@@ -774,9 +804,9 @@ pub const VulkanRenderer = struct {
         self.textured_descriptor_layout = try vk_descriptors.createTexturedLayout(self.device);
     }
 
-    /// Allocate descriptor sets for all frames (4 sets per frame × FRAME_COUNT frames).
+    /// Allocate descriptor sets for all frames (4 sets per frame × `frame_count` frames).
     fn allocateDescriptorSets(self: *Self) !void {
-        for (&self.frames) |*frame| {
+        for (self.frames[0..self.frame_count]) |*frame| {
             frame.unified_descriptor_set = try vk_descriptors.allocateDescriptorSet(
                 self.device,
                 self.descriptor_pool,
@@ -891,7 +921,7 @@ pub const VulkanRenderer = struct {
         const physical_height: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) * scale_factor);
 
         // Wait only for our frames — not ALL GPU work
-        for (0..FRAME_COUNT) |i| {
+        for (0..self.frame_count) |i| {
             _ = vk.vkWaitForFences(
                 self.device,
                 1,
@@ -928,6 +958,7 @@ pub const VulkanRenderer = struct {
             self.surface,
             width,
             height,
+            self.frame_count,
             old_swapchain,
         );
         self.swapchain = sc.swapchain;
@@ -1115,7 +1146,7 @@ pub const VulkanRenderer = struct {
     /// must be updated, so all frames must be idle.
     fn waitOtherFrameFences(self: *Self) void {
         std.debug.assert(self.device != null);
-        for (0..FRAME_COUNT) |i| {
+        for (0..self.frame_count) |i| {
             if (i != self.current_frame) {
                 _ = vk.vkWaitForFences(
                     self.device,
@@ -1133,7 +1164,7 @@ pub const VulkanRenderer = struct {
     fn updateAllDescriptorSets(self: *Self, kind: AtlasKind, resources: *const vk_atlas.AtlasResources) void {
         std.debug.assert(self.device != null);
         std.debug.assert(resources.view != null);
-        for (&self.frames) |*frame| {
+        for (self.frames[0..self.frame_count]) |*frame| {
             switch (kind) {
                 .text => vk_atlas.updateAtlasDescriptorSet(
                     self.device,
@@ -1182,7 +1213,7 @@ pub const VulkanRenderer = struct {
         // Check if swapchain needs recreation from previous frame
         if (self.swapchain_needs_recreate) {
             self.swapchain_needs_recreate = false;
-            for (0..FRAME_COUNT) |i| {
+            for (0..self.frame_count) |i| {
                 _ = vk.vkWaitForFences(
                     self.device,
                     1,
@@ -1226,7 +1257,7 @@ pub const VulkanRenderer = struct {
         // Submit + present
         self.submitAndPresent(cmd, frame, image_index);
 
-        self.current_frame = (self.current_frame + 1) % FRAME_COUNT;
+        self.current_frame = (self.current_frame + 1) % self.frame_count;
     }
 
     /// The renderer never truncates a frame, so the scene it draws must not be

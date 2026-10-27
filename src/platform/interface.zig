@@ -313,8 +313,9 @@ pub const WindowOptions = struct {
 
     /// The application's validated per-window budget. Backends size renderer
     /// instance storage from it during `PlatformWindow.init` rather than from
-    /// framework ceilings. The runtime always sets it from the app config.
-    limits: ResourceLimits = ResourceLimits.standard,
+    /// framework ceilings. The runtime always sets it from the app config;
+    /// there is no default profile (CLAUDE.md §2).
+    limits: ResourceLimits,
 
     /// Effective clear color for this configuration.
     ///
@@ -356,12 +357,16 @@ test "GlassStyle.needsTransparentClear covers every variant" {
 
 test "WindowOptions.clearColor follows the glass style" {
     const opaque_options = WindowOptions{
+        .limits = ResourceLimits.nano,
         .glass_style = .none,
         .background_color = geometry.Color.rgba(0.1, 0.2, 0.3, 1.0),
     };
     try std.testing.expectEqual(@as(f32, 1.0), opaque_options.clearColor().a);
 
-    const glass_options = WindowOptions{ .glass_style = .glass_regular };
+    const glass_options = WindowOptions{
+        .limits = ResourceLimits.nano,
+        .glass_style = .glass_regular,
+    };
     try std.testing.expectEqual(@as(f32, 0.0), glass_options.clearColor().a);
 }
 

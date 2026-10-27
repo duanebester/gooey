@@ -22,6 +22,7 @@ const AppState = struct {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .large,
     .title = "Image Component Example",
     .width = 900,
     .height = 700,

@@ -13,11 +13,11 @@ const objc = @import("objc");
 
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
-const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
 const GeometryCounts = scene.GeometryCounts;
 const GeometryPool = scene.GeometryPool;
 const SceneLimits = scene.SceneLimits;
+const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const colored_point_cloud = @import("../../../scene/colored_point_cloud.zig");
 const ColoredPoint = colored_point_cloud.ColoredPoint;
 const ColoredPointCloud = colored_point_cloud.ColoredPointCloud;
@@ -159,15 +159,15 @@ comptime {
 ///
 /// Resource sketch (CLAUDE.md §7): each frame in flight owns one buffer of
 /// `colored_point_count_frame_max` × 24 B source points, sized in `init` from
-/// `ResourceLimits.scene` and never replaced. `.standard`: 1,572,864 B per frame,
-/// 4,718,592 B per window. Per cloud: one claim, one interleaving copy of its
+/// `ResourceLimits.scene` and never replaced. `.standard`: 393,216 B per frame,
+/// 1,179,648 B per window for three frames. Per cloud: one claim, one interleaving copy of its
 /// positions and colors, and one draw of 6 vertices × points instances. Every
 /// cloud is claimed against the same `GeometryCounts` as the Vulkan and CPU
 /// renderers before it is written, so an over-budget frame panics with the pool
 /// name.
 pub const ColoredPointCloudPipeline = struct {
     pipeline_state: objc.Object,
-    point_buffers: [frame_count]objc.Object,
+    point_buffers: pipelines.FrameBuffers,
     frame_index: u32,
     /// The window's aggregate geometry budget (`ResourceLimits.scene`).
     geometry_budget: GeometryCounts,
@@ -181,7 +181,8 @@ pub const ColoredPointCloudPipeline = struct {
         return @as(u64, scene_limits.colored_point_count_frame_max) * @sizeOf(ColoredPoint);
     }
 
-    pub fn init(device: objc.Object, sample_count: u32, scene_limits: *const SceneLimits) !Self {
+    pub fn init(device: objc.Object, sample_count: u32, limits: *const ResourceLimits) !Self {
+        const scene_limits = &limits.scene;
         assert(sample_count > 0);
         assert(scene_limits.check() == null);
         const pipeline_state = try createPipeline(device, sample_count);
@@ -191,8 +192,9 @@ pub const ColoredPointCloudPipeline = struct {
             device,
             frameBytes(scene_limits),
             "colored_points",
+            limits.frame.in_flight_count,
         );
-        errdefer for (point_buffers) |buffer| buffer.release();
+        errdefer point_buffers.release();
 
         return .{
             .pipeline_state = pipeline_state,
@@ -204,7 +206,7 @@ pub const ColoredPointCloudPipeline = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.point_buffers) |buffer| buffer.release();
+        self.point_buffers.release();
         self.pipeline_state.release();
         self.* = undefined;
     }
@@ -212,8 +214,7 @@ pub const ColoredPointCloudPipeline = struct {
     /// Advance to the next frame-in-flight slot and release the previous frame's
     /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        assert(self.frame_index < frame_count);
-        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_index = self.point_buffers.nextIndex(self.frame_index);
         self.geometry_usage = .{};
     }
 
@@ -230,7 +231,7 @@ pub const ColoredPointCloudPipeline = struct {
         assert(clouds.len <= scene.MAX_COLORED_POINT_CLOUDS_PER_FRAME);
         assert(options.viewport_size[0] > 0);
         assert(options.viewport_size[1] > 0);
-        const point_buffer = self.point_buffers[self.frame_index];
+        const point_buffer = self.point_buffers.at(self.frame_index);
         const points_target = pipelines.frameBufferContents(ColoredPoint, point_buffer);
         const first = clouds[0];
         const clip_bounds = [4]f32{

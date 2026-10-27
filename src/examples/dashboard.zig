@@ -258,6 +258,7 @@ fn ensureDataInitialized() void {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .standard,
     .title = "Analytics Dashboard",
     .width = 1200,
     .height = 800,

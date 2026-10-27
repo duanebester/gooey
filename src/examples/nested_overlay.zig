@@ -48,6 +48,7 @@ const AppState = struct {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .small,
     .title = "Nested Overlay Z-Index Repro",
     .width = 700,
     .height = 500,

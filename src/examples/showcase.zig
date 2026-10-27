@@ -265,6 +265,7 @@ var state = AppState{};
 // =============================================================================
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .standard,
     .title = "Gooey Showcase",
     .width = 1200,
     .height = 800,

@@ -153,12 +153,29 @@ fn render(cx: *Cx) void {
     }));
 }
 
-const App = gooey.App(void, &state, render, .{});
+const App = gooey.App(void, &state, render, .{ .limits = .nano });
 
 pub fn main(init: std.process.Init) !void {
     return App.main(init);
 }
 ```
+
+Every app declares its resource budget with `.limits`. Gooey reserves all of its
+memory from it before the first frame and never grows it; exceeding a capacity stops
+the app with the pool's name. There is no default. Pick the smallest rung that fits:
+
+| Profile     | For                                  | Faces | Frames in flight |
+| ----------- | ------------------------------------ | ----: | ---------------: |
+| `.nano`     | Counter-class apps, one screen       |     1 |                2 |
+| `.small`    | Forms, lists, single-screen tools    |     4 |                2 |
+| `.standard` | Multi-panel apps, tables, dashboards |     6 |                3 |
+| `.large`    | Hundreds of icons, big images, 5K    |     6 |                3 |
+| `.ceiling`  | Framework maxima, stress tests       |    14 |                3 |
+
+The name selects both `ResourceLimits` and `FontLimits`; `.font_limits` overrides the
+faces. A `ResourceLimits` literal also works and then needs `.font_limits` too. The
+values and their measurements are in `src/core/limits.zig` and
+`docs/v0.4.0-memory-budget.md`.
 
 ## Todo App Example
 
@@ -275,6 +292,7 @@ const App = gooey.App(AppState, &state, render, .{
     .title = "Todos",
     .width = 480,
     .height = 560,
+    .limits = .small,
 });
 
 comptime {
@@ -692,6 +710,7 @@ const App = gooey.App(AppState, &state, render, .{
     .title = "My App",
     .font = "Inter",
     .font_size = 16.0,   // optional, defaults to 16.0
+    .limits = .small,
 });
 ```
 
@@ -1670,6 +1689,7 @@ pub const plasma_wgsl =
 
 const App = gooey.App(AppState, &state, render, .{
     .custom_shaders = &.{.{ .msl = plasma_msl, .wgsl = plasma_wgsl }},
+    .limits = .small,
 });
 ```
 
@@ -1695,6 +1715,7 @@ const App = gooey.App(AppState, &state, render, .{
     .glass_style = .glass_regular,  // .glass_clear, .blur, .none
     .glass_corner_radius = 10.0,
     .titlebar_transparent = true,
+    .limits = .small,
 });
 
 // Change glass style at runtime

@@ -179,6 +179,7 @@ const Script = struct {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .standard,
     .title = "Gooey Gen UI",
     .width = 960,
     .height = 600,
