@@ -314,7 +314,14 @@ pub const TextMeasurement = struct {
 ///   wrapping, so the returned width is the full unwrapped advance.
 /// - `font_size == null` means measure at the currently loaded font's
 ///   size, so the caller does not have to restate it.
+///
+/// `weight` and `italic` select the face exactly as `TextStyle` does for
+/// rendering, with the same defaults, so a measured width matches the drawn
+/// text. A combination outside the text system's `FontLimits.variants`
+/// panics, as it does when rendered.
 pub const MeasureTextOptions = struct {
     max_width: ?f32 = null,
     font_size: ?f32 = null,
+    weight: FontWeight = .regular,
+    italic: bool = false,
 };

@@ -244,6 +244,39 @@ test "a click through dispatch reaches a handler with its argument" {
     try std.testing.expect(window.checkAndClearRenderFlag());
 }
 
+test "cx.measureText measures with the requested face: bold is wider than regular" {
+    // Goal: `cx.measureText` honours `weight`, so app code that sizes UI from
+    // a measurement gets the bold width that bold `ui.text` draws. Methodology:
+    // load the standard face set from the system sans-serif and measure one
+    // string through the public `Cx` path, at the loaded size and at a scaled
+    // `font_size` (the two code paths). Bold advances are wider in every
+    // sans-serif with a real bold face, so a regular measurement shows up as
+    // equal widths. Heights match: rows use the regular face's line height.
+    const TextSystem = @import("text/mod.zig").TextSystem;
+    const FontLimits = @import("core/limits.zig").FontLimits;
+
+    const text_system = try std.testing.allocator.create(TextSystem);
+    defer std.testing.allocator.destroy(text_system);
+    try text_system.initInPlace(std.testing.allocator, 1.0, std.testing.io, &FontLimits.standard);
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 16);
+
+    var state = ShapeState{};
+    const window = try handlerTestWindow(ShapeState, &state);
+    defer std.testing.allocator.destroy(window);
+    window.resources.text_system = text_system;
+    var cx = handlerTestCx(ShapeState, window, &state);
+
+    const sample = "Hello, World! 0123";
+    for ([_]?f32{ null, 24 }) |font_size| {
+        const regular = try cx.measureText(sample, .{ .font_size = font_size });
+        const bold = try cx.measureText(sample, .{ .font_size = font_size, .weight = .bold });
+        try std.testing.expect(regular.width > 0);
+        try std.testing.expect(bold.width > regular.width);
+        try std.testing.expectEqual(regular.height, bold.height);
+    }
+}
+
 test "navigation state pattern" {
     // Common pattern: enum-based page navigation
     const AppState = struct {

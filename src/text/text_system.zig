@@ -1197,7 +1197,9 @@ pub const TextSystem = struct {
     ) !TextMeasurement {
         if (!self.faces_loaded) return error.NoFontLoaded;
         const face = self.faceFor(variant);
-        const line_height = face.metrics.line_height;
+        // Rows take their height from the regular face, as in layout and
+        // rendering, so wrapped bold text measures as many pixels tall as it draws.
+        const line_height = self.faceFor(.regular).metrics.line_height;
         std.debug.assert(line_height > 0);
 
         // Fast path: measure directly from shape cache under the lock.
