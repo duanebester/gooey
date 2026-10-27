@@ -3,9 +3,10 @@
 //! Renders polylines as expanded quads for line width support.
 //! Optimized for chart data visualization with thousands of connected points.
 //!
-//! Each line segment (2 points) is expanded to a quad (4 vertices) on the CPU,
-//! then rendered using indexed drawing. This avoids complex geometry shaders
-//! while still providing good performance for typical chart use cases.
+//! The GPU buffer holds source points only. The vertex shader expands each line
+//! segment (one instance) into a butt-ended quad, using the same IEEE operations
+//! as the CPU expansion it replaced, so the buffer stores 8 B per point rather
+//! than 56 B per segment (4 vertices and 6 indices).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -28,17 +29,18 @@ pub const polyline_shader_source =
     \\#include <metal_stdlib>
     \\using namespace metal;
     \\
-    \\// Per-vertex data (expanded quad vertex)
-    \\struct PolylineVertex {
-    \\    float x;
-    \\    float y;
-    \\};
-    \\
-    \\// Per-instance uniforms
+    \\// Per-polyline uniforms
     \\struct PolylineUniforms {
     \\    float4 color;       // HSLA color
     \\    float4 clip_bounds; // x, y, width, height
+    \\    float half_width;
+    \\    float _pad0;
+    \\    float _pad1;
+    \\    float _pad2;
     \\};
+    \\
+    \\// Quad corner (0--1 over 3--2) of each vertex of triangles 0-1-2 and 0-2-3.
+    \\constant uint quad_corners[6] = { 0, 1, 2, 0, 2, 3 };
     \\
     \\struct VertexOut {
     \\    float4 position [[position]];
@@ -65,16 +67,43 @@ pub const polyline_shader_source =
     \\    return float4(rgb + m, a);
     \\}
     \\
+    \\// One instance per segment: a butt-ended quad from points[segment] to
+    \\// points[segment + 1], half_width either side.
     \\vertex VertexOut polyline_vertex(
     \\    uint vid [[vertex_id]],
-    \\    constant PolylineVertex *vertices [[buffer(0)]],
+    \\    uint segment [[instance_id]],
+    \\    device const float2 *points [[buffer(0)]],
     \\    constant PolylineUniforms *uniforms [[buffer(1)]],
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
-    \\    PolylineVertex v = vertices[vid];
     \\    PolylineUniforms u = *uniforms;
+    \\    float2 p0 = points[segment];
+    \\    float2 p1 = points[segment + 1];
+    \\    uint corner = quad_corners[vid];
     \\
-    \\    float2 pos = float2(v.x, v.y);
+    \\    float2 pos;
+    \\    {
+    \\        // The same IEEE operations, in the same order, as the CPU expansion this
+    \\        // replaced: no contraction or reassociation, correctly rounded sqrt and
+    \\        // divide. The clang pragmas cover compilers without the METAL ones.
+    \\        #pragma METAL fp math_mode(safe)
+    \\        #pragma METAL fp contract(off)
+    \\        #pragma clang fp contract(off) reassociate(off)
+    \\        float dx = p1.x - p0.x;
+    \\        float dy = p1.y - p0.y;
+    \\        float len = precise::sqrt(dx * dx + dy * dy);
+    \\        float perp_x = 0.0;
+    \\        float perp_y = u.half_width;
+    \\        if (len > 0.0001) {
+    \\            perp_x = precise::divide(-dy, len) * u.half_width;
+    \\            perp_y = precise::divide(dx, len) * u.half_width;
+    \\        }
+    \\        // Corners 0 and 1 sit on p0, 2 and 3 on p1; 0 and 3 add the
+    \\        // perpendicular, 1 and 2 subtract it. Negation is exact.
+    \\        float2 end = corner < 2 ? p0 : p1;
+    \\        float2 perp = float2(perp_x, perp_y);
+    \\        pos = (corner == 0 || corner == 3) ? end + perp : end - perp;
+    \\    }
     \\
     \\    // Convert to NDC
     \\    float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
@@ -107,84 +136,73 @@ pub const polyline_shader_source =
 // GPU Types
 // =============================================================================
 
-/// Vertex for expanded quad (matches shader)
-pub const PolylineVertex = extern struct {
-    x: f32,
-    y: f32,
-};
-
 /// Per-polyline uniforms (matches shader)
 pub const PolylineUniforms = extern struct {
     color: [4]f32, // HSLA
     clip_bounds: [4]f32, // x, y, width, height
+    half_width: f32,
+    _pad: [3]f32 = @splat(0),
 };
+
+comptime {
+    std.debug.assert(@sizeOf(PolylineUniforms) == 48);
+    std.debug.assert(@sizeOf(scene.Point) == 8);
+}
 
 // =============================================================================
 // Pipeline
 // =============================================================================
 
-/// Polylines expanded on the CPU into one quad per segment, one draw per polyline.
+/// Polylines drawn as one butt-ended quad per segment, expanded in the vertex
+/// shader from the source points (one instance per segment), one draw per polyline.
 ///
-/// Resource sketch (CLAUDE.md §7): a polyline of n points has n - 1 segments, so a
-/// frame's segments never exceed `polyline_point_count_frame_max`. Each frame in
-/// flight owns 4 vertices × 8 B and 6 indices × 4 B per budgeted point, sized in
-/// `init` from `ResourceLimits.scene` and never replaced. `.standard`: 131,072 ×
-/// 56 B = 7,340,032 B per frame, 22,020,096 B per window. Every polyline is claimed
+/// Resource sketch (CLAUDE.md §7): each frame in flight owns one buffer of
+/// `polyline_point_count_frame_max` × 8 B source points, sized in `init` from
+/// `ResourceLimits.scene` and never replaced. `.standard`: 1,048,576 B per frame,
+/// 3,145,728 B per window. Per polyline: one claim, one copy of its points, and
+/// one draw of 6 vertices × (points - 1) instances. Every polyline is claimed
 /// against the same `GeometryCounts` as the Vulkan and CPU renderers before it is
 /// written, so an over-budget frame panics with the pool name.
 pub const PolylinePipeline = struct {
     pipeline_state: objc.Object,
-    vertex_buffers: [frame_count]objc.Object,
-    index_buffers: [frame_count]objc.Object,
+    point_buffers: [frame_count]objc.Object,
     frame_index: u32,
-    /// Expanded vertices and indices written into the current slot this frame.
-    frame_vertex_count: u32,
-    frame_index_count: u32,
     /// The window's aggregate geometry budget (`ResourceLimits.scene`).
     geometry_budget: GeometryCounts,
-    /// Source points claimed this frame.
+    /// Source points claimed this frame; also the slot's write offset.
     geometry_usage: GeometryCounts,
 
     const Self = @This();
 
+    /// Bytes of one frame's point buffer for `scene_limits`.
+    pub fn frameBytes(scene_limits: *const SceneLimits) u64 {
+        return @as(u64, scene_limits.polyline_point_count_frame_max) * @sizeOf(scene.Point);
+    }
+
     pub fn init(device: objc.Object, sample_count: u32, scene_limits: *const SceneLimits) !Self {
         assert(sample_count > 0);
         assert(scene_limits.check() == null);
-        const budget = GeometryCounts.from_limits(scene_limits);
-        const point_count_max: u64 = budget.counts[@backingInt(GeometryPool.polyline_points)];
-
         const pipeline_state = try createPipeline(device, sample_count);
         errdefer pipeline_state.release();
 
-        const vertex_buffers = try pipelines.createFrameBuffers(
+        const point_buffers = try pipelines.createFrameBuffers(
             device,
-            point_count_max * vertices_per_segment * @sizeOf(PolylineVertex),
-            "polyline_vertices",
+            frameBytes(scene_limits),
+            "polyline_points",
         );
-        errdefer for (vertex_buffers) |buffer| buffer.release();
-
-        const index_buffers = try pipelines.createFrameBuffers(
-            device,
-            point_count_max * indices_per_segment * @sizeOf(u32),
-            "polyline_indices",
-        );
-        errdefer for (index_buffers) |buffer| buffer.release();
+        errdefer for (point_buffers) |buffer| buffer.release();
 
         return .{
             .pipeline_state = pipeline_state,
-            .vertex_buffers = vertex_buffers,
-            .index_buffers = index_buffers,
+            .point_buffers = point_buffers,
             .frame_index = 0,
-            .frame_vertex_count = 0,
-            .frame_index_count = 0,
-            .geometry_budget = budget,
+            .geometry_budget = GeometryCounts.from_limits(scene_limits),
             .geometry_usage = .{},
         };
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.vertex_buffers) |buffer| buffer.release();
-        for (self.index_buffers) |buffer| buffer.release();
+        for (self.point_buffers) |buffer| buffer.release();
         self.pipeline_state.release();
         self.* = undefined;
     }
@@ -193,10 +211,7 @@ pub const PolylinePipeline = struct {
     /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
         assert(self.frame_index < frame_count);
-        assert(self.frame_index_count == self.frame_vertex_count / 4 * 6);
         self.frame_index = (self.frame_index + 1) % frame_count;
-        self.frame_vertex_count = 0;
-        self.frame_index_count = 0;
         self.geometry_usage = .{};
     }
 
@@ -210,11 +225,8 @@ pub const PolylinePipeline = struct {
         assert(polylines.len <= scene.MAX_POLYLINES_PER_FRAME);
         assert(options.viewport_size[0] > 0);
         assert(options.viewport_size[1] > 0);
-        const slot = self.frame_index;
-        const vertex_buffer = self.vertex_buffers[slot];
-        const index_buffer = self.index_buffers[slot];
-        const vertices_target = pipelines.frameBufferContents(PolylineVertex, vertex_buffer);
-        const indices_target = pipelines.frameBufferContents(u32, index_buffer);
+        const point_buffer = self.point_buffers[self.frame_index];
+        const points_target = pipelines.frameBufferContents(scene.Point, point_buffer);
 
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
         encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
@@ -226,25 +238,15 @@ pub const PolylinePipeline = struct {
         for (polylines) |*polyline| {
             polyline.validate();
             const points = polyline.getPoints();
+            const pool_index = @backingInt(GeometryPool.polyline_points);
+            const point_first = self.geometry_usage.counts[pool_index];
             // Same pool and per-draw granularity as the Vulkan and CPU renderers.
             self.geometry_usage.claim(&self.geometry_budget, .{
                 .pool = .polyline_points,
                 .requested = @intCast(points.len),
                 .frame = options.frame,
             });
-            const segment_count: u32 = @intCast(points.len - 1);
-            const vertex_first = self.frame_vertex_count;
-            const index_first = self.frame_index_count;
-            expandSegments(
-                vertices_target[vertex_first..][0 .. segment_count * vertices_per_segment],
-                indices_target[index_first..][0 .. segment_count * indices_per_segment],
-                points,
-                polyline.width * 0.5,
-            );
-            self.frame_vertex_count += segment_count * vertices_per_segment;
-            self.frame_index_count += segment_count * indices_per_segment;
-            // Segments never outnumber claimed points, which the buffers are sized for.
-            assert(self.frame_vertex_count <= self.pointsClaimed() * vertices_per_segment);
+            @memcpy(points_target[point_first..][0..points.len], points);
 
             const color = polyline.color;
             const uniforms = PolylineUniforms{
@@ -255,11 +257,12 @@ pub const PolylinePipeline = struct {
                     polyline.clip_width,
                     polyline.clip_height,
                 },
+                .half_width = polyline.width * 0.5,
             };
-            // Indices are relative to the polyline's first vertex, where the buffer binds.
+            // The shader reads `device` memory, so an 8 B-aligned offset suffices.
             encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                vertex_buffer.value,
-                @as(c_ulong, vertex_first) * @sizeOf(PolylineVertex),
+                point_buffer.value,
+                @as(c_ulong, point_first) * @sizeOf(scene.Point),
                 @as(c_ulong, 0),
             });
             encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
@@ -267,61 +270,17 @@ pub const PolylinePipeline = struct {
                 @as(c_ulong, @sizeOf(PolylineUniforms)),
                 @as(c_ulong, 1),
             });
-            encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:" ++
-                "indexBufferOffset:", .{
+            // Instances draw in order, so segments blend in the order the
+            // former indexed draw emitted them.
+            encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
                 @backingInt(mtl.MTLPrimitiveType.triangle),
-                @as(c_ulong, segment_count * indices_per_segment),
-                @backingInt(mtl.MTLIndexType.uint32),
-                index_buffer.value,
-                @as(c_ulong, index_first) * @sizeOf(u32),
+                @as(c_ulong, 0),
+                @as(c_ulong, 6),
+                @as(c_ulong, points.len - 1),
             });
         }
     }
-
-    fn pointsClaimed(self: *const Self) u32 {
-        return self.geometry_usage.counts[@backingInt(GeometryPool.polyline_points)];
-    }
 };
-
-const vertices_per_segment: u32 = 4;
-const indices_per_segment: u32 = 6;
-
-/// Hot loop: expand each segment into a butt-ended quad of half-width `radius`.
-/// Indices are relative to the first vertex of `vertices`.
-fn expandSegments(
-    vertices: []PolylineVertex,
-    indices: []u32,
-    points: []const scene.Point,
-    radius: f32,
-) void {
-    assert(points.len >= 2);
-    assert(vertices.len == (points.len - 1) * vertices_per_segment);
-    assert(indices.len == (points.len - 1) * indices_per_segment);
-    for (points[0 .. points.len - 1], points[1..], 0..) |p0, p1, segment| {
-        const dx = p1.x - p0.x;
-        const dy = p1.y - p0.y;
-        const len = @sqrt(dx * dx + dy * dy);
-        var perp_x: f32 = 0;
-        var perp_y: f32 = radius;
-        if (len > 0.0001) {
-            perp_x = -dy / len * radius;
-            perp_y = dx / len * radius;
-        }
-
-        // Quad corners, counter-clockwise: 0--1 over 3--2.
-        const base: u32 = @intCast(segment * vertices_per_segment);
-        vertices[base + 0] = .{ .x = p0.x + perp_x, .y = p0.y + perp_y };
-        vertices[base + 1] = .{ .x = p0.x - perp_x, .y = p0.y - perp_y };
-        vertices[base + 2] = .{ .x = p1.x - perp_x, .y = p1.y - perp_y };
-        vertices[base + 3] = .{ .x = p1.x + perp_x, .y = p1.y + perp_y };
-
-        // Two triangles: 0-1-2 and 0-2-3.
-        const index_base = segment * indices_per_segment;
-        indices[index_base..][0..indices_per_segment].* = .{
-            base, base + 1, base + 2, base, base + 2, base + 3,
-        };
-    }
-}
 
 // =============================================================================
 // Helper Functions
