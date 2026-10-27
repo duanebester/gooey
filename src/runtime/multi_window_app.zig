@@ -263,6 +263,7 @@ pub const App = struct {
         try self.resources.initOwnedInPlace(allocator, io, 1.0, .{
             .font_name = font_config.font_name,
             .font_size = font_config.font_size,
+            .limits = font_config.limits,
         });
         errdefer self.resources.deinit();
 

@@ -11,6 +11,8 @@ const Metrics = types.Metrics;
 const GlyphMetrics = types.GlyphMetrics;
 const RasterizedGlyph = types.RasterizedGlyph;
 const SystemFont = types.SystemFont;
+const FontVariant = types.FontVariant;
+const FontWeight = types.FontWeight;
 const FontFace = font_face_mod.FontFace;
 
 /// CoreText-backed font face
@@ -22,16 +24,22 @@ pub const CoreTextFace = struct {
 
     const Self = @This();
 
-    /// Load a font by name (e.g., "SF Mono", "SF Pro", "Helvetica Neue")
-    pub fn init(name: []const u8, size: f32) !Self {
+    /// Load one variant of a font by name (e.g., "SF Mono", "SF Pro", "Helvetica Neue").
+    ///
+    /// Fallback policy: CoreText matching picks the nearest real face in the
+    /// family for the requested weight and slant; nothing is synthesized. A
+    /// family without a bold or italic face renders those variants with its
+    /// nearest real face, and init logs a warning. See `createVariantFont`.
+    pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         std.debug.assert(size > 0);
         std.debug.assert(name.len > 0);
 
         const cf_name = ct.createCFStringRuntime(name) orelse return error.InvalidFontName;
         defer ct.release(cf_name);
 
-        const font = ct.CTFontCreateWithName(cf_name, @floatCast(size), null) orelse
+        const base = ct.CTFontCreateWithName(cf_name, @floatCast(size), null) orelse
             return error.FontNotFound;
+        const font = selectVariant(base, size, variant);
 
         return Self{
             .ct_font = font,
@@ -39,11 +47,11 @@ pub const CoreTextFace = struct {
         };
     }
 
-    /// Load a system font
-    pub fn initSystem(style: SystemFont, size: f32) !Self {
+    /// Load one variant of a system font, with the same policy as `init`.
+    pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         std.debug.assert(size > 0);
 
-        const font = switch (style) {
+        const base = switch (style) {
             .monospace => blk: {
                 // Use system API for monospace - SF Mono needs this to work correctly
                 const f = ct.CTFontCreateUIFontForLanguage(
@@ -66,6 +74,7 @@ pub const CoreTextFace = struct {
                     return error.FontNotFound;
             },
         };
+        const font = selectVariant(base, size, variant);
 
         return Self{
             .ct_font = font,
@@ -76,6 +85,129 @@ pub const CoreTextFace = struct {
     pub fn deinit(self: *Self) void {
         ct.release(self.ct_font);
         self.* = undefined;
+    }
+
+    /// Take ownership of `base` and return the font for `variant`: `base`
+    /// itself for `.regular` or when no closer face exists, else a new font
+    /// (and `base` is released).
+    fn selectVariant(base: ct.CTFontRef, size: f32, variant: FontVariant) ct.CTFontRef {
+        if (variant == .regular) return base;
+
+        const font = createVariantFont(base, size, variant) orelse base;
+        if (font != base) ct.release(base);
+
+        const traits = ct.CTFontGetSymbolicTraits(font);
+        const bold_requested = @backingInt(variant.weight()) >= @backingInt(FontWeight.semibold);
+        if (bold_requested and (traits & ct.kCTFontTraitBold) == 0) {
+            std.log.warn("font has no bold face for '{s}'; using the nearest weight", .{
+                @tagName(variant),
+            });
+        }
+        if (variant.isItalic() and (traits & ct.kCTFontTraitItalic) == 0) {
+            std.log.warn("font has no italic face for '{s}'; using an upright face", .{
+                @tagName(variant),
+            });
+        }
+        return font;
+    }
+
+    /// Match `variant` within `base`'s family, or null when CoreText finds no
+    /// other face. Family descriptors carry the weight and slant as traits, so
+    /// CoreText returns the nearest real face (Skia's CoreText font manager
+    /// matches the same way). Hidden system families (names starting with
+    /// '.') do not resolve through a family descriptor, so they, and any family
+    /// the descriptor fails to match, use the bold and italic symbolic traits.
+    fn createVariantFont(base: ct.CTFontRef, size: f32, variant: FontVariant) ?ct.CTFontRef {
+        std.debug.assert(variant != .regular);
+        std.debug.assert(size > 0);
+
+        const family = ct.CTFontCopyFamilyName(base) orelse return null;
+        defer ct.release(family);
+
+        if (!isHiddenFamily(family)) {
+            if (createFromFamilyTraits(family, size, variant)) |font| return font;
+        }
+
+        var symbolic: ct.CTFontSymbolicTraits = 0;
+        if (@backingInt(variant.weight()) >= @backingInt(FontWeight.semibold)) {
+            symbolic |= ct.kCTFontTraitBold;
+        }
+        if (variant.isItalic()) symbolic |= ct.kCTFontTraitItalic;
+        const mask = ct.kCTFontTraitBold | ct.kCTFontTraitItalic;
+        return ct.CTFontCreateCopyWithSymbolicTraits(base, @floatCast(size), null, symbolic, mask);
+    }
+
+    fn createFromFamilyTraits(
+        family: ct.CFStringRef,
+        size: f32,
+        variant: FontVariant,
+    ) ?ct.CTFontRef {
+        const key_callbacks = &ct.kCFTypeDictionaryKeyCallBacks;
+        const value_callbacks = &ct.kCFTypeDictionaryValueCallBacks;
+
+        const weight_value: f64 = coreTextWeight(variant.weight());
+        const weight = ct.CFNumberCreate(null, ct.kCFNumberFloat64Type, &weight_value) orelse
+            return null;
+        defer ct.release(weight);
+
+        const symbolic_value: i32 = if (variant.isItalic()) @intCast(ct.kCTFontTraitItalic) else 0;
+        const symbolic = ct.CFNumberCreate(null, ct.kCFNumberSInt32Type, &symbolic_value) orelse
+            return null;
+        defer ct.release(symbolic);
+
+        const traits = ct.CFDictionaryCreateMutable(null, 2, key_callbacks, value_callbacks) orelse
+            return null;
+        defer ct.release(traits);
+        ct.CFDictionarySetValue(traits, @ptrCast(ct.kCTFontWeightTrait), @ptrCast(weight));
+        ct.CFDictionarySetValue(traits, @ptrCast(ct.kCTFontSymbolicTrait), @ptrCast(symbolic));
+
+        const attrs = ct.CFDictionaryCreateMutable(null, 2, key_callbacks, value_callbacks) orelse
+            return null;
+        defer ct.release(attrs);
+        ct.CFDictionarySetValue(attrs, @ptrCast(ct.kCTFontFamilyNameAttribute), @ptrCast(family));
+        ct.CFDictionarySetValue(attrs, @ptrCast(ct.kCTFontTraitsAttribute), @ptrCast(traits));
+
+        const descriptor = ct.CTFontDescriptorCreateWithAttributes(attrs) orelse return null;
+        defer ct.release(descriptor);
+
+        const font = ct.CTFontCreateWithFontDescriptor(descriptor, @floatCast(size), null) orelse
+            return null;
+        // CoreText substitutes another family when this one does not match.
+        // That would change the typeface, not the weight, so reject it.
+        const matched_family = ct.CTFontCopyFamilyName(font) orelse {
+            ct.release(font);
+            return null;
+        };
+        defer ct.release(matched_family);
+        if (!ct.CFEqual(family, matched_family)) {
+            ct.release(font);
+            return null;
+        }
+        return font;
+    }
+
+    fn isHiddenFamily(family: ct.CFStringRef) bool {
+        if (ct.CFStringGetLength(family) == 0) return false;
+        var first: [1]ct.UniChar = undefined;
+        ct.CFStringGetCharacters(family, ct.CFRange.init(0, 1), &first);
+        return first[0] == '.';
+    }
+
+    /// `kCTFontWeightTrait` value (-1...1) for a weight, from AppKit's
+    /// `NSFontWeight` constants.
+    fn coreTextWeight(weight: FontWeight) f64 {
+        const result: f64 = switch (weight) {
+            .thin => -0.6,
+            .light => -0.4,
+            .regular => 0.0,
+            .medium => 0.23,
+            .semibold => 0.3,
+            .bold => 0.4,
+            .black => 0.62,
+        };
+        std.debug.assert(result >= -1.0);
+        std.debug.assert(result <= 1.0);
+        return result;
     }
 
     /// Get as the generic FontFace interface
@@ -380,7 +512,7 @@ fn renderGlyphInternal(
 // =============================================================================
 
 test "load system font" {
-    var face = try CoreTextFace.initSystem(.monospace, 14.0);
+    var face = try CoreTextFace.initSystem(.monospace, 14.0, .regular);
     defer face.deinit();
 
     try std.testing.expect(face.metrics.ascender > 0);

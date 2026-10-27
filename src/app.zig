@@ -39,6 +39,7 @@ const window_mod = @import("context/window.zig");
 const input_mod = @import("input/mod.zig");
 const shader_mod = @import("core/shader.zig");
 const ResourceLimits = @import("core/limits.zig").ResourceLimits;
+const FontLimits = @import("core/limits.zig").FontLimits;
 const SceneLimits = @import("core/limits.zig").SceneLimits;
 const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
@@ -101,6 +102,7 @@ pub fn App(
         return WebApp(State, state, render, config);
     } else {
         const resource_limits = comptime resolveLimits(config);
+        const font_limits = comptime resolveFontLimits(config);
         return struct {
             // `main` accepts `init: std.process.Init` per Zig 0.16's
             // "Juicy Main" contract. The value is forwarded to `runCx`
@@ -116,8 +118,8 @@ pub fn App(
                 var cfg: runtime.CxConfig(State) = .{};
                 const ConfigType = @TypeOf(config);
                 inline for (@typeInfo(runtime.CxConfig(State)).@"struct".field_names) |field_name| {
-                    // `custom_shaders` (MSL-vs-WGSL coercion) and `limits`
-                    // (profile names) need special handling; everything else
+                    // `custom_shaders` (MSL-vs-WGSL coercion), `limits`, and
+                    // `font_limits` (profile names) need special handling; everything else
                     // is a straight copy when the caller provided it. Unknown
                     // caller fields were already rejected at comptime.
                     if (comptime std.mem.eql(u8, field_name, "custom_shaders")) {
@@ -127,6 +129,8 @@ pub fn App(
                     } else if (comptime std.mem.eql(u8, field_name, "limits")) {
                         // Resolved and validated at comptime (profile names too).
                         cfg.limits = resource_limits;
+                    } else if (comptime std.mem.eql(u8, field_name, "font_limits")) {
+                        cfg.font_limits = font_limits;
                     } else if (@hasField(ConfigType, field_name)) {
                         @field(cfg, field_name) = @field(config, field_name);
                     }
@@ -178,6 +182,7 @@ pub fn WebApp(
     // effect in a canvas) and rejects anything else, exactly like native.
     comptime validateConfigFields(State, @TypeOf(config));
     const resource_limits = comptime resolveLimits(config);
+    const font_limits = comptime resolveFontLimits(config);
     const web_imports = @import("platform/web/imports.zig");
     const WebRenderer = @import("platform/web/renderer.zig").WebRenderer;
 
@@ -260,6 +265,7 @@ pub fn WebApp(
             const font_cfg = window_mod.FontConfig{
                 .font_name = if (@hasField(@TypeOf(config), "font")) config.font else null,
                 .font_size = if (@hasField(@TypeOf(config), "font_size")) config.font_size else 16.0,
+                .limits = font_limits,
             };
             // Browser integrations provide asynchronous services through explicit
             // JavaScript callbacks, so unsupported operations retain failing-I/O
@@ -588,6 +594,28 @@ fn resolveLimits(comptime config: anytype) ResourceLimits {
         else
             .{ .scene = copyFields(SceneLimits, config.limits.scene) };
         ResourceLimits.validate(resolved);
+        return resolved;
+    }
+}
+
+/// The app's font face set from its comptime config, validated at compile
+/// time. Accepts a `FontLimits` value, an anonymous literal such as
+/// `.{ .variants = &.{ .regular, .bold } }`, or a profile name
+/// (`.font_limits = .ceiling`); an absent field selects `FontLimits.standard`.
+fn resolveFontLimits(comptime config: anytype) FontLimits {
+    comptime {
+        const ConfigType = @TypeOf(config);
+        const resolved: FontLimits = if (!@hasField(ConfigType, "font_limits"))
+            FontLimits.standard
+        else if (@TypeOf(config.font_limits) == @TypeOf(.enum_literal))
+            @field(FontLimits, @tagName(config.font_limits))
+        else if (@TypeOf(config.font_limits) == FontLimits)
+            config.font_limits
+        else
+            // Literals passed through `anytype` keep their own type and do
+            // not coerce as a whole; their variant list does.
+            .{ .variants = config.font_limits.variants };
+        FontLimits.validate(resolved);
         return resolved;
     }
 }

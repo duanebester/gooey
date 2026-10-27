@@ -866,9 +866,13 @@
         };
       }
 
+      // The font spec is "<style> <weight> <family>" (see WebFontFace.init).
+      // CSS `font` puts the size between weight and family; style and weight
+      // never contain spaces, so the second space ends the weight.
       function getFont(fontPtr, fontLen, size) {
-        const fontName = getString(fontPtr, fontLen);
-        return `${size}px ${fontName}`;
+        const spec = getString(fontPtr, fontLen);
+        const weightEnd = spec.indexOf(" ", spec.indexOf(" ") + 1);
+        return `${spec.slice(0, weightEnd)} ${size}px ${spec.slice(weightEnd + 1)}`;
       }
 
       // =========================================================================

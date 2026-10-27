@@ -1334,7 +1334,7 @@ pub const DrawContext = struct {
 
         // Use real measurement if TextSystem is available
         if (self.text_system) |ts| {
-            return ts.measureText(text) catch {
+            return ts.measureText(text, .regular) catch {
                 // Fallback on measurement error
                 return self.measureTextFallback(text, font_size);
             };

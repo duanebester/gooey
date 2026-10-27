@@ -160,7 +160,9 @@ pub const TextStyle = struct {
     underline: bool = false,
     strikethrough: bool = false,
 
-    pub const Weight = enum { thin, light, regular, medium, semibold, bold, black };
+    /// Selects a face from the text system's `FontLimits.variants` together
+    /// with `italic`; a combination outside that set panics when measured.
+    pub const Weight = @import("../text/types.zig").FontWeight;
     pub const WrapMode = enum { none, words, newlines };
     pub const Alignment = enum { left, center, right };
 };

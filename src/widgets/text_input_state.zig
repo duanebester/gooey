@@ -1044,7 +1044,7 @@ pub const TextInputState = struct {
     fn measureText(self: *Self, text_system: *TextSystem, text: []const u8) !f32 {
         _ = self;
         if (text.len == 0) return 0;
-        return text_system.measureText(text);
+        return text_system.measureText(text, .regular);
     }
 
     /// Render selection highlight

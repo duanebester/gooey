@@ -16,6 +16,7 @@
 //! - `text-edit`: rejects an over-limit edit silently, then fails on a buffer OOM.
 //! - `builder-canvas`: registers one canvas past `Builder.MAX_PENDING_CANVAS`.
 //! - `builder-layout`: renders text when the layout text arena cannot allocate.
+//! - `font-variant`: measures text in a font variant the face set did not load.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -29,6 +30,7 @@ const Mode = enum {
     @"text-edit",
     @"builder-canvas",
     @"builder-layout",
+    @"font-variant",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -49,6 +51,7 @@ pub fn main(init: std.process.Init) !void {
         .@"text-edit" => textEdit(oom),
         .@"builder-canvas" => builderCanvas(init.gpa),
         .@"builder-layout" => builderLayout(init.gpa, oom),
+        .@"font-variant" => fontVariant(init.gpa, init.io),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -134,6 +137,25 @@ fn builderLayout(gpa: std.mem.Allocator, oom: std.mem.Allocator) void {
         std.debug.panic("setup: openElement failed with reserved storage: {s}", .{@errorName(err)});
     };
     harness.builder.processChildren(gooey.ui.text("x", .{}));
+}
+
+fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
+    // The standard set loads regular, medium, semibold, bold, italic, and bold
+    // italic. Light is a valid variant that the set omits, so measuring it must
+    // name the variant and the loaded set instead of substituting another face.
+    const text = gooey.text;
+    const text_system = gpa.create(text.TextSystem) catch |err| {
+        std.debug.panic("setup: TextSystem allocation failed: {s}", .{@errorName(err)});
+    };
+    text_system.initInPlace(gpa, 1.0, io, &text.FontLimits.standard) catch |err| {
+        std.debug.panic("setup: TextSystem.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    text_system.loadSystemFont(.sans_serif, 16) catch |err| {
+        std.debug.panic("setup: loadSystemFont failed: {s}", .{@errorName(err)});
+    };
+    _ = text_system.measureText("Total", .light) catch |err| {
+        std.debug.panic("measureText failed instead of panicking: {s}", .{@errorName(err)});
+    };
 }
 
 /// A `Builder` over a real layout engine, an empty scene, and a dispatch tree.

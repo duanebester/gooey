@@ -12,6 +12,8 @@ const Metrics = types.Metrics;
 const GlyphMetrics = types.GlyphMetrics;
 const RasterizedGlyph = types.RasterizedGlyph;
 const SystemFont = types.SystemFont;
+const FontVariant = types.FontVariant;
+const FontWeight = types.FontWeight;
 const FontFace = font_face_mod.FontFace;
 
 /// Global FreeType library instance (initialized once)
@@ -62,21 +64,28 @@ pub const FreeTypeFace = struct {
 
     const Self = @This();
 
-    /// Load a font by name using Fontconfig
-    pub fn init(name: []const u8, size: f32) !Self {
+    /// Load one variant of a family by name using Fontconfig.
+    ///
+    /// Fallback policy: Fontconfig returns the nearest face it has for the
+    /// requested `FC_WEIGHT` and `FC_SLANT`; nothing is synthesized. A family
+    /// without a bold or italic face renders those variants with its nearest
+    /// real face, and init logs a warning naming the request and the match.
+    pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
         // Use Fontconfig to find the font file
-        var font_path = try findFontPath(name, null) orelse {
-            std.log.err("Font not found: {s}", .{name});
+        var font_path = try findFontPath(name, null, variant) orelse {
+            std.log.err("Font not found: {s} ({s})", .{ name, @tagName(variant) });
             return error.FontNotFound;
         };
 
-        return initFromPath(library, font_path.pathSlice(), font_path.path_len, size);
+        const self = try initFromPath(library, &font_path, size);
+        warnMissingStyle(self.ft_face, name, variant);
+        return self;
     }
 
-    /// Load a system font
-    pub fn initSystem(style: SystemFont, size: f32) !Self {
+    /// Load one variant of a system family, with the same policy as `init`.
+    pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
         // Map system font style to Fontconfig pattern
@@ -92,24 +101,29 @@ pub const FreeTypeFace = struct {
             else => null,
         };
 
-        var font_path = try findFontPath(family, spacing) orelse {
-            std.log.err("System font not found: {s}", .{family});
+        var font_path = try findFontPath(family, spacing, variant) orelse {
+            std.log.err("System font not found: {s} ({s})", .{ family, @tagName(variant) });
             return error.FontNotFound;
         };
 
-        return initFromPath(library, font_path.pathSlice(), font_path.path_len, size);
+        const self = try initFromPath(library, &font_path, size);
+        warnMissingStyle(self.ft_face, family, variant);
+        return self;
     }
 
     const FontPathResult = struct {
         path_buf: [512]u8,
         path_len: usize,
+        /// Face index within the file: a collection member, or a named
+        /// instance of a variable font (Fontconfig encodes both in `FC_INDEX`).
+        face_index: c_int,
 
         pub fn pathSlice(self: *const FontPathResult) [:0]const u8 {
             return self.path_buf[0..self.path_len :0];
         }
     };
 
-    fn findFontPath(family: []const u8, spacing: ?c_int) !?FontPathResult {
+    fn findFontPath(family: []const u8, spacing: ?c_int, variant: FontVariant) !?FontPathResult {
         // Create Fontconfig pattern
         const pattern = ft.FcPatternCreate() orelse return error.FontconfigError;
         defer ft.FcPatternDestroy(pattern);
@@ -129,6 +143,11 @@ pub const FreeTypeFace = struct {
         if (spacing) |sp| {
             _ = ft.FcPatternAddInteger(pattern, ft.FC_SPACING, sp);
         }
+
+        const weight_requested = fontconfigWeight(variant.weight());
+        const slant_requested = if (variant.isItalic()) ft.FC_SLANT_ITALIC else ft.FC_SLANT_ROMAN;
+        _ = ft.FcPatternAddInteger(pattern, ft.FC_WEIGHT, weight_requested);
+        _ = ft.FcPatternAddInteger(pattern, ft.FC_SLANT, slant_requested);
 
         // Apply default substitutions
         _ = ft.FcConfigSubstitute(null, pattern, .FcMatchPattern);
@@ -153,6 +172,12 @@ pub const FreeTypeFace = struct {
             return null;
         }
 
+        var face_index: c_int = 0;
+        if (ft.FcPatternGetInteger(matched, ft.FC_INDEX, 0, &face_index) != .FcResultMatch) {
+            face_index = 0;
+        }
+        std.debug.assert(face_index >= 0);
+
         // Calculate length
         var len: usize = 0;
         while (file_path.?[len] != 0) : (len += 1) {}
@@ -163,6 +188,7 @@ pub const FreeTypeFace = struct {
         var font_result = FontPathResult{
             .path_buf = undefined,
             .path_len = len,
+            .face_index = face_index,
         };
         @memcpy(font_result.path_buf[0..len], file_path.?[0..len]);
         font_result.path_buf[len] = 0;
@@ -170,9 +196,48 @@ pub const FreeTypeFace = struct {
         return font_result;
     }
 
-    fn initFromPath(library: ft.FT_Library, path: [:0]const u8, path_len: usize, size: f32) !Self {
+    /// Fontconfig's weight scale for a variant weight (`fontconfig.h`).
+    fn fontconfigWeight(weight: FontWeight) c_int {
+        return switch (weight) {
+            .thin => ft.FC_WEIGHT_THIN,
+            .light => ft.FC_WEIGHT_LIGHT,
+            .regular => ft.FC_WEIGHT_REGULAR,
+            .medium => ft.FC_WEIGHT_MEDIUM,
+            .semibold => ft.FC_WEIGHT_SEMIBOLD,
+            .bold => ft.FC_WEIGHT_BOLD,
+            .black => ft.FC_WEIGHT_BLACK,
+        };
+    }
+
+    /// Log when the nearest face lacks the requested bold or italic style, so
+    /// a family without one does not fall back silently. Reads the loaded
+    /// face's own style flags: Fontconfig's match pattern cannot be trusted
+    /// here, because its synthetic-style rules rewrite the reported weight and
+    /// slant of a regular face to the requested ones.
+    fn warnMissingStyle(ft_face: ft.FT_Face, family: []const u8, variant: FontVariant) void {
+        const style_flags = ft_face.style_flags;
+        const is_bold = (style_flags & ft.FT_STYLE_FLAG_BOLD) != 0;
+        const is_italic = (style_flags & ft.FT_STYLE_FLAG_ITALIC) != 0;
+        const bold_requested = @backingInt(variant.weight()) >= @backingInt(FontWeight.semibold);
+        if (bold_requested and !is_bold) {
+            std.log.warn("font '{s}' has no bold face for '{s}'; using the nearest weight", .{
+                family,
+                @tagName(variant),
+            });
+        }
+        if (variant.isItalic() and !is_italic) {
+            std.log.warn("font '{s}' has no italic face for '{s}'; using an upright face", .{
+                family,
+                @tagName(variant),
+            });
+        }
+    }
+
+    fn initFromPath(library: ft.FT_Library, font_path: *const FontPathResult, size: f32) !Self {
+        const path = font_path.pathSlice();
+        const path_len = font_path.path_len;
         var ft_face: ft.FT_Face = undefined;
-        const err = ft.FT_New_Face(library, path.ptr, 0, &ft_face);
+        const err = ft.FT_New_Face(library, path.ptr, font_path.face_index, &ft_face);
         if (err != 0) {
             std.log.err("FreeType face load error: {s}", .{ft.ftErrorString(err)});
             return error.FontLoadFailed;
@@ -566,7 +631,7 @@ fn renderGlyphInternal(
 // =============================================================================
 
 test "load system font" {
-    var face = try FreeTypeFace.initSystem(.monospace, 14.0);
+    var face = try FreeTypeFace.initSystem(.monospace, 14.0, .regular);
     defer face.deinit();
 
     try std.testing.expect(face.metrics.ascender > 0);

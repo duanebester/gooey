@@ -50,6 +50,7 @@ const GradientUniforms = @import("../scene/gradient_uniforms.zig").GradientUnifo
 const Polyline = @import("../scene/polyline.zig").Polyline;
 const PointCloud = @import("../scene/point_cloud.zig").PointCloud;
 const ColoredPointCloud = @import("../scene/colored_point_cloud.zig").ColoredPointCloud;
+const FontVariant = @import("../text/types.zig").FontVariant;
 
 // =============================================================================
 // Rendering Limits (absolute framework ceilings)
@@ -399,6 +400,85 @@ pub const MAX_SHAPED_RUN_CACHE: u32 = 256;
 
 /// Maximum text length for single-line inputs
 pub const MAX_TEXT_LEN: u32 = 512;
+
+/// The font faces a text system loads during initialization (CLAUDE.md §2): one
+/// face per entry in `variants`, so `variants.len` is the face count. Nothing is
+/// loaded on first use. Text that requests a variant outside the set panics
+/// with the variant's name, the loaded set, and this type's name.
+///
+/// Shaped like `SceneLimits` (named profiles, `check`, `assertValid`,
+/// `validate`) so it moves into the planned `ResourceLimits.text` unchanged.
+/// Until then the app selects it with `gooey.App(..., .{ .font_limits = ... })`,
+/// which forwards it through `FontConfig.limits` to every text system it creates.
+///
+/// Gooey-owned cost per face, allocated at init: FreeType 16,976 B (mostly a
+/// 4,096-entry advance cache), web 1,460 B, CoreText 56 B. The platform library
+/// keeps its own state per open face; FreeType, HarfBuzz, and Fontconfig used
+/// 24-38 KiB of heap per DejaVu face at init, measured with `mallinfo2`.
+/// Shaped-run, width, and glyph caches are shared by all faces, not per face.
+pub const FontLimits = struct {
+    /// Distinct variants; must include `.regular`, which supplies line metrics.
+    variants: []const FontVariant,
+
+    /// The weights Gooey's components and examples use (regular, medium,
+    /// semibold, bold) plus italic and bold italic: six faces.
+    pub const standard: FontLimits = .{
+        .variants = &.{ .regular, .medium, .semibold, .bold, .italic, .bold_italic },
+    };
+
+    /// Regular only, for apps whose text never sets a weight or italic.
+    pub const minimal: FontLimits = .{ .variants = &.{.regular} };
+
+    /// Every weight, upright and italic: the framework ceiling.
+    pub const ceiling: FontLimits = .{ .variants = &all_variants };
+
+    const all_variants: [FontVariant.count]FontVariant = blk: {
+        var result: [FontVariant.count]FontVariant = undefined;
+        for (&result, 0..) |*variant, index| variant.* = @fromBackingInt(@intCast(index));
+        break :blk result;
+    };
+
+    pub const Rule = enum { empty, above_ceiling, duplicate, missing_regular };
+
+    /// First violated rule, or null when the set is valid.
+    pub fn check(self: *const FontLimits) ?Rule {
+        if (self.variants.len == 0) return .empty;
+        if (self.variants.len > FontVariant.count) return .above_ceiling;
+        var seen: [FontVariant.count]bool = @splat(false);
+        for (self.variants) |variant| {
+            if (seen[@backingInt(variant)]) return .duplicate;
+            seen[@backingInt(variant)] = true;
+        }
+        if (!seen[@backingInt(FontVariant.regular)]) return .missing_regular;
+        assert(self.variants.len <= FontVariant.count);
+        return null;
+    }
+
+    /// Runtime counterpart of `validate`. An invalid set is a programmer error.
+    pub fn assertValid(self: *const FontLimits) void {
+        if (self.check()) |rule| {
+            std.debug.panic("invalid FontLimits.variants ({d} entries): rule {s}", .{
+                self.variants.len,
+                @tagName(rule),
+            });
+        }
+    }
+
+    /// Reject an invalid set at compile time, naming the broken rule.
+    pub fn validate(comptime self: FontLimits) void {
+        comptime {
+            if (self.check()) |rule| {
+                @compileError("invalid FontLimits.variants: rule " ++ @tagName(rule));
+            }
+        }
+    }
+
+    comptime {
+        assert(standard.check() == null);
+        assert(minimal.check() == null);
+        assert(ceiling.check() == null);
+    }
+};
 
 // =============================================================================
 // Accessibility Limits

@@ -27,6 +27,7 @@ const interface_mod = @import("../platform/interface.zig");
 
 // Core imports
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
+const FontLimits = @import("../core/limits.zig").FontLimits;
 const geometry_mod = @import("../core/geometry.zig");
 const input_mod = @import("../input/mod.zig");
 const handler_mod = @import("../context/handler.zig");
@@ -112,6 +113,7 @@ pub fn runCx(
     const win_ctx = try WinCtx.init(allocator, window, state, render, .{
         .font_name = config.font,
         .font_size = config.font_size,
+        .limits = config.font_limits,
     }, &config.limits, app_ptr, io);
     defer if (owned) win_ctx.deinit();
 
@@ -270,6 +272,13 @@ pub fn CxConfig(comptime State: type) type {
 
         /// Default font size in points.
         font_size: f32 = 16.0,
+
+        /// Font faces loaded during initialization (CLAUDE.md §2), one per
+        /// (weight, italic) variant; text requesting any other variant panics.
+        /// `gooey.App` validates it at comptime and also accepts a profile name:
+        /// `.font_limits = .ceiling`. The default `standard` profile loads
+        /// regular, medium, semibold, bold, italic, and bold italic.
+        font_limits: FontLimits = FontLimits.standard,
 
         /// Custom shaders (cross-platform - MSL for macOS, WGSL for web)
         custom_shaders: []const shader_mod.CustomShader = &.{},

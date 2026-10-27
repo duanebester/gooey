@@ -25,6 +25,7 @@ const ShapedGlyph = types.ShapedGlyph;
 const Hsla = scene_mod.Hsla;
 const types = @import("types.zig");
 const Metrics = types.Metrics;
+const FontVariant = types.FontVariant;
 const TextDecoration = types.TextDecoration;
 const RenderStats = @import("../debug/render_stats.zig").RenderStats;
 
@@ -46,6 +47,10 @@ comptime {
 }
 
 pub const RenderTextOptions = struct {
+    /// Face to shape and rasterize with. Must be in the text system's
+    /// `FontLimits.variants`; the default is the regular face, which every
+    /// set contains.
+    variant: FontVariant = .regular,
     clipped: bool = true,
     decoration: TextDecoration = .{},
     /// Optional separate color for decorations (uses text color if null).
@@ -106,7 +111,7 @@ pub fn renderText(
     // Stack buffer for warm-path glyph copies — avoids GPA alloc/free (~5,000 ns).
     // Total stack footprint verified at comptime above (see WASM stack budget check).
     var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
-    var shaped = try text_system.shapeTextInto(text, options.stats, &glyph_buf);
+    var shaped = try text_system.shapeTextInto(text, options.variant, options.stats, &glyph_buf);
     defer if (shaped.owned) shaped.deinit(text_system.allocator);
 
     const scaled_width = shaped.width * size_scale;
@@ -137,6 +142,7 @@ pub fn renderText(
 
     try text_system.resolveGlyphBatch(
         shaped.glyphs,
+        options.variant,
         font_size,
         subpixel_offsets_x[0..glyph_count],
         cached_results[0..glyph_count],
@@ -154,10 +160,10 @@ pub fn renderText(
     );
 
     // Render decorations (underline, strikethrough) if requested.
+    // The variant's own metrics, so a bold underline uses the bold face's thickness.
     if (options.decoration.hasAny()) {
-        if (text_system.getMetrics()) |metrics| {
-            try renderDecorations(scene, metrics, x, baseline_y, scaled_width, color, options);
-        }
+        const metrics = text_system.faceFor(options.variant).metrics;
+        try renderDecorations(scene, metrics, x, baseline_y, scaled_width, color, options);
     }
 
     return scaled_width;

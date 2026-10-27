@@ -574,6 +574,10 @@ pub const FC_INDEX = "index";
 pub const FC_SCALABLE = "scalable";
 pub const FC_FONTFORMAT = "fontformat";
 
+// FT_FaceRec.style_flags bits
+pub const FT_STYLE_FLAG_ITALIC: FT_Long = 1 << 0;
+pub const FT_STYLE_FLAG_BOLD: FT_Long = 1 << 1;
+
 // Fontconfig weight values
 pub const FC_WEIGHT_THIN: c_int = 0;
 pub const FC_WEIGHT_EXTRALIGHT: c_int = 40;

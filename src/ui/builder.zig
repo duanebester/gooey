@@ -61,6 +61,7 @@ const Hsla = scene_mod.Hsla;
 const styles = @import("styles.zig");
 const primitives = @import("primitives.zig");
 const theme_mod = @import("theme.zig");
+const FontVariant = @import("../text/types.zig").FontVariant;
 pub const Theme = theme_mod.Theme;
 
 // The builder is the create-on-touch site for scroll regions and text
@@ -1387,8 +1388,12 @@ pub const Builder = struct {
     // =========================================================================
 
     fn renderText(self: *Self, txt: Text) void {
+        // `font_id` names the face for both measurement and rendering, so the
+        // laid-out width is the width of the glyphs that are drawn.
+        const variant = FontVariant.init(txt.style.weight, txt.style.italic);
         self.layout.text(txt.content, .{
             .color = txt.style.color orelse self.theme().text,
+            .font_id = variant.fontId(),
             .font_size = txt.style.size,
             .wrap_mode = switch (txt.style.wrap) {
                 .none => .none,
