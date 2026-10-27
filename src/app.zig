@@ -40,8 +40,6 @@ const input_mod = @import("input/mod.zig");
 const shader_mod = @import("core/shader.zig");
 const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 const FontLimits = @import("core/limits.zig").FontLimits;
-const SceneLimits = @import("core/limits.zig").SceneLimits;
-const WindowLimits = @import("core/limits.zig").WindowLimits;
 const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
 
@@ -593,11 +591,48 @@ fn resolveLimits(comptime config: anytype) ResourceLimits {
         else if (@TypeOf(config.limits) == @TypeOf(.enum_literal))
             @field(ResourceLimits, @tagName(config.limits))
         else
-            .{
-                .scene = copyFields(SceneLimits, "scene", config.limits.scene),
-                .window = copyFields(WindowLimits, "window", config.limits.window),
-            };
+            copyBudgets(config.limits);
         ResourceLimits.validate(resolved);
+        return resolved;
+    }
+}
+
+/// Copy an explicit `.limits = .{ ... }` literal into `ResourceLimits` budget by
+/// budget. Every budget is required and unknown names are rejected, each with
+/// an error naming the budget; without these checks a missing budget surfaces
+/// as a generic "no field named" error on the anonymous config literal.
+///
+/// Zig cannot test compile errors in-process. Checked by hand on
+/// `examples/counter.zig` with `wasm-counter` (and `run-counter` for the first):
+/// `.{ .scene = ... }` names `.window`, `.{ .window = ... }` names `.scene`, an
+/// extra `.windows` lists the valid budgets, a missing field inside a budget
+/// names that field, and a non-struct value is rejected. Complete literals, a
+/// `ResourceLimits` value, and a profile name still compile.
+fn copyBudgets(comptime source: anytype) ResourceLimits {
+    comptime {
+        const Source = @TypeOf(source);
+        if (Source == ResourceLimits) return source;
+        if (@typeInfo(Source) != .@"struct") @compileError(
+            "gooey.App .limits must be a profile such as `.standard` or a ResourceLimits " ++
+                "literal, got " ++ @typeName(Source),
+        );
+        for (@typeInfo(Source).@"struct".field_names) |name| {
+            if (@hasField(ResourceLimits, name)) continue;
+            @compileError("ResourceLimits has no budget `" ++ name ++ "`; valid budgets: " ++
+                configFieldList(ResourceLimits));
+        }
+        var resolved: ResourceLimits = undefined;
+        for (@typeInfo(ResourceLimits).@"struct".field_names) |name| {
+            if (!@hasField(Source, name)) {
+                @compileError("ResourceLimits." ++ name ++ " is missing; pass ." ++ name ++
+                    " or a profile such as .limits = .standard");
+            }
+            @field(resolved, name) = copyFields(
+                @FieldType(ResourceLimits, name),
+                name,
+                @field(source, name),
+            );
+        }
         return resolved;
     }
 }
