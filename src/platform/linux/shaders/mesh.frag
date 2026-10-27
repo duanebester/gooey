@@ -76,15 +76,19 @@ void main() {
         }
     }
     if (circle != 0u) {
-        // From a 6.7 device pixel radius up this is the historical (and Metal)
-        // falloff over the outer 15% of the radius. Smaller points get a band
-        // of one device pixel that moves outward to straddle the edge, so a
-        // radius-1 dot keeps its area instead of shrinking by half a pixel.
+        // Shared point falloff (cpu/mesh.zig `pointFalloff`, Metal's point
+        // shaders). From a 6.7 device pixel radius up it is the historical
+        // falloff over the outer 15% of the radius, computed the same way.
+        // Smaller points get a one-pixel band that moves outward to straddle
+        // the edge, so a sub-pixel dot keeps about its area instead of vanishing.
         float radius_px = 1.0 / max(uv_pixel, 1e-6);
-        float distance_px = length(uv) * radius_px;
-        float band_px = max(0.15 * radius_px, 1.0);
-        float end_px = radius_px + 0.5 * max(1.0 - 0.15 * radius_px, 0.0);
-        result.a *= 1.0 - smoothstep(end_px - band_px, end_px, distance_px);
+        float uv_distance = length(uv);
+        if (radius_px >= 1.0 / 0.15) {
+            result.a *= 1.0 - smoothstep(0.85, 1.0, uv_distance);
+        } else {
+            float end_px = radius_px + 0.5 * (1.0 - 0.15 * radius_px);
+            result.a *= 1.0 - smoothstep(end_px - 1.0, end_px, uv_distance * radius_px);
+        }
     } else {
         float coverage = edge_coverage(edge_pixel);
         if (coverage <= 0.0) { discard; }

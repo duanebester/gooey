@@ -74,8 +74,10 @@ pub const point_cloud_shader_source =
     \\    return float4(rgb + m, a);
     \\}
     \\
-    \\// One instance per point. Multiplying by a +-1 corner is exact, so even a
-    \\// fused multiply-add yields `position +- radius` correctly rounded.
+    \\// One instance per point. The quad reaches one logical pixel past the
+    \\// radius so the fragment falloff can straddle the circle's edge; uv stays
+    \\// 1.0 at the radius. Multiplying by a +-1 corner is exact, so even a fused
+    \\// multiply-add yields `position +- extent` correctly rounded.
     \\vertex VertexOut point_cloud_vertex(
     \\    uint vid [[vertex_id]],
     \\    uint point [[instance_id]],
@@ -85,7 +87,8 @@ pub const point_cloud_shader_source =
     \\) {
     \\    PointCloudUniforms u = *uniforms;
     \\    float2 corner = quad_corners[vid];
-    \\    float2 pos = positions[point] + corner * u.radius;
+    \\    float extent = u.radius + 1.0;
+    \\    float2 pos = positions[point] + corner * extent;
     \\
     \\    // Convert to NDC
     \\    float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
@@ -95,11 +98,14 @@ pub const point_cloud_shader_source =
     \\    out.color = hsla_to_rgba(u.color);
     \\    out.clip_bounds = u.clip_bounds;
     \\    out.screen_pos = pos;
-    \\    out.uv = corner;
+    \\    out.uv = corner * (extent / u.radius);
     \\    return out;
     \\}
     \\
     \\fragment float4 point_cloud_fragment(VertexOut in [[stage_in]]) {
+    \\    // Derivatives first: they are undefined after a non-uniform discard.
+    \\    float uv_pixel = length(float2(dfdx(in.uv.x), dfdy(in.uv.x)));
+    \\
     \\    // Clip test
     \\    float2 clip_min = in.clip_bounds.xy;
     \\    float2 clip_max = clip_min + in.clip_bounds.zw;
@@ -108,11 +114,20 @@ pub const point_cloud_shader_source =
     \\        discard_fragment();
     \\    }
     \\
-    \\    // SDF circle: distance from center
+    \\    // Shared point falloff (cpu/mesh.zig `pointFalloff`, Vulkan mesh.frag).
+    \\    // From a 6.7 device pixel radius up it is the historical falloff over
+    \\    // the outer 15% of the radius. Smaller points get a one-pixel band that
+    \\    // moves outward to straddle the edge, so a sub-pixel dot keeps about
+    \\    // its area. MSAA does not change it: the fragment runs once per pixel.
+    \\    float radius_px = 1.0 / max(uv_pixel, 1e-6);
     \\    float dist = length(in.uv);
-    \\
-    \\    // Smooth anti-aliased edge
-    \\    float alpha = 1.0 - smoothstep(0.85, 1.0, dist);
+    \\    float alpha;
+    \\    if (radius_px >= 1.0 / 0.15) {
+    \\        alpha = 1.0 - smoothstep(0.85, 1.0, dist);
+    \\    } else {
+    \\        float end_px = radius_px + 0.5 * (1.0 - 0.15 * radius_px);
+    \\        alpha = 1.0 - smoothstep(end_px - 1.0, end_px, dist * radius_px);
+    \\    }
     \\
     \\    if (alpha < 0.001) discard_fragment();
     \\
