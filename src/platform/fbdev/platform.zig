@@ -148,10 +148,19 @@ pub const FbdevPlatform = struct {
             for (devices, pollfds[0..devices.len]) |device, *pollfd| {
                 pollfd.* = .{ .fd = device.fd, .events = posix.POLL.IN, .revents = 0 };
             }
-            _ = posix.poll(pollfds[0..devices.len], self.pollTimeout(window)) catch 0;
+            // `poll` fails only on a bad descriptor array or a lack of kernel
+            // memory; neither leaves a way to wait for input, so stop.
+            _ = posix.poll(pollfds[0..devices.len], self.pollTimeout(window)) catch |err| {
+                std.log.err("fbdev: poll on {d} input device(s) failed: {t}", .{
+                    devices.len,
+                    err,
+                });
+                break;
+            };
             self.dispatchInput(pollfds[0..devices.len]);
 
             if (window.isClosed()) continue;
+            window.fireRenderDeadline(nowMilliseconds());
             if (window.needs_redraw and self.frameDue()) {
                 window.renderFrame();
                 self.last_frame_ns = nowNanoseconds();
@@ -177,12 +186,21 @@ pub const FbdevPlatform = struct {
 
     fn pollTimeout(self: *const Self, window: *const FbdevWindow) i32 {
         assert(!window.isClosed());
-        if (!window.needs_redraw) return idle_poll_timeout_ms;
+        assert(idle_poll_timeout_ms > 0);
+        if (!window.needs_redraw) {
+            // Wake no later than an armed timed redraw.
+            const deadline_ms = window.render_deadline_ms orelse return idle_poll_timeout_ms;
+            const wait_ms = deadline_ms - nowMilliseconds();
+            return @intCast(std.math.clamp(wait_ms, 0, idle_poll_timeout_ms));
+        }
         const last = self.last_frame_ns orelse return 0;
         const elapsed = nowNanoseconds() -| last;
         if (elapsed >= frame_period_ns_min) return 0;
         const remaining_ns = frame_period_ns_min - elapsed;
-        return @intCast(std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch unreachable);
+        // Ceiling division; `remaining_ns < frame_period_ns_min` keeps it small.
+        const remaining_ms = @divFloor(remaining_ns + std.time.ns_per_ms - 1, std.time.ns_per_ms);
+        assert(remaining_ms <= @divFloor(frame_period_ns_min, std.time.ns_per_ms) + 1);
+        return @intCast(remaining_ms);
     }
 
     fn frameDue(self: *const Self) bool {
@@ -190,15 +208,33 @@ pub const FbdevPlatform = struct {
         return nowNanoseconds() -| last >= frame_period_ns_min;
     }
 
+    /// Deliver what each readable device queued. A device that reports an
+    /// error or hangup, or fails to read, is closed and forgotten so the loop
+    /// does not wake for it again. Walks from the last device because removal
+    /// moves the last device into the removed slot.
     fn dispatchInput(self: *Self, pollfds: []const posix.pollfd) void {
         assert(pollfds.len == self.devices.count);
+        assert(pollfds.len <= evdev.device_count_max);
+        const lost_mask = posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL;
         var raw_events: [evdev.raw_batch_max]evdev.RawEvent = undefined;
-        for (self.devices.slice(), pollfds) |*device, pollfd| {
-            if (pollfd.revents & posix.POLL.IN == 0) continue;
-            for (evdev.readEvents(device, &raw_events)) |raw| {
-                var batch = evdev.Batch{};
-                self.translator.feed(device, raw, &batch);
-                for (batch.slice()) |event| self.deliver(event);
+        var index: u32 = @intCast(pollfds.len);
+        while (index > 0) {
+            index -= 1;
+            const device = &self.devices.devices[index];
+            const revents = pollfds[index].revents;
+            var lost = revents & lost_mask != 0;
+            if (!lost and revents & posix.POLL.IN != 0) {
+                if (evdev.readEvents(device, &raw_events)) |raws| {
+                    for (raws) |raw| {
+                        var batch = evdev.Batch{};
+                        self.translator.feed(device, raw, &batch);
+                        for (batch.slice()) |event| self.deliver(event);
+                    }
+                } else |_| lost = true;
+            }
+            if (lost) {
+                std.log.warn("fbdev: input device fd {d} lost; closing it", .{device.fd});
+                self.devices.remove(index);
             }
         }
     }
@@ -254,10 +290,27 @@ pub const FbdevPlatform = struct {
         return self.window_registry.count();
     }
 
+    /// Frames render on the main thread inside `run`, so a main-thread
+    /// caller already excludes every frame; there is no lock.
+    pub fn lockRenderThreads(self: *Self) void {
+        assert(self.window_registry.count() <= 1);
+    }
+
+    pub fn unlockRenderThreads(self: *Self) void {
+        assert(self.window_registry.count() <= 1);
+    }
+
     pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
         self.loop_turn_callback = callback;
     }
 };
+
+/// Milliseconds on the same clock, for timed-redraw deadlines.
+pub fn nowMilliseconds() i64 {
+    const ms = @divFloor(nowNanoseconds(), std.time.ns_per_ms);
+    assert(ms <= std.math.maxInt(i64));
+    return @intCast(ms);
+}
 
 fn nowNanoseconds() u64 {
     // Same process-lifetime single-threaded `Io` the Wayland render path

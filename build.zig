@@ -1380,6 +1380,13 @@ fn addOverflowChecks(
     add_geometry_overflow_checks(b, exe, test_step);
 
     if (target.result.os.tag == .linux) {
+        const run_cpu_atlas = b.addRunArtifact(exe);
+        run_cpu_atlas.addArg("cpu-atlas");
+        run_cpu_atlas.addCheck(.{ .expect_stderr_match = "CPU renderer: 1 glyph instance(s) " ++
+            "in frame 1 but no glyph atlas is bound;" });
+        run_cpu_atlas.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run_cpu_atlas.step);
+
         const run_vulkan = b.addRunArtifact(exe);
         run_vulkan.addArg("vulkan-instances");
         run_vulkan.addCheck(.{ .expect_stderr_match = "Vulkan instance buffer 'primitives' " ++

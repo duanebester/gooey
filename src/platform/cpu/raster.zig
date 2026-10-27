@@ -169,7 +169,8 @@ pub fn unitToByte(value: f32) u8 {
     assert(!std.math.isNan(value));
     const clamped = std.math.clamp(value, 0.0, 1.0);
     const scaled = @round(clamped * 255.0);
-    assert(scaled >= 0.0 and scaled <= 255.0);
+    assert(scaled >= 0.0);
+    assert(scaled <= 255.0);
     return @intFromFloat(scaled);
 }
 
@@ -185,7 +186,9 @@ pub fn premulFromStraight(color: Color) Premul {
     };
     // Rounding is monotonic and each channel is at most 1, so no channel can
     // round above alpha. The blend relies on this to stay within a byte.
-    assert(result.r <= result.a and result.g <= result.a and result.b <= result.a);
+    assert(result.r <= result.a);
+    assert(result.g <= result.a);
+    assert(result.b <= result.a);
     return result;
 }
 
@@ -231,7 +234,9 @@ pub fn blendPixel(target_pixel: u32, source: Premul) u32 {
     const b = @as(u32, source.b) + mul255(target_pixel & 0xFF, inverse);
     // `source.c <= source.a` and `mul255(x, inverse) <= inverse`, so each sum
     // is at most `a + (255 - a)`.
-    assert(r <= 255 and g <= 255 and b <= 255);
+    assert(r <= 255);
+    assert(g <= 255);
+    assert(b <= 255);
     return 0xFF00_0000 | (r << 16) | (g << 8) | b;
 }
 
@@ -269,7 +274,7 @@ pub fn clear(target: Target, color: Color) void {
 // =============================================================================
 
 /// Clamp an integral float to `[0, limit]` and convert it.
-fn clampIndex(value: f32, limit: u32) u32 {
+pub fn clampIndex(value: f32, limit: u32) u32 {
     assert(!std.math.isNan(value));
     assert(@floor(value) == value or std.math.isInf(value));
     if (value <= 0.0) return 0;
@@ -352,8 +357,10 @@ pub fn roundedRectSdf(x: f32, y: f32, half_width: f32, half_height: f32, radius:
 
 /// The radius of the corner whose quadrant contains the point.
 pub fn pickCornerRadius(x: f32, y: f32, radii: Radii) f32 {
-    assert(radii.top_left >= 0 and radii.top_right >= 0);
-    assert(radii.bottom_left >= 0 and radii.bottom_right >= 0);
+    assert(radii.top_left >= 0);
+    assert(radii.top_right >= 0);
+    assert(radii.bottom_left >= 0);
+    assert(radii.bottom_right >= 0);
     if (x < 0.0) {
         if (y < 0.0) return radii.top_left;
         return radii.bottom_left;
@@ -365,13 +372,16 @@ pub fn pickCornerRadius(x: f32, y: f32, radii: Radii) f32 {
 fn coverageFromDistance(distance: f32) f32 {
     assert(!std.math.isNan(distance));
     const coverage = 1.0 - smoothstep(-0.5, 0.5, distance);
-    assert(coverage >= 0.0 and coverage <= 1.0);
+    assert(coverage >= 0.0);
+    assert(coverage <= 1.0);
     return coverage;
 }
 
 fn mixColor(a: Color, b: Color, t: f32) Color {
-    assert(t >= 0.0 and t <= 1.0);
-    assert(!std.math.isNan(a.a) and !std.math.isNan(b.a));
+    assert(t >= 0.0);
+    assert(t <= 1.0);
+    assert(!std.math.isNan(a.a));
+    assert(!std.math.isNan(b.a));
     return .{
         .r = a.r + (b.r - a.r) * t,
         .g = a.g + (b.g - a.g) * t,
@@ -415,7 +425,8 @@ const QuadGeometry = struct {
     corner_columns: Span,
 
     fn init(shape: *const QuadShape, columns: Span) QuadGeometry {
-        assert(shape.bounds.width >= 0 and shape.bounds.height >= 0);
+        assert(shape.bounds.width >= 0);
+        assert(shape.bounds.height >= 0);
         assert(!columns.isEmpty());
         const bounds = shape.bounds;
         const borders = shape.borders;
@@ -463,8 +474,10 @@ const QuadGeometry = struct {
 
     /// Shade one pixel center exactly as `quad.frag` does.
     fn shade(self: *const QuadGeometry, pixel_x: f32, pixel_y: f32) Premul {
-        assert(self.half_width >= 0 and self.half_height >= 0);
-        assert(self.inner_half_width >= 0 and self.inner_half_height >= 0);
+        assert(self.half_width >= 0);
+        assert(self.half_height >= 0);
+        assert(self.inner_half_width >= 0);
+        assert(self.inner_half_height >= 0);
         const x = pixel_x - self.center_x;
         const y = pixel_y - self.center_y;
         const radius = pickCornerRadius(x, y, self.radii);
@@ -493,8 +506,10 @@ const QuadGeometry = struct {
 
 /// Inner radii shrink by the wider of the two borders meeting at a corner.
 fn innerRadii(radii: Radii, borders: Borders) Radii {
-    assert(borders.top >= 0 and borders.bottom >= 0);
-    assert(borders.left >= 0 and borders.right >= 0);
+    assert(borders.top >= 0);
+    assert(borders.bottom >= 0);
+    assert(borders.left >= 0);
+    assert(borders.right >= 0);
     return .{
         .top_left = @max(0.0, radii.top_left - @max(borders.top, borders.left)),
         .top_right = @max(0.0, radii.top_right - @max(borders.top, borders.right)),
@@ -515,8 +530,10 @@ fn shadeQuadRange(row: []u32, columns: Span, pixel_y: f32, quad: *const QuadGeom
 
 /// Draw a rounded, optionally bordered quad.
 pub fn drawQuad(target: Target, shape: *const QuadShape) void {
-    assert(shape.bounds.width >= 0 and shape.bounds.height >= 0);
-    assert(shape.clip.width >= 0 and shape.clip.height >= 0);
+    assert(shape.bounds.width >= 0);
+    assert(shape.bounds.height >= 0);
+    assert(shape.clip.width >= 0);
+    assert(shape.clip.height >= 0);
     if (target.width == 0 or target.height == 0) return;
     const bounds = shape.bounds;
     const rows = touchedSpan(bounds.y, bounds.y + bounds.height, target.height)
@@ -557,8 +574,13 @@ pub fn drawQuad(target: Target, shape: *const QuadShape) void {
 /// center plus *twice* the offset while bounding the geometry by one offset
 /// (`local = unit * size - size / 2 - offset`). The CPU path reproduces that
 /// exactly so a shadow looks the same on every renderer.
-pub fn drawShadow(target: Target, shape: *const ShadowShape) void {
-    assert(shape.content.width >= 0 and shape.content.height >= 0);
+///
+/// `profile` is caller-owned scratch of at least `target.width` colors. Rows
+/// that meet no rounded corner share one per-column color profile, computed
+/// once into it.
+pub fn drawShadow(target: Target, shape: *const ShadowShape, profile: []Premul) void {
+    assert(shape.content.width >= 0);
+    assert(shape.content.height >= 0);
     assert(shape.blur >= 0);
     if (target.width == 0 or target.height == 0) return;
     const content = shape.content;
@@ -569,27 +591,23 @@ pub fn drawShadow(target: Target, shape: *const ShadowShape) void {
     const columns = centerSpanHalfOpen(left, left + content.width + expand * 2.0, target.width);
     if (rows.isEmpty() or columns.isEmpty()) return;
 
+    assert(profile.len >= target.width);
     const falloff = ShadowFalloff.init(shape);
     const base = premulFromStraight(shape.color);
     if (base.a == 0) return;
-    // Straight rows share one per-column color profile. 16 KiB of stack at
-    // the ceiling; wider spans (larger than any presenter's target) shade
-    // every row through the general path instead.
-    var profile_storage: [shadow_profile_columns_max]Premul = undefined;
-    const profile: ?[]const Premul = if (columns.end - columns.start <= shadow_profile_columns_max)
-        falloff.straightRowProfile(profile_storage[0 .. columns.end - columns.start], columns, base)
-    else
-        null;
+    const colors = falloff.straightRowProfile(
+        profile[0 .. columns.end - columns.start],
+        columns,
+        base,
+    );
     const middle = falloff.middleColumns(columns);
     var y = rows.start;
     while (y < rows.end) : (y += 1) {
         const local_y = @as(f32, @floatFromInt(y)) + 0.5 - falloff.center_y;
         const row = target.row(y);
-        if (profile) |colors| {
-            if (falloff.isStraightRow(local_y)) {
-                blendColors(row[columns.start..columns.end], colors);
-                continue;
-            }
+        if (falloff.isStraightRow(local_y)) {
+            blendColors(row[columns.start..columns.end], colors);
+            continue;
         }
         if (middle.isEmpty()) {
             shadeShadowRange(row, columns, local_y, &falloff, base);
@@ -604,14 +622,10 @@ pub fn drawShadow(target: Target, shape: *const ShadowShape) void {
     }
 }
 
-/// Widest shadow, in device pixels, that uses the straight-row profile.
-/// Matches the largest framebuffer dimension any presenter reserves.
-const shadow_profile_columns_max: u32 = 4096;
-
 /// Blend a row of per-pixel source colors, skipping transparent ones.
 fn blendColors(pixels: []u32, colors: []const Premul) void {
     assert(pixels.len == colors.len);
-    assert(pixels.len <= shadow_profile_columns_max);
+    assert(pixels.len <= std.math.maxInt(u32));
     for (pixels, colors) |*pixel, color| {
         if (color.a != 0) pixel.* = blendPixel(pixel.*, color);
     }
@@ -669,7 +683,8 @@ const ShadowFalloff = struct {
         for (storage, columns.start..) |*color, x| {
             const local_x = @as(f32, @floatFromInt(x)) + 0.5 - self.center_x;
             const distance = @abs(local_x) - self.half_width;
-            color.* = premulScale(base, unitToByte(1.0 - smoothstep(self.edge0, self.edge1, distance)));
+            const covered = 1.0 - smoothstep(self.edge0, self.edge1, distance);
+            color.* = premulScale(base, unitToByte(covered));
         }
         return storage;
     }
@@ -752,15 +767,18 @@ fn sampleBilinear(comptime channels: u8, atlas: AtlasView, tx: f32, ty: f32) [ch
 }
 
 fn texel(atlas: AtlasView, x: u32, y: u32, channel: u32) f32 {
-    assert(x < atlas.size and y < atlas.size);
+    assert(x < atlas.size);
+    assert(y < atlas.size);
     assert(channel < atlas.bytes_per_pixel);
     const index = (@as(usize, y) * atlas.size + x) * atlas.bytes_per_pixel + channel;
     return @floatFromInt(atlas.data[index]);
 }
 
 fn lerp(a: f32, b: f32, t: f32) f32 {
-    assert(t >= 0.0 and t <= 1.0);
-    assert(!std.math.isNan(a) and !std.math.isNan(b));
+    assert(t >= 0.0);
+    assert(t <= 1.0);
+    assert(!std.math.isNan(a));
+    assert(!std.math.isNan(b));
     return a + (b - a) * t;
 }
 
@@ -780,7 +798,8 @@ const TexelMapping = struct {
 
     /// Null when the quad covers no pixel center inside the clip.
     fn init(target: Target, rect: *const TexturedRect, atlas: AtlasView) ?TexelMapping {
-        assert(rect.bounds.width >= 0 and rect.bounds.height >= 0);
+        assert(rect.bounds.width >= 0);
+        assert(rect.bounds.height >= 0);
         assert(atlas.size > 0);
         const bounds = rect.bounds;
         if (bounds.width <= 0 or bounds.height <= 0) return null;
@@ -809,7 +828,8 @@ const TexelMapping = struct {
     }
 
     fn alignedOffset(self: *const TexelMapping, atlas_size: u32) ?TexelOffset {
-        assert(!self.rows.isEmpty() and !self.columns.isEmpty());
+        assert(!self.rows.isEmpty());
+        assert(!self.columns.isEmpty());
         assert(atlas_size > 0);
         // UVs are stored as `f32` fractions of the atlas, so allow a sliver of
         // rounding error before declaring the mapping one-to-one.
@@ -825,8 +845,10 @@ const TexelMapping = struct {
         };
         // Every texel read must be inside the atlas; edge clamping is the
         // bilinear path's job.
-        if (self.columns.start + offset.x < 0 or self.columns.end - 1 + offset.x >= atlas_size) return null;
-        if (self.rows.start + offset.y < 0 or self.rows.end - 1 + offset.y >= atlas_size) return null;
+        if (self.columns.start + offset.x < 0) return null;
+        if (self.columns.end - 1 + offset.x >= atlas_size) return null;
+        if (self.rows.start + offset.y < 0) return null;
+        if (self.rows.end - 1 + offset.y >= atlas_size) return null;
         return offset;
     }
 
@@ -839,9 +861,13 @@ const TexelMapping = struct {
         y: u32,
         ty: f32,
     ) [channels]f32 {
-        assert(x >= self.columns.start and x < self.columns.end);
-        assert(y >= self.rows.start and y < self.rows.end);
-        const offset = self.aligned orelse return sampleBilinear(channels, atlas, self.texelX(x), ty);
+        assert(x >= self.columns.start);
+        assert(x < self.columns.end);
+        assert(y >= self.rows.start);
+        assert(y < self.rows.end);
+        const offset = self.aligned orelse {
+            return sampleBilinear(channels, atlas, self.texelX(x), ty);
+        };
         const texel_x: u32 = @intCast(x + offset.x);
         const texel_y: u32 = @intCast(y + offset.y);
         var result: [channels]f32 = undefined;
@@ -895,7 +921,8 @@ pub fn drawSvg(
     stroke: Color,
 ) void {
     assert(atlas.bytes_per_pixel == 4);
-    assert(!std.math.isNan(fill.a) and !std.math.isNan(stroke.a));
+    assert(!std.math.isNan(fill.a));
+    assert(!std.math.isNan(stroke.a));
     const mapping = TexelMapping.init(target, rect, atlas) orelse return;
     var y = mapping.rows.start;
     while (y < mapping.rows.end) : (y += 1) {
@@ -911,8 +938,10 @@ pub fn drawSvg(
 }
 
 fn shadeSvg(fill_sample: f32, stroke_sample: f32, fill: Color, stroke: Color) Premul {
-    assert(fill_sample >= 0.0 and fill_sample <= 1.0);
-    assert(stroke_sample >= 0.0 and stroke_sample <= 1.0);
+    assert(fill_sample >= 0.0);
+    assert(fill_sample <= 1.0);
+    assert(stroke_sample >= 0.0);
+    assert(stroke_sample <= 1.0);
     // The threshold removes filtering bleed between the packed channels.
     const fill_alpha = if (fill_sample > 0.02) fill_sample else 0.0;
     const stroke_alpha = if (stroke_sample > 0.02) stroke_sample else 0.0;
@@ -945,7 +974,8 @@ pub fn drawImage(
     effects: *const ImageEffects,
 ) void {
     assert(atlas.bytes_per_pixel == 4);
-    assert(effects.opacity >= 0.0 and effects.opacity <= 1.0);
+    assert(effects.opacity >= 0.0);
+    assert(effects.opacity <= 1.0);
     const mapping = TexelMapping.init(target, rect, atlas) orelse return;
     const bounds = rect.bounds;
     const half_width = bounds.width * 0.5;
@@ -974,8 +1004,10 @@ pub fn drawImage(
 }
 
 fn shadeImage(sample: [4]f32, effects: *const ImageEffects, corner: f32) Premul {
-    assert(corner >= 0.0 and corner <= 1.0);
-    assert(effects.grayscale >= 0.0 and effects.grayscale <= 1.0);
+    assert(corner >= 0.0);
+    assert(corner <= 1.0);
+    assert(effects.grayscale >= 0.0);
+    assert(effects.grayscale <= 1.0);
     var color = Color{
         .r = sample[0] / 255.0,
         .g = sample[1] / 255.0,
@@ -1006,7 +1038,8 @@ const test_background: u32 = 0xFF00_0000;
 
 fn testTarget(pixels: []u32, width: u32, height: u32) Target {
     assert(pixels.len == @as(usize, width) * height);
-    assert(width > 0 and height > 0);
+    assert(width > 0);
+    assert(height > 0);
     @memset(pixels, test_background);
     return .{ .pixels = pixels, .width = width, .height = height, .stride = width };
 }
@@ -1135,6 +1168,7 @@ test "shadow distance center sits at twice the offset, inside one-offset geometr
     var pixels: [9 * 6]u32 = undefined;
     const target = testTarget(&pixels, 9, 6);
     @memset(&pixels, 0xFFFF_FFFF);
+    var profile: [9]Premul = undefined;
     drawShadow(target, &.{
         .content = .{ .x = 2, .y = 1, .width = 4, .height = 4 },
         .offset_x = 1,
@@ -1142,7 +1176,7 @@ test "shadow distance center sits at twice the offset, inside one-offset geometr
         .blur = 0,
         .radii = .{},
         .color = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
-    });
+    }, &profile);
     try testing.expectEqual(@as(u32, 0xFFFF_FFFF), testPixel(target, 3, 2));
     try testing.expectEqual(@as(u32, 0xFF00_0000), testPixel(target, 4, 2));
     try testing.expectEqual(@as(u32, 0xFF00_0000), testPixel(target, 6, 2));
@@ -1239,6 +1273,7 @@ test "span fast paths match per-pixel shading exactly" {
     const random = prng.random();
     var fast_pixels: [64 * 48]u32 = undefined;
     var slow_pixels: [64 * 48]u32 = undefined;
+    var profile: [64]Premul = undefined;
     var iteration: u32 = 0;
     while (iteration < 300) : (iteration += 1) {
         const fast = testTarget(&fast_pixels, 64, 48);
@@ -1247,7 +1282,7 @@ test "span fast paths match per-pixel shading exactly" {
         drawQuad(fast, &quad);
         drawQuadReference(slow, &quad);
         const shadow = randomShadow(random);
-        drawShadow(fast, &shadow);
+        drawShadow(fast, &shadow, &profile);
         drawShadowReference(slow, &shadow);
         try testing.expectEqualSlices(u32, &slow_pixels, &fast_pixels);
     }
@@ -1281,7 +1316,12 @@ fn randomQuad(random: std.Random) QuadShape {
             .bottom = @floor(randomUnit(random) * 2),
             .left = randomUnit(random) * 5,
         },
-        .background = .{ .r = randomUnit(random), .g = 0.3, .b = 0.6, .a = 0.4 + randomUnit(random) * 0.6 },
+        .background = .{
+            .r = randomUnit(random),
+            .g = 0.3,
+            .b = 0.6,
+            .a = 0.4 + randomUnit(random) * 0.6,
+        },
         .border_color = .{ .r = 0.1, .g = randomUnit(random), .b = 0.2, .a = 1 },
     };
 }
@@ -1291,11 +1331,21 @@ fn randomShadow(random: std.Random) ShadowShape {
     const height = 2 + randomUnit(random) * 20;
     const radius = randomUnit(random) * @min(width, height) * 0.5;
     return .{
-        .content = .{ .x = 8 + randomUnit(random) * 20, .y = 6 + randomUnit(random) * 10, .width = width, .height = height },
+        .content = .{
+            .x = 8 + randomUnit(random) * 20,
+            .y = 6 + randomUnit(random) * 10,
+            .width = width,
+            .height = height,
+        },
         .offset_x = randomUnit(random) * 4 - 2,
         .offset_y = randomUnit(random) * 4,
         .blur = randomUnit(random) * 6,
-        .radii = .{ .top_left = radius, .top_right = radius * 0.5, .bottom_right = radius, .bottom_left = 0 },
+        .radii = .{
+            .top_left = radius,
+            .top_right = radius * 0.5,
+            .bottom_right = radius,
+            .bottom_left = 0,
+        },
         .color = .{ .r = 0, .g = 0, .b = 0, .a = 0.2 + randomUnit(random) * 0.8 },
     };
 }

@@ -16,6 +16,7 @@ const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
 const raster = @import("../cpu/raster.zig");
+const limits = @import("../../core/limits.zig");
 
 const assert = std.debug.assert;
 
@@ -25,9 +26,10 @@ const FBIOGET_FSCREENINFO: u32 = 0x4602;
 /// `_IOW('F', 0x20, __u32)`.
 const FBIO_WAITFORVSYNC: u32 = 0x4004_4620;
 
-/// Largest panel the backend accepts, per side. Bounds the back buffer the
-/// window reserves at initialization (64 MiB at the ceiling).
-pub const dimension_max: u32 = 4096;
+/// Largest panel the backend accepts: the framework's framebuffer ceiling.
+/// The window then checks the panel against the app's own budget.
+const width_max = limits.MAX_FRAMEBUFFER_WIDTH;
+const height_max = limits.MAX_FRAMEBUFFER_HEIGHT;
 
 pub const Bitfield = extern struct {
     offset: u32,
@@ -132,7 +134,10 @@ pub const PixelLayout = struct {
             .red = try channel(info.red, info.bits_per_pixel),
             .green = try channel(info.green, info.bits_per_pixel),
             .blue = try channel(info.blue, info.bits_per_pixel),
-            .alpha = if (info.transp.length == 0) null else try channel(info.transp, info.bits_per_pixel),
+            .alpha = if (info.transp.length == 0)
+                null
+            else
+                try channel(info.transp, info.bits_per_pixel),
         };
         assert(layout.bytes_per_pixel == 2 or layout.bytes_per_pixel == 4);
         return layout;
@@ -152,8 +157,10 @@ pub const PixelLayout = struct {
 /// Convert one `0xAARRGGBB` pixel to the device layout, truncating each
 /// channel to its width.
 pub fn convertPixel(pixel: u32, layout: PixelLayout) u32 {
-    assert(layout.red.length >= 1 and layout.red.length <= 8);
-    assert(layout.blue.length >= 1 and layout.blue.length <= 8);
+    assert(layout.red.length >= 1);
+    assert(layout.red.length <= 8);
+    assert(layout.blue.length >= 1);
+    assert(layout.blue.length <= 8);
     var result = placeChannel((pixel >> 16) & 0xFF, layout.red) |
         placeChannel((pixel >> 8) & 0xFF, layout.green) |
         placeChannel(pixel & 0xFF, layout.blue);
@@ -163,7 +170,8 @@ pub fn convertPixel(pixel: u32, layout: PixelLayout) u32 {
 
 fn placeChannel(value: u32, field: Channel) u32 {
     assert(value <= 0xFF);
-    assert(field.length >= 1 and field.length <= 8);
+    assert(field.length >= 1);
+    assert(field.length <= 8);
     const shift: u5 = @intCast(8 - @as(u32, field.length));
     return (value >> shift) << field.offset;
 }
@@ -292,7 +300,8 @@ fn validateGeometry(
     assert(@intFromPtr(fixed) != 0);
     const bad = error.UnsupportedFramebufferGeometry;
     if (variable.xres == 0 or variable.yres == 0) return bad;
-    if (variable.xres > dimension_max or variable.yres > dimension_max) return bad;
+    if (variable.xres > width_max) return bad;
+    if (variable.yres > height_max) return bad;
     const row_bytes = @as(u64, variable.xres) * (variable.bits_per_pixel / 8);
     if (fixed.line_length < row_bytes) return bad;
     const offset = @as(u64, variable.yoffset) * fixed.line_length +
@@ -330,7 +339,8 @@ test "RGB565 conversion keeps each channel's high bits in its own field" {
     );
     const layout = try PixelLayout.fromScreenInfo(&info);
     try testing.expect(!layout.isNative());
-    try testing.expectEqual(@as(u32, (31 << 11) | (32 << 5) | 8), convertPixel(0xFFFF_8040, layout));
+    const expected: u32 = (31 << 11) | (32 << 5) | 8;
+    try testing.expectEqual(expected, convertPixel(0xFFFF_8040, layout));
 
     var row: [4]u8 = undefined;
     convertRow(&.{ 0xFFFF_8040, 0xFF00_0000 }, &row, layout);

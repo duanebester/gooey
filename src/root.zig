@@ -356,6 +356,7 @@ test {
         // Platform-independent CPU rasterizer used by the Wayland shm and
         // fbdev backends. Tested on every host, not only CPU-backend builds.
         @import("platform/cpu/raster.zig"),
+        @import("platform/cpu/mesh.zig"),
         @import("platform/cpu/renderer.zig"),
 
         // Scene leaves — path/polyline/svg test-heavy files.

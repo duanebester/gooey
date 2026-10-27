@@ -7,8 +7,16 @@
 //! result is copied to the framebuffer by `Framebuffer.present`.
 //!
 //! Rendering is on demand, like the macOS backend: input, animations, and
-//! state changes call `requestRender`, and the platform loop presents at most
-//! once per `frame_period_ns_min`.
+//! state changes call `requestRender`, views that change with the clock arm
+//! `requestRenderAfter`, and the platform loop presents at most once per
+//! `frame_period_ns_min`.
+//!
+//! ## Memory (CLAUDE.md §2)
+//!
+//! The panel's size is fixed by the hardware and known before the window
+//! opens. `init` checks it against the app's `ResourceLimits.window` and
+//! fails when it does not fit, then reserves the panel-sized back buffer and
+//! the CPU renderer's raster scratch. Nothing is allocated afterwards.
 
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
@@ -17,7 +25,8 @@ const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
 const input = @import("../../input/events.zig");
 const cpu = @import("../cpu/renderer.zig");
-const FbdevPlatform = @import("platform.zig").FbdevPlatform;
+const fbdev_platform = @import("platform.zig");
+const FbdevPlatform = fbdev_platform.FbdevPlatform;
 
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
@@ -54,8 +63,13 @@ pub const Window = struct {
     text_atlas: ?*const text_mod.Atlas = null,
     svg_atlas: ?*const text_mod.Atlas = null,
     image_atlas: ?*const text_mod.Atlas = null,
+    renderer: cpu.Renderer,
     /// Primitive counts of the last presented frame.
     last_stats: cpu.RenderStats = .{},
+    /// Earliest time, on `platform.nowMilliseconds`, at which the loop
+    /// must request a frame. Frame-scoped like the Wayland window's: cleared
+    /// before application code builds a frame, which re-arms what it needs.
+    render_deadline_ms: ?i64 = null,
 
     title_buffer: [title_bytes_max]u8 = undefined,
     title_len: usize = 0,
@@ -90,9 +104,27 @@ pub const Window = struct {
     const Self = @This();
 
     pub fn init(allocator: Allocator, plat: *FbdevPlatform, options: *const WindowOptions) !*Self {
-        assert(options.width > 0 and options.height > 0);
+        assert(options.width > 0);
+        assert(options.height > 0);
         assert(options.title.len <= title_bytes_max);
         const panel = &plat.framebuffer;
+
+        assert(options.limits.check() == null);
+        const window_limits = &options.limits.window;
+        if (panel.width > window_limits.framebuffer_width_max or
+            panel.height > window_limits.framebuffer_height_max)
+        {
+            std.log.err(
+                "fbdev: the {d}x{d} panel exceeds ResourceLimits.window ({d}x{d})",
+                .{
+                    panel.width,
+                    panel.height,
+                    window_limits.framebuffer_width_max,
+                    window_limits.framebuffer_height_max,
+                },
+            );
+            return error.PanelExceedsResourceLimits;
+        }
 
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
@@ -106,6 +138,7 @@ pub const Window = struct {
             .size = .{ .width = plat.logicalWidth(), .height = plat.logicalHeight() },
             .scale_factor = plat.scale_factor,
             .back_buffer = back_buffer,
+            .renderer = undefined,
             .background_color = options.background_color,
             .cursor_visible = plat.devices.hasPointer(),
             .mouse_x = plat.translator.pointer_x,
@@ -113,6 +146,9 @@ pub const Window = struct {
             .mouse_inside = plat.devices.hasPointer(),
         };
         self.setTitle(options.title);
+
+        try self.renderer.initInPlace(allocator, &options.limits);
+        errdefer self.renderer.deinit(allocator);
 
         self.window_id = try plat.registerWindow(self);
         plat.window = self;
@@ -129,6 +165,7 @@ pub const Window = struct {
             self.window_id = .invalid;
         }
         if (self.platform.window == self) self.platform.window = null;
+        self.renderer.deinit(self.allocator);
         self.allocator.free(self.back_buffer);
         assert(self.platform.window != self);
         self.allocator.destroy(self);
@@ -152,18 +189,23 @@ pub const Window = struct {
         // Cleared before application code runs so a render requested while
         // building this frame (an animation step) schedules the next one.
         self.needs_redraw = false;
+        self.render_deadline_ms = null;
         if (self.on_render) |callback| callback(self);
         if (self.closed) return;
 
         const target = self.frameTarget();
         if (self.scene) |scene| {
-            self.last_stats = cpu.renderScene(target, scene, &.{
-                .scale_factor = @floatCast(self.scale_factor),
-                .clear_color = self.getClearColor(),
-                .text_atlas = self.text_atlas,
-                .svg_atlas = self.svg_atlas,
-                .image_atlas = self.image_atlas,
+            self.renderer.bindAtlases(.{
+                .text = self.text_atlas,
+                .svg = self.svg_atlas,
+                .image = self.image_atlas,
             });
+            self.last_stats = self.renderer.draw(
+                target,
+                scene,
+                .{ .scale_factor = @floatCast(self.scale_factor) },
+                self.getClearColor(),
+            );
         } else {
             cpu.raster.clear(target, self.getClearColor());
         }
@@ -229,7 +271,8 @@ pub const Window = struct {
     }
 
     pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
-        assert(color.a >= 0 and color.a <= 1);
+        assert(color.a >= 0);
+        assert(color.a <= 1);
         self.background_color = color;
         self.requestRender();
     }
@@ -278,6 +321,35 @@ pub const Window = struct {
         self.needs_redraw = true;
     }
 
+    /// Ask for a frame no later than `delay_ms` from now. Only the earliest
+    /// deadline is kept; the frame drawn at it re-arms whatever views still
+    /// depend on the clock (see `render_deadline_ms`).
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        assert(delay_ms <= interface_mod.render_delay_ms_max);
+        if (self.closed) return;
+        if (delay_ms == 0) {
+            self.requestRender();
+            return;
+        }
+        const deadline_ms = fbdev_platform.nowMilliseconds() + delay_ms;
+        if (self.render_deadline_ms) |armed_ms| {
+            if (armed_ms <= deadline_ms) return;
+        }
+        self.render_deadline_ms = deadline_ms;
+        assert(self.render_deadline_ms.? <= deadline_ms);
+    }
+
+    /// Request the frame a passed deadline asked for. Called by the platform
+    /// loop once per turn.
+    pub fn fireRenderDeadline(self: *Self, now_ms: i64) void {
+        assert(now_ms >= 0);
+        const deadline_ms = self.render_deadline_ms orelse return;
+        if (now_ms < deadline_ms) return;
+        self.render_deadline_ms = null;
+        self.requestRender();
+        if (!self.closed) assert(self.needs_redraw);
+    }
+
     /// The only window always has focus.
     pub fn focus(self: *Self) void {
         assert(!self.closed);
@@ -294,6 +366,7 @@ pub const Window = struct {
         }
         self.closed = true;
         self.needs_redraw = false;
+        self.render_deadline_ms = null;
         assert(self.isClosed());
     }
 
@@ -417,7 +490,8 @@ const cursor_rows = [_]*const [12]u8{
 /// Draw the arrow at a logical position, scaled to whole device pixels.
 fn drawCursor(target: cpu.raster.Target, x: f64, y: f64, scale_factor: f64) void {
     assert(scale_factor > 0);
-    assert(target.width > 0 and target.height > 0);
+    assert(target.width > 0);
+    assert(target.height > 0);
     const scale: u32 = @intFromFloat(@max(1.0, @round(scale_factor)));
     const origin_x: i64 = @intFromFloat(@floor(x * scale_factor));
     const origin_y: i64 = @intFromFloat(@floor(y * scale_factor));
@@ -436,7 +510,8 @@ fn drawCursor(target: cpu.raster.Target, x: f64, y: f64, scale_factor: f64) void
 }
 
 fn fillCell(target: cpu.raster.Target, x: i64, y: i64, scale: u32, color: u32) void {
-    assert(scale >= 1 and scale <= 8);
+    assert(scale >= 1);
+    assert(scale <= 8);
     assert(color >> 24 == 0xFF);
     var dy: u32 = 0;
     while (dy < scale) : (dy += 1) {

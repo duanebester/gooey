@@ -13,6 +13,8 @@
 //!   same budget, fills the shared quad + shadow primitive buffer exactly with a
 //!   quad batch and a shadow batch (as `drawScene` does), and claims one more.
 //!   Linux only; it needs no GPU because the capacity check is pure.
+//! - `cpu-atlas`: draws a frame holding one glyph through the CPU renderer with
+//!   no glyph atlas bound, which must panic rather than drop the glyph. Linux.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -53,6 +55,7 @@ const Mode = enum {
     @"geometry-polyline_points",
     @"geometry-points",
     @"geometry-colored_points",
+    @"cpu-atlas",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -68,6 +71,7 @@ pub fn main(init: std.process.Init) !void {
         .scene => try overflowScene(init.gpa),
         .@"vulkan-instances" => overflowVulkanInstances(),
         .triangles, .strip_expanded, .points, .colored_points => overflow_vulkan_mesh(mode),
+        .@"cpu-atlas" => try cpuMissingAtlas(init.gpa),
         else => overflow_geometry(mode),
     }
     std.debug.print("unreachable: {s} accepted a claim past its budget\n", .{@tagName(mode)});
@@ -108,6 +112,33 @@ fn overflowVulkanInstances() void {
         capacity.reserve(.primitives, quad_count + shadow_count, 1, frame);
     } else {
         std.debug.panic("vulkan-instances mode exists only on Linux", .{});
+    }
+}
+
+fn cpuMissingAtlas(gpa: std.mem.Allocator) !void {
+    if (builtin.os.tag == .linux) {
+        const cpu = gooey.platform.linux.cpu;
+        const limits = gooey.ResourceLimits{
+            .scene = overflow_limits,
+            .window = .{ .framebuffer_width_max = 8, .framebuffer_height_max = 8 },
+        };
+        var scene = try Scene.initCapacity(gpa, &limits.scene);
+        defer scene.deinit();
+        scene.finish();
+        scene.clear();
+        const glyph = gooey.scene.GlyphInstance.init(0, 0, 4, 4, 0, 0, 1, 1, Hsla.black);
+        try scene.insertGlyph(glyph);
+
+        var renderer: cpu.Renderer = undefined;
+        try renderer.initInPlace(gpa, &limits);
+        defer renderer.deinit(gpa);
+        var pixels: [8 * 8]u32 = undefined;
+        const target = cpu.raster.Target{ .pixels = &pixels, .width = 8, .height = 8, .stride = 8 };
+        const clear = gooey.core.geometry.Color.rgba(0, 0, 0, 1);
+        // No atlas is bound: must panic inside `draw`.
+        _ = renderer.draw(target, &scene, .{ .scale_factor = 1 }, clear);
+    } else {
+        std.debug.panic("cpu-atlas mode exists only on Linux", .{});
     }
 }
 

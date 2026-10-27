@@ -31,6 +31,14 @@ pub const device_scan_max: u32 = 32;
 pub const device_count_max: u32 = 16;
 pub const raw_batch_max: u32 = 64;
 
+/// Room for `/dev/input/event<index>` and its terminator.
+const device_path_bytes_max: usize = 32;
+
+comptime {
+    const longest = std.fmt.comptimePrint("/dev/input/event{d}", .{device_scan_max - 1});
+    assert(longest.len + 1 <= device_path_bytes_max);
+}
+
 /// Scroll distance reported per wheel detent, in logical pixels. Matches the
 /// value libinput gives Wayland compositors for one detent.
 pub const scroll_per_detent: f64 = 15.0;
@@ -211,7 +219,8 @@ pub const Translator = struct {
     click_tracker: linux_input.ClickTracker = .{},
 
     pub fn init(screen_width: f64, screen_height: f64, scale_factor: f64) Translator {
-        assert(screen_width > 0 and screen_height > 0);
+        assert(screen_width > 0);
+        assert(screen_height > 0);
         assert(scale_factor > 0);
         return .{
             .screen_width = screen_width,
@@ -315,11 +324,22 @@ pub const Translator = struct {
                     self.pointer_y,
                     button.code,
                 );
-                out.push(linux_input.mouseDownEvent(self.pointer_x, self.pointer_y, button.code, count, modifiers));
+                out.push(linux_input.mouseDownEvent(
+                    self.pointer_x,
+                    self.pointer_y,
+                    button.code,
+                    count,
+                    modifiers,
+                ));
             }
             if (packet.released & button.bit != 0) {
                 self.buttons &= ~button.bit;
-                out.push(linux_input.mouseUpEvent(self.pointer_x, self.pointer_y, button.code, modifiers));
+                out.push(linux_input.mouseUpEvent(
+                    self.pointer_x,
+                    self.pointer_y,
+                    button.code,
+                    modifiers,
+                ));
             }
         }
         self.applyTouch(packet.touch, out);
@@ -328,18 +348,29 @@ pub const Translator = struct {
             // `REL_WHEEL` is a turn away from the user, which scrolls up.
             const delta_x = @as(f64, @floatFromInt(packet.wheel_x)) * scroll_per_detent;
             const delta_y = -@as(f64, @floatFromInt(packet.wheel_y)) * scroll_per_detent;
-            out.push(linux_input.scrollEvent(self.pointer_x, self.pointer_y, delta_x, delta_y, modifiers));
+            out.push(linux_input.scrollEvent(
+                self.pointer_x,
+                self.pointer_y,
+                delta_x,
+                delta_y,
+                modifiers,
+            ));
         }
     }
 
     /// Update the pointer from a packet. Returns true when it moved.
     fn applyMotion(self: *Translator, device: *const Device, packet: *const Packet) bool {
         assert(self.scale_factor > 0);
-        assert(self.screen_width > 0 and self.screen_height > 0);
+        assert(self.screen_width > 0);
+        assert(self.screen_height > 0);
         const previous_x = self.pointer_x;
         const previous_y = self.pointer_y;
-        if (packet.absolute_x) |raw| self.pointer_x = mapAxis(raw, device.x_range, self.screen_width);
-        if (packet.absolute_y) |raw| self.pointer_y = mapAxis(raw, device.y_range, self.screen_height);
+        if (packet.absolute_x) |raw| {
+            self.pointer_x = mapAxis(raw, device.x_range, self.screen_width);
+        }
+        if (packet.absolute_y) |raw| {
+            self.pointer_y = mapAxis(raw, device.y_range, self.screen_height);
+        }
         if (packet.relative_x != 0 or packet.relative_y != 0) {
             const dx = @as(f64, @floatFromInt(packet.relative_x)) / self.scale_factor;
             const dy = @as(f64, @floatFromInt(packet.relative_y)) / self.scale_factor;
@@ -367,9 +398,12 @@ pub const Translator = struct {
     }
 
     fn motionEvent(self: *const Translator, modifiers: input.Modifiers) input.InputEvent {
-        assert(self.pointer_x >= 0 and self.pointer_y >= 0);
+        assert(self.pointer_x >= 0);
+        assert(self.pointer_y >= 0);
         assert(self.buttons <= 0b111);
-        if (self.buttons == 0) return linux_input.mouseMovedEvent(self.pointer_x, self.pointer_y, modifiers);
+        if (self.buttons == 0) {
+            return linux_input.mouseMovedEvent(self.pointer_x, self.pointer_y, modifiers);
+        }
         const button: input.MouseButton = if (self.buttons & 1 != 0)
             .left
         else if (self.buttons & 2 != 0) .right else .middle;
@@ -409,8 +443,15 @@ pub const DeviceSet = struct {
         assert(self.count == 0);
         var index: u32 = 0;
         while (index < device_scan_max and self.count < device_count_max) : (index += 1) {
-            var path_buffer: [32]u8 = undefined;
-            const path = std.fmt.bufPrintSentinel(&path_buffer, "/dev/input/event{d}", .{index}, 0) catch unreachable;
+            var path_buffer: [device_path_bytes_max]u8 = undefined;
+            // Cannot fail: the longest path fits `device_path_bytes_max` (see
+            // the comptime check there), and formatting writes nothing else.
+            const path = std.fmt.bufPrintSentinel(
+                &path_buffer,
+                "/dev/input/event{d}",
+                .{index},
+                0,
+            ) catch unreachable;
             if (openDevice(path, grab)) |device| {
                 self.devices[self.count] = device;
                 self.count += 1;
@@ -423,6 +464,16 @@ pub const DeviceSet = struct {
         assert(self.count <= device_count_max);
         for (self.devices[0..self.count]) |device| _ = std.c.close(device.fd);
         self.count = 0;
+    }
+
+    /// Close and forget the device at `index`. The last device moves into its
+    /// slot, so callers iterating while removing walk from the end.
+    pub fn remove(self: *DeviceSet, index: u32) void {
+        assert(index < self.count);
+        assert(self.count <= device_count_max);
+        _ = std.c.close(self.devices[index].fd);
+        self.count -= 1;
+        self.devices[index] = self.devices[self.count];
     }
 
     pub fn slice(self: *DeviceSet) []Device {
@@ -481,7 +532,8 @@ fn probeCapabilities(fd: posix.fd_t) Capabilities {
 
     const has_axes = hasBit(&absolute, ABS_X) and hasBit(&absolute, ABS_Y);
     return .{
-        .keyboard = hasBit(&keys, @intCast(evdev_keys.KEY_A)) and hasBit(&keys, @intCast(evdev_keys.KEY_Z)),
+        .keyboard = hasBit(&keys, @intCast(evdev_keys.KEY_A)) and
+            hasBit(&keys, @intCast(evdev_keys.KEY_Z)),
         .relative_pointer = hasBit(&relative, REL_X) and hasBit(&relative, REL_Y),
         .absolute_pointer = has_axes and !hasBit(&keys, BTN_TOUCH) and hasBit(&keys, BTN_LEFT),
         .touch = has_axes and hasBit(&keys, BTN_TOUCH),
@@ -512,12 +564,22 @@ fn probeAxis(fd: posix.fd_t, axis: u16) ?AxisRange {
 }
 
 /// Read up to `raw_batch_max` pending events from a non-blocking device.
-/// Returns an empty slice when nothing is pending or the device failed.
-pub fn readEvents(device: *const Device, buffer: *[raw_batch_max]RawEvent) []const RawEvent {
+/// Returns an empty slice when nothing is pending, and `error.DeviceLost` when
+/// the device can no longer be read (unplugged or revoked).
+pub fn readEvents(
+    device: *const Device,
+    buffer: *[raw_batch_max]RawEvent,
+) error{DeviceLost}![]const RawEvent {
     assert(device.fd >= 0);
     assert(buffer.len == raw_batch_max);
     const bytes = std.mem.sliceAsBytes(buffer);
-    const count = posix.read(device.fd, bytes) catch return buffer[0..0];
+    const count = posix.read(device.fd, bytes) catch |err| switch (err) {
+        error.WouldBlock => return buffer[0..0],
+        else => {
+            std.log.warn("evdev: device fd {d} failed: {t}", .{ device.fd, err });
+            return error.DeviceLost;
+        },
+    };
     // The kernel only ever returns whole events.
     assert(count % @sizeOf(RawEvent) == 0);
     return buffer[0 .. count / @sizeOf(RawEvent)];

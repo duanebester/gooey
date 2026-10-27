@@ -176,6 +176,8 @@ pub const linux = if (is_linux) struct {
     pub const clipboard = @import("linux/clipboard.zig");
     pub const dbus = @import("linux/dbus.zig");
     pub const file_dialog = @import("linux/file_dialog.zig");
+    /// CPU renderer shared by the `wayland_cpu` and `fbdev` backends.
+    pub const cpu = @import("cpu/renderer.zig");
     // Type aliases
     pub const LinuxPlatform = platform.LinuxPlatform;
     pub const Window = window.Window;

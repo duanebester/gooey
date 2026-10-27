@@ -1987,10 +1987,14 @@ Fontconfig, libpng, and D-Bus. Build on the device, or cross-compile with
 `-Dtarget=aarch64-linux-gnu` plus `--sysroot` pointing at a root filesystem that
 contains those libraries.
 
-The CPU renderer reproduces the Vulkan shaders (SDF rounded rects, borders,
-shadows, glyphs, SVGs, images) and draws only when the UI requests a frame. Paths,
-polylines, and point clouds are not drawn yet, matching the current Vulkan
-renderer.
+The CPU renderer reproduces the Vulkan pipelines: SDF rounded rects, borders,
+shadows, glyphs, SVGs, images, solid and gradient paths, polylines, and point
+clouds. Paths and polylines are antialiased with the same four sample positions
+as Vulkan's 4x MSAA. It draws only when the UI requests a frame, and reserves its
+framebuffers and scratch at window creation from `ResourceLimits.window`
+(`framebuffer_width_max` and `framebuffer_height_max`, 3840x2160 at
+`.standard`). An fbdev panel larger than that fails to open; a larger Wayland
+window renders at a reduced scale.
 
 The fbdev backend reads 16 bpp (RGB565) and 32 bpp framebuffers and probes
 `/dev/input/event*` for keyboards, mice, and touchscreens. Run it from a VT or

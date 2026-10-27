@@ -436,11 +436,13 @@ pub const Window = struct {
         if (use_cpu_renderer) {
             const shm = plat.getShm() orelse return error.NoShm;
             try self.renderer.initWithSurface(
+                self.allocator,
                 shm,
                 self.wl_surface.?,
                 self.width_px,
                 self.height_px,
                 self.scale_factor,
+                limits,
             );
         } else {
             const wl_display = plat.getDisplay() orelse return error.NoDisplay;
