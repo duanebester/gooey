@@ -13,6 +13,9 @@
 //!   same budget, fills the shared quad + shadow primitive buffer exactly with a
 //!   quad batch and a shadow batch (as `drawScene` does), and claims one more.
 //!   Linux only; it needs no GPU because the capacity check is pure.
+//! - `instances-<pool>`: fills a renderer's glyph, SVG or image instance budget
+//!   (`gooey.scene.InstanceCounts`, used by Metal) with two batches and claims one
+//!   more. Every OS.
 //! - `cpu-atlas`: draws a frame holding one glyph through the CPU renderer with
 //!   no glyph atlas bound, which must panic rather than drop the glyph. Linux.
 
@@ -55,6 +58,9 @@ const Mode = enum {
     @"geometry-polyline_points",
     @"geometry-points",
     @"geometry-colored_points",
+    @"instances-glyphs",
+    @"instances-svgs",
+    @"instances-images",
     @"cpu-atlas",
 };
 
@@ -72,6 +78,7 @@ pub fn main(init: std.process.Init) !void {
         .@"vulkan-instances" => overflowVulkanInstances(),
         .triangles, .strip_expanded, .points, .colored_points => overflow_vulkan_mesh(mode),
         .@"cpu-atlas" => try cpuMissingAtlas(init.gpa),
+        .@"instances-glyphs", .@"instances-svgs", .@"instances-images" => overflow_instances(mode),
         else => overflow_geometry(mode),
     }
     std.debug.print("unreachable: {s} accepted a claim past its budget\n", .{@tagName(mode)});
@@ -176,4 +183,21 @@ fn overflow_geometry(mode: Mode) void {
     usage.claim(&budget, .{ .pool = pool, .requested = capacity - 2, .frame = 7 });
     usage.claim(&budget, .{ .pool = pool, .requested = 2, .frame = 7 });
     usage.claim(&budget, .{ .pool = pool, .requested = 1, .frame = 7 });
+}
+
+fn overflow_instances(mode: Mode) void {
+    // Two batches fill a renderer instance buffer sized from the scene budget
+    // exactly, as two draw batches in one frame would; one more instance aborts.
+    const name = @tagName(mode)["instances-".len..];
+    const pool = std.meta.stringToEnum(gooey.scene.InstancePool, name).?;
+    const budget = gooey.scene.InstanceCounts.from_limits(&overflow_limits);
+    const capacity = budget.counts[@backingInt(pool)];
+    std.debug.assert(capacity >= 4);
+    std.debug.assert(capacity <= gooey.core.limits.MAX_GLYPHS_PER_RUN);
+    var usage = gooey.scene.InstanceCounts{};
+    const first = usage.claim(&budget, .{ .pool = pool, .requested = capacity - 1, .frame = 7 });
+    const last = usage.claim(&budget, .{ .pool = pool, .requested = 1, .frame = 7 });
+    std.debug.assert(first == 0);
+    std.debug.assert(last == capacity - 1);
+    _ = usage.claim(&budget, .{ .pool = pool, .requested = 1, .frame = 7 });
 }

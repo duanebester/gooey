@@ -23,6 +23,8 @@ pub const SceneLimits = scene.SceneLimits;
 pub const DrawOrder = scene.DrawOrder;
 pub const GeometryCounts = @import("geometry_budget.zig").GeometryCounts;
 pub const GeometryPool = @import("geometry_budget.zig").GeometryPool;
+pub const InstanceCounts = @import("instance_budget.zig").InstanceCounts;
+pub const InstancePool = @import("instance_budget.zig").InstancePool;
 
 // Hard limits (static memory allocation policy)
 pub const MAX_QUADS_PER_FRAME = scene.MAX_QUADS_PER_FRAME;

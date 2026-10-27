@@ -4,9 +4,16 @@
 //! Structure mirrors TextPipeline for consistency.
 
 const std = @import("std");
+const assert = std.debug.assert;
+
 const objc = @import("objc");
 const mtl = @import("api.zig");
+const pipelines = @import("pipelines.zig");
+const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
+const InstanceCounts = scene.InstanceCounts;
+const InstancePool = scene.InstancePool;
+const SceneLimits = scene.SceneLimits;
 const SvgInstance = @import("../../../scene/svg_instance.zig").SvgInstance;
 const Atlas = @import("../../../text/atlas.zig").Atlas;
 
@@ -66,7 +73,7 @@ pub const svg_shader_source =
     \\    uint vid [[vertex_id]],
     \\    uint iid [[instance_id]],
     \\    constant float2 *unit_vertices [[buffer(0)]],
-    \\    constant SvgInstance *icons [[buffer(1)]],
+    \\    device const SvgInstance *icons [[buffer(1)]],
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
     \\    float2 unit = unit_vertices[vid];
@@ -131,18 +138,28 @@ pub const unit_vertices = [_][2]f32{
     .{ 0.0, 1.0 },
 };
 
-const FRAME_COUNT = 3;
-const INITIAL_CAPACITY = 256;
+comptime {
+    assert(@sizeOf(SvgInstance) == 96);
+}
 
+/// SVG icon pipeline state.
+///
+/// Resource sketch (CLAUDE.md §7): each frame in flight owns one instance buffer
+/// of `svg_count_frame_max` × 96 B SVG instances, sized in `init` from
+/// `ResourceLimits.scene` and never replaced. `.standard`: 98,304 B per frame,
+/// 294,912 B per window. Per batch: one claim, one sequential copy and one
+/// instanced draw. The scene holds at most the same number of SVGs, so a claim
+/// past the budget is a programmer error and panics with the pool name.
 pub const SvgPipeline = struct {
     device: objc.Object,
     pipeline_state: objc.Object,
     unit_vertex_buffer: objc.Object,
-    instance_buffers: [FRAME_COUNT]objc.Object,
-    instance_capacities: [FRAME_COUNT]usize,
-    frame_index: usize,
-    // Current offset within frame's buffer (for batched rendering)
-    current_offset: usize,
+    instance_buffers: [frame_count]objc.Object,
+    frame_index: u32,
+    /// The window's instance budget (`ResourceLimits.scene`).
+    instance_budget: InstanceCounts,
+    /// SVGs claimed this frame; also the slot's write offset.
+    instance_usage: InstanceCounts,
 
     // Atlas texture management
     atlas_texture: ?objc.Object,
@@ -153,8 +170,19 @@ pub const SvgPipeline = struct {
 
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, device: objc.Object, sample_count: u32) !SvgPipeline {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        device: objc.Object,
+        sample_count: u32,
+        scene_limits: *const SceneLimits,
+    ) !SvgPipeline {
+        assert(sample_count > 0);
+        assert(scene_limits.check() == null);
+        const budget = InstanceCounts.from_limits(scene_limits);
+        const svg_count_max: u64 = budget.counts[@backingInt(InstancePool.svgs)];
+
         const pipeline_state = try createPipeline(device, sample_count);
+        errdefer pipeline_state.release();
 
         // Unit vertex buffer
         const vert_ptr = device.msgSend(?*anyopaque, "newBufferWithBytes:length:options:", .{
@@ -162,29 +190,22 @@ pub const SvgPipeline = struct {
             @as(c_ulong, @sizeOf(@TypeOf(unit_vertices))),
             @as(c_ulong, @bitCast(mtl.MTLResourceOptions{ .storage_mode = .shared })),
         }) orelse return error.BufferCreationFailed;
+        const unit_vertex_buffer = objc.Object.fromId(vert_ptr);
+        errdefer unit_vertex_buffer.release();
 
-        // Instance buffers (triple-buffered)
-        var instance_buffers: [FRAME_COUNT]objc.Object = undefined;
-        var instance_capacities: [FRAME_COUNT]usize = undefined;
-        const instance_size = INITIAL_CAPACITY * @sizeOf(SvgInstance);
-
-        for (0..FRAME_COUNT) |i| {
-            const buf_ptr = device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
-                @as(c_ulong, instance_size),
-                @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
-            }) orelse return error.BufferCreationFailed;
-            instance_buffers[i] = objc.Object.fromId(buf_ptr);
-            instance_capacities[i] = INITIAL_CAPACITY;
-        }
-
+        const instance_buffers = try pipelines.createFrameBuffers(
+            device,
+            svg_count_max * @sizeOf(SvgInstance),
+            "svg_instances",
+        );
         return .{
             .device = device,
             .pipeline_state = pipeline_state,
-            .unit_vertex_buffer = objc.Object.fromId(vert_ptr),
+            .unit_vertex_buffer = unit_vertex_buffer,
             .instance_buffers = instance_buffers,
-            .instance_capacities = instance_capacities,
             .frame_index = 0,
-            .current_offset = 0,
+            .instance_budget = budget,
+            .instance_usage = .{},
             .atlas_texture = null,
             .atlas_generation = 0,
             .current_atlas = null,
@@ -199,45 +220,47 @@ pub const SvgPipeline = struct {
         if (self.atlas_texture) |tex| tex.release();
     }
 
-    /// Call at start of frame to bind atlas reference and reset offset
-    pub fn prepareFrame(self: *SvgPipeline, atlas: *const Atlas) void {
-        self.current_atlas = atlas;
-        self.current_offset = 0; // Reset offset for new frame
+    /// Advance to the next frame-in-flight slot and release the previous frame's
+    /// claims. Call once per rendered frame, before any batch is drawn.
+    pub fn nextFrame(self: *SvgPipeline) void {
+        assert(self.frame_index < frame_count);
+        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.instance_usage = .{};
     }
 
-    /// Render a batch of SVG instances using triple-buffered storage with offset tracking.
-    /// Safe for multiple calls per frame - appends to buffer at current offset.
-    /// More efficient than setVertexBytes for larger batches.
+    /// Bind this frame's atlas. Its texture is uploaded by the first batch.
+    pub fn prepareFrame(self: *SvgPipeline, atlas: *const Atlas) void {
+        assert(atlas.size > 0);
+        self.current_atlas = atlas;
+    }
+
+    /// Render a batch of SVG instances, appended to this frame's slot after the
+    /// SVGs already claimed. Safe for multiple calls per frame.
     pub fn renderBatch(
         self: *SvgPipeline,
         encoder: objc.Object,
         instances: []const SvgInstance,
-        viewport_size: [2]f32,
+        options: struct { viewport_size: [2]f32, frame: u64 },
     ) !void {
-        if (instances.len == 0) return;
-
+        assert(instances.len > 0);
+        assert(instances.len <= scene.MAX_SVGS_PER_FRAME);
+        // Claimed even when no atlas is bound yet, so the count matches the scene.
+        const first = self.instance_usage.claim(&self.instance_budget, .{
+            .pool = .svgs,
+            .requested = @intCast(instances.len),
+            .frame = options.frame,
+        });
         const atlas = self.current_atlas orelse return;
 
         // Update atlas texture if needed (only once per frame typically)
         try self.updateAtlasTexture(atlas);
 
         const idx = self.frame_index;
-        const byte_offset = self.current_offset * @sizeOf(SvgInstance);
-        const needed_capacity = self.current_offset + instances.len;
-
-        // Grow buffer if needed
-        if (needed_capacity > self.instance_capacities[idx]) {
-            try self.growInstanceBuffer(idx, needed_capacity);
-        }
-
-        // Upload instances at current offset
-        const buffer_ptr = self.instance_buffers[idx].msgSend(*anyopaque, "contents", .{});
-        const base: [*]SvgInstance = @ptrCast(@alignCast(buffer_ptr));
-        const dest = base + self.current_offset;
-        @memcpy(dest[0..instances.len], instances);
-
-        // Advance offset for next batch
-        self.current_offset += instances.len;
+        assert(idx < frame_count);
+        const byte_offset = @as(c_ulong, first) * @sizeOf(SvgInstance);
+        const base = pipelines.frameBufferContents(SvgInstance, self.instance_buffers[idx]);
+        @memcpy(base[first..][0..instances.len], instances);
+        const viewport_size = options.viewport_size;
 
         // Bind pipeline
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
@@ -252,7 +275,7 @@ pub const SvgPipeline = struct {
         // Set instance buffer with offset for this batch
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
             self.instance_buffers[idx].value,
-            @as(c_ulong, byte_offset),
+            byte_offset,
             @as(c_ulong, 1),
         });
         encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
@@ -314,20 +337,6 @@ pub const SvgPipeline = struct {
 
         self.atlas_texture = texture;
         self.atlas_generation = atlas.generation;
-    }
-
-    fn growInstanceBuffer(self: *SvgPipeline, idx: usize, min_capacity: usize) !void {
-        const new_capacity = @max(min_capacity, self.instance_capacities[idx] * 2);
-        const new_size = new_capacity * @sizeOf(SvgInstance);
-
-        const new_ptr = self.device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
-            @as(c_ulong, new_size),
-            @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
-        }) orelse return error.BufferCreationFailed;
-
-        self.instance_buffers[idx].release();
-        self.instance_buffers[idx] = objc.Object.fromId(new_ptr);
-        self.instance_capacities[idx] = new_capacity;
     }
 };
 

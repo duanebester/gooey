@@ -116,9 +116,31 @@ fn drawPipelineBatch(
 ) void {
     switch (batch) {
         .shadow, .quad => unreachable, // Appended to the unified ring by the caller.
-        .glyph => |glyphs| drawGlyphBatch(encoder, glyphs, pipelines.*, viewport_size, stats),
-        .svg => |svgs| drawSvgBatch(encoder, svgs, pipelines.*, viewport_size, stats),
-        .image => |images| drawImageBatch(encoder, images, pipelines.*, viewport_size, stats),
+        // Instances are claimed against the window budget like mesh geometry.
+        .glyph => |glyphs| drawGlyphBatch(
+            encoder,
+            glyphs,
+            pipelines.*,
+            viewport_size,
+            scene.frame_count_finished,
+            stats,
+        ),
+        .svg => |svgs| drawSvgBatch(
+            encoder,
+            svgs,
+            pipelines.*,
+            viewport_size,
+            scene.frame_count_finished,
+            stats,
+        ),
+        .image => |images| drawImageBatch(
+            encoder,
+            images,
+            pipelines.*,
+            viewport_size,
+            scene.frame_count_finished,
+            stats,
+        ),
         .path => |paths| drawPathBatch(encoder, paths, scene, pipelines.*, viewport_size, stats),
         // Mesh geometry is claimed against the window budget; the frame number
         // names the failing frame if a claim exceeds it.
@@ -184,18 +206,14 @@ fn drawGlyphBatch(
     glyphs: []const scene_mod.GlyphInstance,
     pipelines: Pipelines,
     viewport_size: [2]f32,
+    frame: u64,
     stats: ?*render_stats.RenderStats,
 ) void {
     if (glyphs.len == 0) return;
     const tp = pipelines.text orelse return;
 
-    // Use renderBatch which copies data inline via setVertexBytes,
-    // safe for multiple calls per frame (unlike render which uses shared buffer)
-    tp.renderBatch(encoder, glyphs, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawGlyphBatch failed: {}\n", .{err});
-        }
-    };
+    // Appends to this frame's instance slot; claimed against the window budget.
+    tp.renderBatch(encoder, glyphs, .{ .viewport_size = viewport_size, .frame = frame });
 
     if (stats) |s| {
         s.recordDrawCall();
@@ -209,14 +227,15 @@ fn drawSvgBatch(
     svgs: []const @import("../../../scene/svg_instance.zig").SvgInstance,
     pipelines: Pipelines,
     viewport_size: [2]f32,
+    frame: u64,
     stats: ?*render_stats.RenderStats,
 ) void {
     if (svgs.len == 0) return;
     const sp = pipelines.svg orelse return;
 
-    // Use renderBatch which copies data inline via setVertexBytes,
-    // safe for multiple calls per frame (unlike render which uses shared buffer)
-    sp.renderBatch(encoder, svgs, viewport_size) catch |err| {
+    // Appends to this frame's instance slot; claimed against the window budget.
+    // An error means the atlas texture could not be created.
+    sp.renderBatch(encoder, svgs, .{ .viewport_size = viewport_size, .frame = frame }) catch |err| {
         if (builtin.mode == .debug) {
             std.debug.print("drawSvgBatch failed: {}\n", .{err});
         }
@@ -234,18 +253,14 @@ fn drawImageBatch(
     images: []const @import("../../../scene/image_instance.zig").ImageInstance,
     pipelines: Pipelines,
     viewport_size: [2]f32,
+    frame: u64,
     stats: ?*render_stats.RenderStats,
 ) void {
     if (images.len == 0) return;
     const ip = pipelines.image orelse return;
 
-    // Use renderBatch which copies data inline via setVertexBytes,
-    // safe for multiple calls per frame (unlike render which uses shared buffer)
-    ip.renderBatch(encoder, images, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawImageBatch failed: {}\n", .{err});
-        }
-    };
+    // Appends to this frame's instance slot; claimed against the window budget.
+    ip.renderBatch(encoder, images, .{ .viewport_size = viewport_size, .frame = frame });
 
     if (stats) |s| {
         s.recordDrawCall();
