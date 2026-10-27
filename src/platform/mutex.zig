@@ -251,6 +251,7 @@ test "ExclusionSet keeps every other thread out and leaves the caller's own lock
                 }
                 _ = shared.frames.fetchAdd(1, .monotonic);
                 shared.window_b.unlock();
+                std.Thread.yield() catch std.atomic.spinLoopHint();
             }
         }
     };
@@ -271,9 +272,13 @@ test "ExclusionSet keeps every other thread out and leaves the caller's own lock
         shared.reloading.store(false, .release);
         exclusion.release();
 
-        // Let the render thread take window B between reloads.
+        // Let the render thread take window B between reloads. Both threads yield
+        // rather than spin: Valgrind runs one thread at a time and switches only on
+        // a syscall or after a long timeslice, so spin waits took 17 minutes there.
         const frames_before = shared.frames.load(.monotonic);
-        while (shared.frames.load(.monotonic) == frames_before) std.atomic.spinLoopHint();
+        while (shared.frames.load(.monotonic) == frames_before) {
+            std.Thread.yield() catch std.atomic.spinLoopHint();
+        }
     }
 
     try std.testing.expect(shared.window_a.heldByCurrentThread());
