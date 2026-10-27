@@ -467,26 +467,28 @@ pub const WindowLimits = struct {
     framebuffer_width_max: u32,
     framebuffer_height_max: u32,
 
-    /// Counter-class windows: counter at 2x is 1,000 x 700 physical pixels.
-    /// Two `wl_shm` frames map 7.8 MiB.
+    /// Counter-class windows up to 1,280 x 800 points on a 2x Retina display (the
+    /// budget is physical pixels). Two `wl_shm` frames map 31.3 MiB of virtual
+    /// memory; pages become resident only for the window's actual size.
     pub const nano: WindowLimits = .{
-        .framebuffer_width_max = 1280,
-        .framebuffer_height_max = 800,
+        .framebuffer_width_max = 2560,
+        .framebuffer_height_max = 1600,
     };
 
-    /// Single-screen windows: todo at 2x is 960 x 1,120. Two `wl_shm` frames map
-    /// 17.6 MiB.
+    /// Single-screen windows up to 1,920 x 1,080 points at 2x. Two `wl_shm` frames
+    /// map 63.3 MiB of virtual memory; resident pages follow the window size.
     pub const small: WindowLimits = .{
-        .framebuffer_width_max = 1920,
-        .framebuffer_height_max = 1200,
-    };
-
-    /// 4K UHD, kept so a full-screen 4K window renders at full scale (memory budget
-    /// decision 2 kept it). Two `wl_shm` frames of this size map 63.3 MiB per
-    /// window; pages are touched, and so resident, only for the window's actual size.
-    pub const standard: WindowLimits = .{
         .framebuffer_width_max = 3840,
         .framebuffer_height_max = 2160,
+    };
+
+    /// Full screen at full scale on a 4K UHD display (3,840 wide) and on a 16"
+    /// MacBook Pro (3,456 x 2,234), memory budget decision 2. Two `wl_shm` frames
+    /// map 70.3 MiB per window; pages are touched, and so resident, only for the
+    /// window's actual size.
+    pub const standard: WindowLimits = .{
+        .framebuffer_width_max = 3840,
+        .framebuffer_height_max = 2400,
     };
 
     /// 5K, for full-screen windows on high-density desktop panels.
