@@ -357,6 +357,10 @@ pub const Renderer = struct {
             .height = size.height * scale_factor,
         }});
 
+        // Known CLAUDE.md §2 gap, tracked in docs/v0.4.0-plan.md: the MSAA texture
+        // is recreated at the drawable size on every resize. A budget-sized texture
+        // cannot replace it, because Metal validation requires the MSAA texture and
+        // its resolve texture to have the same size.
         if (self.msaa_texture) |tex| tex.release();
         self.msaa_texture = pipelines.createMSAATexture(
             self.device,
