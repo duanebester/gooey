@@ -322,6 +322,16 @@ pub const LinuxPlatform = struct {
         return self.window_registry.get(id);
     }
 
+    /// Wayland frames render on the main thread inside the event loop, so a
+    /// main-thread caller already excludes every frame; there is no lock.
+    pub fn lockRenderThreads(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+    }
+
+    pub fn unlockRenderThreads(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+    }
+
     /// Get the active window ID.
     pub fn getActiveWindowId(self: *const Self) ?WindowId {
         return self.window_registry.getActiveWindow();

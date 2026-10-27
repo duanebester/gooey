@@ -697,7 +697,7 @@ pub const CodeEditorState = struct {
     fn measureLineNumber(self: *Self, text_system: *TextSystem, text: []const u8) !f32 {
         _ = self;
         if (text.len == 0) return 0;
-        return text_system.measureText(text);
+        return text_system.measureText(text, .regular);
     }
 
     fn renderContent(self: *Self, scene: *Scene, text_system: *TextSystem, scale_factor: f32) !void {

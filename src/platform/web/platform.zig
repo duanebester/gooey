@@ -119,6 +119,16 @@ pub const WebPlatform = struct {
         std.debug.assert(!self.window_registry.contains(id));
     }
 
+    /// The browser renders frames on the one WASM thread, so a caller already
+    /// excludes every frame; there is no lock.
+    pub fn lockRenderThreads(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= 1);
+    }
+
+    pub fn unlockRenderThreads(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= 1);
+    }
+
     /// Get a window by ID.
     pub fn getWindow(self: *const Self, id: WindowId) ?*anyopaque {
         const found = self.window_registry.get(id);

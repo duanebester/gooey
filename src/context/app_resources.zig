@@ -25,6 +25,7 @@ const Allocator = std.mem.Allocator;
 
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
+const FontLimits = text_mod.FontLimits;
 
 const svg_mod = @import("../svg/mod.zig");
 const SvgAtlas = svg_mod.SvgAtlas;
@@ -43,6 +44,9 @@ pub const FontConfig = struct {
     font_name: ?[]const u8 = null,
     /// Font size in points. Asserted `> 0` and `< 1000` at load time.
     font_size: f32 = 16.0,
+    /// The faces loaded at init, one per variant. `FontLimits.standard`
+    /// (regular, medium, semibold, bold, italic, bold italic) is the default.
+    limits: FontLimits = FontLimits.standard,
 
     /// Default config — system sans-serif at 16pt.
     pub const default = FontConfig{};
@@ -98,7 +102,7 @@ pub const AppResources = struct {
 
         const text_system = try allocator.create(TextSystem);
         errdefer allocator.destroy(text_system);
-        text_system.* = try TextSystem.initWithScale(allocator, scale, io);
+        try text_system.initInPlace(allocator, scale, io, &font_config.limits);
         errdefer text_system.deinit();
 
         if (font_config.font_name) |name| {
@@ -157,7 +161,7 @@ pub const AppResources = struct {
 
         const text_system = try allocator.create(TextSystem);
         errdefer allocator.destroy(text_system);
-        try text_system.initInPlace(allocator, scale, io);
+        try text_system.initInPlace(allocator, scale, io, &font_config.limits);
         errdefer text_system.deinit();
 
         if (font_config.font_name) |name| {

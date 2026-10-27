@@ -7,11 +7,13 @@ const std = @import("std");
 const ft = @import("bindings.zig");
 const types = @import("../../types.zig");
 const font_face_mod = @import("../../font_face.zig");
+const font_match = @import("../../font_match.zig");
 
 const Metrics = types.Metrics;
 const GlyphMetrics = types.GlyphMetrics;
 const RasterizedGlyph = types.RasterizedGlyph;
 const SystemFont = types.SystemFont;
+const FontVariant = types.FontVariant;
 const FontFace = font_face_mod.FontFace;
 
 /// Global FreeType library instance (initialized once)
@@ -62,21 +64,25 @@ pub const FreeTypeFace = struct {
 
     const Self = @This();
 
-    /// Load a font by name using Fontconfig
-    pub fn init(name: []const u8, size: f32) !Self {
+    /// Load one variant of a family by name using Fontconfig.
+    ///
+    /// Selection: Fontconfig resolves `name` to an installed family, then the
+    /// family's real faces are listed and `font_match.select` picks one by the
+    /// CSS font matching rule. Fallback policy: nothing is synthesized. A
+    /// family without the requested weight or slant renders with the face CSS
+    /// matching picks, and init logs a warning naming the request and the face.
+    pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
-        // Use Fontconfig to find the font file
-        var font_path = try findFontPath(name, null) orelse {
-            std.log.err("Font not found: {s}", .{name});
+        const font_path = try findFontPath(name, null, variant) orelse {
+            std.log.err("Font not found: {s} ({s})", .{ name, @tagName(variant) });
             return error.FontNotFound;
         };
-
-        return initFromPath(library, font_path.pathSlice(), font_path.path_len, size);
+        return initFromPath(library, &font_path, size);
     }
 
-    /// Load a system font
-    pub fn initSystem(style: SystemFont, size: f32) !Self {
+    /// Load one variant of a system family, with the same policy as `init`.
+    pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
         // Map system font style to Fontconfig pattern
@@ -92,87 +98,259 @@ pub const FreeTypeFace = struct {
             else => null,
         };
 
-        var font_path = try findFontPath(family, spacing) orelse {
-            std.log.err("System font not found: {s}", .{family});
+        const font_path = try findFontPath(family, spacing, variant) orelse {
+            std.log.err("System font not found: {s} ({s})", .{ family, @tagName(variant) });
             return error.FontNotFound;
         };
-
-        return initFromPath(library, font_path.pathSlice(), font_path.path_len, size);
+        return initFromPath(library, &font_path, size);
     }
 
     const FontPathResult = struct {
         path_buf: [512]u8,
         path_len: usize,
+        /// Face index within the file: a collection member, or a named
+        /// instance of a variable font (Fontconfig encodes both in `FC_INDEX`).
+        face_index: c_int,
 
         pub fn pathSlice(self: *const FontPathResult) [:0]const u8 {
             return self.path_buf[0..self.path_len :0];
         }
     };
 
-    fn findFontPath(family: []const u8, spacing: ?c_int) !?FontPathResult {
-        // Create Fontconfig pattern
+    /// Resolve `family` to an installed family, then pick the variant's face
+    /// from that family's face list. Falls back to Fontconfig's own match only
+    /// when the list is empty, which a family Fontconfig just matched cannot
+    /// normally produce.
+    fn findFontPath(family: []const u8, spacing: ?c_int, variant: FontVariant) !?FontPathResult {
+        std.debug.assert(family.len > 0);
+
+        const matched = try matchFamily(family, spacing) orelse return null;
+        defer ft.FcPatternDestroy(matched);
+
+        var resolved_family: ?[*:0]const ft.FcChar8 = null;
+        if (ft.FcPatternGetString(matched, ft.FC_FAMILY, 0, &resolved_family) != .FcResultMatch) {
+            resolved_family = null;
+        }
+
+        // Keep the resolved face's width, so a condensed family stays condensed.
+        const matched_candidate = faceCandidate(matched);
+        const stretch = if (matched_candidate) |c| c.stretch else font_match.stretch_normal;
+
+        if (resolved_family) |resolved| {
+            const font_set = try listFamilyFaces(resolved, spacing);
+            defer ft.FcFontSetDestroy(font_set);
+
+            if (try selectFace(font_set, variant, stretch)) |selection| {
+                warnInexactFace(family, variant, selection.candidate);
+                return selection.path;
+            }
+        }
+
+        const result = try copyFontPath(matched) orelse return null;
+        if (matched_candidate) |candidate| warnInexactFace(family, variant, candidate);
+        return result;
+    }
+
+    /// Fontconfig's best match for the family alone (weight and slant left at
+    /// their defaults), which resolves generic names like "sans-serif".
+    fn matchFamily(family: []const u8, spacing: ?c_int) !?*ft.FcPattern {
         const pattern = ft.FcPatternCreate() orelse return error.FontconfigError;
         defer ft.FcPatternDestroy(pattern);
 
-        // Add family name
         var family_buf: [256]u8 = undefined;
         if (family.len >= family_buf.len) return error.FontNameTooLong;
         @memcpy(family_buf[0..family.len], family);
         family_buf[family.len] = 0;
 
         _ = ft.FcPatternAddString(pattern, ft.FC_FAMILY, family_buf[0..family.len :0]);
-
-        // Request scalable fonts
         _ = ft.FcPatternAddBool(pattern, ft.FC_SCALABLE, 1);
-
-        // Add spacing constraint for monospace
         if (spacing) |sp| {
             _ = ft.FcPatternAddInteger(pattern, ft.FC_SPACING, sp);
         }
 
-        // Apply default substitutions
         _ = ft.FcConfigSubstitute(null, pattern, .FcMatchPattern);
         ft.FcDefaultSubstitute(pattern);
 
-        // Find best match
         var fc_result: ft.FcResult = undefined;
-        const matched = ft.FcFontMatch(null, pattern, &fc_result) orelse {
+        const matched = ft.FcFontMatch(null, pattern, &fc_result) orelse return null;
+        if (fc_result != .FcResultMatch) {
+            ft.FcPatternDestroy(matched);
+            return null;
+        }
+        return matched;
+    }
+
+    /// Every scalable face of one family, with the properties selection needs.
+    /// Listing bypasses Fontconfig's synthetic-style rules, so each face
+    /// reports its real weight and slant. The caller destroys the set.
+    fn listFamilyFaces(family: [*:0]const ft.FcChar8, spacing: ?c_int) !*ft.FcFontSet {
+        const pattern = ft.FcPatternCreate() orelse return error.FontconfigError;
+        defer ft.FcPatternDestroy(pattern);
+
+        _ = ft.FcPatternAddString(pattern, ft.FC_FAMILY, family);
+        _ = ft.FcPatternAddBool(pattern, ft.FC_SCALABLE, 1);
+        if (spacing) |sp| {
+            _ = ft.FcPatternAddInteger(pattern, ft.FC_SPACING, sp);
+        }
+
+        const object_set = ft.FcObjectSetCreate() orelse return error.FontconfigError;
+        defer ft.FcObjectSetDestroy(object_set);
+
+        const objects = [_][*:0]const u8{
+            ft.FC_FILE,
+            ft.FC_INDEX,
+            ft.FC_WEIGHT,
+            ft.FC_SLANT,
+            ft.FC_WIDTH,
+        };
+        for (objects) |object| {
+            if (ft.FcObjectSetAdd(object_set, object) == 0) return error.FontconfigError;
+        }
+
+        const font_set = ft.FcFontList(null, pattern, object_set) orelse {
+            return error.FontconfigError;
+        };
+        std.debug.assert(font_set.nfont >= 0);
+        return font_set;
+    }
+
+    const FaceSelection = struct {
+        path: FontPathResult,
+        candidate: font_match.Candidate,
+    };
+
+    /// The face of `font_set` CSS matching picks for `variant`, or null when
+    /// no listed face has a usable weight and slant.
+    fn selectFace(
+        font_set: *const ft.FcFontSet,
+        variant: FontVariant,
+        stretch: u16,
+    ) !?FaceSelection {
+        const listed_count: u32 = @intCast(font_set.nfont);
+        const considered_count = @min(listed_count, font_match.candidate_count_max);
+        if (listed_count > considered_count) {
+            std.log.warn("font family lists {d} faces; matching considers the first {d}", .{
+                listed_count,
+                considered_count,
+            });
+        }
+
+        var candidates: [font_match.candidate_count_max]font_match.Candidate = undefined;
+        var patterns: [font_match.candidate_count_max]*ft.FcPattern = undefined;
+        var candidate_count: u32 = 0;
+        for (font_set.fonts[0..considered_count]) |pattern| {
+            // A variable font's default instance reports a weight range; its
+            // named instances are listed separately with single weights.
+            const candidate = faceCandidate(pattern) orelse continue;
+            candidates[candidate_count] = candidate;
+            patterns[candidate_count] = pattern;
+            candidate_count += 1;
+        }
+        std.debug.assert(candidate_count <= considered_count);
+
+        const index = font_match.select(candidates[0..candidate_count], variant, stretch) orelse {
             return null;
         };
-        defer ft.FcPatternDestroy(matched);
+        std.debug.assert(index < candidate_count);
+        const path = try copyFontPath(patterns[index]) orelse return null;
+        return .{ .path = path, .candidate = candidates[index] };
+    }
 
-        if (fc_result != .FcResultMatch) {
+    /// A face's CSS weight, slant, and width, or null when the weight or slant
+    /// is missing or a range. A missing or ranged width counts as normal.
+    fn faceCandidate(pattern: *ft.FcPattern) ?font_match.Candidate {
+        var fc_weight: c_int = 0;
+        if (ft.FcPatternGetInteger(pattern, ft.FC_WEIGHT, 0, &fc_weight) != .FcResultMatch) {
+            return null;
+        }
+        var fc_slant: c_int = 0;
+        if (ft.FcPatternGetInteger(pattern, ft.FC_SLANT, 0, &fc_slant) != .FcResultMatch) {
             return null;
         }
 
-        // Get file path from matched pattern
-        var file_path: ?[*:0]const ft.FcChar8 = null;
-        const path_result = ft.FcPatternGetString(matched, ft.FC_FILE, 0, &file_path);
+        // Fontconfig widths are already CSS `font-stretch` percentages.
+        var fc_width: c_int = font_match.stretch_normal;
+        if (ft.FcPatternGetInteger(pattern, ft.FC_WIDTH, 0, &fc_width) != .FcResultMatch) {
+            fc_width = font_match.stretch_normal;
+        }
+        const stretch = std.math.clamp(fc_width, font_match.stretch_min, font_match.stretch_max);
 
+        const css_weight = std.math.clamp(ft.FcWeightToOpenType(fc_weight), 1, 1000);
+        const slant: font_match.Slant = switch (fc_slant) {
+            ft.FC_SLANT_ROMAN => .upright,
+            ft.FC_SLANT_ITALIC => .italic,
+            else => .oblique,
+        };
+        const candidate: font_match.Candidate = .{
+            .weight = @intCast(css_weight),
+            .slant = slant,
+            .stretch = @intCast(stretch),
+        };
+        std.debug.assert(candidate.weight >= 1);
+        std.debug.assert(candidate.weight <= 1000);
+        return candidate;
+    }
+
+    /// Copy a pattern's file path and face index out before it is destroyed.
+    fn copyFontPath(pattern: *ft.FcPattern) !?FontPathResult {
+        var file_path: ?[*:0]const ft.FcChar8 = null;
+        const path_result = ft.FcPatternGetString(pattern, ft.FC_FILE, 0, &file_path);
         if (path_result != .FcResultMatch or file_path == null) {
             return null;
         }
 
-        // Calculate length
-        var len: usize = 0;
-        while (file_path.?[len] != 0) : (len += 1) {}
+        var face_index: c_int = 0;
+        if (ft.FcPatternGetInteger(pattern, ft.FC_INDEX, 0, &face_index) != .FcResultMatch) {
+            face_index = 0;
+        }
+        std.debug.assert(face_index >= 0);
 
-        // Copy path before pattern is destroyed (defer above)
-        if (len >= 511) return error.FontPathTooLong;
+        const path = std.mem.span(file_path.?);
+        if (path.len >= 511) return error.FontPathTooLong;
 
         var font_result = FontPathResult{
             .path_buf = undefined,
-            .path_len = len,
+            .path_len = path.len,
+            .face_index = face_index,
         };
-        @memcpy(font_result.path_buf[0..len], file_path.?[0..len]);
-        font_result.path_buf[len] = 0;
-
+        @memcpy(font_result.path_buf[0..path.len], path);
+        font_result.path_buf[path.len] = 0;
+        std.debug.assert(font_result.pathSlice().len == path.len);
         return font_result;
     }
 
-    fn initFromPath(library: ft.FT_Library, path: [:0]const u8, path_len: usize, size: f32) !Self {
+    /// Log when the chosen face's weight class or slant differs from the
+    /// request, so a family without that face does not fall back silently.
+    fn warnInexactFace(
+        family: []const u8,
+        variant: FontVariant,
+        chosen: font_match.Candidate,
+    ) void {
+        const weight_requested = variant.weight().cssWeight();
+        const weight_class = font_match.weightClass(chosen.weight);
+        if (weight_class != weight_requested) {
+            std.log.warn("font '{s}' has no {d} face for '{s}'; using weight {d}", .{
+                family,
+                weight_requested,
+                @tagName(variant),
+                chosen.weight,
+            });
+        }
+        if (!font_match.slantMatches(chosen.slant, variant.isItalic())) {
+            std.log.warn("font '{s}' has no {s} face for '{s}'; using an {s} face", .{
+                family,
+                if (variant.isItalic()) "italic" else "upright",
+                @tagName(variant),
+                @tagName(chosen.slant),
+            });
+        }
+    }
+
+    fn initFromPath(library: ft.FT_Library, font_path: *const FontPathResult, size: f32) !Self {
+        const path = font_path.pathSlice();
+        const path_len = font_path.path_len;
         var ft_face: ft.FT_Face = undefined;
-        const err = ft.FT_New_Face(library, path.ptr, 0, &ft_face);
+        const err = ft.FT_New_Face(library, path.ptr, font_path.face_index, &ft_face);
         if (err != 0) {
             std.log.err("FreeType face load error: {s}", .{ft.ftErrorString(err)});
             return error.FontLoadFailed;
@@ -566,7 +744,7 @@ fn renderGlyphInternal(
 // =============================================================================
 
 test "load system font" {
-    var face = try FreeTypeFace.initSystem(.monospace, 14.0);
+    var face = try FreeTypeFace.initSystem(.monospace, 14.0, .regular);
     defer face.deinit();
 
     try std.testing.expect(face.metrics.ascender > 0);

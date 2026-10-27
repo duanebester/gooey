@@ -71,6 +71,11 @@ pub const App = @import("app.zig").App;
 /// `large` (dense content), `ceiling` (framework maxima, for stress tests).
 pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 
+/// The font faces every text system loads at init, declared at `App`
+/// (`.font_limits = ...`). Profiles: `standard` (regular, medium, semibold,
+/// bold, italic, bold italic), `minimal` (regular only), `ceiling` (all 14).
+pub const FontLimits = @import("core/limits.zig").FontLimits;
+
 /// The unified rendering context handed to every `render` callback.
 /// Holds the state pointer, layout builder, animation pools, and the
 /// `cx.lists` / `cx.animations` / `cx.focus` / `cx.entities` /
@@ -340,6 +345,9 @@ test {
 
         // Platform-independent web input buffer logic.
         @import("platform/web/composition_buffer.zig"),
+
+        // Render-thread mutex and the render exclusion `Window.setFont` holds.
+        @import("platform/mutex.zig"),
 
         // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
         // its capacity tests run on every OS, not only where the renderer builds.

@@ -19,11 +19,12 @@
 //! ## Usage
 //!
 //! ```zig
-//! var text = try TextSystem.init(allocator, io);
+//! const text = try allocator.create(TextSystem);
+//! try text.initInPlace(allocator, 1.0, io, &FontLimits.standard);
 //! defer text.deinit();
 //!
 //! try text.loadSystemFont(.monospace, 14.0);
-//! const width = try text.measureText("Hello, World!");
+//! const width = try text.measureText("Hello, World!", .bold);
 //! ```
 //!
 //! The `io` parameter is stored on the struct so lock sites on render
@@ -41,11 +42,15 @@ pub const ShapedRun = types.ShapedRun;
 pub const TextMeasurement = types.TextMeasurement;
 pub const MeasureTextOptions = types.MeasureTextOptions;
 pub const SystemFont = types.SystemFont;
+pub const FontWeight = types.FontWeight;
+pub const FontVariant = types.FontVariant;
+pub const FontLimits = @import("../core/limits.zig").FontLimits;
 pub const TextDecoration = types.TextDecoration;
 pub const RasterizedGlyph = types.RasterizedGlyph;
 
 // Interfaces
 pub const font_face = @import("font_face.zig");
+pub const font_match = @import("font_match.zig");
 pub const FontFace = font_face.FontFace;
 
 // Infrastructure

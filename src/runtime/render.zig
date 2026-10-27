@@ -204,6 +204,7 @@ fn renderText(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
 
     const use_clip = window_ctx.next_frame.scene.hasActiveClip();
     var opts = text_mod.RenderTextOptions{
+        .variant = text_mod.FontVariant.fromFontId(text_data.font_id),
         .clipped = use_clip,
         .decoration = .{
             .underline = text_data.underline,

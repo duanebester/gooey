@@ -13,6 +13,15 @@ const file_dialog = @import("file_dialog.zig");
 const window_registry = @import("../window_registry.zig");
 const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
+const mutex_mod = @import("../mutex.zig");
+const MacWindow = @import("window.zig").Window;
+
+/// Nonzero when the calling thread is the process's main thread.
+extern "c" fn pthread_main_np() c_int;
+
+comptime {
+    assert(WindowRegistry.MAX_WINDOWS <= mutex_mod.ExclusionSet.mutex_count_max);
+}
 
 // External Foundation constants - linked at runtime
 extern "c" var NSDefaultRunLoopMode: *anyopaque;
@@ -36,6 +45,9 @@ pub const MacPlatform = struct {
 
     /// Owner hook fired once per `run` iteration; see `setLoopTurnCallback`.
     loop_turn_callback: ?LoopTurnCallback = null,
+
+    /// Render mutexes held between `lockRenderThreads` and `unlockRenderThreads`.
+    render_exclusion: mutex_mod.ExclusionSet = .{},
 
     const Self = @This();
 
@@ -94,6 +106,7 @@ pub const MacPlatform = struct {
         self.delegate = null;
         self.running = false;
         self.loop_turn_callback = null;
+        self.render_exclusion = .{};
 
         self.window_registry = WindowRegistry.init(allocator);
         errdefer self.window_registry.deinit();
@@ -162,6 +175,41 @@ pub const MacPlatform = struct {
             assert(self.window_registry.contains(active));
         }
         self.window_registry.setActiveWindow(id);
+    }
+
+    /// Hold every window's `render_mutex`, the lock each CVDisplayLink frame
+    /// takes, so no frame runs until `unlockRenderThreads`. A window whose lock
+    /// the caller already holds (input dispatch runs handlers inside it) is
+    /// skipped and stays held. Main thread only: render threads would then be
+    /// a second thread holding several render locks, which can deadlock.
+    pub fn lockRenderThreads(self: *Self) void {
+        if (pthread_main_np() == 0) {
+            std.debug.panic(
+                "MacPlatform.lockRenderThreads called off the main thread; " ++
+                    "call cx.setFont from on_init or an event handler, not from render",
+                .{},
+            );
+        }
+        assert(self.render_exclusion.acquired_count == 0);
+
+        var mutexes: [WindowRegistry.MAX_WINDOWS]*mutex_mod.Mutex = undefined;
+        var mutex_count: u32 = 0;
+        var ids = self.window_registry.iterator();
+        while (ids.next()) |id| {
+            assert(mutex_count < WindowRegistry.MAX_WINDOWS);
+            const window: *MacWindow = @ptrCast(@alignCast(self.window_registry.get(id.*).?));
+            mutexes[mutex_count] = &window.render_mutex;
+            mutex_count += 1;
+        }
+        self.render_exclusion.acquire(mutexes[0..mutex_count]);
+
+        assert(mutex_count == self.window_registry.count());
+    }
+
+    pub fn unlockRenderThreads(self: *Self) void {
+        assert(pthread_main_np() != 0);
+        self.render_exclusion.release();
+        assert(self.render_exclusion.acquired_count == 0);
     }
 
     /// Get the number of registered windows.

@@ -40,6 +40,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
+const FontLimits = @import("../core/limits.zig").FontLimits;
 const builtin = @import("builtin");
 
 // Enable verbose init logging for debugging stack overflow issues
@@ -215,6 +216,10 @@ pub const FontConfig = struct {
 
     /// Font size in points.
     font_size: f32 = 16.0,
+
+    /// The faces loaded at init, one per variant. `FontLimits.standard`
+    /// (regular, medium, semibold, bold, italic, bold italic) is the default.
+    limits: FontLimits = FontLimits.standard,
 
     /// Default config — system sans-serif at 16pt.
     pub const default = FontConfig{};
@@ -545,6 +550,7 @@ pub const Window = struct {
             .{
                 .font_name = font_config.font_name,
                 .font_size = font_config.font_size,
+                .limits = font_config.limits,
             },
         );
         errdefer self.resources.deinit();
@@ -1377,11 +1383,24 @@ pub const Window = struct {
 
     /// Change the font at runtime. Clears glyph and shape caches.
     /// Triggers a re-render so the new font takes effect immediately.
+    ///
+    /// The reload replaces faces every window's frames read (multi-window
+    /// apps share one text system), and on macOS those frames run on
+    /// CVDisplayLink threads. Holding the platform's render exclusion for the
+    /// whole reload means no frame ever sees a partial or empty face set.
+    /// Call it from `on_init` or an event handler, not from render.
     pub fn setFont(self: *Self, name: []const u8, size: f32) !void {
         std.debug.assert(name.len > 0);
         std.debug.assert(size > 0 and size < 1000);
 
-        try self.resources.text_system.loadFont(name, size);
+        if (self.platform_window) |platform_window| {
+            const plat = platform_window.getPlatform();
+            plat.lockRenderThreads();
+            defer plat.unlockRenderThreads();
+            try self.resources.text_system.loadFont(name, size);
+        } else {
+            try self.resources.text_system.loadFont(name, size);
+        }
         self.requestRender();
     }
 
@@ -1536,7 +1555,7 @@ pub const Window = struct {
 
 fn measureTextCallback(
     text_content: []const u8,
-    _: u16, // font_id (future use)
+    font_id: u16,
     font_size: u16,
     _: ?f32, // max_width
     user_data: ?*anyopaque,
@@ -1557,7 +1576,10 @@ fn measureTextCallback(
         // Assertion: scale must be positive
         std.debug.assert(scale > 0);
 
-        const base_width = text_system.measureText(text_content) catch 0;
+        // Measure with the face that renders this text (`font_id` is its
+        // `FontVariant`): bold is wider than regular for the same string.
+        const variant = text_mod.FontVariant.fromFontId(font_id);
+        const base_width = text_system.measureText(text_content, variant) catch 0;
         return .{
             .width = base_width * scale,
             .height = metrics.line_height * scale,
@@ -1758,5 +1780,35 @@ test "DrawPhase: drawPhase mirrors current_phase across multiple ladders" {
         try testing.expectEqual(DrawPhase.focus, g.drawPhase());
         g.advancePhase(.none);
         try testing.expectEqual(DrawPhase.none, g.drawPhase());
+    }
+}
+
+test "layout measures text with the requested face: bold is wider than regular" {
+    // Goal: the layout's measurement entry point honours `font_id`, so a bold
+    // run is laid out at its rendered width instead of the regular face's.
+    // Methodology: load the standard face set from the system sans-serif and
+    // measure one string through the callback the layout engine calls, at the
+    // base size and at a scaled size. Bold glyphs have wider advances in every
+    // sans-serif family with a real bold face, so a wrong face shows up as
+    // equal widths. The width cache is keyed per face, so the regular repeat
+    // must also return its own width rather than the bold one.
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard);
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 16);
+
+    const sample = "Hello, World! 0123";
+    const regular_id = text_mod.FontVariant.regular.fontId();
+    const bold_id = text_mod.FontVariant.bold.fontId();
+    for ([_]u16{ 16, 24 }) |font_size| {
+        const regular = measureTextCallback(sample, regular_id, font_size, null, text_system);
+        const bold = measureTextCallback(sample, bold_id, font_size, null, text_system);
+        const regular_again = measureTextCallback(sample, regular_id, font_size, null, text_system);
+        try testing.expect(regular.width > 0);
+        try testing.expect(bold.width > regular.width);
+        try testing.expectEqual(regular.width, regular_again.width);
+        // Line height comes from the regular face, so mixed runs share rows.
+        try testing.expectEqual(regular.height, bold.height);
     }
 }
