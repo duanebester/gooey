@@ -66,7 +66,8 @@ pub const Renderer = struct {
     const Self = @This();
 
     /// `scene_limits` is the window's validated budget; the quad/shadow instance ring
-    /// is reserved from it instead of the framework ceilings.
+    /// and the mesh pipelines' per-frame geometry buffers are reserved from it
+    /// instead of the framework ceilings.
     pub fn init(
         allocator: std.mem.Allocator,
         layer: objc.Object,
@@ -95,9 +96,8 @@ pub const Renderer = struct {
         assert(drawable_count_max >= 2);
         assert(drawable_count_max <= scene_renderer.UnifiedPrimitiveRing.frame_count);
 
-        var unified_primitive_ring =
+        const unified_primitive_ring =
             try scene_renderer.UnifiedPrimitiveRing.init(device, scene_limits);
-        errdefer unified_primitive_ring.deinit();
 
         var self = Self{
             .device = device,
@@ -121,6 +121,8 @@ pub const Renderer = struct {
             .post_process_state = null,
             .allocator = allocator,
         };
+        // Releases the ring and every optional resource created below.
+        errdefer self.deinit();
 
         self.msaa_texture = try pipelines.createMSAATexture(
             device,
@@ -135,11 +137,12 @@ pub const Renderer = struct {
         self.quad_unit_vertex_buffer = try pipelines.createUnitVertexBuffer(device, unified_memory);
 
         self.initOptionalPipelines(sample_count);
+        try self.initMeshPipelines(sample_count, scene_limits);
         return self;
     }
 
-    /// Create the optional pipelines. Each one that fails to build stays null and its
-    /// primitives are skipped, as before this was split out of `init`.
+    /// Create the text, SVG and image pipelines. Each one that fails to build stays
+    /// null and its primitives are skipped, as before this was split out of `init`.
     fn initOptionalPipelines(self: *Self, sample_count: u32) void {
         assert(sample_count > 0);
         assert(self.text_pipeline_state == null);
@@ -151,7 +154,7 @@ pub const Renderer = struct {
             sample_count,
         ) catch null;
 
-        // Instanced pipelines for SVGs, images, paths, chart polylines, and scatter points.
+        // Instanced pipelines for SVGs and images.
         const allocator = self.allocator;
         const samples: u32 = sample_count;
         self.svg_pipeline_state = svg_pipeline.SvgPipeline.init(
@@ -164,27 +167,76 @@ pub const Renderer = struct {
             device,
             @intCast(samples),
         ) catch null;
-        self.path_pipeline_state = path_pipeline.PathPipeline.init(
-            allocator,
+    }
+
+    /// Create the path, polyline and point-cloud pipelines with their per-frame
+    /// geometry buffers sized from `scene_limits`. A failure here is fatal rather
+    /// than skipped: a missing pipeline would silently drop geometry the scene
+    /// accepted within its budget (CLAUDE.md §2).
+    fn initMeshPipelines(
+        self: *Self,
+        sample_count: u32,
+        scene_limits: *const SceneLimits,
+    ) !void {
+        assert(sample_count > 0);
+        assert(self.path_pipeline_state == null);
+        const device = self.device;
+        try checkMeshReservation(device, scene_limits);
+        self.path_pipeline_state = try path_pipeline.PathPipeline.init(
             device,
-            @intCast(samples),
-        ) catch null;
-        self.polyline_pipeline_state = polyline_pipeline.PolylinePipeline.init(
-            allocator,
+            sample_count,
+            scene_limits,
+        );
+        self.polyline_pipeline_state = try polyline_pipeline.PolylinePipeline.init(
             device,
-            @intCast(samples),
-        ) catch null;
-        self.point_cloud_pipeline_state = point_cloud_pipeline.PointCloudPipeline.init(
-            allocator,
+            sample_count,
+            scene_limits,
+        );
+        self.point_cloud_pipeline_state = try point_cloud_pipeline.PointCloudPipeline.init(
             device,
-            @intCast(samples),
-        ) catch null;
+            sample_count,
+            scene_limits,
+        );
         const ColoredPointCloudPipeline = colored_point_cloud_pipeline.ColoredPointCloudPipeline;
-        self.colored_point_cloud_pipeline_state = ColoredPointCloudPipeline.init(
-            allocator,
+        self.colored_point_cloud_pipeline_state = try ColoredPointCloudPipeline.init(
             device,
-            @intCast(samples),
-        ) catch null;
+            sample_count,
+            scene_limits,
+        );
+    }
+
+    /// Fail init when one window's mesh reservation exceeds the device's
+    /// recommended working set. `createFrameBuffers` checks each buffer against
+    /// `maxBufferLength` only, and on Apple silicon that is a large fraction of
+    /// system memory: `.ceiling` reserves 26,750,976,000 B per window in buffers
+    /// that each pass it, so the total must be checked separately.
+    fn checkMeshReservation(device: objc.Object, scene_limits: *const SceneLimits) !void {
+        assert(scene_limits.check() == null);
+        const reservation_bytes = meshReservationBytes(scene_limits);
+        const working_set_bytes_max: u64 = device.msgSend(u64, "recommendedMaxWorkingSetSize", .{});
+        assert(reservation_bytes > 0);
+        assert(working_set_bytes_max > 0);
+        if (reservation_bytes <= working_set_bytes_max) return;
+
+        std.log.err(
+            "Metal mesh reservation of {d} B per window ({d} frames in flight, " ++
+                "ResourceLimits.scene) exceeds the device's recommendedMaxWorkingSetSize " ++
+                "of {d} B.",
+            .{ reservation_bytes, pipelines.frame_count, working_set_bytes_max },
+        );
+        return error.MeshReservationExceedsWorkingSet;
+    }
+
+    /// Bytes the mesh pipelines reserve for one window: every per-frame buffer of
+    /// every frame in flight.
+    fn meshReservationBytes(scene_limits: *const SceneLimits) u64 {
+        const ColoredPointCloudPipeline = colored_point_cloud_pipeline.ColoredPointCloudPipeline;
+        const frame_bytes = path_pipeline.PathPipeline.frameBytes(scene_limits) +
+            polyline_pipeline.PolylinePipeline.frameBytes(scene_limits) +
+            point_cloud_pipeline.PointCloudPipeline.frameBytes(scene_limits) +
+            ColoredPointCloudPipeline.frameBytes(scene_limits);
+        assert(frame_bytes > 0);
+        return frame_bytes * pipelines.frame_count;
     }
 
     pub fn deinit(self: *Self) void {
@@ -363,6 +415,7 @@ pub const Renderer = struct {
     fn renderSceneInternal(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color, synchronous: bool) !void {
         self.unified_primitive_ring.nextFrame();
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
+        if (self.path_pipeline_state) |*pp| pp.nextFrame();
         if (self.polyline_pipeline_state) |*plp| plp.nextFrame();
         if (self.point_cloud_pipeline_state) |*pcp| pcp.nextFrame();
         if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.nextFrame();
