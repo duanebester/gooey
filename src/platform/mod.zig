@@ -97,7 +97,12 @@ pub const backend = if (is_wasm)
     @import("web/mod.zig")
 else switch (builtin.os.tag) {
     .macos => @import("macos/mod.zig"),
-    .linux => @import("linux/mod.zig"),
+    // `-Dlinux-backend` picks Wayland (GPU or CPU rendered) or the
+    // display-server-free framebuffer backend; see `linux_backend.zig`.
+    .linux => switch (@import("linux_backend.zig").selected) {
+        .wayland_vulkan, .wayland_cpu => @import("linux/mod.zig"),
+        .fbdev => @import("fbdev/mod.zig"),
+    },
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
