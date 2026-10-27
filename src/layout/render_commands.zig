@@ -8,6 +8,7 @@
 //! keeping the layout system fully decoupled from rendering.
 
 const std = @import("std");
+const reservation = @import("../core/reservation.zig");
 const types = @import("types.zig");
 const BoundingBox = types.BoundingBox;
 const Color = types.Color;
@@ -149,43 +150,56 @@ pub const CustomData = struct {
 
 /// List of render commands (typically per-frame)
 pub const RenderCommandList = struct {
-    allocator: std.mem.Allocator,
     commands: std.ArrayList(RenderCommand),
     next_order: u32 = 0,
+    /// Most commands any frame has held; `deinit` zeroes this prefix (§21).
+    command_count_max: u32 = 0,
 
     const Self = @This();
 
-    /// Pre-allocated capacity for render commands per frame.
+    /// Reserved capacity for render commands per frame.
     /// Each element may emit multiple commands (shadow, rectangle, border, text, etc.)
-    const INITIAL_CAPACITY = 32768;
+    const CAPACITY: u32 = 32768;
 
-    /// Pre-allocates at startup to avoid per-frame allocation, and returns a
-    /// failed reservation instead of ignoring it.
-    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!Self {
-        var list = Self{
-            .allocator = allocator,
-            .commands = .empty,
+    /// Reserves exactly `CAPACITY` commands (4.5 MiB at 144 B each) through
+    /// `core/reservation.zig`, so only the commands a frame writes become
+    /// resident. It used to round up through `ArrayList` growth to 49,153
+    /// commands, 50% over. A failed reservation is returned, not ignored.
+    pub fn init() error{OutOfMemory}!Self {
+        const list = Self{
+            .commands = try reservation.reserveList(RenderCommand, CAPACITY),
             .next_order = 0,
+            .command_count_max = 0,
         };
-        try list.commands.ensureTotalCapacity(allocator, INITIAL_CAPACITY);
-        std.debug.assert(list.commands.capacity >= INITIAL_CAPACITY);
+        std.debug.assert(list.commands.capacity == CAPACITY);
         return list;
     }
 
     pub fn deinit(self: *Self) void {
-        self.commands.deinit(self.allocator);
+        reservation.releaseList(RenderCommand, &self.commands, self.command_count_max);
     }
 
     pub fn clear(self: *Self) void {
+        std.debug.assert(self.commands.items.len <= CAPACITY);
+        const count: u32 = @intCast(self.commands.items.len);
+        self.command_count_max = @max(self.command_count_max, count);
         self.commands.clearRetainingCapacity();
         self.next_order = 0;
     }
 
-    pub fn append(self: *Self, cmd: RenderCommand) !void {
-        var c = cmd;
-        c.order = self.next_order;
-        self.next_order += 1;
-        try self.commands.append(self.allocator, c);
+    /// Exhaustion is a capacity-planning error (CLAUDE.md §2): it stops with
+    /// the pool name and capacity rather than growing a reservation no
+    /// allocator owns.
+    pub fn append(self: *Self, cmd: RenderCommand) error{}!void {
+        if (self.commands.items.len < self.commands.capacity) {
+            var c = cmd;
+            c.order = self.next_order;
+            self.next_order += 1;
+            self.commands.appendAssumeCapacity(c);
+        } else {
+            std.debug.panic("render command list exhausted: capacity {d}, {d} in use, " ++
+                "1 requested", .{ self.commands.capacity, self.commands.items.len });
+        }
     }
 
     pub fn items(self: *const Self) []const RenderCommand {
