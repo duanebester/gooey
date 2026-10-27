@@ -611,6 +611,7 @@ fn render(cx: *Cx) void {
 // =============================================================================
 
 const App = gooey.App(State, &state, render, .{
+    .limits = .standard,
     .title = "DataTable Example - 10,000 Rows",
     .width = 900,
     .height = 600,

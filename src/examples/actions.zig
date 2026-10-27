@@ -33,6 +33,8 @@ var state = AppState{};
 
 pub fn main(init: std.process.Init) !void {
     try gooey.run(AppState, &state, render, .{
+        .limits = .nano,
+        .font_limits = .nano,
         .title = "Actions Demo",
     }, init);
 }

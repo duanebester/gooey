@@ -7,7 +7,7 @@ const objc = @import("objc");
 const interface_verify = @import("../../../core/interface_verify.zig");
 const geometry = @import("../../../core/geometry.zig");
 const scene_mod = @import("../../../scene/mod.zig");
-const SceneLimits = @import("../../../core/limits.zig").SceneLimits;
+const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
 const render_pass = @import("render_pass.zig");
@@ -65,16 +65,18 @@ pub const Renderer = struct {
 
     const Self = @This();
 
-    /// `scene_limits` is the window's validated budget; the quad/shadow instance ring
+    /// `limits` is the window's validated budget; the quad/shadow instance ring
     /// and the mesh pipelines' per-frame geometry buffers are reserved from it
-    /// instead of the framework ceilings.
+    /// instead of the framework ceilings, once per frame in flight, and the layer
+    /// keeps exactly that many drawables.
     pub fn init(
         allocator: std.mem.Allocator,
         layer: objc.Object,
         size: geometry.Size(f64),
         scale_factor: f64,
-        scene_limits: *const SceneLimits,
+        limits: *const ResourceLimits,
     ) !Self {
+        assert(limits.check() == null);
         const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse
             return error.MetalNotAvailable;
         const device = objc.Object.fromId(device_ptr);
@@ -90,14 +92,19 @@ pub const Renderer = struct {
 
         const sample_count: u32 = 4;
 
-        // The ring's in-flight safety proof relies on every frame holding one of at most
-        // `frame_count` drawables (see `UnifiedPrimitiveRing`).
+        // The rings' in-flight safety proof relies on every frame holding one of at most
+        // `frame_count` drawables (see `UnifiedPrimitiveRing`). CAMetalLayer accepts 2 or
+        // 3, the same range `FrameLimits.check` enforces. Two drawables at `nano` and
+        // `small` drop one window-sized surface; three is the layer's default, kept at
+        // `standard` and above.
+        const frame_count = limits.frame.in_flight_count;
+        layer.msgSend(void, "setMaximumDrawableCount:", .{@as(c_ulong, frame_count)});
         const drawable_count_max = layer.msgSend(c_ulong, "maximumDrawableCount", .{});
         assert(drawable_count_max >= 2);
-        assert(drawable_count_max <= scene_renderer.UnifiedPrimitiveRing.frame_count);
+        assert(drawable_count_max == frame_count);
 
         const unified_primitive_ring =
-            try scene_renderer.UnifiedPrimitiveRing.init(device, scene_limits);
+            try scene_renderer.UnifiedPrimitiveRing.init(device, limits);
 
         var self = Self{
             .device = device,
@@ -136,19 +143,19 @@ pub const Renderer = struct {
         self.unified_pipeline_state = try pipelines.setupUnifiedPipeline(device, sample_count);
         self.quad_unit_vertex_buffer = try pipelines.createUnitVertexBuffer(device, unified_memory);
 
-        try self.initInstancePipelines(sample_count, scene_limits);
-        try self.initMeshPipelines(sample_count, scene_limits);
+        try self.initInstancePipelines(sample_count, limits);
+        try self.initMeshPipelines(sample_count, limits);
         return self;
     }
 
     /// Create the text, SVG and image pipelines with their per-frame instance
-    /// buffers sized from `scene_limits`. A failure here is fatal rather than
+    /// buffers sized from `limits`. A failure here is fatal rather than
     /// skipped: a missing pipeline would silently drop primitives the scene
     /// accepted within its budget (CLAUDE.md §2).
     fn initInstancePipelines(
         self: *Self,
         sample_count: u32,
-        scene_limits: *const SceneLimits,
+        limits: *const ResourceLimits,
     ) !void {
         assert(sample_count > 0);
         assert(self.text_pipeline_state == null);
@@ -157,55 +164,55 @@ pub const Renderer = struct {
             device,
             mtl.MTLPixelFormat.bgra8unorm,
             sample_count,
-            scene_limits,
+            limits,
         );
         self.svg_pipeline_state = try svg_pipeline.SvgPipeline.init(
             self.allocator,
             device,
             sample_count,
-            scene_limits,
+            limits,
         );
         self.image_pipeline_state = try image_pipeline.ImagePipeline.init(
             self.allocator,
             device,
             sample_count,
-            scene_limits,
+            limits,
         );
     }
 
     /// Create the path, polyline and point-cloud pipelines with their per-frame
-    /// geometry buffers sized from `scene_limits`. A failure here is fatal rather
+    /// geometry buffers sized from `limits`. A failure here is fatal rather
     /// than skipped: a missing pipeline would silently drop geometry the scene
     /// accepted within its budget (CLAUDE.md §2).
     fn initMeshPipelines(
         self: *Self,
         sample_count: u32,
-        scene_limits: *const SceneLimits,
+        limits: *const ResourceLimits,
     ) !void {
         assert(sample_count > 0);
         assert(self.path_pipeline_state == null);
         const device = self.device;
-        try checkMeshReservation(device, scene_limits);
+        try checkMeshReservation(device, limits);
         self.path_pipeline_state = try path_pipeline.PathPipeline.init(
             device,
             sample_count,
-            scene_limits,
+            limits,
         );
         self.polyline_pipeline_state = try polyline_pipeline.PolylinePipeline.init(
             device,
             sample_count,
-            scene_limits,
+            limits,
         );
         self.point_cloud_pipeline_state = try point_cloud_pipeline.PointCloudPipeline.init(
             device,
             sample_count,
-            scene_limits,
+            limits,
         );
         const ColoredPointCloudPipeline = colored_point_cloud_pipeline.ColoredPointCloudPipeline;
         self.colored_point_cloud_pipeline_state = try ColoredPointCloudPipeline.init(
             device,
             sample_count,
-            scene_limits,
+            limits,
         );
     }
 
@@ -214,9 +221,9 @@ pub const Renderer = struct {
     /// `maxBufferLength` only, and on Apple silicon that is a large fraction of
     /// system memory: `.ceiling` reserves 26,750,976,000 B per window in buffers
     /// that each pass it, so the total must be checked separately.
-    fn checkMeshReservation(device: objc.Object, scene_limits: *const SceneLimits) !void {
-        assert(scene_limits.check() == null);
-        const reservation_bytes = meshReservationBytes(scene_limits);
+    fn checkMeshReservation(device: objc.Object, limits: *const ResourceLimits) !void {
+        assert(limits.check() == null);
+        const reservation_bytes = meshReservationBytes(limits);
         const working_set_bytes_max: u64 = device.msgSend(u64, "recommendedMaxWorkingSetSize", .{});
         assert(reservation_bytes > 0);
         assert(working_set_bytes_max > 0);
@@ -226,21 +233,22 @@ pub const Renderer = struct {
             "Metal mesh reservation of {d} B per window ({d} frames in flight, " ++
                 "ResourceLimits.scene) exceeds the device's recommendedMaxWorkingSetSize " ++
                 "of {d} B.",
-            .{ reservation_bytes, pipelines.frame_count, working_set_bytes_max },
+            .{ reservation_bytes, limits.frame.in_flight_count, working_set_bytes_max },
         );
         return error.MeshReservationExceedsWorkingSet;
     }
 
     /// Bytes the mesh pipelines reserve for one window: every per-frame buffer of
     /// every frame in flight.
-    fn meshReservationBytes(scene_limits: *const SceneLimits) u64 {
+    fn meshReservationBytes(limits: *const ResourceLimits) u64 {
+        const scene_limits = &limits.scene;
         const ColoredPointCloudPipeline = colored_point_cloud_pipeline.ColoredPointCloudPipeline;
         const frame_bytes = path_pipeline.PathPipeline.frameBytes(scene_limits) +
             polyline_pipeline.PolylinePipeline.frameBytes(scene_limits) +
             point_cloud_pipeline.PointCloudPipeline.frameBytes(scene_limits) +
             ColoredPointCloudPipeline.frameBytes(scene_limits);
         assert(frame_bytes > 0);
-        return frame_bytes * pipelines.frame_count;
+        return frame_bytes * limits.frame.in_flight_count;
     }
 
     pub fn deinit(self: *Self) void {

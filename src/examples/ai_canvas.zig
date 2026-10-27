@@ -132,6 +132,7 @@ var state = AppState{};
 // =============================================================================
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .standard,
     .title = "AI Canvas",
     .width = WINDOW_WIDTH,
     .height = WINDOW_HEIGHT,

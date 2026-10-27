@@ -16,11 +16,11 @@ const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
-const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
 const GeometryCounts = scene.GeometryCounts;
 const GeometryPool = scene.GeometryPool;
 const SceneLimits = scene.SceneLimits;
+const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const PointCloud = @import("../../../scene/point_cloud.zig").PointCloud;
 
 // =============================================================================
@@ -150,14 +150,14 @@ comptime {
 ///
 /// Resource sketch (CLAUDE.md §7): each frame in flight owns one buffer of
 /// `point_count_frame_max` × 8 B source positions, sized in `init` from
-/// `ResourceLimits.scene` and never replaced. `.standard`: 524,288 B per frame,
-/// 1,572,864 B per window. Per cloud: one claim, one copy of its positions, and
+/// `ResourceLimits.scene` and never replaced. `.standard`: 131,072 B per frame,
+/// 393,216 B per window for three frames. Per cloud: one claim, one copy of its positions, and
 /// one draw of 6 vertices × points instances. Every cloud is claimed against the
 /// same `GeometryCounts` as the Vulkan and CPU renderers before it is written, so
 /// an over-budget frame panics with the pool name.
 pub const PointCloudPipeline = struct {
     pipeline_state: objc.Object,
-    position_buffers: [frame_count]objc.Object,
+    position_buffers: pipelines.FrameBuffers,
     frame_index: u32,
     /// The window's aggregate geometry budget (`ResourceLimits.scene`).
     geometry_budget: GeometryCounts,
@@ -171,7 +171,8 @@ pub const PointCloudPipeline = struct {
         return @as(u64, scene_limits.point_count_frame_max) * @sizeOf(scene.Point);
     }
 
-    pub fn init(device: objc.Object, sample_count: u32, scene_limits: *const SceneLimits) !Self {
+    pub fn init(device: objc.Object, sample_count: u32, limits: *const ResourceLimits) !Self {
+        const scene_limits = &limits.scene;
         assert(sample_count > 0);
         assert(scene_limits.check() == null);
         const pipeline_state = try createPipeline(device, sample_count);
@@ -181,8 +182,9 @@ pub const PointCloudPipeline = struct {
             device,
             frameBytes(scene_limits),
             "point_positions",
+            limits.frame.in_flight_count,
         );
-        errdefer for (position_buffers) |buffer| buffer.release();
+        errdefer position_buffers.release();
 
         return .{
             .pipeline_state = pipeline_state,
@@ -194,7 +196,7 @@ pub const PointCloudPipeline = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.position_buffers) |buffer| buffer.release();
+        self.position_buffers.release();
         self.pipeline_state.release();
         self.* = undefined;
     }
@@ -202,8 +204,7 @@ pub const PointCloudPipeline = struct {
     /// Advance to the next frame-in-flight slot and release the previous frame's
     /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        assert(self.frame_index < frame_count);
-        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_index = self.position_buffers.nextIndex(self.frame_index);
         self.geometry_usage = .{};
     }
 
@@ -217,7 +218,7 @@ pub const PointCloudPipeline = struct {
         assert(point_clouds.len <= scene.MAX_POINT_CLOUDS_PER_FRAME);
         assert(options.viewport_size[0] > 0);
         assert(options.viewport_size[1] > 0);
-        const position_buffer = self.position_buffers[self.frame_index];
+        const position_buffer = self.position_buffers.at(self.frame_index);
         const positions_target = pipelines.frameBufferContents(scene.Point, position_buffer);
 
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});

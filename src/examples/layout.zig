@@ -38,6 +38,7 @@ var state = AppState{};
 
 // For WASM: WebApp with @export; For Native: struct with main()
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .small,
     .title = "Floating Dropdown Test",
     .width = 600,
     .height = 400,

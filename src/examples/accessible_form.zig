@@ -183,6 +183,7 @@ const FormState = struct {
 var state = FormState{};
 
 const App = gooey.App(FormState, &state, render, .{
+    .limits = .small,
     .title = "Accessible Form Example",
     .width = 600,
     .height = 800,

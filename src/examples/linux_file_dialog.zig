@@ -131,6 +131,7 @@ const AppState = struct {
 var state = AppState{};
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .nano,
     .title = "Linux File Dialog Demo",
     .width = 700,
     .height = 450,

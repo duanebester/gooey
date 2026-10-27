@@ -352,6 +352,7 @@ fn render(cx: *Cx) void {
 // =============================================================================
 
 const App = gooey.App(State, &state, render, .{
+    .limits = .standard,
     .title = "VirtualList Example - Variable Height Items",
     .width = 800,
     .height = 600,

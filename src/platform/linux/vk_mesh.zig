@@ -1,8 +1,9 @@
 //! Three topology pipelines, four independently budgeted Scene pools.
 //!
 //! Resource sketch: each pool reserves aggregate geometry bytes plus bounded
-//! header/alignment space per draw. At .standard this is 5,570,560 B/frame,
-//! 16,760,832 B/window for three frames including host-pool alignment slack.
+//! header/alignment space per draw, once per frame in flight. At .standard this
+//! is 2,424,832 B/frame, 7,323,648 B/window for three frames including host-pool
+//! alignment slack; .nano is 95,232 B/frame, 223,232 B/window for two frames.
 //! Worst-case upload is bounded by that reservation; normal uploads pack only
 //! live data contiguously. Descriptors expose only initialized bytes. No network,
 //! disk, texture uploads, tessellation, queues, or runtime allocations are needed.
@@ -55,7 +56,9 @@ pub const Renderer = struct {
     descriptor_layout: vk.DescriptorSetLayout = null,
     pipeline_layout: vk.PipelineLayout = null,
     topology_pipelines: [3]vk.Pipeline = @splat(null),
-    frames: [types.FRAME_COUNT]Frame = @splat(.{}),
+    /// Declared at the ceiling; only `frame_count` are created and rotated.
+    frames: [types.frame_count_max]Frame = @splat(.{}),
+    frame_count: u32 = 0,
 
     pub fn init(
         self: *Renderer,
@@ -67,16 +70,21 @@ pub const Renderer = struct {
             render_pass: vk.RenderPass,
             sample_count: vk.SampleCountFlagBits,
             cache: vk.PipelineCache,
+            /// The window budget's `ResourceLimits.frame.in_flight_count`.
+            frame_count: u32,
         },
     ) !void {
         assert(device != null);
         assert(self.device == null);
+        assert(options.frame_count >= 1);
+        assert(options.frame_count <= types.frame_count_max);
         self.device = device;
         self.allocator = allocator;
         self.capacity = Capacity.from_scene_limits(limits);
+        self.frame_count = options.frame_count;
         errdefer self.deinit();
 
-        const bytes = types.FRAME_COUNT * (self.capacity.frame_bytes() +
+        const bytes = @as(u64, self.frame_count) * (self.capacity.frame_bytes() +
             4 * types.host_pool_alignment_slack_bytes);
         self.memory = try buffers.MemoryPool.init(
             device,
@@ -87,8 +95,12 @@ pub const Renderer = struct {
 
         self.descriptor_layout = try create_layout(device);
         self.pipeline_layout = try pipelines.createPipelineLayout(device, self.descriptor_layout);
-        self.descriptor_pool = try create_descriptor_pool(device, &self.capacity);
-        for (&self.frames) |*frame| try self.init_frame(frame);
+        self.descriptor_pool = try create_descriptor_pool(
+            device,
+            &self.capacity,
+            self.frame_count,
+        );
+        for (self.frames[0..self.frame_count]) |*frame| try self.init_frame(frame);
         const names = .{ "triangles", "strip_expanded", "point_instanced" };
         inline for (names, 0..) |name, index| {
             self.topology_pipelines[index] = try pipelines.createGraphicsPipeline(
@@ -386,10 +398,15 @@ fn create_layout(device: vk.Device) !vk.DescriptorSetLayout {
     return layout;
 }
 
-fn create_descriptor_pool(device: vk.Device, capacity: *const Capacity) !vk.DescriptorPool {
+fn create_descriptor_pool(
+    device: vk.Device,
+    capacity: *const Capacity,
+    frame_count: u32,
+) !vk.DescriptorPool {
     assert(device != null);
+    assert(frame_count <= types.frame_count_max);
     var count: u32 = 0;
-    for (capacity.counts) |draws| count += draws * types.FRAME_COUNT;
+    for (capacity.counts) |draws| count += draws * frame_count;
     assert(count > 0);
     const sizes = [_]vk.DescriptorPoolSize{
         .{ .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = count },

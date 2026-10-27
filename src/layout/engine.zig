@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const types = @import("types.zig");
+const reservation = @import("../core/reservation.zig");
 const layout_id = @import("layout_id.zig");
 const arena_mod = @import("arena.zig");
 const render_commands = @import("render_commands.zig");
@@ -255,37 +256,54 @@ pub const LayoutElement = struct {
     cached_z_index: i16 = 0,
 };
 
-/// Element storage (unmanaged ArrayList pattern)
+/// Element storage: one fixed reservation of `MAX_ELEMENTS_PER_FRAME`
+/// elements, never grown.
 pub const ElementList = struct {
-    allocator: std.mem.Allocator,
     elements: std.ArrayList(LayoutElement),
+    /// Most elements any frame has held; `deinit` zeroes this prefix (§21).
+    element_count_max: u32,
 
     const Self = @This();
 
-    /// Reserves the full per-frame element budget. A failed reservation is
-    /// returned rather than ignored: an engine without it would allocate on
-    /// the frame path (CLAUDE.md §2).
-    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!Self {
-        var list = Self{
-            .allocator = allocator,
-            .elements = .empty,
+    /// Reserves exactly the per-frame element budget (10.1 MiB at 648 B per
+    /// element) through `core/reservation.zig`, so only the elements a frame
+    /// writes become resident. It used to round up through `ArrayList` growth
+    /// to 24,577 elements, 50% over. A failed reservation is returned rather
+    /// than ignored: an engine without it would allocate on the frame path
+    /// (CLAUDE.md §2).
+    pub fn init() error{OutOfMemory}!Self {
+        const list = Self{
+            .elements = try reservation.reserveList(LayoutElement, MAX_ELEMENTS_PER_FRAME),
+            .element_count_max = 0,
         };
-        try list.elements.ensureTotalCapacity(allocator, MAX_ELEMENTS_PER_FRAME);
-        std.debug.assert(list.elements.capacity >= MAX_ELEMENTS_PER_FRAME);
+        std.debug.assert(list.elements.capacity == MAX_ELEMENTS_PER_FRAME);
         return list;
     }
 
     pub fn deinit(self: *Self) void {
-        self.elements.deinit(self.allocator);
+        reservation.releaseList(LayoutElement, &self.elements, self.element_count_max);
     }
 
     pub fn clear(self: *Self) void {
+        std.debug.assert(self.elements.items.len <= MAX_ELEMENTS_PER_FRAME);
+        self.element_count_max = @max(self.element_count_max, self.len());
         self.elements.clearRetainingCapacity();
     }
 
-    pub fn append(self: *Self, elem: LayoutElement) !u32 {
+    /// Exhaustion is a capacity-planning error (CLAUDE.md §2): it stops with
+    /// the pool name and capacity rather than growing a reservation no
+    /// allocator owns. `createElement` asserts the same bound before calling.
+    pub fn append(self: *Self, elem: LayoutElement) error{}!u32 {
         const index: u32 = @intCast(self.elements.items.len);
-        try self.elements.append(self.allocator, elem);
+        if (index < self.elements.capacity) {
+            self.elements.appendAssumeCapacity(elem);
+        } else {
+            std.debug.panic("layout element list exhausted: capacity {d} " ++
+                "(MAX_ELEMENTS_PER_FRAME), {d} in use, 1 requested", .{
+                self.elements.capacity,
+                index,
+            });
+        }
         return index;
     }
 
@@ -362,10 +380,10 @@ pub const LayoutEngine = struct {
         errdefer id_to_index.deinit();
         try id_to_index.ensureTotalCapacity(MAX_TRACKED_IDS);
 
-        var elements = try ElementList.init(allocator);
+        var elements = try ElementList.init();
         errdefer elements.deinit();
 
-        const commands = try RenderCommandList.init(allocator);
+        const commands = try RenderCommandList.init();
         std.debug.assert(seen_ids.capacity() >= MAX_TRACKED_IDS);
         std.debug.assert(id_to_index.capacity() >= MAX_TRACKED_IDS);
         return .{

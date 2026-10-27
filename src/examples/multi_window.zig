@@ -75,6 +75,7 @@ const MainState = struct {
                 &self.dialog_state,
                 renderDialog,
                 .{
+                    .limits = .small,
                     .title = "Settings Dialog",
                     .width = 420,
                     .height = 340,
@@ -403,7 +404,9 @@ pub fn main() !void {
     // `app` lives in this frame, which outlives the event loop.
     const io = std.Io.Threaded.global_single_threaded.io();
     var app: MultiWindowApp = undefined;
-    try app.initInPlace(allocator, .{ .font_size = 16.0 }, io);
+    // One `small` budget for every window: the faces are shared app-wide and
+    // each window's scenes and renderer are reserved from `.limits` below.
+    try app.initInPlace(allocator, .{ .font_size = 16.0, .limits = .small }, io);
     defer app.deinit();
 
     // Create main window state with app reference
@@ -412,6 +415,7 @@ pub fn main() !void {
 
     // Open the main window
     _ = try app.openWindow(MainState, &main_state, renderMain, .{
+        .limits = .small,
         .title = "Multi-Window Demo - Main",
         .width = 500,
         .height = 450,

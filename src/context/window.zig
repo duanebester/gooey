@@ -217,12 +217,9 @@ pub const FontConfig = struct {
     /// Font size in points.
     font_size: f32 = 16.0,
 
-    /// The faces loaded at init, one per variant. `FontLimits.standard`
-    /// (regular, medium, semibold, bold, italic, bold italic) is the default.
-    limits: FontLimits = FontLimits.standard,
-
-    /// Default config — system sans-serif at 16pt.
-    pub const default = FontConfig{};
+    /// The faces loaded at init, one per variant. No default (CLAUDE.md §2):
+    /// the app's `FontLimits` profile, such as `FontLimits.nano`.
+    limits: FontLimits,
 };
 
 /// Window - unified UI context

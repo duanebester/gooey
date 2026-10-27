@@ -319,6 +319,7 @@ var scene_populated: bool = false;
 // =============================================================================
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .standard,
     .title = "AI Canvas Spike (Phase 0)",
     .width = WINDOW_WIDTH,
     .height = WINDOW_HEIGHT,

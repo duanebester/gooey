@@ -171,6 +171,7 @@ const AppState = struct {
 var state = AppState.init();
 
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .small,
     .title = "Drag & Drop Demo",
     .width = 700,
     .height = 500,

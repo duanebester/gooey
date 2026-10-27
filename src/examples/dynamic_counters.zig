@@ -219,6 +219,7 @@ const CounterItems = struct {
 var app_state = AppState{};
 
 const App = gooey.App(AppState, &app_state, render, .{
+    .limits = .nano,
     .title = "Dynamic Counters",
     .width = 600,
     .height = 400,

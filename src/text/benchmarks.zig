@@ -1682,7 +1682,7 @@ test "validate: IterationSamples divides by operation count" {
 fn createTestTextSystem(allocator: std.mem.Allocator) ?*TextSystem {
     const ts = allocator.create(TextSystem) catch return null;
 
-    ts.initInPlace(allocator, 1.0, std.testing.io, &text.FontLimits.minimal) catch {
+    ts.initInPlace(allocator, 1.0, std.testing.io, &text.FontLimits.nano) catch {
         allocator.destroy(ts);
         return null;
     };
@@ -2204,7 +2204,7 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     // shape/glyph cache mutexes (`std.Io.Mutex`) have a process-lifetime
     // vtable to lock against.  Forward the `Io`
     // supplied by the process entry point.
-    try text_sys.initInPlace(gpa, 1.0, reporter.io, &text.FontLimits.minimal);
+    try text_sys.initInPlace(gpa, 1.0, reporter.io, &text.FontLimits.nano);
     defer text_sys.deinit();
 
     try text_sys.loadSystemFont(.monospace, BENCH_FONT_SIZE);

@@ -48,6 +48,7 @@ Keep the existing literal-friendly call site, but add compile-time validation th
 const App = gooey.App(State, &state, render, .{
     .title = "Example",
     .width = 800,
+    .limits = .small,
 });
 ```
 

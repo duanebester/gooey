@@ -17,7 +17,7 @@ const App = gooey.App(State, &state, render, .{
     .title = "Mesh geometry budget stress",
     .width = 760,
     .height = 480,
-    .limits = gooey.ResourceLimits.standard,
+    .limits = .large,
     .on_init = initialize,
 });
 pub const main = App.main;

@@ -536,6 +536,7 @@ pub fn openDialog(
         .centered = true,
         // Modal styling
         .titlebar_transparent = true,
+        .limits = .small, // Every window declares its budget; there is no default.
     });
 
     // Disable parent window interaction (platform-specific)

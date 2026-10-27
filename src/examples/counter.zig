@@ -66,6 +66,7 @@ var state = AppState{};
 
 // For WASM: WebApp with @export; For Native: struct with main()
 const App = gooey.App(AppState, &state, render, .{
+    .limits = .nano,
     .title = "Counter",
     .width = 500,
     .height = 350,
