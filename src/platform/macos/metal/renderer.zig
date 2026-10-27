@@ -181,6 +181,7 @@ pub const Renderer = struct {
         assert(sample_count > 0);
         assert(self.path_pipeline_state == null);
         const device = self.device;
+        try checkMeshReservation(device, scene_limits);
         self.path_pipeline_state = try path_pipeline.PathPipeline.init(
             device,
             sample_count,
@@ -202,6 +203,40 @@ pub const Renderer = struct {
             sample_count,
             scene_limits,
         );
+    }
+
+    /// Fail init when one window's mesh reservation exceeds the device's
+    /// recommended working set. `createFrameBuffers` checks each buffer against
+    /// `maxBufferLength` only, and on Apple silicon that is a large fraction of
+    /// system memory: `.ceiling` reserves 26,750,976,000 B per window in buffers
+    /// that each pass it, so the total must be checked separately.
+    fn checkMeshReservation(device: objc.Object, scene_limits: *const SceneLimits) !void {
+        assert(scene_limits.check() == null);
+        const reservation_bytes = meshReservationBytes(scene_limits);
+        const working_set_bytes_max: u64 = device.msgSend(u64, "recommendedMaxWorkingSetSize", .{});
+        assert(reservation_bytes > 0);
+        assert(working_set_bytes_max > 0);
+        if (reservation_bytes <= working_set_bytes_max) return;
+
+        std.log.err(
+            "Metal mesh reservation of {d} B per window ({d} frames in flight, " ++
+                "ResourceLimits.scene) exceeds the device's recommendedMaxWorkingSetSize " ++
+                "of {d} B.",
+            .{ reservation_bytes, pipelines.frame_count, working_set_bytes_max },
+        );
+        return error.MeshReservationExceedsWorkingSet;
+    }
+
+    /// Bytes the mesh pipelines reserve for one window: every per-frame buffer of
+    /// every frame in flight.
+    fn meshReservationBytes(scene_limits: *const SceneLimits) u64 {
+        const ColoredPointCloudPipeline = colored_point_cloud_pipeline.ColoredPointCloudPipeline;
+        const frame_bytes = path_pipeline.PathPipeline.frameBytes(scene_limits) +
+            polyline_pipeline.PolylinePipeline.frameBytes(scene_limits) +
+            point_cloud_pipeline.PointCloudPipeline.frameBytes(scene_limits) +
+            ColoredPointCloudPipeline.frameBytes(scene_limits);
+        assert(frame_bytes > 0);
+        return frame_bytes * pipelines.frame_count;
     }
 
     pub fn deinit(self: *Self) void {

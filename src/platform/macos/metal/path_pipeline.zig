@@ -284,26 +284,37 @@ pub const PathPipeline = struct {
 
     const Self = @This();
 
+    /// Bytes of one frame's vertex buffer for `scene_limits`.
+    fn vertexFrameBytes(scene_limits: *const SceneLimits) u64 {
+        return @as(u64, scene_limits.path_vertex_count_frame_max) * @sizeOf(PathVertex);
+    }
+
+    /// Bytes of one frame's index buffer for `scene_limits`.
+    fn indexFrameBytes(scene_limits: *const SceneLimits) u64 {
+        return @as(u64, scene_limits.path_index_count_frame_max) * @sizeOf(u32);
+    }
+
+    /// Bytes of one frame's vertex and index buffers for `scene_limits`.
+    pub fn frameBytes(scene_limits: *const SceneLimits) u64 {
+        return vertexFrameBytes(scene_limits) + indexFrameBytes(scene_limits);
+    }
+
     pub fn init(device: objc.Object, sample_count: u32, scene_limits: *const SceneLimits) !Self {
         assert(sample_count > 0);
         assert(scene_limits.check() == null);
-        const budget = GeometryCounts.from_limits(scene_limits);
-        const vertex_count_max = budget.counts[@backingInt(GeometryPool.path_vertices)];
-        const index_count_max = budget.counts[@backingInt(GeometryPool.path_indices)];
-
         const pipeline_state = try createPipeline(device, sample_count);
         errdefer pipeline_state.release();
 
         const vertex_buffers = try pipelines.createFrameBuffers(
             device,
-            @as(u64, vertex_count_max) * @sizeOf(PathVertex),
+            vertexFrameBytes(scene_limits),
             "path_vertices",
         );
         errdefer for (vertex_buffers) |buffer| buffer.release();
 
         const index_buffers = try pipelines.createFrameBuffers(
             device,
-            @as(u64, index_count_max) * @sizeOf(u32),
+            indexFrameBytes(scene_limits),
             "path_indices",
         );
         errdefer for (index_buffers) |buffer| buffer.release();
@@ -313,7 +324,7 @@ pub const PathPipeline = struct {
             .vertex_buffers = vertex_buffers,
             .index_buffers = index_buffers,
             .frame_index = 0,
-            .geometry_budget = budget,
+            .geometry_budget = GeometryCounts.from_limits(scene_limits),
             .geometry_usage = .{},
         };
     }
