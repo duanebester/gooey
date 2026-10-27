@@ -1,9 +1,24 @@
 //! Three topology pipelines, four independently budgeted Scene pools.
 //!
+//! Anti-aliasing: the renderer draws one sample per pixel, so the mesh shaders
+//! compute edge coverage analytically instead of relying on MSAA. Each
+//! triangle vertex carries two bits per triangle edge (`vk_mesh_edges`):
+//! silhouette edges are pushed one logical pixel outward and faded across
+//! their pixel-wide boundary, edges shared with a same-fill triangle are left
+//! alone so tiled shapes have no seams, and fill boundaries blend like a
+//! resolve. Polyline segments fade their sides and the line's two end caps;
+//! the joints between segments stay hard so consecutive segments do not
+//! double-fade where they meet. Points keep their circular falloff, widened
+//! to at least one device pixel. Coverage is measured in device pixels from
+//! screen-space derivatives of exact (affine) edge distances.
+//!
 //! Resource sketch: each pool reserves aggregate geometry bytes plus bounded
 //! header/alignment space per draw, once per frame in flight. At .standard this
-//! is 2,424,832 B/frame, 7,323,648 B/window for three frames including host-pool
-//! alignment slack; .nano is 95,232 B/frame, 223,232 B/window for two frames.
+//! is 2,490,368 B/frame, 7,520,256 B/window for three frames including host-pool
+//! alignment slack; .nano is 103,424 B/frame, 239,616 B/window for two frames
+//! (20 B per path index: the 16 B source vertex plus 4 B of edge modes). The
+//! edge table adds 30 B of host memory per path index budget: 491,540 B at
+//! .standard, 61,460 B at .nano.
 //! Worst-case upload is bounded by that reservation; normal uploads pack only
 //! live data contiguously. Descriptors expose only initialized bytes. No network,
 //! disk, texture uploads, tessellation, queues, or runtime allocations are needed.
@@ -19,6 +34,7 @@ const pipelines = @import("vk_pipelines.zig");
 const types = @import("vk_types.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const colored_cloud = @import("../../scene/colored_point_cloud.zig");
+const edges_mod = @import("vk_mesh_edges.zig");
 const Header = types.MeshHeader;
 const Capacity = types.MeshCapacity;
 const Pool = types.MeshPool;
@@ -59,6 +75,8 @@ pub const Renderer = struct {
     /// Declared at the ceiling; only `frame_count` are created and rotated.
     frames: [types.frame_count_max]Frame = @splat(.{}),
     frame_count: u32 = 0,
+    /// Path edge modes for the frame being recorded; see `classify_edges`.
+    edges: edges_mod.EdgeTable = .{},
 
     pub fn init(
         self: *Renderer,
@@ -68,10 +86,11 @@ pub const Renderer = struct {
         limits: *const scene_mod.SceneLimits,
         options: *const struct {
             render_pass: vk.RenderPass,
-            sample_count: vk.SampleCountFlagBits,
             cache: vk.PipelineCache,
             /// The window budget's `ResourceLimits.frame.in_flight_count`.
             frame_count: u32,
+            /// From `vk_buffers.queryAllocationBytesMax`.
+            allocation_bytes_max: vk.DeviceSize,
         },
     ) !void {
         assert(device != null);
@@ -86,12 +105,17 @@ pub const Renderer = struct {
 
         const bytes = @as(u64, self.frame_count) * (self.capacity.frame_bytes() +
             4 * types.host_pool_alignment_slack_bytes);
-        self.memory = try buffers.MemoryPool.init(
-            device,
-            memory_properties,
-            bytes,
-            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        );
+        self.memory = try buffers.MemoryPool.init(device, memory_properties, &.{
+            .name = "mesh geometry",
+            .size = bytes,
+            .allocation_bytes_max = options.allocation_bytes_max,
+            .required_properties = vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        });
+        const index_count_max = self.capacity.geometry.counts[
+            @backingInt(scene_mod.GeometryPool.path_indices)
+        ];
+        try self.edges.init(allocator, index_count_max);
 
         self.descriptor_layout = try create_layout(device);
         self.pipeline_layout = try pipelines.createPipelineLayout(device, self.descriptor_layout);
@@ -106,7 +130,6 @@ pub const Renderer = struct {
             self.topology_pipelines[index] = try pipelines.createGraphicsPipeline(
                 device,
                 options.render_pass,
-                options.sample_count,
                 .{
                     .vert_spv = @alignCast(@embedFile("shaders/" ++ name ++ ".vert.spv")),
                     .frag_spv = @alignCast(@embedFile("shaders/mesh.frag.spv")),
@@ -161,9 +184,98 @@ pub const Renderer = struct {
             }
         }
         self.memory.destroy(self.device);
+        if (self.edges.entries.len > 0) self.edges.deinit(self.allocator);
         self.* = .{};
     }
+
+    /// Classify every path triangle edge of the frame before any path is drawn
+    /// (`vk_mesh_edges`). Paths are visited in draw order, the order
+    /// `Draw.paths` receives them. Classification stops at the frame's path
+    /// index budget; the draw pass then reports the exhausted pool.
+    pub fn classify_edges(self: *Renderer, scene: *const scene_mod.Scene) void {
+        assert(self.edges.entries.len > 0);
+        const paths = scene.getPathInstances();
+        const gradients = scene.getPathGradients();
+        assert(paths.len == gradients.len);
+        assert(paths.len <= scene.limits.path_count_frame_max);
+        self.edges.begin();
+        const index_count_max = self.edges.edge_count_max;
+        var index_count: u64 = 0;
+        for (paths, gradients, 0..) |*path, *gradient, path_index| {
+            const mesh = scene.getMeshPool().getMesh(path.getMeshRef());
+            const indices = mesh.indices.constSlice();
+            if (index_count + indices.len > index_count_max) break;
+            index_count += indices.len;
+            const fill = fill_hash(&path_header(path, gradient));
+            const vertices = mesh.vertices.constSlice();
+            var triangle: usize = 0;
+            while (triangle < indices.len) : (triangle += 3) {
+                const corners = triangle_corners(path, vertices, indices[triangle..][0..3]);
+                for (0..3) |edge| {
+                    const key = edges_mod.edgeKey(corners[edge], corners[(edge + 1) % 3]);
+                    self.edges.insert(key, @intCast(path_index), fill);
+                }
+            }
+        }
+    }
 };
+
+/// The per-draw header for a path. `classify_edges` and `Draw.paths` build it
+/// the same way so a path's fill hash matches between the two passes.
+fn path_header(path: *const scene_mod.PathInstance, gradient: anytype) Header {
+    var header = Header{
+        .transform = .{ path.offset_x, path.offset_y, path.scale_x, path.scale_y },
+        .color = path.fill_color,
+        .clip = .{ path.clip_x, path.clip_y, path.clip_width, path.clip_height },
+        .params = .{
+            path.grad_param0,
+            path.grad_param1,
+            path.grad_param2,
+            path.grad_param3,
+        },
+        .gradient_type = path.gradient_type,
+        .stop_count = gradient.stop_count,
+    };
+    assert(header.gradient_type <= 2);
+    if (header.gradient_type != 0) {
+        assert(header.stop_count >= 2);
+        assert(header.stop_count <= 16);
+        const count = header.stop_count;
+        @memcpy(header.stop_offsets[0..count], gradient.stop_offsets[0..count]);
+        @memcpy(header.stop_h[0..count], gradient.stop_h[0..count]);
+        @memcpy(header.stop_s[0..count], gradient.stop_s[0..count]);
+        @memcpy(header.stop_l[0..count], gradient.stop_l[0..count]);
+        @memcpy(header.stop_a[0..count], gradient.stop_a[0..count]);
+    }
+    return header;
+}
+
+/// Everything that decides a path's colour: the header after its transform.
+/// Two paths with equal hashes blend identically across a shared edge.
+fn fill_hash(header: *const Header) u32 {
+    const bytes = std.mem.asBytes(header)[@sizeOf(@TypeOf(header.transform))..];
+    assert(bytes.len == @sizeOf(Header) - 16);
+    return @truncate(std.hash.Wyhash.hash(0, bytes));
+}
+
+/// A triangle's corners in screen space, transformed exactly as the vertex
+/// shader transforms them, so equal corners compare equal across draws.
+fn triangle_corners(
+    path: *const scene_mod.PathInstance,
+    vertices: []const scene_mod.PathVertex,
+    indices: *const [3]u32,
+) [3][2]f32 {
+    var corners: [3][2]f32 = undefined;
+    for (indices, &corners) |index, *corner| {
+        assert(index < vertices.len);
+        const vertex = vertices[index];
+        corner.* = .{
+            vertex.x * path.scale_x + path.offset_x,
+            vertex.y * path.scale_y + path.offset_y,
+        };
+    }
+    return corners;
+}
 
 /// One recording context is stack-owned by drawScene. It never survives a frame.
 pub const Draw = struct {
@@ -183,7 +295,7 @@ pub const Draw = struct {
         assert(first + instances.len <= all.len);
         var draws: u32 = 0;
         const gradients = self.scene.getPathGradients()[first..][0..instances.len];
-        for (instances, gradients) |*path, *gradient| {
+        for (instances, gradients, first..) |*path, *gradient, path_index| {
             const mesh = self.scene.getMeshPool().getMesh(path.getMeshRef());
             const indices = mesh.indices.constSlice();
             if (indices.len == 0) continue;
@@ -193,33 +305,17 @@ pub const Draw = struct {
                 .requested = @intCast(mesh.vertices.len),
                 .frame = self.scene.frame_count_finished,
             });
-            var header = Header{
-                .transform = .{ path.offset_x, path.offset_y, path.scale_x, path.scale_y },
-                .color = path.fill_color,
-                .clip = .{ path.clip_x, path.clip_y, path.clip_width, path.clip_height },
-                .params = .{
-                    path.grad_param0,
-                    path.grad_param1,
-                    path.grad_param2,
-                    path.grad_param3,
-                },
-                .gradient_type = path.gradient_type,
-                .stop_count = gradient.stop_count,
-            };
-            assert(header.gradient_type <= 2);
-            if (header.gradient_type != 0) {
-                assert(header.stop_count >= 2);
-                assert(header.stop_count <= 16);
-                const count = header.stop_count;
-                @memcpy(header.stop_offsets[0..count], gradient.stop_offsets[0..count]);
-                @memcpy(header.stop_h[0..count], gradient.stop_h[0..count]);
-                @memcpy(header.stop_s[0..count], gradient.stop_s[0..count]);
-                @memcpy(header.stop_l[0..count], gradient.stop_l[0..count]);
-                @memcpy(header.stop_a[0..count], gradient.stop_a[0..count]);
-            }
-            const target = self.prepare(.triangles, &header, indices.len * 16);
-            const vertices: [*]scene_mod.PathVertex = @ptrCast(@alignCast(target));
-            copy_triangles(vertices[0..indices.len], mesh.vertices.constSlice(), indices);
+            const header = path_header(path, gradient);
+            const bytes = indices.len * @sizeOf(types.TriangleVertex);
+            const target = self.prepare(.triangles, &header, bytes);
+            const records: [*]types.TriangleVertex = @ptrCast(@alignCast(target));
+            copy_triangles(records[0..indices.len], &.{
+                .edges = &self.renderer.edges,
+                .path = path,
+                .path_index = @intCast(path_index),
+                .vertices = mesh.vertices.constSlice(),
+                .indices = indices,
+            });
             self.submit(.triangles, .{ .vertices = @intCast(indices.len), .instances = 1 });
             draws += 1;
         }
@@ -231,9 +327,12 @@ pub const Draw = struct {
         assert(self.command != null);
         for (instances) |*line| {
             line.validate();
+            // Strips have no gradient: `params[0]` carries the segment count so
+            // the shader can fade the line's two end caps and not its joints.
             const header = Header{
                 .color = line.color,
                 .clip = .{ line.clip_x, line.clip_y, line.clip_width, line.clip_height },
+                .params = .{ @floatFromInt(line.point_count - 1), 0, 0, 0 },
                 .radius = line.width * 0.5,
             };
             const positions = line.getPoints();
@@ -336,18 +435,44 @@ comptime {
     assert(@sizeOf(ColoredPoint) == 24);
     assert(@sizeOf(scene_mod.Point) == 8);
     assert(@sizeOf(scene_mod.PathVertex) == 16);
+    assert(@sizeOf(types.TriangleVertex) == @sizeOf(scene_mod.PathVertex) + 4);
 }
 
-fn copy_triangles(
-    target: []scene_mod.PathVertex,
+const TriangleSource = struct {
+    edges: *const edges_mod.EdgeTable,
+    path: *const scene_mod.PathInstance,
+    path_index: edges_mod.PathIndex,
     vertices: []const scene_mod.PathVertex,
     indices: []const u32,
-) void {
-    assert(target.len == indices.len);
-    assert(indices.len <= @import("../../scene/path_mesh.zig").MAX_MESH_INDICES);
-    for (indices, target) |index, *vertex| {
-        assert(index < vertices.len);
-        vertex.* = vertices[index];
+};
+
+/// De-index a path mesh into vertex records, each triangle tagged with the
+/// modes `classify_edges` chose for its three edges.
+fn copy_triangles(target: []types.TriangleVertex, source: *const TriangleSource) void {
+    assert(target.len == source.indices.len);
+    assert(target.len % 3 == 0);
+    assert(target.len <= @import("../../scene/path_mesh.zig").MAX_MESH_INDICES);
+    var triangle: usize = 0;
+    while (triangle < target.len) : (triangle += 3) {
+        const indices = source.indices[triangle..][0..3];
+        const corners = triangle_corners(source.path, source.vertices, indices);
+        var edge_modes: u8 = 0;
+        for (0..3) |edge| {
+            const key = edges_mod.edgeKey(corners[edge], corners[(edge + 1) % 3]);
+            const mode = source.edges.mode(key, source.path_index);
+            edge_modes |= @as(u8, @backingInt(mode)) << @intCast(2 * edge);
+        }
+        assert(edge_modes < 64);
+        for (indices, target[triangle..][0..3]) |index, *record| {
+            const vertex = source.vertices[index];
+            record.* = .{
+                .x = vertex.x,
+                .y = vertex.y,
+                .u = vertex.u,
+                .v = vertex.v,
+                .edge_modes = @floatFromInt(edge_modes),
+            };
+        }
     }
 }
 

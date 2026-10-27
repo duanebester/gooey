@@ -1,9 +1,13 @@
-//! Swapchain lifecycle, MSAA resources, render pass, and framebuffers.
+//! Swapchain lifecycle, render pass, and framebuffers.
 //!
 //! Free functions with targeted parameters — each takes only what it needs.
-//! All functions in this module are coupled to swapchain extent/format and
-//! are re-invoked together on resize. Extracting them groups the resize-path
-//! code into a single module.
+//! The swapchain and its framebuffers are the only objects re-created on
+//! resize: the WSI requires a new swapchain per extent, and its images belong
+//! to the driver. Gooey bounds them instead: the extent never exceeds
+//! `ResourceLimits.window` (the caller fits it) and the image count follows the
+//! frames in flight. There is no multisampled target: the renderer draws at one
+//! sample per pixel and every pipeline anti-aliases analytically, so nothing
+//! Gooey allocates depends on the window size.
 
 const std = @import("std");
 const limits_mod = @import("../../core/limits.zig");
@@ -31,22 +35,6 @@ pub const SwapchainResult = struct {
     image_count: u32,
 };
 
-pub const MSAAResources = struct {
-    image: vk.Image = null,
-    memory: vk.DeviceMemory = null,
-    view: vk.ImageView = null,
-
-    pub fn destroy(self: *MSAAResources, device: vk.Device) void {
-        std.debug.assert(device != null);
-        if (self.view) |v| vk.vkDestroyImageView(device, v, null);
-        self.view = null;
-        if (self.image) |img| vk.vkDestroyImage(device, img, null);
-        self.image = null;
-        if (self.memory) |mem| vk.vkFreeMemory(device, mem, null);
-        self.memory = null;
-    }
-};
-
 // =============================================================================
 // Error Types
 // =============================================================================
@@ -54,14 +42,6 @@ pub const MSAAResources = struct {
 pub const SwapchainError = error{
     SwapchainCreationFailed,
     ImageViewCreationFailed,
-};
-
-pub const MSAAError = error{
-    MSAAImageCreationFailed,
-    NoSuitableMemoryType,
-    MSAAMemoryAllocationFailed,
-    MSAAMemoryBindFailed,
-    MSAAImageViewCreationFailed,
 };
 
 pub const RenderPassError = error{
@@ -76,33 +56,18 @@ pub const FramebufferError = error{
 // Public API
 // =============================================================================
 
-/// Query the maximum usable MSAA sample count for the physical device.
-/// Prefers 4x MSAA for a good quality/performance balance.
-pub fn getMaxUsableSampleCount(physical_device: vk.PhysicalDevice) vk.SampleCountFlagBits {
-    std.debug.assert(physical_device != null);
-
-    var props: vk.PhysicalDeviceProperties = undefined;
-    vk.vkGetPhysicalDeviceProperties(physical_device, &props);
-
-    const counts = props.limits.framebufferColorSampleCounts &
-        props.limits.framebufferDepthSampleCounts;
-
-    // Prefer 4x MSAA — best quality/performance tradeoff for UI rendering
-    if ((counts & vk.VK_SAMPLE_COUNT_4_BIT) != 0) return vk.VK_SAMPLE_COUNT_4_BIT;
-    if ((counts & vk.VK_SAMPLE_COUNT_2_BIT) != 0) return vk.VK_SAMPLE_COUNT_2_BIT;
-    return vk.VK_SAMPLE_COUNT_1_BIT;
-}
-
 /// Create a swapchain, retrieve its images, and create image views.
 ///
-/// On initial creation, pass `null` for `old_swapchain`. On resize, pass the
-/// previous swapchain handle — Vulkan can recycle internal resources.
+/// `width` and `height` are physical pixels already fitted to the window budget.
+/// `image_count_min` is the frames-in-flight count; the driver's own minimum
+/// wins when it is higher. On initial creation, pass `null` for
+/// `old_swapchain`. On resize, pass the previous swapchain handle — Vulkan can
+/// recycle internal resources.
 pub fn createSwapchain(
     device: vk.Device,
     physical_device: vk.PhysicalDevice,
     surface: vk.Surface,
-    width: u32,
-    height: u32,
+    extent: vk.Extent2D,
     /// The window budget's `ResourceLimits.frame.in_flight_count`.
     frame_count: u32,
     old_swapchain: vk.Swapchain,
@@ -113,7 +78,7 @@ pub fn createSwapchain(
     std.debug.assert(frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
     std.debug.assert(frame_count <= limits_mod.MAX_FRAMES_IN_FLIGHT);
 
-    const config = querySwapchainConfig(physical_device, surface, width, height, frame_count);
+    const config = querySwapchainConfig(physical_device, surface, extent, frame_count);
     const swapchain = try createSwapchainHandle(device, surface, config, old_swapchain);
     errdefer vk.vkDestroySwapchainKHR(device, swapchain, null);
 
@@ -130,86 +95,94 @@ pub fn createSwapchain(
     };
 }
 
-/// Create MSAA color buffer resources. Returns empty resources if sample_count is 1.
-pub fn createMSAAResources(
-    device: vk.Device,
-    format: vk.Format,
-    extent: vk.Extent2D,
-    sample_count: vk.SampleCountFlagBits,
-    mem_properties: *const vk.PhysicalDeviceMemoryProperties,
-) MSAAError!MSAAResources {
-    std.debug.assert(device != null);
-    std.debug.assert(extent.width > 0 and extent.height > 0);
-
-    if (sample_count == vk.VK_SAMPLE_COUNT_1_BIT) return .{};
-
-    var result: MSAAResources = .{};
-
-    result.image = try createMSAAImage(device, format, extent, sample_count);
-    errdefer {
-        vk.vkDestroyImage(device, result.image, null);
-        result.image = null;
-    }
-
-    result.memory = try allocateMSAAMemory(device, result.image, mem_properties);
-    errdefer {
-        vk.vkFreeMemory(device, result.memory, null);
-        result.memory = null;
-    }
-
-    const bind_res = vk.vkBindImageMemory(device, result.image, result.memory, 0);
-    if (!vk.succeeded(bind_res)) return MSAAError.MSAAMemoryBindFailed;
-
-    result.view = try createMSAAView(device, result.image, format);
-
-    return result;
-}
-
-/// Create a render pass. Uses MSAA resolve if sample_count > 1.
-pub fn createRenderPass(
-    device: vk.Device,
-    format: vk.Format,
-    sample_count: vk.SampleCountFlagBits,
-) RenderPassError!vk.RenderPass {
+/// Create the single-subpass render pass: one single-sample swapchain image,
+/// cleared on load, stored, and handed to presentation.
+///
+/// Two external dependencies make every hazard on the attachment explicit:
+///
+/// - Incoming: the previous use of the image was a colour write (an earlier
+///   frame's store) followed by presentation. The acquire semaphore waits at
+///   `COLOR_ATTACHMENT_OUTPUT`, so this dependency chains from that stage and
+///   orders the load-op clear and the layout transition after the earlier
+///   write (`srcAccessMask = COLOR_ATTACHMENT_WRITE`). The old dependency had
+///   `srcAccessMask = 0`, which is the WRITE_AFTER_WRITE hazard
+///   synchronization validation reported at `vkCmdBeginRenderPass` on the
+///   shared MSAA image.
+/// - Outgoing: the store and the transition to `PRESENT_SRC_KHR` complete
+///   before anything after the pass; presentation waits on a semaphore that
+///   is signalled after `BOTTOM_OF_PIPE`.
+pub fn createRenderPass(device: vk.Device, format: vk.Format) RenderPassError!vk.RenderPass {
     std.debug.assert(device != null);
     std.debug.assert(format != vk.VK_FORMAT_UNDEFINED);
 
-    if (sample_count != vk.VK_SAMPLE_COUNT_1_BIT) {
-        return createMSAARenderPass(device, format, sample_count);
-    } else {
-        return createSimpleRenderPass(device, format);
-    }
+    const attachment = vk.AttachmentDescription{
+        .flags = 0,
+        .format = @intCast(format),
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+    const color_ref = vk.AttachmentReference{
+        .attachment = 0,
+        .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    const subpass = vk.SubpassDescription{
+        .flags = 0,
+        .pipelineBindPoint = vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .inputAttachmentCount = 0,
+        .pInputAttachments = null,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = (&color_ref)[0..1],
+        .pResolveAttachments = null,
+        .pDepthStencilAttachment = null,
+        .preserveAttachmentCount = 0,
+        .pPreserveAttachments = null,
+    };
+    const dependencies = renderPassDependencies();
+    const render_pass_info = vk.RenderPassCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .pNext = null,
+        .flags = 0,
+        .attachmentCount = 1,
+        .pAttachments = (&attachment)[0..1],
+        .subpassCount = 1,
+        .pSubpasses = (&subpass)[0..1],
+        .dependencyCount = dependencies.len,
+        .pDependencies = &dependencies,
+    };
+
+    var render_pass: vk.RenderPass = null;
+    const result = vk.vkCreateRenderPass(device, &render_pass_info, null, &render_pass);
+    if (!vk.succeeded(result)) return RenderPassError.RenderPassCreationFailed;
+
+    std.debug.assert(render_pass != null);
+    return render_pass;
 }
 
-/// Create framebuffers for each swapchain image.
-///
-/// When MSAA is active (sample_count > 1), each framebuffer has two attachments:
-///   0 = shared MSAA color buffer, 1 = per-image resolve target.
-/// Without MSAA, each framebuffer has a single swapchain image attachment.
+/// Create one single-attachment framebuffer per swapchain image.
 pub fn createFramebuffers(
     device: vk.Device,
     render_pass: vk.RenderPass,
     image_views: []const vk.ImageView,
     image_count: u32,
-    msaa_view: vk.ImageView,
     extent: vk.Extent2D,
-    sample_count: vk.SampleCountFlagBits,
     out_framebuffers: *[MAX_SWAPCHAIN_IMAGES]vk.Framebuffer,
 ) FramebufferError!void {
     std.debug.assert(device != null);
     std.debug.assert(render_pass != null);
     std.debug.assert(image_count <= MAX_SWAPCHAIN_IMAGES);
-
-    const use_msaa = sample_count != vk.VK_SAMPLE_COUNT_1_BIT;
+    std.debug.assert(image_count <= image_views.len);
 
     for (0..image_count) |i| {
         out_framebuffers[i] = try createSingleFramebuffer(
             device,
             render_pass,
             image_views[i],
-            if (use_msaa) msaa_view else null,
             extent,
-            use_msaa,
         );
     }
 }
@@ -255,8 +228,7 @@ const SwapchainConfig = struct {
 fn querySwapchainConfig(
     physical_device: vk.PhysicalDevice,
     surface: vk.Surface,
-    width: u32,
-    height: u32,
+    extent_requested: vk.Extent2D,
     frame_count: u32,
 ) SwapchainConfig {
     var capabilities: vk.SurfaceCapabilitiesKHR = undefined;
@@ -265,7 +237,7 @@ fn querySwapchainConfig(
     const format_result = chooseFormat(physical_device, surface);
     const present_mode = choosePresentMode(physical_device, surface);
     const composite_alpha = chooseCompositeAlpha(capabilities);
-    const extent = chooseExtent(capabilities, width, height);
+    const extent = chooseExtent(capabilities, extent_requested);
     const image_count = chooseImageCount(capabilities, frame_count);
 
     return .{
@@ -344,18 +316,24 @@ fn chooseCompositeAlpha(capabilities: vk.SurfaceCapabilitiesKHR) vk.CompositeAlp
     unreachable;
 }
 
-fn chooseExtent(
-    capabilities: vk.SurfaceCapabilitiesKHR,
-    width: u32,
-    height: u32,
-) vk.Extent2D {
+/// The requested extent, already fitted to the window budget by the caller,
+/// clamped to what the surface accepts. A surface that dictates its extent
+/// (`currentExtent` defined) can only be smaller than the budget-fitted
+/// request when it is also smaller than the window, so it is honoured only
+/// when it fits inside the request.
+fn chooseExtent(capabilities: vk.SurfaceCapabilitiesKHR, requested: vk.Extent2D) vk.Extent2D {
+    std.debug.assert(requested.width > 0);
+    std.debug.assert(requested.height > 0);
+    var extent = requested;
     if (capabilities.currentExtent.width != 0xFFFFFFFF) {
-        return capabilities.currentExtent;
+        extent.width = @min(capabilities.currentExtent.width, requested.width);
+        extent.height = @min(capabilities.currentExtent.height, requested.height);
     }
-    return .{
-        .width = std.math.clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
-        .height = std.math.clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height),
-    };
+    const width_min = capabilities.minImageExtent.width;
+    const height_min = capabilities.minImageExtent.height;
+    extent.width = std.math.clamp(extent.width, width_min, capabilities.maxImageExtent.width);
+    extent.height = std.math.clamp(extent.height, height_min, capabilities.maxImageExtent.height);
+    return extent;
 }
 
 /// The driver's minimum image count plus one spare image per frame in flight
@@ -369,6 +347,7 @@ fn chooseImageCount(capabilities: vk.SurfaceCapabilitiesKHR, frame_count: u32) u
         count = capabilities.maxImageCount;
     }
     std.debug.assert(count >= capabilities.minImageCount);
+    std.debug.assert(count <= MAX_SWAPCHAIN_IMAGES);
     return count;
 }
 
@@ -476,238 +455,37 @@ fn createImageViews(
 }
 
 // =============================================================================
-// Internal — MSAA Helpers
+// Internal — Render Pass Helper
 // =============================================================================
 
-fn createMSAAImage(
-    device: vk.Device,
-    format: vk.Format,
-    extent: vk.Extent2D,
-    sample_count: vk.SampleCountFlagBits,
-) MSAAError!vk.Image {
-    const image_info = vk.ImageCreateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = null,
-        .flags = 0,
-        .imageType = vk.VK_IMAGE_TYPE_2D,
-        .format = format,
-        .extent = .{
-            .width = extent.width,
-            .height = extent.height,
-            .depth = 1,
-        },
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = sample_count,
-        .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
-        .usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-        .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = 0,
-        .pQueueFamilyIndices = null,
-        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-
-    var image: vk.Image = null;
-    const result = vk.vkCreateImage(device, &image_info, null, &image);
-    if (!vk.succeeded(result)) return MSAAError.MSAAImageCreationFailed;
-
-    std.debug.assert(image != null);
-    return image;
-}
-
-fn allocateMSAAMemory(
-    device: vk.Device,
-    image: vk.Image,
-    mem_properties: *const vk.PhysicalDeviceMemoryProperties,
-) MSAAError!vk.DeviceMemory {
-    std.debug.assert(image != null);
-
-    var mem_reqs: vk.MemoryRequirements = undefined;
-    vk.vkGetImageMemoryRequirements(device, image, &mem_reqs);
-
-    const mem_type = vk.findMemoryType(
-        mem_properties,
-        mem_reqs.memoryTypeBits,
-        vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-    ) orelse return MSAAError.NoSuitableMemoryType;
-
-    const alloc_info = vk.MemoryAllocateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = null,
-        .allocationSize = mem_reqs.size,
-        .memoryTypeIndex = mem_type,
-    };
-
-    var memory: vk.DeviceMemory = null;
-    const result = vk.vkAllocateMemory(device, &alloc_info, null, &memory);
-    if (!vk.succeeded(result)) return MSAAError.MSAAMemoryAllocationFailed;
-
-    std.debug.assert(memory != null);
-    return memory;
-}
-
-fn createMSAAView(
-    device: vk.Device,
-    image: vk.Image,
-    format: vk.Format,
-) MSAAError!vk.ImageView {
-    std.debug.assert(image != null);
-
-    const view_info = vk.ImageViewCreateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .pNext = null,
-        .flags = 0,
-        .image = image,
-        .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-        .format = format,
-        .components = .{
-            .r = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            .g = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            .b = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-            .a = vk.VK_COMPONENT_SWIZZLE_IDENTITY,
-        },
-        .subresourceRange = .{
-            .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    };
-
-    var view: vk.ImageView = null;
-    const result = vk.vkCreateImageView(device, &view_info, null, &view);
-    if (!vk.succeeded(result)) return MSAAError.MSAAImageViewCreationFailed;
-
-    std.debug.assert(view != null);
-    return view;
-}
-
-// =============================================================================
-// Internal — Render Pass Helpers
-// =============================================================================
-
-/// MSAA render pass: attachment 0 = multisampled color, attachment 1 = resolve target.
-fn createMSAARenderPass(
-    device: vk.Device,
-    format: vk.Format,
-    sample_count: vk.SampleCountFlagBits,
-) RenderPassError!vk.RenderPass {
-    const attachments = [_]vk.AttachmentDescription{
-        // MSAA color attachment
+/// The incoming and outgoing external dependencies documented on
+/// `createRenderPass`.
+fn renderPassDependencies() [2]vk.SubpassDependency {
+    const color_output = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    const color_write = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    const dependencies = [2]vk.SubpassDependency{
         .{
-            .flags = 0,
-            .format = @intCast(format),
-            .samples = sample_count,
-            .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcSubpass = vk.SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = color_output,
+            .dstStageMask = color_output,
+            .srcAccessMask = color_write,
+            .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | color_write,
+            .dependencyFlags = 0,
         },
-        // Resolve attachment (swapchain image)
         .{
-            .flags = 0,
-            .format = @intCast(format),
-            .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcSubpass = 0,
+            .dstSubpass = vk.SUBPASS_EXTERNAL,
+            .srcStageMask = color_output,
+            .dstStageMask = vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            .srcAccessMask = color_write,
+            .dstAccessMask = 0,
+            .dependencyFlags = 0,
         },
     };
-
-    const color_ref = vk.AttachmentReference{
-        .attachment = 0,
-        .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    };
-    const resolve_ref = vk.AttachmentReference{
-        .attachment = 1,
-        .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    };
-
-    return buildRenderPass(device, &attachments, 2, &color_ref, &resolve_ref);
-}
-
-/// Simple render pass: single swapchain image attachment, no MSAA.
-fn createSimpleRenderPass(
-    device: vk.Device,
-    format: vk.Format,
-) RenderPassError!vk.RenderPass {
-    const attachment = [_]vk.AttachmentDescription{.{
-        .flags = 0,
-        .format = @intCast(format),
-        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE,
-        .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-    }};
-
-    const color_ref = vk.AttachmentReference{
-        .attachment = 0,
-        .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    };
-
-    return buildRenderPass(device, &attachment, 1, &color_ref, null);
-}
-
-/// Shared render pass construction — subpass + dependency are identical for both paths.
-fn buildRenderPass(
-    device: vk.Device,
-    attachments: [*]const vk.AttachmentDescription,
-    attachment_count: u32,
-    color_ref: *const vk.AttachmentReference,
-    resolve_ref: ?*const vk.AttachmentReference,
-) RenderPassError!vk.RenderPass {
-    std.debug.assert(attachment_count >= 1 and attachment_count <= 2);
-
-    const subpass = vk.SubpassDescription{
-        .flags = 0,
-        .pipelineBindPoint = vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
-        .inputAttachmentCount = 0,
-        .pInputAttachments = null,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = color_ref[0..1],
-        .pResolveAttachments = if (resolve_ref) |ref| ref[0..1] else null,
-        .pDepthStencilAttachment = null,
-        .preserveAttachmentCount = 0,
-        .pPreserveAttachments = null,
-    };
-
-    const dependency = vk.SubpassDependency{
-        .srcSubpass = vk.SUBPASS_EXTERNAL,
-        .dstSubpass = 0,
-        .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .srcAccessMask = 0,
-        .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dependencyFlags = 0,
-    };
-
-    const render_pass_info = vk.RenderPassCreateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .pNext = null,
-        .flags = 0,
-        .attachmentCount = attachment_count,
-        .pAttachments = attachments,
-        .subpassCount = 1,
-        .pSubpasses = (&subpass)[0..1],
-        .dependencyCount = 1,
-        .pDependencies = (&dependency)[0..1],
-    };
-
-    var render_pass: vk.RenderPass = null;
-    const result = vk.vkCreateRenderPass(device, &render_pass_info, null, &render_pass);
-    if (!vk.succeeded(result)) return RenderPassError.RenderPassCreationFailed;
-
-    std.debug.assert(render_pass != null);
-    return render_pass;
+    std.debug.assert(dependencies[0].srcSubpass == vk.SUBPASS_EXTERNAL);
+    std.debug.assert(dependencies[1].dstSubpass == vk.SUBPASS_EXTERNAL);
+    return dependencies;
 }
 
 // =============================================================================
@@ -718,33 +496,18 @@ fn createSingleFramebuffer(
     device: vk.Device,
     render_pass: vk.RenderPass,
     image_view: vk.ImageView,
-    msaa_view: ?vk.ImageView,
     extent: vk.Extent2D,
-    use_msaa: bool,
 ) FramebufferError!vk.Framebuffer {
     std.debug.assert(image_view != null);
-    if (use_msaa) std.debug.assert(msaa_view != null);
-
-    // MSAA: [0]=MSAA color, [1]=resolve. Non-MSAA: [0]=swapchain image.
-    var attachment_buf: [2]vk.ImageView = undefined;
-    var attachment_count: u32 = undefined;
-
-    if (use_msaa) {
-        attachment_buf[0] = msaa_view.?;
-        attachment_buf[1] = image_view;
-        attachment_count = 2;
-    } else {
-        attachment_buf[0] = image_view;
-        attachment_count = 1;
-    }
+    std.debug.assert(extent.width > 0 and extent.height > 0);
 
     const framebuffer_info = vk.FramebufferCreateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .pNext = null,
         .flags = 0,
         .renderPass = render_pass,
-        .attachmentCount = attachment_count,
-        .pAttachments = &attachment_buf,
+        .attachmentCount = 1,
+        .pAttachments = (&image_view)[0..1],
         .width = extent.width,
         .height = extent.height,
         .layers = 1,

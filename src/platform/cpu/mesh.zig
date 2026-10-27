@@ -15,9 +15,10 @@
 //!   per-row sample mask before the row is shaded. Two triangles sharing an
 //!   edge therefore add up to full coverage instead of blending twice, which
 //!   is what MSAA's per-sample resolve gives on the GPU.
-//! - Points are quads whose fragment shader fades alpha to zero at the
-//!   inscribed circle (`1 - smoothstep(0.85, 1, |uv|)`), so they need no
-//!   sample coverage: the shader alone decides every pixel.
+//! - Points are quads whose fragment shader fades alpha across the circle's
+//!   edge (`pointFalloff`, the same falloff as `mesh.frag` and Metal's point
+//!   shaders), so they need no sample coverage: the shader alone decides
+//!   every pixel.
 //!
 //! Every coordinate here is in device pixels; `renderer.zig` converts from
 //! logical pixels. Nothing allocates: polygons, bucket chains, and the row
@@ -441,8 +442,9 @@ fn shadeRow(row: []u32, y: u32, covered: Span, mask: []const u8, fill: *const Fi
     }
 }
 
-/// One point of a point cloud: a square of half-size `radius` around the
-/// center whose alpha fades out at the inscribed circle (`mesh.frag`).
+/// One point of a point cloud: a circle of `radius` device pixels whose alpha
+/// fades across its edge (`pointFalloff`). The pixels visited are the square
+/// that reaches the end of the falloff, as the GPU's quad does.
 pub fn drawPoint(
     target: Target,
     center: [2]f32,
@@ -453,11 +455,13 @@ pub fn drawPoint(
     assert(radius > 0);
     assert(color.r <= color.a);
     if (color.a == 0) return;
+    const extent = pointFalloffEnd(radius);
+    assert(extent >= radius);
     // The GPU rasterizes the square's pixel centers half-open and the shader
     // discards centers outside the clip.
-    const rows = raster.centerSpanHalfOpen(center[1] - radius, center[1] + radius, target.height)
+    const rows = raster.centerSpanHalfOpen(center[1] - extent, center[1] + extent, target.height)
         .intersect(raster.centerSpanClosed(clip.y, clip.y + clip.height, target.height));
-    const columns = raster.centerSpanHalfOpen(center[0] - radius, center[0] + radius, target.width)
+    const columns = raster.centerSpanHalfOpen(center[0] - extent, center[0] + extent, target.width)
         .intersect(raster.centerSpanClosed(clip.x, clip.x + clip.width, target.width));
     if (rows.isEmpty() or columns.isEmpty()) return;
     const inverse_radius = 1.0 / radius;
@@ -468,12 +472,43 @@ pub fn drawPoint(
         var x = columns.start;
         while (x < columns.end) : (x += 1) {
             const u = (@as(f32, @floatFromInt(x)) + 0.5 - center[0]) * inverse_radius;
-            const falloff = 1.0 - raster.smoothstep(0.85, 1.0, @sqrt(u * u + v * v));
-            const coverage = raster.unitToByte(falloff);
+            const coverage = raster.unitToByte(pointFalloff(@sqrt(u * u + v * v), radius));
             if (coverage == 0) continue;
             row[x] = raster.blendPixel(row[x], raster.premulScale(color, coverage));
         }
     }
+}
+
+/// Smallest radius, in device pixels, whose historical falloff band (the
+/// outer 15% of the radius) is at least one pixel wide.
+const point_radius_band_min: f32 = 1.0 / 0.15;
+
+/// Point alpha at `uv_distance` (distance from the center over the radius)
+/// for a point of `radius` device pixels. The contract shared with
+/// `shaders/mesh.frag` and Metal's point shaders:
+///
+/// - From a 6.7 px radius up: `1 - smoothstep(0.85, 1, uv_distance)`, the
+///   historical falloff, computed the same way so large points do not change.
+/// - Smaller points: a one-pixel band that moves outward to straddle the edge,
+///   so a sub-pixel dot keeps roughly its true area instead of vanishing.
+fn pointFalloff(uv_distance: f32, radius: f32) f32 {
+    assert(radius > 0);
+    assert(uv_distance >= 0);
+    if (radius >= point_radius_band_min) {
+        return 1.0 - raster.smoothstep(0.85, 1.0, uv_distance);
+    }
+    const end = pointFalloffEnd(radius);
+    return 1.0 - raster.smoothstep(end - 1.0, end, uv_distance * radius);
+}
+
+/// Distance from the center, in device pixels, where a point's alpha reaches
+/// zero: the radius for large points, up to half a pixel beyond for small ones.
+fn pointFalloffEnd(radius: f32) f32 {
+    assert(radius > 0);
+    const end = radius + 0.5 * @max(1.0 - 0.15 * radius, 0.0);
+    assert(end >= radius);
+    assert(end <= radius + 0.5);
+    return end;
 }
 
 // =============================================================================
@@ -667,18 +702,36 @@ test "uv plane reproduces the vertex uvs it was fitted to" {
     }
 }
 
-test "point alpha fades to zero at the inscribed circle" {
-    // Goal: a point is a square whose shader keeps full alpha inside 85% of
-    // the radius and none outside the circle. Radius 3.2 at (4.5, 4.5): the
-    // center pixel is opaque and the square's corner pixel (1, 1), at
-    // |uv| = 1.33, is untouched.
+test "large point alpha keeps the historical falloff" {
+    // Goal: from a 6.7 px radius up a point is unchanged: full alpha inside
+    // 85% of the radius and none outside the circle. Radius 8 at (10, 10.5):
+    // the center pixel is opaque and the square's corner pixel (3, 3), at
+    // |uv| = 1.19, is untouched.
+    var pixels: [24 * 24]u32 = undefined;
+    const target = testTarget(&pixels, 24, 24);
+    const white = Premul{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    drawPoint(target, .{ 10, 10.5 }, 8, open_clip, white);
+    try testing.expectEqual(@as(u32, 0xFFFF_FFFF), target.row(10)[10]);
+    try testing.expectEqual(test_background, target.row(3)[3]);
+    // Pixel (17, 10) has |uv| = 7.5 / 8 = 0.9375. smoothstep(0.85, 1, 0.9375)
+    // = 0.6238, so coverage 0.3762 rounds to byte 96.
+    try testing.expectEqual(@as(u32, 0xFF60_6060), target.row(10)[17]);
+}
+
+test "sub-pixel point keeps its area with a one-pixel falloff" {
+    // Goal: a radius-0.7 point centered on a pixel corner draws its four
+    // pixels at about its true area (pi * 0.49 / 4 = 0.385 each). The old
+    // falloff left it invisible: every pixel center, at 0.707 px, lies past
+    // the radius. The band ends at 0.7 + 0.5 * (1 - 0.105) = 1.1475 px, so
+    // t = 0.7071 - 0.1475 = 0.5596, smoothstep = 0.5890 and alpha 0.4110,
+    // byte 105. The next pixel out, at 1.58 px, is untouched.
     var pixels: [8 * 8]u32 = undefined;
     const target = testTarget(&pixels, 8, 8);
     const white = Premul{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    drawPoint(target, .{ 4.5, 4.5 }, 3.2, open_clip, white);
-    try testing.expectEqual(@as(u32, 0xFFFF_FFFF), target.row(4)[4]);
-    try testing.expectEqual(test_background, target.row(1)[1]);
-    // Pixel (7, 4) has |uv| = 3 / 3.2 = 0.9375. smoothstep(0.85, 1, 0.9375)
-    // = 0.6238, so coverage 0.3762 rounds to byte 96.
-    try testing.expectEqual(@as(u32, 0xFF60_6060), target.row(4)[7]);
+    drawPoint(target, .{ 4, 4 }, 0.7, open_clip, white);
+    for ([_][2]u32{ .{ 3, 3 }, .{ 4, 3 }, .{ 3, 4 }, .{ 4, 4 } }) |pixel| {
+        try testing.expectEqual(@as(u32, 0xFF69_6969), target.row(pixel[1])[pixel[0]]);
+    }
+    try testing.expectEqual(test_background, target.row(4)[5]);
+    try testing.expectEqual(test_background, target.row(2)[3]);
 }

@@ -3,13 +3,14 @@
 //! Takes a gooey Scene and renders it using Vulkan directly.
 //! Delegates to one module per subsystem:
 //!   - `vk_instance`    : Instance, device, surface, debug messenger
-//!   - `vk_swapchain`   : Swapchain lifecycle, MSAA, render pass, framebuffers
+//!   - `vk_swapchain`   : Swapchain lifecycle, render pass, framebuffers
 //!   - `vk_buffers`     : Buffer, command pool, command buffer, sync object creation
 //!   - `vk_descriptors` : Descriptor layouts, pool, sets, sampler, updates
 //!   - `vk_pipelines`   : Generic pipeline creation
 //!   - `vk_atlas`       : Atlas texture upload
 
 const std = @import("std");
+const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
 const wayland = @import("wayland.zig");
 const interface_verify = @import("../../core/interface_verify.zig");
@@ -33,7 +34,9 @@ const ImageInstance = image_instance_mod.ImageInstance;
 
 const Scene = scene_mod.Scene;
 const SceneLimits = scene_mod.SceneLimits;
-const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
+const limits_mod = @import("../../core/limits.zig");
+const ResourceLimits = limits_mod.ResourceLimits;
+const WindowLimits = limits_mod.WindowLimits;
 const InstanceCapacity = vk_types.InstanceCapacity;
 const Allocator = std.mem.Allocator;
 
@@ -58,31 +61,49 @@ pub const GpuSvg = vk_types.GpuSvg;
 pub const GpuImage = vk_types.GpuImage;
 
 // =============================================================================
-// Pending Atlas Upload (deferred staging for async transfers)
+// Atlas Uploads (bounded per frame)
 // =============================================================================
 
-/// Deferred atlas upload request. Populated by `stageTextAtlas()` etc.,
-/// consumed by `render()` after the frame fence wait.
+/// The rows one atlas still owes the GPU.
 ///
-/// Stores a *pointer* to the atlas pixel data — no memcpy until render().
-/// The pointer must remain valid for the duration of `renderFrame()`.
-const PendingUpload = struct {
+/// `stageTextAtlas()` and friends record the CPU atlas and union its dirty
+/// region in; `render()` then uploads at most one band of rows per atlas per
+/// frame, and all three atlases share one staging lane of
+/// `ResourceLimits.atlas.upload_bytes_frame_max` bytes. Bands advance through
+/// the region and wrap, and every stage restarts the count of rows owed, so
+/// each row reaches the GPU within one pass after its latest change even while
+/// new glyphs keep arriving. Until then a not-yet-uploaded row samples as the
+/// previous contents (or as transparent after the image was re-created).
+const AtlasUpload = struct {
+    /// CPU atlas pixels. Valid across frames: `Window.syncAtlases` stages
+    /// before every render, and an atlas reallocates only when it grows, which
+    /// bumps its generation so the new pointer is staged before the next render.
     data: []const u8 = &.{},
     width: u32 = 0,
     height: u32 = 0,
     format: vk_atlas.AtlasFormat = .r8,
-    /// Dirty sub-region to upload, or null for full upload.
-    dirty: ?vk_atlas.DirtyRegion = null,
-    /// Whether this pending upload is active.
-    active: bool = false,
+    /// Union of the dirty regions staged and not yet uploaded, or null.
+    region: ?vk_atlas.DirtyRegion = null,
+    /// Next row of `region` to upload.
+    cursor_y: u32 = 0,
+    /// Rows of `region` still to upload since the latest stage.
+    rows_owed: u32 = 0,
+    /// A stage arrived since the last render: the image may need (re)creation.
+    staged: bool = false,
+    /// The image was (re)created and is cleared before its first copy.
+    initialize: bool = false,
+
+    fn pending(self: *const AtlasUpload) bool {
+        if (self.region != null) assert(self.rows_owed > 0);
+        return self.region != null or self.initialize or self.staged;
+    }
 };
 
 /// Info needed to record a single atlas transfer into the render command buffer.
 const AtlasTransferRecord = struct {
     image: vk.Image,
-    staging_offset: vk.DeviceSize,
-    dirty: vk_atlas.DirtyRegion,
-    preserve_contents: bool,
+    copy: ?vk_atlas.StagedCopy,
+    initialize: bool,
 };
 
 /// Maximum atlas transfers per frame (text + SVG + image).
@@ -172,14 +193,13 @@ pub const VulkanRenderer = struct {
     swapchain_format: vk.Format = vk.VK_FORMAT_B8G8R8A8_UNORM,
     swapchain_extent: vk.Extent2D = .{ .width = 0, .height = 0 },
 
-    // MSAA resources
-    msaa_image: vk.Image = null,
-    msaa_memory: vk.DeviceMemory = null,
-    msaa_view: vk.ImageView = null,
-    sample_count: vk.SampleCountFlagBits = vk.VK_SAMPLE_COUNT_4_BIT,
-
     // Scale factor for HiDPI
     scale_factor: f64 = 1.0,
+
+    // Largest swapchain extent, from `ResourceLimits.window`. A window larger
+    // than this renders at a reduced device scale (see `fitExtent`).
+    window_limits: WindowLimits = undefined,
+    extent_downscaled: bool = false,
 
     // Framebuffer clear color, republished by `Window.renderFrame` from
     // `Window.getClearColor()` before every frame. The default only covers the
@@ -219,11 +239,12 @@ pub const VulkanRenderer = struct {
     // `initWithWaylandSurface` before any per-frame resource is created.
     frame_count: u32 = 0,
 
-    // Staging buffer for texture uploads (shared across frames)
+    // Staging buffer for atlas uploads: one lane of `staging_lane_bytes`
+    // (`ResourceLimits.atlas.upload_bytes_frame_max`) per frame in flight.
+    staging_pool: vk_buffers.MemoryPool = .{},
     staging_buffer: vk.Buffer = null,
-    staging_memory: vk.DeviceMemory = null,
     staging_mapped: ?*anyopaque = null,
-    staging_size: vk.DeviceSize = 0,
+    staging_lane_bytes: vk.DeviceSize = 0,
 
     // Atlas textures (text=R8, SVG/image=RGBA8)
     text_atlas: vk_atlas.AtlasResources = .{},
@@ -231,11 +252,11 @@ pub const VulkanRenderer = struct {
     image_atlas: vk_atlas.AtlasResources = .{},
     atlas_sampler: vk.Sampler = null,
 
-    // Pending atlas uploads — populated by stageXxxAtlas(), consumed by render().
-    // Stores data pointers valid for the duration of renderFrame().
-    pending_text: PendingUpload = .{},
-    pending_svg: PendingUpload = .{},
-    pending_image: PendingUpload = .{},
+    // Atlas rows owed to the GPU — populated by stageXxxAtlas(), drained by
+    // render() within the per-frame upload budget. Indexed by `AtlasKind`.
+    uploads: [atlas_kind_count]AtlasUpload = @splat(.{}),
+    // The atlas served first this frame; rotates so none starves the others.
+    upload_rotation: u32 = 0,
 
     // Descriptors (layouts + pool shared; per-frame sets live in FrameResources)
     unified_descriptor_layout: vk.DescriptorSetLayout = null,
@@ -248,6 +269,9 @@ pub const VulkanRenderer = struct {
     // Memory pool for per-frame buffer sub-allocation (1 vkAllocateMemory instead of ~15)
     host_memory_pool: vk_buffers.MemoryPool = .{},
 
+    // `maxMemoryAllocationSize`; every reservation is checked against it.
+    allocation_bytes_max: vk.DeviceSize = 0,
+
     // Per-frame instance buffer capacities, from the window's `ResourceLimits.scene`.
     // Set once in `initWithWaylandSurface` before any buffer is created; read-only
     // afterwards (buffers never grow). Meaningful only while `initialized`.
@@ -258,7 +282,8 @@ pub const VulkanRenderer = struct {
     const Self = @This();
 
     /// Atlas type identifier for descriptor set routing.
-    const AtlasKind = enum { text, svg, image };
+    const AtlasKind = enum(u8) { text, svg, image };
+    const atlas_kind_count: u32 = @typeInfo(AtlasKind).@"enum".field_names.len;
 
     // Embedded SPIR-V shaders (compiled from GLSL)
     // Force 4-byte alignment as required by Vulkan for SPIR-V code
@@ -311,8 +336,7 @@ pub const VulkanRenderer = struct {
             vk.vkDestroyRenderPass(self.device, rp, null);
         }
 
-        // MSAA + swapchain image views + swapchain
-        self.destroyMSAAResources();
+        // Swapchain image views + swapchain
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
         if (self.swapchain) |sc| {
             vk.vkDestroySwapchainKHR(self.device, sc, null);
@@ -383,15 +407,6 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    fn destroyMSAAResources(self: *Self) void {
-        if (self.msaa_view) |view| vk.vkDestroyImageView(self.device, view, null);
-        self.msaa_view = null;
-        if (self.msaa_image) |image| vk.vkDestroyImage(self.device, image, null);
-        self.msaa_image = null;
-        if (self.msaa_memory) |mem| vk.vkFreeMemory(self.device, mem, null);
-        self.msaa_memory = null;
-    }
-
     fn destroyFrameResources(self: *Self) void {
         for (&self.frames) |*frame| {
             // Sync objects
@@ -436,9 +451,9 @@ pub const VulkanRenderer = struct {
     }
 
     fn destroyStagingBuffer(self: *Self) void {
-        vk_buffers.destroyBuffer(self.device, self.staging_buffer, self.staging_memory);
+        vk_buffers.destroyBufferOnly(self.device, self.staging_buffer);
+        self.staging_pool.destroy(self.device);
         self.staging_buffer = null;
-        self.staging_memory = null;
         self.staging_mapped = null;
     }
 
@@ -488,13 +503,15 @@ pub const VulkanRenderer = struct {
     ) !void {
         std.debug.assert(!self.initialized);
         std.debug.assert(limits.check() == null);
-        const scene_limits = &limits.scene;
 
-        // Every per-frame instance buffer is sized from the window's budget here,
-        // once, before the first frame (CLAUDE.md §2), for each frame in flight.
-        self.instance_capacity = InstanceCapacity.fromSceneLimits(scene_limits);
+        // Every per-frame buffer and the staging lanes are sized from the
+        // window's budget here, once, before the first frame (CLAUDE.md §2).
+        self.instance_capacity = InstanceCapacity.fromSceneLimits(&limits.scene);
+        self.window_limits = limits.window;
+        self.staging_lane_bytes = limits.atlas.upload_bytes_frame_max;
         self.frame_count = limits.frame.in_flight_count;
-        std.debug.assert(self.frame_count <= frame_count_max);
+        assert(self.frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
+        assert(self.frame_count <= frame_count_max);
 
         // Store Wayland display reference for cleanup roundtrips
         self.wl_display = @ptrCast(wl_display);
@@ -525,10 +542,6 @@ pub const VulkanRenderer = struct {
         self.graphics_family = phys.families.graphics;
         self.present_family = phys.families.present;
 
-        // ---- MSAA sample count (vk_swapchain) ----
-        self.sample_count = vk_swapchain.getMaxUsableSampleCount(self.physical_device);
-        std.log.info("Using MSAA sample count: {}", .{self.sample_count});
-
         // ---- Logical device + queues (vk_instance) ----
         const dev = try vk_instance.createLogicalDevice(self.physical_device, phys.families);
         self.device = dev.device;
@@ -539,67 +552,12 @@ pub const VulkanRenderer = struct {
             self.device = null;
         }
 
-        // ---- Memory properties ----
+        // ---- Memory properties and the single-allocation limit ----
         vk.vkGetPhysicalDeviceMemoryProperties(self.physical_device, &self.mem_properties);
+        self.allocation_bytes_max = vk_buffers.queryAllocationBytesMax(self.physical_device);
 
-        // Calculate physical pixel dimensions for HiDPI rendering
-        const physical_width: u32 = @intFromFloat(@as(f64, @floatFromInt(width)) * scale_factor);
-        const physical_height: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) * scale_factor);
-
-        // ---- Swapchain (vk_swapchain) ----
-        const sc = try vk_swapchain.createSwapchain(
-            self.device,
-            self.physical_device,
-            self.surface,
-            physical_width,
-            physical_height,
-            self.frame_count,
-            null,
-        );
-        self.swapchain = sc.swapchain;
-        self.swapchain_images = sc.images;
-        self.swapchain_image_views = sc.image_views;
-        self.swapchain_image_count = sc.image_count;
-        self.swapchain_format = sc.format;
-        self.swapchain_extent = sc.extent;
-        errdefer self.destroySwapchainResources();
-
-        // ---- MSAA resources (vk_swapchain) ----
-        const msaa = try vk_swapchain.createMSAAResources(
-            self.device,
-            self.swapchain_format,
-            self.swapchain_extent,
-            self.sample_count,
-            &self.mem_properties,
-        );
-        self.msaa_image = msaa.image;
-        self.msaa_memory = msaa.memory;
-        self.msaa_view = msaa.view;
-        errdefer self.destroyMSAAResources();
-
-        // ---- Render pass (vk_swapchain) ----
-        self.render_pass = try vk_swapchain.createRenderPass(
-            self.device,
-            self.swapchain_format,
-            self.sample_count,
-        );
-        errdefer {
-            if (self.render_pass) |rp| vk.vkDestroyRenderPass(self.device, rp, null);
-            self.render_pass = null;
-        }
-
-        // ---- Framebuffers (vk_swapchain) ----
-        try vk_swapchain.createFramebuffers(
-            self.device,
-            self.render_pass,
-            &self.swapchain_image_views,
-            self.swapchain_image_count,
-            self.msaa_view,
-            self.swapchain_extent,
-            self.sample_count,
-            &self.framebuffers,
-        );
-        errdefer vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
+        try self.initSwapchainTargets(width, height, scale_factor);
+        errdefer self.destroySwapchainTargets();
 
         // ---- Command pool + buffers (vk_buffers) ----
         self.command_pool = try vk_buffers.createCommandPool(self.device, self.graphics_family);
@@ -625,28 +583,11 @@ pub const VulkanRenderer = struct {
         }
         errdefer self.destroyFrameResources();
 
-        // ---- Host memory pool (vk_buffers — 1 vkAllocateMemory instead of ~15) ----
-        // Sized from the budget: every frame's buffers plus alignment headroom.
-        self.host_memory_pool = try vk_buffers.MemoryPool.init(
-            self.device,
-            &self.mem_properties,
-            self.instance_capacity.hostPoolBytes(self.frame_count),
-            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        );
-        errdefer self.host_memory_pool.destroy(self.device);
-
-        // ---- Pre-allocate staging buffer (zero mid-frame allocations) ----
-        const staging_result = try vk_buffers.createMappedBuffer(
-            self.device,
-            &self.mem_properties,
-            vk_atlas.MAX_STAGING_BYTES,
-            vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        );
-        self.staging_buffer = staging_result.buffer;
-        self.staging_memory = staging_result.memory;
-        self.staging_mapped = staging_result.mapped;
-        self.staging_size = vk_atlas.MAX_STAGING_BYTES;
-        errdefer self.destroyStagingBuffer();
+        try self.initHostReservations();
+        errdefer {
+            self.destroyStagingBuffer();
+            self.host_memory_pool.destroy(self.device);
+        }
 
         // ---- Per-frame GPU buffers (sub-allocated from host pool) ----
         try self.createFrameBuffers();
@@ -679,11 +620,11 @@ pub const VulkanRenderer = struct {
         try self.createAllPipelines();
         errdefer self.destroyAllPipelines();
 
-        try self.mesh.init(self.allocator, self.device, &self.mem_properties, scene_limits, &.{
+        try self.mesh.init(self.allocator, self.device, &self.mem_properties, &limits.scene, &.{
             .render_pass = self.render_pass,
-            .sample_count = self.sample_count,
             .cache = self.pipeline_cache,
             .frame_count = self.frame_count,
+            .allocation_bytes_max = self.allocation_bytes_max,
         });
         errdefer self.mesh.deinit();
 
@@ -707,19 +648,105 @@ pub const VulkanRenderer = struct {
         self.initialized = true;
 
         std.log.info(
-            "VulkanRenderer initialized: {}x{} logical, {}x{} physical (scale: {d:.2}, " ++
-                "MSAA: {}x, frames in flight: {d}, swapchain images: {d})",
+            "VulkanRenderer initialized: {}x{} logical, {}x{} physical (scale: {d:.2}), " ++
+                "1 sample per pixel, frames in flight: {d}, swapchain images: {d}, " ++
+                "atlas staging {d} B",
             .{
                 width,
                 height,
-                physical_width,
-                physical_height,
+                self.swapchain_extent.width,
+                self.swapchain_extent.height,
                 scale_factor,
-                self.sample_count,
                 self.frame_count,
                 self.swapchain_image_count,
+                self.staging_pool.size,
             },
         );
+    }
+
+    /// Swapchain, render pass and framebuffers. None of them is Gooey memory:
+    /// the swapchain images belong to the driver, bounded by the window budget
+    /// (extent) and the frames in flight (count).
+    fn initSwapchainTargets(self: *Self, width: u32, height: u32, scale_factor: f64) !void {
+        assert(self.device != null);
+        assert(self.swapchain == null);
+        const sc = try vk_swapchain.createSwapchain(
+            self.device,
+            self.physical_device,
+            self.surface,
+            self.fitExtent(width, height, scale_factor),
+            self.frame_count,
+            null,
+        );
+        self.swapchain = sc.swapchain;
+        self.swapchain_images = sc.images;
+        self.swapchain_image_views = sc.image_views;
+        self.swapchain_image_count = sc.image_count;
+        self.swapchain_format = sc.format;
+        self.swapchain_extent = sc.extent;
+        errdefer self.destroySwapchainResources();
+
+        self.render_pass = try vk_swapchain.createRenderPass(self.device, self.swapchain_format);
+        errdefer {
+            if (self.render_pass) |rp| vk.vkDestroyRenderPass(self.device, rp, null);
+            self.render_pass = null;
+        }
+
+        errdefer vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
+        try vk_swapchain.createFramebuffers(
+            self.device,
+            self.render_pass,
+            &self.swapchain_image_views,
+            self.swapchain_image_count,
+            self.swapchain_extent,
+            &self.framebuffers,
+        );
+    }
+
+    /// Undo `initSwapchainTargets` during a failed initialization.
+    fn destroySwapchainTargets(self: *Self) void {
+        vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
+        if (self.render_pass) |rp| vk.vkDestroyRenderPass(self.device, rp, null);
+        self.render_pass = null;
+        self.destroySwapchainResources();
+    }
+
+    /// The two host-visible reservations besides the mesh pools: the per-frame
+    /// instance and uniform buffers, and the atlas staging lanes. Each is one
+    /// `vkAllocateMemory`, checked against the device's allocation and heap
+    /// limits before it is made.
+    fn initHostReservations(self: *Self) !void {
+        assert(self.staging_lane_bytes >= limits_mod.MAX_ATLAS_ROW_BYTES);
+        assert(self.allocation_bytes_max > 0);
+        const host_visible = vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        const host_pool = &self.host_memory_pool;
+        host_pool.* = try vk_buffers.MemoryPool.init(self.device, &self.mem_properties, &.{
+            .name = "instance and uniform buffers",
+            .size = self.instance_capacity.hostPoolBytes(self.frame_count),
+            .allocation_bytes_max = self.allocation_bytes_max,
+            .required_properties = host_visible,
+        });
+        errdefer self.host_memory_pool.destroy(self.device);
+
+        // One lane per frame in flight, plus alignment slack for the buffer.
+        assert(self.frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
+        const staging_bytes = @as(vk.DeviceSize, self.frame_count) * self.staging_lane_bytes;
+        self.staging_pool = try vk_buffers.MemoryPool.init(self.device, &self.mem_properties, &.{
+            .name = "atlas staging",
+            .size = staging_bytes + vk_types.host_pool_alignment_slack_bytes,
+            .allocation_bytes_max = self.allocation_bytes_max,
+            .required_properties = host_visible,
+        });
+        errdefer self.staging_pool.destroy(self.device);
+        const staging = try vk_buffers.createMappedBufferFromPool(
+            self.device,
+            &self.staging_pool,
+            staging_bytes,
+            vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        );
+        self.staging_buffer = staging.buffer;
+        self.staging_mapped = staging.mapped;
     }
 
     // =========================================================================
@@ -853,26 +880,28 @@ pub const VulkanRenderer = struct {
             self.textured_descriptor_layout,
         );
 
-        self.unified_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        const device = self.device;
+        const render_pass = self.render_pass;
+        self.unified_pipeline = try vk_pipelines.createGraphicsPipeline(device, render_pass, .{
             .vert_spv = unified_vert_spv,
             .frag_spv = unified_frag_spv,
             .pipeline_layout = self.unified_pipeline_layout,
         }, self.pipeline_cache);
 
-        self.text_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        self.text_pipeline = try vk_pipelines.createGraphicsPipeline(device, render_pass, .{
             .vert_spv = text_vert_spv,
             .frag_spv = text_frag_spv,
             .pipeline_layout = self.textured_pipeline_layout,
         }, self.pipeline_cache);
 
-        self.svg_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        self.svg_pipeline = try vk_pipelines.createGraphicsPipeline(device, render_pass, .{
             .vert_spv = svg_vert_spv,
             .frag_spv = svg_frag_spv,
             .pipeline_layout = self.textured_pipeline_layout,
             .blend_mode = .premultiplied, // SVG shader outputs pre-multiplied RGB
         }, self.pipeline_cache);
 
-        self.image_pipeline = try vk_pipelines.createGraphicsPipeline(self.device, self.render_pass, self.sample_count, .{
+        self.image_pipeline = try vk_pipelines.createGraphicsPipeline(device, render_pass, .{
             .vert_spv = image_vert_spv,
             .frag_spv = image_frag_spv,
             .pipeline_layout = self.textured_pipeline_layout,
@@ -916,10 +945,6 @@ pub const VulkanRenderer = struct {
         // Store new scale factor
         self.scale_factor = scale_factor;
 
-        // Calculate physical pixel dimensions
-        const physical_width: u32 = @intFromFloat(@as(f64, @floatFromInt(width)) * scale_factor);
-        const physical_height: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) * scale_factor);
-
         // Wait only for our frames — not ALL GPU work
         for (0..self.frame_count) |i| {
             _ = vk.vkWaitForFences(
@@ -935,19 +960,51 @@ pub const VulkanRenderer = struct {
         self.updateUniformBuffer(width, height);
 
         // Recreate swapchain at physical resolution for HiDPI
-        self.recreateSwapchain(physical_width, physical_height) catch |err| {
+        self.recreateSwapchain(self.fitExtent(width, height, scale_factor)) catch |err| {
             std.debug.print("Failed to recreate swapchain: {}\n", .{err});
         };
     }
 
-    /// Recreate swapchain and dependent resources (MSAA, framebuffers).
+    /// Physical swapchain extent for a logical size: the scale factor, lowered
+    /// uniformly when the window would exceed `ResourceLimits.window`. The
+    /// compositor scales the smaller buffer up through the window's viewport
+    /// (wp_viewporter), as the CPU backend does. Logged once per transition.
+    fn fitExtent(self: *Self, width: u32, height: u32, scale_factor: f64) vk.Extent2D {
+        assert(width > 0 and height > 0);
+        assert(scale_factor > 0);
+        const width_f: f64 = @floatFromInt(width);
+        const height_f: f64 = @floatFromInt(height);
+        const width_max: f64 = @floatFromInt(self.window_limits.framebuffer_width_max);
+        const height_max: f64 = @floatFromInt(self.window_limits.framebuffer_height_max);
+        const scale = @min(scale_factor, width_max / width_f, height_max / height_f);
+        const extent = vk.Extent2D{
+            .width = @max(1, @as(u32, @intFromFloat(width_f * scale))),
+            .height = @max(1, @as(u32, @intFromFloat(height_f * scale))),
+        };
+        const downscaled = scale < scale_factor;
+        if (downscaled and !self.extent_downscaled) {
+            std.log.warn(
+                "Vulkan: a {d}x{d} window at scale {d} exceeds ResourceLimits.window " ++
+                    "({d}x{d} px); rendering at scale {d}",
+                .{ width, height, scale_factor, width_max, height_max, scale },
+            );
+        }
+        self.extent_downscaled = downscaled;
+        assert(extent.width <= self.window_limits.framebuffer_width_max);
+        assert(extent.height <= self.window_limits.framebuffer_height_max);
+        return extent;
+    }
+
+    /// Recreate the swapchain and its framebuffers for a new extent.
     ///
-    /// The render pass is NOT recreated — it depends only on format and sample count,
-    /// neither of which changes on resize.
-    fn recreateSwapchain(self: *Self, width: u32, height: u32) !void {
+    /// Nothing Gooey allocates is resized: the render pass depends only on the
+    /// format, there is no multisampled target, and the swapchain images belong
+    /// to the driver, bounded by the window budget and the frames in flight.
+    fn recreateSwapchain(self: *Self, extent: vk.Extent2D) !void {
+        assert(extent.width <= self.window_limits.framebuffer_width_max);
+        assert(extent.height <= self.window_limits.framebuffer_height_max);
         // Destroy old resources in dependency order
         vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
-        self.destroyMSAAResources();
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
 
         // Create new swapchain, passing old one for resource recycling
@@ -956,8 +1013,7 @@ pub const VulkanRenderer = struct {
             self.device,
             self.physical_device,
             self.surface,
-            width,
-            height,
+            extent,
             self.frame_count,
             old_swapchain,
         );
@@ -974,68 +1030,113 @@ pub const VulkanRenderer = struct {
             vk.vkDestroySwapchainKHR(self.device, old, null);
         }
 
-        // Recreate MSAA resources for new extent
-        const msaa = try vk_swapchain.createMSAAResources(
-            self.device,
-            self.swapchain_format,
-            self.swapchain_extent,
-            self.sample_count,
-            &self.mem_properties,
-        );
-        self.msaa_image = msaa.image;
-        self.msaa_memory = msaa.memory;
-        self.msaa_view = msaa.view;
-
         // Recreate framebuffers through the shared helper rather than inline copies
         try vk_swapchain.createFramebuffers(
             self.device,
             self.render_pass,
             &self.swapchain_image_views,
             self.swapchain_image_count,
-            self.msaa_view,
             self.swapchain_extent,
-            self.sample_count,
             &self.framebuffers,
         );
     }
 
     // =========================================================================
-    // Atlas Upload — async partial transfers (no synchronous fence)
+    // Atlas Upload — bounded partial transfers (no synchronous fence)
     //
-    // Flow: stageXxxAtlas() stores data pointers → render() waits frame fence
-    // → processAtlasUploads() stages dirty rects into per-frame lane →
-    // recordAtlasTransfers() records barriers+copies into the render cmd buf.
+    // Flow: stageXxxAtlas() records the CPU atlas and unions its dirty region
+    // → render() waits the frame fence → processAtlasUploads() (re)creates
+    // images and stages at most one band of rows per atlas into this frame's
+    // lane → recordAtlasTransfers() records clear/copy/barriers into the render
+    // command buffer.
     //
-    // Avoids a synchronous GPU round-trip per upload, the largest frame stall.
-    // Per-frame staging lanes (48MB each) prevent CPU/GPU races without extra
-    // fences. Partial uploads (dirty rects only) reduce transfer bandwidth
-    // from 64MB to typically <1MB per atlas-dirty frame.
+    // Resource sketch (CLAUDE.md §7): the staging buffer is one lane of
+    // `ResourceLimits.atlas.upload_bytes_frame_max` per frame in flight
+    // (`ResourceLimits.frame.in_flight_count`): 0.5 MiB at `.nano`, 2 MiB at
+    // `.small`, 3 MiB at `.standard` (previously 144 MiB: three 4096² atlases). Per frame: at most that many
+    // bytes memcpy'd, three copies, three to five barriers. Lanes are reused
+    // only after the frame's fence, so CPU writes never race GPU reads.
     // =========================================================================
 
     /// Notify renderer that the text atlas has new data. Call before render().
-    /// The data pointer must remain valid until render() returns.
+    /// The data must stay valid until the atlas changes generation.
     pub fn stageTextAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
         std.debug.assert(data.len == @as(usize, width) * @as(usize, height));
         std.debug.assert(width > 0 and height > 0);
-        self.pending_text = .{ .data = data, .width = width, .height = height, .format = .r8, .dirty = dirty, .active = true };
+        self.stageAtlas(.text, data, .{ .width = width, .height = height }, .r8, dirty);
     }
 
     /// Notify renderer that the SVG atlas has new data. Call before render().
     pub fn stageSvgAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
         std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
         std.debug.assert(width > 0 and height > 0);
-        self.pending_svg = .{ .data = data, .width = width, .height = height, .format = .rgba8, .dirty = dirty, .active = true };
+        self.stageAtlas(.svg, data, .{ .width = width, .height = height }, .rgba8, dirty);
     }
 
     /// Notify renderer that the image atlas has new data. Call before render().
     pub fn stageImageAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
         std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
         std.debug.assert(width > 0 and height > 0);
-        self.pending_image = .{ .data = data, .width = width, .height = height, .format = .rgba8, .dirty = dirty, .active = true };
+        self.stageAtlas(.image, data, .{ .width = width, .height = height }, .rgba8, dirty);
     }
 
-    /// Process all pending atlas uploads: (re)create VkImages if dimensions
-    /// changed, stage dirty pixel data into the current frame's staging lane.
+    /// Whether atlas rows are still owed to the GPU. The window keeps
+    /// requesting frames until this is false, so a frame budget that splits an
+    /// upload never leaves a partially uploaded atlas on screen.
+    pub fn atlasUploadsPending(self: *const Self) bool {
+        for (&self.uploads) |*upload| {
+            if (upload.pending()) return true;
+        }
+        return false;
+    }
+
+    /// Record the CPU atlas and union its dirty region into the rows owed.
+    /// The atlas's dirty region is cumulative since its last reset, so the
+    /// union never loses rows; a size change starts over, because the image
+    /// is re-created and cleared and the CPU atlas then reports itself fully
+    /// dirty.
+    fn stageAtlas(
+        self: *Self,
+        kind: AtlasKind,
+        data: []const u8,
+        size: vk.Extent2D,
+        format: vk_atlas.AtlasFormat,
+        dirty: ?vk_atlas.DirtyRegion,
+    ) void {
+        const upload = &self.uploads[@backingInt(kind)];
+        if (upload.width != size.width or upload.height != size.height) {
+            upload.region = null;
+            upload.rows_owed = 0;
+        }
+        upload.data = data;
+        upload.width = size.width;
+        upload.height = size.height;
+        upload.format = format;
+        upload.staged = true;
+        const region = dirty orelse return;
+        assert(region.width > 0 and region.height > 0);
+        assert(region.x + region.width <= size.width);
+        assert(region.y + region.height <= size.height);
+        const merged = if (upload.region) |owed| unionRegion(owed, region) else region;
+        upload.region = merged;
+        upload.rows_owed = merged.height;
+        const cursor_inside = upload.cursor_y >= merged.y and
+            upload.cursor_y < merged.y + merged.height;
+        if (!cursor_inside) upload.cursor_y = merged.y;
+    }
+
+    fn unionRegion(a: vk_atlas.DirtyRegion, b: vk_atlas.DirtyRegion) vk_atlas.DirtyRegion {
+        const x = @min(a.x, b.x);
+        const y = @min(a.y, b.y);
+        const right = @max(a.x + a.width, b.x + b.width);
+        const bottom = @max(a.y + a.height, b.y + b.height);
+        assert(right > x);
+        assert(bottom > y);
+        return .{ .x = x, .y = y, .width = right - x, .height = bottom - y };
+    }
+
+    /// Prepare every atlas for this frame and stage the rows the frame's lane
+    /// has room for, rotating which atlas is served first.
     ///
     /// Must be called AFTER vkWaitForFences(current_frame) — the staging lane
     /// is only safe to write once the previous use of this frame slot is done.
@@ -1047,97 +1148,137 @@ pub const VulkanRenderer = struct {
         std.debug.assert(self.staging_mapped != null);
         std.debug.assert(count.* == 0);
 
-        const lane_start = @as(vk.DeviceSize, self.current_frame) * vk_atlas.STAGING_LANE_SIZE;
+        const lane_start = @as(vk.DeviceSize, self.current_frame) * self.staging_lane_bytes;
+        const lane_end = lane_start + self.staging_lane_bytes;
         var cursor = lane_start;
+        for (0..atlas_kind_count) |index| {
+            const kind_index: u32 = (self.upload_rotation + @as(u32, @intCast(index))) %
+                atlas_kind_count;
+            const kind: AtlasKind = @fromBackingInt(@intCast(kind_index));
+            const record = self.processSingleUpload(kind, &cursor, lane_end) orelse continue;
+            assert(count.* < MAX_ATLAS_TRANSFERS);
+            transfers[count.*] = record;
+            count.* += 1;
+        }
+        self.upload_rotation = (self.upload_rotation + 1) % atlas_kind_count;
 
-        self.processSingleUpload(&self.pending_text, &self.text_atlas, .text, &cursor, transfers, count);
-        self.processSingleUpload(&self.pending_svg, &self.svg_atlas, .svg, &cursor, transfers, count);
-        self.processSingleUpload(&self.pending_image, &self.image_atlas, .image, &cursor, transfers, count);
-
-        // Assert we stayed within this frame's staging lane
-        std.debug.assert(cursor - lane_start <= vk_atlas.STAGING_LANE_SIZE);
+        // Every staged byte stayed inside this frame's lane.
+        std.debug.assert(cursor >= lane_start);
+        std.debug.assert(cursor <= lane_end);
     }
 
-    /// Process a single pending atlas upload. Handles VkImage (re)creation,
-    /// descriptor set updates, and dirty-region staging.
+    /// (Re)create one atlas's image when its size changed, then stage the next
+    /// band of its owed rows that fits in the lane. Returns the transfer to
+    /// record, or null when this atlas has nothing to do this frame.
     fn processSingleUpload(
         self: *Self,
-        pending: *PendingUpload,
-        resources: *vk_atlas.AtlasResources,
         kind: AtlasKind,
         cursor: *vk.DeviceSize,
-        transfers: *[MAX_ATLAS_TRANSFERS]AtlasTransferRecord,
-        count: *u32,
-    ) void {
-        if (!pending.active) return;
-        defer pending.active = false;
-
-        std.debug.assert(pending.width > 0 and pending.height > 0);
-        std.debug.assert(count.* < MAX_ATLAS_TRANSFERS);
-
-        // (Re)create VkImage if dimensions changed or image doesn't exist
-        const image_recreated = vk_atlas.ensureAtlasImage(
-            resources,
-            pending.width,
-            pending.height,
-            pending.format,
-            self.device,
-            &self.mem_properties,
-        ) catch |err| {
-            std.log.err("Atlas image creation failed: {}", .{err});
-            return;
-        };
-
-        if (image_recreated) {
-            // Other frames may still reference old descriptor sets — wait for them.
-            // Current frame's fence was already waited by the caller.
-            self.waitOtherFrameFences();
-            self.updateAllDescriptorSets(kind, resources);
+        lane_end: vk.DeviceSize,
+    ) ?AtlasTransferRecord {
+        const upload = &self.uploads[@backingInt(kind)];
+        const resources = self.atlasResources(kind);
+        if (upload.staged) {
+            upload.staged = false;
+            assert(upload.width > 0 and upload.height > 0);
+            const recreated = vk_atlas.ensureAtlasImage(
+                resources,
+                upload.width,
+                upload.height,
+                upload.format,
+                self.device,
+                &self.mem_properties,
+            ) catch |err| {
+                std.log.err("Atlas image creation failed: {}", .{err});
+                return null;
+            };
+            if (recreated) {
+                // Other frames may still reference old descriptor sets — wait for them.
+                // Current frame's fence was already waited by the caller.
+                self.waitOtherFrameFences();
+                self.updateAllDescriptorSets(kind, resources);
+                upload.initialize = true;
+            }
         }
-
-        // Full upload on (re)creation to initialize entire VkImage;
-        // dirty-rect-only otherwise. Skip if no dirty region and no resize.
-        const dirty: vk_atlas.DirtyRegion = if (image_recreated)
-            .{ .x = 0, .y = 0, .width = pending.width, .height = pending.height }
-        else
-            (pending.dirty orelse return);
-
-        // Stage dirty rows into per-frame staging lane
-        const staging_ptr: [*]u8 = @ptrCast(self.staging_mapped orelse return);
-        const bytes = vk_atlas.stageDirtyRegion(
-            staging_ptr,
-            cursor.*,
-            pending.data,
-            pending.width,
-            pending.format,
-            dirty,
-        );
-
-        transfers[count.*] = .{
+        const copy = self.stageAtlasBand(upload, cursor, lane_end);
+        if (copy == null and !upload.initialize) return null;
+        const record = AtlasTransferRecord{
             .image = resources.image,
-            .staging_offset = cursor.*,
-            .dirty = dirty,
-            .preserve_contents = !image_recreated,
+            .copy = copy,
+            .initialize = upload.initialize,
         };
-        count.* += 1;
-        cursor.* += bytes;
+        upload.initialize = false;
+        return record;
     }
 
-    /// Record atlas transfer commands (barrier → copy → barrier) into a
+    fn atlasResources(self: *Self, kind: AtlasKind) *vk_atlas.AtlasResources {
+        return switch (kind) {
+            .text => &self.text_atlas,
+            .svg => &self.svg_atlas,
+            .image => &self.image_atlas,
+        };
+    }
+
+    /// Copy the next band of owed rows that fits between `cursor` and
+    /// `lane_end` into the staging buffer, and advance the band. A band never
+    /// wraps within one frame; the next frame continues from the region's top.
+    fn stageAtlasBand(
+        self: *Self,
+        upload: *AtlasUpload,
+        cursor: *vk.DeviceSize,
+        lane_end: vk.DeviceSize,
+    ) ?vk_atlas.StagedCopy {
+        const region = upload.region orelse return null;
+        assert(upload.rows_owed > 0);
+        assert(upload.cursor_y >= region.y);
+        assert(upload.cursor_y < region.y + region.height);
+
+        const offset = std.mem.alignForward(
+            vk.DeviceSize,
+            cursor.*,
+            vk_atlas.STAGING_COPY_ALIGNMENT_BYTES,
+        );
+        if (offset >= lane_end) return null;
+        const row_bytes = @as(vk.DeviceSize, region.width) * upload.format.bytesPerPixel();
+        const rows_fit = (lane_end - offset) / row_bytes;
+        const rows_to_bottom = region.y + region.height - upload.cursor_y;
+        const rows: u32 = @intCast(@min(rows_fit, rows_to_bottom, upload.rows_owed));
+        if (rows == 0) return null;
+
+        const band = vk_atlas.DirtyRegion{
+            .x = region.x,
+            .y = upload.cursor_y,
+            .width = region.width,
+            .height = rows,
+        };
+        const staging_ptr: [*]u8 = @ptrCast(self.staging_mapped.?);
+        const bytes = vk_atlas.stageDirtyRegion(
+            staging_ptr,
+            offset,
+            upload.data,
+            upload.width,
+            upload.format,
+            band,
+        );
+        assert(bytes == row_bytes * rows);
+        assert(offset + bytes <= lane_end);
+        cursor.* = offset + bytes;
+
+        upload.cursor_y += rows;
+        if (upload.cursor_y == region.y + region.height) upload.cursor_y = region.y;
+        upload.rows_owed -= rows;
+        if (upload.rows_owed == 0) upload.region = null;
+        return .{ .staging_offset = offset, .region = band };
+    }
+
+    /// Record atlas transfer commands (barrier → clear/copy → barrier) into a
     /// command buffer. Called after vkBeginCommandBuffer, before vkCmdBeginRenderPass.
     /// Pipeline barriers guarantee transfers complete before fragment shaders read.
     fn recordAtlasTransfers(self: *const Self, cmd: vk.CommandBuffer, transfers: []const AtlasTransferRecord) void {
         std.debug.assert(cmd != null);
         for (transfers) |t| {
             std.debug.assert(t.image != null);
-            vk_atlas.recordPartialAtlasTransfer(
-                cmd,
-                t.image,
-                self.staging_buffer,
-                t.staging_offset,
-                t.dirty,
-                t.preserve_contents,
-            );
+            vk_atlas.recordAtlasTransfer(cmd, t.image, self.staging_buffer, t.copy, t.initialize);
         }
     }
 
@@ -1222,7 +1363,7 @@ pub const VulkanRenderer = struct {
                     std.math.maxInt(u64),
                 );
             }
-            self.recreateSwapchain(self.swapchain_extent.width, self.swapchain_extent.height) catch |err| {
+            self.recreateSwapchain(self.swapchain_extent) catch |err| {
                 std.debug.print("Failed to recreate swapchain: {}\n", .{err});
                 return;
             };

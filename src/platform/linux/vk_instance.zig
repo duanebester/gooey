@@ -83,7 +83,8 @@ pub fn createInstance() InstanceError!InstanceResult {
         .applicationVersion = 1,
         .pEngineName = "Gooey",
         .engineVersion = 1,
-        .apiVersion = vk.API_VERSION_1_0,
+        // 1.1 for `vkGetPhysicalDeviceProperties2` (`maxMemoryAllocationSize`).
+        .apiVersion = vk.API_VERSION_1_1,
     };
 
     const use_validation = enable_validation_layers and vk.isValidationLayerAvailable();

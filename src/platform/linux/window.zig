@@ -1186,6 +1186,8 @@ pub const Window = struct {
             if (!self.renderer.render(scene)) self.needs_redraw = true;
         } else {
             self.renderer.render(scene);
+            // The per-frame upload budget left atlas rows for later frames.
+            if (self.renderer.atlasUploadsPending()) self.needs_redraw = true;
         }
     }
 
@@ -1477,10 +1479,11 @@ pub const Window = struct {
                 .name = "CPU",
             };
         }
+        // One sample per pixel: the mesh shaders compute analytic edge coverage.
         return .{
             .max_texture_size = 4096,
-            .msaa = true,
-            .msaa_sample_count = 4,
+            .msaa = false,
+            .msaa_sample_count = 1,
             .unified_memory = false,
             .name = "Vulkan",
         };

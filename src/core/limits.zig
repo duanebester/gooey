@@ -127,6 +127,7 @@ pub const ResourceLimits = struct {
     scene: SceneLimits,
     window: WindowLimits,
     frame: FrameLimits,
+    atlas: AtlasLimits,
 
     /// Every profile name `gooey.App(.., .{ .limits = ... })` accepts, smallest first.
     /// `FontLimits` has a profile of each name, so one name selects both budgets.
@@ -137,6 +138,7 @@ pub const ResourceLimits = struct {
         .scene = SceneLimits.nano,
         .window = WindowLimits.nano,
         .frame = FrameLimits.nano,
+        .atlas = AtlasLimits.nano,
     };
 
     /// Single-screen forms and lists, two frames in flight.
@@ -144,6 +146,7 @@ pub const ResourceLimits = struct {
         .scene = SceneLimits.small,
         .window = WindowLimits.small,
         .frame = FrameLimits.small,
+        .atlas = AtlasLimits.small,
     };
 
     /// Ordinary multi-panel UI apps. See `SceneLimits.standard`.
@@ -151,6 +154,7 @@ pub const ResourceLimits = struct {
         .scene = SceneLimits.standard,
         .window = WindowLimits.standard,
         .frame = FrameLimits.standard,
+        .atlas = AtlasLimits.standard,
     };
 
     /// Dense-content apps: big tables, treemaps, full-screen editors, charts,
@@ -159,6 +163,7 @@ pub const ResourceLimits = struct {
         .scene = SceneLimits.large,
         .window = WindowLimits.large,
         .frame = FrameLimits.large,
+        .atlas = AtlasLimits.large,
     };
 
     /// Every capacity at its framework ceiling. For stress tests and benchmarks;
@@ -170,6 +175,7 @@ pub const ResourceLimits = struct {
         .scene = SceneLimits.ceiling,
         .window = WindowLimits.ceiling,
         .frame = FrameLimits.ceiling,
+        .atlas = AtlasLimits.ceiling,
     };
 
     /// First violated rule, or null when the budget is valid. Shared by the
@@ -177,7 +183,8 @@ pub const ResourceLimits = struct {
     pub fn check(self: *const ResourceLimits) ?Violation {
         if (self.scene.check()) |violation| return violation;
         if (self.window.check()) |violation| return violation;
-        return self.frame.check();
+        if (self.frame.check()) |violation| return violation;
+        return self.atlas.check();
     }
 
     /// Runtime counterpart of `validate` for budgets that are not comptime-known
@@ -594,6 +601,87 @@ pub const FrameLimits = struct {
     }
 };
 
+/// Per-window atlas budgets.
+///
+/// `upload_bytes_frame_max` bounds the atlas pixels one frame copies to the GPU.
+/// The Vulkan renderer reserves one staging lane of this size per frame in
+/// flight and splits a larger dirty region across frames, so the staging buffer
+/// scales with the profile instead of holding three maximum-size atlases
+/// (144 MiB before this budget existed). Metal uploads straight into shared
+/// textures and the CPU renderer samples atlases in place; neither reads it yet.
+///
+/// Latency sketch: a full 1024² RGBA atlas (4 MiB) reaches the GPU in 4 frames
+/// at `standard`; a full 512² R8 text atlas (256 KiB) in one.
+pub const AtlasLimits = struct {
+    upload_bytes_frame_max: u32,
+
+    /// 256 KiB per frame, 0.5 MiB of Vulkan staging with two frames in flight.
+    /// A full nano atlas set (0.75 MiB) uploads within three frames.
+    pub const nano: AtlasLimits = .{ .upload_bytes_frame_max = 256 * 1024 };
+
+    /// 1 MiB per frame, 2 MiB of Vulkan staging with two frames in flight.
+    pub const small: AtlasLimits = .{ .upload_bytes_frame_max = 1024 * 1024 };
+
+    /// 1 MiB per frame, 3 MiB of Vulkan staging with three frames in flight.
+    pub const standard: AtlasLimits = .{ .upload_bytes_frame_max = 1024 * 1024 };
+
+    /// 16 MiB per frame, 48 MiB of Vulkan staging.
+    pub const large: AtlasLimits = .{ .upload_bytes_frame_max = 16 * 1024 * 1024 };
+
+    /// The framework ceiling: one 4096² R8 atlas plus two 4096² RGBA atlases
+    /// divided over three frames, the most the old fixed staging buffer held.
+    pub const ceiling: AtlasLimits = .{
+        .upload_bytes_frame_max = MAX_ATLAS_UPLOAD_BYTES_PER_FRAME,
+    };
+
+    /// First violated rule, or null. A frame must be able to upload at least one
+    /// full-width row of the widest RGBA atlas, or a dirty row could never land.
+    pub fn check(self: *const AtlasLimits) ?Violation {
+        if (self.upload_bytes_frame_max < MAX_ATLAS_ROW_BYTES) {
+            return .{
+                .budget = .atlas,
+                .field = "upload_bytes_frame_max",
+                .rule = .below_relationship,
+                .value = self.upload_bytes_frame_max,
+                .bound = MAX_ATLAS_ROW_BYTES,
+            };
+        }
+        if (self.upload_bytes_frame_max > MAX_ATLAS_UPLOAD_BYTES_PER_FRAME) {
+            return .{
+                .budget = .atlas,
+                .field = "upload_bytes_frame_max",
+                .rule = .above_ceiling,
+                .value = self.upload_bytes_frame_max,
+                .bound = MAX_ATLAS_UPLOAD_BYTES_PER_FRAME,
+            };
+        }
+        return null;
+    }
+
+    comptime {
+        assert(nano.check() == null);
+        assert(small.check() == null);
+        assert(standard.check() == null);
+        assert(large.check() == null);
+        assert(ceiling.check() == null);
+    }
+};
+
+/// Widest atlas edge, in pixels, matching `Atlas.MAX_SIZE`; the Vulkan atlas
+/// upload path asserts the two agree.
+pub const MAX_ATLAS_DIMENSION: u32 = 4096;
+
+/// One full-width row of the widest RGBA atlas: the smallest useful upload.
+pub const MAX_ATLAS_ROW_BYTES: u32 = MAX_ATLAS_DIMENSION * 4;
+
+/// Ceiling for `AtlasLimits.upload_bytes_frame_max`: 4096² × (1 + 4 + 4) bytes
+/// spread over three frames.
+pub const MAX_ATLAS_UPLOAD_BYTES_PER_FRAME: u32 = 48 * 1024 * 1024;
+
+comptime {
+    assert(MAX_ATLAS_UPLOAD_BYTES_PER_FRAME * 3 == MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 9);
+}
+
 /// A broken budget rule, precise enough to name in a compile error.
 pub const Violation = struct {
     budget: Budget,
@@ -603,7 +691,7 @@ pub const Violation = struct {
     bound: u32,
 
     /// The `ResourceLimits` field holding the broken rule.
-    pub const Budget = enum { scene, window, frame };
+    pub const Budget = enum { scene, window, frame, atlas };
     pub const Rule = enum { zero, above_ceiling, below_relationship };
 
     /// Human-readable message. Comptime only: used by `ResourceLimits.validate`.
@@ -958,7 +1046,7 @@ test "named profiles are valid and ordered" {
     inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
         const lower = @field(ResourceLimits, lower_name);
         const upper = @field(ResourceLimits, upper_name);
-        inline for (.{ "scene", "window", "frame" }) |budget| {
+        inline for (.{ "scene", "window", "frame", "atlas" }) |budget| {
             const Budget = @TypeOf(@field(lower, budget));
             inline for (@typeInfo(Budget).@"struct".field_names) |field_name| {
                 const lower_value = @field(@field(lower, budget), field_name);
@@ -1048,6 +1136,19 @@ test "check reports each negative case precisely" {
         try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
         try std.testing.expectEqualStrings(field, limits.check().?.field);
     }
+
+    // The atlas upload budget must hold one full-width RGBA row and stay under
+    // its ceiling; both ends are checked one past the boundary.
+    limits = ResourceLimits.standard;
+    limits.atlas.upload_bytes_frame_max = MAX_ATLAS_ROW_BYTES - 1;
+    try std.testing.expectEqual(Violation.Budget.atlas, limits.check().?.budget);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, limits.check().?.rule);
+    limits.atlas.upload_bytes_frame_max = MAX_ATLAS_ROW_BYTES;
+    try std.testing.expect(limits.check() == null);
+    limits.atlas.upload_bytes_frame_max = MAX_ATLAS_UPLOAD_BYTES_PER_FRAME;
+    try std.testing.expect(limits.check() == null);
+    limits.atlas.upload_bytes_frame_max += 1;
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
 }
 
 test "derived budget quantities" {

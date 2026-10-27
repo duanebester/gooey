@@ -60,6 +60,10 @@ pub const SUBPASS_EXTERNAL: u32 = ~@as(u32, 0);
 /// `VK_MAKE_API_VERSION(0, 1, 0, 0)`: variant in bits 29..31, major in
 /// 22..28, minor in 12..21, patch in 0..11.
 pub const API_VERSION_1_0: u32 = (1 << 22) | (0 << 12) | 0;
+/// `VK_MAKE_API_VERSION(0, 1, 1, 0)`: the instance requests 1.1 so the
+/// renderer can read `maxMemoryAllocationSize` through
+/// `vkGetPhysicalDeviceProperties2` (core in 1.1).
+pub const API_VERSION_1_1: u32 = (1 << 22) | (1 << 12) | 0;
 
 // =============================================================================
 // Enumeration and Flag Types
@@ -268,6 +272,8 @@ pub const VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: StructureType = 35;
 pub const VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO: StructureType = 31;
 pub const VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER: StructureType = 45;
 pub const VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT: StructureType = 1000128004;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: StructureType = 1000059001;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES: StructureType = 1000168000;
 
 // Format constants
 pub const VK_FORMAT_UNDEFINED: Format = 0;
@@ -1077,6 +1083,17 @@ pub const PhysicalDeviceProperties = extern struct {
     limits: PhysicalDeviceLimits,
     sparseProperties: PhysicalDeviceSparseProperties,
 };
+pub const PhysicalDeviceProperties2 = extern struct {
+    sType: StructureType,
+    pNext: ?*anyopaque,
+    properties: PhysicalDeviceProperties,
+};
+pub const PhysicalDeviceMaintenance3Properties = extern struct {
+    sType: StructureType,
+    pNext: ?*anyopaque,
+    maxPerSetDescriptors: u32,
+    maxMemoryAllocationSize: DeviceSize,
+};
 pub const PhysicalDeviceMemoryProperties = extern struct {
     memoryTypeCount: u32,
     memoryTypes: [32]MemoryType,
@@ -1414,6 +1431,10 @@ pub extern fn vkEnumeratePhysicalDevices(
 pub extern fn vkGetPhysicalDeviceProperties(
     physicalDevice: PhysicalDevice,
     pProperties: *PhysicalDeviceProperties,
+) callconv(.c) void;
+pub extern fn vkGetPhysicalDeviceProperties2(
+    physicalDevice: PhysicalDevice,
+    pProperties: *PhysicalDeviceProperties2,
 ) callconv(.c) void;
 pub extern fn vkGetPhysicalDeviceFeatures(
     physicalDevice: PhysicalDevice,
@@ -1822,6 +1843,14 @@ pub extern fn vkCmdCopyBufferToImage(
     regionCount: u32,
     pRegions: ?[*]const BufferImageCopy,
 ) callconv(.c) void;
+pub extern fn vkCmdClearColorImage(
+    commandBuffer: CommandBuffer,
+    image: Image,
+    imageLayout: ImageLayout,
+    pColor: *const ClearColorValue,
+    rangeCount: u32,
+    pRanges: [*]const ImageSubresourceRange,
+) callconv(.c) void;
 pub extern fn vkCmdPipelineBarrier(
     commandBuffer: CommandBuffer,
     srcStageMask: PipelineStageFlags,
@@ -1994,9 +2023,8 @@ pub fn clearColor(r: f32, g: f32, b: f32, a: f32) ClearValue {
 ///
 /// Vulkan NDC and framebuffer space are Y-down, matching Gooey's scene pixel
 /// coordinates, so neither the viewport nor the shaders flip Y. The height
-/// must stay positive: the instance requests `API_VERSION_1_0` without
-/// `VK_KHR_maintenance1`, where a negative height violates
-/// VUID-VkViewport-height-01772.
+/// stays positive, so the renderer does not depend on `VK_KHR_maintenance1`
+/// (core since 1.1, which the instance now requests) for a negative height.
 pub fn makeViewport(width: f32, height: f32) Viewport {
     assert(width > 0);
     assert(height > 0);
@@ -2105,6 +2133,10 @@ comptime {
     assert(@sizeOf(SurfaceCapabilitiesKHR) == 52);
     assert(@sizeOf(SurfaceFormatKHR) == 8);
     assert(@sizeOf(PhysicalDeviceProperties) == 824);
+    assert(@sizeOf(PhysicalDeviceProperties2) == 840);
+    assert(@offsetOf(PhysicalDeviceProperties2, "properties") == 16);
+    assert(@sizeOf(PhysicalDeviceMaintenance3Properties) == 32);
+    assert(@offsetOf(PhysicalDeviceMaintenance3Properties, "maxMemoryAllocationSize") == 24);
     assert(@sizeOf(PhysicalDeviceMemoryProperties) == 520);
     assert(@sizeOf(PhysicalDeviceFeatures) == 220);
     assert(@sizeOf(VertexInputBindingDescription) == 12);

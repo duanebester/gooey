@@ -1,4 +1,21 @@
 // Shared std430 contract: vk_types.MeshHeader, then tightly packed float payload.
+//
+// Analytic anti-aliasing contract (the render pass has one sample per pixel).
+// Every mesh vertex shader writes, besides uv, color and screen_pos:
+//   edge_distance: signed distances in logical pixels from the fragment to up
+//     to four straight edges, positive inside. They are affine in screen
+//     space, so interpolation is exact and mesh.frag converts them to device
+//     pixels with screen-space derivatives.
+//   edge_modes: two bits per distance (bits 2i..2i+1 for component i), values
+//     from vk_mesh_edges.EdgeMode:
+//     0 interior: no coverage change; the edge is drawn by the rasterizer.
+//     1 fade:     coverage *= clamp(distance_px + 0.5, 0, 1).
+//     2 underlap: full coverage up to half a pixel outside, discard beyond.
+//   Vertex shaders push every edge with a non-zero mode `aa_fringe` logical
+//   pixels outward so the faded band is rasterized.
+// Triangle records are { x, y, u, v, edge_modes } with the three edge modes of
+// the triangle (v0->v1, v1->v2, v2->v0) as an integral float. Polyline strips
+// carry their segment count in params.x so only the line's ends are capped.
 layout(std430, set = 0, binding = 0) readonly buffer Mesh {
     vec4 transform;
     vec4 color;
@@ -39,6 +56,9 @@ vec4 hsla_to_rgba(vec4 hsla) {
     }
     return vec4(rgb + hsla.z - c * 0.5, hsla.w);
 }
+
+// One logical pixel is at least one device pixel at every supported scale.
+const float aa_fringe = 1.0;
 
 // Triangle-list expansion avoids geometry shaders and device point-size limits.
 vec2 corner(uint vertex) {
