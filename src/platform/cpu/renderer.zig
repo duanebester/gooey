@@ -674,6 +674,7 @@ const test_limits = limits_mod.ResourceLimits{
     .scene = scene_mod.SceneLimits.standard,
     .window = .{ .framebuffer_width_max = 16, .framebuffer_height_max = 16 },
     .frame = limits_mod.FrameLimits.nano,
+    .atlas = limits_mod.AtlasLimits.standard,
 };
 
 const black = geometry.Color.rgba(0, 0, 0, 1);

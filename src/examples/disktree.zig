@@ -49,6 +49,7 @@ const resource_limits: gooey.ResourceLimits = .{
     },
     .window = gooey.ResourceLimits.large.window,
     .frame = gooey.ResourceLimits.large.frame,
+    .atlas = gooey.ResourceLimits.large.atlas,
 };
 
 comptime {
