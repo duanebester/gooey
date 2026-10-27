@@ -1963,6 +1963,50 @@ zig build run-file-dialog  # XDG portal file dialogs
 zig build compile-shaders
 ```
 
+### Linux Backends
+
+`-Dlinux-backend` selects the display and renderer at build time. The unselected
+renderer is not compiled or linked.
+
+| Backend                    | Display            | Renderer             | Display libraries |
+| -------------------------- | ------------------ | -------------------- | ----------------- |
+| `wayland_vulkan` (default) | Wayland compositor | Vulkan               | Vulkan, Wayland   |
+| `wayland_cpu`              | Wayland compositor | CPU into `wl_shm`    | Wayland           |
+| `fbdev`                    | `/dev/fb0`         | CPU into framebuffer | None              |
+
+```cpu-backends.sh
+# Desktop without a GPU driver (e.g. Debian VMs, servers with a compositor)
+zig build run -Dlinux-backend=wayland_cpu
+
+# Embedded Linux: a full-screen app on the kernel framebuffer with evdev input
+zig build showcase -Dlinux-backend=fbdev -Doptimize=ReleaseSafe
+```
+
+The fbdev backend drops Wayland and Vulkan but still links FreeType, HarfBuzz,
+Fontconfig, libpng, and D-Bus. Build on the device, or cross-compile with
+`-Dtarget=aarch64-linux-gnu` plus `--sysroot` pointing at a root filesystem that
+contains those libraries.
+
+The CPU renderer reproduces the Vulkan pipelines: SDF rounded rects, borders,
+shadows, glyphs, SVGs, images, solid and gradient paths, polylines, and point
+clouds. Paths and polylines are antialiased with the same four sample positions
+as Vulkan's 4x MSAA. It draws only when the UI requests a frame, and reserves its
+framebuffers and scratch at window creation from `ResourceLimits.window`
+(`framebuffer_width_max` and `framebuffer_height_max`, 3840x2160 at
+`.standard`). An fbdev panel larger than that fails to open; a larger Wayland
+window renders at a reduced scale.
+
+The fbdev backend reads 16 bpp (RGB565) and 32 bpp framebuffers and probes
+`/dev/input/event*` for keyboards, mice, and touchscreens. Run it from a VT or
+init script as a user with access to `/dev/fb0` and `/dev/input`. Ctrl+Q or
+Alt+F4 exits. Environment overrides:
+
+| Variable             | Effect                                                    |
+| -------------------- | --------------------------------------------------------- |
+| `GOOEY_FBDEV`        | Framebuffer device path (default `/dev/fb0`)              |
+| `GOOEY_SCALE`        | UI scale factor from 1 to 8 (default 1)                   |
+| `GOOEY_EVDEV_GRAB=1` | Grab input devices exclusively so the console ignores them |
+
 ### What's Left / Known Limitations
 
 1. **Custom cursors** - Cursor theming via wl_cursor not yet implemented

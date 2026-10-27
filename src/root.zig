@@ -353,6 +353,12 @@ test {
         // its capacity tests run on every OS, not only where the renderer builds.
         @import("platform/linux/vk_types.zig"),
 
+        // Platform-independent CPU rasterizer used by the Wayland shm and
+        // fbdev backends. Tested on every host, not only CPU-backend builds.
+        @import("platform/cpu/raster.zig"),
+        @import("platform/cpu/mesh.zig"),
+        @import("platform/cpu/renderer.zig"),
+
         // Scene leaves — path/polyline/svg test-heavy files.
         @import("scene/path.zig"),
         @import("scene/path_instance.zig"),
@@ -407,6 +413,14 @@ test {
         @import("api_check.zig"),
     }) |leaf| {
         std.testing.refAllDecls(leaf);
+    }
+    // The fbdev backend is only selected by `-Dlinux-backend=fbdev`, but its
+    // pixel conversion, evdev translation, and clipboard logic are pure and
+    // must stay tested in the default Linux test run.
+    if (builtin.os.tag == .linux) {
+        std.testing.refAllDecls(@import("platform/fbdev/framebuffer.zig"));
+        std.testing.refAllDecls(@import("platform/fbdev/evdev.zig"));
+        std.testing.refAllDecls(@import("platform/fbdev/clipboard.zig"));
     }
 }
 

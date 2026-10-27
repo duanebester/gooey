@@ -126,6 +126,11 @@ pub const CallbackListener = extern struct {
     ) callconv(.c) void = null,
 };
 
+/// `wl_buffer.release`: the compositor no longer reads the buffer's memory.
+pub const BufferListener = extern struct {
+    release: ?*const fn (data: ?*anyopaque, buffer: *Buffer) callconv(.c) void = null,
+};
+
 pub const SeatListener = extern struct {
     capabilities: ?*const fn (
         data: ?*anyopaque,
@@ -626,6 +631,8 @@ pub extern "wayland-client" var wl_keyboard_interface: Interface;
 pub extern "wayland-client" var wl_touch_interface: Interface;
 pub extern "wayland-client" var wl_output_interface: Interface;
 pub extern "wayland-client" var wl_shm_interface: Interface;
+pub extern "wayland-client" var wl_shm_pool_interface: Interface;
+pub extern "wayland-client" var wl_buffer_interface: Interface;
 
 // XDG shell interfaces (defined manually since they come from wayland-protocols, not wayland-client)
 // These need proper message signatures for wl_proxy_marshal_flags to work correctly.
@@ -1133,6 +1140,110 @@ pub fn callbackAddListener(callback: *Callback, listener: *const CallbackListene
 
 pub fn callbackDestroy(callback: *Callback) void {
     wl_proxy_destroy(@ptrCast(callback));
+}
+
+// Shared-memory buffers (CPU rendering)
+
+/// `WL_SHM_FORMAT_XRGB8888`: 32-bit little-endian B, G, R, X. Every compositor
+/// must support it, so the CPU renderer needs no format negotiation.
+pub const WL_SHM_FORMAT_XRGB8888: u32 = 1;
+
+pub fn bindShm(registry: *Registry, name: u32, version: u32) ?*Shm {
+    return @ptrCast(@alignCast(registryBind(registry, name, &wl_shm_interface, @min(version, 1))));
+}
+
+pub fn shmCreatePool(shm: *Shm, fd: i32, size: i32) ?*ShmPool {
+    const result = wl_proxy_marshal_flags(
+        @ptrCast(shm),
+        0, // WL_SHM_CREATE_POOL
+        &wl_shm_pool_interface,
+        wl_proxy_get_version(@ptrCast(shm)),
+        0,
+        @as(?*anyopaque, null),
+        fd,
+        size,
+    );
+    return @ptrCast(@alignCast(result));
+}
+
+pub fn shmDestroy(shm: *Shm) void {
+    wl_proxy_destroy(@ptrCast(shm));
+}
+
+pub fn shmPoolCreateBuffer(
+    pool: *ShmPool,
+    offset: i32,
+    width: i32,
+    height: i32,
+    stride: i32,
+    format: u32,
+) ?*Buffer {
+    const result = wl_proxy_marshal_flags(
+        @ptrCast(pool),
+        0, // WL_SHM_POOL_CREATE_BUFFER
+        &wl_buffer_interface,
+        wl_proxy_get_version(@ptrCast(pool)),
+        0,
+        @as(?*anyopaque, null),
+        offset,
+        width,
+        height,
+        stride,
+        format,
+    );
+    return @ptrCast(@alignCast(result));
+}
+
+pub fn shmPoolDestroy(pool: *ShmPool) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(pool),
+        1, // WL_SHM_POOL_DESTROY
+        null,
+        wl_proxy_get_version(@ptrCast(pool)),
+        MARSHAL_FLAG_DESTROY,
+    );
+}
+
+pub fn bufferAddListener(buffer: *Buffer, listener: *const BufferListener, data: ?*anyopaque) bool {
+    return wl_proxy_add_listener(@ptrCast(buffer), @ptrCast(listener), data) == 0;
+}
+
+pub fn bufferDestroy(buffer: *Buffer) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(buffer),
+        0, // WL_BUFFER_DESTROY
+        null,
+        wl_proxy_get_version(@ptrCast(buffer)),
+        MARSHAL_FLAG_DESTROY,
+    );
+}
+
+pub fn surfaceAttach(surface: *Surface, buffer: ?*Buffer, x: i32, y: i32) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(surface),
+        1, // WL_SURFACE_ATTACH
+        null,
+        wl_proxy_get_version(@ptrCast(surface)),
+        0,
+        @as(?*anyopaque, @ptrCast(buffer)),
+        x,
+        y,
+    );
+}
+
+/// Requires `wl_surface` version 4; the compositor is bound at up to 6.
+pub fn surfaceDamageBuffer(surface: *Surface, x: i32, y: i32, width: i32, height: i32) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(surface),
+        9, // WL_SURFACE_DAMAGE_BUFFER
+        null,
+        wl_proxy_get_version(@ptrCast(surface)),
+        0,
+        x,
+        y,
+        width,
+        height,
+    );
 }
 
 // Region operations
