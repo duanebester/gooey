@@ -344,21 +344,24 @@ pub const Cx = struct {
     // =========================================================================
 
     /// Options for `measureText`. `null` fields fall back to "no
-    /// wrapping" / "current font size" respectively. Aliased from
+    /// wrapping" / "current font size" respectively; `weight` and `italic`
+    /// pick the face text with that `TextStyle` renders in. Aliased from
     /// `gooey.text.MeasureTextOptions` so the value type a downstream
     /// needs to *store* a measurement+options pair lives on the public
     /// text surface alongside `TextMeasurement`, while
     /// `Cx.MeasureTextOptions` keeps working unchanged.
     pub const MeasureTextOptions = text_mod.MeasureTextOptions;
 
-    /// Measure a text string with optional wrapping and font size.
-    /// Uses the platform text shaper (CoreText / HarfBuzz / browser)
-    /// so kerning and wrapping match rendered output.
+    /// Measure a text string with optional wrapping, font size, weight, and
+    /// slant. Uses the platform text shaper (CoreText / HarfBuzz / browser)
+    /// and the face that renders the same `TextStyle`, so kerning, bold
+    /// advances, and wrapping match rendered output.
     pub fn measureText(self: *Self, text_content: []const u8, opts: MeasureTextOptions) !TextMeasurement {
         std.debug.assert(opts.font_size == null or opts.font_size.? > 0);
         std.debug.assert(opts.max_width == null or opts.max_width.? > 0);
 
         const ts = self._window.getTextSystem();
+        const variant = text_mod.FontVariant.init(opts.weight, opts.italic);
 
         if (opts.font_size) |requested_size| {
             const metrics = ts.getMetrics() orelse return error.NoFontLoaded;
@@ -369,13 +372,13 @@ pub const Cx = struct {
             // Scale max_width into base-font units so wrapping breaks at
             // the correct character positions, then scale the result back.
             const base_max_width: ?f32 = if (opts.max_width) |mw| mw / scale else null;
-            var m = try ts.measureTextEx(text_content, .regular, base_max_width);
+            var m = try ts.measureTextEx(text_content, variant, base_max_width);
             m.width *= scale;
             m.height *= scale;
             return m;
         }
 
-        return ts.measureTextEx(text_content, .regular, opts.max_width);
+        return ts.measureTextEx(text_content, variant, opts.max_width);
     }
 
     // =========================================================================

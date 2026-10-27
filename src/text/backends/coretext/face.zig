@@ -91,11 +91,13 @@ pub const CoreTextFace = struct {
 
     /// Take ownership of `base` and return the font for `variant`: `base`
     /// itself for `.regular` or when no other face can be created, else a new
-    /// font (and `base` is released).
+    /// font (and `base` is released). Regular keeps the face the name resolved
+    /// to, but warns under the same rule when its weight class is not 400.
     fn selectVariant(base: ct.CTFontRef, size: f32, variant: FontVariant) ct.CTFontRef {
-        if (variant == .regular) return base;
-
-        const font = createVariantFont(base, size, variant) orelse base;
+        const font = if (variant == .regular)
+            base
+        else
+            createVariantFont(base, size, variant) orelse base;
         if (font != base) ct.release(base);
 
         const traits = ct.CTFontCopyTraits(font);
