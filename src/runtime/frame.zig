@@ -208,6 +208,13 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
         window.requestRender();
     }
 
+    // An atlas skipped an item because this frame's upload staging was full
+    // (`AtlasLimits.upload_bytes_frame_max`); the next frame stages it.
+    if (window.atlas_frame != 0) {
+        const uploads = window.resources.atlas_uploads;
+        if (uploads.deferredSince(window.atlas_frame)) window.requestRender();
+    }
+
     // Finalize frame timing for profiler
     window.finalizeFrame();
 

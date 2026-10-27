@@ -37,6 +37,9 @@ const SceneLimits = scene_mod.SceneLimits;
 const limits_mod = @import("../../core/limits.zig");
 const ResourceLimits = limits_mod.ResourceLimits;
 const WindowLimits = limits_mod.WindowLimits;
+const AtlasLimits = limits_mod.AtlasLimits;
+const AtlasUploads = text_mod.AtlasUploads;
+const AtlasUpload = text_mod.AtlasUpload;
 const InstanceCapacity = vk_types.InstanceCapacity;
 const Allocator = std.mem.Allocator;
 
@@ -61,53 +64,15 @@ pub const GpuSvg = vk_types.GpuSvg;
 pub const GpuImage = vk_types.GpuImage;
 
 // =============================================================================
-// Atlas Uploads (bounded per frame)
+// Atlas uploads
 // =============================================================================
 
-/// The rows one atlas still owes the GPU.
-///
-/// `stageTextAtlas()` and friends record the CPU atlas and union its dirty
-/// region in; `render()` then uploads at most one band of rows per atlas per
-/// frame, and all three atlases share one staging lane of
-/// `ResourceLimits.atlas.upload_bytes_frame_max` bytes. Bands advance through
-/// the region and wrap, and every stage restarts the count of rows owed, so
-/// each row reaches the GPU within one pass after its latest change even while
-/// new glyphs keep arriving. Until then a not-yet-uploaded row samples as the
-/// previous contents (or as transparent after the image was re-created).
-const AtlasUpload = struct {
-    /// CPU atlas pixels. Valid across frames: `Window.syncAtlases` stages
-    /// before every render, and an atlas reallocates only when it grows, which
-    /// bumps its generation so the new pointer is staged before the next render.
-    data: []const u8 = &.{},
-    width: u32 = 0,
-    height: u32 = 0,
-    format: vk_atlas.AtlasFormat = .r8,
-    /// Union of the dirty regions staged and not yet uploaded, or null.
-    region: ?vk_atlas.DirtyRegion = null,
-    /// Next row of `region` to upload.
-    cursor_y: u32 = 0,
-    /// Rows of `region` still to upload since the latest stage.
-    rows_owed: u32 = 0,
-    /// A stage arrived since the last render: the image may need (re)creation.
-    staged: bool = false,
-    /// The image was (re)created and is cleared before its first copy.
-    initialize: bool = false,
-
-    fn pending(self: *const AtlasUpload) bool {
-        if (self.region != null) assert(self.rows_owed > 0);
-        return self.region != null or self.initialize or self.staged;
-    }
+/// The atlas journal this renderer consumes, and its consumer identity.
+const AtlasSource = struct {
+    uploads: *AtlasUploads,
+    /// The platform window's address; registered by the framework `Window`.
+    key: usize,
 };
-
-/// Info needed to record a single atlas transfer into the render command buffer.
-const AtlasTransferRecord = struct {
-    image: vk.Image,
-    copy: ?vk_atlas.StagedCopy,
-    initialize: bool,
-};
-
-/// Maximum atlas transfers per frame (text + SVG + image).
-const MAX_ATLAS_TRANSFERS: u32 = 3;
 
 // =============================================================================
 // Per-Frame Resources (one set per frame in flight)
@@ -252,11 +217,8 @@ pub const VulkanRenderer = struct {
     image_atlas: vk_atlas.AtlasResources = .{},
     atlas_sampler: vk.Sampler = null,
 
-    // Atlas rows owed to the GPU — populated by stageXxxAtlas(), drained by
-    // render() within the per-frame upload budget. Indexed by `AtlasKind`.
-    uploads: [atlas_kind_count]AtlasUpload = @splat(.{}),
-    // The atlas served first this frame; rotates so none starves the others.
-    upload_rotation: u32 = 0,
+    // Atlas journal consumed each frame, bound by the window before render().
+    atlas_source: ?AtlasSource = null,
 
     // Descriptors (layouts + pool shared; per-frame sets live in FrameResources)
     unified_descriptor_layout: vk.DescriptorSetLayout = null,
@@ -346,9 +308,7 @@ pub const VulkanRenderer = struct {
         self.destroyStagingBuffer();
 
         // Atlas textures + sampler
-        self.text_atlas.destroy(self.device);
-        self.svg_atlas.destroy(self.device);
-        self.image_atlas.destroy(self.device);
+        self.destroyAtlasImages();
         if (self.atlas_sampler) |sampler| {
             vk.vkDestroySampler(self.device, sampler, null);
         }
@@ -589,6 +549,10 @@ pub const VulkanRenderer = struct {
             self.host_memory_pool.destroy(self.device);
         }
 
+        // ---- Atlas images, created once at their budget sizes ----
+        try self.createAtlasImages(&limits.atlas);
+        errdefer self.destroyAtlasImages();
+
         // ---- Per-frame GPU buffers (sub-allocated from host pool) ----
         try self.createFrameBuffers();
 
@@ -615,6 +579,11 @@ pub const VulkanRenderer = struct {
             if (self.atlas_sampler) |sampler| vk.vkDestroySampler(self.device, sampler, null);
             self.atlas_sampler = null;
         }
+
+        // Bind the atlas images once; they are never recreated.
+        self.updateAllDescriptorSets(.text, &self.text_atlas);
+        self.updateAllDescriptorSets(.svg, &self.svg_atlas);
+        self.updateAllDescriptorSets(.image, &self.image_atlas);
 
         // ---- Pipelines (vk_pipelines) ----
         try self.createAllPipelines();
@@ -716,7 +685,8 @@ pub const VulkanRenderer = struct {
     /// `vkAllocateMemory`, checked against the device's allocation and heap
     /// limits before it is made.
     fn initHostReservations(self: *Self) !void {
-        assert(self.staging_lane_bytes >= limits_mod.MAX_ATLAS_ROW_BYTES);
+        // `AtlasLimits.check` proved a lane holds the largest glyph or icon.
+        assert(self.staging_lane_bytes > 0);
         assert(self.allocation_bytes_max > 0);
         const host_visible = vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -1042,262 +1012,131 @@ pub const VulkanRenderer = struct {
     }
 
     // =========================================================================
-    // Atlas Upload — bounded partial transfers (no synchronous fence)
+    // Atlas Upload — journal records staged per frame (no synchronous fence)
     //
-    // Flow: stageXxxAtlas() records the CPU atlas and unions its dirty region
-    // → render() waits the frame fence → processAtlasUploads() (re)creates
-    // images and stages at most one band of rows per atlas into this frame's
-    // lane → recordAtlasTransfers() records clear/copy/barriers into the render
-    // command buffer.
+    // Flow: the window binds the shared `AtlasUploads` journal → render() waits
+    // the frame fence and acquires an image → recordAtlasUploads() copies the
+    // records this window has not uploaded into the frame's staging lane and
+    // records barrier → copies → barrier per atlas into the render cmd buf.
     //
-    // Resource sketch (CLAUDE.md §7): the staging buffer is one lane of
-    // `ResourceLimits.atlas.upload_bytes_frame_max` per frame in flight
-    // (`ResourceLimits.frame.in_flight_count`): 0.5 MiB at `.nano`, 2 MiB at
-    // `.small`, 3 MiB at `.standard` (previously 144 MiB: three 4096² atlases). Per frame: at most that many
-    // bytes memcpy'd, three copies, three to five barriers. Lanes are reused
-    // only after the frame's fence, so CPU writes never race GPU reads.
+    // No CPU copy of atlas pixels exists: the journal holds only this frame's
+    // rasterized items (bounded by `AtlasLimits.upload_bytes_frame_max`), and
+    // each lane holds one journal's worth.
     // =========================================================================
 
-    /// Notify renderer that the text atlas has new data. Call before render().
-    /// The data must stay valid until the atlas changes generation.
-    pub fn stageTextAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
-        std.debug.assert(data.len == @as(usize, width) * @as(usize, height));
-        std.debug.assert(width > 0 and height > 0);
-        self.stageAtlas(.text, data, .{ .width = width, .height = height }, .r8, dirty);
+    /// Bind the atlas journal this renderer consumes. Call before render().
+    pub fn bindAtlasUploads(self: *Self, uploads: *AtlasUploads, key: usize) void {
+        std.debug.assert(key != 0);
+        std.debug.assert(uploads.storage == .gpu_upload);
+        self.atlas_source = .{ .uploads = uploads, .key = key };
     }
 
-    /// Notify renderer that the SVG atlas has new data. Call before render().
-    pub fn stageSvgAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
-        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
-        std.debug.assert(width > 0 and height > 0);
-        self.stageAtlas(.svg, data, .{ .width = width, .height = height }, .rgba8, dirty);
+    /// True when the journal holds records this window has not uploaded, such
+    /// as glyphs another window placed in the shared atlases.
+    pub fn hasPendingAtlasUploads(self: *const Self) bool {
+        const source = self.atlas_source orelse return false;
+        std.debug.assert(source.key != 0);
+        return source.uploads.hasPending(source.key);
     }
 
-    /// Notify renderer that the image atlas has new data. Call before render().
-    pub fn stageImageAtlas(self: *Self, data: []const u8, width: u32, height: u32, dirty: ?vk_atlas.DirtyRegion) void {
-        std.debug.assert(data.len == @as(usize, width) * @as(usize, height) * 4);
-        std.debug.assert(width > 0 and height > 0);
-        self.stageAtlas(.image, data, .{ .width = width, .height = height }, .rgba8, dirty);
-    }
-
-    /// Whether atlas rows are still owed to the GPU. The window keeps
-    /// requesting frames until this is false, so a frame budget that splits an
-    /// upload never leaves a partially uploaded atlas on screen.
-    pub fn atlasUploadsPending(self: *const Self) bool {
-        for (&self.uploads) |*upload| {
-            if (upload.pending()) return true;
-        }
-        return false;
-    }
-
-    /// Record the CPU atlas and union its dirty region into the rows owed.
-    /// The atlas's dirty region is cumulative since its last reset, so the
-    /// union never loses rows; a size change starts over, because the image
-    /// is re-created and cleared and the CPU atlas then reports itself fully
-    /// dirty.
-    fn stageAtlas(
-        self: *Self,
-        kind: AtlasKind,
-        data: []const u8,
-        size: vk.Extent2D,
-        format: vk_atlas.AtlasFormat,
-        dirty: ?vk_atlas.DirtyRegion,
-    ) void {
-        const upload = &self.uploads[@backingInt(kind)];
-        if (upload.width != size.width or upload.height != size.height) {
-            upload.region = null;
-            upload.rows_owed = 0;
-        }
-        upload.data = data;
-        upload.width = size.width;
-        upload.height = size.height;
-        upload.format = format;
-        upload.staged = true;
-        const region = dirty orelse return;
-        assert(region.width > 0 and region.height > 0);
-        assert(region.x + region.width <= size.width);
-        assert(region.y + region.height <= size.height);
-        const merged = if (upload.region) |owed| unionRegion(owed, region) else region;
-        upload.region = merged;
-        upload.rows_owed = merged.height;
-        const cursor_inside = upload.cursor_y >= merged.y and
-            upload.cursor_y < merged.y + merged.height;
-        if (!cursor_inside) upload.cursor_y = merged.y;
-    }
-
-    fn unionRegion(a: vk_atlas.DirtyRegion, b: vk_atlas.DirtyRegion) vk_atlas.DirtyRegion {
-        const x = @min(a.x, b.x);
-        const y = @min(a.y, b.y);
-        const right = @max(a.x + a.width, b.x + b.width);
-        const bottom = @max(a.y + a.height, b.y + b.height);
-        assert(right > x);
-        assert(bottom > y);
-        return .{ .x = x, .y = y, .width = right - x, .height = bottom - y };
-    }
-
-    /// Prepare every atlas for this frame and stage the rows the frame's lane
-    /// has room for, rotating which atlas is served first.
-    ///
-    /// Must be called AFTER vkWaitForFences(current_frame) — the staging lane
-    /// is only safe to write once the previous use of this frame slot is done.
-    fn processAtlasUploads(
-        self: *Self,
-        transfers: *[MAX_ATLAS_TRANSFERS]AtlasTransferRecord,
-        count: *u32,
-    ) void {
-        std.debug.assert(self.staging_mapped != null);
-        std.debug.assert(count.* == 0);
-
-        const lane_start = @as(vk.DeviceSize, self.current_frame) * self.staging_lane_bytes;
-        const lane_end = lane_start + self.staging_lane_bytes;
-        var cursor = lane_start;
-        for (0..atlas_kind_count) |index| {
-            const kind_index: u32 = (self.upload_rotation + @as(u32, @intCast(index))) %
-                atlas_kind_count;
-            const kind: AtlasKind = @fromBackingInt(@intCast(kind_index));
-            const record = self.processSingleUpload(kind, &cursor, lane_end) orelse continue;
-            assert(count.* < MAX_ATLAS_TRANSFERS);
-            transfers[count.*] = record;
-            count.* += 1;
-        }
-        self.upload_rotation = (self.upload_rotation + 1) % atlas_kind_count;
-
-        // Every staged byte stayed inside this frame's lane.
-        std.debug.assert(cursor >= lane_start);
-        std.debug.assert(cursor <= lane_end);
-    }
-
-    /// (Re)create one atlas's image when its size changed, then stage the next
-    /// band of its owed rows that fits in the lane. Returns the transfer to
-    /// record, or null when this atlas has nothing to do this frame.
-    fn processSingleUpload(
-        self: *Self,
-        kind: AtlasKind,
-        cursor: *vk.DeviceSize,
-        lane_end: vk.DeviceSize,
-    ) ?AtlasTransferRecord {
-        const upload = &self.uploads[@backingInt(kind)];
-        const resources = self.atlasResources(kind);
-        if (upload.staged) {
-            upload.staged = false;
-            assert(upload.width > 0 and upload.height > 0);
-            const recreated = vk_atlas.ensureAtlasImage(
-                resources,
-                upload.width,
-                upload.height,
-                upload.format,
-                self.device,
-                &self.mem_properties,
-            ) catch |err| {
-                std.log.err("Atlas image creation failed: {}", .{err});
-                return null;
-            };
-            if (recreated) {
-                // Other frames may still reference old descriptor sets — wait for them.
-                // Current frame's fence was already waited by the caller.
-                self.waitOtherFrameFences();
-                self.updateAllDescriptorSets(kind, resources);
-                upload.initialize = true;
-            }
-        }
-        const copy = self.stageAtlasBand(upload, cursor, lane_end);
-        if (copy == null and !upload.initialize) return null;
-        const record = AtlasTransferRecord{
-            .image = resources.image,
-            .copy = copy,
-            .initialize = upload.initialize,
-        };
-        upload.initialize = false;
-        return record;
-    }
-
-    fn atlasResources(self: *Self, kind: AtlasKind) *vk_atlas.AtlasResources {
-        return switch (kind) {
-            .text => &self.text_atlas,
-            .svg => &self.svg_atlas,
-            .image => &self.image_atlas,
-        };
-    }
-
-    /// Copy the next band of owed rows that fits between `cursor` and
-    /// `lane_end` into the staging buffer, and advance the band. A band never
-    /// wraps within one frame; the next frame continues from the region's top.
-    fn stageAtlasBand(
-        self: *Self,
-        upload: *AtlasUpload,
-        cursor: *vk.DeviceSize,
-        lane_end: vk.DeviceSize,
-    ) ?vk_atlas.StagedCopy {
-        const region = upload.region orelse return null;
-        assert(upload.rows_owed > 0);
-        assert(upload.cursor_y >= region.y);
-        assert(upload.cursor_y < region.y + region.height);
-
-        const offset = std.mem.alignForward(
-            vk.DeviceSize,
-            cursor.*,
-            vk_atlas.STAGING_COPY_ALIGNMENT_BYTES,
-        );
-        if (offset >= lane_end) return null;
-        const row_bytes = @as(vk.DeviceSize, region.width) * upload.format.bytesPerPixel();
-        const rows_fit = (lane_end - offset) / row_bytes;
-        const rows_to_bottom = region.y + region.height - upload.cursor_y;
-        const rows: u32 = @intCast(@min(rows_fit, rows_to_bottom, upload.rows_owed));
-        if (rows == 0) return null;
-
-        const band = vk_atlas.DirtyRegion{
-            .x = region.x,
-            .y = upload.cursor_y,
-            .width = region.width,
-            .height = rows,
-        };
-        const staging_ptr: [*]u8 = @ptrCast(self.staging_mapped.?);
-        const bytes = vk_atlas.stageDirtyRegion(
-            staging_ptr,
-            offset,
-            upload.data,
-            upload.width,
-            upload.format,
-            band,
-        );
-        assert(bytes == row_bytes * rows);
-        assert(offset + bytes <= lane_end);
-        cursor.* = offset + bytes;
-
-        upload.cursor_y += rows;
-        if (upload.cursor_y == region.y + region.height) upload.cursor_y = region.y;
-        upload.rows_owed -= rows;
-        if (upload.rows_owed == 0) upload.region = null;
-        return .{ .staging_offset = offset, .region = band };
-    }
-
-    /// Record atlas transfer commands (barrier → clear/copy → barrier) into a
-    /// command buffer. Called after vkBeginCommandBuffer, before vkCmdBeginRenderPass.
-    /// Pipeline barriers guarantee transfers complete before fragment shaders read.
-    fn recordAtlasTransfers(self: *const Self, cmd: vk.CommandBuffer, transfers: []const AtlasTransferRecord) void {
-        std.debug.assert(cmd != null);
-        for (transfers) |t| {
-            std.debug.assert(t.image != null);
-            vk_atlas.recordAtlasTransfer(cmd, t.image, self.staging_buffer, t.copy, t.initialize);
-        }
-    }
-
-    /// Wait for all frame fences EXCEPT the current frame (already waited).
-    /// Needed when (re)creating a VkImage — descriptor sets for all frames
-    /// must be updated, so all frames must be idle.
-    fn waitOtherFrameFences(self: *Self) void {
+    fn createAtlasImages(self: *Self, limits: *const AtlasLimits) !void {
         std.debug.assert(self.device != null);
-        for (0..self.frame_count) |i| {
-            if (i != self.current_frame) {
-                _ = vk.vkWaitForFences(
-                    self.device,
-                    1,
-                    (&self.frames[i].fence)[0..1],
-                    vk.TRUE,
-                    std.math.maxInt(u64),
+        std.debug.assert(self.text_atlas.image == null);
+        errdefer self.destroyAtlasImages();
+        try vk_atlas.createAtlas(
+            &self.text_atlas,
+            limits.text_size,
+            .r8,
+            self.device,
+            &self.mem_properties,
+        );
+        try vk_atlas.createAtlas(
+            &self.svg_atlas,
+            limits.svg_size,
+            .rgba8,
+            self.device,
+            &self.mem_properties,
+        );
+        try vk_atlas.createAtlas(
+            &self.image_atlas,
+            limits.image_size,
+            .rgba8,
+            self.device,
+            &self.mem_properties,
+        );
+    }
+
+    fn destroyAtlasImages(self: *Self) void {
+        self.text_atlas.destroy(self.device);
+        self.svg_atlas.destroy(self.device);
+        self.image_atlas.destroy(self.device);
+    }
+
+    /// Stage the journal records this window has not uploaded into the current
+    /// frame's lane and record their copies. Must run after the frame fence wait
+    /// (the lane is free) and after a successful acquire (the frame is
+    /// submitted, so consumed records are never lost).
+    fn recordAtlasUploads(self: *Self, cmd: vk.CommandBuffer) void {
+        std.debug.assert(cmd != null);
+        const source = self.atlas_source orelse return;
+        const pending = source.uploads.consumeBegin(source.key);
+        defer source.uploads.consumeEnd(source.key);
+        if (pending.records.len == 0) return;
+
+        const lane_bytes = self.staging_lane_bytes;
+        const lane_start = @as(vk.DeviceSize, self.current_frame) * lane_bytes;
+        std.debug.assert(pending.bytes.len <= lane_bytes);
+        const staging: [*]u8 = @ptrCast(self.staging_mapped orelse return);
+        @memcpy(staging[@intCast(lane_start)..][0..pending.bytes.len], pending.bytes);
+
+        self.recordAtlasKind(cmd, &self.text_atlas, .text, pending.records, lane_start);
+        self.recordAtlasKind(cmd, &self.svg_atlas, .svg, pending.records, lane_start);
+        self.recordAtlasKind(cmd, &self.image_atlas, .image, pending.records, lane_start);
+    }
+
+    /// Record one atlas's copies from `records`, batching regions on the stack.
+    fn recordAtlasKind(
+        self: *const Self,
+        cmd: vk.CommandBuffer,
+        resources: *vk_atlas.AtlasResources,
+        kind: text_mod.AtlasKind,
+        records: []const AtlasUpload,
+        lane_start: vk.DeviceSize,
+    ) void {
+        std.debug.assert(resources.image != null);
+        var count: usize = 0;
+        for (records) |record| {
+            if (record.kind == kind) count += 1;
+        }
+        if (count == 0) return;
+        // Regions are recorded in batches; each batch is one barrier-free run
+        // of non-overlapping copies inside a single transfer scope.
+        var batch: [vk_atlas.copy_region_count_max]vk.BufferImageCopy = undefined;
+        var batch_len: usize = 0;
+        for (records) |record| {
+            if (record.kind != kind) continue;
+            std.debug.assert(@as(u32, record.x) + record.width <= resources.width);
+            std.debug.assert(@as(u32, record.y) + record.height <= resources.height);
+            batch[batch_len] = vk_atlas.copyRegion(
+                lane_start + record.offset,
+                record.x,
+                record.y,
+                record.width,
+                record.height,
+            );
+            batch_len += 1;
+            if (batch_len == batch.len) {
+                vk_atlas.recordAtlasCopies(
+                    cmd,
+                    resources,
+                    self.staging_buffer,
+                    batch[0..batch_len],
                 );
+                batch_len = 0;
             }
         }
+        vk_atlas.recordAtlasCopies(cmd, resources, self.staging_buffer, batch[0..batch_len]);
+        std.debug.assert(resources.layout_ready);
     }
 
     /// Update all frames' descriptor sets for a given atlas kind.
@@ -1376,13 +1215,6 @@ pub const VulkanRenderer = struct {
         _ = vk.vkWaitForFences(self.device, 1, (&frame.fence)[0..1], vk.TRUE, std.math.maxInt(u64));
         _ = vk.vkResetFences(self.device, 1, (&frame.fence)[0..1]);
 
-        // Stage pending atlas dirty rects into per-frame staging lane.
-        // MUST happen after frame fence wait — the lane is only safe to
-        // overwrite once the previous GPU read from it is complete.
-        var transfer_count: u32 = 0;
-        var transfers: [MAX_ATLAS_TRANSFERS]AtlasTransferRecord = undefined;
-        self.processAtlasUploads(&transfers, &transfer_count);
-
         // Acquire swapchain image
         var image_index: u32 = 0;
         switch (self.acquireNextImage(frame, &image_index)) {
@@ -1393,7 +1225,7 @@ pub const VulkanRenderer = struct {
 
         // Record command buffer: atlas transfers → render pass → draw
         const cmd = frame.command_buffer;
-        self.recordFrame(cmd, frame, scene, image_index, transfers[0..transfer_count]);
+        self.recordFrame(cmd, frame, scene, image_index);
 
         // Submit + present
         self.submitAndPresent(cmd, frame, image_index);
@@ -1455,7 +1287,6 @@ pub const VulkanRenderer = struct {
         frame: *const FrameResources,
         scene: *const Scene,
         image_index: u32,
-        transfers: []const AtlasTransferRecord,
     ) void {
         std.debug.assert(cmd != null);
         std.debug.assert(image_index < self.swapchain_image_count);
@@ -1472,7 +1303,7 @@ pub const VulkanRenderer = struct {
         // Atlas transfers: barrier → copy → barrier BEFORE render pass.
         // VK_PIPELINE_STAGE_TRANSFER_BIT → VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
         // guarantees the copy finishes before any fragment shader reads.
-        self.recordAtlasTransfers(cmd, transfers);
+        self.recordAtlasUploads(cmd);
 
         // Begin render pass
         const clear_value = vk.clearColor(

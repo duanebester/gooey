@@ -9,7 +9,6 @@ const wayland = @import("wayland.zig");
 const VulkanRenderer = @import("vk_renderer.zig").VulkanRenderer;
 const ShmRenderer = @import("shm_renderer.zig").ShmRenderer;
 const linux_backend = @import("../linux_backend.zig");
-const vk_atlas = @import("vk_atlas.zig");
 const LinuxPlatform = @import("platform.zig").LinuxPlatform;
 const interface_mod = @import("../interface.zig");
 const WindowId = interface_mod.WindowId;
@@ -159,11 +158,8 @@ pub const Window = struct {
     // Scene reference (set externally)
     scene: ?*const scene_mod.Scene = null,
     text_atlas: ?*const text_mod.Atlas = null,
-    last_atlas_generation: u32 = 0,
     svg_atlas: ?*const text_mod.Atlas = null,
-    last_svg_atlas_generation: u32 = 0,
     image_atlas: ?*const text_mod.Atlas = null,
-    last_image_atlas_generation: u32 = 0,
 
     // Title storage. `xdg_toplevel.set_title` takes a C string, so the buffer
     // holds `title_bytes_max` payload bytes plus the terminating NUL.
@@ -718,6 +714,14 @@ pub const Window = struct {
         return self.closed;
     }
 
+    /// Atlas records staged since this window last rendered, by another window
+    /// sharing the atlases or by an async image load. The window renders to
+    /// upload them; otherwise the shared journal could not retire them.
+    pub fn hasPendingAtlasUploads(self: *const Self) bool {
+        if (use_cpu_renderer) return false;
+        return self.renderer.hasPendingAtlasUploads();
+    }
+
     pub fn requestRender(self: *Self) void {
         // A closed window never presents again (`renderFrame` returns at once),
         // so arming a `wl_callback` here would start a chain that re-schedules
@@ -1106,7 +1110,7 @@ pub const Window = struct {
         // than letting it drive a zombie render chain (see `markClosed`).
         if (self.closed) return;
         if (!self.configured) return;
-        if (!self.needs_redraw and !self.pending_resize) return;
+        if (!self.needs_redraw and !self.pending_resize and !self.hasPendingAtlasUploads()) return;
 
         // Clear before invoking application code so requestRender() calls made
         // while building an animation survive for the following frame. The
@@ -1128,9 +1132,8 @@ pub const Window = struct {
         // last record, and the renderer only reads this when recording.
         self.renderer.setClearColor(self.getClearColor());
 
-        // Stage atlas uploads — stores data pointers only, no memcpy.
-        // Actual staging + GPU transfer happens inside render() after
-        // the frame fence wait, eliminating the synchronous GPU stall.
+        // Bind the atlases. Vulkan copies this window's pending atlas uploads
+        // into its staging lane inside render(), after the frame fence wait.
         self.syncAtlases();
 
         // Time GPU command recording + atlas transfers + submit + present.
@@ -1166,14 +1169,16 @@ pub const Window = struct {
     }
 
     /// Hand the atlases to the renderer before drawing. The CPU renderer
-    /// samples them in place and has no upload; Vulkan stages the dirty ones.
+    /// samples them in place and has no upload; Vulkan consumes the shared
+    /// upload journal as this window (the key the framework registered).
     fn syncAtlases(self: *Self) void {
         std.debug.assert(!self.closed);
         std.debug.assert(self.configured);
         if (use_cpu_renderer) {
             self.renderer.setAtlases(self.text_atlas, self.svg_atlas, self.image_atlas);
         } else {
-            self.stageAtlasUploads();
+            const atlas = self.text_atlas orelse return;
+            self.renderer.bindAtlasUploads(atlas.uploads, @intFromPtr(self));
         }
     }
 
@@ -1185,66 +1190,15 @@ pub const Window = struct {
             // request so the next frame callback draws it.
             if (!self.renderer.render(scene)) self.needs_redraw = true;
         } else {
+            // Items the per-frame upload budget deferred re-request a frame
+            // through `AtlasUploads.deferredSince` (runtime/frame.zig).
             self.renderer.render(scene);
-            // The per-frame upload budget left atlas rows for later frames.
-            if (self.renderer.atlasUploadsPending()) self.needs_redraw = true;
         }
     }
 
     // =========================================================================
     // Wayland Callbacks
     // =========================================================================
-
-    /// Stage all pending atlas uploads to the renderer. Only stores data
-    /// pointers and dirty regions — the actual memcpy + GPU transfer is
-    /// deferred to render() after the frame fence wait.
-    fn stageAtlasUploads(self: *Self) void {
-        // Text atlas — R8 format, dirty region from skyline packer
-        if (self.text_atlas) |atlas| {
-            if (atlas.generation != self.last_atlas_generation) {
-                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
-                    .x = @as(u32, d.x),
-                    .y = @as(u32, d.y),
-                    .width = @as(u32, d.width),
-                    .height = @as(u32, d.height),
-                } else null;
-                self.renderer.stageTextAtlas(atlas.data, atlas.size, atlas.size, dirty);
-                self.last_atlas_generation = atlas.generation;
-            }
-        }
-
-        // SVG atlas — RGBA format; also upload on first frame when view is null
-        if (self.svg_atlas) |atlas| {
-            const needs_upload = (atlas.generation != self.last_svg_atlas_generation) or
-                (self.last_svg_atlas_generation == 0 and self.renderer.svg_atlas.view == null);
-            if (needs_upload) {
-                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
-                    .x = @as(u32, d.x),
-                    .y = @as(u32, d.y),
-                    .width = @as(u32, d.width),
-                    .height = @as(u32, d.height),
-                } else null;
-                self.renderer.stageSvgAtlas(atlas.data, atlas.size, atlas.size, dirty);
-                self.last_svg_atlas_generation = atlas.generation;
-            }
-        }
-
-        // Image atlas — RGBA format; also upload on first frame when view is null
-        if (self.image_atlas) |atlas| {
-            const needs_upload = (atlas.generation != self.last_image_atlas_generation) or
-                (self.last_image_atlas_generation == 0 and self.renderer.image_atlas.view == null);
-            if (needs_upload) {
-                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
-                    .x = @as(u32, d.x),
-                    .y = @as(u32, d.y),
-                    .width = @as(u32, d.width),
-                    .height = @as(u32, d.height),
-                } else null;
-                self.renderer.stageImageAtlas(atlas.data, atlas.size, atlas.size, dirty);
-                self.last_image_atlas_generation = atlas.generation;
-            }
-        }
-    }
 
     fn surfaceEnter(
         data: ?*anyopaque,
@@ -1472,7 +1426,7 @@ pub const Window = struct {
         _ = self;
         if (use_cpu_renderer) {
             return .{
-                .max_texture_size = text_mod.Atlas.MAX_SIZE,
+                .max_texture_size = @import("../../core/limits.zig").MAX_ATLAS_SIZE,
                 .msaa = false,
                 .msaa_sample_count = 1,
                 .unified_memory = true,

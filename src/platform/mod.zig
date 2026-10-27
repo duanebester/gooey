@@ -113,6 +113,16 @@ else switch (builtin.os.tag) {
 // means adding a backend cannot silently skip the contract, and the selection
 // logic does not have to know what any backend calls its own types.
 
+/// Where atlas pixels live for the selected renderer. The CPU renderer samples
+/// its atlases in place, so they are its textures; GPU renderers keep atlas
+/// pixels only in their textures and receive them through `AtlasUploads`.
+pub const atlas_storage: @import("../text/atlas_uploads.zig").AtlasStorage = if (is_wasm)
+    .gpu_upload
+else switch (builtin.os.tag) {
+    .linux => if (@import("linux_backend.zig").uses_cpu_renderer) .cpu_texture else .gpu_upload,
+    else => .gpu_upload,
+};
+
 /// Platform type for the current target (compile-time selected).
 pub const Platform = backend.Platform;
 

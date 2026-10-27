@@ -333,6 +333,9 @@ pub const Window = struct {
     // Frame state
     frame_count: u64 = 0,
     needs_render: bool = true,
+    /// Atlas frame this window opened in `beginFrame`; the frame renders again
+    /// when an atlas deferred an upload at or after it.
+    atlas_frame: u64 = 0,
 
     // Window dimensions (cached for convenience)
     width: f32 = 0,
@@ -549,6 +552,7 @@ pub const Window = struct {
                 .font_size = font_config.font_size,
                 .limits = font_config.limits,
             },
+            &resource_limits.atlas,
         );
         errdefer self.resources.deinit();
 
@@ -633,6 +637,10 @@ pub const Window = struct {
         // `image_loader` is app-scoped: the caller binds it after this
         // returns and `window.app` is wired.
 
+        // This window's renderer draws from the atlases from its first frame.
+        self.resources.registerAtlasConsumer(@intFromPtr(platform_window));
+        errdefer self.resources.unregisterAtlasConsumer(@intFromPtr(platform_window));
+
         // Per-window globals hold `Debugger` only (`Keymap` is on
         // `App.globals`). `self` is at its final heap address, so `setOwned`
         // writes its bookkeeping directly. No `errdefer` after this last
@@ -702,13 +710,12 @@ pub const Window = struct {
         // Borrowed `AppResources` view; the parent owns the pointees.
         // By-value init is safe — the struct only carries the three pointers
         // plus the `owned = false` flag, no internal self-references.
-        self.resources = AppResources.borrowed(
-            allocator,
-            io,
-            shared_resources.text_system,
-            shared_resources.svg_atlas,
-            shared_resources.image_atlas,
-        );
+        // The shared atlases were sized from the app's budget; a window budget
+        // that disagrees would size this window's textures differently.
+        assert(resource_limits.atlas.text_size == shared_resources.text_system.getAtlas().size);
+        assert(resource_limits.atlas.svg_size == shared_resources.svg_atlas.getAtlas().size);
+        assert(resource_limits.atlas.image_size == shared_resources.image_atlas.getAtlas().size);
+        self.resources = AppResources.borrowed(allocator, io, shared_resources);
 
         self.platform_window = platform_window;
 
@@ -768,6 +775,11 @@ pub const Window = struct {
         // once by `multi_window_app::App.init` against this same atlas)
         // handles every window's URL fetches; this function does NOT bind.
 
+        // This window's renderer draws from the shared atlases; its texture
+        // starts empty, so registering condemns every cached atlas item.
+        self.resources.registerAtlasConsumer(@intFromPtr(platform_window));
+        errdefer self.resources.unregisterAtlasConsumer(@intFromPtr(platform_window));
+
         // Per-window globals hold `Debugger` only (`Keymap` is on
         // `app.globals`). No `errdefer` after this last `try`: the function
         // returns immediately after.
@@ -807,6 +819,11 @@ pub const Window = struct {
         // after every `Window.deinit` has run. `Window.deinit` deliberately
         // does not touch `self.app` — that would be a use-after-free in the
         // multi-window case where one `App` outlives many `Window`s.
+
+        // The renderer stops drawing from the atlases with its window.
+        if (self.platform_window) |platform_window| {
+            self.resources.unregisterAtlasConsumer(@intFromPtr(platform_window));
+        }
 
         // Single teardown call covers text_system + svg_atlas + image_atlas.
         // `AppResources.deinit` is a no-op when borrowed (multi-window mode),
@@ -893,7 +910,13 @@ pub const Window = struct {
         // keyed by call-site comptime hash, not by frame).
         self.animations.beginFrame();
         self.focus.beginFrame();
-        self.resources.image_atlas.beginFrame();
+        // Opens this window's atlas frame: items used from here on stay
+        // resident until its renderer has uploaded the frame.
+        if (self.platform_window) |platform_window| {
+            self.atlas_frame = self.resources.atlas_uploads.beginFrame(
+                @intFromPtr(platform_window),
+            );
+        }
 
         // `self.app.beginFrame()` is driven once per tick by
         // `runtime/frame.zig::renderFrameImpl`, not here: running the
@@ -1789,9 +1812,15 @@ test "layout measures text with the requested face: bold is wider than regular" 
     // sans-serif family with a real bold face, so a wrong face shows up as
     // equal widths. The width cache is keyed per face, so the regular repeat
     // must also return its own width rather than the bold one.
+    var uploads: text_mod.AtlasUploads = undefined;
+    try uploads.initHeadless(testing.allocator, testing.io);
+    defer uploads.deinit();
     const text_system = try testing.allocator.create(TextSystem);
     defer testing.allocator.destroy(text_system);
-    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+        .size = 1024,
+        .uploads = &uploads,
+    });
     defer text_system.deinit();
     try text_system.loadSystemFont(.sans_serif, 16);
 

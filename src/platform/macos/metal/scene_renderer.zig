@@ -234,12 +234,7 @@ fn drawSvgBatch(
     const sp = pipelines.svg orelse return;
 
     // Appends to this frame's instance slot; claimed against the window budget.
-    // An error means the atlas texture could not be created.
-    sp.renderBatch(encoder, svgs, .{ .viewport_size = viewport_size, .frame = frame }) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawSvgBatch failed: {}\n", .{err});
-        }
-    };
+    sp.renderBatch(encoder, svgs, .{ .viewport_size = viewport_size, .frame = frame });
 
     if (stats) |s| {
         s.recordDrawCall();

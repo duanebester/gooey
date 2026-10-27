@@ -33,6 +33,10 @@ const SvgAtlas = svg_mod.SvgAtlas;
 const image_mod = @import("../image/mod.zig");
 const ImageAtlas = image_mod.ImageAtlas;
 
+const AtlasUploads = text_mod.AtlasUploads;
+const AtlasLimits = @import("../core/limits.zig").AtlasLimits;
+const platform = @import("../platform/mod.zig");
+
 /// Font configuration. Duplicated as a small POD struct so
 /// `AppResources.initOwned` avoids a circular import on `window.zig`
 /// (the multi-window `App` builds its resources without ever
@@ -66,6 +70,8 @@ pub const AppResources = struct {
     text_system: *TextSystem,
     svg_atlas: *SvgAtlas,
     image_atlas: *ImageAtlas,
+    /// Upload journal and frame clock shared by the three atlases.
+    atlas_uploads: *AtlasUploads,
 
     /// True when this struct owns the three pointees (allocated in an
     /// `initOwned*` path). False when borrowed from a parent
@@ -79,7 +85,7 @@ pub const AppResources = struct {
     // Owning init paths
     // =========================================================================
 
-    /// Allocate and initialise all three subsystems against `scale`.
+    /// Allocate and initialise all subsystems against `scale`.
     ///
     /// Returns an `AppResources` that owns the heap allocations; the caller
     /// must invoke `deinit` exactly once. The `font_config` drives
@@ -90,51 +96,11 @@ pub const AppResources = struct {
         io: std.Io,
         scale: f32,
         font_config: FontConfig,
+        atlas_limits: *const AtlasLimits,
     ) !Self {
-        // Pair with the post-init assertions at the bottom of this function.
-        std.debug.assert(scale > 0);
-        std.debug.assert(scale <= 4.0);
-        std.debug.assert(font_config.font_size > 0);
-        std.debug.assert(font_config.font_size < 1000);
-
-        const text_system = try allocator.create(TextSystem);
-        errdefer allocator.destroy(text_system);
-        try text_system.initInPlace(allocator, scale, io, &font_config.limits);
-        errdefer text_system.deinit();
-
-        if (font_config.font_name) |name| {
-            try text_system.loadFont(name, font_config.font_size);
-        } else {
-            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
-        }
-
-        const svg_atlas = try allocator.create(SvgAtlas);
-        errdefer allocator.destroy(svg_atlas);
-        svg_atlas.* = try SvgAtlas.init(allocator, scale, io);
-        errdefer svg_atlas.deinit();
-
-        const image_atlas = try allocator.create(ImageAtlas);
-        errdefer allocator.destroy(image_atlas);
-        image_atlas.* = try ImageAtlas.init(allocator, scale, io);
-        errdefer image_atlas.deinit();
-
-        // Pair-assert: the post-init pointers must be non-null and
-        // distinct. Pointer-equality between the three would imply a
-        // cross-aliased allocation bug somewhere upstream.
-        std.debug.assert(@intFromPtr(text_system) != 0);
-        std.debug.assert(@intFromPtr(svg_atlas) != 0);
-        std.debug.assert(@intFromPtr(image_atlas) != 0);
-        std.debug.assert(@intFromPtr(text_system) != @intFromPtr(svg_atlas));
-        std.debug.assert(@intFromPtr(svg_atlas) != @intFromPtr(image_atlas));
-
-        return .{
-            .allocator = allocator,
-            .io = io,
-            .text_system = text_system,
-            .svg_atlas = svg_atlas,
-            .image_atlas = image_atlas,
-            .owned = true,
-        };
+        var self: Self = undefined;
+        try self.initOwnedInPlace(allocator, io, scale, font_config, atlas_limits);
+        return self;
     }
 
     /// In-place owning init for callers that need to avoid a stack temp.
@@ -143,22 +109,36 @@ pub const AppResources = struct {
     ///
     /// `self` must point at uninitialised memory; the function writes
     /// every field. On error, partially-allocated subsystems are torn
-    /// down via the same `errdefer` chain as `initOwned`.
+    /// down via the `errdefer` chain. Every atlas is reserved here at its
+    /// budget size and never grows (CLAUDE.md §2).
     pub noinline fn initOwnedInPlace(
         self: *Self,
         allocator: Allocator,
         io: std.Io,
         scale: f32,
         font_config: FontConfig,
+        atlas_limits: *const AtlasLimits,
     ) !void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0);
         std.debug.assert(font_config.font_size > 0);
         std.debug.assert(font_config.font_size < 1000);
+        atlas_limits.assertValid();
+
+        const atlas_uploads = try allocator.create(AtlasUploads);
+        errdefer allocator.destroy(atlas_uploads);
+        try atlas_uploads.init(allocator, io, .{
+            .storage = platform.atlas_storage,
+            .upload_bytes_frame_max = atlas_limits.upload_bytes_frame_max,
+        });
+        errdefer atlas_uploads.deinit();
 
         const text_system = try allocator.create(TextSystem);
         errdefer allocator.destroy(text_system);
-        try text_system.initInPlace(allocator, scale, io, &font_config.limits);
+        try text_system.initInPlace(allocator, scale, io, &font_config.limits, .{
+            .size = atlas_limits.text_size,
+            .uploads = atlas_uploads,
+        });
         errdefer text_system.deinit();
 
         if (font_config.font_name) |name| {
@@ -169,12 +149,19 @@ pub const AppResources = struct {
 
         const svg_atlas = try allocator.create(SvgAtlas);
         errdefer allocator.destroy(svg_atlas);
-        svg_atlas.* = try SvgAtlas.init(allocator, scale, io);
+        try svg_atlas.initInPlace(allocator, scale, io, .{
+            .size = atlas_limits.svg_size,
+            .icon_size_max = atlas_limits.svg_icon_size_max,
+            .uploads = atlas_uploads,
+        });
         errdefer svg_atlas.deinit();
 
         const image_atlas = try allocator.create(ImageAtlas);
         errdefer allocator.destroy(image_atlas);
-        image_atlas.* = try ImageAtlas.init(allocator, scale, io);
+        try image_atlas.initInPlace(allocator, scale, io, .{
+            .size = atlas_limits.image_size,
+            .uploads = atlas_uploads,
+        });
         errdefer image_atlas.deinit();
 
         // Field-by-field — no struct literal — to avoid a stack temp
@@ -184,11 +171,35 @@ pub const AppResources = struct {
         self.text_system = text_system;
         self.svg_atlas = svg_atlas;
         self.image_atlas = image_atlas;
+        self.atlas_uploads = atlas_uploads;
         self.owned = true;
 
-        std.debug.assert(@intFromPtr(self.text_system) != 0);
-        std.debug.assert(@intFromPtr(self.svg_atlas) != 0);
-        std.debug.assert(@intFromPtr(self.image_atlas) != 0);
+        // Pair-assert: pointer-equality between the subsystems would imply a
+        // cross-aliased allocation bug somewhere upstream.
+        std.debug.assert(@intFromPtr(self.text_system) != @intFromPtr(self.svg_atlas));
+        std.debug.assert(@intFromPtr(self.svg_atlas) != @intFromPtr(self.image_atlas));
+        std.debug.assert(self.text_system.getAtlas().uploads == atlas_uploads);
+    }
+
+    // =========================================================================
+    // Atlas consumers (renderers)
+    // =========================================================================
+
+    /// Register the renderer identified by `key` (its platform window's
+    /// address) as a consumer of the atlas uploads. Its texture starts empty,
+    /// so every cached glyph, icon, and image is condemned: they re-rasterize
+    /// on next use and reach every texture through the journal.
+    pub fn registerAtlasConsumer(self: *const Self, key: usize) void {
+        std.debug.assert(key != 0);
+        self.atlas_uploads.registerConsumer(key);
+        self.text_system.clearGlyphCache();
+        self.svg_atlas.clear();
+        self.image_atlas.clear();
+    }
+
+    pub fn unregisterAtlasConsumer(self: *const Self, key: usize) void {
+        std.debug.assert(key != 0);
+        self.atlas_uploads.unregisterConsumer(key);
     }
 
     // =========================================================================
@@ -203,13 +214,10 @@ pub const AppResources = struct {
     /// `App` keeps one owning `AppResources` on the heap, and every
     /// window's `Window` embeds a borrowed view of those same three
     /// pointers.
-    pub fn borrowed(
-        allocator: Allocator,
-        io: std.Io,
-        text_system: *TextSystem,
-        svg_atlas: *SvgAtlas,
-        image_atlas: *ImageAtlas,
-    ) Self {
+    pub fn borrowed(allocator: Allocator, io: std.Io, owner: *const Self) Self {
+        const text_system = owner.text_system;
+        const svg_atlas = owner.svg_atlas;
+        const image_atlas = owner.image_atlas;
         std.debug.assert(@intFromPtr(text_system) != 0);
         std.debug.assert(@intFromPtr(svg_atlas) != 0);
         std.debug.assert(@intFromPtr(image_atlas) != 0);
@@ -222,6 +230,7 @@ pub const AppResources = struct {
             .text_system = text_system,
             .svg_atlas = svg_atlas,
             .image_atlas = image_atlas,
+            .atlas_uploads = owner.atlas_uploads,
             .owned = false,
         };
     }
@@ -250,11 +259,16 @@ pub const AppResources = struct {
         self.text_system.deinit();
         self.allocator.destroy(self.text_system);
 
+        // The journal outlives every atlas that stages into it.
+        self.atlas_uploads.deinit();
+        self.allocator.destroy(self.atlas_uploads);
+
         // Null out so an accidental re-deinit fails fast on the
         // pointer check, rather than double-freeing.
         self.text_system = undefined;
         self.svg_atlas = undefined;
         self.image_atlas = undefined;
+        self.atlas_uploads = undefined;
         self.owned = false;
     }
 };
@@ -280,6 +294,7 @@ test "AppResources: initOwned allocates and frees cleanly" {
         testing.io,
         1.0,
         test_font_config,
+        &AtlasLimits.standard,
     );
     defer resources.deinit();
 
@@ -296,17 +311,12 @@ test "AppResources: borrowed deinit is a no-op (no double-free)" {
         testing.io,
         1.0,
         test_font_config,
+        &AtlasLimits.standard,
     );
     defer owner.deinit();
 
     // Borrowed view over the same pointers.
-    var view = AppResources.borrowed(
-        testing.allocator,
-        testing.io,
-        owner.text_system,
-        owner.svg_atlas,
-        owner.image_atlas,
-    );
+    var view = AppResources.borrowed(testing.allocator, testing.io, &owner);
 
     try testing.expect(!view.owned);
     try testing.expectEqual(owner.text_system, view.text_system);
@@ -337,6 +347,7 @@ test "AppResources: initOwnedInPlace produces an owned instance" {
         testing.io,
         1.0,
         test_font_config,
+        &AtlasLimits.standard,
     );
     defer slot.deinit();
 
@@ -352,6 +363,7 @@ test "AppResources: custom font config loads named font" {
         testing.io,
         1.0,
         .{ .font_name = null, .font_size = 14.0, .limits = FontLimits.nano },
+        &AtlasLimits.nano,
     );
     defer resources.deinit();
 

@@ -255,9 +255,15 @@ test "cx.measureText measures with the requested face: bold is wider than regula
     const TextSystem = @import("text/mod.zig").TextSystem;
     const FontLimits = @import("core/limits.zig").FontLimits;
 
+    var uploads: @import("text/mod.zig").AtlasUploads = undefined;
+    try uploads.initHeadless(std.testing.allocator, std.testing.io);
+    defer uploads.deinit();
     const text_system = try std.testing.allocator.create(TextSystem);
     defer std.testing.allocator.destroy(text_system);
-    try text_system.initInPlace(std.testing.allocator, 1.0, std.testing.io, &FontLimits.standard);
+    try text_system.initInPlace(std.testing.allocator, 1.0, std.testing.io, &FontLimits.standard, .{
+        .size = 1024,
+        .uploads = &uploads,
+    });
     defer text_system.deinit();
     try text_system.loadSystemFont(.sans_serif, 16);
 

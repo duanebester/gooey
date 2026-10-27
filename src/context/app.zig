@@ -73,6 +73,7 @@ const Keymap = action_mod.Keymap;
 const image_mod = @import("../image/mod.zig");
 const ImageLoader = image_mod.ImageLoader;
 const ImageAtlas = image_mod.ImageAtlas;
+const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 
 /// Application-lifetime state shared across all windows.
 ///
@@ -473,7 +474,14 @@ test "App: bindImageLoader wires the loader against the atlas" {
     var app = try App.init(testing.allocator, io);
     defer app.deinit();
 
-    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0, io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     app.bindImageLoader(&image_atlas);
@@ -491,7 +499,14 @@ test "App: image_loader is shared across simulated windows" {
     var app = try App.init(testing.allocator, io);
     defer app.deinit();
 
-    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0, io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     app.bindImageLoader(&image_atlas);
@@ -570,7 +585,14 @@ test "App: beginFrame drains image_loader when bound" {
     var app = try App.init(testing.allocator, io);
     defer app.deinit();
 
-    var image_atlas = try ImageAtlas.init(testing.allocator, 1.0, io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     app.bindImageLoader(&image_atlas);

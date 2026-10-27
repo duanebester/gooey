@@ -35,10 +35,6 @@ const NSRect = appkit.NSRect;
 const NSSize = appkit.NSSize;
 const DisplayLink = display_link.DisplayLink;
 
-/// Uploads a CPU-side atlas into GPU storage while holding the caller's lock.
-/// Named so the three atlas hooks below stay inside the 100-column limit.
-const AtlasUploadFn = *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void;
-
 /// Hard ceiling on application-supplied Metal shaders per window. Each one
 /// costs a pipeline state object and a `custom_{d}` name slot, so the count
 /// is bounded rather than taken on trust from the caller's slice.
@@ -80,15 +76,6 @@ pub const Window = struct {
     svg_atlas: ?*const Atlas = null,
     image_atlas: ?*const Atlas = null,
 
-    /// Thread-safe atlas upload callbacks for multi-window scenarios.
-    /// These are set by WindowContext to hold the appropriate mutex during GPU upload,
-    /// preventing races where another window's DisplayLink modifies the atlas.
-    text_atlas_upload_ctx: ?*anyopaque = null,
-    text_atlas_upload_fn: ?AtlasUploadFn = null,
-    svg_atlas_upload_ctx: ?*anyopaque = null,
-    svg_atlas_upload_fn: ?AtlasUploadFn = null,
-    image_atlas_upload_ctx: ?*anyopaque = null,
-    image_atlas_upload_fn: ?AtlasUploadFn = null,
     /// Owned +1 from `window_delegate.create`, released once in `deinit`.
     delegate: ?objc.Object = null,
     /// Owned +1 from `alloc`/`init`; the view also retains it while installed.
@@ -558,7 +545,8 @@ pub const Window = struct {
         return null;
     }
 
-    /// Set the text atlas for automatic GPU sync (thread-safe)
+    /// Set the text atlas (thread-safe). The renderer consumes the atlases'
+    /// shared upload journal as this window, the key the framework registered.
     pub fn setTextAtlas(self: *Self, atlas: *const Atlas) void {
         // Only lock if we're not already in a render (which holds the lock)
         if (!self.render_in_progress.load(.acquire)) {
@@ -566,37 +554,7 @@ pub const Window = struct {
             defer self.render_mutex.unlock();
         }
         self.text_atlas = atlas;
-    }
-
-    /// Set thread-safe text atlas upload callback for multi-window scenarios.
-    /// The callback is called with the appropriate mutex held during GPU upload.
-    pub fn setTextAtlasUploadCallback(
-        self: *Self,
-        ctx: *anyopaque,
-        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
-    ) void {
-        self.text_atlas_upload_ctx = ctx;
-        self.text_atlas_upload_fn = callback;
-    }
-
-    /// Set thread-safe SVG atlas upload callback for multi-window scenarios.
-    pub fn setSvgAtlasUploadCallback(
-        self: *Self,
-        ctx: *anyopaque,
-        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
-    ) void {
-        self.svg_atlas_upload_ctx = ctx;
-        self.svg_atlas_upload_fn = callback;
-    }
-
-    /// Set thread-safe image atlas upload callback for multi-window scenarios.
-    pub fn setImageAtlasUploadCallback(
-        self: *Self,
-        ctx: *anyopaque,
-        callback: *const fn (ctx: *anyopaque, renderer: *metal.Renderer) anyerror!void,
-    ) void {
-        self.image_atlas_upload_ctx = ctx;
-        self.image_atlas_upload_fn = callback;
+        self.renderer.bindAtlasUploads(atlas.uploads, @intFromPtr(self));
     }
 
     /// Set the scene (thread-safe)
@@ -891,29 +849,7 @@ pub const Window = struct {
                 callback(self);
             }
 
-            // Use thread-safe callbacks if available (multi-window scenarios)
-            if (self.text_atlas_upload_fn) |upload_fn| {
-                if (self.text_atlas_upload_ctx) |ctx| {
-                    upload_fn(ctx, &self.renderer) catch {};
-                }
-            } else if (self.text_atlas) |atlas| {
-                self.renderer.updateTextAtlas(atlas) catch {};
-            }
-            if (self.svg_atlas_upload_fn) |upload_fn| {
-                if (self.svg_atlas_upload_ctx) |ctx| {
-                    upload_fn(ctx, &self.renderer) catch {};
-                }
-            } else if (self.svg_atlas) |atlas| {
-                self.renderer.prepareSvgAtlas(atlas);
-            }
-            if (self.image_atlas_upload_fn) |upload_fn| {
-                if (self.image_atlas_upload_ctx) |ctx| {
-                    upload_fn(ctx, &self.renderer) catch {};
-                }
-            } else if (self.image_atlas) |atlas| {
-                self.renderer.prepareImageAtlas(atlas);
-            }
-
+            // Atlas uploads are encoded by the render itself, ahead of its draws.
             if (self.scene) |s| {
                 self.renderer.renderSceneSynchronous(s, self.getClearColor()) catch {};
             } else {
@@ -1410,8 +1346,10 @@ fn displayLinkCallback(
 
     // Always render if custom shader animation is enabled (for iTime)
     const explicit_render = window.needs_render.swap(false, .acq_rel);
-    const should_render =
-        window.benchmark_mode or explicit_render or window.custom_shader_animation;
+    // Atlas records another window (or an async image load) staged must reach
+    // this window's textures too, or the shared journal cannot retire them.
+    const should_render = window.benchmark_mode or explicit_render or
+        window.custom_shader_animation or window.renderer.hasPendingAtlasUploads();
 
     // DEBUG. CVDisplayLink callbacks run on a dedicated vsync thread that
     // does not carry a `*Cx`/`Gooey`, so we reach for the single-threaded
@@ -1457,34 +1395,7 @@ fn displayLinkCallback(
         callback(window);
     }
 
-    // Update text atlas if set - use thread-safe callback if available
-    // The callback holds the glyph_cache_mutex during upload, preventing races
-    // where another window's DisplayLink modifies the atlas concurrently.
-    if (window.text_atlas_upload_fn) |upload_fn| {
-        if (window.text_atlas_upload_ctx) |ctx| {
-            upload_fn(ctx, &window.renderer) catch {};
-        }
-    } else if (window.text_atlas) |atlas| {
-        window.renderer.updateTextAtlas(atlas) catch {};
-    }
-
-    // Update SVG atlas if set - use thread-safe callback if available
-    if (window.svg_atlas_upload_fn) |upload_fn| {
-        if (window.svg_atlas_upload_ctx) |ctx| {
-            upload_fn(ctx, &window.renderer) catch {};
-        }
-    } else if (window.svg_atlas) |atlas| {
-        window.renderer.prepareSvgAtlas(atlas);
-    }
-
-    // Update image atlas if set - use thread-safe callback if available
-    if (window.image_atlas_upload_fn) |upload_fn| {
-        if (window.image_atlas_upload_ctx) |ctx| {
-            upload_fn(ctx, &window.renderer) catch {};
-        }
-    } else if (window.image_atlas) |atlas| {
-        window.renderer.prepareImageAtlas(atlas);
-    }
+    // Atlas uploads are encoded by the render itself, ahead of its draws.
 
     // Use post-process rendering if shaders are active
     if (window.scene) |s| {
