@@ -4,9 +4,16 @@
 //! Supports tinting, opacity, grayscale effects, and rounded corners.
 
 const std = @import("std");
+const assert = std.debug.assert;
+
 const objc = @import("objc");
 const mtl = @import("api.zig");
+const pipelines = @import("pipelines.zig");
+const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
+const InstanceCounts = scene.InstanceCounts;
+const InstancePool = scene.InstancePool;
+const SceneLimits = scene.SceneLimits;
 const ImageInstance = @import("../../../scene/image_instance.zig").ImageInstance;
 const Atlas = @import("../../../text/atlas.zig").Atlas;
 
@@ -77,7 +84,7 @@ pub const image_shader_source =
     \\    uint vid [[vertex_id]],
     \\    uint iid [[instance_id]],
     \\    constant float2 *unit_vertices [[buffer(0)]],
-    \\    constant ImageInstance *images [[buffer(1)]],
+    \\    device const ImageInstance *images [[buffer(1)]],
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
     \\    float2 unit = unit_vertices[vid];
@@ -176,18 +183,28 @@ pub const unit_vertices = [_][2]f32{
     .{ 0.0, 1.0 },
 };
 
-const FRAME_COUNT = 3;
-const INITIAL_CAPACITY = 256;
+comptime {
+    assert(@sizeOf(ImageInstance) == 112);
+}
 
+/// Image pipeline state.
+///
+/// Resource sketch (CLAUDE.md §7): each frame in flight owns one instance buffer
+/// of `image_count_frame_max` × 112 B image instances, sized in `init` from
+/// `ResourceLimits.scene` and never replaced. `.standard`: 28,672 B per frame,
+/// 86,016 B per window. Per batch: one claim, one sequential copy and one
+/// instanced draw. The scene holds at most the same number of images, so a claim
+/// past the budget is a programmer error and panics with the pool name.
 pub const ImagePipeline = struct {
     device: objc.Object,
     pipeline_state: objc.Object,
     unit_vertex_buffer: objc.Object,
-    instance_buffers: [FRAME_COUNT]objc.Object,
-    instance_capacities: [FRAME_COUNT]usize,
-    frame_index: usize,
-    // Current write offset for streaming
-    current_offset: usize,
+    instance_buffers: [frame_count]objc.Object,
+    frame_index: u32,
+    /// The window's instance budget (`ResourceLimits.scene`).
+    instance_budget: InstanceCounts,
+    /// Images claimed this frame; also the slot's write offset.
+    instance_usage: InstanceCounts,
 
     // Atlas texture
     atlas_texture: ?objc.Object,
@@ -198,45 +215,46 @@ pub const ImagePipeline = struct {
 
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, device: objc.Object, sample_count: u32) !ImagePipeline {
-        const pipeline = createPipeline(device, sample_count) orelse return error.PipelineCreationFailed;
+    pub fn init(
+        allocator: std.mem.Allocator,
+        device: objc.Object,
+        sample_count: u32,
+        scene_limits: *const SceneLimits,
+    ) !ImagePipeline {
+        assert(sample_count > 0);
+        assert(scene_limits.check() == null);
+        const budget = InstanceCounts.from_limits(scene_limits);
+        const image_count_max: u64 = budget.counts[@backingInt(InstancePool.images)];
 
-        // Create unit vertex buffer
-        const unit_buffer = device.msgSend(
-            objc.Object,
+        const pipeline = createPipeline(device, sample_count) orelse
+            return error.PipelineCreationFailed;
+        errdefer pipeline.release();
+
+        const unit_buffer_ptr = device.msgSend(
+            ?*anyopaque,
             "newBufferWithBytes:length:options:",
             .{
                 @as(*const anyopaque, @ptrCast(&unit_vertices)),
                 @as(c_ulong, @sizeOf(@TypeOf(unit_vertices))),
-                @as(c_ulong, 0), // MTLResourceStorageModeShared
+                @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
             },
+        ) orelse return error.BufferCreationFailed;
+        const unit_buffer = objc.Object.fromId(unit_buffer_ptr);
+        errdefer unit_buffer.release();
+
+        const instance_buffers = try pipelines.createFrameBuffers(
+            device,
+            image_count_max * @sizeOf(ImageInstance),
+            "image_instances",
         );
-
-        // Create triple-buffered instance buffers
-        var instance_buffers: [FRAME_COUNT]objc.Object = undefined;
-        var instance_capacities: [FRAME_COUNT]usize = undefined;
-
-        for (0..FRAME_COUNT) |i| {
-            const buffer_size = INITIAL_CAPACITY * @sizeOf(ImageInstance);
-            instance_buffers[i] = device.msgSend(
-                objc.Object,
-                "newBufferWithLength:options:",
-                .{
-                    @as(c_ulong, buffer_size),
-                    @as(c_ulong, 0), // MTLResourceStorageModeShared
-                },
-            );
-            instance_capacities[i] = INITIAL_CAPACITY;
-        }
-
         return ImagePipeline{
             .device = device,
             .pipeline_state = pipeline,
             .unit_vertex_buffer = unit_buffer,
             .instance_buffers = instance_buffers,
-            .instance_capacities = instance_capacities,
             .frame_index = 0,
-            .current_offset = 0,
+            .instance_budget = budget,
+            .instance_usage = .{},
             .atlas_texture = null,
             .atlas_generation = 0,
             .current_atlas = null,
@@ -253,38 +271,43 @@ pub const ImagePipeline = struct {
         if (self.atlas_texture) |tex| tex.release();
     }
 
-    /// Call at frame start to advance buffer index
+    /// Advance to the next frame-in-flight slot and release the previous frame's
+    /// claims. Call once per rendered frame, before any batch is drawn.
+    pub fn nextFrame(self: *ImagePipeline) void {
+        assert(self.frame_index < frame_count);
+        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.instance_usage = .{};
+    }
+
+    /// Bind this frame's atlas and upload it if its generation changed.
     pub fn prepareFrame(self: *ImagePipeline, atlas: *const Atlas) void {
-        self.frame_index = (self.frame_index + 1) % FRAME_COUNT;
-        self.current_offset = 0;
+        assert(atlas.size > 0);
         self.updateAtlasTexture(atlas);
     }
 
-    /// Render images using pre-allocated buffer (single batch per frame)
-    pub fn render(
+    /// Render a batch of images, appended to this frame's slot after the images
+    /// already claimed. Safe for multiple calls per frame.
+    pub fn renderBatch(
         self: *ImagePipeline,
         encoder: objc.Object,
         images: []const ImageInstance,
-        viewport_size: [2]f32,
-    ) !void {
-        if (images.len == 0) return;
-        if (self.atlas_texture == null) return;
+        options: struct { viewport_size: [2]f32, frame: u64 },
+    ) void {
+        assert(images.len > 0);
+        assert(images.len <= scene.MAX_IMAGES_PER_FRAME);
+        // Claimed even when no atlas is bound yet, so the count matches the scene.
+        const first = self.instance_usage.claim(&self.instance_budget, .{
+            .pool = .images,
+            .requested = @intCast(images.len),
+            .frame = options.frame,
+        });
+        const atlas_texture = self.atlas_texture orelse return;
 
         const buffer = self.instance_buffers[self.frame_index];
-        var capacity = self.instance_capacities[self.frame_index];
+        const base = pipelines.frameBufferContents(ImageInstance, buffer);
+        @memcpy(base[first..][0..images.len], images);
+        const viewport_size = options.viewport_size;
 
-        // Grow buffer if needed
-        if (images.len > capacity) {
-            self.growInstanceBuffer(self.frame_index, images.len);
-            capacity = self.instance_capacities[self.frame_index];
-        }
-
-        // Copy image data to buffer
-        const contents = buffer.msgSend(*anyopaque, "contents", .{});
-        const dest: [*]ImageInstance = @ptrCast(@alignCast(contents));
-        @memcpy(dest[0..images.len], images);
-
-        // Draw
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
             self.unit_vertex_buffer.value,
@@ -293,7 +316,7 @@ pub const ImagePipeline = struct {
         });
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
             buffer.value,
-            @as(c_ulong, 0),
+            @as(c_ulong, first) * @sizeOf(ImageInstance),
             @as(c_ulong, 1),
         });
         encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
@@ -302,76 +325,7 @@ pub const ImagePipeline = struct {
             @as(c_ulong, 2),
         });
         encoder.msgSend(void, "setFragmentTexture:atIndex:", .{
-            self.atlas_texture.?.value,
-            @as(c_ulong, 0),
-        });
-        encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
-            @backingInt(mtl.MTLPrimitiveType.triangle),
-            @as(c_ulong, 0),
-            @as(c_ulong, 6),
-            @as(c_ulong, images.len),
-        });
-    }
-
-    /// Render a batch of images (safe for multiple calls per frame)
-    /// Uses setVertexBytes for small batches, avoiding buffer contention
-    pub fn renderBatch(
-        self: *ImagePipeline,
-        encoder: objc.Object,
-        images: []const ImageInstance,
-        viewport_size: [2]f32,
-    ) !void {
-        if (images.len == 0) return;
-        if (self.atlas_texture == null) return;
-
-        const max_inline_bytes: usize = 4096;
-        const data_size = images.len * @sizeOf(ImageInstance);
-
-        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
-        encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            self.unit_vertex_buffer.value,
-            @as(c_ulong, 0),
-            @as(c_ulong, 0),
-        });
-
-        if (data_size <= max_inline_bytes) {
-            // Small batch - use setVertexBytes (copies inline)
-            encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                @as(*const anyopaque, @ptrCast(images.ptr)),
-                @as(c_ulong, data_size),
-                @as(c_ulong, 1),
-            });
-        } else {
-            // Large batch - use buffer with offset
-            const capacity = self.instance_capacities[self.frame_index];
-            const needed = self.current_offset + images.len;
-
-            if (needed > capacity) {
-                // Buffer too small, grow it
-                self.growInstanceBuffer(self.frame_index, needed);
-            }
-
-            const new_buffer = self.instance_buffers[self.frame_index];
-            const contents = new_buffer.msgSend(*anyopaque, "contents", .{});
-            const dest: [*]ImageInstance = @ptrCast(@alignCast(contents));
-            @memcpy(dest[self.current_offset..][0..images.len], images);
-
-            encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                new_buffer.value,
-                @as(c_ulong, self.current_offset * @sizeOf(ImageInstance)),
-                @as(c_ulong, 1),
-            });
-
-            self.current_offset += images.len;
-        }
-
-        encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-            @as(*const anyopaque, @ptrCast(&viewport_size)),
-            @as(c_ulong, @sizeOf([2]f32)),
-            @as(c_ulong, 2),
-        });
-        encoder.msgSend(void, "setFragmentTexture:atIndex:", .{
-            self.atlas_texture.?.value,
+            atlas_texture.value,
             @as(c_ulong, 0),
         });
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
@@ -434,26 +388,6 @@ pub const ImagePipeline = struct {
         }
 
         self.atlas_generation = atlas.generation;
-    }
-
-    fn growInstanceBuffer(self: *ImagePipeline, index: usize, needed: usize) void {
-        var new_capacity = self.instance_capacities[index];
-        while (new_capacity < needed) {
-            new_capacity *= 2;
-        }
-
-        const new_buffer = self.device.msgSend(
-            objc.Object,
-            "newBufferWithLength:options:",
-            .{
-                @as(c_ulong, new_capacity * @sizeOf(ImageInstance)),
-                @as(c_ulong, 0),
-            },
-        );
-
-        self.instance_buffers[index].release();
-        self.instance_buffers[index] = new_buffer;
-        self.instance_capacities[index] = new_capacity;
     }
 };
 

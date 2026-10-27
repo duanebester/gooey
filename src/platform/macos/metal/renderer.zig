@@ -136,37 +136,41 @@ pub const Renderer = struct {
         self.unified_pipeline_state = try pipelines.setupUnifiedPipeline(device, sample_count);
         self.quad_unit_vertex_buffer = try pipelines.createUnitVertexBuffer(device, unified_memory);
 
-        self.initOptionalPipelines(sample_count);
+        try self.initInstancePipelines(sample_count, scene_limits);
         try self.initMeshPipelines(sample_count, scene_limits);
         return self;
     }
 
-    /// Create the text, SVG and image pipelines. Each one that fails to build stays
-    /// null and its primitives are skipped, as before this was split out of `init`.
-    fn initOptionalPipelines(self: *Self, sample_count: u32) void {
+    /// Create the text, SVG and image pipelines with their per-frame instance
+    /// buffers sized from `scene_limits`. A failure here is fatal rather than
+    /// skipped: a missing pipeline would silently drop primitives the scene
+    /// accepted within its budget (CLAUDE.md §2).
+    fn initInstancePipelines(
+        self: *Self,
+        sample_count: u32,
+        scene_limits: *const SceneLimits,
+    ) !void {
         assert(sample_count > 0);
         assert(self.text_pipeline_state == null);
         const device = self.device;
-
-        self.text_pipeline_state = text_pipeline.TextPipeline.init(
+        self.text_pipeline_state = try text_pipeline.TextPipeline.init(
             device,
             mtl.MTLPixelFormat.bgra8unorm,
             sample_count,
-        ) catch null;
-
-        // Instanced pipelines for SVGs and images.
-        const allocator = self.allocator;
-        const samples: u32 = sample_count;
-        self.svg_pipeline_state = svg_pipeline.SvgPipeline.init(
-            allocator,
+            scene_limits,
+        );
+        self.svg_pipeline_state = try svg_pipeline.SvgPipeline.init(
+            self.allocator,
             device,
-            @intCast(samples),
-        ) catch null;
-        self.image_pipeline_state = image_pipeline.ImagePipeline.init(
-            allocator,
+            sample_count,
+            scene_limits,
+        );
+        self.image_pipeline_state = try image_pipeline.ImagePipeline.init(
+            self.allocator,
             device,
-            @intCast(samples),
-        ) catch null;
+            sample_count,
+            scene_limits,
+        );
     }
 
     /// Create the path, polyline and point-cloud pipelines with their per-frame
@@ -291,8 +295,7 @@ pub const Renderer = struct {
             return;
         }
 
-        self.unified_primitive_ring.nextFrame();
-        if (self.text_pipeline_state) |*tp| tp.nextFrame();
+        self.nextFrame();
 
         const width: u32 = @intFromFloat(self.size.width * self.scale_factor);
         const height: u32 = @intFromFloat(self.size.height * self.scale_factor);
@@ -412,13 +415,24 @@ pub const Renderer = struct {
         }
     }
 
-    fn renderSceneInternal(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color, synchronous: bool) !void {
+    /// Advance every per-frame buffer ring to its next frame-in-flight slot and
+    /// release the previous frame's claims. Both render paths call this once per
+    /// frame, before any batch is drawn.
+    fn nextFrame(self: *Self) void {
+        assert(self.text_pipeline_state != null);
+        assert(self.path_pipeline_state != null);
         self.unified_primitive_ring.nextFrame();
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
+        if (self.svg_pipeline_state) |*sp| sp.nextFrame();
+        if (self.image_pipeline_state) |*ip| ip.nextFrame();
         if (self.path_pipeline_state) |*pp| pp.nextFrame();
         if (self.polyline_pipeline_state) |*plp| plp.nextFrame();
         if (self.point_cloud_pipeline_state) |*pcp| pcp.nextFrame();
         if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.nextFrame();
+    }
+
+    fn renderSceneInternal(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color, synchronous: bool) !void {
+        self.nextFrame();
 
         // No empty-scene shortcut: `drawScene` draws exactly what the scene's
         // BatchIterator yields, so an empty scene already presents a plain

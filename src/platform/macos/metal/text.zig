@@ -1,11 +1,19 @@
 //! Metal text rendering pipeline
 //!
-//! Renders glyph quads from a texture atlas using instanced rendering.
+//! Renders glyph quads from a texture atlas using instanced rendering. Instance
+//! buffers are reserved per frame in flight from `ResourceLimits.scene` at init.
 
 const std = @import("std");
+const assert = std.debug.assert;
+
 const objc = @import("objc");
 const mtl = @import("api.zig");
+const pipelines = @import("pipelines.zig");
+const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
+const InstanceCounts = scene.InstanceCounts;
+const InstancePool = scene.InstancePool;
+const SceneLimits = scene.SceneLimits;
 const Atlas = @import("../../../text/mod.zig").Atlas;
 
 /// Metal shader for text rendering
@@ -66,7 +74,7 @@ pub const text_shader_source =
     \\    uint vid [[vertex_id]],
     \\    uint iid [[instance_id]],
     \\    constant float2 *unit_vertices [[buffer(0)]],
-    \\    constant GlyphInstance *glyphs [[buffer(1)]],
+    \\    device const GlyphInstance *glyphs [[buffer(1)]],
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
     \\    float2 unit = unit_vertices[vid];
@@ -121,108 +129,50 @@ pub const unit_vertices = [_][2]f32{
     .{ 0.0, 1.0 },
 };
 
-const FRAME_COUNT = 3;
+comptime {
+    assert(@sizeOf(scene.GlyphInstance) == 80);
+}
 
-/// Text rendering pipeline state
+/// Text rendering pipeline state.
+///
+/// Resource sketch (CLAUDE.md §7): each frame in flight owns one instance buffer
+/// of `glyph_count_frame_max` × 80 B glyph instances, sized in `init` from
+/// `ResourceLimits.scene` and never replaced. `.standard`: 1,310,720 B per frame,
+/// 3,932,160 B per window. Per batch: one claim, one sequential copy and one
+/// instanced draw. The scene holds at most the same number of glyphs, so a claim
+/// past the budget is a programmer error and panics with the pool name.
 pub const TextPipeline = struct {
     device: objc.Object,
     pipeline_state: objc.Object,
     unit_vertex_buffer: objc.Object,
 
-    // Triple-buffered instance buffers
-    instance_buffers: [FRAME_COUNT]objc.Object,
-    instance_capacities: [FRAME_COUNT]usize,
-    frame_index: usize,
-    // Current offset within frame's buffer (for batched rendering)
-    current_offset: usize,
+    instance_buffers: [frame_count]objc.Object,
+    frame_index: u32,
+    /// The window's instance budget (`ResourceLimits.scene`).
+    instance_budget: InstanceCounts,
+    /// Glyphs claimed this frame; also the slot's write offset.
+    instance_usage: InstanceCounts,
 
     atlas_texture: ?objc.Object,
     atlas_generation: u32,
     sampler_state: objc.Object,
 
     const Self = @This();
-    const INITIAL_CAPACITY: usize = 1024;
 
-    pub fn init(device: objc.Object, pixel_format: mtl.MTLPixelFormat, sample_count: u32) !Self {
-        const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+    pub fn init(
+        device: objc.Object,
+        pixel_format: mtl.MTLPixelFormat,
+        sample_count: u32,
+        scene_limits: *const SceneLimits,
+    ) !Self {
+        assert(sample_count > 0);
+        assert(scene_limits.check() == null);
+        const budget = InstanceCounts.from_limits(scene_limits);
+        const glyph_count_max: u64 = budget.counts[@backingInt(InstancePool.glyphs)];
 
-        // Create shader library from source
-        const source_str = NSString.msgSend(
-            objc.Object,
-            "stringWithUTF8String:",
-            .{text_shader_source.ptr},
-        );
+        const pipeline_state = try createPipelineState(device, pixel_format, sample_count);
+        errdefer pipeline_state.release();
 
-        // Compile shader library
-        var compile_error: ?*anyopaque = null;
-        const library_ptr = device.msgSend(
-            ?*anyopaque,
-            "newLibraryWithSource:options:error:",
-            .{ source_str.value, @as(?*anyopaque, null), &compile_error },
-        );
-
-        if (library_ptr == null) {
-            if (compile_error) |err| {
-                const err_obj = objc.Object.fromId(err);
-                const desc = err_obj.msgSend(objc.Object, "localizedDescription", .{});
-                const cstr = desc.msgSend([*:0]const u8, "UTF8String", .{});
-                std.debug.print("Text shader compile error: {s}\n", .{cstr});
-            }
-            return error.ShaderCompileFailed;
-        }
-        const library = objc.Object.fromId(library_ptr);
-        defer library.release();
-
-        // Get shader functions
-        const vert_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"text_vertex"});
-        const frag_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"text_fragment"});
-
-        const vert_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{vert_name.value});
-        const frag_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{frag_name.value});
-
-        if (vert_fn_ptr == null or frag_fn_ptr == null) {
-            std.debug.print("Text shader function not found\n", .{});
-            return error.ShaderFunctionNotFound;
-        }
-        const vert_fn = objc.Object.fromId(vert_fn_ptr);
-        const frag_fn = objc.Object.fromId(frag_fn_ptr);
-        defer vert_fn.release();
-        defer frag_fn.release();
-
-        // Create pipeline descriptor
-        const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
-            return error.ClassNotFound;
-        const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
-            .msgSend(objc.Object, "init", .{});
-        defer desc.release();
-
-        desc.msgSend(void, "setVertexFunction:", .{vert_fn.value});
-        desc.msgSend(void, "setFragmentFunction:", .{frag_fn.value});
-        desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
-
-        // Configure color attachment with alpha blending
-        const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
-        const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
-        attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(pixel_format)});
-        attachment0.msgSend(void, "setBlendingEnabled:", .{true});
-        attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
-        attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
-        attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
-        attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
-
-        // Create pipeline state
-        var pipeline_error: ?*anyopaque = null;
-        const pipeline_ptr = device.msgSend(
-            ?*anyopaque,
-            "newRenderPipelineStateWithDescriptor:error:",
-            .{ desc.value, &pipeline_error },
-        );
-        if (pipeline_ptr == null) {
-            return error.PipelineCreationFailed;
-        }
-        const pipeline_state = objc.Object.fromId(pipeline_ptr);
-
-        // Create unit vertex buffer
         const unit_vertex_buffer_ptr = device.msgSend(
             ?*anyopaque,
             "newBufferWithBytes:length:options:",
@@ -233,45 +183,24 @@ pub const TextPipeline = struct {
             },
         ) orelse return error.BufferCreationFailed;
         const unit_vertex_buffer = objc.Object.fromId(unit_vertex_buffer_ptr);
+        errdefer unit_vertex_buffer.release();
 
-        // Create triple instance buffers
-        var instance_buffers: [FRAME_COUNT]objc.Object = undefined;
-        var instance_capacities: [FRAME_COUNT]usize = undefined;
+        const instance_buffers = try pipelines.createFrameBuffers(
+            device,
+            glyph_count_max * @sizeOf(scene.GlyphInstance),
+            "glyph_instances",
+        );
+        errdefer for (instance_buffers) |buffer| buffer.release();
 
-        // Create instance buffer
-        const instance_size = INITIAL_CAPACITY * @sizeOf(scene.GlyphInstance);
-        for (0..FRAME_COUNT) |i| {
-            const buffer_ptr = device.msgSend(
-                ?*anyopaque,
-                "newBufferWithLength:options:",
-                .{ @as(c_ulong, instance_size), @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)) },
-            ) orelse return error.BufferCreationFailed;
-            instance_buffers[i] = objc.Object.fromId(buffer_ptr);
-            instance_capacities[i] = INITIAL_CAPACITY;
-        }
-
-        // Create sampler state
-        const MTLSamplerDescriptor = objc.getClass("MTLSamplerDescriptor") orelse
-            return error.ClassNotFound;
-        const sampler_desc = MTLSamplerDescriptor.msgSend(objc.Object, "alloc", .{})
-            .msgSend(objc.Object, "init", .{});
-        defer sampler_desc.release();
-
-        sampler_desc.msgSend(void, "setMinFilter:", .{@as(c_ulong, 1)}); // linear
-        sampler_desc.msgSend(void, "setMagFilter:", .{@as(c_ulong, 1)}); // linear
-
-        const sampler_ptr = device.msgSend(?*anyopaque, "newSamplerStateWithDescriptor:", .{sampler_desc.value}) orelse
-            return error.SamplerCreationFailed;
-        const sampler_state = objc.Object.fromId(sampler_ptr);
-
+        const sampler_state = try createSampler(device);
         return .{
             .device = device,
             .pipeline_state = pipeline_state,
             .unit_vertex_buffer = unit_vertex_buffer,
             .instance_buffers = instance_buffers,
-            .instance_capacities = instance_capacities,
             .frame_index = 0,
-            .current_offset = 0,
+            .instance_budget = budget,
+            .instance_usage = .{},
             .atlas_texture = null,
             .atlas_generation = 0,
             .sampler_state = sampler_state,
@@ -289,10 +218,12 @@ pub const TextPipeline = struct {
         self.* = undefined;
     }
 
-    /// Advance to next buffer (call at start of frame)
+    /// Advance to the next frame-in-flight slot and release the previous frame's
+    /// claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        self.frame_index = (self.frame_index + 1) % FRAME_COUNT;
-        self.current_offset = 0; // Reset offset for new frame
+        assert(self.frame_index < frame_count);
+        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.instance_usage = .{};
     }
 
     /// Update atlas texture if generation changed
@@ -347,35 +278,30 @@ pub const TextPipeline = struct {
         self.atlas_generation = atlas.generation;
     }
 
-    /// Render a batch of glyphs using triple-buffered storage with offset tracking.
-    /// Safe for multiple calls per frame - appends to buffer at current offset.
-    /// More efficient than setVertexBytes for larger batches.
+    /// Render a batch of glyphs, appended to this frame's slot after the glyphs
+    /// already claimed. Safe for multiple calls per frame.
     pub fn renderBatch(
         self: *Self,
         encoder: objc.Object,
         glyphs: []const scene.GlyphInstance,
-        viewport_size: [2]f32,
-    ) !void {
-        if (glyphs.len == 0) return;
+        options: struct { viewport_size: [2]f32, frame: u64 },
+    ) void {
+        assert(glyphs.len > 0);
+        assert(glyphs.len <= scene.MAX_GLYPHS_PER_FRAME);
+        // Claimed even when no atlas is bound yet, so the count matches the scene.
+        const first = self.instance_usage.claim(&self.instance_budget, .{
+            .pool = .glyphs,
+            .requested = @intCast(glyphs.len),
+            .frame = options.frame,
+        });
         if (self.atlas_texture == null) return;
 
         const idx = self.frame_index;
-        const byte_offset = self.current_offset * @sizeOf(scene.GlyphInstance);
-        const needed_capacity = self.current_offset + glyphs.len;
-
-        // Grow buffer if needed
-        if (needed_capacity > self.instance_capacities[idx]) {
-            try self.growInstanceBuffer(idx, needed_capacity);
-        }
-
-        // Upload glyphs at current offset
-        const buffer_ptr = self.instance_buffers[idx].msgSend(*anyopaque, "contents", .{});
-        const base: [*]scene.GlyphInstance = @ptrCast(@alignCast(buffer_ptr));
-        const dest = base + self.current_offset;
-        @memcpy(dest[0..glyphs.len], glyphs);
-
-        // Advance offset for next batch
-        self.current_offset += glyphs.len;
+        assert(idx < frame_count);
+        const byte_offset = @as(c_ulong, first) * @sizeOf(scene.GlyphInstance);
+        const base = pipelines.frameBufferContents(scene.GlyphInstance, self.instance_buffers[idx]);
+        @memcpy(base[first..][0..glyphs.len], glyphs);
+        const viewport_size = options.viewport_size;
 
         // Set pipeline state
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state});
@@ -417,19 +343,109 @@ pub const TextPipeline = struct {
             @as(c_ulong, glyphs.len),
         });
     }
-
-    fn growInstanceBuffer(self: *Self, idx: usize, min_capacity: usize) !void {
-        const new_capacity = @max(min_capacity, self.instance_capacities[idx] * 2);
-        const new_size = new_capacity * @sizeOf(scene.GlyphInstance);
-
-        const new_buffer_ptr = self.device.msgSend(
-            ?*anyopaque,
-            "newBufferWithLength:options:",
-            .{ @as(c_ulong, new_size), @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)) },
-        ) orelse return error.BufferCreationFailed;
-
-        self.instance_buffers[idx].release();
-        self.instance_buffers[idx] = objc.Object.fromId(new_buffer_ptr);
-        self.instance_capacities[idx] = new_capacity;
-    }
 };
+
+/// Compile the text shaders and build the alpha-blended glyph pipeline state.
+fn createPipelineState(
+    device: objc.Object,
+    pixel_format: mtl.MTLPixelFormat,
+    sample_count: u32,
+) !objc.Object {
+    assert(sample_count > 0);
+    const library = try createLibrary(device);
+    defer library.release();
+
+    const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+    const vert_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"text_vertex"});
+    const frag_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"text_fragment"});
+    const vert_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{vert_name.value});
+    const frag_fn_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{frag_name.value});
+    if (vert_fn_ptr == null or frag_fn_ptr == null) {
+        std.debug.print("Text shader function not found\n", .{});
+        return error.ShaderFunctionNotFound;
+    }
+    const vert_fn = objc.Object.fromId(vert_fn_ptr);
+    const frag_fn = objc.Object.fromId(frag_fn_ptr);
+    defer vert_fn.release();
+    defer frag_fn.release();
+
+    const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
+        return error.ClassNotFound;
+    const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "init", .{});
+    defer desc.release();
+
+    desc.msgSend(void, "setVertexFunction:", .{vert_fn.value});
+    desc.msgSend(void, "setFragmentFunction:", .{frag_fn.value});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+
+    // Color attachment with straight-alpha blending.
+    const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
+    const attachment0 = color_attachments.msgSend(
+        objc.Object,
+        "objectAtIndexedSubscript:",
+        .{@as(c_ulong, 0)},
+    );
+    const one_minus_source_alpha = @backingInt(mtl.MTLBlendFactor.one_minus_source_alpha);
+    attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(pixel_format)});
+    attachment0.msgSend(void, "setBlendingEnabled:", .{true});
+    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{
+        @backingInt(mtl.MTLBlendFactor.source_alpha),
+    });
+    attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{one_minus_source_alpha});
+    attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{
+        @backingInt(mtl.MTLBlendFactor.one),
+    });
+    attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{one_minus_source_alpha});
+
+    var pipeline_error: ?*anyopaque = null;
+    const pipeline_ptr = device.msgSend(
+        ?*anyopaque,
+        "newRenderPipelineStateWithDescriptor:error:",
+        .{ desc.value, &pipeline_error },
+    ) orelse return error.PipelineCreationFailed;
+    return objc.Object.fromId(pipeline_ptr);
+}
+
+fn createLibrary(device: objc.Object) !objc.Object {
+    const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+    const source_str = NSString.msgSend(
+        objc.Object,
+        "stringWithUTF8String:",
+        .{text_shader_source.ptr},
+    );
+    var compile_error: ?*anyopaque = null;
+    const library_ptr = device.msgSend(
+        ?*anyopaque,
+        "newLibraryWithSource:options:error:",
+        .{ source_str.value, @as(?*anyopaque, null), &compile_error },
+    );
+    if (library_ptr == null) {
+        if (compile_error) |err| {
+            const err_obj = objc.Object.fromId(err);
+            const desc = err_obj.msgSend(objc.Object, "localizedDescription", .{});
+            const cstr = desc.msgSend([*:0]const u8, "UTF8String", .{});
+            std.debug.print("Text shader compile error: {s}\n", .{cstr});
+        }
+        return error.ShaderCompileFailed;
+    }
+    return objc.Object.fromId(library_ptr);
+}
+
+fn createSampler(device: objc.Object) !objc.Object {
+    const MTLSamplerDescriptor = objc.getClass("MTLSamplerDescriptor") orelse
+        return error.ClassNotFound;
+    const sampler_desc = MTLSamplerDescriptor.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "init", .{});
+    defer sampler_desc.release();
+
+    sampler_desc.msgSend(void, "setMinFilter:", .{@as(c_ulong, 1)}); // linear
+    sampler_desc.msgSend(void, "setMagFilter:", .{@as(c_ulong, 1)}); // linear
+
+    const sampler_ptr = device.msgSend(
+        ?*anyopaque,
+        "newSamplerStateWithDescriptor:",
+        .{sampler_desc.value},
+    ) orelse return error.SamplerCreationFailed;
+    return objc.Object.fromId(sampler_ptr);
+}

@@ -1486,6 +1486,20 @@ fn add_geometry_overflow_checks(
         run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
         test_step.dependOn(&run.step);
     }
+    // Renderer instance buffers, sized from the same `overflow_limits` scene budget.
+    const instance_pools = [_][]const u8{ "glyphs", "svgs", "images" };
+    const instance_capacities = [_]u32{ 1024, 4, 4 };
+    for (instance_pools, instance_capacities) |pool, capacity| {
+        const run = b.addRunArtifact(exe);
+        run.addArg(b.fmt("instances-{s}", .{pool}));
+        run.addCheck(.{ .expect_stderr_match = b.fmt(
+            "Scene instance pool '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
+                "{d} in use, 1 requested, frame 7.",
+            .{ pool, capacity, capacity },
+        ) });
+        run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+        test_step.dependOn(&run.step);
+    }
 }
 
 /// Helper to add a charts example with both gooey and gooey-charts modules.
