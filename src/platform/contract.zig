@@ -382,6 +382,16 @@ pub fn verifyPlatform(comptime Platform: type) void {
         });
         verifyFn(Platform, "windowCount", .{ .params = &.{self_const}, .returns = u32 });
 
+        // Render exclusion. Between `lockRenderThreads` and
+        // `unlockRenderThreads` no window renders a frame on any thread, so
+        // the caller may replace state every window's frames read, such as
+        // the shared text system's face set. Called on the main thread,
+        // possibly from inside an input handler that already holds its own
+        // window's render lock. Backends that render on the main thread
+        // satisfy this without locking.
+        verifyFn(Platform, "lockRenderThreads", .{ .params = &.{self_mut}, .returns = void });
+        verifyFn(Platform, "unlockRenderThreads", .{ .params = &.{self_mut}, .returns = void });
+
         // Per-turn owner hook.
         //
         // The one point in the host's cycle where the owner is provably *not*
@@ -830,6 +840,8 @@ const GoodPlatform = struct {
     pub fn windowCount(self: *const @This()) u32 {
         return self.registry.count();
     }
+    pub fn lockRenderThreads(_: *@This()) void {}
+    pub fn unlockRenderThreads(_: *@This()) void {}
     pub fn setLoopTurnCallback(self: *@This(), callback: ?LoopTurnCallback) void {
         self.loop_turn_callback = callback;
     }

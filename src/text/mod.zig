@@ -50,6 +50,7 @@ pub const RasterizedGlyph = types.RasterizedGlyph;
 
 // Interfaces
 pub const font_face = @import("font_face.zig");
+pub const font_match = @import("font_match.zig");
 pub const FontFace = font_face.FontFace;
 
 // Infrastructure

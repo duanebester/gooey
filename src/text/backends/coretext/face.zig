@@ -6,13 +6,13 @@ const std = @import("std");
 const ct = @import("bindings.zig");
 const types = @import("../../types.zig");
 const font_face_mod = @import("../../font_face.zig");
+const font_match = @import("../../font_match.zig");
 
 const Metrics = types.Metrics;
 const GlyphMetrics = types.GlyphMetrics;
 const RasterizedGlyph = types.RasterizedGlyph;
 const SystemFont = types.SystemFont;
 const FontVariant = types.FontVariant;
-const FontWeight = types.FontWeight;
 const FontFace = font_face_mod.FontFace;
 
 /// CoreText-backed font face
@@ -26,10 +26,12 @@ pub const CoreTextFace = struct {
 
     /// Load one variant of a font by name (e.g., "SF Mono", "SF Pro", "Helvetica Neue").
     ///
-    /// Fallback policy: CoreText matching picks the nearest real face in the
-    /// family for the requested weight and slant; nothing is synthesized. A
-    /// family without a bold or italic face renders those variants with its
-    /// nearest real face, and init logs a warning. See `createVariantFont`.
+    /// Selection: the name resolves to a family, the family's faces are
+    /// listed, and `font_match.select` picks one by the CSS font matching rule,
+    /// the same rule Fontconfig selection and the browser use. Fallback policy:
+    /// nothing is synthesized. A family without the requested weight or slant
+    /// renders with the face CSS matching picks, and init logs a warning when
+    /// its weight class or slant differs. See `createVariantFont`.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         std.debug.assert(size > 0);
         std.debug.assert(name.len > 0);
@@ -88,35 +90,28 @@ pub const CoreTextFace = struct {
     }
 
     /// Take ownership of `base` and return the font for `variant`: `base`
-    /// itself for `.regular` or when no closer face exists, else a new font
-    /// (and `base` is released).
+    /// itself for `.regular` or when no other face can be created, else a new
+    /// font (and `base` is released).
     fn selectVariant(base: ct.CTFontRef, size: f32, variant: FontVariant) ct.CTFontRef {
         if (variant == .regular) return base;
 
         const font = createVariantFont(base, size, variant) orelse base;
         if (font != base) ct.release(base);
 
-        const traits = ct.CTFontGetSymbolicTraits(font);
-        const bold_requested = @backingInt(variant.weight()) >= @backingInt(FontWeight.semibold);
-        if (bold_requested and (traits & ct.kCTFontTraitBold) == 0) {
-            std.log.warn("font has no bold face for '{s}'; using the nearest weight", .{
-                @tagName(variant),
-            });
-        }
-        if (variant.isItalic() and (traits & ct.kCTFontTraitItalic) == 0) {
-            std.log.warn("font has no italic face for '{s}'; using an upright face", .{
-                @tagName(variant),
-            });
-        }
+        const traits = ct.CTFontCopyTraits(font);
+        defer ct.release(traits);
+        warnInexactFace(variant, traitsCandidate(traits));
         return font;
     }
 
-    /// Match `variant` within `base`'s family, or null when CoreText finds no
-    /// other face. Family descriptors carry the weight and slant as traits, so
-    /// CoreText returns the nearest real face (Skia's CoreText font manager
-    /// matches the same way). Hidden system families (names starting with
-    /// '.') do not resolve through a family descriptor, so they, and any family
-    /// the descriptor fails to match, use the bold and italic symbolic traits.
+    /// Create `variant` within `base`'s family, or null when CoreText cannot.
+    ///
+    /// Listed families pick a face by CSS matching. Hidden system families
+    /// (names starting with '.', such as `.AppleSystemUIFont` and the system
+    /// monospace) do not list through a family descriptor, so they request the
+    /// variant's weight and slant as traits on `base`'s own descriptor; SF has
+    /// real faces at every weight, so medium and semibold get their own faces
+    /// rather than the bold symbolic trait's on/off choice.
     fn createVariantFont(base: ct.CTFontRef, size: f32, variant: FontVariant) ?ct.CTFontRef {
         std.debug.assert(variant != .regular);
         std.debug.assert(size > 0);
@@ -124,28 +119,74 @@ pub const CoreTextFace = struct {
         const family = ct.CTFontCopyFamilyName(base) orelse return null;
         defer ct.release(family);
 
-        if (!isHiddenFamily(family)) {
-            if (createFromFamilyTraits(family, size, variant)) |font| return font;
+        if (isHiddenFamily(family)) {
+            return createFromBaseTraits(base, size, variant);
         }
 
-        var symbolic: ct.CTFontSymbolicTraits = 0;
-        if (@backingInt(variant.weight()) >= @backingInt(FontWeight.semibold)) {
-            symbolic |= ct.kCTFontTraitBold;
-        }
-        if (variant.isItalic()) symbolic |= ct.kCTFontTraitItalic;
-        const mask = ct.kCTFontTraitBold | ct.kCTFontTraitItalic;
-        return ct.CTFontCreateCopyWithSymbolicTraits(base, @floatCast(size), null, symbolic, mask);
+        // Keep the resolved face's width, so a condensed family stays condensed.
+        const base_traits = ct.CTFontCopyTraits(base);
+        defer ct.release(base_traits);
+        const stretch = traitsCandidate(base_traits).stretch;
+        return createFromFamilyList(family, size, variant, stretch);
     }
 
-    fn createFromFamilyTraits(
+    /// List `family`'s faces and create the one CSS matching picks.
+    fn createFromFamilyList(
         family: ct.CFStringRef,
         size: f32,
         variant: FontVariant,
+        stretch: u16,
     ) ?ct.CTFontRef {
-        const key_callbacks = &ct.kCFTypeDictionaryKeyCallBacks;
-        const value_callbacks = &ct.kCFTypeDictionaryValueCallBacks;
+        const attrs = createDictionary() orelse return null;
+        defer ct.release(attrs);
+        ct.CFDictionarySetValue(attrs, @ptrCast(ct.kCTFontFamilyNameAttribute), @ptrCast(family));
 
-        const weight_value: f64 = coreTextWeight(variant.weight());
+        const descriptor = ct.CTFontDescriptorCreateWithAttributes(attrs) orelse return null;
+        defer ct.release(descriptor);
+
+        const matches = ct.CTFontDescriptorCreateMatchingFontDescriptors(descriptor, null) orelse
+            return null;
+        defer ct.release(matches);
+
+        const listed_count: u32 = @intCast(ct.CFArrayGetCount(matches));
+        const considered_count = @min(listed_count, font_match.candidate_count_max);
+        if (listed_count > considered_count) {
+            std.log.warn("font family lists {d} faces; matching considers the first {d}", .{
+                listed_count,
+                considered_count,
+            });
+        }
+
+        var candidates: [font_match.candidate_count_max]font_match.Candidate = undefined;
+        var listed_index: [font_match.candidate_count_max]u32 = undefined;
+        var candidate_count: u32 = 0;
+        var index: u32 = 0;
+        while (index < considered_count) : (index += 1) {
+            const face = listedDescriptor(matches, index);
+            const traits = ct.CTFontDescriptorCopyAttribute(face, ct.kCTFontTraitsAttribute) orelse
+                continue;
+            defer ct.release(traits);
+            candidates[candidate_count] = traitsCandidate(traits);
+            listed_index[candidate_count] = index;
+            candidate_count += 1;
+        }
+        std.debug.assert(candidate_count <= considered_count);
+
+        const chosen = font_match.select(candidates[0..candidate_count], variant, stretch) orelse
+            return null;
+        std.debug.assert(chosen < candidate_count);
+        const face = listedDescriptor(matches, listed_index[chosen]);
+        return ct.CTFontCreateWithFontDescriptor(face, @floatCast(size), null);
+    }
+
+    fn listedDescriptor(matches: ct.CFArrayRef, index: u32) ct.CTFontDescriptorRef {
+        std.debug.assert(index < ct.CFArrayGetCount(matches));
+        return @constCast(ct.CFArrayGetValueAtIndex(matches, index));
+    }
+
+    /// Copy `base`'s descriptor with the variant's weight and slant as traits.
+    fn createFromBaseTraits(base: ct.CTFontRef, size: f32, variant: FontVariant) ?ct.CTFontRef {
+        const weight_value: f64 = coreTextWeight(variant.weight().cssWeight());
         const weight = ct.CFNumberCreate(null, ct.kCFNumberFloat64Type, &weight_value) orelse
             return null;
         defer ct.release(weight);
@@ -155,35 +196,28 @@ pub const CoreTextFace = struct {
             return null;
         defer ct.release(symbolic);
 
-        const traits = ct.CFDictionaryCreateMutable(null, 2, key_callbacks, value_callbacks) orelse
-            return null;
+        const traits = createDictionary() orelse return null;
         defer ct.release(traits);
         ct.CFDictionarySetValue(traits, @ptrCast(ct.kCTFontWeightTrait), @ptrCast(weight));
         ct.CFDictionarySetValue(traits, @ptrCast(ct.kCTFontSymbolicTrait), @ptrCast(symbolic));
 
-        const attrs = ct.CFDictionaryCreateMutable(null, 2, key_callbacks, value_callbacks) orelse
-            return null;
+        const attrs = createDictionary() orelse return null;
         defer ct.release(attrs);
-        ct.CFDictionarySetValue(attrs, @ptrCast(ct.kCTFontFamilyNameAttribute), @ptrCast(family));
         ct.CFDictionarySetValue(attrs, @ptrCast(ct.kCTFontTraitsAttribute), @ptrCast(traits));
 
-        const descriptor = ct.CTFontDescriptorCreateWithAttributes(attrs) orelse return null;
+        const base_descriptor = ct.CTFontCopyFontDescriptor(base);
+        defer ct.release(base_descriptor);
+
+        const descriptor = ct.CTFontDescriptorCreateCopyWithAttributes(base_descriptor, attrs);
         defer ct.release(descriptor);
 
-        const font = ct.CTFontCreateWithFontDescriptor(descriptor, @floatCast(size), null) orelse
-            return null;
-        // CoreText substitutes another family when this one does not match.
-        // That would change the typeface, not the weight, so reject it.
-        const matched_family = ct.CTFontCopyFamilyName(font) orelse {
-            ct.release(font);
-            return null;
-        };
-        defer ct.release(matched_family);
-        if (!ct.CFEqual(family, matched_family)) {
-            ct.release(font);
-            return null;
-        }
-        return font;
+        return ct.CTFontCreateWithFontDescriptor(descriptor, @floatCast(size), null);
+    }
+
+    fn createDictionary() ?ct.CFMutableDictionaryRef {
+        const key_callbacks = &ct.kCFTypeDictionaryKeyCallBacks;
+        const value_callbacks = &ct.kCFTypeDictionaryValueCallBacks;
+        return ct.CFDictionaryCreateMutable(null, 2, key_callbacks, value_callbacks);
     }
 
     fn isHiddenFamily(family: ct.CFStringRef) bool {
@@ -193,21 +227,113 @@ pub const CoreTextFace = struct {
         return first[0] == '.';
     }
 
-    /// `kCTFontWeightTrait` value (-1...1) for a weight, from AppKit's
-    /// `NSFontWeight` constants.
-    fn coreTextWeight(weight: FontWeight) f64 {
-        const result: f64 = switch (weight) {
-            .thin => -0.6,
-            .light => -0.4,
-            .regular => 0.0,
-            .medium => 0.23,
-            .semibold => 0.3,
-            .bold => 0.4,
-            .black => 0.62,
+    /// A CoreText traits dictionary as a CSS match candidate. Missing traits
+    /// count as regular, upright, and normal width.
+    fn traitsCandidate(traits: ct.CFDictionaryRef) font_match.Candidate {
+        const weight = traitFloat(traits, ct.kCTFontWeightTrait) orelse 0.0;
+        const width = traitFloat(traits, ct.kCTFontWidthTrait) orelse 0.0;
+
+        var symbolic: i64 = 0;
+        if (ct.CFDictionaryGetValue(traits, @ptrCast(ct.kCTFontSymbolicTrait))) |value| {
+            if (ct.CFNumberGetValue(@constCast(value), ct.kCFNumberSInt64Type, &symbolic) == 0) {
+                symbolic = 0;
+            }
+        }
+        const symbolic_bits: ct.CTFontSymbolicTraits = @truncate(@as(u64, @bitCast(symbolic)));
+        const italic = (symbolic_bits & ct.kCTFontTraitItalic) != 0;
+
+        const candidate: font_match.Candidate = .{
+            .weight = cssWeight(weight),
+            .slant = if (italic) .italic else .upright,
+            .stretch = cssStretch(width),
         };
-        std.debug.assert(result >= -1.0);
-        std.debug.assert(result <= 1.0);
+        std.debug.assert(candidate.weight >= 1);
+        std.debug.assert(candidate.stretch >= font_match.stretch_min);
+        return candidate;
+    }
+
+    fn traitFloat(traits: ct.CFDictionaryRef, key: ct.CFStringRef) ?f64 {
+        const value = ct.CFDictionaryGetValue(traits, @ptrCast(key)) orelse return null;
+        var result: f64 = 0;
+        if (ct.CFNumberGetValue(@constCast(value), ct.kCFNumberFloat64Type, &result) == 0) {
+            return null;
+        }
         return result;
+    }
+
+    /// `kCTFontWeightTrait` values of AppKit's `NSFontWeight` constants at
+    /// each CSS hundred, UltraLight (100) through Black (900). Weights convert
+    /// both ways by piecewise linear interpolation over this table.
+    const weight_table = [_]struct { core_text: f64, css: f64 }{
+        .{ .core_text = -0.8, .css = 100 },
+        .{ .core_text = -0.6, .css = 200 },
+        .{ .core_text = -0.4, .css = 300 },
+        .{ .core_text = 0.0, .css = 400 },
+        .{ .core_text = 0.23, .css = 500 },
+        .{ .core_text = 0.3, .css = 600 },
+        .{ .core_text = 0.4, .css = 700 },
+        .{ .core_text = 0.56, .css = 800 },
+        .{ .core_text = 0.62, .css = 900 },
+    };
+
+    /// CSS weight (100...900) for a `kCTFontWeightTrait` value.
+    fn cssWeight(core_text: f64) u16 {
+        const first = weight_table[0];
+        const last = weight_table[weight_table.len - 1];
+        if (core_text <= first.core_text) return @intFromFloat(first.css);
+        if (core_text >= last.core_text) return @intFromFloat(last.css);
+        for (weight_table[1..], 1..) |upper, index| {
+            if (core_text <= upper.core_text) {
+                const lower = weight_table[index - 1];
+                const t = (core_text - lower.core_text) / (upper.core_text - lower.core_text);
+                return @intFromFloat(@round(lower.css + t * (upper.css - lower.css)));
+            }
+        }
+        unreachable; // The table is sorted and `core_text` is below its last entry.
+    }
+
+    /// `kCTFontWeightTrait` value (-1...1) for a CSS weight (100...900).
+    fn coreTextWeight(css: u16) f64 {
+        std.debug.assert(css >= 100);
+        std.debug.assert(css <= 900);
+        const css_float: f64 = @floatFromInt(css);
+        for (weight_table[1..], 1..) |upper, index| {
+            if (css_float <= upper.css) {
+                const lower = weight_table[index - 1];
+                const t = (css_float - lower.css) / (upper.css - lower.css);
+                return lower.core_text + t * (upper.core_text - lower.core_text);
+            }
+        }
+        unreachable; // 900 is the table's last CSS weight.
+    }
+
+    /// CSS `font-stretch` percentage for a `kCTFontWidthTrait` value (-1...1):
+    /// -1 is ultra-condensed (50%), 0 normal (100%), 1 ultra-expanded (200%).
+    fn cssStretch(width: f64) u16 {
+        const clamped = std.math.clamp(width, -1.0, 1.0);
+        const percent = if (clamped <= 0) 100 + clamped * 50 else 100 + clamped * 100;
+        const result: u16 = @intFromFloat(@round(percent));
+        std.debug.assert(result >= font_match.stretch_min);
+        std.debug.assert(result <= font_match.stretch_max);
+        return result;
+    }
+
+    /// Log when the chosen face's weight class or slant differs from the
+    /// request, so a family without that face does not fall back silently.
+    fn warnInexactFace(variant: FontVariant, chosen: font_match.Candidate) void {
+        const weight_requested = variant.weight().cssWeight();
+        if (font_match.weightClass(chosen.weight) != weight_requested) {
+            std.log.warn("font has no {d} face for '{s}'; using weight {d}", .{
+                weight_requested,
+                @tagName(variant),
+                chosen.weight,
+            });
+        }
+        if (!font_match.slantMatches(chosen.slant, variant.isItalic())) {
+            std.log.warn("font has no italic face for '{s}'; using an upright face", .{
+                @tagName(variant),
+            });
+        }
     }
 
     /// Get as the generic FontFace interface

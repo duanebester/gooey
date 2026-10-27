@@ -28,6 +28,9 @@ pub const interface = @import("interface.zig");
 /// Exact compile-time verification of the platform boundary.
 pub const contract = @import("contract.zig");
 
+/// Render-thread mutex and the exclusion set that locks every window's.
+pub const mutex = @import("mutex.zig");
+
 // `platform.PlatformWindow` and the framework-level `Window` are distinct
 // names because they are very different things — `PlatformWindow` is the
 // OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas on web);

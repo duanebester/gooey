@@ -553,7 +553,12 @@ pub extern "c" fn hb_ft_font_changed(font: *hb_font_t) void;
 
 pub const FcConfig = opaque {};
 pub const FcPattern = opaque {};
-pub const FcFontSet = opaque {};
+/// `FcFontSet` from `fontconfig.h`; `FcFontList` returns one the caller destroys.
+pub const FcFontSet = extern struct {
+    nfont: c_int,
+    sfont: c_int,
+    fonts: [*]*FcPattern,
+};
 pub const FcObjectSet = opaque {};
 pub const FcCharSet = opaque {};
 pub const FcLangSet = opaque {};
@@ -566,6 +571,7 @@ pub const FC_FAMILY = "family";
 pub const FC_STYLE = "style";
 pub const FC_SLANT = "slant";
 pub const FC_WEIGHT = "weight";
+pub const FC_WIDTH = "width";
 pub const FC_SIZE = "size";
 pub const FC_PIXEL_SIZE = "pixelsize";
 pub const FC_SPACING = "spacing";
@@ -692,6 +698,9 @@ pub extern "c" fn FcFontList(
 ) ?*FcFontSet;
 
 pub extern "c" fn FcFontSetDestroy(fs: *FcFontSet) void;
+
+/// Fontconfig weight (`FC_WEIGHT_*`) to OpenType/CSS weight; fontconfig 2.12+.
+pub extern "c" fn FcWeightToOpenType(fc_weight: c_int) c_int;
 
 pub extern "c" fn FcObjectSetCreate() ?*FcObjectSet;
 pub extern "c" fn FcObjectSetDestroy(os: *FcObjectSet) void;

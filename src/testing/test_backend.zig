@@ -726,6 +726,18 @@ pub const TestPlatform = struct {
         return self.registry.count();
     }
 
+    /// Headless frames run only when a test calls them, on the test's thread,
+    /// so there is no render thread to exclude.
+    pub fn lockRenderThreads(self: *Self) void {
+        const live = self.lifecycle.accepts_calls();
+        assert(live);
+    }
+
+    pub fn unlockRenderThreads(self: *Self) void {
+        const live = self.lifecycle.accepts_calls();
+        assert(live);
+    }
+
     // =========================================================================
     // Window slot pool
     // =========================================================================

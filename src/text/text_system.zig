@@ -672,6 +672,8 @@ pub const TextSystem = struct {
     face_slot_by_variant: [FontVariant.count]u8,
     /// True once every slot holds a loaded face.
     faces_loaded: bool,
+    /// Where the loaded set came from; meaningful only while `faces_loaded`.
+    loaded_source: LoadedSource,
     /// Complex shaper (native only, void on web)
     shaper: ?PlatformShaper,
     scale_factor: f32,
@@ -732,6 +734,10 @@ pub const TextSystem = struct {
             self.face_slot_by_variant[@backingInt(variant)] = @intCast(slot);
         }
         self.faces_loaded = false;
+        self.loaded_source.system = null;
+        self.loaded_source.name_buffer = @splat(0);
+        self.loaded_source.name_len = 0;
+        self.loaded_source.size = 0;
         self.allocator = allocator;
         self.shaper = null;
         self.scale_factor = scale;
@@ -768,11 +774,13 @@ pub const TextSystem = struct {
     }
 
     /// Load every variant in the face set from the named family. `cx.setFont`
-    /// reaches this at runtime: the set is reloaded into the same slots, so a
-    /// font change claims no new storage.
+    /// reaches this at runtime, under the platform's render exclusion: the set
+    /// is reloaded into the same slots, so a font change claims no new storage.
     pub fn loadFont(self: *Self, name: []const u8, size: f32) !void {
         std.debug.assert(name.len > 0);
         std.debug.assert(size > 0 and size < 1000);
+        // Checked before any face is unloaded, so a bad name changes nothing.
+        if (name.len > family_name_bytes_max) return error.FontNameTooLong;
         try self.loadFaces(.{ .name = name }, size);
     }
 
@@ -782,18 +790,73 @@ pub const TextSystem = struct {
         try self.loadFaces(.{ .system = style }, size);
     }
 
+    /// Longest family name `loadFont` accepts; the loaded name is kept so a
+    /// failed reload can restore it.
+    pub const family_name_bytes_max: u32 = 255;
+
     const FaceSource = union(enum) {
         name: []const u8,
         system: SystemFont,
     };
 
-    /// Replace every face, then drop cached data keyed by the old faces. On
-    /// failure no face stays loaded and the caller sees the error.
+    /// The source of the loaded set, with the family name copied inline.
+    const LoadedSource = struct {
+        system: ?SystemFont,
+        name_buffer: [family_name_bytes_max]u8,
+        name_len: u8,
+        size: f32,
+
+        fn faceSource(self: *const LoadedSource) FaceSource {
+            if (self.system) |style| return .{ .system = style };
+            std.debug.assert(self.name_len > 0);
+            return .{ .name = self.name_buffer[0..self.name_len] };
+        }
+    };
+
+    /// Replace every face, then drop cached data keyed by the old faces.
+    ///
+    /// The set is never left empty once loaded: if the new family fails
+    /// partway, the previous one is reloaded before the error is returned, so
+    /// a frame after a failed `cx.setFont` still has a complete set. Only the
+    /// first load at init can fail with nothing loaded, before any frame.
     fn loadFaces(self: *Self, source: FaceSource, size: f32) !void {
         std.debug.assert(self.faces.len > 0);
         std.debug.assert(self.faces.len <= FontVariant.count);
 
+        const previous: ?LoadedSource = if (self.faces_loaded) self.loaded_source else null;
         self.unloadFaces();
+        self.loadEveryFace(source, size) catch |err| {
+            const restore = previous orelse return err;
+            self.loadEveryFace(restore.faceSource(), restore.size) catch |restore_err| {
+                std.debug.panic(
+                    "TextSystem: font reload failed ({s}) and the previous font " ++
+                        "could not be restored ({s})",
+                    .{ @errorName(err), @errorName(restore_err) },
+                );
+            };
+            self.clearCaches();
+            return err;
+        };
+
+        self.loaded_source.size = size;
+        switch (source) {
+            .system => |style| self.loaded_source.system = style,
+            .name => |name| {
+                std.debug.assert(name.len <= family_name_bytes_max);
+                self.loaded_source.system = null;
+                @memcpy(self.loaded_source.name_buffer[0..name.len], name);
+                self.loaded_source.name_len = @intCast(name.len);
+            },
+        }
+        self.clearCaches();
+
+        std.debug.assert(self.faces_loaded);
+        std.debug.assert(self.faceFor(.regular).metrics.point_size == size);
+    }
+
+    /// Load one face per slot; on failure, release the faces already loaded.
+    fn loadEveryFace(self: *Self, source: FaceSource, size: f32) !void {
+        std.debug.assert(!self.faces_loaded);
         var loaded_count: usize = 0;
         errdefer for (self.faces[0..loaded_count]) |*face| face.deinit();
 
@@ -805,9 +868,12 @@ pub const TextSystem = struct {
             };
         }
         self.faces_loaded = true;
+        std.debug.assert(loaded_count == self.faces.len);
+    }
 
-        // Faces reuse their slot addresses, so the keyed pointers cannot signal
-        // the change: every cache is cleared explicitly instead.
+    /// Faces reuse their slot addresses across reloads, so the keyed pointers
+    /// cannot signal the change: every cache is cleared explicitly instead.
+    fn clearCaches(self: *Self) void {
         self.glyph_cache_mutex.lockUncancelable(self.io);
         self.cache.clear();
         self.glyph_cache_mutex.unlock(self.io);
@@ -815,9 +881,6 @@ pub const TextSystem = struct {
         self.shape_cache.clear();
         self.measure_cache.clear();
         self.shape_cache_mutex.unlock(self.io);
-
-        std.debug.assert(loaded_count == self.faces.len);
-        std.debug.assert(self.faceFor(.regular).metrics.point_size == size);
     }
 
     fn unloadFaces(self: *Self) void {
@@ -862,8 +925,14 @@ pub const TextSystem = struct {
         }
         std.debug.panic(
             "TextSystem: font variant '{s}' (font_id {d}) is not loaded; " ++
-                "FontLimits.variants loads {d} faces: {s}. Add it to the app's font_limits.",
-            .{ @tagName(variant), variant.fontId(), self.faces.len, names_buffer[0..names_len] },
+                "FontLimits.variants loads {d} face{s}: {s}. Add it to the app's font_limits.",
+            .{
+                @tagName(variant),
+                variant.fontId(),
+                self.faces.len,
+                if (self.faces.len == 1) "" else "s",
+                names_buffer[0..names_len],
+            },
         );
     }
 

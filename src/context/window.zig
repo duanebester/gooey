@@ -1383,11 +1383,24 @@ pub const Window = struct {
 
     /// Change the font at runtime. Clears glyph and shape caches.
     /// Triggers a re-render so the new font takes effect immediately.
+    ///
+    /// The reload replaces faces every window's frames read (multi-window
+    /// apps share one text system), and on macOS those frames run on
+    /// CVDisplayLink threads. Holding the platform's render exclusion for the
+    /// whole reload means no frame ever sees a partial or empty face set.
+    /// Call it from `on_init` or an event handler, not from render.
     pub fn setFont(self: *Self, name: []const u8, size: f32) !void {
         std.debug.assert(name.len > 0);
         std.debug.assert(size > 0 and size < 1000);
 
-        try self.resources.text_system.loadFont(name, size);
+        if (self.platform_window) |platform_window| {
+            const plat = platform_window.getPlatform();
+            plat.lockRenderThreads();
+            defer plat.unlockRenderThreads();
+            try self.resources.text_system.loadFont(name, size);
+        } else {
+            try self.resources.text_system.loadFont(name, size);
+        }
         self.requestRender();
     }
 
