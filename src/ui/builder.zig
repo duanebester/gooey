@@ -233,6 +233,9 @@ pub const Builder = struct {
 
     /// Currently dragged scroll container ID, as the layout-id u32 hash.
     /// Avoids an O(n) scan (and a string re-hash) per mouse drag event.
+    /// A drag spans many frames, so this is input state, not per-frame state:
+    /// it is set on thumb press and cleared only on mouse-up. Do not reset it
+    /// per frame, or mouse-up cannot find the container to end its drag.
     active_scroll_drag_id: ?u32 = null,
 
     /// Cursor shape requested by the hovered box's `Box.cursor`, if any.
