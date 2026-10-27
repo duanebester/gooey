@@ -87,6 +87,8 @@ pub fn drawScene(
     var counts = BatchCounts{};
     var bound: ?PipelineKind = null;
     pipelines.mesh_frame.reset();
+    // Path edges are classified over the whole frame before the first path draw.
+    pipelines.mesh.classify_edges(scene);
     const mesh = mesh_mod.Draw{
         .renderer = pipelines.mesh,
         .frame = pipelines.mesh_frame,

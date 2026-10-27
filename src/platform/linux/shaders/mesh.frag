@@ -6,6 +6,8 @@ layout(location = 0) in vec2 uv;
 layout(location = 1) in vec4 color;
 layout(location = 2) in vec2 screen_pos;
 layout(location = 3) flat in uint circle;
+layout(location = 4) in vec4 edge_distance;
+layout(location = 5) flat in uint edge_modes;
 layout(location = 0) out vec4 output_color;
 
 vec4 gradient_color(float value) {
@@ -35,7 +37,26 @@ vec4 gradient_color(float value) {
     return hsla_to_rgba(hsla);
 }
 
+// Coverage of the fragment's pixel from the analytic edges (mesh.glsl).
+// `pixel` is one device pixel measured in edge-distance units per component.
+float edge_coverage(vec4 pixel) {
+    vec4 distance_px = edge_distance / max(pixel, vec4(1e-6));
+    float coverage = 1.0;
+    for (uint edge = 0u; edge < 4u; ++edge) {
+        uint mode = (edge_modes >> (2u * edge)) & 3u;
+        if (mode == 1u) { coverage *= clamp(distance_px[edge] + 0.5, 0.0, 1.0); }
+        else {
+            if (mode == 2u && distance_px[edge] < -0.5) { coverage = 0.0; }
+        }
+    }
+    return coverage;
+}
+
 void main() {
+    // Derivatives first: they are undefined after a non-uniform discard.
+    vec4 edge_pixel = sqrt(dFdx(edge_distance) * dFdx(edge_distance) +
+        dFdy(edge_distance) * dFdy(edge_distance));
+    float uv_pixel = length(vec2(dFdx(uv.x), dFdy(uv.x)));
     if (any(lessThan(screen_pos, mesh.clip.xy)) ||
         any(greaterThan(screen_pos, mesh.clip.xy + mesh.clip.zw))) { discard; }
     vec4 result = color;
@@ -55,7 +76,19 @@ void main() {
         }
     }
     if (circle != 0u) {
-        result.a *= 1.0 - smoothstep(0.85, 1.0, length(uv));
+        // From a 6.7 device pixel radius up this is the historical (and Metal)
+        // falloff over the outer 15% of the radius. Smaller points get a band
+        // of one device pixel that moves outward to straddle the edge, so a
+        // radius-1 dot keeps its area instead of shrinking by half a pixel.
+        float radius_px = 1.0 / max(uv_pixel, 1e-6);
+        float distance_px = length(uv) * radius_px;
+        float band_px = max(0.15 * radius_px, 1.0);
+        float end_px = radius_px + 0.5 * max(1.0 - 0.15 * radius_px, 0.0);
+        result.a *= 1.0 - smoothstep(end_px - band_px, end_px, distance_px);
+    } else {
+        float coverage = edge_coverage(edge_pixel);
+        if (coverage <= 0.0) { discard; }
+        result.a *= coverage;
     }
     if (result.a < 0.001) { discard; }
     output_color = vec4(result.rgb * result.a, result.a);

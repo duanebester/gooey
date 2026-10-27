@@ -75,6 +75,26 @@ pub const MeshHeader = extern struct {
     }
 };
 
+/// One de-indexed path triangle vertex: the source `PathVertex` plus the
+/// triangle's edge modes, two bits per edge in order (v0→v1, v1→v2, v2→v0),
+/// values from `vk_mesh_edges.EdgeMode`. All three vertices of a triangle carry
+/// the same modes; the vertex shader reads its two neighbours from the buffer.
+/// The modes are stored as an integral float (0..63) because the shader reads
+/// the payload as `float[]`; a small integer bit pattern would be a denormal,
+/// which a GPU may flush to zero on load.
+pub const TriangleVertex = extern struct {
+    x: f32,
+    y: f32,
+    u: f32,
+    v: f32,
+    edge_modes: f32,
+
+    comptime {
+        assert(@sizeOf(TriangleVertex) == 20);
+        assert(@offsetOf(TriangleVertex, "edge_modes") == 16);
+    }
+};
+
 pub const MeshCapacity = struct {
     counts: [4]u32,
     geometry: scene_mod.GeometryCounts,
@@ -113,7 +133,7 @@ pub const MeshCapacity = struct {
 
     pub fn element_bytes(pool: MeshPool) u32 {
         return switch (pool) {
-            .triangles => 16, // Deindexed PathVertex, one per source index.
+            .triangles => @sizeOf(TriangleVertex), // One per source index.
             .strip_expanded, .points => 8,
             .colored_points => 24,
         };
@@ -121,7 +141,8 @@ pub const MeshCapacity = struct {
 
     pub fn stride_bytes(pool: MeshPool) u64 {
         const payload_bytes: u64 = switch (pool) {
-            .triangles => @import("../../scene/path_mesh.zig").MAX_MESH_INDICES * 16,
+            .triangles => @import("../../scene/path_mesh.zig").MAX_MESH_INDICES *
+                @as(u64, @sizeOf(TriangleVertex)),
             .strip_expanded => @import("../../scene/polyline.zig").MAX_POLYLINE_POINTS * 8,
             .points => @import("../../scene/point_cloud.zig").MAX_POINTS_PER_CLOUD * 8,
             .colored_points => colored_cloud.MAX_POINTS_PER_COLORED_CLOUD * 24,
@@ -503,7 +524,8 @@ test "MeshCapacity sizes aggregate geometry plus bounded draw overhead" {
     // Independent byte totals catch swapped budgets, expansion on the CPU, and
     // missing header/alignment space. No GPU or large allocations are needed.
     const standard = MeshCapacity.from_scene_limits(&SceneLimits.standard);
-    const expected = [_]u64{ 1_048_576, 458_752, 327_680, 589_824 };
+    // Triangles: 16,384 × 20 B vertex records + 1,024 × 768 B draw overhead.
+    const expected = [_]u64{ 1_114_112, 458_752, 327_680, 589_824 };
     for (std.enums.values(MeshPool), expected) |pool, bytes| {
         try testing.expectEqual(bytes, standard.buffer_bytes(pool));
         try testing.expectEqual(0, MeshCapacity.stride_bytes(pool) % 256);
@@ -511,13 +533,13 @@ test "MeshCapacity sizes aggregate geometry plus bounded draw overhead" {
             MeshCapacity.stride_bytes(pool) <= storage_buffer_range_guaranteed_bytes,
         );
     }
-    try testing.expectEqual(@as(u64, 2_424_832), standard.frame_bytes());
+    try testing.expectEqual(@as(u64, 2_490_368), standard.frame_bytes());
     // `large` keeps the geometry `standard` had before its 4x cut, 16x today's.
     const large = MeshCapacity.from_scene_limits(&SceneLimits.large);
-    try testing.expectEqual(@as(u64, 22_282_240), large.frame_bytes());
+    try testing.expectEqual(@as(u64, 23_330_816), large.frame_bytes());
     const ceiling = MeshCapacity.from_scene_limits(&SceneLimits.ceiling);
     // Each maximal path has (512 - 2) * 3 = 1530 source indices.
-    try testing.expectEqual(@as(u64, 8_971_223_040), ceiling.frame_bytes());
+    try testing.expectEqual(@as(u64, 8_996_290_560), ceiling.frame_bytes());
 }
 
 test "InstanceCapacity mirrors the scene budget and sizes the host pool from it" {

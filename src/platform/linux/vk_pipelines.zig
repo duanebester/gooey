@@ -117,7 +117,6 @@ pub fn createPipelineCache(
 pub fn createGraphicsPipeline(
     device: vk.Device,
     render_pass: vk.RenderPass,
-    sample_count: vk.SampleCountFlagBits,
     config: PipelineConfig,
     pipeline_cache: vk.PipelineCache,
 ) PipelineError!vk.Pipeline {
@@ -139,7 +138,7 @@ pub fn createGraphicsPipeline(
     const input_assembly = inputAssemblyState();
     const viewport = viewportState();
     const rasterizer = rasterizationState();
-    const multisampling = multisampleState(sample_count);
+    const multisampling = multisampleState();
     const blend_attachment = blendAttachment(config.blend_mode);
     const color_blending = colorBlendState(&blend_attachment);
     const dynamic_states = [_]vk.DynamicState{
@@ -340,12 +339,15 @@ fn rasterizationState() vk.PipelineRasterizationStateCreateInfo {
     };
 }
 
-fn multisampleState(sample_count: vk.SampleCountFlagBits) vk.PipelineMultisampleStateCreateInfo {
+/// One sample per pixel at every profile: quads, text, SVGs and images
+/// anti-alias in their fragment shaders, and the mesh shaders compute analytic
+/// edge coverage (see `vk_mesh.zig`), so no pipeline needs a multisampled target.
+fn multisampleState() vk.PipelineMultisampleStateCreateInfo {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .pNext = null,
         .flags = 0,
-        .rasterizationSamples = sample_count,
+        .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
         .sampleShadingEnable = vk.FALSE,
         .minSampleShading = 1.0,
         .pSampleMask = null,

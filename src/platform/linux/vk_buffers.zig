@@ -20,11 +20,6 @@ pub const frame_count_max: u32 = vk_types.frame_count_max;
 // Result Types
 // =============================================================================
 
-pub const BufferResult = struct {
-    buffer: vk.Buffer,
-    memory: vk.DeviceMemory,
-};
-
 pub const MappedBufferResult = struct {
     buffer: vk.Buffer,
     memory: vk.DeviceMemory,
@@ -68,9 +63,6 @@ pub const CommandBuffers = struct {
 
 pub const BufferError = error{
     BufferCreationFailed,
-    NoSuitableMemoryType,
-    MemoryAllocationFailed,
-    MemoryMapFailed,
 };
 
 pub const CommandPoolError = error{
@@ -86,11 +78,85 @@ pub const SyncError = error{
 };
 
 pub const PoolError = error{
+    /// The driver refused an allocation that passed both checks below.
     PoolAllocationFailed,
     PoolMapFailed,
     NoSuitableMemoryType,
     ProbeBufferFailed,
+    /// A reservation is larger than `maxMemoryAllocationSize`.
+    VulkanReservationExceedsAllocationMax,
+    /// A reservation is larger than the memory heap it would live in.
+    VulkanReservationExceedsHeap,
 };
+
+/// `VkPhysicalDeviceMaintenance3Properties.maxMemoryAllocationSize`, the
+/// largest single `vkAllocateMemory` the device accepts. A Vulkan 1.0 device
+/// cannot report it; the heap-size check still applies there.
+pub fn queryAllocationBytesMax(physical_device: vk.PhysicalDevice) vk.DeviceSize {
+    assert(physical_device != null);
+    var properties: vk.PhysicalDeviceProperties = undefined;
+    vk.vkGetPhysicalDeviceProperties(physical_device, &properties);
+    if (properties.apiVersion < vk.API_VERSION_1_1) return std.math.maxInt(vk.DeviceSize);
+
+    var maintenance3 = vk.PhysicalDeviceMaintenance3Properties{
+        .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES,
+        .pNext = null,
+        .maxPerSetDescriptors = 0,
+        .maxMemoryAllocationSize = 0,
+    };
+    var properties2 = vk.PhysicalDeviceProperties2{
+        .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &maintenance3,
+        .properties = undefined,
+    };
+    vk.vkGetPhysicalDeviceProperties2(physical_device, &properties2);
+    // The spec requires at least 2^30 bytes.
+    assert(maintenance3.maxMemoryAllocationSize >= 1 << 30);
+    return maintenance3.maxMemoryAllocationSize;
+}
+
+/// Which device limit, if any, keeps one reservation from being a single
+/// allocation in `memory_type_index`. Pure, so the boundaries are unit tested.
+fn checkReservation(
+    mem_properties: *const vk.PhysicalDeviceMemoryProperties,
+    options: *const MemoryPool.Options,
+    memory_type_index: u32,
+) ?PoolError {
+    assert(memory_type_index < mem_properties.memoryTypeCount);
+    assert(options.allocation_bytes_max > 0);
+    const heap_index = mem_properties.memoryTypes[memory_type_index].heapIndex;
+    assert(heap_index < mem_properties.memoryHeapCount);
+    const heap_bytes = mem_properties.memoryHeaps[heap_index].size;
+    if (options.size > options.allocation_bytes_max) {
+        return PoolError.VulkanReservationExceedsAllocationMax;
+    }
+    if (options.size > heap_bytes) return PoolError.VulkanReservationExceedsHeap;
+    return null;
+}
+
+/// Name the reservation, its size, the broken limit and the heap.
+fn reportReservation(
+    mem_properties: *const vk.PhysicalDeviceMemoryProperties,
+    options: *const MemoryPool.Options,
+    memory_type_index: u32,
+    err: PoolError,
+) void {
+    const heap_index = mem_properties.memoryTypes[memory_type_index].heapIndex;
+    const heap_bytes = mem_properties.memoryHeaps[heap_index].size;
+    const limit_name = switch (err) {
+        PoolError.VulkanReservationExceedsAllocationMax => "maxMemoryAllocationSize",
+        PoolError.VulkanReservationExceedsHeap => "the heap size",
+        else => unreachable, // `checkReservation` returns only these two.
+    };
+    std.log.err(
+        "Vulkan reservation '{s}' of {d} B exceeds {s} (maxMemoryAllocationSize {d} B; " ++
+            "memory type {d} in heap {d} of {d} B). Lower ResourceLimits.",
+        .{
+            options.name,      options.size, limit_name, options.allocation_bytes_max,
+            memory_type_index, heap_index,   heap_bytes,
+        },
+    );
+}
 
 // =============================================================================
 // MemoryPool — sub-allocate from a single large VkDeviceMemory block
@@ -112,19 +178,32 @@ pub const MemoryPool = struct {
     /// Hard cap on sub-allocations per pool (CLAUDE.md Rule #4).
     const MAX_POOL_ALLOCATIONS: u32 = 64;
 
+    pub const Options = struct {
+        /// Names the reservation in failure reports.
+        name: []const u8,
+        size: vk.DeviceSize,
+        /// From `queryAllocationBytesMax`.
+        allocation_bytes_max: vk.DeviceSize,
+        required_properties: u32,
+    };
+
     /// Create a memory pool backed by a single large allocation.
     ///
     /// Uses a probe buffer to discover valid memoryTypeBits for storage/uniform
     /// usage, then finds a memory type matching `required_properties`.
     /// If the pool is host-visible, the entire block is mapped at creation.
+    /// A reservation larger than the device's allocation limit or its heap
+    /// fails with a named error and a report instead of a bare driver refusal.
     pub fn init(
         device: vk.Device,
         mem_properties: *const vk.PhysicalDeviceMemoryProperties,
-        size: vk.DeviceSize,
-        required_properties: u32,
+        options: *const Options,
     ) PoolError!MemoryPool {
         std.debug.assert(device != null);
-        std.debug.assert(size > 0);
+        std.debug.assert(options.size > 0);
+        std.debug.assert(options.name.len > 0);
+        const size = options.size;
+        const required_properties = options.required_properties;
 
         // Probe buffer discovers valid memoryTypeBits for buffer allocations.
         const probe_usage = vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -141,6 +220,10 @@ pub const MemoryPool = struct {
             reqs.memoryTypeBits,
             required_properties,
         ) orelse return PoolError.NoSuitableMemoryType;
+        if (checkReservation(mem_properties, options, type_index)) |err| {
+            reportReservation(mem_properties, options, type_index, err);
+            return err;
+        }
 
         const alloc_info = vk.MemoryAllocateInfo{
             .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -150,7 +233,10 @@ pub const MemoryPool = struct {
         };
 
         var memory: vk.DeviceMemory = null;
-        if (!vk.succeeded(vk.vkAllocateMemory(device, &alloc_info, null, &memory))) {
+        const result = vk.vkAllocateMemory(device, &alloc_info, null, &memory);
+        if (!vk.succeeded(result)) {
+            std.log.err("Vulkan reservation '{s}' of {d} B: vkAllocateMemory failed ({d}) " ++
+                "on memory type {d}.", .{ options.name, size, result, type_index });
             return PoolError.PoolAllocationFailed;
         }
         std.debug.assert(memory != null);
@@ -240,63 +326,6 @@ pub const MemoryPool = struct {
 // =============================================================================
 // Public API — Buffers
 // =============================================================================
-
-/// Create a Vulkan buffer with dedicated memory allocation.
-///
-/// Caller owns both returned handles and must destroy them via `destroyBuffer`
-/// or individually when no longer needed.
-pub fn createBuffer(
-    device: vk.Device,
-    mem_properties: *const vk.PhysicalDeviceMemoryProperties,
-    size: vk.DeviceSize,
-    usage: u32,
-    properties: u32,
-) BufferError!BufferResult {
-    std.debug.assert(device != null);
-    std.debug.assert(size > 0);
-
-    const buffer = try createBufferHandle(device, size, usage);
-    errdefer vk.vkDestroyBuffer(device, buffer, null);
-
-    const memory = try allocateBufferMemory(device, mem_properties, buffer, properties);
-
-    return .{ .buffer = buffer, .memory = memory };
-}
-
-/// Create a buffer, allocate memory, bind it, and map the memory.
-///
-/// Convenience wrapper for host-visible buffers that will be written from the CPU.
-/// The returned mapped pointer is valid until the buffer is destroyed.
-pub fn createMappedBuffer(
-    device: vk.Device,
-    mem_properties: *const vk.PhysicalDeviceMemoryProperties,
-    size: vk.DeviceSize,
-    usage: u32,
-) BufferError!MappedBufferResult {
-    std.debug.assert(device != null);
-    std.debug.assert(size > 0);
-
-    const host_props = vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    const result = try createBuffer(device, mem_properties, size, usage, host_props);
-    errdefer destroyBuffer(device, result.buffer, result.memory);
-
-    var mapped: ?*anyopaque = null;
-    const map_result = vk.vkMapMemory(device, result.memory, 0, size, 0, &mapped);
-    if (!vk.succeeded(map_result) or mapped == null) return BufferError.MemoryMapFailed;
-
-    return .{
-        .buffer = result.buffer,
-        .memory = result.memory,
-        .mapped = mapped.?,
-    };
-}
-
-/// Destroy a buffer and free its memory. Safe to call with null handles.
-pub fn destroyBuffer(device: vk.Device, buffer: vk.Buffer, memory: vk.DeviceMemory) void {
-    std.debug.assert(device != null);
-    if (buffer) |buf| vk.vkDestroyBuffer(device, buf, null);
-    if (memory) |mem| vk.vkFreeMemory(device, mem, null);
-}
 
 /// Destroy only the buffer handle. Memory is NOT freed — use this for
 /// pool-allocated buffers where the pool owns the backing memory.
@@ -502,36 +531,41 @@ fn createBufferHandle(
     return buffer;
 }
 
-fn allocateBufferMemory(
-    device: vk.Device,
-    mem_properties: *const vk.PhysicalDeviceMemoryProperties,
-    buffer: vk.Buffer,
-    properties: u32,
-) BufferError!vk.DeviceMemory {
-    std.debug.assert(buffer != null);
-
-    var mem_requirements: vk.MemoryRequirements = undefined;
-    vk.vkGetBufferMemoryRequirements(device, buffer, &mem_requirements);
-
-    const mem_type_index = vk.findMemoryType(
-        mem_properties,
-        mem_requirements.memoryTypeBits,
-        properties,
-    ) orelse return BufferError.NoSuitableMemoryType;
-
-    const alloc_info = vk.MemoryAllocateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = null,
-        .allocationSize = mem_requirements.size,
-        .memoryTypeIndex = mem_type_index,
+test "reservations fail by name at the allocation and heap limits" {
+    // Goal: each limit admits a reservation of exactly its size and names the
+    // limit one byte past it. The allocation limit is checked first, so a
+    // reservation over both reports the allocation limit.
+    var properties = std.mem.zeroes(vk.PhysicalDeviceMemoryProperties);
+    properties.memoryTypeCount = 2;
+    properties.memoryHeapCount = 2;
+    properties.memoryTypes[0].heapIndex = 0;
+    properties.memoryTypes[1].heapIndex = 1;
+    properties.memoryHeaps[0].size = 1 << 32;
+    properties.memoryHeaps[1].size = 256 << 20;
+    const allocation_max: vk.DeviceSize = 1 << 30;
+    var options = MemoryPool.Options{
+        .name = "test",
+        .size = allocation_max,
+        .allocation_bytes_max = allocation_max,
+        .required_properties = 0,
     };
-
-    var memory: vk.DeviceMemory = null;
-    const result = vk.vkAllocateMemory(device, &alloc_info, null, &memory);
-    if (!vk.succeeded(result)) return BufferError.MemoryAllocationFailed;
-
-    std.debug.assert(memory != null);
-
-    _ = vk.vkBindBufferMemory(device, buffer, memory, 0);
-    return memory;
+    try std.testing.expectEqual(@as(?PoolError, null), checkReservation(&properties, &options, 0));
+    options.size = allocation_max + 1;
+    try std.testing.expectEqual(
+        @as(?PoolError, PoolError.VulkanReservationExceedsAllocationMax),
+        checkReservation(&properties, &options, 0),
+    );
+    // Type 1 lives in the 256 MiB heap: the heap is the binding limit there.
+    options.size = 256 << 20;
+    try std.testing.expectEqual(@as(?PoolError, null), checkReservation(&properties, &options, 1));
+    options.size = (256 << 20) + 1;
+    try std.testing.expectEqual(
+        @as(?PoolError, PoolError.VulkanReservationExceedsHeap),
+        checkReservation(&properties, &options, 1),
+    );
+    options.size = allocation_max + 1;
+    try std.testing.expectEqual(
+        @as(?PoolError, PoolError.VulkanReservationExceedsAllocationMax),
+        checkReservation(&properties, &options, 1),
+    );
 }
