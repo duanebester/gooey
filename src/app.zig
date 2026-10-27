@@ -41,6 +41,7 @@ const shader_mod = @import("core/shader.zig");
 const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 const FontLimits = @import("core/limits.zig").FontLimits;
 const SceneLimits = @import("core/limits.zig").SceneLimits;
+const WindowLimits = @import("core/limits.zig").WindowLimits;
 const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
 
@@ -592,7 +593,10 @@ fn resolveLimits(comptime config: anytype) ResourceLimits {
         else if (@TypeOf(config.limits) == @TypeOf(.enum_literal))
             @field(ResourceLimits, @tagName(config.limits))
         else
-            .{ .scene = copyFields(SceneLimits, config.limits.scene) };
+            .{
+                .scene = copyFields(SceneLimits, "scene", config.limits.scene),
+                .window = copyFields(WindowLimits, "window", config.limits.window),
+            };
         ResourceLimits.validate(resolved);
         return resolved;
     }
@@ -623,13 +627,14 @@ fn resolveFontLimits(comptime config: anytype) FontLimits {
 /// Copy an anonymous `.{ ... }` literal into `T` field by field. Literals passed
 /// through `anytype` keep their own type and do not coerce. A missing field is a
 /// compile error because budget fields deliberately have no defaults.
-fn copyFields(comptime T: type, comptime source: anytype) T {
+fn copyFields(comptime T: type, comptime budget: []const u8, comptime source: anytype) T {
     comptime {
         if (@TypeOf(source) == T) return source;
         var target: T = undefined;
         for (@typeInfo(T).@"struct".field_names) |field_name| {
             if (!@hasField(@TypeOf(source), field_name)) {
-                @compileError("ResourceLimits.scene is missing field '" ++ field_name ++ "'");
+                @compileError("ResourceLimits." ++ budget ++ " is missing field '" ++
+                    field_name ++ "'");
             }
             @field(target, field_name) = @field(source, field_name);
         }

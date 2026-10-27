@@ -90,6 +90,12 @@ pub const MAX_COLORED_POINT_CLOUDS_PER_FRAME: u32 = 4096;
 /// Maximum clip stack depth (nested clips)
 pub const MAX_CLIP_STACK_DEPTH: u32 = 32;
 
+/// Widest framebuffer, in physical pixels, any window budget may declare (8K UHD).
+pub const MAX_FRAMEBUFFER_WIDTH: u32 = 7680;
+
+/// Tallest framebuffer, in physical pixels, any window budget may declare (8K UHD).
+pub const MAX_FRAMEBUFFER_HEIGHT: u32 = 4320;
+
 // =============================================================================
 // Application Resource Budget
 // =============================================================================
@@ -99,26 +105,37 @@ pub const MAX_CLIP_STACK_DEPTH: u32 = 32;
 /// storage from this value during initialization and never grows afterwards.
 ///
 /// Each subsystem owns one nested struct so later budgets (layout, a11y, text,
-/// widgets) are added as new fields beside `scene` without reshaping the type.
-/// Fields have no defaults: callers pick a named profile or spell out every
-/// capacity, so no capacity hides in a leaf default.
+/// widgets) are added as new fields beside `scene` and `window` without
+/// reshaping the type. Fields have no defaults: callers pick a named profile or
+/// spell out every capacity, so no capacity hides in a leaf default.
 pub const ResourceLimits = struct {
     scene: SceneLimits,
+    window: WindowLimits,
 
     /// Measured default for ordinary UI apps. See `SceneLimits.standard`.
-    pub const standard: ResourceLimits = .{ .scene = SceneLimits.standard };
+    pub const standard: ResourceLimits = .{
+        .scene = SceneLimits.standard,
+        .window = WindowLimits.standard,
+    };
 
     /// Dense-content apps: big tables, treemaps, full-screen editors, charts.
-    pub const large: ResourceLimits = .{ .scene = SceneLimits.large };
+    pub const large: ResourceLimits = .{
+        .scene = SceneLimits.large,
+        .window = WindowLimits.large,
+    };
 
     /// Every capacity at its framework ceiling. For stress tests and benchmarks;
     /// costs about 16.5 MiB per scene and 25.5 MiB of Metal instance ring.
-    pub const ceiling: ResourceLimits = .{ .scene = SceneLimits.ceiling };
+    pub const ceiling: ResourceLimits = .{
+        .scene = SceneLimits.ceiling,
+        .window = WindowLimits.ceiling,
+    };
 
     /// First violated rule, or null when the budget is valid. Shared by the
     /// comptime `validate` and the runtime initialization checks.
     pub fn check(self: *const ResourceLimits) ?Violation {
-        return self.scene.check();
+        if (self.scene.check()) |violation| return violation;
+        return self.window.check();
     }
 
     /// Runtime counterpart of `validate` for budgets that are not comptime-known
@@ -126,10 +143,11 @@ pub const ResourceLimits = struct {
     /// programmer error, so it stops initialization with the broken rule.
     pub fn assertValid(self: *const ResourceLimits) void {
         if (self.check()) |violation| {
-            std.debug.panic("invalid ResourceLimits.scene.{s} = {d}: rule {s}, bound {d}", .{
+            std.debug.panic("invalid ResourceLimits.{t}.{s} = {d}: rule {t}, bound {d}", .{
+                violation.budget,
                 violation.field,
                 violation.value,
-                @tagName(violation.rule),
+                violation.rule,
                 violation.bound,
             });
         }
@@ -247,10 +265,17 @@ pub const SceneLimits = struct {
             const value: u32 = @field(self, field_name);
             const bound: u32 = @field(ceiling, field_name);
             if (value == 0) {
-                return .{ .field = field_name, .rule = .zero, .value = value, .bound = 1 };
+                return .{
+                    .budget = .scene,
+                    .field = field_name,
+                    .rule = .zero,
+                    .value = value,
+                    .bound = 1,
+                };
             }
             if (value > bound) {
                 return .{
+                    .budget = .scene,
                     .field = field_name,
                     .rule = .above_ceiling,
                     .value = value,
@@ -261,6 +286,7 @@ pub const SceneLimits = struct {
         // One shaped text run is inserted whole, so a frame must hold at least one.
         if (self.glyph_count_frame_max < MAX_GLYPHS_PER_RUN) {
             return .{
+                .budget = .scene,
                 .field = "glyph_count_frame_max",
                 .rule = .below_relationship,
                 .value = self.glyph_count_frame_max,
@@ -270,6 +296,7 @@ pub const SceneLimits = struct {
         // The draw-order sort scratch is sized from the largest sortable pool.
         if (self.sortKeyCountMax() > MAX_SORT_KEYS) {
             return .{
+                .budget = .scene,
                 .field = "sortKeyCountMax()",
                 .rule = .above_ceiling,
                 .value = self.sortKeyCountMax(),
@@ -331,29 +358,105 @@ pub const SceneLimits = struct {
     }
 };
 
+/// Per-window framebuffer bounds, in physical pixels.
+///
+/// The CPU renderer backends (`-Dlinux-backend=wayland_cpu` and `fbdev`) reserve
+/// their framebuffers and raster scratch for this size while the window
+/// initializes and never resize them (CLAUDE.md §2). A Wayland window the
+/// compositor makes larger renders at a reduced device scale, which the
+/// compositor scales up; an fbdev panel larger than the budget fails
+/// initialization. The GPU backends size their swapchains from the driver and
+/// do not read these fields yet.
+pub const WindowLimits = struct {
+    framebuffer_width_max: u32,
+    framebuffer_height_max: u32,
+
+    /// 4K UHD. Two `wl_shm` frames of this size map 63.3 MiB per window; pages
+    /// are touched, and so resident, only for the window's actual size.
+    pub const standard: WindowLimits = .{
+        .framebuffer_width_max = 3840,
+        .framebuffer_height_max = 2160,
+    };
+
+    /// 5K, for full-screen windows on high-density desktop panels.
+    pub const large: WindowLimits = .{
+        .framebuffer_width_max = 5120,
+        .framebuffer_height_max = 2880,
+    };
+
+    /// The framework ceilings themselves (8K UHD).
+    pub const ceiling: WindowLimits = .{
+        .framebuffer_width_max = MAX_FRAMEBUFFER_WIDTH,
+        .framebuffer_height_max = MAX_FRAMEBUFFER_HEIGHT,
+    };
+
+    /// First violated rule, or null. Every field must be in `1..=ceiling`.
+    pub fn check(self: *const WindowLimits) ?Violation {
+        inline for (@typeInfo(WindowLimits).@"struct".field_names) |field_name| {
+            const value: u32 = @field(self, field_name);
+            const bound: u32 = @field(ceiling, field_name);
+            if (value == 0) {
+                return .{
+                    .budget = .window,
+                    .field = field_name,
+                    .rule = .zero,
+                    .value = value,
+                    .bound = 1,
+                };
+            }
+            if (value > bound) {
+                return .{
+                    .budget = .window,
+                    .field = field_name,
+                    .rule = .above_ceiling,
+                    .value = value,
+                    .bound = bound,
+                };
+            }
+        }
+        return null;
+    }
+
+    /// Pixels in the largest framebuffer the budget allows.
+    pub fn framebufferPixelCountMax(self: *const WindowLimits) u64 {
+        assert(self.framebuffer_width_max <= MAX_FRAMEBUFFER_WIDTH);
+        assert(self.framebuffer_height_max <= MAX_FRAMEBUFFER_HEIGHT);
+        return @as(u64, self.framebuffer_width_max) * self.framebuffer_height_max;
+    }
+
+    comptime {
+        assert(standard.check() == null);
+        assert(large.check() == null);
+        assert(ceiling.check() == null);
+    }
+};
+
 /// A broken budget rule, precise enough to name in a compile error.
 pub const Violation = struct {
+    budget: Budget,
     field: []const u8,
     rule: Rule,
     value: u32,
     bound: u32,
 
+    /// The `ResourceLimits` field holding the broken rule.
+    pub const Budget = enum { scene, window };
     pub const Rule = enum { zero, above_ceiling, below_relationship };
 
     /// Human-readable message. Comptime only: used by `ResourceLimits.validate`.
     pub fn describe(comptime self: Violation) []const u8 {
         return switch (self.rule) {
             .zero => std.fmt.comptimePrint(
-                "ResourceLimits.scene.{s} must be at least 1, got 0",
-                .{self.field},
+                "ResourceLimits.{t}.{s} must be at least 1, got 0",
+                .{ self.budget, self.field },
             ),
             .above_ceiling => std.fmt.comptimePrint(
-                "ResourceLimits.scene.{s} = {d} exceeds the framework ceiling {d}",
-                .{ self.field, self.value, self.bound },
+                "ResourceLimits.{t}.{s} = {d} exceeds the framework ceiling {d}",
+                .{ self.budget, self.field, self.value, self.bound },
             ),
             .below_relationship => std.fmt.comptimePrint(
-                "ResourceLimits.scene.{s} = {d} is below the required minimum {d}",
-                .{ self.field, self.value, self.bound },
+                "ResourceLimits.{t}.{s} = {d} is below the required minimum {d}",
+                .{ self.budget, self.field, self.value, self.bound },
             ),
         };
     }
@@ -680,6 +783,12 @@ test "named profiles are valid and ordered" {
         try std.testing.expect(standard_value <= large_value);
         try std.testing.expect(large_value <= @field(SceneLimits.ceiling, field_name));
     }
+    inline for (@typeInfo(WindowLimits).@"struct".field_names) |field_name| {
+        const standard_value = @field(WindowLimits.standard, field_name);
+        const large_value = @field(WindowLimits.large, field_name);
+        try std.testing.expect(standard_value <= large_value);
+        try std.testing.expect(large_value <= @field(WindowLimits.ceiling, field_name));
+    }
 }
 
 test "check reports each negative case precisely" {
@@ -724,6 +833,20 @@ test "check reports each negative case precisely" {
         @field(limits.scene, field) = @field(SceneLimits.ceiling, field);
         try std.testing.expect(limits.check() == null);
         @field(limits.scene, field) += 1;
+        try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+        try std.testing.expectEqualStrings(field, limits.check().?.field);
+    }
+
+    // The window budget reports under its own name, at both ends of each range.
+    inline for (.{ "framebuffer_width_max", "framebuffer_height_max" }) |field| {
+        limits = ResourceLimits.standard;
+        @field(limits.window, field) = 0;
+        try std.testing.expectEqual(Violation.Budget.window, limits.check().?.budget);
+        try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+        try std.testing.expectEqualStrings(field, limits.check().?.field);
+        @field(limits.window, field) = @field(WindowLimits.ceiling, field);
+        try std.testing.expect(limits.check() == null);
+        @field(limits.window, field) += 1;
         try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
         try std.testing.expectEqualStrings(field, limits.check().?.field);
     }
