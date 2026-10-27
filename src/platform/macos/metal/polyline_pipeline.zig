@@ -8,11 +8,16 @@
 //! while still providing good performance for typical chart use cases.
 
 const std = @import("std");
-const builtin = @import("builtin");
+const assert = std.debug.assert;
 
 const objc = @import("objc");
 const mtl = @import("api.zig");
+const pipelines = @import("pipelines.zig");
+const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
+const GeometryCounts = scene.GeometryCounts;
+const GeometryPool = scene.GeometryPool;
+const SceneLimits = scene.SceneLimits;
 const Polyline = @import("../../../scene/polyline.zig").Polyline;
 
 // =============================================================================
@@ -99,14 +104,6 @@ pub const polyline_shader_source =
 ;
 
 // =============================================================================
-// Constants
-// =============================================================================
-
-const FRAME_COUNT = 3;
-const INITIAL_VERTEX_CAPACITY: u32 = 16384; // Enough for ~4000 line segments
-const INITIAL_INDEX_CAPACITY: u32 = 24576; // 6 indices per segment
-
-// =============================================================================
 // GPU Types
 // =============================================================================
 
@@ -126,218 +123,205 @@ pub const PolylineUniforms = extern struct {
 // Pipeline
 // =============================================================================
 
+/// Polylines expanded on the CPU into one quad per segment, one draw per polyline.
+///
+/// Resource sketch (CLAUDE.md §7): a polyline of n points has n - 1 segments, so a
+/// frame's segments never exceed `polyline_point_count_frame_max`. Each frame in
+/// flight owns 4 vertices × 8 B and 6 indices × 4 B per budgeted point, sized in
+/// `init` from `ResourceLimits.scene` and never replaced. `.standard`: 131,072 ×
+/// 56 B = 7,340,032 B per frame, 22,020,096 B per window. Every polyline is claimed
+/// against the same `GeometryCounts` as the Vulkan and CPU renderers before it is
+/// written, so an over-budget frame panics with the pool name.
 pub const PolylinePipeline = struct {
-    device: objc.Object,
     pipeline_state: objc.Object,
-
-    // Triple-buffered vertex/index data
-    vertex_buffers: [FRAME_COUNT]objc.Object,
-    index_buffers: [FRAME_COUNT]objc.Object,
-    vertex_capacities: [FRAME_COUNT]u32,
-    index_capacities: [FRAME_COUNT]u32,
+    vertex_buffers: [frame_count]objc.Object,
+    index_buffers: [frame_count]objc.Object,
     frame_index: u32,
-
-    // Per-frame tracking for batched uploads
-    frame_vertex_offset: u32,
-    frame_index_offset: u32,
-
-    allocator: std.mem.Allocator,
+    /// Expanded vertices and indices written into the current slot this frame.
+    frame_vertex_count: u32,
+    frame_index_count: u32,
+    /// The window's aggregate geometry budget (`ResourceLimits.scene`).
+    geometry_budget: GeometryCounts,
+    /// Source points claimed this frame.
+    geometry_usage: GeometryCounts,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, device: objc.Object, sample_count: u32) !Self {
-        const pipeline = try createPipeline(device, sample_count);
+    pub fn init(device: objc.Object, sample_count: u32, scene_limits: *const SceneLimits) !Self {
+        assert(sample_count > 0);
+        assert(scene_limits.check() == null);
+        const budget = GeometryCounts.from_limits(scene_limits);
+        const point_count_max: u64 = budget.counts[@backingInt(GeometryPool.polyline_points)];
 
-        var self = Self{
-            .device = device,
-            .pipeline_state = pipeline,
-            .vertex_buffers = undefined,
-            .index_buffers = undefined,
-            .vertex_capacities = undefined,
-            .index_capacities = undefined,
+        const pipeline_state = try createPipeline(device, sample_count);
+        errdefer pipeline_state.release();
+
+        const vertex_buffers = try pipelines.createFrameBuffers(
+            device,
+            point_count_max * vertices_per_segment * @sizeOf(PolylineVertex),
+            "polyline_vertices",
+        );
+        errdefer for (vertex_buffers) |buffer| buffer.release();
+
+        const index_buffers = try pipelines.createFrameBuffers(
+            device,
+            point_count_max * indices_per_segment * @sizeOf(u32),
+            "polyline_indices",
+        );
+        errdefer for (index_buffers) |buffer| buffer.release();
+
+        return .{
+            .pipeline_state = pipeline_state,
+            .vertex_buffers = vertex_buffers,
+            .index_buffers = index_buffers,
             .frame_index = 0,
-            .frame_vertex_offset = 0,
-            .frame_index_offset = 0,
-            .allocator = allocator,
+            .frame_vertex_count = 0,
+            .frame_index_count = 0,
+            .geometry_budget = budget,
+            .geometry_usage = .{},
         };
-
-        // Create triple-buffered vertex/index buffers
-        for (0..FRAME_COUNT) |i| {
-            self.vertex_buffers[i] = try createBuffer(device, INITIAL_VERTEX_CAPACITY * @sizeOf(PolylineVertex));
-            self.index_buffers[i] = try createBuffer(device, INITIAL_INDEX_CAPACITY * @sizeOf(u32));
-            self.vertex_capacities[i] = INITIAL_VERTEX_CAPACITY;
-            self.index_capacities[i] = INITIAL_INDEX_CAPACITY;
-        }
-
-        return self;
     }
 
     pub fn deinit(self: *Self) void {
-        for (0..FRAME_COUNT) |i| {
-            self.vertex_buffers[i].release();
-            self.index_buffers[i].release();
-        }
+        for (self.vertex_buffers) |buffer| buffer.release();
+        for (self.index_buffers) |buffer| buffer.release();
         self.pipeline_state.release();
+        self.* = undefined;
     }
 
-    /// Advance to next frame (call at start of frame)
+    /// Advance to the next frame-in-flight slot and release the previous frame's
+    /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        self.frame_index = (self.frame_index + 1) % FRAME_COUNT;
-        self.frame_vertex_offset = 0;
-        self.frame_index_offset = 0;
+        assert(self.frame_index < frame_count);
+        assert(self.frame_index_count == self.frame_vertex_count / 4 * 6);
+        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_vertex_count = 0;
+        self.frame_index_count = 0;
+        self.geometry_usage = .{};
     }
 
-    /// Render a batch of polylines
+    /// Render a batch of polylines.
     pub fn renderBatch(
         self: *Self,
         encoder: objc.Object,
         polylines: []const Polyline,
-        viewport_size: [2]f32,
-    ) !void {
-        if (polylines.len == 0) return;
+        options: struct { viewport_size: [2]f32, frame: u64 },
+    ) void {
+        assert(polylines.len <= scene.MAX_POLYLINES_PER_FRAME);
+        assert(options.viewport_size[0] > 0);
+        assert(options.viewport_size[1] > 0);
+        const slot = self.frame_index;
+        const vertex_buffer = self.vertex_buffers[slot];
+        const index_buffer = self.index_buffers[slot];
+        const vertices_target = pipelines.frameBufferContents(PolylineVertex, vertex_buffer);
+        const indices_target = pipelines.frameBufferContents(u32, index_buffer);
 
-        // Calculate total vertices and indices needed
-        var total_vertices: u32 = 0;
-        var total_indices: u32 = 0;
-        for (polylines) |pl| {
-            total_vertices += pl.vertexCount();
-            total_indices += pl.indexCount();
-        }
+        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
+        encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+            @as(*const anyopaque, @ptrCast(&options.viewport_size)),
+            @as(c_ulong, @sizeOf([2]f32)),
+            @as(c_ulong, 2),
+        });
 
-        if (total_vertices == 0 or total_indices == 0) return;
+        for (polylines) |*polyline| {
+            polyline.validate();
+            const points = polyline.getPoints();
+            // Same pool and per-draw granularity as the Vulkan and CPU renderers.
+            self.geometry_usage.claim(&self.geometry_budget, .{
+                .pool = .polyline_points,
+                .requested = @intCast(points.len),
+                .frame = options.frame,
+            });
+            const segment_count: u32 = @intCast(points.len - 1);
+            const vertex_first = self.frame_vertex_count;
+            const index_first = self.frame_index_count;
+            expandSegments(
+                vertices_target[vertex_first..][0 .. segment_count * vertices_per_segment],
+                indices_target[index_first..][0 .. segment_count * indices_per_segment],
+                points,
+                polyline.width * 0.5,
+            );
+            self.frame_vertex_count += segment_count * vertices_per_segment;
+            self.frame_index_count += segment_count * indices_per_segment;
+            // Segments never outnumber claimed points, which the buffers are sized for.
+            assert(self.frame_vertex_count <= self.pointsClaimed() * vertices_per_segment);
 
-        const fi = self.frame_index;
-
-        // Grow buffers if needed
-        if (self.frame_vertex_offset + total_vertices > self.vertex_capacities[fi]) {
-            try self.growVertexBuffer(fi, self.frame_vertex_offset + total_vertices);
-        }
-        if (self.frame_index_offset + total_indices > self.index_capacities[fi]) {
-            try self.growIndexBuffer(fi, self.frame_index_offset + total_indices);
-        }
-
-        // Get buffer pointers
-        const vb = self.vertex_buffers[fi];
-        const ib = self.index_buffers[fi];
-
-        const vb_ptr: [*]PolylineVertex = @ptrCast(@alignCast(vb.msgSend(*anyopaque, "contents", .{})));
-        const ib_ptr: [*]u32 = @ptrCast(@alignCast(ib.msgSend(*anyopaque, "contents", .{})));
-
-        // Expand all polylines to quads
-        var vertex_offset = self.frame_vertex_offset;
-        var index_offset = self.frame_index_offset;
-
-        for (polylines) |pl| {
-            const points = pl.getPoints();
-            if (points.len < 2) continue;
-
-            const half_width = pl.width * 0.5;
-            const base_vertex = vertex_offset;
-
-            // Generate quad vertices for each segment
-            for (0..points.len - 1) |i| {
-                const p0 = points[i];
-                const p1 = points[i + 1];
-
-                // Calculate direction and perpendicular
-                const dx = p1.x - p0.x;
-                const dy = p1.y - p0.y;
-                const len = @sqrt(dx * dx + dy * dy);
-
-                var perp_x: f32 = 0;
-                var perp_y: f32 = half_width;
-
-                if (len > 0.0001) {
-                    perp_x = -dy / len * half_width;
-                    perp_y = dx / len * half_width;
-                }
-
-                // Quad corners (CCW winding)
-                // 0--1
-                // |  |
-                // 3--2
-                const seg_base = vertex_offset - base_vertex;
-
-                vb_ptr[vertex_offset] = .{ .x = p0.x + perp_x, .y = p0.y + perp_y };
-                vertex_offset += 1;
-                vb_ptr[vertex_offset] = .{ .x = p0.x - perp_x, .y = p0.y - perp_y };
-                vertex_offset += 1;
-                vb_ptr[vertex_offset] = .{ .x = p1.x - perp_x, .y = p1.y - perp_y };
-                vertex_offset += 1;
-                vb_ptr[vertex_offset] = .{ .x = p1.x + perp_x, .y = p1.y + perp_y };
-                vertex_offset += 1;
-
-                // Two triangles: 0-1-2 and 0-2-3
-                ib_ptr[index_offset] = seg_base;
-                index_offset += 1;
-                ib_ptr[index_offset] = seg_base + 1;
-                index_offset += 1;
-                ib_ptr[index_offset] = seg_base + 2;
-                index_offset += 1;
-                ib_ptr[index_offset] = seg_base;
-                index_offset += 1;
-                ib_ptr[index_offset] = seg_base + 2;
-                index_offset += 1;
-                ib_ptr[index_offset] = seg_base + 3;
-                index_offset += 1;
-            }
-
-            // Draw this polyline
+            const color = polyline.color;
             const uniforms = PolylineUniforms{
-                .color = .{ pl.color.h, pl.color.s, pl.color.l, pl.color.a },
-                .clip_bounds = .{ pl.clip_x, pl.clip_y, pl.clip_width, pl.clip_height },
+                .color = .{ color.h, color.s, color.l, color.a },
+                .clip_bounds = .{
+                    polyline.clip_x,
+                    polyline.clip_y,
+                    polyline.clip_width,
+                    polyline.clip_height,
+                },
             };
-
-            const index_count = pl.indexCount();
-
-            encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
-
+            // Indices are relative to the polyline's first vertex, where the buffer binds.
             encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                vb.value,
-                @as(c_ulong, base_vertex * @sizeOf(PolylineVertex)),
+                vertex_buffer.value,
+                @as(c_ulong, vertex_first) * @sizeOf(PolylineVertex),
                 @as(c_ulong, 0),
             });
-
             encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
                 @as(*const anyopaque, @ptrCast(&uniforms)),
                 @as(c_ulong, @sizeOf(PolylineUniforms)),
                 @as(c_ulong, 1),
             });
-
-            encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                @as(*const anyopaque, @ptrCast(&viewport_size)),
-                @as(c_ulong, @sizeOf([2]f32)),
-                @as(c_ulong, 2),
-            });
-
-            encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
+            encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:" ++
+                "indexBufferOffset:", .{
                 @backingInt(mtl.MTLPrimitiveType.triangle),
-                @as(c_ulong, index_count),
+                @as(c_ulong, segment_count * indices_per_segment),
                 @backingInt(mtl.MTLIndexType.uint32),
-                ib.value,
-                @as(c_ulong, self.frame_index_offset * @sizeOf(u32)),
+                index_buffer.value,
+                @as(c_ulong, index_first) * @sizeOf(u32),
             });
-
-            self.frame_index_offset = index_offset;
         }
-
-        self.frame_vertex_offset = vertex_offset;
     }
 
-    fn growVertexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
-        const new_capacity = @max(min_capacity, self.vertex_capacities[frame] * 2);
-        self.vertex_buffers[frame].release();
-        self.vertex_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(PolylineVertex));
-        self.vertex_capacities[frame] = new_capacity;
-    }
-
-    fn growIndexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
-        const new_capacity = @max(min_capacity, self.index_capacities[frame] * 2);
-        self.index_buffers[frame].release();
-        self.index_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(u32));
-        self.index_capacities[frame] = new_capacity;
+    fn pointsClaimed(self: *const Self) u32 {
+        return self.geometry_usage.counts[@backingInt(GeometryPool.polyline_points)];
     }
 };
+
+const vertices_per_segment: u32 = 4;
+const indices_per_segment: u32 = 6;
+
+/// Hot loop: expand each segment into a butt-ended quad of half-width `radius`.
+/// Indices are relative to the first vertex of `vertices`.
+fn expandSegments(
+    vertices: []PolylineVertex,
+    indices: []u32,
+    points: []const scene.Point,
+    radius: f32,
+) void {
+    assert(points.len >= 2);
+    assert(vertices.len == (points.len - 1) * vertices_per_segment);
+    assert(indices.len == (points.len - 1) * indices_per_segment);
+    for (points[0 .. points.len - 1], points[1..], 0..) |p0, p1, segment| {
+        const dx = p1.x - p0.x;
+        const dy = p1.y - p0.y;
+        const len = @sqrt(dx * dx + dy * dy);
+        var perp_x: f32 = 0;
+        var perp_y: f32 = radius;
+        if (len > 0.0001) {
+            perp_x = -dy / len * radius;
+            perp_y = dx / len * radius;
+        }
+
+        // Quad corners, counter-clockwise: 0--1 over 3--2.
+        const base: u32 = @intCast(segment * vertices_per_segment);
+        vertices[base + 0] = .{ .x = p0.x + perp_x, .y = p0.y + perp_y };
+        vertices[base + 1] = .{ .x = p0.x - perp_x, .y = p0.y - perp_y };
+        vertices[base + 2] = .{ .x = p1.x - perp_x, .y = p1.y - perp_y };
+        vertices[base + 3] = .{ .x = p1.x + perp_x, .y = p1.y + perp_y };
+
+        // Two triangles: 0-1-2 and 0-2-3.
+        const index_base = segment * indices_per_segment;
+        indices[index_base..][0..indices_per_segment].* = .{
+            base, base + 1, base + 2, base, base + 2, base + 3,
+        };
+    }
+}
 
 // =============================================================================
 // Helper Functions
@@ -426,27 +410,4 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     std.debug.print("Polyline pipeline created successfully\n", .{});
     return objc.Object.fromId(pipeline_ptr);
-}
-
-fn createBuffer(device: objc.Object, size: u32) !objc.Object {
-    const unified_memory = device.msgSend(bool, "hasUnifiedMemory", .{});
-    const storage: mtl.MTLResourceOptions = if (unified_memory)
-        .{ .storage_mode = .shared }
-    else
-        .{ .storage_mode = .managed };
-
-    const buffer_ptr = device.msgSend(
-        ?*anyopaque,
-        "newBufferWithLength:options:",
-        .{
-            @as(c_ulong, size),
-            @as(c_ulong, @bitCast(storage)),
-        },
-    );
-
-    if (buffer_ptr == null) {
-        return error.BufferCreationFailed;
-    }
-
-    return objc.Object.fromId(buffer_ptr);
 }

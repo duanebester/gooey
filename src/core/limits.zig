@@ -125,7 +125,10 @@ pub const ResourceLimits = struct {
     };
 
     /// Every capacity at its framework ceiling. For stress tests and benchmarks;
-    /// costs about 16.5 MiB per scene and 25.5 MiB of Metal instance ring.
+    /// costs about 16.5 MiB per scene and 25.5 MiB of Metal instance ring. The
+    /// aggregate mesh geometry ceilings are validation bounds, not a renderable
+    /// reservation: GPU renderers reserve geometry per frame in flight (Metal
+    /// about 62 GiB per frame here), so a window that renders must lower them.
     pub const ceiling: ResourceLimits = .{
         .scene = SceneLimits.ceiling,
         .window = WindowLimits.ceiling,
@@ -164,7 +167,8 @@ pub const ResourceLimits = struct {
 
 /// Per-window, per-frame scene capacities. Each window allocates two scenes
 /// (built and presented) of exactly these sizes, plus a Metal instance ring of
-/// `unifiedPrimitiveCountMax()` primitives per frame in flight.
+/// `unifiedPrimitiveCountMax()` primitives per frame in flight. GPU renderers
+/// also reserve mesh buffers from the aggregate geometry fields per frame in flight.
 pub const SceneLimits = struct {
     quad_count_frame_max: u32,
     shadow_count_frame_max: u32,

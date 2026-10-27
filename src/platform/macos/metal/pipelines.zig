@@ -3,10 +3,62 @@
 //! This module handles the creation and configuration of Metal render pipelines.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const quad_shader = @import("quad.zig");
 const shadow_shader = @import("shadow.zig");
+
+/// Frames in flight for every per-frame Metal buffer. The in-flight proof is the
+/// one documented on `UnifiedPrimitiveRing`: the renderer asserts at init that the
+/// layer never hands out more drawables than this.
+pub const frame_count = @import("scene_renderer.zig").UnifiedPrimitiveRing.frame_count;
+
+/// Create one shared buffer of `size_bytes` per frame in flight. Mesh pipelines
+/// call this only from `init`, with sizes derived from `ResourceLimits.scene`,
+/// and never replace the buffers. A budget the device cannot hold fails here,
+/// naming the buffer, rather than at draw time.
+pub fn createFrameBuffers(
+    device: objc.Object,
+    size_bytes: u64,
+    name: []const u8,
+) ![frame_count]objc.Object {
+    assert(size_bytes > 0);
+    assert(name.len > 0);
+    const length_max: u64 = device.msgSend(c_ulong, "maxBufferLength", .{});
+    if (size_bytes > length_max) {
+        std.log.err(
+            "Metal buffer '{s}' needs {d} B per frame (ResourceLimits.scene), above " ++
+                "the device's maxBufferLength of {d} B.",
+            .{ name, size_bytes, length_max },
+        );
+        return error.BufferTooLarge;
+    }
+
+    var buffers: [frame_count]objc.Object = undefined;
+    var created: u32 = 0;
+    errdefer for (buffers[0..created]) |buffer| buffer.release();
+
+    while (created < frame_count) : (created += 1) {
+        // Fresh shared buffers are zero-filled; draws read only the prefix written
+        // in the same frame, so no stale bytes from an earlier frame are exposed.
+        const buffer_ptr = device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
+            @as(c_ulong, size_bytes),
+            @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
+        }) orelse return error.BufferCreationFailed;
+        buffers[created] = objc.Object.fromId(buffer_ptr);
+        assert(buffers[created].msgSend(c_ulong, "length", .{}) == size_bytes);
+    }
+    assert(created == frame_count);
+    return buffers;
+}
+
+/// CPU-visible base address of a buffer made by `createFrameBuffers`, as `[*]T`.
+pub fn frameBufferContents(comptime T: type, buffer: objc.Object) [*]T {
+    const contents = buffer.msgSend(*anyopaque, "contents", .{});
+    assert(@intFromPtr(contents) % @alignOf(T) == 0);
+    return @ptrCast(@alignCast(contents));
+}
 
 /// Create MSAA texture for multi-sample anti-aliasing
 pub fn createMSAATexture(

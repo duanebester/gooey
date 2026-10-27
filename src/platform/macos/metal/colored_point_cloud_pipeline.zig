@@ -10,11 +10,16 @@
 //! - Triple-buffered vertex/index data to avoid GPU stalls
 
 const std = @import("std");
-const builtin = @import("builtin");
+const assert = std.debug.assert;
 const objc = @import("objc");
 
 const mtl = @import("api.zig");
+const pipelines = @import("pipelines.zig");
+const frame_count = pipelines.frame_count;
 const scene = @import("../../../scene/mod.zig");
+const GeometryCounts = scene.GeometryCounts;
+const GeometryPool = scene.GeometryPool;
+const SceneLimits = scene.SceneLimits;
 const ColoredPointCloud = @import("../../../scene/colored_point_cloud.zig").ColoredPointCloud;
 
 // =============================================================================
@@ -114,14 +119,6 @@ pub const colored_point_cloud_shader_source =
 ;
 
 // =============================================================================
-// Constants
-// =============================================================================
-
-const FRAME_COUNT = 3;
-const INITIAL_VERTEX_CAPACITY: u32 = 16384; // Enough for ~4000 points
-const INITIAL_INDEX_CAPACITY: u32 = 24576; // 6 indices per point
-
-// =============================================================================
 // GPU Types
 // =============================================================================
 
@@ -163,240 +160,201 @@ comptime {
 // Pipeline
 // =============================================================================
 
+/// Per-point-color clouds expanded on the CPU into one SDF quad per point, one
+/// draw per batch.
+///
+/// Resource sketch (CLAUDE.md §7): each frame in flight owns 4 vertices × 32 B and
+/// 6 indices × 4 B per budgeted point (`colored_point_count_frame_max`), sized in
+/// `init` from `ResourceLimits.scene` and never replaced. `.standard`: 65,536 ×
+/// 152 B = 9,961,472 B per frame, 29,884,416 B per window. Every cloud is claimed
+/// against the same `GeometryCounts` as the Vulkan and CPU renderers before it is
+/// written, so an over-budget frame panics with the pool name.
 pub const ColoredPointCloudPipeline = struct {
-    device: objc.Object,
     pipeline_state: objc.Object,
-
-    // Triple-buffered vertex/index data
-    vertex_buffers: [FRAME_COUNT]objc.Object,
-    index_buffers: [FRAME_COUNT]objc.Object,
-    vertex_capacities: [FRAME_COUNT]u32,
-    index_capacities: [FRAME_COUNT]u32,
+    vertex_buffers: [frame_count]objc.Object,
+    index_buffers: [frame_count]objc.Object,
     frame_index: u32,
-
-    // Per-frame tracking for batched uploads
-    frame_vertex_offset: u32,
-    frame_index_offset: u32,
-
-    allocator: std.mem.Allocator,
+    /// The window's aggregate geometry budget (`ResourceLimits.scene`).
+    geometry_budget: GeometryCounts,
+    /// Points claimed this frame. Every claimed point is written as exactly one
+    /// quad, so this count also locates the slot's write offsets.
+    geometry_usage: GeometryCounts,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, device: objc.Object, sample_count: u32) !Self {
-        const pipeline = try createPipeline(device, sample_count);
+    pub fn init(device: objc.Object, sample_count: u32, scene_limits: *const SceneLimits) !Self {
+        assert(sample_count > 0);
+        assert(scene_limits.check() == null);
+        const budget = GeometryCounts.from_limits(scene_limits);
+        const point_count_max: u64 = budget.counts[@backingInt(GeometryPool.colored_points)];
 
-        var self = Self{
-            .device = device,
-            .pipeline_state = pipeline,
-            .vertex_buffers = undefined,
-            .index_buffers = undefined,
-            .vertex_capacities = undefined,
-            .index_capacities = undefined,
+        const pipeline_state = try createPipeline(device, sample_count);
+        errdefer pipeline_state.release();
+
+        const vertex_buffers = try pipelines.createFrameBuffers(
+            device,
+            point_count_max * vertices_per_point * @sizeOf(ColoredPointVertex),
+            "colored_point_vertices",
+        );
+        errdefer for (vertex_buffers) |buffer| buffer.release();
+
+        const index_buffers = try pipelines.createFrameBuffers(
+            device,
+            point_count_max * indices_per_point * @sizeOf(u32),
+            "colored_point_indices",
+        );
+        errdefer for (index_buffers) |buffer| buffer.release();
+
+        return .{
+            .pipeline_state = pipeline_state,
+            .vertex_buffers = vertex_buffers,
+            .index_buffers = index_buffers,
             .frame_index = 0,
-            .frame_vertex_offset = 0,
-            .frame_index_offset = 0,
-            .allocator = allocator,
+            .geometry_budget = budget,
+            .geometry_usage = .{},
         };
-
-        // Create triple-buffered vertex/index buffers
-        for (0..FRAME_COUNT) |i| {
-            self.vertex_buffers[i] = try createBuffer(device, INITIAL_VERTEX_CAPACITY * @sizeOf(ColoredPointVertex));
-            self.index_buffers[i] = try createBuffer(device, INITIAL_INDEX_CAPACITY * @sizeOf(u32));
-            self.vertex_capacities[i] = INITIAL_VERTEX_CAPACITY;
-            self.index_capacities[i] = INITIAL_INDEX_CAPACITY;
-        }
-
-        return self;
     }
 
     pub fn deinit(self: *Self) void {
-        for (0..FRAME_COUNT) |i| {
-            self.vertex_buffers[i].release();
-            self.index_buffers[i].release();
-        }
+        for (self.vertex_buffers) |buffer| buffer.release();
+        for (self.index_buffers) |buffer| buffer.release();
         self.pipeline_state.release();
+        self.* = undefined;
     }
 
-    /// Advance to next frame (call at start of frame)
+    /// Advance to the next frame-in-flight slot and release the previous frame's
+    /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        self.frame_index = (self.frame_index + 1) % FRAME_COUNT;
-        self.frame_vertex_offset = 0;
-        self.frame_index_offset = 0;
+        assert(self.frame_index < frame_count);
+        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.geometry_usage = .{};
     }
 
-    /// Render a batch of colored point clouds.
-    /// All points from all clouds are rendered in a SINGLE draw call!
+    /// Render a batch of colored point clouds in a single draw call. The batch
+    /// is clipped to the first cloud's bounds; canvas clouds share their clip.
     pub fn renderBatch(
         self: *Self,
         encoder: objc.Object,
-        colored_point_clouds: []const ColoredPointCloud,
-        viewport_size: [2]f32,
-    ) !void {
-        if (colored_point_clouds.len == 0) return;
+        clouds: []const ColoredPointCloud,
+        options: struct { viewport_size: [2]f32, frame: u64 },
+    ) void {
+        assert(clouds.len > 0);
+        assert(clouds.len <= scene.MAX_COLORED_POINT_CLOUDS_PER_FRAME);
+        assert(options.viewport_size[0] > 0);
+        assert(options.viewport_size[1] > 0);
+        const slot = self.frame_index;
+        const vertex_buffer = self.vertex_buffers[slot];
+        const index_buffer = self.index_buffers[slot];
+        const vertices_target = pipelines.frameBufferContents(ColoredPointVertex, vertex_buffer);
+        const indices_target = pipelines.frameBufferContents(u32, index_buffer);
 
-        // Calculate total vertices and indices needed
-        var total_vertices: u32 = 0;
-        var total_indices: u32 = 0;
-        for (colored_point_clouds) |cpc| {
-            total_vertices += cpc.vertexCount();
-            total_indices += cpc.indexCount();
+        const batch_point_first = self.pointsClaimed();
+        for (clouds) |*cloud| {
+            cloud.validate();
+            const positions = cloud.getPositions();
+            const point_first = self.pointsClaimed();
+            // Same pool and per-draw granularity as the Vulkan and CPU renderers.
+            self.geometry_usage.claim(&self.geometry_budget, .{
+                .pool = .colored_points,
+                .requested = @intCast(positions.len),
+                .frame = options.frame,
+            });
+            const point_count: u32 = @intCast(positions.len);
+            expandColoredPoints(
+                vertices_target[point_first * vertices_per_point ..][0 .. point_count *
+                    vertices_per_point],
+                indices_target[point_first * indices_per_point ..][0 .. point_count *
+                    indices_per_point],
+                .{
+                    .positions = positions,
+                    .colors = cloud.getColors(),
+                    .radius = cloud.radius,
+                    .vertex_base = (point_first - batch_point_first) * vertices_per_point,
+                },
+            );
         }
+        const point_count = self.pointsClaimed() - batch_point_first;
+        assert(point_count > 0);
 
-        if (total_vertices == 0 or total_indices == 0) return;
-
-        const fi = self.frame_index;
-
-        // Grow buffers if needed
-        if (self.frame_vertex_offset + total_vertices > self.vertex_capacities[fi]) {
-            try self.growVertexBuffer(fi, self.frame_vertex_offset + total_vertices);
-        }
-        if (self.frame_index_offset + total_indices > self.index_capacities[fi]) {
-            try self.growIndexBuffer(fi, self.frame_index_offset + total_indices);
-        }
-
-        // Get buffer pointers
-        const vb = self.vertex_buffers[fi];
-        const ib = self.index_buffers[fi];
-
-        const vb_ptr: [*]ColoredPointVertex = @ptrCast(@alignCast(vb.msgSend(*anyopaque, "contents", .{})));
-        const ib_ptr: [*]u32 = @ptrCast(@alignCast(ib.msgSend(*anyopaque, "contents", .{})));
-
-        // Track global clip bounds (use first cloud's clip, or compute union)
-        // For simplicity, use the clip bounds from the first cloud
-        // (In practice, colored point clouds from canvas will share clip bounds)
-        var clip_bounds: [4]f32 = .{ 0, 0, 99999, 99999 };
-        if (colored_point_clouds.len > 0) {
-            const first = colored_point_clouds[0];
-            clip_bounds = .{ first.clip_x, first.clip_y, first.clip_width, first.clip_height };
-        }
-
-        // Expand all colored point clouds to quads with per-vertex colors
-        var vertex_offset = self.frame_vertex_offset;
-        var index_offset = self.frame_index_offset;
-        const base_vertex = vertex_offset;
-        const base_index = index_offset;
-
-        for (colored_point_clouds) |cpc| {
-            const positions = cpc.getPositions();
-            const colors = cpc.getColors();
-            if (positions.len == 0) continue;
-
-            const radius = cpc.radius;
-
-            // Generate quad vertices for each point with its color
-            for (positions, colors) |pos, color| {
-                const pt_base = vertex_offset;
-                const hsla = [4]f32{ color.h, color.s, color.l, color.a };
-
-                // Quad corners with UV for SDF + color
-                // 0--1
-                // |  |
-                // 3--2
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x - radius,
-                    .y = pos.y - radius,
-                    .u = -1.0,
-                    .v = -1.0,
-                    .color = hsla,
-                };
-                vertex_offset += 1;
-
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x + radius,
-                    .y = pos.y - radius,
-                    .u = 1.0,
-                    .v = -1.0,
-                    .color = hsla,
-                };
-                vertex_offset += 1;
-
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x + radius,
-                    .y = pos.y + radius,
-                    .u = 1.0,
-                    .v = 1.0,
-                    .color = hsla,
-                };
-                vertex_offset += 1;
-
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x - radius,
-                    .y = pos.y + radius,
-                    .u = -1.0,
-                    .v = 1.0,
-                    .color = hsla,
-                };
-                vertex_offset += 1;
-
-                // Two triangles: 0-1-2 and 0-2-3
-                ib_ptr[index_offset] = pt_base;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 1;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 2;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 2;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 3;
-                index_offset += 1;
-            }
-        }
-
-        // SINGLE DRAW CALL for ALL points!
+        const first = clouds[0];
         const uniforms = ColoredPointCloudUniforms{
-            .clip_bounds = clip_bounds,
+            .clip_bounds = .{ first.clip_x, first.clip_y, first.clip_width, first.clip_height },
         };
-
-        const total_index_count = index_offset - base_index;
-
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
-
+        // Indices are relative to the batch's first vertex, where the buffer binds.
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            vb.value,
-            @as(c_ulong, base_vertex * @sizeOf(ColoredPointVertex)),
+            vertex_buffer.value,
+            @as(c_ulong, batch_point_first) * vertices_per_point * @sizeOf(ColoredPointVertex),
             @as(c_ulong, 0),
         });
-
         encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
             @as(*const anyopaque, @ptrCast(&uniforms)),
             @as(c_ulong, @sizeOf(ColoredPointCloudUniforms)),
             @as(c_ulong, 1),
         });
-
         encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-            @as(*const anyopaque, @ptrCast(&viewport_size)),
+            @as(*const anyopaque, @ptrCast(&options.viewport_size)),
             @as(c_ulong, @sizeOf([2]f32)),
             @as(c_ulong, 2),
         });
-
-        encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
+        encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:" ++
+            "indexBufferOffset:", .{
             @backingInt(mtl.MTLPrimitiveType.triangle),
-            @as(c_ulong, total_index_count),
+            @as(c_ulong, point_count) * indices_per_point,
             @backingInt(mtl.MTLIndexType.uint32),
-            ib.value,
-            @as(c_ulong, base_index * @sizeOf(u32)),
+            index_buffer.value,
+            @as(c_ulong, batch_point_first) * indices_per_point * @sizeOf(u32),
         });
-
-        self.frame_vertex_offset = vertex_offset;
-        self.frame_index_offset = index_offset;
     }
 
-    fn growVertexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
-        const new_capacity = @max(min_capacity, self.vertex_capacities[frame] * 2);
-        self.vertex_buffers[frame].release();
-        self.vertex_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(ColoredPointVertex));
-        self.vertex_capacities[frame] = new_capacity;
-    }
-
-    fn growIndexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
-        const new_capacity = @max(min_capacity, self.index_capacities[frame] * 2);
-        self.index_buffers[frame].release();
-        self.index_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(u32));
-        self.index_capacities[frame] = new_capacity;
+    fn pointsClaimed(self: *const Self) u32 {
+        return self.geometry_usage.counts[@backingInt(GeometryPool.colored_points)];
     }
 };
+
+const vertices_per_point: u32 = 4;
+const indices_per_point: u32 = 6;
+/// Quad corners in SDF UV space, ordered 0--1 over 3--2.
+const quad_corners = [vertices_per_point][2]f32{ .{ -1, -1 }, .{ 1, -1 }, .{ 1, 1 }, .{ -1, 1 } };
+
+/// Hot loop: expand each point into a quad of half-size `radius` carrying the
+/// point's HSLA color. Indices start at `vertex_base`, the cloud's first vertex
+/// relative to the batch.
+fn expandColoredPoints(
+    vertices: []ColoredPointVertex,
+    indices: []u32,
+    cloud: struct {
+        positions: []const scene.Point,
+        colors: []const scene.Hsla,
+        radius: f32,
+        vertex_base: u32,
+    },
+) void {
+    assert(cloud.colors.len == cloud.positions.len);
+    assert(vertices.len == cloud.positions.len * vertices_per_point);
+    assert(indices.len == cloud.positions.len * indices_per_point);
+    for (cloud.positions, cloud.colors, 0..) |position, color, point| {
+        const local: u32 = @intCast(point * vertices_per_point);
+        const hsla = [4]f32{ color.h, color.s, color.l, color.a };
+        // Multiplying by ±1 is exact, so corners equal `position ± radius` bit for bit.
+        for (quad_corners, vertices[local..][0..vertices_per_point]) |corner, *vertex| {
+            vertex.* = .{
+                .x = position.x + corner[0] * cloud.radius,
+                .y = position.y + corner[1] * cloud.radius,
+                .u = corner[0],
+                .v = corner[1],
+                .color = hsla,
+            };
+        }
+
+        // Two triangles: 0-1-2 and 0-2-3.
+        const base = cloud.vertex_base + local;
+        const index_base = point * indices_per_point;
+        indices[index_base..][0..indices_per_point].* = .{
+            base, base + 1, base + 2, base, base + 2, base + 3,
+        };
+    }
+}
 
 // =============================================================================
 // Pipeline Creation
@@ -487,27 +445,4 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     std.debug.print("Colored point cloud pipeline created successfully\n", .{});
     return objc.Object.fromId(pipeline_ptr);
-}
-
-fn createBuffer(device: objc.Object, size: u32) !objc.Object {
-    const unified_memory = device.msgSend(bool, "hasUnifiedMemory", .{});
-    const storage: mtl.MTLResourceOptions = if (unified_memory)
-        .{ .storage_mode = .shared }
-    else
-        .{ .storage_mode = .managed };
-
-    const buffer_ptr = device.msgSend(
-        ?*anyopaque,
-        "newBufferWithLength:options:",
-        .{
-            @as(c_ulong, size),
-            @as(c_ulong, @bitCast(storage)),
-        },
-    );
-
-    if (buffer_ptr == null) {
-        return error.BufferCreationFailed;
-    }
-
-    return objc.Object.fromId(buffer_ptr);
 }

@@ -24,9 +24,6 @@ const polyline_pipeline = @import("polyline_pipeline.zig");
 const point_cloud_pipeline = @import("point_cloud_pipeline.zig");
 const colored_point_cloud_pipeline = @import("colored_point_cloud_pipeline.zig");
 const mesh_pool_mod = @import("../../../scene/mesh_pool.zig");
-const Polyline = @import("../../../scene/polyline.zig").Polyline;
-const PointCloud = @import("../../../scene/point_cloud.zig").PointCloud;
-const ColoredPointCloud = @import("../../../scene/colored_point_cloud.zig").ColoredPointCloud;
 
 /// Pipeline references for batch rendering
 pub const Pipelines = struct {
@@ -123,14 +120,28 @@ fn drawPipelineBatch(
         .svg => |svgs| drawSvgBatch(encoder, svgs, pipelines.*, viewport_size, stats),
         .image => |images| drawImageBatch(encoder, images, pipelines.*, viewport_size, stats),
         .path => |paths| drawPathBatch(encoder, paths, scene, pipelines.*, viewport_size, stats),
-        .polyline => |polylines| {
-            drawPolylineBatch(encoder, polylines, pipelines.*, viewport_size, stats);
+        // Mesh geometry is claimed against the window budget; the frame number
+        // names the failing frame if a claim exceeds it.
+        .polyline => |polylines| if (pipelines.polyline) |plp| {
+            plp.renderBatch(encoder, polylines, .{
+                .viewport_size = viewport_size,
+                .frame = scene.frame_count_finished,
+            });
+            if (stats) |s| s.recordDrawCall();
         },
-        .point_cloud => |point_clouds| {
-            drawPointCloudBatch(encoder, point_clouds, pipelines.*, viewport_size, stats);
+        .point_cloud => |point_clouds| if (pipelines.point_cloud) |pcp| {
+            pcp.renderBatch(encoder, point_clouds, .{
+                .viewport_size = viewport_size,
+                .frame = scene.frame_count_finished,
+            });
+            if (stats) |s| s.recordDrawCall();
         },
-        .colored_point_cloud => |clouds| {
-            drawColoredPointCloudBatch(encoder, clouds, pipelines.*, viewport_size, stats);
+        .colored_point_cloud => |clouds| if (pipelines.colored_point_cloud) |cpcp| {
+            cpcp.renderBatch(encoder, clouds, .{
+                .viewport_size = viewport_size,
+                .frame = scene.frame_count_finished,
+            });
+            if (stats) |s| s.recordDrawCall();
         },
     }
 }
@@ -271,83 +282,14 @@ fn drawPathBatch(
     // Slice gradients to match the path batch (parallel arrays must stay aligned)
     const gradients = all_gradients[batch_offset..][0..paths.len];
 
-    pp.renderBatchWithGradients(encoder, paths, gradients, pool, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawPathBatch failed: {}\n", .{err});
-        }
-    };
+    pp.renderBatchWithGradients(encoder, paths, gradients, pool, .{
+        .viewport_size = viewport_size,
+        .frame = scene.frame_count_finished,
+    });
 
     if (stats) |s| {
         s.recordDrawCall();
         s.recordPaths(@intCast(paths.len));
-    }
-}
-
-/// Draw a batch of polylines using the polyline pipeline
-fn drawPolylineBatch(
-    encoder: objc.Object,
-    polylines: []const Polyline,
-    pipelines: Pipelines,
-    viewport_size: [2]f32,
-    stats: ?*render_stats.RenderStats,
-) void {
-    if (polylines.len == 0) return;
-    const plp = pipelines.polyline orelse return;
-
-    plp.renderBatch(encoder, polylines, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawPolylineBatch failed: {}\n", .{err});
-        }
-    };
-
-    if (stats) |s| {
-        s.recordDrawCall();
-        // TODO: Add recordPolylines to stats if needed
-    }
-}
-
-/// Draw a batch of point clouds using the point cloud pipeline
-fn drawPointCloudBatch(
-    encoder: objc.Object,
-    point_clouds: []const PointCloud,
-    pipelines: Pipelines,
-    viewport_size: [2]f32,
-    stats: ?*render_stats.RenderStats,
-) void {
-    if (point_clouds.len == 0) return;
-    const pcp = pipelines.point_cloud orelse return;
-
-    pcp.renderBatch(encoder, point_clouds, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawPointCloudBatch failed: {}\n", .{err});
-        }
-    };
-
-    if (stats) |s| {
-        s.recordDrawCall();
-        // TODO: Add recordPointClouds to stats if needed
-    }
-}
-
-fn drawColoredPointCloudBatch(
-    encoder: objc.Object,
-    colored_point_clouds: []const ColoredPointCloud,
-    pipelines: Pipelines,
-    viewport_size: [2]f32,
-    stats: ?*render_stats.RenderStats,
-) void {
-    if (colored_point_clouds.len == 0) return;
-    const cpcp = pipelines.colored_point_cloud orelse return;
-
-    cpcp.renderBatch(encoder, colored_point_clouds, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawColoredPointCloudBatch failed: {}\n", .{err});
-        }
-    };
-
-    if (stats) |s| {
-        s.recordDrawCall();
-        // TODO: Add recordColoredPointClouds to stats if needed
     }
 }
 
