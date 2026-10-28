@@ -1991,6 +1991,75 @@ test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
     try testing.expectEqualSlices(u8, saved[0..saved_len], current[0..current_len]);
 }
 
+test "glyph cache hits protect their shelf in every frame they are used" {
+    // Goal: a glyph used in the current frame is never evicted, although only
+    // its first hit in each frame stamps its shelf. Methodology: 'A' at 20 px
+    // and 'B' at 40 px take separate shelves in frame 1, and 'A' is hit there
+    // too, so a stamp that is merely non-zero would look current. In frame 2
+    // 'A' is hit twice in one batch, uploads are consumed, and every
+    // unprotected shelf is evicted. 'B's shelf (lowest y on a tie would be
+    // 'A's) must go; 'A' must keep its region and pixels.
+    const testing = std.testing;
+    var uploads: atlas_mod.AtlasUploads = undefined;
+    try uploads.init(testing.allocator, testing.io, .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 4096,
+    });
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+        .size = 128,
+        .uploads = &uploads,
+    });
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 40);
+
+    var run = try text_system.shapeText("AB", .regular, null);
+    defer run.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), run.glyphs.len);
+    const id_a = run.glyphs[0].glyph_id;
+    const id_b = run.glyphs[1].glyph_id;
+    const atlas = text_system.getAtlas();
+
+    _ = uploads.beginFrame(consumer);
+    const first = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    _ = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    const tall = try text_system.getGlyphSubpixel(id_b, 40, 0, 0);
+    try testing.expect(tall.region.y > first.region.y);
+    var saved: [128 * 128]u8 = undefined;
+    const saved_len = copyRegion(atlas, first.region, &saved);
+    const rows_frame_1 = atlas.rows_active;
+
+    _ = uploads.beginFrame(consumer);
+    const pair = [_]types.ShapedGlyph{ run.glyphs[0], run.glyphs[0] };
+    const subpixels = [_]u8{ 0, 0 };
+    var resolved: [2]CachedGlyph = undefined;
+    try text_system.resolveGlyphBatch(&pair, .regular, 20, &subpixels, &resolved);
+    try testing.expectEqual(first.region.y, resolved[1].region.y);
+    _ = uploads.consumeBegin(consumer);
+    uploads.consumeEnd(consumer);
+
+    // Each eviction frees one shelf, so the shelf count bounds the loop.
+    var evicted: u32 = 0;
+    while (evicted < atlas.shelves.len) : (evicted += 1) {
+        if (!text_system.cache.grayscale_atlas.evictOne()) break;
+    }
+    try testing.expectEqual(@as(u32, 1), evicted);
+    try testing.expect(atlas.rows_active < rows_frame_1);
+
+    const again = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    try testing.expectEqual(first.region.x, again.region.x);
+    try testing.expectEqual(first.region.y, again.region.y);
+    var current: [128 * 128]u8 = undefined;
+    const current_len = copyRegion(atlas, again.region, &current);
+    try testing.expectEqualSlices(u8, saved[0..saved_len], current[0..current_len]);
+}
+
 /// Copy a region of a CPU grayscale atlas into `out`, row by row (test helper).
 fn copyRegion(atlas: *const Atlas, region: atlas_mod.Region, out: []u8) usize {
     std.debug.assert(atlas.format == .grayscale);

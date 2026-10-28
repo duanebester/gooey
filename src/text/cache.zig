@@ -136,6 +136,9 @@ const GlyphEntry = struct {
     shelf: u16,
     generation: u32,
     valid: bool,
+    /// Frame in which a hit last proved this entry live and stamped its shelf
+    /// used; 0 when none has. See `GlyphCache.lookupHit`.
+    frame_verified: u64,
 };
 
 /// Why `lookupHit` found no live glyph: where `store` puts the re-render.
@@ -282,11 +285,29 @@ pub const GlyphCache = struct {
     /// This runs for every glyph drawn, so it returns a pointer: returning the
     /// glyph by value as an optional copied it through the stack twice and
     /// doubled the cost of a hit.
+    ///
+    /// Only the first hit on an entry in each frame checks its shelf and
+    /// stamps it used; repeat hits that frame return at once. That is exact:
+    /// the first hit stamped the shelf with `frame`, eviction takes only
+    /// shelves used before every open frame, and the clock has not passed
+    /// `frame` while the caller still holds it, since eviction and `clear` run
+    /// under the same text system mutex as the caller's lookup. `clear` also
+    /// drops every entry, and `store` resets the stamp.
     inline fn lookupHit(self: *Self, key: GlyphKey, frame: u64) ?*const CachedGlyph {
+        std.debug.assert(frame > 0);
         const index = self.findEntry(key) orelse return null;
         const entry = &self.entries[index];
+        if (entry.frame_verified == frame) {
+            // Checked only with runtime safety: the hit path must not load
+            // the shelf, and ReleaseFast may keep loads an assert needs.
+            if (std.debug.runtime_safety) {
+                std.debug.assert(self.grayscale_atlas.isLive(entry.shelf, entry.generation));
+            }
+            return &entry.glyph;
+        }
         if (!self.grayscale_atlas.isLive(entry.shelf, entry.generation)) return null;
         self.grayscale_atlas.touch(entry.shelf, frame);
+        entry.frame_verified = frame;
         return &entry.glyph;
     }
 
@@ -328,6 +349,7 @@ pub const GlyphCache = struct {
             .shelf = rendered.shelf,
             .generation = rendered.generation,
             .valid = true,
+            .frame_verified = 0,
         };
         switch (lookup_result) {
             .stale => |index| {
