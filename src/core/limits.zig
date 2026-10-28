@@ -669,12 +669,14 @@ pub const AtlasLimits = struct {
         .svg_icon_size_max = 128,
     };
 
-    /// Showcase holds 132 of 1024 glyph rows at 1x and 480 at 2x, 44 SVG rows,
-    /// and 324 of 1024 image rows. Textures: 1 + 4 + 4 MiB. A full 1024² RGBA
-    /// atlas uploads in 4 frames.
+    /// The glyph atlas is 2048² for Retina display text: a frame of 70 distinct
+    /// 52 pt glyphs at 2x needs more than 1024 shelf rows once glyphs are cached
+    /// per subpixel variant. Showcase holds 132 glyph rows at 1x and 480 at 2x,
+    /// 44 SVG rows, and 324 of 1024 image rows. Textures: 4 + 4 + 4 MiB. A full
+    /// 1024² RGBA atlas uploads in 4 frames.
     pub const standard: AtlasLimits = .{
         .upload_bytes_frame_max = 1024 * 1024,
-        .text_size = 1_024,
+        .text_size = 2_048,
         .svg_size = 1_024,
         .image_size = 1_024,
         .svg_icon_size_max = 256,
