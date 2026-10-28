@@ -20,7 +20,7 @@
 //! the same field — no schema changes needed beyond the description.
 
 const std = @import("std");
-const Color = @import("../core/geometry.zig").Color;
+const Color = @import("../geometry/geometry.zig").Color;
 const Theme = @import("../ui/theme.zig").Theme;
 
 // =============================================================================

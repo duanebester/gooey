@@ -101,6 +101,7 @@ fn pinCuratedCore() void {
 fn pinNamespaces() void {
     comptime {
         _ = gooey.core;
+        _ = gooey.geometry;
         _ = gooey.input;
         _ = gooey.scene;
         _ = gooey.context;
@@ -135,19 +136,24 @@ fn pinNamespaces() void {
 // and grouped by namespace so a failing build clearly says *which*
 // namespace lost the name.
 
-/// `gooey.core` — primitive types reached for by layout-aware
-/// examples (sizing in `Corners` / `Edges` / `Size`, custom shader
-/// types in shader demos). `Color` lives on the flat-7 above; do not
-/// double-pin it here.
+/// `gooey.core` — custom shader types reached for in shader demos.
 fn pinTier1NamespacedCore() void {
     comptime {
-        _ = gooey.core.Point;
-        _ = gooey.core.Size;
-        _ = gooey.core.Rect;
-        _ = gooey.core.Bounds;
-        _ = gooey.core.Edges;
-        _ = gooey.core.Corners;
         _ = gooey.core.CustomShader;
+    }
+}
+
+/// `gooey.geometry` — value types reached for by layout-aware examples
+/// (sizing in `Corners` / `Edges` / `Size`). `Color` lives on the flat-7
+/// above; do not double-pin it here.
+fn pinTier1NamespacedGeometry() void {
+    comptime {
+        _ = gooey.geometry.Point;
+        _ = gooey.geometry.Size;
+        _ = gooey.geometry.Rect;
+        _ = gooey.geometry.Bounds;
+        _ = gooey.geometry.Edges;
+        _ = gooey.geometry.Corners;
     }
 }
 
@@ -374,6 +380,7 @@ test "tier 1 public API surface compiles" {
         pinNamespaces();
 
         pinTier1NamespacedCore();
+        pinTier1NamespacedGeometry();
         pinTier1NamespacedInput();
         pinTier1NamespacedScene();
         pinTier1NamespacedContext();

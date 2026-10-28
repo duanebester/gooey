@@ -52,7 +52,7 @@ const WindowOptions = platform.WindowOptions;
 const GlassStyle = platform.GlassStyle;
 
 // Core
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 const Color = geometry.Color;
 const shader_mod = @import("../core/shader.zig");
 

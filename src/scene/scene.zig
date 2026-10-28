@@ -11,7 +11,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 const limits = @import("../core/limits.zig");
 const reservation = @import("../core/reservation.zig");
 const svg_instance_mod = @import("svg_instance.zig");

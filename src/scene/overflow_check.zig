@@ -159,7 +159,7 @@ fn cpuMissingAtlas(gpa: std.mem.Allocator) !void {
         defer renderer.deinit(gpa);
         var pixels: [8 * 8]u32 = undefined;
         const target = cpu.raster.Target{ .pixels = &pixels, .width = 8, .height = 8, .stride = 8 };
-        const clear = gooey.core.geometry.Color.rgba(0, 0, 0, 1);
+        const clear = gooey.geometry.Color.rgba(0, 0, 0, 1);
         // No atlas is bound: must panic inside `draw`.
         _ = renderer.draw(target, &scene, .{ .scale_factor = 1 }, clear);
     } else {

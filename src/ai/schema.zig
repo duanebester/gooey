@@ -21,7 +21,7 @@
 
 const std = @import("std");
 const DrawCommand = @import("draw_command.zig").DrawCommand;
-const Color = @import("../core/geometry.zig").Color;
+const Color = @import("../geometry/geometry.zig").Color;
 const ThemeColor = @import("theme_color.zig").ThemeColor;
 const SemanticToken = @import("theme_color.zig").SemanticToken;
 const semantic_token_list = @import("theme_color.zig").semantic_token_list;

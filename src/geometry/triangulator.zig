@@ -7,9 +7,9 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const limits = @import("limits.zig");
+const limits = @import("../core/limits.zig");
 const vec2_mod = @import("vec2.zig");
-const fixed_array_mod = @import("fixed_array.zig");
+const fixed_array_mod = @import("../core/fixed_array.zig");
 
 // =============================================================================
 // Re-exports — canonical definitions live in dedicated modules

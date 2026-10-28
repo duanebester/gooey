@@ -60,7 +60,7 @@ const history_mod = @import("edit_history.zig");
 const EditHistory = history_mod.EditHistory;
 const Edit = history_mod.Edit;
 
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 const focus_mod = @import("../context/focus.zig");
 
 const Scene = scene_mod.Scene;

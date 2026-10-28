@@ -29,7 +29,7 @@
 //! is where nearly all pixels of a typical UI frame are written.
 
 const std = @import("std");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 
 const assert = std.debug.assert;
 const Color = geometry.Color;

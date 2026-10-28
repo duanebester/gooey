@@ -4,7 +4,7 @@
 const std = @import("std");
 const objc = @import("objc");
 const input = @import("../../input/events.zig");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 const appkit = @import("appkit.zig");
 const Window = @import("window.zig").Window;
 

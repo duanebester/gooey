@@ -42,7 +42,7 @@
 //!   and points per frame, and the framebuffer bounds the pixels per polygon.
 
 const std = @import("std");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const GradientUniforms = @import("../../scene/gradient_uniforms.zig").GradientUniforms;
 const raster = @import("raster.zig");

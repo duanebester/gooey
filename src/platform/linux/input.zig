@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const input = @import("../../input/events.zig");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 const wayland = @import("wayland.zig");
 
 // =============================================================================
