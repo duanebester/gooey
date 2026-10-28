@@ -127,7 +127,7 @@ pub const colored_point_cloud_shader_source =
     \\    // From a 6.7 device pixel radius up it is the historical falloff over
     \\    // the outer 15% of the radius. Smaller points get a one-pixel band that
     \\    // moves outward to straddle the edge, so a sub-pixel dot keeps about
-    \\    // its area. MSAA does not change it: the fragment runs once per pixel.
+    \\    // its area.
     \\    float radius_px = 1.0 / max(uv_pixel, 1e-6);
     \\    float dist = length(in.uv);
     \\    float alpha;
@@ -196,11 +196,11 @@ pub const ColoredPointCloudPipeline = struct {
         return @as(u64, scene_limits.colored_point_count_frame_max) * @sizeOf(ColoredPoint);
     }
 
-    pub fn init(device: objc.Object, sample_count: u32, limits: *const ResourceLimits) !Self {
+    pub fn init(device: objc.Object, limits: *const ResourceLimits) !Self {
         const scene_limits = &limits.scene;
-        assert(sample_count > 0);
+        assert(device.value != null);
         assert(scene_limits.check() == null);
-        const pipeline_state = try createPipeline(device, sample_count);
+        const pipeline_state = try createPipeline(device);
         errdefer pipeline_state.release();
 
         const point_buffers = try pipelines.createFrameBuffers(
@@ -323,7 +323,7 @@ fn copyColoredPoints(
 // Pipeline Creation
 // =============================================================================
 
-fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+fn createPipeline(device: objc.Object) !objc.Object {
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,
@@ -375,15 +375,18 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, pipelines.sample_count)});
 
     // Configure color attachment for premultiplied alpha blending
     const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
     const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
 
+    // The fragment shader outputs premultiplied alpha, so source RGB blends
+    // with ONE, as Vulkan's mesh pipelines do. With SOURCE_ALPHA the point
+    // falloff would apply twice (rgb * a * a).
     attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attachment0.msgSend(void, "setBlendingEnabled:", .{true});
-    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
+    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
     attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
     attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
     attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});

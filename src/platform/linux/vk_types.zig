@@ -75,25 +75,9 @@ pub const MeshHeader = extern struct {
     }
 };
 
-/// One de-indexed path triangle vertex: the source `PathVertex` plus the
-/// triangle's edge modes, two bits per edge in order (v0→v1, v1→v2, v2→v0),
-/// values from `vk_mesh_edges.EdgeMode`. All three vertices of a triangle carry
-/// the same modes; the vertex shader reads its two neighbours from the buffer.
-/// The modes are stored as an integral float (0..63) because the shader reads
-/// the payload as `float[]`; a small integer bit pattern would be a denormal,
-/// which a GPU may flush to zero on load.
-pub const TriangleVertex = extern struct {
-    x: f32,
-    y: f32,
-    u: f32,
-    v: f32,
-    edge_modes: f32,
-
-    comptime {
-        assert(@sizeOf(TriangleVertex) == 20);
-        assert(@offsetOf(TriangleVertex, "edge_modes") == 16);
-    }
-};
+/// One de-indexed path triangle vertex with its triangle's edge modes. Shared
+/// with Metal, which reads the same record layout.
+pub const TriangleVertex = @import("../mesh_edges.zig").TriangleVertex;
 
 pub const MeshCapacity = struct {
     counts: [4]u32,

@@ -1301,11 +1301,13 @@ pub const Window = struct {
 
     /// Get renderer capabilities.
     pub fn getRendererCapabilities(self: *const Self) interface_mod.RendererCapabilities {
-        assert(self.renderer.sample_count >= 1);
+        assert(self.renderer.device.value != null);
+        // One sample per pixel; edges are anti-aliased analytically.
+        comptime assert(metal.pipelines.sample_count == 1);
         return .{
             .max_texture_size = 4096, // Could query from Metal device
-            .msaa = true,
-            .msaa_sample_count = self.renderer.sample_count,
+            .msaa = false,
+            .msaa_sample_count = metal.pipelines.sample_count,
             .unified_memory = self.renderer.unified_memory,
             .name = "Metal",
         };

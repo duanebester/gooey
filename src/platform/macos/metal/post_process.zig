@@ -24,7 +24,6 @@ pub fn renderFullPipeline(
     layer: objc.Object,
     scene: *const scene_mod.Scene,
     clear_color: geometry.Color,
-    msaa_texture: objc.Object,
     unit_vertex_buffer: objc.Object,
     unified_pipeline: ?objc.Object,
     unified_ring: *scene_renderer.UnifiedPrimitiveRing,
@@ -43,12 +42,13 @@ pub fn renderFullPipeline(
     // Atlas blits precede every pass that samples the atlases.
     atlas_textures.encodeUploads(command_buffer);
 
-    // === Pass 1: Render scene to front_texture (with MSAA resolve) ===
+    // === Pass 1: Render scene to front_texture ===
     {
-        const rp = render_pass.createRenderPass(.{
-            .msaa_texture = msaa_texture,
-            .resolve_texture = pp.front_texture.?,
+        const rp = render_pass.createSimpleRenderPass(.{
+            .texture = pp.front_texture.?,
             .clear_color = clear_color,
+            .load_action = .clear,
+            .store_action = .store,
         }) orelse return;
 
         const encoder = render_pass.createEncoder(command_buffer, rp) orelse return;

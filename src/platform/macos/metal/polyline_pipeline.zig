@@ -4,9 +4,11 @@
 //! Optimized for chart data visualization with thousands of connected points.
 //!
 //! The GPU buffer holds source points only. The vertex shader expands each line
-//! segment (one instance) into a butt-ended quad, using the same IEEE operations
-//! as the CPU expansion it replaced, so the buffer stores 8 B per point rather
-//! than 56 B per segment (4 vertices and 6 indices).
+//! segment (one instance) into a butt-ended quad, so the buffer stores 8 B per
+//! point rather than 56 B per segment (4 vertices and 6 indices). Edges are
+//! anti-aliased analytically, as in Vulkan's `strip_expanded.vert`: the quad
+//! grows one logical pixel across its sides (and the line's two end caps) and
+//! the fragment shader fades coverage across that fringe.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -34,19 +36,32 @@ pub const polyline_shader_source =
     \\    float4 color;       // HSLA color
     \\    float4 clip_bounds; // x, y, width, height
     \\    float half_width;
-    \\    float _pad0;
+    \\    uint segment_count; // points - 1: only the line's two ends are capped
     \\    float _pad1;
     \\    float _pad2;
     \\};
     \\
-    \\// Quad corner (0--1 over 3--2) of each vertex of triangles 0-1-2 and 0-2-3.
-    \\constant uint quad_corners[6] = { 0, 1, 2, 0, 2, 3 };
+    \\// One logical pixel is at least one device pixel at every supported scale.
+    \\constant float aa_fringe = 1.0;
+    \\
+    \\// Quad corner of each vertex of triangles 0-1-2 and 0-2-3, as (along,
+    \\// across) signs: corner 0 is start+perp, 1 start-perp, 2 end-perp and
+    \\// 3 end+perp, the triangle order of the former CPU expansion.
+    \\constant float2 quad_corners[6] = {
+    \\    float2(-1.0, 1.0), float2(-1.0, -1.0), float2(1.0, -1.0),
+    \\    float2(-1.0, 1.0), float2(1.0, -1.0), float2(1.0, 1.0),
+    \\};
     \\
     \\struct VertexOut {
     \\    float4 position [[position]];
     \\    float4 color;
     \\    float4 clip_bounds;
     \\    float2 screen_pos;
+    \\    // Signed distances in logical pixels to the segment's two sides and its
+    \\    // start and end, positive inside. Affine, so interpolation is exact.
+    \\    float4 edge_distance;
+    \\    // Two bits per distance; 1 fades across that edge (mesh_edges.EdgeMode).
+    \\    uint edge_modes [[flat]];
     \\};
     \\
     \\float4 hsla_to_rgba(float4 hsla) {
@@ -68,7 +83,11 @@ pub const polyline_shader_source =
     \\}
     \\
     \\// One instance per segment: a butt-ended quad from points[segment] to
-    \\// points[segment + 1], half_width either side.
+    \\// points[segment + 1], half_width either side, grown by `aa_fringe` across
+    \\// both sides so their fade is rasterized. Only the line's first start cap
+    \\// and last end cap extend and fade; interior joints stay hard, so
+    \\// consecutive segments still overlap without a seam. Ported from Vulkan's
+    \\// strip_expanded.vert.
     \\vertex VertexOut polyline_vertex(
     \\    uint vid [[vertex_id]],
     \\    uint segment [[instance_id]],
@@ -77,33 +96,25 @@ pub const polyline_shader_source =
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
     \\    PolylineUniforms u = *uniforms;
-    \\    float2 p0 = points[segment];
-    \\    float2 p1 = points[segment + 1];
-    \\    uint corner = quad_corners[vid];
-    \\
-    \\    float2 pos;
-    \\    {
-    \\        // The same IEEE operations, in the same order, as the CPU expansion this
-    \\        // replaced: no contraction or reassociation, correctly rounded sqrt and
-    \\        // divide. The clang pragmas cover compilers without the METAL ones.
-    \\        #pragma METAL fp math_mode(safe)
-    \\        #pragma METAL fp contract(off)
-    \\        #pragma clang fp contract(off) reassociate(off)
-    \\        float dx = p1.x - p0.x;
-    \\        float dy = p1.y - p0.y;
-    \\        float len = precise::sqrt(dx * dx + dy * dy);
-    \\        float perp_x = 0.0;
-    \\        float perp_y = u.half_width;
-    \\        if (len > 0.0001) {
-    \\            perp_x = precise::divide(-dy, len) * u.half_width;
-    \\            perp_y = precise::divide(dx, len) * u.half_width;
-    \\        }
-    \\        // Corners 0 and 1 sit on p0, 2 and 3 on p1; 0 and 3 add the
-    \\        // perpendicular, 1 and 2 subtract it. Negation is exact.
-    \\        float2 end = corner < 2 ? p0 : p1;
-    \\        float2 perp = float2(perp_x, perp_y);
-    \\        pos = (corner == 0 || corner == 3) ? end + perp : end - perp;
+    \\    float2 start = points[segment];
+    \\    float2 end = points[segment + 1];
+    \\    float2 direction = end - start;
+    \\    float distance = length(direction);
+    \\    // Zero-length segments keep their degenerate quad: they cover no pixels.
+    \\    float2 along_unit = float2(1.0, 0.0);
+    \\    float2 across_unit = float2(0.0, 1.0);
+    \\    bool has_length = distance > 0.0001;
+    \\    if (has_length) {
+    \\        along_unit = direction / distance;
+    \\        across_unit = float2(-along_unit.y, along_unit.x);
     \\    }
+    \\    bool cap_start = has_length && segment == 0;
+    \\    bool cap_end = has_length && segment + 1 == u.segment_count;
+    \\    float2 corner = quad_corners[vid];
+    \\    float across = corner.y * (u.half_width + aa_fringe);
+    \\    float along = corner.x < 0.0 ? (cap_start ? -aa_fringe : 0.0) :
+    \\        distance + (cap_end ? aa_fringe : 0.0);
+    \\    float2 pos = start + along_unit * along + across_unit * across;
     \\
     \\    // Convert to NDC
     \\    float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
@@ -113,10 +124,19 @@ pub const polyline_shader_source =
     \\    out.color = hsla_to_rgba(u.color);
     \\    out.clip_bounds = u.clip_bounds;
     \\    out.screen_pos = pos;
+    \\    out.edge_distance = float4(u.half_width + across, u.half_width - across,
+    \\                               along, distance - along);
+    \\    out.edge_modes = 1u | (1u << 2) | (cap_start ? 1u << 4 : 0u) |
+    \\        (cap_end ? 1u << 6 : 0u);
     \\    return out;
     \\}
     \\
     \\fragment float4 polyline_fragment(VertexOut in [[stage_in]]) {
+    \\    // Derivatives first: they are undefined after a non-uniform discard.
+    \\    float4 edge_dx = dfdx(in.edge_distance);
+    \\    float4 edge_dy = dfdy(in.edge_distance);
+    \\    float4 edge_pixel = sqrt(edge_dx * edge_dx + edge_dy * edge_dy);
+    \\
     \\    // Clip test
     \\    float2 clip_min = in.clip_bounds.xy;
     \\    float2 clip_max = clip_min + in.clip_bounds.zw;
@@ -125,10 +145,19 @@ pub const polyline_shader_source =
     \\        discard_fragment();
     \\    }
     \\
-    \\    if (in.color.a < 0.001) discard_fragment();
+    \\    // Fade across every flagged edge over one device pixel centred on it.
+    \\    float4 distance_px = in.edge_distance / max(edge_pixel, float4(1e-6));
+    \\    float coverage = 1.0;
+    \\    for (uint edge = 0; edge < 4; edge++) {
+    \\        if (((in.edge_modes >> (2 * edge)) & 3) == 1) {
+    \\            coverage *= clamp(distance_px[edge] + 0.5, 0.0, 1.0);
+    \\        }
+    \\    }
+    \\    float alpha = in.color.a * coverage;
+    \\    if (alpha < 0.001) discard_fragment();
     \\
-    \\    // Output premultiplied alpha
-    \\    return float4(in.color.rgb * in.color.a, in.color.a);
+    \\    // Output premultiplied alpha (the pipeline blends with ONE).
+    \\    return float4(in.color.rgb * alpha, alpha);
     \\}
 ;
 
@@ -141,11 +170,15 @@ pub const PolylineUniforms = extern struct {
     color: [4]f32, // HSLA
     clip_bounds: [4]f32, // x, y, width, height
     half_width: f32,
-    _pad: [3]f32 = @splat(0),
+    /// Points - 1. The shader caps (extends and fades) only the line's first
+    /// start and last end, not the joints between segments.
+    segment_count: u32,
+    _pad: [2]f32 = @splat(0),
 };
 
 comptime {
     std.debug.assert(@sizeOf(PolylineUniforms) == 48);
+    std.debug.assert(@offsetOf(PolylineUniforms, "segment_count") == 36);
     std.debug.assert(@sizeOf(scene.Point) == 8);
 }
 
@@ -179,11 +212,11 @@ pub const PolylinePipeline = struct {
         return @as(u64, scene_limits.polyline_point_count_frame_max) * @sizeOf(scene.Point);
     }
 
-    pub fn init(device: objc.Object, sample_count: u32, limits: *const ResourceLimits) !Self {
+    pub fn init(device: objc.Object, limits: *const ResourceLimits) !Self {
         const scene_limits = &limits.scene;
-        assert(sample_count > 0);
+        assert(device.value != null);
         assert(scene_limits.check() == null);
-        const pipeline_state = try createPipeline(device, sample_count);
+        const pipeline_state = try createPipeline(device);
         errdefer pipeline_state.release();
 
         const point_buffers = try pipelines.createFrameBuffers(
@@ -259,7 +292,9 @@ pub const PolylinePipeline = struct {
                     polyline.clip_height,
                 },
                 .half_width = polyline.width * 0.5,
+                .segment_count = @intCast(points.len - 1),
             };
+            assert(uniforms.segment_count >= 1);
             // The shader reads `device` memory, so an 8 B-aligned offset suffices.
             encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
                 point_buffer.value,
@@ -287,7 +322,7 @@ pub const PolylinePipeline = struct {
 // Helper Functions
 // =============================================================================
 
-fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+fn createPipeline(device: objc.Object) !objc.Object {
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,
@@ -338,15 +373,17 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, pipelines.sample_count)});
 
     const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
     const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
 
-    // Configure blending
+    // The fragment shader outputs premultiplied alpha, so source RGB blends
+    // with ONE, as the path pipeline and Vulkan's mesh pipelines do. With
+    // SOURCE_ALPHA the edge fade would apply twice (rgb * a * a).
     attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attachment0.msgSend(void, "setBlendingEnabled:", .{true});
-    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
+    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
     attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
     attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
     attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});

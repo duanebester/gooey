@@ -8,16 +8,7 @@ const objc = @import("objc");
 const mtl = @import("api.zig");
 const geometry = @import("../../../core/geometry.zig");
 
-/// Configuration for creating a render pass
-pub const RenderPassConfig = struct {
-    msaa_texture: objc.Object,
-    resolve_texture: objc.Object,
-    clear_color: geometry.Color,
-    load_action: mtl.MTLLoadAction = .clear,
-    store_action: mtl.MTLStoreAction = .multisample_resolve,
-};
-
-/// Configuration for a simple (non-MSAA) render pass
+/// Configuration for a single-sample render pass (`pipelines.sample_count`).
 pub const SimpleRenderPassConfig = struct {
     texture: objc.Object,
     clear_color: ?geometry.Color = null,
@@ -25,28 +16,7 @@ pub const SimpleRenderPassConfig = struct {
     store_action: mtl.MTLStoreAction = .store,
 };
 
-/// Create a render pass descriptor with MSAA configuration
-pub fn createRenderPass(config: RenderPassConfig) ?objc.Object {
-    const MTLRenderPassDescriptor = objc.getClass("MTLRenderPassDescriptor") orelse return null;
-    const render_pass = MTLRenderPassDescriptor.msgSend(objc.Object, "renderPassDescriptor", .{});
-
-    const color_attachments = render_pass.msgSend(objc.Object, "colorAttachments", .{});
-    const color_attachment_0 = color_attachments.msgSend(
-        objc.Object,
-        "objectAtIndexedSubscript:",
-        .{@as(c_ulong, 0)},
-    );
-
-    color_attachment_0.msgSend(void, "setTexture:", .{config.msaa_texture.value});
-    color_attachment_0.msgSend(void, "setResolveTexture:", .{config.resolve_texture.value});
-    color_attachment_0.msgSend(void, "setLoadAction:", .{@backingInt(config.load_action)});
-    color_attachment_0.msgSend(void, "setStoreAction:", .{@backingInt(config.store_action)});
-    color_attachment_0.msgSend(void, "setClearColor:", .{mtl.MTLClearColor.fromColor(config.clear_color)});
-
-    return render_pass;
-}
-
-/// Create a simple render pass descriptor (no MSAA)
+/// Create a single-sample render pass descriptor that draws into `texture`.
 pub fn createSimpleRenderPass(config: SimpleRenderPassConfig) ?objc.Object {
     const MTLRenderPassDescriptor = objc.getClass("MTLRenderPassDescriptor") orelse return null;
     const render_pass = MTLRenderPassDescriptor.msgSend(objc.Object, "renderPassDescriptor", .{});

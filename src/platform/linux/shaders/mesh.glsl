@@ -7,12 +7,14 @@
 //     space, so interpolation is exact and mesh.frag converts them to device
 //     pixels with screen-space derivatives.
 //   edge_modes: two bits per distance (bits 2i..2i+1 for component i), values
-//     from vk_mesh_edges.EdgeMode:
+//     from mesh_edges.EdgeMode (src/platform/mesh_edges.zig):
 //     0 interior: no coverage change; the edge is drawn by the rasterizer.
 //     1 fade:     coverage *= clamp(distance_px + 0.5, 0, 1).
 //     2 underlap: full coverage up to half a pixel outside, discard beyond.
-//   Vertex shaders push every edge with a non-zero mode `aa_fringe` logical
-//   pixels outward so the faded band is rasterized.
+//   The faded band of every edge with a non-zero mode reaches `aa_fringe`
+//   logical pixels outward: triangles.vert adds a fringe quad outside each
+//   such edge and never moves a triangle's corners; strip and point vertex
+//   shaders grow their quads.
 // Triangle records are { x, y, u, v, edge_modes } with the three edge modes of
 // the triangle (v0->v1, v1->v2, v2->v0) as an integral float. Polyline strips
 // carry their segment count in params.x so only the line's ends are capped.

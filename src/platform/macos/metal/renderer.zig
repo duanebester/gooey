@@ -57,8 +57,6 @@ pub const Renderer = struct {
     colored_point_cloud_pipeline_state: ?colored_point_cloud_pipeline.ColoredPointCloudPipeline,
 
     quad_unit_vertex_buffer: ?objc.Object,
-    msaa_texture: ?objc.Object,
-    sample_count: u32,
 
     size: geometry.Size(f64),
     scale_factor: f64,
@@ -90,7 +88,6 @@ pub const Renderer = struct {
         const command_queue = device.msgSend(objc.Object, "newCommandQueue", .{});
 
         configureLayer(layer, device, size, scale_factor, limits.frame.in_flight_count);
-        const sample_count: u32 = 4;
 
         var unified_primitive_ring =
             try scene_renderer.UnifiedPrimitiveRing.init(device, limits);
@@ -116,8 +113,6 @@ pub const Renderer = struct {
             .point_cloud_pipeline_state = null,
             .colored_point_cloud_pipeline_state = null,
             .quad_unit_vertex_buffer = null,
-            .msaa_texture = null,
-            .sample_count = sample_count,
             .size = size,
             .scale_factor = scale_factor,
             .post_process_state = null,
@@ -126,20 +121,14 @@ pub const Renderer = struct {
         // Releases the ring and every optional resource created below.
         errdefer self.deinit();
 
-        self.msaa_texture = try pipelines.createMSAATexture(
-            device,
-            size.width,
-            size.height,
-            scale_factor,
-            sample_count,
-            unified_memory,
-        );
-
-        self.unified_pipeline_state = try pipelines.setupUnifiedPipeline(device, sample_count);
+        // One sample per pixel (`pipelines.sample_count`): no MSAA target exists,
+        // so the drawable is the only window-sized surface and resize recreates
+        // nothing.
+        self.unified_pipeline_state = try pipelines.setupUnifiedPipeline(device);
         self.quad_unit_vertex_buffer = try pipelines.createUnitVertexBuffer(device, unified_memory);
 
-        try self.initInstancePipelines(sample_count, limits);
-        try self.initMeshPipelines(sample_count, limits);
+        try self.initInstancePipelines(limits);
+        try self.initMeshPipelines(limits);
         return self;
     }
 
@@ -174,30 +163,23 @@ pub const Renderer = struct {
     /// buffers sized from `limits`. A failure here is fatal rather than
     /// skipped: a missing pipeline would silently drop primitives the scene
     /// accepted within its budget (CLAUDE.md §2).
-    fn initInstancePipelines(
-        self: *Self,
-        sample_count: u32,
-        limits: *const ResourceLimits,
-    ) !void {
-        assert(sample_count > 0);
+    fn initInstancePipelines(self: *Self, limits: *const ResourceLimits) !void {
+        assert(limits.check() == null);
         assert(self.text_pipeline_state == null);
         const device = self.device;
         self.text_pipeline_state = try text_pipeline.TextPipeline.init(
             device,
             mtl.MTLPixelFormat.bgra8unorm,
-            sample_count,
             limits,
             self.atlas_textures.text,
         );
         self.svg_pipeline_state = try svg_pipeline.SvgPipeline.init(
             device,
-            sample_count,
             limits,
             self.atlas_textures.svg,
         );
         self.image_pipeline_state = try image_pipeline.ImagePipeline.init(
             device,
-            sample_count,
             limits,
             self.atlas_textures.image,
         );
@@ -207,34 +189,23 @@ pub const Renderer = struct {
     /// geometry buffers sized from `limits`. A failure here is fatal rather
     /// than skipped: a missing pipeline would silently drop geometry the scene
     /// accepted within its budget (CLAUDE.md §2).
-    fn initMeshPipelines(
-        self: *Self,
-        sample_count: u32,
-        limits: *const ResourceLimits,
-    ) !void {
-        assert(sample_count > 0);
+    fn initMeshPipelines(self: *Self, limits: *const ResourceLimits) !void {
+        assert(limits.check() == null);
         assert(self.path_pipeline_state == null);
         const device = self.device;
         try checkMeshReservation(device, limits);
-        self.path_pipeline_state = try path_pipeline.PathPipeline.init(
-            device,
-            sample_count,
-            limits,
-        );
+        self.path_pipeline_state = try path_pipeline.PathPipeline.init(device, limits);
         self.polyline_pipeline_state = try polyline_pipeline.PolylinePipeline.init(
             device,
-            sample_count,
             limits,
         );
         self.point_cloud_pipeline_state = try point_cloud_pipeline.PointCloudPipeline.init(
             device,
-            sample_count,
             limits,
         );
         const ColoredPointCloudPipeline = colored_point_cloud_pipeline.ColoredPointCloudPipeline;
         self.colored_point_cloud_pipeline_state = try ColoredPointCloudPipeline.init(
             device,
-            sample_count,
             limits,
         );
     }
@@ -275,7 +246,6 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.msaa_texture) |tex| tex.release();
         if (self.unified_pipeline_state) |ps| ps.release();
         self.unified_primitive_ring.deinit();
         self.atlas_textures.deinit();
@@ -342,7 +312,6 @@ pub const Renderer = struct {
             self.layer,
             scene,
             clear_color,
-            self.msaa_texture.?,
             self.quad_unit_vertex_buffer.?,
             self.unified_pipeline_state,
             &self.unified_primitive_ring,
@@ -378,26 +347,15 @@ pub const Renderer = struct {
     }
 
     pub fn resize(self: *Self, size: geometry.Size(f64), scale_factor: f64) void {
+        assert(scale_factor > 0);
+        assert(size.width >= 0);
+        assert(size.height >= 0);
         self.size = size;
         self.scale_factor = scale_factor;
         self.layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
             .width = size.width * scale_factor,
             .height = size.height * scale_factor,
         }});
-
-        // Known CLAUDE.md §2 gap, tracked in docs/v0.4.0-plan.md: the MSAA texture
-        // is recreated at the drawable size on every resize. A budget-sized texture
-        // cannot replace it, because Metal validation requires the MSAA texture and
-        // its resolve texture to have the same size.
-        if (self.msaa_texture) |tex| tex.release();
-        self.msaa_texture = pipelines.createMSAATexture(
-            self.device,
-            size.width,
-            size.height,
-            scale_factor,
-            self.sample_count,
-            self.unified_memory,
-        ) catch return;
     }
 
     /// Bind the atlas journal this renderer consumes, keyed by its platform
@@ -432,12 +390,11 @@ pub const Renderer = struct {
         defer if (ca_scope) |scope| scope.commit();
 
         const drawable_info = render_pass.getNextDrawable(self.layer) orelse return;
-        const msaa_tex = self.msaa_texture orelse return;
-
-        const rp = render_pass.createRenderPass(.{
-            .msaa_texture = msaa_tex,
-            .resolve_texture = drawable_info.texture,
+        const rp = render_pass.createSimpleRenderPass(.{
+            .texture = drawable_info.texture,
             .clear_color = clear_color,
+            .load_action = .clear,
+            .store_action = .store,
         }) orelse return;
 
         const command_buffer = self.command_queue.msgSend(objc.Object, "commandBuffer", .{});
@@ -478,12 +435,11 @@ pub const Renderer = struct {
         defer if (ca_scope) |scope| scope.commit();
 
         const drawable_info = render_pass.getNextDrawable(self.layer) orelse return;
-        const msaa_tex = self.msaa_texture orelse return;
-
-        const rp = render_pass.createRenderPass(.{
-            .msaa_texture = msaa_tex,
-            .resolve_texture = drawable_info.texture,
+        const rp = render_pass.createSimpleRenderPass(.{
+            .texture = drawable_info.texture,
             .clear_color = clear_color,
+            .load_action = .clear,
+            .store_action = .store,
         }) orelse return;
 
         const command_buffer = self.command_queue.msgSend(objc.Object, "commandBuffer", .{});
