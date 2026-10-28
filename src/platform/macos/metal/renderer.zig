@@ -194,11 +194,7 @@ pub const Renderer = struct {
         assert(self.path_pipeline_state == null);
         const device = self.device;
         try checkMeshReservation(device, limits);
-        self.path_pipeline_state = try path_pipeline.PathPipeline.init(
-            self.allocator,
-            device,
-            limits,
-        );
+        self.path_pipeline_state = try path_pipeline.PathPipeline.init(device, limits);
         self.polyline_pipeline_state = try polyline_pipeline.PolylinePipeline.init(
             device,
             limits,

@@ -405,8 +405,9 @@ comptime {
 /// path index. `.standard`: 327,680 B per frame, 983,040 B per window for three
 /// frames, as before (16 B × 16,384 vertices + 4 B × 16,384 indices). `.nano`
 /// grows from 24,576 to 40,960 B per frame because its index budget is twice
-/// its vertex budget. The edge table adds 30 B of host memory per path index
-/// budget (491,540 B at `.standard`), reserved at init.
+/// its vertex budget. The edge table maps 30 B of host address space per path
+/// index budget at init (491,540 B at `.standard`); only the slots a frame's
+/// edges hash into become resident (`mesh_edges.EdgeTable`).
 ///
 /// Per frame: one classification pass over every path triangle (three hashed
 /// inserts each). Per draw: one claim of each path pool, one de-indexing copy
@@ -429,7 +430,6 @@ pub const PathPipeline = struct {
     geometry_usage: GeometryCounts,
     /// Edge modes of the frame being drawn, filled by `classifyEdges`.
     edges: mesh_edges.EdgeTable,
-    gpa: std.mem.Allocator,
 
     const Self = @This();
 
@@ -438,7 +438,7 @@ pub const PathPipeline = struct {
         return @as(u64, scene_limits.path_index_count_frame_max) * @sizeOf(TriangleVertex);
     }
 
-    pub fn init(gpa: std.mem.Allocator, device: objc.Object, limits: *const ResourceLimits) !Self {
+    pub fn init(device: objc.Object, limits: *const ResourceLimits) !Self {
         const scene_limits = &limits.scene;
         assert(scene_limits.check() == null);
         assert(scene_limits.path_index_count_frame_max > 0);
@@ -454,8 +454,8 @@ pub const PathPipeline = struct {
         errdefer triangle_buffers.release();
 
         var edges: mesh_edges.EdgeTable = .{};
-        try edges.init(gpa, scene_limits.path_index_count_frame_max);
-        errdefer edges.deinit(gpa);
+        try edges.init(scene_limits.path_index_count_frame_max);
+        errdefer edges.deinit();
 
         return .{
             .pipeline_state = pipeline_state,
@@ -464,14 +464,13 @@ pub const PathPipeline = struct {
             .geometry_budget = GeometryCounts.from_limits(scene_limits),
             .geometry_usage = .{},
             .edges = edges,
-            .gpa = gpa,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.pipeline_state.release();
         self.triangle_buffers.release();
-        self.edges.deinit(self.gpa);
+        self.edges.deinit();
         self.* = undefined;
     }
 

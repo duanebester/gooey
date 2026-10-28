@@ -42,11 +42,16 @@
 //!
 //! Resource sketch (CLAUDE.md §7): one entry per path index the frame may
 //! submit (`SceneLimits.path_index_count_frame_max`), at most two thirds full:
-//! 20 B × 1.5 = 30 B per index budget, 491,540 B at `.standard`, reserved and
-//! zeroed at init. An entry is live only when its stamp is the frame's, so a
-//! frame starts without clearing the table. Per frame: three inserts
-//! and three lookups per submitted triangle, each a 64-bit hash and a short
-//! linear probe. Nothing allocates after init. The fringe quads add no
+//! 20 B × 1.5 = 30 B per index budget, 491,540 B at `.standard` and 7,864,340 B
+//! at `.large`. The table is mapped from fresh pages at init and not cleared:
+//! the pages are zero and not resident until touched. A frame hashes only into
+//! the first 1.5 × (its own path index count) entries, so resident memory
+//! follows the largest frame drawn so far, 30 B per path index it submitted;
+//! an app that draws no paths keeps one page. An entry is live only when its
+//! stamp is the frame's, so a frame starts without clearing the table. Per
+//! frame: one pass summing the admitted paths' index counts, then three
+//! inserts and three lookups per submitted triangle, each a 64-bit hash and a
+//! short linear probe. Nothing allocates after init. The fringe quads add no
 //! memory: the shaders generate them from the triangle's three records, 21
 //! draw vertices per triangle.
 
@@ -142,42 +147,77 @@ const Entry = extern struct {
 };
 
 pub const EdgeTable = struct {
+    /// Room for `edge_count_max` edges, mapped from fresh pages at init and
+    /// never cleared there: fresh pages are zero by kernel contract, and stamp
+    /// 0 marks an entry empty. A frame probes only its first `slot_count`
+    /// entries, so the resident part follows the frames' edge counts, not the
+    /// budget: an app that draws no paths keeps one page resident.
     entries: []Entry = &.{},
     stamp: u32 = 0,
-    /// Edges inserted this frame; bounded by `edge_count_max`.
+    /// Entries this frame hashes into: 1.5 × its edge bound, plus one.
+    slot_count: u32 = 0,
+    /// The largest `slot_count` of any frame; no entry past it was written.
+    slot_count_high: u32 = 0,
+    /// Edges inserted this frame; bounded by `edge_count_frame`.
     edge_count: u32 = 0,
+    /// This frame's edge bound: the path indices `classify` admitted.
+    edge_count_frame: u32 = 0,
     edge_count_max: u32 = 0,
 
     /// Reserve room for `edge_count_max` edges per frame (the path index
     /// budget: a triangle's three indices bring three edges).
-    pub fn init(self: *EdgeTable, gpa: std.mem.Allocator, edge_count_max: u32) !void {
+    pub fn init(self: *EdgeTable, edge_count_max: u32) !void {
         assert(self.entries.len == 0);
         assert(edge_count_max > 0);
-        // Load factor at most 2/3 keeps linear probes short.
-        const capacity: usize = @as(usize, edge_count_max) + edge_count_max / 2 + 1;
-        self.entries = try gpa.alloc(Entry, capacity);
-        @memset(self.entries, std.mem.zeroes(Entry));
+        // Fresh anonymous pages (CLAUDE.md §21): zero, and not resident
+        // until a frame touches them. A general-purpose allocator could hand
+        // back reused bytes, and `Allocator.alloc` fills safe builds with
+        // 0xAA, which would touch every page; `rawAlloc` does neither.
+        const entry_count = slot_count_for(edge_count_max);
+        const bytes = std.heap.page_allocator.rawAlloc(
+            @as(usize, entry_count) * @sizeOf(Entry),
+            .of(Entry),
+            @returnAddress(),
+        ) orelse return error.OutOfMemory;
+        self.entries = @as([*]Entry, @ptrCast(@alignCast(bytes)))[0..entry_count];
+        assert(self.entries[0].stamp == 0);
         self.stamp = 0;
+        self.slot_count = 0;
+        self.slot_count_high = 0;
         self.edge_count = 0;
+        self.edge_count_frame = 0;
         self.edge_count_max = edge_count_max;
         assert(self.entries.len > self.edge_count_max);
     }
 
-    pub fn deinit(self: *EdgeTable, gpa: std.mem.Allocator) void {
-        gpa.free(self.entries);
+    pub fn deinit(self: *EdgeTable) void {
+        assert(self.entries.len > 0);
+        // The pages go back to the kernel, which zeroes them for any next owner.
+        std.heap.page_allocator.rawFree(
+            std.mem.sliceAsBytes(self.entries),
+            .of(Entry),
+            @returnAddress(),
+        );
         self.* = .{};
     }
 
-    /// Start a frame: every entry written by earlier frames becomes empty.
-    pub fn begin(self: *EdgeTable) void {
+    /// Start a frame of at most `edge_count_frame` edges: every entry written
+    /// by earlier frames becomes empty.
+    pub fn begin(self: *EdgeTable, edge_count_frame: u32) void {
         assert(self.entries.len > 0);
+        assert(edge_count_frame <= self.edge_count_max);
         self.stamp +%= 1;
         if (self.stamp == 0) {
-            // Stamp wrap-around, once per 2^32 frames: really empty the table.
-            @memset(self.entries, std.mem.zeroes(Entry));
+            // Stamp wrap-around, once per 2^32 frames: really empty every
+            // entry a frame has written.
+            @memset(self.entries[0..self.slot_count_high], std.mem.zeroes(Entry));
             self.stamp = 1;
         }
+        self.slot_count = slot_count_for(edge_count_frame);
+        self.slot_count_high = @max(self.slot_count_high, self.slot_count);
+        assert(self.slot_count_high <= self.entries.len);
         self.edge_count = 0;
+        self.edge_count_frame = edge_count_frame;
     }
 
     /// Record one occurrence of an edge, drawn by path `path` with `fill`.
@@ -185,7 +225,7 @@ pub const EdgeTable = struct {
     pub fn insert(self: *EdgeTable, key: Key, path: PathIndex, fill: u32) void {
         const entry = self.slot(key);
         if (entry.stamp != self.stamp) {
-            assert(self.edge_count < self.edge_count_max);
+            assert(self.edge_count < self.edge_count_frame);
             self.edge_count += 1;
             entry.* = .{
                 .key = splitKey(key),
@@ -221,12 +261,15 @@ pub const EdgeTable = struct {
     /// The live entry for `key`, or the empty entry where it would go.
     fn slot(self: *EdgeTable, key: Key) *Entry {
         const split = splitKey(key);
-        var index: usize = @intCast(key % self.entries.len);
-        for (0..self.entries.len) |_| {
-            const entry = &self.entries[index];
+        assert(self.slot_count > 0);
+        assert(self.slot_count <= self.entries.len);
+        const slots = self.entries[0..self.slot_count];
+        var index: usize = @intCast(key % slots.len);
+        for (0..slots.len) |_| {
+            const entry = &slots[index];
             if (entry.stamp != self.stamp) return entry;
             if (entry.key[0] == split[0] and entry.key[1] == split[1]) return entry;
-            index = if (index + 1 == self.entries.len) 0 else index + 1;
+            index = if (index + 1 == slots.len) 0 else index + 1;
         }
         // The load factor stays below 2/3, so a probe always meets an empty slot.
         unreachable;
@@ -239,6 +282,14 @@ pub const EdgeTable = struct {
     }
 };
 
+/// Hash slots for `edge_count` edges: a load factor of at most 2/3 keeps
+/// linear probes short, and the extra slot keeps an empty frame probe-able.
+fn slot_count_for(edge_count: u32) u32 {
+    const slot_count = @as(u64, edge_count) + edge_count / 2 + 1;
+    assert(slot_count <= std.math.maxInt(u32));
+    return @intCast(slot_count);
+}
+
 /// Classify every path triangle edge of the frame before any path is drawn.
 /// Paths are visited in draw order, the order the backends draw them in, and
 /// `path_index` in `write_triangles` is the same index into
@@ -250,14 +301,18 @@ pub fn classify(table: *EdgeTable, scene: *const scene_mod.Scene) void {
     const gradients = scene.getPathGradients();
     assert(paths.len == gradients.len);
     assert(paths.len <= scene.limits.path_count_frame_max);
-    table.begin();
-    const index_count_max = table.edge_count_max;
-    var index_count: u64 = 0;
-    for (paths, gradients, 0..) |*path, *gradient, path_index| {
+    const path_count = admitted_path_count(scene, table.edge_count_max);
+    var index_count: u32 = 0;
+    for (paths[0..path_count]) |*path| {
+        const mesh = scene.getMeshPool().getMesh(path.getMeshRef());
+        index_count += @intCast(mesh.indices.len);
+    }
+    // Each admitted index brings one edge: three per triangle.
+    assert(index_count <= table.edge_count_max);
+    table.begin(index_count);
+    for (paths[0..path_count], gradients[0..path_count], 0..) |*path, *gradient, path_index| {
         const mesh = scene.getMeshPool().getMesh(path.getMeshRef());
         const indices = mesh.indices.constSlice();
-        if (index_count + indices.len > index_count_max) break;
-        index_count += indices.len;
         const fill = fill_hash(path, gradient);
         const vertices = mesh.vertices.constSlice();
         var triangle: usize = 0;
@@ -269,7 +324,22 @@ pub fn classify(table: *EdgeTable, scene: *const scene_mod.Scene) void {
             }
         }
     }
+    assert(table.edge_count <= index_count);
+}
+
+/// Paths, in draw order, whose indices fit the frame's path index budget
+/// together with every path before them. Classification stops at the first
+/// path that does not fit; the draw pass reports that path's exhausted pool.
+fn admitted_path_count(scene: *const scene_mod.Scene, index_count_max: u32) usize {
+    const paths = scene.getPathInstances();
+    var index_count: u64 = 0;
+    for (paths, 0..) |*path, path_count| {
+        const indices = scene.getMeshPool().getMesh(path.getMeshRef()).indices.len;
+        if (index_count + indices > index_count_max) return path_count;
+        index_count += indices;
+    }
     assert(index_count <= index_count_max);
+    return paths.len;
 }
 
 pub const TriangleSource = struct {
@@ -391,9 +461,9 @@ test "classification distinguishes silhouettes, shared fills and fill boundaries
     // answer. Path 0 and path 1 share edge `ab` with the same fill; path 1 and
     // path 2 share `bc` with different fills; `cd` belongs to path 2 alone.
     var table: EdgeTable = .{};
-    try table.init(testing.allocator, 8);
-    defer table.deinit(testing.allocator);
-    table.begin();
+    try table.init(8);
+    defer table.deinit();
+    table.begin(6);
     const ab = edgeKey(.{ 0, 0 }, .{ 1, 0 });
     const bc = edgeKey(.{ 1, 0 }, .{ 1, 1 });
     const cd = edgeKey(.{ 1, 1 }, .{ 0, 1 });
@@ -415,20 +485,20 @@ test "a new frame forgets the previous frame's edges" {
     // Goal: stamps, not clearing, empty the table. An edge shared last frame
     // is a silhouette this frame when only one triangle submits it.
     var table: EdgeTable = .{};
-    try table.init(testing.allocator, 4);
-    defer table.deinit(testing.allocator);
+    try table.init(4);
+    defer table.deinit();
     const key = edgeKey(.{ 2, 3 }, .{ 5, 8 });
-    table.begin();
+    table.begin(4);
     table.insert(key, 0, 1);
     table.insert(key, 1, 1);
     try testing.expectEqual(EdgeMode.interior, table.mode(key, 0));
-    table.begin();
+    table.begin(4);
     try testing.expectEqual(EdgeMode.fade, table.mode(key, 0));
     table.insert(key, 0, 1);
     try testing.expectEqual(EdgeMode.fade, table.mode(key, 0));
     // Wrap the stamp: the table must still read as empty afterwards.
     table.stamp = std.math.maxInt(u32);
-    table.begin();
+    table.begin(4);
     try testing.expectEqual(@as(u32, 1), table.stamp);
     try testing.expectEqual(EdgeMode.fade, table.mode(key, 0));
 }
@@ -438,9 +508,9 @@ test "a full frame of distinct edges fits and every edge stays findable" {
     // own entry under collisions, so every lookup still returns silhouette.
     var table: EdgeTable = .{};
     const edge_count_max: u32 = 300;
-    try table.init(testing.allocator, edge_count_max);
-    defer table.deinit(testing.allocator);
-    table.begin();
+    try table.init(edge_count_max);
+    defer table.deinit();
+    table.begin(edge_count_max);
     for (0..edge_count_max) |index| {
         const x: f32 = @floatFromInt(index);
         table.insert(edgeKey(.{ x, 0 }, .{ x, 1 }), 0, 3);
@@ -454,4 +524,37 @@ test "a full frame of distinct edges fits and every edge stays findable" {
     table.insert(edgeKey(.{ 0, 0 }, .{ 0, 1 }), 1, 3);
     try testing.expectEqual(edge_count_max, table.edge_count);
     try testing.expectEqual(EdgeMode.interior, table.mode(edgeKey(.{ 0, 0 }, .{ 0, 1 }), 1));
+}
+
+test "a frame hashes into slots for its own edge count, not the budget" {
+    // Goal: resident memory follows use. A small frame after a full one must
+    // touch only its own slots and still ignore the full frame's entries,
+    // which sit both inside and outside the small frame's slot range.
+    var table: EdgeTable = .{};
+    const edge_count_max: u32 = 600;
+    try table.init(edge_count_max);
+    defer table.deinit();
+    table.begin(edge_count_max);
+    for (0..edge_count_max) |index| {
+        const x: f32 = @floatFromInt(index);
+        table.insert(edgeKey(.{ x, 0 }, .{ x, 1 }), 0, 3);
+    }
+    try testing.expectEqual(@as(u32, 901), table.slot_count_high);
+    table.begin(4);
+    try testing.expectEqual(@as(u32, 7), table.slot_count);
+    try testing.expectEqual(@as(u32, 901), table.slot_count_high);
+    const stale = edgeKey(.{ 3, 0 }, .{ 3, 1 });
+    try testing.expectEqual(EdgeMode.fade, table.mode(stale, 0));
+    // Four edges, the frame's bound, fit in seven slots and stay distinct.
+    for (0..4) |index| {
+        const x: f32 = @floatFromInt(index);
+        table.insert(edgeKey(.{ x, 0 }, .{ x, 1 }), 0, 3);
+        table.insert(edgeKey(.{ x, 0 }, .{ x, 1 }), 1, 3);
+    }
+    try testing.expectEqual(@as(u32, 4), table.edge_count);
+    try testing.expectEqual(EdgeMode.interior, table.mode(stale, 0));
+    // An empty frame still has one slot to probe.
+    table.begin(0);
+    try testing.expectEqual(@as(u32, 1), table.slot_count);
+    try testing.expectEqual(EdgeMode.fade, table.mode(stale, 0));
 }

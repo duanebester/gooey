@@ -17,8 +17,8 @@
 //! is 2,490,368 B/frame, 7,520,256 B/window for three frames including host-pool
 //! alignment slack; .nano is 103,424 B/frame, 239,616 B/window for two frames
 //! (20 B per path index: the 16 B source vertex plus 4 B of edge modes). The
-//! edge table adds 30 B of host memory per path index budget: 491,540 B at
-//! .standard, 61,460 B at .nano.
+//! edge table maps 30 B of host address space per path index budget: 491,540 B
+//! at .standard, 61,460 B at .nano; only the slots a frame uses become resident.
 //! Worst-case upload is bounded by that reservation; normal uploads pack only
 //! live data contiguously. Descriptors expose only initialized bytes. No network,
 //! disk, texture uploads, tessellation, queues, or runtime allocations are needed.
@@ -117,7 +117,7 @@ pub const Renderer = struct {
         const index_count_max = self.capacity.geometry.counts[
             @backingInt(scene_mod.GeometryPool.path_indices)
         ];
-        try self.edges.init(allocator, index_count_max);
+        try self.edges.init(index_count_max);
 
         self.descriptor_layout = try create_layout(device);
         self.pipeline_layout = try pipelines.createPipelineLayout(device, self.descriptor_layout);
@@ -186,7 +186,7 @@ pub const Renderer = struct {
             }
         }
         self.memory.destroy(self.device);
-        if (self.edges.entries.len > 0) self.edges.deinit(self.allocator);
+        if (self.edges.entries.len > 0) self.edges.deinit();
         self.* = .{};
     }
 
