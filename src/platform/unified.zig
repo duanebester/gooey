@@ -338,10 +338,15 @@ pub const metal_shader_source =
     \\    if (p.primitive_type == PRIM_QUAD) {
     \\        float2 origin = float2(p.bounds_origin_x, p.bounds_origin_y);
     \\        float2 size = float2(p.bounds_size_width, p.bounds_size_height);
-    \\        float2 pos = origin + unit * size;
+    \\        // One sample per pixel: grow the quad by one logical pixel so pixels
+    \\        // the rectangle only partly covers are rasterized; the fragment
+    \\        // shader weights them by that coverage. Empty quads stay empty.
+    \\        float fringe = (size.x > 0.0 && size.y > 0.0) ? 1.0 : 0.0;
+    \\        float2 pos = origin - fringe + unit * (size + 2.0 * fringe);
     \\        float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
     \\        out.position = float4(ndc, 0.0, 1.0);
-    \\        out.quad_coord = unit;
+    \\        // Quad-local position in logical pixels; outside [0, size] in the fringe.
+    \\        out.quad_coord = pos - origin;
     \\        out.quad_size = size;
     \\        out.screen_pos = pos;
     \\        out.content_size = size;
@@ -366,8 +371,27 @@ pub const metal_shader_source =
     \\    return out;
     \\}
     \\
+    \\// Share of a pixel's extent along one axis inside [0, size]: the overlap of
+    \\// [pos - pixel/2, pos + pixel/2] with the quad, where `pos` is the pixel
+    \\// centre and `pixel` one device pixel, both in logical pixels. Exact for a
+    \\// box filter, including quads thinner than a pixel. Interpolation leaves
+    \\// float noise in `pos`, so a pixel within 1/1000 of full or empty counts as
+    \\// such: pixel-aligned sides then give exactly 1 or 0, as 4x MSAA did.
+    \\float axis_coverage(float pos, float size, float pixel) {
+    \\    float low = max(pos - 0.5 * pixel, 0.0);
+    \\    float high = min(pos + 0.5 * pixel, size);
+    \\    float coverage = clamp((high - low) / max(pixel, 1e-6), 0.0, 1.0);
+    \\    if (coverage > 0.999) return 1.0;
+    \\    if (coverage < 0.001) return 0.0;
+    \\    return coverage;
+    \\}
+    \\
     \\fragment float4 unified_fragment(VertexOutput in [[stage_in]]) {
     \\    if (in.primitive_type == PRIM_QUAD) {
+    \\        // Derivatives first: they are undefined after a non-uniform discard.
+    \\        // quad_coord is affine, so these are logical pixels per device pixel.
+    \\        float2 pixel = float2(length(float2(dfdx(in.quad_coord.x), dfdy(in.quad_coord.x))),
+    \\                              length(float2(dfdx(in.quad_coord.y), dfdy(in.quad_coord.y))));
     \\        float2 clip_min = in.clip_bounds.xy;
     \\        float2 clip_max = clip_min + in.clip_bounds.zw;
     \\        if (in.screen_pos.x < clip_min.x || in.screen_pos.x > clip_max.x ||
@@ -376,8 +400,13 @@ pub const metal_shader_source =
     \\        }
     \\        float2 size = in.quad_size;
     \\        float2 half_size = size / 2.0;
-    \\        float2 pos = in.quad_coord * size;
+    \\        float2 pos = in.quad_coord;
     \\        float2 centered = pos - half_size;
+    \\        // The pixel's coverage by the quad's rectangle: what 4x MSAA
+    \\        // sampled before the fade below multiplied it. Pixels inside the
+    \\        // rectangle, including rounded corners, are fully covered.
+    \\        float rect_coverage = axis_coverage(pos.x, size.x, pixel.x) *
+    \\            axis_coverage(pos.y, size.y, pixel.y);
     \\        float radius = pick_corner_radius(centered, in.corner_radii);
     \\        float outer_dist = rounded_rect_sdf(centered, half_size, radius);
     \\        float4 bw = in.border_widths;
@@ -406,7 +435,8 @@ pub const metal_shader_source =
     \\            float border_blend = smoothstep(-0.5, 0.5, inner_dist);
     \\            color = mix(in.color, in.border_color, border_blend);
     \\        }
-    \\        float alpha = 1.0 - smoothstep(-0.5, 0.5, outer_dist);
+    \\        float alpha = (1.0 - smoothstep(-0.5, 0.5, outer_dist)) * rect_coverage;
+    \\        if (alpha <= 0.0) discard_fragment();
     \\        return color * float4(1.0, 1.0, 1.0, alpha);
     \\    } else {
     \\        float2 half_size = in.content_size / 2.0;

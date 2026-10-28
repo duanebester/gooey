@@ -89,12 +89,21 @@ pub const image_shader_source =
     \\    float2 unit = unit_vertices[vid];
     \\    ImageInstance img = images[iid];
     \\
-    \\    float2 pos = float2(img.pos_x, img.pos_y) + unit * float2(img.dest_width, img.dest_height);
+    \\    // One sample per pixel: grow the quad by one logical pixel so pixels the
+    \\    // image's rectangle only partly covers are rasterized; the fragment
+    \\    // shader weights them by that coverage. Atlas coordinates extrapolate
+    \\    // linearly, so every pixel samples where it did before.
+    \\    float2 origin = float2(img.pos_x, img.pos_y);
+    \\    float2 size = float2(img.dest_width, img.dest_height);
+    \\    float fringe = (size.x > 0.0 && size.y > 0.0) ? 1.0 : 0.0;
+    \\    float2 local = unit * (size + 2.0 * fringe) - fringe;
+    \\    float2 pos = origin + local;
     \\    float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
     \\
+    \\    float2 t = local / max(size, float2(1e-6));
     \\    float2 uv = float2(
-    \\        mix(img.uv_left, img.uv_right, unit.x),
-    \\        mix(img.uv_top, img.uv_bottom, unit.y)
+    \\        mix(img.uv_left, img.uv_right, t.x),
+    \\        mix(img.uv_top, img.uv_bottom, t.y)
     \\    );
     \\
     \\    VertexOut out;
@@ -103,12 +112,28 @@ pub const image_shader_source =
     \\    out.tint_rgba = hsla_to_rgba(img.tint);
     \\    out.clip_bounds = float4(img.clip_x, img.clip_y, img.clip_width, img.clip_height);
     \\    out.screen_pos = pos;
-    \\    out.image_origin = float2(img.pos_x, img.pos_y);
-    \\    out.size = float2(img.dest_width, img.dest_height);
+    \\    out.image_origin = origin;
+    \\    out.size = size;
     \\    out.corner_radii = float4(img.corner_tl, img.corner_tr, img.corner_br, img.corner_bl);
     \\    out.grayscale = img.grayscale;
     \\    out.opacity = img.opacity;
     \\    return out;
+    \\}
+    \\
+    \\// Share of a pixel's extent along one axis inside [0, size]: the overlap of
+    \\// [pos - pixel/2, pos + pixel/2] with the rectangle, where `pos` is the
+    \\// pixel centre and `pixel` one device pixel, both in logical pixels. This
+    \\// is what 4x MSAA sampled at the rectangle's edges. Interpolation leaves
+    \\// float noise in `pos`, so a pixel within 1/1000 of full or empty counts as
+    \\// such: pixel-aligned sides give exactly 1 or 0. Shared with the quad
+    \\// shader in unified.zig.
+    \\float axis_coverage(float pos, float size, float pixel) {
+    \\    float low = max(pos - 0.5 * pixel, 0.0);
+    \\    float high = min(pos + 0.5 * pixel, size);
+    \\    float coverage = clamp((high - low) / max(pixel, 1e-6), 0.0, 1.0);
+    \\    if (coverage > 0.999) return 1.0;
+    \\    if (coverage < 0.001) return 0.0;
+    \\    return coverage;
     \\}
     \\
     \\// Signed distance function for rounded rectangle
@@ -126,6 +151,14 @@ pub const image_shader_source =
     \\    VertexOut in [[stage_in]],
     \\    texture2d<float> atlas [[texture(0)]]
     \\) {
+    \\    // Derivatives first: they are undefined after a non-uniform discard.
+    \\    // screen_pos is affine, so these are logical pixels per device pixel.
+    \\    float2 pixel = float2(length(float2(dfdx(in.screen_pos.x), dfdy(in.screen_pos.x))),
+    \\                          length(float2(dfdx(in.screen_pos.y), dfdy(in.screen_pos.y))));
+    \\    float2 rect_pos = in.screen_pos - in.image_origin;
+    \\    float rect_coverage = axis_coverage(rect_pos.x, in.size.x, pixel.x) *
+    \\        axis_coverage(rect_pos.y, in.size.y, pixel.y);
+    \\
     \\    // Clip test
     \\    float2 clip_min = in.clip_bounds.xy;
     \\    float2 clip_max = clip_min + in.clip_bounds.zw;
@@ -165,7 +198,7 @@ pub const image_shader_source =
     \\    color *= in.tint_rgba;
     \\
     \\    // Apply corner anti-aliasing and opacity
-    \\    color.a *= corner_alpha * in.opacity;
+    \\    color.a *= corner_alpha * in.opacity * rect_coverage;
     \\
     \\    if (color.a < 0.001) discard_fragment();
     \\
@@ -210,17 +243,16 @@ pub const ImagePipeline = struct {
 
     pub fn init(
         device: objc.Object,
-        sample_count: u32,
         limits: *const ResourceLimits,
         atlas_texture: objc.Object,
     ) !ImagePipeline {
         const scene_limits = &limits.scene;
-        assert(sample_count > 0);
+        assert(device.value != null);
         assert(scene_limits.check() == null);
         const budget = InstanceCounts.from_limits(scene_limits);
         const image_count_max: u64 = budget.counts[@backingInt(InstancePool.images)];
 
-        const pipeline = createPipeline(device, sample_count) orelse
+        const pipeline = createPipeline(device) orelse
             return error.PipelineCreationFailed;
         errdefer pipeline.release();
 
@@ -318,7 +350,7 @@ pub const ImagePipeline = struct {
     }
 };
 
-fn createPipeline(device: objc.Object, sample_count: u32) ?objc.Object {
+fn createPipeline(device: objc.Object) ?objc.Object {
     const NSString = objc.getClass("NSString") orelse return null;
     const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse return null;
 
@@ -349,7 +381,7 @@ fn createPipeline(device: objc.Object, sample_count: u32) ?objc.Object {
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, pipelines.sample_count)});
 
     // Color attachment with alpha blending
     const attachments = desc.msgSend(objc.Object, "colorAttachments", .{});

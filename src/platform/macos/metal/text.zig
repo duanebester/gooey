@@ -162,17 +162,16 @@ pub const TextPipeline = struct {
     pub fn init(
         device: objc.Object,
         pixel_format: mtl.MTLPixelFormat,
-        sample_count: u32,
         limits: *const ResourceLimits,
         atlas_texture: objc.Object,
     ) !Self {
         const scene_limits = &limits.scene;
-        assert(sample_count > 0);
+        assert(device.value != null);
         assert(scene_limits.check() == null);
         const budget = InstanceCounts.from_limits(scene_limits);
         const glyph_count_max: u64 = budget.counts[@backingInt(InstancePool.glyphs)];
 
-        const pipeline_state = try createPipelineState(device, pixel_format, sample_count);
+        const pipeline_state = try createPipelineState(device, pixel_format);
         errdefer pipeline_state.release();
 
         const unit_vertex_buffer_ptr = device.msgSend(
@@ -293,9 +292,8 @@ pub const TextPipeline = struct {
 fn createPipelineState(
     device: objc.Object,
     pixel_format: mtl.MTLPixelFormat,
-    sample_count: u32,
 ) !objc.Object {
-    assert(sample_count > 0);
+    assert(device.value != null);
     const library = try createLibrary(device);
     defer library.release();
 
@@ -321,7 +319,7 @@ fn createPipelineState(
 
     desc.msgSend(void, "setVertexFunction:", .{vert_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{frag_fn.value});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, pipelines.sample_count)});
 
     // Color attachment with straight-alpha blending.
     const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});

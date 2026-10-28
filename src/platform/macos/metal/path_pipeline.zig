@@ -1,6 +1,8 @@
 //! Path Pipeline - Metal rendering for triangulated paths
 //!
-//! Renders triangulated path meshes using indexed drawing.
+//! Renders triangulated path meshes as de-indexed triangle records with
+//! analytic edge anti-aliasing, the same technique and vertex records as the
+//! Vulkan renderer (`mesh_edges.zig`, Vulkan `triangles.vert`/`mesh.frag`).
 //! Supports solid, linear-gradient and radial-gradient fills with clip bounds.
 
 const std = @import("std");
@@ -15,9 +17,9 @@ const GeometryPool = scene.GeometryPool;
 const SceneLimits = scene.SceneLimits;
 const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const PathInstance = @import("../../../scene/path_instance.zig").PathInstance;
-const path_mesh_mod = @import("../../../scene/path_mesh.zig");
-const PathVertex = path_mesh_mod.PathVertex;
-const PathMesh = path_mesh_mod.PathMesh;
+const PathMesh = @import("../../../scene/path_mesh.zig").PathMesh;
+const mesh_edges = @import("../../mesh_edges.zig");
+const TriangleVertex = mesh_edges.TriangleVertex;
 const MeshPool = @import("../../../scene/mesh_pool.zig").MeshPool;
 const GradientUniforms = @import("../../../scene/gradient_uniforms.zig").GradientUniforms;
 
@@ -48,12 +50,24 @@ pub const path_shader_source =
     \\// Maximum gradient stops (must match GradientUniforms)
     \\constant uint MAX_STOPS = 16;
     \\
-    \\// Per-vertex data from mesh
-    \\struct PathVertex {
+    \\// One logical pixel is at least one device pixel at every supported scale.
+    \\constant float aa_fringe = 1.0;
+    \\// A sharp corner's offset point is clamped; tips sharper than about 14
+    \\// degrees lose part of their fade band instead of producing long slivers.
+    \\constant float miter_max = 4.0 * aa_fringe;
+    \\
+    \\// One de-indexed triangle vertex (mesh_edges.TriangleVertex, 20 bytes).
+    \\// `edge_modes` holds two bits per triangle edge (v0->v1, v1->v2, v2->v0)
+    \\// as an integral float, values from mesh_edges.EdgeMode:
+    \\//   0 interior: no coverage change; the edge is drawn by the rasterizer.
+    \\//   1 fade:     coverage *= clamp(distance_px + 0.5, 0, 1).
+    \\//   2 underlap: full coverage up to half a pixel outside, discard beyond.
+    \\struct TriangleVertex {
     \\    float x;
     \\    float y;
     \\    float u;
     \\    float v;
+    \\    float edge_modes;
     \\};
     \\
     \\// Per-instance data (112 bytes)
@@ -106,6 +120,10 @@ pub const path_shader_source =
     \\    float2 screen_pos;
     \\    uint gradient_type;
     \\    float4 grad_params;
+    \\    // Signed distances in logical pixels to the three original edges,
+    \\    // positive inside. Affine in screen space, so interpolation is exact.
+    \\    float3 edge_distance;
+    \\    uint edge_modes [[flat]];
     \\};
     \\
     \\float4 hsla_to_rgba(float4 hsla) {
@@ -169,37 +187,133 @@ pub const path_shader_source =
     \\    return hsla_to_rgba(hsla);
     \\}
     \\
+    \\// Offset of a corner that lies on edges with inward unit normals n0 and
+    \\// n1: the intersection of the two edges' offset lines, each pushed
+    \\// outward by its offset. Solves dot(shift, n0) = -offset0 and
+    \\// dot(shift, n1) = -offset1. Ported from Vulkan's triangles.vert.
+    \\float2 corner_shift(float2 n0, float2 n1, float offset0, float offset1) {
+    \\    float det = n0.x * n1.y - n0.y * n1.x;
+    \\    float2 shift;
+    \\    if (abs(det) > 1e-4) {
+    \\        shift = float2(-offset0 * n1.y + offset1 * n0.y,
+    \\                       -offset1 * n0.x + offset0 * n1.x) / det;
+    \\    } else {
+    \\        // Nearly straight corner: the two offset lines coincide.
+    \\        shift = -max(offset0, offset1) * n0;
+    \\    }
+    \\    float shift_length = length(shift);
+    \\    if (shift_length > miter_max) shift *= miter_max / shift_length;
+    \\    return shift;
+    \\}
+    \\
+    \\// Each corner moves to the intersection of its two edges' offset lines, so
+    \\// the expanded triangle is the original grown by `aa_fringe` across every
+    \\// faded or underlapping edge and unchanged across interior edges.
+    \\// Distances to the original edges and barycentric uv extrapolation keep
+    \\// shading identical. A triangle whose edges are all interior is drawn
+    \\// exactly as before.
     \\vertex VertexOut path_vertex(
     \\    uint vid [[vertex_id]],
-    \\    constant PathVertex *vertices [[buffer(0)]],
+    \\    device const TriangleVertex *vertices [[buffer(0)]],
     \\    constant PathInstance *instance [[buffer(1)]],
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
-    \\    PathVertex v = vertices[vid];
     \\    PathInstance inst = *instance;
+    \\    uint first = vid / 3 * 3;
+    \\    uint k = vid - first;
+    \\    float2 corners[3];
+    \\    float2 uvs[3];
+    \\    for (uint j = 0; j < 3; j++) {
+    \\        TriangleVertex v = vertices[first + j];
+    \\        // Apply transform: scale then translate
+    \\        corners[j] = float2(v.x * inst.scale_x + inst.offset_x,
+    \\                            v.y * inst.scale_y + inst.offset_y);
+    \\        uvs[j] = float2(v.u, v.v);
+    \\    }
+    \\    uint modes = uint(vertices[first].edge_modes + 0.5);
     \\
-    \\    // Apply transform: scale then translate
-    \\    float2 pos = float2(v.x * inst.scale_x + inst.offset_x,
-    \\                        v.y * inst.scale_y + inst.offset_y);
+    \\    VertexOut out;
+    \\    out.fill_color = hsla_to_rgba(inst.fill_color);
+    \\    out.clip_bounds = float4(inst.clip_x, inst.clip_y, inst.clip_width, inst.clip_height);
+    \\    out.gradient_type = inst.gradient_type;
+    \\    out.grad_params = inst.grad_params;
+    \\    out.edge_modes = modes;
+    \\
+    \\    float area = (corners[1].x - corners[0].x) * (corners[2].y - corners[0].y) -
+    \\        (corners[1].y - corners[0].y) * (corners[2].x - corners[0].x);
+    \\    float2 normals[3];
+    \\    float lengths[3];
+    \\    for (uint edge = 0; edge < 3; edge++) {
+    \\        float2 direction = corners[(edge + 1) % 3] - corners[edge];
+    \\        lengths[edge] = length(direction);
+    \\        normals[edge] = float2(-direction.y, direction.x) * sign(area) /
+    \\            max(lengths[edge], 1e-12);
+    \\    }
+    \\    float shortest = min(lengths[0], min(lengths[1], lengths[2]));
+    \\    float2 pos = corners[k];
+    \\    float3 distances = float3(1e4);
+    \\    out.uv = uvs[k];
+    \\    if (abs(area) < 1e-6 || shortest < 1e-6) {
+    \\        // Degenerate: covers no pixel samples. Draw it unexpanded and unfaded.
+    \\        out.edge_modes = 0;
+    \\    } else {
+    \\        // Corner k lies on edge k (k -> k+1) and edge k-1 (k-1 -> k).
+    \\        uint before = (k + 2) % 3;
+    \\        float offset_k = ((modes >> (2 * k)) & 3) != 0 ? aa_fringe : 0.0;
+    \\        float offset_before = ((modes >> (2 * before)) & 3) != 0 ? aa_fringe : 0.0;
+    \\        float2 shift = corner_shift(normals[k], normals[before], offset_k, offset_before);
+    \\        pos += shift;
+    \\        for (uint edge = 0; edge < 3; edge++) {
+    \\            distances[edge] = dot(pos - corners[edge], normals[edge]);
+    \\        }
+    \\        if (shift.x != 0.0 || shift.y != 0.0) {
+    \\            // Extrapolate uv to the moved corner. The barycentric weight of
+    \\            // corner j is the distance to its opposite edge (edge j+1)
+    \\            // divided by the triangle's height over that edge. An unmoved
+    \\            // corner keeps its exact source uv.
+    \\            float2 uv = float2(0.0);
+    \\            for (uint j = 0; j < 3; j++) {
+    \\                uint opposite = (j + 1) % 3;
+    \\                float height = abs(area) / lengths[opposite];
+    \\                uv += distances[opposite] / height * uvs[j];
+    \\            }
+    \\            out.uv = uv;
+    \\        }
+    \\    }
     \\
     \\    // Convert to NDC
     \\    float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
-    \\
-    \\    VertexOut out;
     \\    out.position = float4(ndc, 0.0, 1.0);
-    \\    out.uv = float2(v.u, v.v);
-    \\    out.fill_color = hsla_to_rgba(inst.fill_color);
-    \\    out.clip_bounds = float4(inst.clip_x, inst.clip_y, inst.clip_width, inst.clip_height);
     \\    out.screen_pos = pos;
-    \\    out.gradient_type = inst.gradient_type;
-    \\    out.grad_params = inst.grad_params;
+    \\    out.edge_distance = distances;
     \\    return out;
+    \\}
+    \\
+    \\// Coverage of the fragment's pixel from the analytic edges. `pixel` is one
+    \\// device pixel measured in edge-distance units per component.
+    \\float edge_coverage(float3 distance, float3 pixel, uint modes) {
+    \\    float3 distance_px = distance / max(pixel, float3(1e-6));
+    \\    float coverage = 1.0;
+    \\    for (uint edge = 0; edge < 3; edge++) {
+    \\        uint mode = (modes >> (2 * edge)) & 3;
+    \\        if (mode == 1) {
+    \\            coverage *= clamp(distance_px[edge] + 0.5, 0.0, 1.0);
+    \\        } else if (mode == 2 && distance_px[edge] < -0.5) {
+    \\            coverage = 0.0;
+    \\        }
+    \\    }
+    \\    return coverage;
     \\}
     \\
     \\fragment float4 path_fragment(
     \\    VertexOut in [[stage_in]],
     \\    constant GradientUniforms &gradient [[buffer(0)]]
     \\) {
+    \\    // Derivatives first: they are undefined after a non-uniform discard.
+    \\    float3 edge_dx = dfdx(in.edge_distance);
+    \\    float3 edge_dy = dfdy(in.edge_distance);
+    \\    float3 edge_pixel = sqrt(edge_dx * edge_dx + edge_dy * edge_dy);
+    \\
     \\    // Clip test
     \\    float2 clip_min = in.clip_bounds.xy;
     \\    float2 clip_max = clip_min + in.clip_bounds.zw;
@@ -211,49 +325,30 @@ pub const path_shader_source =
     \\    float4 color;
     \\
     \\    if (in.gradient_type == 1) {
-    \\        // Linear gradient
-    \\        // Use UV coordinates directly (already normalized to bounds)
+    \\        // Linear gradient in uv space: project uv onto the gradient line.
     \\        float2 start = in.grad_params.xy;
     \\        float2 end = in.grad_params.zw;
     \\        float2 dir = end - start;
     \\        float len_sq = dot(dir, dir);
-    \\
-    \\        // Project UV onto gradient line
-    \\        float t;
-    \\        if (len_sq < 0.0001) {
-    \\            t = 0.0;
-    \\        } else {
-    \\            // Convert UV [0,1] to local coords for projection
-    \\            float2 p = in.uv;
-    \\            // Normalize start/end to [0,1] space based on typical use
-    \\            // For now, assume UV-space gradient definition
-    \\            t = dot(p - start, dir) / len_sq;
-    \\        }
-    \\
+    \\        float t = len_sq < 0.0001 ? 0.0 : dot(in.uv - start, dir) / len_sq;
     \\        color = sample_gradient(t, gradient);
     \\    } else if (in.gradient_type == 2) {
-    \\        // Radial gradient
+    \\        // Radial gradient: distance from the centre in uv space.
     \\        float2 center = in.grad_params.xy;
     \\        float radius = in.grad_params.z;
     \\        float inner_radius = in.grad_params.w;
-    \\
-    \\        // Calculate distance from center in UV space
     \\        float dist = length(in.uv - center);
-    \\
-    \\        // Normalize to [0, 1] range
-    \\        float t;
-    \\        if (radius <= inner_radius) {
-    \\            t = 1.0;
-    \\        } else {
-    \\            t = (dist - inner_radius) / (radius - inner_radius);
-    \\        }
-    \\
+    \\        float t = radius <= inner_radius ? 1.0 :
+    \\            (dist - inner_radius) / (radius - inner_radius);
     \\        color = sample_gradient(t, gradient);
     \\    } else {
     \\        // Solid color fill
     \\        color = in.fill_color;
     \\    }
     \\
+    \\    float coverage = edge_coverage(in.edge_distance, edge_pixel, in.edge_modes);
+    \\    if (coverage <= 0.0) discard_fragment();
+    \\    color.a *= coverage;
     \\    if (color.a < 0.001) discard_fragment();
     \\
     \\    // Output premultiplied alpha
@@ -261,113 +356,122 @@ pub const path_shader_source =
     \\}
 ;
 
-/// Indexed path meshes, one draw per path instance, in scene order.
+/// De-indexed path triangles, one draw per path instance, in scene order, with
+/// analytic edge anti-aliasing (`mesh_edges`). The render target has one
+/// sample per pixel.
 ///
-/// Resource sketch (CLAUDE.md §7): each frame in flight owns a vertex buffer of
-/// `path_vertex_count_frame_max` × 16 B and an index buffer of
-/// `path_index_count_frame_max` × 4 B, sized in `init` from `ResourceLimits.scene`
-/// and never replaced. `.standard`: 262,144 + 65,536 = 327,680 B per frame,
-/// 983,040 B per window for three frames. Per draw: one mesh copy, one index rebase, a 112 B
-/// `setVertexBytes`, a 352 B `setFragmentBytes` and one indexed draw. Every mesh
-/// is claimed against the same `GeometryCounts` as the Vulkan and CPU renderers
-/// before it is written, so an over-budget frame panics with the pool name.
+/// Resource sketch (CLAUDE.md §7): each frame in flight owns one buffer of
+/// `path_index_count_frame_max` × 20 B triangle records (`TriangleVertex`: the
+/// source vertex plus its triangle's edge modes), sized in `init` from
+/// `ResourceLimits.scene` and never replaced; Vulkan reserves the same 20 B per
+/// path index. `.standard`: 327,680 B per frame, 983,040 B per window for three
+/// frames, as before (16 B × 16,384 vertices + 4 B × 16,384 indices). `.nano`
+/// grows from 24,576 to 40,960 B per frame because its index budget is twice
+/// its vertex budget. The edge table adds 30 B of host memory per path index
+/// budget (491,540 B at `.standard`), reserved at init.
+///
+/// Per frame: one classification pass over every path triangle (three hashed
+/// inserts each). Per draw: one claim of each path pool, one de-indexing copy
+/// with three edge lookups per triangle, a 112 B `setVertexBytes`, a 352 B
+/// `setFragmentBytes` and one non-indexed draw. Every mesh is claimed against
+/// the same `GeometryCounts` as the Vulkan and CPU renderers before it is
+/// written, so an over-budget frame panics with the pool name.
 pub const PathPipeline = struct {
     pipeline_state: objc.Object,
-    vertex_buffers: pipelines.FrameBuffers,
-    index_buffers: pipelines.FrameBuffers,
+    triangle_buffers: pipelines.FrameBuffers,
     frame_index: u32,
     /// The window's aggregate geometry budget (`ResourceLimits.scene`).
     geometry_budget: GeometryCounts,
-    /// Geometry claimed this frame. The path counts are also the slot's write
-    /// offsets, because every claimed vertex and index is written exactly once.
+    /// Geometry claimed this frame. The path index count is also the slot's
+    /// write offset in triangle records: one record per claimed index.
     geometry_usage: GeometryCounts,
+    /// Edge modes of the frame being drawn, filled by `classifyEdges`.
+    edges: mesh_edges.EdgeTable,
+    gpa: std.mem.Allocator,
 
     const Self = @This();
 
-    /// Bytes of one frame's vertex buffer for `scene_limits`.
-    fn vertexFrameBytes(scene_limits: *const SceneLimits) u64 {
-        return @as(u64, scene_limits.path_vertex_count_frame_max) * @sizeOf(PathVertex);
-    }
-
-    /// Bytes of one frame's index buffer for `scene_limits`.
-    fn indexFrameBytes(scene_limits: *const SceneLimits) u64 {
-        return @as(u64, scene_limits.path_index_count_frame_max) * @sizeOf(u32);
-    }
-
-    /// Bytes of one frame's vertex and index buffers for `scene_limits`.
+    /// Bytes of one frame's triangle record buffer for `scene_limits`.
     pub fn frameBytes(scene_limits: *const SceneLimits) u64 {
-        return vertexFrameBytes(scene_limits) + indexFrameBytes(scene_limits);
+        return @as(u64, scene_limits.path_index_count_frame_max) * @sizeOf(TriangleVertex);
     }
 
-    pub fn init(device: objc.Object, sample_count: u32, limits: *const ResourceLimits) !Self {
+    pub fn init(gpa: std.mem.Allocator, device: objc.Object, limits: *const ResourceLimits) !Self {
         const scene_limits = &limits.scene;
-        assert(sample_count > 0);
         assert(scene_limits.check() == null);
-        const pipeline_state = try createPipeline(device, sample_count);
+        assert(scene_limits.path_index_count_frame_max > 0);
+        const pipeline_state = try createPipeline(device);
         errdefer pipeline_state.release();
 
-        const vertex_buffers = try pipelines.createFrameBuffers(
+        const triangle_buffers = try pipelines.createFrameBuffers(
             device,
-            vertexFrameBytes(scene_limits),
-            "path_vertices",
+            frameBytes(scene_limits),
+            "path_triangles",
             limits.frame.in_flight_count,
         );
-        errdefer vertex_buffers.release();
+        errdefer triangle_buffers.release();
 
-        const index_buffers = try pipelines.createFrameBuffers(
-            device,
-            indexFrameBytes(scene_limits),
-            "path_indices",
-            limits.frame.in_flight_count,
-        );
-        errdefer index_buffers.release();
+        var edges: mesh_edges.EdgeTable = .{};
+        try edges.init(gpa, scene_limits.path_index_count_frame_max);
+        errdefer edges.deinit(gpa);
 
         return .{
             .pipeline_state = pipeline_state,
-            .vertex_buffers = vertex_buffers,
-            .index_buffers = index_buffers,
+            .triangle_buffers = triangle_buffers,
             .frame_index = 0,
             .geometry_budget = GeometryCounts.from_limits(scene_limits),
             .geometry_usage = .{},
+            .edges = edges,
+            .gpa = gpa,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.pipeline_state.release();
-        self.vertex_buffers.release();
-        self.index_buffers.release();
+        self.triangle_buffers.release();
+        self.edges.deinit(self.gpa);
         self.* = undefined;
     }
 
     /// Advance to the next frame-in-flight slot and release the previous frame's
     /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        self.frame_index = self.vertex_buffers.nextIndex(self.frame_index);
+        self.frame_index = self.triangle_buffers.nextIndex(self.frame_index);
         self.geometry_usage = .{};
     }
 
+    /// Classify every path edge of `scene` (`mesh_edges.classify`, shared with
+    /// Vulkan). Call before the frame's first path batch.
+    pub fn classifyEdges(self: *Self, scene_data: *const scene.Scene) void {
+        assert(self.edges.entries.len > 0);
+        assert(self.edges.edge_count_max == self.geometry_budget.counts[
+            @backingInt(GeometryPool.path_indices)
+        ]);
+        mesh_edges.classify(&self.edges, scene_data);
+    }
+
     /// Draw path instances in order, each with its parallel gradient uniforms.
+    /// `path_first` is the index of `instances[0]` in the scene's path list,
+    /// the index `classifyEdges` recorded its edges under.
     pub fn renderBatchWithGradients(
         self: *Self,
         encoder: objc.Object,
         instances: []const PathInstance,
         gradients: []const GradientUniforms,
         mesh_pool: *const MeshPool,
-        options: struct { viewport_size: [2]f32, frame: u64 },
+        options: struct { viewport_size: [2]f32, frame: u64, path_first: u32 },
     ) void {
         assert(instances.len == gradients.len);
-        assert(instances.len <= scene.MAX_PATHS_PER_FRAME);
+        assert(options.path_first + instances.len <= scene.MAX_PATHS_PER_FRAME);
         assert(options.viewport_size[0] > 0);
         assert(options.viewport_size[1] > 0);
-        const slot = self.frame_index;
-        const vertex_buffer = self.vertex_buffers.at(slot);
-        const vertices_target = pipelines.frameBufferContents(PathVertex, vertex_buffer);
-        const indices_target = pipelines.frameBufferContents(u32, self.index_buffers.at(slot));
+        const triangle_buffer = self.triangle_buffers.at(self.frame_index);
+        const records = pipelines.frameBufferContents(TriangleVertex, triangle_buffer);
 
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
-        // Indices are rebased onto the whole slot, so the buffer binds at offset 0.
+        // Draws address records by vertex start, so the buffer binds at offset 0.
         encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            vertex_buffer.value,
+            triangle_buffer.value,
             @as(c_ulong, 0),
             @as(c_ulong, 0),
         });
@@ -377,11 +481,15 @@ pub const PathPipeline = struct {
             @as(c_ulong, 2),
         });
 
-        for (instances, gradients) |*instance, *gradient| {
+        for (instances, gradients, options.path_first..) |*instance, *gradient, path_index| {
             const mesh = mesh_pool.getMesh(instance.getMeshRef());
             // An empty mesh has no triangles to draw, on every backend.
             if (mesh.indices.len == 0) continue;
-            const index_first = self.upload(mesh, options.frame, vertices_target, indices_target);
+            const record_first = self.upload(mesh, records, .{
+                .path = instance,
+                .path_index = @intCast(path_index),
+                .frame = options.frame,
+            });
 
             encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
                 @as(*const anyopaque, @ptrCast(instance)),
@@ -394,70 +502,56 @@ pub const PathPipeline = struct {
                 @as(c_ulong, @sizeOf(GradientUniforms)),
                 @as(c_ulong, 0),
             });
-            encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:" ++
-                "indexBufferOffset:", .{
+            // Each record is one vertex; `vertex_id` includes the start, and
+            // `record_first` is a multiple of three, so `vid / 3` is the triangle.
+            encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
                 @backingInt(mtl.MTLPrimitiveType.triangle),
+                @as(c_ulong, record_first),
                 @as(c_ulong, mesh.indices.len),
-                @backingInt(mtl.MTLIndexType.uint32),
-                self.index_buffers.at(slot).value,
-                @as(c_ulong, index_first) * @sizeOf(u32),
             });
         }
     }
 
-    /// Claim one mesh against the frame's budget, then append it to the slot after
-    /// the geometry already claimed this frame. Returns the copy's first index.
+    /// Claim one mesh against the frame's budget, then de-index it into the slot
+    /// after the records already claimed this frame. Returns the first record.
     /// Pools, order and per-draw granularity match the Vulkan and CPU renderers, so
     /// every backend panics at the same boundary with the same message.
     fn upload(
         self: *Self,
         mesh: *const PathMesh,
-        frame: u64,
-        vertices_target: [*]PathVertex,
-        indices_target: [*]u32,
+        records: [*]TriangleVertex,
+        options: struct { path: *const PathInstance, path_index: mesh_edges.PathIndex, frame: u64 },
     ) u32 {
         const vertices = mesh.vertices.constSlice();
         const indices = mesh.indices.constSlice();
         assert(vertices.len > 0);
         assert(indices.len % 3 == 0);
-        const vertex_first = self.geometry_usage.counts[@backingInt(GeometryPool.path_vertices)];
-        const index_first = self.geometry_usage.counts[@backingInt(GeometryPool.path_indices)];
+        const record_first = self.geometry_usage.counts[@backingInt(GeometryPool.path_indices)];
+        assert(record_first % 3 == 0);
 
         self.geometry_usage.claim(&self.geometry_budget, .{
             .pool = .path_vertices,
             .requested = @intCast(vertices.len),
-            .frame = frame,
+            .frame = options.frame,
         });
         self.geometry_usage.claim(&self.geometry_budget, .{
             .pool = .path_indices,
             .requested = @intCast(indices.len),
-            .frame = frame,
+            .frame = options.frame,
         });
 
-        @memcpy(vertices_target[vertex_first..][0..vertices.len], vertices);
-        rebaseIndices(indices_target[index_first..][0..indices.len], indices, .{
-            .vertex_first = vertex_first,
-            .vertex_count = @intCast(vertices.len),
+        mesh_edges.write_triangles(records[record_first..][0..indices.len], &.{
+            .edges = &self.edges,
+            .path = options.path,
+            .path_index = options.path_index,
+            .vertices = vertices,
+            .indices = indices,
         });
-        return index_first;
+        return record_first;
     }
 };
 
-/// Hot loop: copy mesh-local indices into the slot, offset by the mesh's first vertex.
-fn rebaseIndices(
-    target: []u32,
-    source: []const u32,
-    options: struct { vertex_first: u32, vertex_count: u32 },
-) void {
-    assert(target.len == source.len);
-    assert(source.len <= path_mesh_mod.MAX_MESH_INDICES);
-    for (source, target) |index, *rebased| {
-        assert(index < options.vertex_count);
-        rebased.* = index + options.vertex_first;
-    }
-}
-
-fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+fn createPipeline(device: objc.Object) !objc.Object {
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{path_shader_source.ptr});
 
@@ -484,7 +578,7 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     desc.msgSend(void, "setVertexFunction:", .{vert_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{frag_fn.value});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, pipelines.sample_count)});
 
     const attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
     const attach0 = attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});

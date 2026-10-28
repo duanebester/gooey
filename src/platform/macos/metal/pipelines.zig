@@ -1,4 +1,4 @@
-//! Pipeline Setup - Metal pipeline state creation for quads, shadows, and MSAA
+//! Pipeline Setup - Metal pipeline state creation for quads and shadows
 //!
 //! This module handles the creation and configuration of Metal render pipelines.
 
@@ -16,6 +16,13 @@ const limits = @import("../../../core/limits.zig");
 /// documented on `UnifiedPrimitiveRing`: the renderer sets the layer's
 /// `maximumDrawableCount` to that same count at init.
 pub const frame_count_max: u32 = limits.MAX_FRAMES_IN_FLIGHT;
+
+/// Samples per pixel of every render target and pipeline. Metal draws one
+/// sample per pixel, like Vulkan: quads, glyphs, SVGs, images and points fade
+/// their edges in the fragment shader, and path triangles and polylines
+/// compute analytic edge coverage (`mesh_edges.zig`). Without an MSAA target
+/// nothing window-sized is allocated or recreated on resize (CLAUDE.md §2).
+pub const sample_count: u32 = 1;
 
 /// One shared buffer per frame in flight, created once in `init` and rotated
 /// with `nextIndex`. Entries past `count` are never created or read.
@@ -92,52 +99,9 @@ pub fn frameBufferContents(comptime T: type, buffer: objc.Object) [*]T {
     return @ptrCast(@alignCast(contents));
 }
 
-/// Create MSAA texture for multi-sample anti-aliasing
-pub fn createMSAATexture(
-    device: objc.Object,
-    width: f64,
-    height: f64,
-    scale_factor: f64,
-    sample_count: u32,
-    unified_memory: bool,
-) !objc.Object {
-    const MTLTextureDescriptor = objc.getClass("MTLTextureDescriptor") orelse
-        return error.ClassNotFound;
-
-    const desc = MTLTextureDescriptor.msgSend(
-        objc.Object,
-        "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
-        .{
-            @backingInt(mtl.MTLPixelFormat.bgra8unorm),
-            @as(c_ulong, @intFromFloat(width * scale_factor)),
-            @as(c_ulong, @intFromFloat(height * scale_factor)),
-            false,
-        },
-    );
-
-    desc.msgSend(void, "setTextureType:", .{@backingInt(mtl.MTLTextureType.type_2d_multisample)});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
-
-    const usage = mtl.MTLTextureUsage.render_target_only;
-    desc.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(usage))});
-
-    // Use memoryless on unified memory (Apple Silicon)
-    const storage_mode: mtl.MTLStorageMode = if (unified_memory)
-        .memoryless
-    else
-        .private;
-
-    desc.msgSend(void, "setStorageMode:", .{@backingInt(storage_mode)});
-
-    const texture_ptr = device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{desc.value});
-    if (texture_ptr == null) {
-        return error.MSAATextureCreationFailed;
-    }
-    return objc.Object.fromId(texture_ptr);
-}
-
 /// Setup shadow rendering pipeline
-pub fn setupShadowPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+pub fn setupShadowPipeline(device: objc.Object) !objc.Object {
+    assert(device.value != null);
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,
@@ -206,7 +170,8 @@ pub fn setupShadowPipeline(device: objc.Object, sample_count: u32) !objc.Object 
 }
 
 /// Setup quad rendering pipeline
-pub fn setupQuadPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+pub fn setupQuadPipeline(device: objc.Object) !objc.Object {
+    assert(device.value != null);
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,
@@ -296,7 +261,8 @@ fn configureBlending(attachment: objc.Object) void {
 }
 
 /// Setup unified quad+shadow rendering pipeline
-pub fn setupUnifiedPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+pub fn setupUnifiedPipeline(device: objc.Object) !objc.Object {
+    assert(device.value != null);
     const unified_shader = @import("../../unified.zig");
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(

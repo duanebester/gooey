@@ -81,6 +81,12 @@ pub fn drawSceneWithStats(
         });
     }
 
+    // Path edges are classified over the whole frame before the first path
+    // draw, as on Vulkan (`mesh_edges.classify`).
+    if (pipelines.path) |pp| {
+        if (pipelines.mesh_pool != null) pp.classifyEdges(scene);
+    }
+
     var iter = batch_iter.BatchIterator.init(scene);
     var batch_num: u32 = 0;
     while (iter.next()) |batch| : (batch_num += 1) {
@@ -295,6 +301,7 @@ fn drawPathBatch(
     pp.renderBatchWithGradients(encoder, paths, gradients, pool, .{
         .viewport_size = viewport_size,
         .frame = scene.frame_count_finished,
+        .path_first = @intCast(batch_offset),
     });
 
     if (stats) |s| {
