@@ -19,6 +19,7 @@
 //! - iScrollOffset: vec2 - current scroll offset
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 
@@ -160,6 +161,117 @@ pub const msl_suffix =
     \\    return fragColor;
     \\}
 ;
+
+/// Final post-process pass: copy the front texture into the drawable with a
+/// full-screen draw. A blit cannot target a drawable, because CAMetalLayer
+/// drawables are `framebufferOnly` and Metal validation rejects them as a blit
+/// destination. Clearing `framebufferOnly` on the layer would cost every app
+/// its framebuffer-optimised drawables, not just post-process apps.
+///
+/// The fragment shader reads the texel under each pixel centre with
+/// `texture.read`, which has no filtering or coordinate rounding. Both
+/// textures are `bgra8unorm` and blending is off, so each 8-bit channel
+/// round-trips through float exactly and the drawable receives the same bytes
+/// the blit copied.
+pub const present_shader_source =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\
+    \\struct PresentVertexOut {
+    \\    float4 position [[position]];
+    \\};
+    \\
+    \\vertex PresentVertexOut post_process_present_vertex(uint vid [[vertex_id]]) {
+    \\    const float2 positions[3] = {
+    \\        float2(-1.0, -1.0),
+    \\        float2( 3.0, -1.0),
+    \\        float2(-1.0,  3.0)
+    \\    };
+    \\    PresentVertexOut out;
+    \\    out.position = float4(positions[vid], 0.0, 1.0);
+    \\    return out;
+    \\}
+    \\
+    \\fragment float4 post_process_present_fragment(
+    \\    PresentVertexOut in [[stage_in]],
+    \\    texture2d<float, access::read> source [[texture(0)]]
+    \\) {
+    \\    return source.read(uint2(in.position.xy));
+    \\}
+;
+
+/// Build the pipeline for `present_shader_source`. Called once, when the
+/// post-process state is created during window initialisation.
+fn createPresentPipeline(device: objc.Object) !objc.Object {
+    assert(device.value != null);
+    const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+    const source = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        present_shader_source.ptr,
+    });
+
+    var compile_error: ?*anyopaque = null;
+    const library_ptr = device.msgSend(?*anyopaque, "newLibraryWithSource:options:error:", .{
+        source.value, @as(?*anyopaque, null), &compile_error,
+    }) orelse {
+        if (compile_error) |err| logNSError("Post-process present shader compilation", err);
+        return error.ShaderCompilationFailed;
+    };
+    const library = objc.Object.fromId(library_ptr);
+    defer library.release();
+
+    const vertex_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        "post_process_present_vertex",
+    });
+    const fragment_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        "post_process_present_fragment",
+    });
+    const vertex_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{vertex_name.value}) orelse
+        return error.VertexFunctionNotFound;
+    const vertex_fn = objc.Object.fromId(vertex_ptr);
+    defer vertex_fn.release();
+
+    const fragment_ptr = library.msgSend(?*anyopaque, "newFunctionWithName:", .{
+        fragment_name.value,
+    }) orelse return error.FragmentFunctionNotFound;
+    const fragment_fn = objc.Object.fromId(fragment_ptr);
+    defer fragment_fn.release();
+
+    const MTLRenderPipelineDescriptor = objc.getClass("MTLRenderPipelineDescriptor") orelse
+        return error.ClassNotFound;
+    const desc = MTLRenderPipelineDescriptor.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "init", .{});
+    defer desc.release();
+
+    desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
+    desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, 1)});
+    const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
+    const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{
+        @as(c_ulong, 0),
+    });
+    // The layer's pixel format (window.zig `setupMetalLayer`), matching the
+    // post-process textures. Blending stays off so the copy is exact.
+    attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
+    attachment0.msgSend(void, "setBlendingEnabled:", .{false});
+
+    var pipeline_error: ?*anyopaque = null;
+    const pipeline_ptr = device.msgSend(?*anyopaque, "newRenderPipelineStateWithDescriptor:error:", .{
+        desc.value, &pipeline_error,
+    }) orelse {
+        if (pipeline_error) |err| logNSError("Post-process present pipeline creation", err);
+        return error.PipelineCreationFailed;
+    };
+    const pipeline = objc.Object.fromId(pipeline_ptr);
+    assert(pipeline.value != null);
+    return pipeline;
+}
+
+fn logNSError(what: []const u8, err: *anyopaque) void {
+    const err_obj = objc.Object.fromId(err);
+    const desc = err_obj.msgSend(objc.Object, "localizedDescription", .{});
+    const c_str = desc.msgSend([*:0]const u8, "UTF8String", .{});
+    std.log.err("{s} failed: {s}", .{ what, c_str });
+}
 
 /// Represents a compiled custom shader pipeline
 pub const CustomShaderPipeline = struct {
@@ -311,6 +423,9 @@ pub const PostProcessState = struct {
     // Compiled shader pipelines
     pipelines: std.ArrayList(CustomShaderPipeline),
 
+    // Copies the final front texture into the drawable (`present_shader_source`).
+    present_pipeline: objc.Object,
+
     // Timing. Monotonic `.awake` timestamps are captured via the
     // process-lifetime single-threaded `Io` in `updateTiming` — this
     // struct lives on the render path and does not carry a `*Cx`.
@@ -323,7 +438,9 @@ pub const PostProcessState = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, device: objc.Object) Self {
+    pub fn init(allocator: std.mem.Allocator, device: objc.Object) !Self {
+        assert(device.value != null);
+        const present_pipeline = try createPresentPipeline(device);
         return Self{
             .device = device,
             .allocator = allocator,
@@ -333,6 +450,7 @@ pub const PostProcessState = struct {
             .uniforms = Uniforms.init(),
             .sampler = null,
             .pipelines = .empty,
+            .present_pipeline = present_pipeline,
             .start_time = null,
             .last_frame_time = null,
             .width = 0,
@@ -345,6 +463,7 @@ pub const PostProcessState = struct {
             pipeline.deinit();
         }
         self.pipelines.deinit(self.allocator);
+        self.present_pipeline.release();
 
         if (self.front_texture) |tex| tex.release();
         if (self.back_texture) |tex| tex.release();

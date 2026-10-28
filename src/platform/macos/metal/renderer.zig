@@ -332,7 +332,10 @@ pub const Renderer = struct {
 
     pub fn initPostProcess(self: *Self) !void {
         if (self.post_process_state != null) return;
-        self.post_process_state = custom_shader.PostProcessState.init(self.allocator, self.device);
+        self.post_process_state = try custom_shader.PostProcessState.init(
+            self.allocator,
+            self.device,
+        );
     }
 
     pub fn addCustomShader(self: *Self, shader_source: []const u8, name: []const u8) !void {
