@@ -10,6 +10,11 @@ layout(location = 4) out vec4 edge_distance;
 layout(location = 5) flat out uint edge_modes;
 
 const uint triangle_stride = 5u;
+// Draw vertices per triangle (mesh_edges.triangle_draw_vertex_count): the
+// triangle at its exact corners (0-2), then one fringe quad of two triangles
+// for each of its three edges (3-20).
+const uint triangle_draw_vertex_count = 21u;
+const uint fringe_vertex_count = 6u;
 // A sharp corner's offset point is clamped; tips sharper than about 14 degrees
 // lose part of their fade band instead of producing long slivers.
 const float miter_max = 4.0 * aa_fringe;
@@ -25,13 +30,47 @@ vec2 triangle_uv(uint vertex) {
     return vec2(mesh.data[offset + 2u], mesh.data[offset + 3u]);
 }
 
-// Each corner moves to the intersection of its two edges' offset lines, so the
-// expanded triangle is the original grown by `aa_fringe` across every faded
-// or underlapping edge and unchanged across interior edges. Distances to the
-// original edges and barycentric uv extrapolation keep shading identical.
+// Offset of corner k, which lies on edge k (k -> k+1) and edge k-1: the
+// intersection of the two edges' offset lines, each pushed outward by
+// `aa_fringe` when its mode is not interior. Solves dot(shift, n_k) =
+// -offset_k and dot(shift, n_before) = -offset_before. Every fringe vertex at
+// corner k calls this with the same inputs, so neighbouring quads share their
+// common side exactly.
+vec2 corner_shift(uint k, uint modes, vec2 normals[3]) {
+    uint before = (k + 2u) % 3u;
+    float offset_k = ((modes >> (2u * k)) & 3u) != 0u ? aa_fringe : 0.0;
+    float offset_before = ((modes >> (2u * before)) & 3u) != 0u ? aa_fringe : 0.0;
+    vec2 n0 = normals[k];
+    vec2 n1 = normals[before];
+    float det = n0.x * n1.y - n0.y * n1.x;
+    vec2 shift = vec2(0);
+    if (abs(det) > 1e-4) {
+        shift = vec2(-offset_k * n1.y + offset_before * n0.y,
+            -offset_before * n0.x + offset_k * n1.x) / det;
+    } else {
+        // Nearly straight corner: the two offset lines coincide.
+        shift = -max(offset_k, offset_before) * n0;
+    }
+    float shift_length = length(shift);
+    if (shift_length > miter_max) { shift *= miter_max / shift_length; }
+    return shift;
+}
+
+// The triangle itself is drawn at its exact corners, so every edge it shares
+// with another triangle has bit-identical endpoints in both draws and the
+// rasterization rule covers each pixel on it exactly once. Each fade or
+// underlap edge adds a quad outside it: its inner side is that same edge, its
+// outer side joins the two corners' offset points (`corner_shift`). An
+// offset point slides along an interior edge, or sits on the miter of two
+// faded edges, so the quads and the triangle together cover exactly the
+// triangle grown by `aa_fringe` across those edges. Interior edges get no
+// quad: their six vertices collapse onto one point and cover nothing.
+// Distances to the original edges and barycentric uv extrapolation keep
+// shading identical across the triangle and its quads.
 void main() {
-    uint first = uint(gl_VertexIndex) / 3u * 3u;
-    uint k = uint(gl_VertexIndex) - first;
+    uint triangle = uint(gl_VertexIndex) / triangle_draw_vertex_count;
+    uint slot = uint(gl_VertexIndex) - triangle * triangle_draw_vertex_count;
+    uint first = triangle * 3u;
     vec2 corners[3] = vec2[3](triangle_position(first), triangle_position(first + 1u),
         triangle_position(first + 2u));
     uint modes = uint(mesh.data[first * triangle_stride + 4u] + 0.5);
@@ -50,8 +89,26 @@ void main() {
             max(lengths[edge], 1e-12);
     }
     float shortest = min(lengths[0], min(lengths[1], lengths[2]));
-    if (abs(area) < 1e-6 || shortest < 1e-6) {
-        // Degenerate: covers no pixel samples. Draw it unexpanded and unfaded.
+    bool degenerate = abs(area) < 1e-6 || shortest < 1e-6;
+
+    // Corner k of the triangle this vertex sits on, and whether it is the
+    // corner's offset point (a fringe quad's outer side).
+    uint k = slot;
+    bool outer = false;
+    if (slot >= 3u) {
+        uint edge = (slot - 3u) / fringe_vertex_count;
+        uint quad_vertex = slot - 3u - edge * fringe_vertex_count;
+        // Quad (inner start, inner end, outer end), (inner start, outer end, outer start).
+        bool at_end = quad_vertex == 1u || quad_vertex == 2u || quad_vertex == 4u;
+        k = at_end ? (edge + 1u) % 3u : edge;
+        outer = quad_vertex == 2u || quad_vertex == 4u || quad_vertex == 5u;
+        if (degenerate || ((modes >> (2u * edge)) & 3u) == 0u) {
+            k = edge;
+            outer = false;
+        }
+    }
+    if (degenerate) {
+        // Covers no pixel samples. Draw it at its corners, unfaded, without quads.
         screen_pos = corners[k];
         gl_Position = vec4(screen_pos / viewport.size * 2.0 - 1.0, 0, 1);
         uv = triangle_uv(first + k);
@@ -60,25 +117,8 @@ void main() {
         return;
     }
 
-    // Corner k lies on edge k (k -> k+1) and edge k-1 (k-1 -> k).
-    uint before = (k + 2u) % 3u;
-    float offset_k = ((modes >> (2u * k)) & 3u) != 0u ? aa_fringe : 0.0;
-    float offset_before = ((modes >> (2u * before)) & 3u) != 0u ? aa_fringe : 0.0;
-    vec2 n0 = normals[k];
-    vec2 n1 = normals[before];
-    float det = n0.x * n1.y - n0.y * n1.x;
-    vec2 shift = vec2(0);
-    if (abs(det) > 1e-4) {
-        // Solve dot(shift, n0) = -offset_k and dot(shift, n1) = -offset_before.
-        shift = vec2(-offset_k * n1.y + offset_before * n0.y,
-            -offset_before * n0.x + offset_k * n1.x) / det;
-    } else {
-        // Nearly straight corner: the two offset lines coincide.
-        shift = -max(offset_k, offset_before) * n0;
-    }
-    float shift_length = length(shift);
-    if (shift_length > miter_max) { shift *= miter_max / shift_length; }
-    screen_pos = corners[k] + shift;
+    screen_pos = corners[k];
+    if (outer) { screen_pos += corner_shift(k, modes, normals); }
     gl_Position = vec4(screen_pos / viewport.size * 2.0 - 1.0, 0, 1);
 
     vec3 distances;

@@ -3,9 +3,9 @@
 //! Anti-aliasing: the renderer draws one sample per pixel, so the mesh shaders
 //! compute edge coverage analytically instead of relying on MSAA. Each
 //! triangle vertex carries two bits per triangle edge (`mesh_edges`):
-//! silhouette edges are pushed one logical pixel outward and faded across
-//! their pixel-wide boundary, edges shared with a same-fill triangle are left
-//! alone so tiled shapes have no seams, and fill boundaries blend like a
+//! silhouette edges get a one-logical-pixel fringe quad outside them and fade
+//! across their pixel-wide boundary, edges shared with a same-fill triangle are
+//! left alone so tiled shapes have no seams, and fill boundaries blend like a
 //! resolve. Polyline segments fade their sides and the line's two end caps;
 //! the joints between segments stay hard so consecutive segments do not
 //! double-fade where they meet. Points keep their circular falloff, widened
@@ -22,8 +22,10 @@
 //! Worst-case upload is bounded by that reservation; normal uploads pack only
 //! live data contiguously. Descriptors expose only initialized bytes. No network,
 //! disk, texture uploads, tessellation, queues, or runtime allocations are needed.
-//! CPU work is O(path indices + input points + draws); GPU expansion emits three
-//! vertices/triangle, six/segment, six/point. Draws <= sum of the four scene limits.
+//! CPU work is O(path indices + input points + draws); GPU expansion emits 21
+//! vertices/triangle (the triangle and a fringe quad per edge, from its three
+//! records; quads on interior edges collapse), six/segment, six/point. Draws
+//! <= sum of the four scene limits.
 //! Each frame reuses its resources only after the renderer's fence has completed.
 const std = @import("std");
 const assert = std.debug.assert;
@@ -267,7 +269,8 @@ pub const Draw = struct {
                 .vertices = mesh.vertices.constSlice(),
                 .indices = indices,
             });
-            self.submit(.triangles, .{ .vertices = @intCast(indices.len), .instances = 1 });
+            const vertex_count = edges_mod.draw_vertex_count(@intCast(indices.len));
+            self.submit(.triangles, .{ .vertices = vertex_count, .instances = 1 });
             draws += 1;
         }
         return draws;
@@ -383,6 +386,9 @@ pub const Draw = struct {
 const ColoredPoint = colored_cloud.ColoredPoint;
 
 comptime {
+    // `shaders/triangles.vert` hard-codes the draw layout as
+    // `triangle_draw_vertex_count`.
+    assert(edges_mod.triangle_draw_vertex_count == 21);
     assert(@sizeOf(ColoredPoint) == 24);
     assert(@sizeOf(scene_mod.Point) == 8);
     assert(@sizeOf(scene_mod.PathVertex) == 16);

@@ -28,7 +28,17 @@
 //! compute shared vertices with identical arithmetic, so their shared edges
 //! match; edges that only overlap partially (T-junctions) are treated as
 //! silhouettes. Both backends classify with `classify` and write their vertex
-//! records with `writeTriangles`, so they choose the same mode for every edge.
+//! records with `write_triangles`, so they choose the same mode for every edge.
+//!
+//! Geometry (`triangle_draw_vertex_count`): the shaders draw every triangle at
+//! its exact corners and add a separate fringe quad outside each fade and
+//! underlap edge, as NanoVG and Skia draw anti-aliasing fringes. An interior
+//! edge therefore has bit-identical endpoints in both triangles that share it,
+//! and the rasterization rule covers each pixel on it exactly once. Moving a
+//! corner instead (sliding it along an interior edge so the triangle itself
+//! grows over its faded edge) left the two copies of the shared edge a few
+//! ulps apart, and pixel centres in the sliver between them, inside donut
+//! slices, showed the background.
 //!
 //! Resource sketch (CLAUDE.md §7): one entry per path index the frame may
 //! submit (`SceneLimits.path_index_count_frame_max`), at most two thirds full:
@@ -36,7 +46,9 @@
 //! zeroed at init. An entry is live only when its stamp is the frame's, so a
 //! frame starts without clearing the table. Per frame: three inserts
 //! and three lookups per submitted triangle, each a 64-bit hash and a short
-//! linear probe. Nothing allocates after init.
+//! linear probe. Nothing allocates after init. The fringe quads add no
+//! memory: the shaders generate them from the triangle's three records, 21
+//! draw vertices per triangle.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -84,6 +96,19 @@ pub const TriangleVertex = extern struct {
         assert(@sizeOf(TriangleVertex) == @sizeOf(scene_mod.PathVertex) + 4);
     }
 };
+
+/// Vertices the triangle shaders draw per path triangle (Vulkan
+/// `triangles.vert`, Metal `path_pipeline.zig`): the triangle at its exact
+/// corners, then a fringe quad of two triangles outside each of its three
+/// edges. A quad whose edge is interior collapses to a point.
+pub const triangle_draw_vertex_count: u32 = 3 + 3 * 6;
+
+/// Draw vertices for one path draw of `index_count` triangle records.
+pub fn draw_vertex_count(index_count: u32) u32 {
+    assert(index_count % 3 == 0);
+    assert(index_count <= path_mesh.MAX_MESH_INDICES);
+    return @divExact(index_count, 3) * triangle_draw_vertex_count;
+}
 
 /// Hash an edge so that both orientations, and +0.0 and -0.0, give one key.
 pub fn edgeKey(a: [2]f32, b: [2]f32) Key {

@@ -55,6 +55,11 @@ pub const path_shader_source =
     \\// A sharp corner's offset point is clamped; tips sharper than about 14
     \\// degrees lose part of their fade band instead of producing long slivers.
     \\constant float miter_max = 4.0 * aa_fringe;
+    \\// Draw vertices per triangle (mesh_edges.triangle_draw_vertex_count): the
+    \\// triangle at its exact corners (0-2), then one fringe quad of two
+    \\// triangles for each of its three edges (3-20).
+    \\constant uint triangle_draw_vertex_count = 21;
+    \\constant uint fringe_vertex_count = 6;
     \\
     \\// One de-indexed triangle vertex (mesh_edges.TriangleVertex, 20 bytes).
     \\// `edge_modes` holds two bits per triangle edge (v0->v1, v1->v2, v2->v0)
@@ -190,7 +195,9 @@ pub const path_shader_source =
     \\// Offset of a corner that lies on edges with inward unit normals n0 and
     \\// n1: the intersection of the two edges' offset lines, each pushed
     \\// outward by its offset. Solves dot(shift, n0) = -offset0 and
-    \\// dot(shift, n1) = -offset1. Ported from Vulkan's triangles.vert.
+    \\// dot(shift, n1) = -offset1. Ported from Vulkan's triangles.vert. Every
+    \\// fringe vertex at a corner calls this with the same inputs, so
+    \\// neighbouring quads share their common side exactly.
     \\float2 corner_shift(float2 n0, float2 n1, float offset0, float offset1) {
     \\    float det = n0.x * n1.y - n0.y * n1.x;
     \\    float2 shift;
@@ -206,12 +213,17 @@ pub const path_shader_source =
     \\    return shift;
     \\}
     \\
-    \\// Each corner moves to the intersection of its two edges' offset lines, so
-    \\// the expanded triangle is the original grown by `aa_fringe` across every
-    \\// faded or underlapping edge and unchanged across interior edges.
-    \\// Distances to the original edges and barycentric uv extrapolation keep
-    \\// shading identical. A triangle whose edges are all interior is drawn
-    \\// exactly as before.
+    \\// The triangle itself is drawn at its exact corners, so every edge it
+    \\// shares with another triangle has bit-identical endpoints in both draws
+    \\// and the rasterization rule covers each pixel on it exactly once. Each
+    \\// fade or underlap edge adds a quad outside it: its inner side is that
+    \\// same edge, its outer side joins the two corners' offset points
+    \\// (`corner_shift`). An offset point slides along an interior edge or sits
+    \\// on the miter of two faded edges, so the quads and the triangle cover
+    \\// exactly the triangle grown by `aa_fringe` across those edges. Interior
+    \\// edges get no quad: their six vertices collapse onto one point. Distances
+    \\// to the original edges and barycentric uv extrapolation keep shading
+    \\// identical across the triangle and its quads. Ported from triangles.vert.
     \\vertex VertexOut path_vertex(
     \\    uint vid [[vertex_id]],
     \\    device const TriangleVertex *vertices [[buffer(0)]],
@@ -219,8 +231,9 @@ pub const path_shader_source =
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
     \\    PathInstance inst = *instance;
-    \\    uint first = vid / 3 * 3;
-    \\    uint k = vid - first;
+    \\    uint triangle = vid / triangle_draw_vertex_count;
+    \\    uint slot = vid - triangle * triangle_draw_vertex_count;
+    \\    uint first = triangle * 3;
     \\    float2 corners[3];
     \\    float2 uvs[3];
     \\    for (uint j = 0; j < 3; j++) {
@@ -250,26 +263,46 @@ pub const path_shader_source =
     \\            max(lengths[edge], 1e-12);
     \\    }
     \\    float shortest = min(lengths[0], min(lengths[1], lengths[2]));
+    \\    bool degenerate = abs(area) < 1e-6 || shortest < 1e-6;
+    \\
+    \\    // Corner k of the triangle this vertex sits on, and whether it is the
+    \\    // corner's offset point (a fringe quad's outer side).
+    \\    uint k = slot;
+    \\    bool outer = false;
+    \\    if (slot >= 3) {
+    \\        uint edge = (slot - 3) / fringe_vertex_count;
+    \\        uint quad_vertex = slot - 3 - edge * fringe_vertex_count;
+    \\        // Quad (inner start, inner end, outer end), (inner start, outer end, outer start).
+    \\        bool at_end = quad_vertex == 1 || quad_vertex == 2 || quad_vertex == 4;
+    \\        k = at_end ? (edge + 1) % 3 : edge;
+    \\        outer = quad_vertex == 2 || quad_vertex == 4 || quad_vertex == 5;
+    \\        if (degenerate || ((modes >> (2 * edge)) & 3) == 0) {
+    \\            k = edge;
+    \\            outer = false;
+    \\        }
+    \\    }
+    \\
     \\    float2 pos = corners[k];
     \\    float3 distances = float3(1e4);
     \\    out.uv = uvs[k];
-    \\    if (abs(area) < 1e-6 || shortest < 1e-6) {
-    \\        // Degenerate: covers no pixel samples. Draw it unexpanded and unfaded.
+    \\    if (degenerate) {
+    \\        // Covers no pixel samples. Draw it at its corners, unfaded, without quads.
     \\        out.edge_modes = 0;
     \\    } else {
-    \\        // Corner k lies on edge k (k -> k+1) and edge k-1 (k-1 -> k).
-    \\        uint before = (k + 2) % 3;
-    \\        float offset_k = ((modes >> (2 * k)) & 3) != 0 ? aa_fringe : 0.0;
-    \\        float offset_before = ((modes >> (2 * before)) & 3) != 0 ? aa_fringe : 0.0;
-    \\        float2 shift = corner_shift(normals[k], normals[before], offset_k, offset_before);
-    \\        pos += shift;
+    \\        if (outer) {
+    \\            // Corner k lies on edge k (k -> k+1) and edge k-1 (k-1 -> k).
+    \\            uint before = (k + 2) % 3;
+    \\            float offset_k = ((modes >> (2 * k)) & 3) != 0 ? aa_fringe : 0.0;
+    \\            float offset_before = ((modes >> (2 * before)) & 3) != 0 ? aa_fringe : 0.0;
+    \\            pos += corner_shift(normals[k], normals[before], offset_k, offset_before);
+    \\        }
     \\        for (uint edge = 0; edge < 3; edge++) {
     \\            distances[edge] = dot(pos - corners[edge], normals[edge]);
     \\        }
-    \\        if (shift.x != 0.0 || shift.y != 0.0) {
-    \\            // Extrapolate uv to the moved corner. The barycentric weight of
+    \\        if (outer) {
+    \\            // Extrapolate uv to the offset point. The barycentric weight of
     \\            // corner j is the distance to its opposite edge (edge j+1)
-    \\            // divided by the triangle's height over that edge. An unmoved
+    \\            // divided by the triangle's height over that edge. A vertex at a
     \\            // corner keeps its exact source uv.
     \\            float2 uv = float2(0.0);
     \\            for (uint j = 0; j < 3; j++) {
@@ -356,6 +389,11 @@ pub const path_shader_source =
     \\}
 ;
 
+// `path_shader_source` hard-codes the draw layout as `triangle_draw_vertex_count`.
+comptime {
+    assert(mesh_edges.triangle_draw_vertex_count == 21);
+}
+
 /// De-indexed path triangles, one draw per path instance, in scene order, with
 /// analytic edge anti-aliasing (`mesh_edges`). The render target has one
 /// sample per pixel.
@@ -373,7 +411,11 @@ pub const path_shader_source =
 /// Per frame: one classification pass over every path triangle (three hashed
 /// inserts each). Per draw: one claim of each path pool, one de-indexing copy
 /// with three edge lookups per triangle, a 112 B `setVertexBytes`, a 352 B
-/// `setFragmentBytes` and one non-indexed draw. Every mesh is claimed against
+/// `setFragmentBytes` and one non-indexed draw of 21 vertices per triangle
+/// (`mesh_edges.triangle_draw_vertex_count`): the triangle and a fringe quad
+/// per edge, generated from the same three records, so fringe geometry costs
+/// vertex shader invocations, not buffer space. A quad on an interior edge
+/// collapses to a point and rasterizes nothing. Every mesh is claimed against
 /// the same `GeometryCounts` as the Vulkan and CPU renderers before it is
 /// written, so an over-budget frame panics with the pool name.
 pub const PathPipeline = struct {
@@ -502,12 +544,16 @@ pub const PathPipeline = struct {
                 @as(c_ulong, @sizeOf(GradientUniforms)),
                 @as(c_ulong, 0),
             });
-            // Each record is one vertex; `vertex_id` includes the start, and
-            // `record_first` is a multiple of three, so `vid / 3` is the triangle.
+            // Every triangle draws `triangle_draw_vertex_count` vertices (itself
+            // and three fringe quads) from its three records. `vertex_id`
+            // includes the start, so `vid / 21` is the triangle's index in the
+            // frame's records, three records each.
+            const triangle_first = @divExact(@as(u64, record_first), 3);
+            const draw_vertex_count = mesh_edges.draw_vertex_count(@intCast(mesh.indices.len));
             encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
                 @backingInt(mtl.MTLPrimitiveType.triangle),
-                @as(c_ulong, record_first),
-                @as(c_ulong, mesh.indices.len),
+                @as(c_ulong, triangle_first * mesh_edges.triangle_draw_vertex_count),
+                @as(c_ulong, draw_vertex_count),
             });
         }
     }
