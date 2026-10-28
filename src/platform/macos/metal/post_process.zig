@@ -5,6 +5,7 @@
 //! within the same command buffer - no CPU waits needed.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const render_pass = @import("render_pass.zig");
@@ -113,32 +114,63 @@ pub fn renderFullPipeline(
         pp.swapTextures();
     }
 
-    // === Final Pass: Blit to screen ===
-    {
-        const blit_encoder_ptr = command_buffer.msgSend(?*anyopaque, "blitCommandEncoder", .{});
-        if (blit_encoder_ptr) |ptr| {
-            const blit_encoder = objc.Object.fromId(ptr);
-
-            const width: u32 = @intFromFloat(size.width * scale_factor);
-            const height: u32 = @intFromFloat(size.height * scale_factor);
-
-            blit_encoder.msgSend(void, "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:", .{
-                pp.front_texture.?.value,
-                @as(c_ulong, 0),
-                @as(c_ulong, 0),
-                mtl.MTLOrigin{ .x = 0, .y = 0, .z = 0 },
-                mtl.MTLSize{ .width = width, .height = height, .depth = 1 },
-                drawable_info.texture.value,
-                @as(c_ulong, 0),
-                @as(c_ulong, 0),
-                mtl.MTLOrigin{ .x = 0, .y = 0, .z = 0 },
-            });
-
-            blit_encoder.msgSend(void, "endEncoding", .{});
-        }
-    }
+    // === Final Pass: draw the front texture into the drawable ===
+    encodePresentPass(command_buffer, pp, drawable_info.texture);
 
     // === Present and commit (NO WAIT!) ===
     command_buffer.msgSend(void, "presentDrawable:", .{drawable_info.drawable.value});
     command_buffer.msgSend(void, "commit", .{});
+}
+
+/// Copy `pp.front_texture` into the drawable with one full-screen triangle
+/// (`custom_shader.present_shader_source`). Drawables are `framebufferOnly`,
+/// so this must be a render pass rather than a blit.
+///
+/// The viewport covers the texels both textures have. They are normally the
+/// same size (`ensureSize` and `setDrawableSize:` take the same device-pixel
+/// size), and the former blit copied the same rectangle. Every drawable pixel
+/// inside it is written, so the attachment needs no load.
+fn encodePresentPass(
+    command_buffer: objc.Object,
+    pp: *const custom_shader.PostProcessState,
+    drawable_texture: objc.Object,
+) void {
+    const front_texture = pp.front_texture.?;
+    const width: c_ulong = @min(
+        front_texture.msgSend(c_ulong, "width", .{}),
+        drawable_texture.msgSend(c_ulong, "width", .{}),
+    );
+    const height: c_ulong = @min(
+        front_texture.msgSend(c_ulong, "height", .{}),
+        drawable_texture.msgSend(c_ulong, "height", .{}),
+    );
+    assert(width > 0);
+    assert(height > 0);
+
+    const rp = render_pass.createSimpleRenderPass(.{
+        .texture = drawable_texture,
+        .load_action = .dont_care,
+        .store_action = .store,
+    }) orelse return;
+    const encoder = render_pass.createEncoder(command_buffer, rp) orelse return;
+
+    encoder.msgSend(void, "setViewport:", .{mtl.MTLViewport{
+        .x = 0,
+        .y = 0,
+        .width = @floatFromInt(width),
+        .height = @floatFromInt(height),
+        .znear = 0,
+        .zfar = 1,
+    }});
+    encoder.msgSend(void, "setRenderPipelineState:", .{pp.present_pipeline.value});
+    encoder.msgSend(void, "setFragmentTexture:atIndex:", .{
+        front_texture.value,
+        @as(c_ulong, 0),
+    });
+    encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
+        @backingInt(mtl.MTLPrimitiveType.triangle),
+        @as(c_ulong, 0),
+        @as(c_ulong, 3),
+    });
+    encoder.msgSend(void, "endEncoding", .{});
 }
