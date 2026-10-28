@@ -44,7 +44,7 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 
 **Dependencies:** None. Gooey has zero external Zig package dependencies — `build.zig.zon` lists no dependencies. It links only against platform system frameworks/libraries (see platform notes below).
 
-**macOS:** macOS 12.0+
+**macOS:** macOS 14.0+
 
 **Linux:** Wayland compositor, Vulkan drivers, FreeType, HarfBuzz, Fontconfig, libpng, D-Bus
 
