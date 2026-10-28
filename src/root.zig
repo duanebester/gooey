@@ -71,7 +71,10 @@ pub const App = @import("app.zig").App;
 /// and validated at comptime. There is no default; pick one of five rungs,
 /// smallest first: `nano` (counter-class), `small` (single-screen forms),
 /// `standard` (multi-panel apps), `large` (dense content, many icons or
-/// images), `ceiling` (framework maxima, for stress tests).
+/// images), `ceiling` (framework maxima, for stress tests). To raise one budget
+/// or field without moving the whole app up a rung, pass a modified copy, for
+/// example `ResourceLimits.standard` with `atlas.image_size = 2_048`, plus
+/// `.font_limits = .standard`; the readme shows the pattern.
 pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 
 /// The font faces every text system loads at init. `App`'s `.limits` profile

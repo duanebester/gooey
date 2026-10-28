@@ -173,7 +173,32 @@ the app with the pool's name. There is no default. Pick the smallest rung that f
 | `.ceiling`  | Framework maxima, stress tests       |    14 |                3 |
 
 The name selects both `ResourceLimits` and `FontLimits`; `.font_limits` overrides the
-faces. A `ResourceLimits` literal also works and then needs `.font_limits` too. The
+faces.
+
+Apps are rarely heavy in every direction. Instead of moving the whole app up a rung,
+start from the closest profile and raise only what it needs. Each budget (`scene`,
+`window`, `frame`, `atlas`) and each field can come from a different rung:
+
+```zig
+// A standard app with a large photo gallery: only the image atlas grows.
+const limits = blk: {
+    var mixed = gooey.ResourceLimits.standard;
+    mixed.atlas.image_size = 2_048;
+    // Or take a whole budget from another rung:
+    // mixed.scene = gooey.ResourceLimits.large.scene;
+    break :blk mixed;
+};
+
+const App = gooey.App(AppState, &state, render, .{
+    .limits = limits,
+    .font_limits = .standard, // a value has no profile name to follow
+});
+```
+
+The mixed budget passes the same compile-time checks as a profile, so an impossible
+combination fails the build with the field and the rule. One coupling to know: an image
+uploads in a single frame, so `atlas.upload_bytes_frame_max` caps the largest image
+(about 510×510 px at `.standard`'s 1 MiB, 2046×2046 px at `.large`'s 16 MiB). The
 values and their measurements are in `src/core/limits.zig` and
 `docs/v0.4.0-memory-budget.md`.
 
