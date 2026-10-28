@@ -1,14 +1,15 @@
 //! Path triangle edge classification for analytic anti-aliasing.
 //!
-//! The Vulkan renderer draws one sample per pixel. The triangle vertex shader
-//! anti-aliases a path by pushing chosen triangle edges outward by a pixel and
-//! fading coverage across them (`shaders/triangles.vert`, `shaders/mesh.frag`).
-//! Fading every edge of every triangle would draw a visible seam wherever two
-//! triangles meet: each covers about half of the pixels on the shared edge,
-//! and blending two half-covered draws leaves a quarter of the background
-//! showing. That happens inside one triangulated path and also between
-//! separate draws that tile a shape, such as the pie and donut charts, whose
-//! slices are hundreds of single-triangle paths.
+//! The Vulkan and Metal renderers draw one sample per pixel. Their triangle
+//! vertex shaders anti-alias a path by pushing chosen triangle edges outward by
+//! a pixel and fading coverage across them (Vulkan `shaders/triangles.vert` and
+//! `shaders/mesh.frag`, Metal `path_pipeline.zig`). Fading every edge of every
+//! triangle would draw a visible seam wherever two triangles meet: each covers
+//! about half of the pixels on the shared edge, and blending two half-covered
+//! draws leaves a quarter of the background showing. That happens inside one
+//! triangulated path and also between separate draws that tile a shape, such
+//! as the pie and donut charts, whose slices are hundreds of single-triangle
+//! paths.
 //!
 //! So every edge is classified once per frame, over all path draws, by its
 //! exact endpoint positions in screen space:
@@ -26,7 +27,8 @@
 //! Edges are matched by exact float equality after the path transform. Charts
 //! compute shared vertices with identical arithmetic, so their shared edges
 //! match; edges that only overlap partially (T-junctions) are treated as
-//! silhouettes.
+//! silhouettes. Both backends classify with `classify` and write their vertex
+//! records with `writeTriangles`, so they choose the same mode for every edge.
 //!
 //! Resource sketch (CLAUDE.md §7): one entry per path index the frame may
 //! submit (`SceneLimits.path_index_count_frame_max`), at most two thirds full:
@@ -39,8 +41,12 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+const scene_mod = @import("../scene/mod.zig");
+const path_mesh = @import("../scene/path_mesh.zig");
+
 /// How the triangle shader treats one edge. Two bits per edge in the vertex
-/// record; the values are part of the shader contract in `mesh.glsl`.
+/// record; the values are part of the shader contract in Vulkan's `mesh.glsl`
+/// and Metal's `path_pipeline.zig`.
 pub const EdgeMode = enum(u2) {
     interior = 0,
     fade = 1,
@@ -55,8 +61,29 @@ pub const Key = u64;
 pub const PathIndex = u16;
 
 comptime {
-    assert(@import("../../core/limits.zig").MAX_PATHS_PER_FRAME <= std.math.maxInt(PathIndex));
+    assert(@import("../core/limits.zig").MAX_PATHS_PER_FRAME <= std.math.maxInt(PathIndex));
 }
+
+/// One de-indexed path triangle vertex: the source `PathVertex` plus the
+/// triangle's edge modes, two bits per edge in order (v0→v1, v1→v2, v2→v0),
+/// values from `EdgeMode`. All three vertices of a triangle carry the same
+/// modes; the vertex shader reads its two neighbours from the buffer. The
+/// modes are stored as an integral float (0..63) because the Vulkan shader
+/// reads the payload as `float[]`; a small integer bit pattern would be a
+/// denormal, which a GPU may flush to zero on load.
+pub const TriangleVertex = extern struct {
+    x: f32,
+    y: f32,
+    u: f32,
+    v: f32,
+    edge_modes: f32,
+
+    comptime {
+        assert(@sizeOf(TriangleVertex) == 20);
+        assert(@offsetOf(TriangleVertex, "edge_modes") == 16);
+        assert(@sizeOf(TriangleVertex) == @sizeOf(scene_mod.PathVertex) + 4);
+    }
+};
 
 /// Hash an edge so that both orientations, and +0.0 and -0.0, give one key.
 pub fn edgeKey(a: [2]f32, b: [2]f32) Key {
@@ -186,6 +213,133 @@ pub const EdgeTable = struct {
         return entry;
     }
 };
+
+/// Classify every path triangle edge of the frame before any path is drawn.
+/// Paths are visited in draw order, the order the backends draw them in, and
+/// `path_index` in `write_triangles` is the same index into
+/// `scene.getPathInstances()`. Classification stops at the frame's path index
+/// budget; the draw pass then reports the exhausted pool.
+pub fn classify(table: *EdgeTable, scene: *const scene_mod.Scene) void {
+    assert(table.entries.len > 0);
+    const paths = scene.getPathInstances();
+    const gradients = scene.getPathGradients();
+    assert(paths.len == gradients.len);
+    assert(paths.len <= scene.limits.path_count_frame_max);
+    table.begin();
+    const index_count_max = table.edge_count_max;
+    var index_count: u64 = 0;
+    for (paths, gradients, 0..) |*path, *gradient, path_index| {
+        const mesh = scene.getMeshPool().getMesh(path.getMeshRef());
+        const indices = mesh.indices.constSlice();
+        if (index_count + indices.len > index_count_max) break;
+        index_count += indices.len;
+        const fill = fill_hash(path, gradient);
+        const vertices = mesh.vertices.constSlice();
+        var triangle: usize = 0;
+        while (triangle < indices.len) : (triangle += 3) {
+            const corners = triangle_corners(path, vertices, indices[triangle..][0..3]);
+            for (0..3) |edge| {
+                const key = edgeKey(corners[edge], corners[(edge + 1) % 3]);
+                table.insert(key, @intCast(path_index), fill);
+            }
+        }
+    }
+    assert(index_count <= index_count_max);
+}
+
+pub const TriangleSource = struct {
+    edges: *const EdgeTable,
+    path: *const scene_mod.PathInstance,
+    /// The path's index in `scene.getPathInstances()`, as `classify` saw it.
+    path_index: PathIndex,
+    vertices: []const scene_mod.PathVertex,
+    indices: []const u32,
+};
+
+/// De-index a path mesh into vertex records, each triangle tagged with the
+/// modes `classify` chose for its three edges.
+pub fn write_triangles(target: []TriangleVertex, source: *const TriangleSource) void {
+    assert(target.len == source.indices.len);
+    assert(target.len % 3 == 0);
+    assert(target.len <= path_mesh.MAX_MESH_INDICES);
+    var triangle: usize = 0;
+    while (triangle < target.len) : (triangle += 3) {
+        const indices = source.indices[triangle..][0..3];
+        const corners = triangle_corners(source.path, source.vertices, indices);
+        var edge_modes: u8 = 0;
+        for (0..3) |edge| {
+            const key = edgeKey(corners[edge], corners[(edge + 1) % 3]);
+            const mode = source.edges.mode(key, source.path_index);
+            edge_modes |= @as(u8, @backingInt(mode)) << @intCast(2 * edge);
+        }
+        assert(edge_modes < 64);
+        for (indices, target[triangle..][0..3]) |index, *record| {
+            const vertex = source.vertices[index];
+            record.* = .{
+                .x = vertex.x,
+                .y = vertex.y,
+                .u = vertex.u,
+                .v = vertex.v,
+                .edge_modes = @floatFromInt(edge_modes),
+            };
+        }
+    }
+}
+
+/// Everything that decides a path's colour after its transform: fill colour,
+/// clip, gradient parameters and the gradient's live stops. Two paths with
+/// equal hashes blend identically across a shared edge. Unused stops are
+/// zeroed so stale bytes past `stop_count` cannot split equal fills.
+fn fill_hash(
+    path: *const scene_mod.PathInstance,
+    gradient: *const scene_mod.GradientUniforms,
+) u32 {
+    const Fill = extern struct {
+        color: [4]f32,
+        clip: [4]f32,
+        params: [4]f32,
+        gradient_type: u32,
+        stop_count: u32,
+        stops: [5][16]f32,
+    };
+    var fill = std.mem.zeroes(Fill);
+    fill.color = .{ path.fill_color.h, path.fill_color.s, path.fill_color.l, path.fill_color.a };
+    fill.clip = .{ path.clip_x, path.clip_y, path.clip_width, path.clip_height };
+    fill.params = .{ path.grad_param0, path.grad_param1, path.grad_param2, path.grad_param3 };
+    fill.gradient_type = path.gradient_type;
+    fill.stop_count = gradient.stop_count;
+    assert(fill.gradient_type <= 2);
+    if (fill.gradient_type != 0) {
+        assert(fill.stop_count >= 2);
+        assert(fill.stop_count <= 16);
+        const count = fill.stop_count;
+        @memcpy(fill.stops[0][0..count], gradient.stop_offsets[0..count]);
+        @memcpy(fill.stops[1][0..count], gradient.stop_h[0..count]);
+        @memcpy(fill.stops[2][0..count], gradient.stop_s[0..count]);
+        @memcpy(fill.stops[3][0..count], gradient.stop_l[0..count]);
+        @memcpy(fill.stops[4][0..count], gradient.stop_a[0..count]);
+    }
+    return @truncate(std.hash.Wyhash.hash(0, std.mem.asBytes(&fill)));
+}
+
+/// A triangle's corners in screen space, transformed exactly as the vertex
+/// shaders transform them, so equal corners compare equal across draws.
+fn triangle_corners(
+    path: *const scene_mod.PathInstance,
+    vertices: []const scene_mod.PathVertex,
+    indices: *const [3]u32,
+) [3][2]f32 {
+    var corners: [3][2]f32 = undefined;
+    for (indices, &corners) |index, *corner| {
+        assert(index < vertices.len);
+        const vertex = vertices[index];
+        corner.* = .{
+            vertex.x * path.scale_x + path.offset_x,
+            vertex.y * path.scale_y + path.offset_y,
+        };
+    }
+    return corners;
+}
 
 // =============================================================================
 // Tests

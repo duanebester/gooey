@@ -7,7 +7,7 @@
 //     space, so interpolation is exact and mesh.frag converts them to device
 //     pixels with screen-space derivatives.
 //   edge_modes: two bits per distance (bits 2i..2i+1 for component i), values
-//     from vk_mesh_edges.EdgeMode:
+//     from mesh_edges.EdgeMode (src/platform/mesh_edges.zig):
 //     0 interior: no coverage change; the edge is drawn by the rasterizer.
 //     1 fade:     coverage *= clamp(distance_px + 0.5, 0, 1).
 //     2 underlap: full coverage up to half a pixel outside, discard beyond.

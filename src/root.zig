@@ -357,9 +357,9 @@ test {
         // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
         // its capacity tests run on every OS, not only where the renderer builds.
         @import("platform/linux/vk_types.zig"),
-        // Path edge classification for the Vulkan mesh shaders' analytic
-        // anti-aliasing. Pure Zig, tested on every OS.
-        @import("platform/linux/vk_mesh_edges.zig"),
+        // Path edge classification for the Vulkan and Metal mesh shaders'
+        // analytic anti-aliasing. Pure Zig, tested on every OS.
+        @import("platform/mesh_edges.zig"),
 
         // Platform-independent CPU rasterizer used by the Wayland shm and
         // fbdev backends. Tested on every host, not only CPU-backend builds.
