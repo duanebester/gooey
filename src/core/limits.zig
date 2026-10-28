@@ -683,13 +683,14 @@ pub const AtlasLimits = struct {
     };
 
     /// lucide-demo's visible icons hold 520 of 2048 SVG rows at 2x, and the
-    /// images example's logo copies hold 516 of 4096 image rows. Textures:
-    /// 16 + 16 + 64 MiB.
+    /// images example's logo copies hold 1032 of 2048 image rows at 1x and 2x.
+    /// The image atlas was 4096² (64 MiB), which cost about 65 MB per window
+    /// on macOS for space no example used. Textures: 16 + 16 + 16 MiB.
     pub const large: AtlasLimits = .{
         .upload_bytes_frame_max = 16 * 1024 * 1024,
         .text_size = 4_096,
         .svg_size = 2_048,
-        .image_size = 4_096,
+        .image_size = 2_048,
         .svg_icon_size_max = 256,
     };
 
