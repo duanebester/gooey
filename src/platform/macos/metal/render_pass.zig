@@ -6,7 +6,7 @@
 const std = @import("std");
 const objc = @import("objc");
 const mtl = @import("api.zig");
-const geometry = @import("../../../core/geometry.zig");
+const geometry = @import("../../../geometry/geometry.zig");
 
 /// Configuration for a single-sample render pass (`pipelines.sample_count`).
 pub const SimpleRenderPassConfig = struct {

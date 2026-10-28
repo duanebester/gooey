@@ -24,7 +24,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const DrawCommand = @import("draw_command.zig").DrawCommand;
 const TextPool = @import("text_pool.zig").TextPool;
-const Color = @import("../core/geometry.zig").Color;
+const Color = @import("../geometry/geometry.zig").Color;
 const ThemeColor = @import("theme_color.zig").ThemeColor;
 const SemanticToken = @import("theme_color.zig").SemanticToken;
 

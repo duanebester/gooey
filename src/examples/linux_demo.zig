@@ -18,8 +18,8 @@ const Scene = gooey.scene.Scene;
 const Quad = gooey.scene.Quad;
 const Shadow = gooey.scene.Shadow;
 const Hsla = gooey.scene.Hsla;
-const Corners = gooey.core.Corners;
-const Edges = gooey.core.Edges;
+const Corners = gooey.geometry.Corners;
+const Edges = gooey.geometry.Edges;
 const Color = gooey.Color;
 const input = gooey.input;
 

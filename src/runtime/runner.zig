@@ -28,7 +28,7 @@ const interface_mod = @import("../platform/interface.zig");
 // Core imports
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const FontLimits = @import("../core/limits.zig").FontLimits;
-const geometry_mod = @import("../core/geometry.zig");
+const geometry_mod = @import("../geometry/geometry.zig");
 const input_mod = @import("../input/mod.zig");
 const handler_mod = @import("../context/handler.zig");
 const cx_mod = @import("../cx.zig");

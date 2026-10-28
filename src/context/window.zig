@@ -149,7 +149,7 @@ const drag_mod = @import("drag.zig");
 pub const DragState = drag_mod.DragState;
 
 // Geometry
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 const Point = geometry.Point;
 
 // Composed subsystems. Body lives in the named files; `Window` composes

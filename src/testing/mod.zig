@@ -59,10 +59,10 @@ pub const allocator = std.testing.allocator;
 // Test Helpers
 // =============================================================================
 
-const core = @import("../core/mod.zig");
+const geometry = @import("../geometry/mod.zig");
 
 /// Assert two colors are equal (with tolerance for floating point)
-pub fn expectColorEqual(expected: core.Color, actual: core.Color) !void {
+pub fn expectColorEqual(expected: geometry.Color, actual: geometry.Color) !void {
     const tolerance: f32 = 0.001;
     try std.testing.expectApproxEqAbs(expected.r, actual.r, tolerance);
     try std.testing.expectApproxEqAbs(expected.g, actual.g, tolerance);
@@ -71,7 +71,7 @@ pub fn expectColorEqual(expected: core.Color, actual: core.Color) !void {
 }
 
 /// Assert two bounds are equal (with tolerance)
-pub fn expectBoundsEqual(expected: core.BoundsF, actual: core.BoundsF) !void {
+pub fn expectBoundsEqual(expected: geometry.BoundsF, actual: geometry.BoundsF) !void {
     const tolerance: f32 = 0.001;
     try std.testing.expectApproxEqAbs(expected.origin.x, actual.origin.x, tolerance);
     try std.testing.expectApproxEqAbs(expected.origin.y, actual.origin.y, tolerance);
@@ -80,14 +80,14 @@ pub fn expectBoundsEqual(expected: core.BoundsF, actual: core.BoundsF) !void {
 }
 
 /// Assert two points are equal (with tolerance)
-pub fn expectPointEqual(expected: core.PointF, actual: core.PointF) !void {
+pub fn expectPointEqual(expected: geometry.PointF, actual: geometry.PointF) !void {
     const tolerance: f32 = 0.001;
     try std.testing.expectApproxEqAbs(expected.x, actual.x, tolerance);
     try std.testing.expectApproxEqAbs(expected.y, actual.y, tolerance);
 }
 
 /// Assert two sizes are equal (with tolerance)
-pub fn expectSizeEqual(expected: core.SizeF, actual: core.SizeF) !void {
+pub fn expectSizeEqual(expected: geometry.SizeF, actual: geometry.SizeF) !void {
     const tolerance: f32 = 0.001;
     try std.testing.expectApproxEqAbs(expected.width, actual.width, tolerance);
     try std.testing.expectApproxEqAbs(expected.height, actual.height, tolerance);
@@ -102,25 +102,25 @@ test {
 }
 
 test "expectColorEqual passes for equal colors" {
-    const c1 = core.Color.rgb(1.0, 0.5, 0.0);
-    const c2 = core.Color.rgb(1.0, 0.5, 0.0);
+    const c1 = geometry.Color.rgb(1.0, 0.5, 0.0);
+    const c2 = geometry.Color.rgb(1.0, 0.5, 0.0);
     try expectColorEqual(c1, c2);
 }
 
 test "expectPointEqual passes for equal points" {
-    const p1 = core.PointF{ .x = 10.0, .y = 20.0 };
-    const p2 = core.PointF{ .x = 10.0, .y = 20.0 };
+    const p1 = geometry.PointF{ .x = 10.0, .y = 20.0 };
+    const p2 = geometry.PointF{ .x = 10.0, .y = 20.0 };
     try expectPointEqual(p1, p2);
 }
 
 test "expectBoundsEqual passes for equal bounds" {
-    const b1 = core.BoundsF.init(10.0, 20.0, 100.0, 200.0);
-    const b2 = core.BoundsF.init(10.0, 20.0, 100.0, 200.0);
+    const b1 = geometry.BoundsF.init(10.0, 20.0, 100.0, 200.0);
+    const b2 = geometry.BoundsF.init(10.0, 20.0, 100.0, 200.0);
     try expectBoundsEqual(b1, b2);
 }
 
 test "expectSizeEqual passes for equal sizes" {
-    const s1 = core.SizeF{ .width = 100.0, .height = 200.0 };
-    const s2 = core.SizeF{ .width = 100.0, .height = 200.0 };
+    const s1 = geometry.SizeF{ .width = 100.0, .height = 200.0 };
+    const s2 = geometry.SizeF{ .width = 100.0, .height = 200.0 };
     try expectSizeEqual(s1, s2);
 }

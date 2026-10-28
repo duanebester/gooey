@@ -13,7 +13,7 @@ const BorderWidth = layout_mod.BorderWidth;
 const FloatingConfig = layout_types.FloatingConfig;
 
 // Re-exports for convenience
-pub const Color = @import("../core/geometry.zig").Color;
+pub const Color = @import("../geometry/geometry.zig").Color;
 pub const ShadowConfig = layout_types.ShadowConfig;
 pub const AttachPoint = layout_types.AttachPoint;
 pub const CornerRadius = layout_mod.CornerRadius;

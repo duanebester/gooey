@@ -124,8 +124,8 @@ pub const Selection = struct {
 /// Flat unparameterized rectangle used by `TextInput`, `TextArea`, and
 /// `CodeEditorState` for bounds tracking and hit-testing.
 ///
-/// **Why this lives here, not on `core/geometry.Rect/Bounds(T)`.**
-/// `core/geometry`'s `Rect(T)` / `Bounds(T)` is a generic value type with a
+/// **Why this lives here, not on `geometry/geometry.Rect/Bounds(T)`.**
+/// `geometry/geometry`'s `Rect(T)` / `Bounds(T)` is a generic value type with a
 /// nested `origin: Point(T)` + `size: Size(T)` shape. Text widgets touch
 /// `bounds.x` / `bounds.y` / `bounds.width` / `bounds.height` ~150 times
 /// across hot rendering and hit-testing loops; rewriting every access to
@@ -136,7 +136,7 @@ pub const Selection = struct {
 /// `code_editor_state.zig` one tested `Bounds` type.
 ///
 /// **Half-open `[x, x+w)` hit-test convention.** `contains` matches the
-/// framework-wide convention used by `core/geometry.Rect.contains` and the
+/// framework-wide convention used by `geometry/geometry.Rect.contains` and the
 /// layout-engine hit-testing path: a point on the exact right or bottom
 /// edge is *outside* the rectangle. This aligns the text-widget family
 /// with every other hit-test in the framework, so adjacent rectangles never
@@ -235,7 +235,7 @@ test "Bounds.contains: left and top edges are inclusive (hit)" {
 test "Bounds.contains: right and bottom edges are exclusive (miss)" {
     // Goal: pin the half-open `[x, x+w) x [y, y+h)` convention on its open
     // edges. The right and bottom edges are *outside* the rectangle. This
-    // matches `core/geometry.Rect.contains` and the framework-wide hit-test
+    // matches `geometry/geometry.Rect.contains` and the framework-wide hit-test
     // convention. A refactor that flips the inequalities to `<=` (the
     // closed form, which counts the right and bottom edges as inside)
     // fails this test.

@@ -4,7 +4,7 @@
 //! zero allocation after init (state stored inline in Window struct).
 
 const std = @import("std");
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 const Point = geometry.Point;
 
 /// Type identifier for drag payloads (comptime-stable address)

@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const imports = @import("imports.zig");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
 const input = @import("../../input/mod.zig");

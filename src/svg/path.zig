@@ -3,12 +3,12 @@
 //! Parses SVG path data into a format suitable for tessellation and GPU rendering.
 //! Adapted from cosmic graphics for the gooey rendering pipeline.
 //!
-//! Vector math types live in `core.vec2` so the SVG, scene-path, and
+//! Vector math types live in `geometry.vec2` so the SVG, scene-path, and
 //! triangulation pipelines all share one `Vec2` / `IndexSlice`, so no two
 //! modules can declare conflicting `Vec2` types.
 
 const std = @import("std");
-const vec2_mod = @import("../core/vec2.zig");
+const vec2_mod = @import("../geometry/vec2.zig");
 
 /// Re-exported here so existing call sites
 /// (`svg_mod.Vec2`, `svg.flattenPath(... Vec2 ...)`) keep compiling

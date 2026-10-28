@@ -37,7 +37,7 @@
 //! - GPU, disk, and network: none.
 
 const std = @import("std");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 const limits_mod = @import("../../core/limits.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const batch_iterator = @import("../../scene/batch_iterator.zig");
@@ -780,7 +780,7 @@ test "a gradient path takes its color from the mesh uv at each pixel" {
     // the path sits on the target.
     var scene = try scene_mod.Scene.initCapacity(testing.allocator, &test_limits.scene);
     defer scene.deinit();
-    const Vec2 = @import("../../core/vec2.zig").Vec2;
+    const Vec2 = @import("../../geometry/vec2.zig").Vec2;
     const corners = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 8, .y = 0 },

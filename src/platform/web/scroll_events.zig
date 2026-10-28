@@ -6,7 +6,7 @@
 //! No JS↔WASM calls needed during frame processing.
 
 const input = @import("../../input/events.zig");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 
 /// Packed scroll event - exactly 24 bytes
 /// Layout matches JavaScript writer:

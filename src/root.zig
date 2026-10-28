@@ -5,7 +5,7 @@
 //!      satisfy ~all uses across `src/examples/*.zig` and are the
 //!      only names guaranteed to live at `gooey.X`.
 //!   2. Everything else lives under a namespace
-//!      (`gooey.core.Rect`, `gooey.animation.lerp`, \u2026). A namespace is the
+//!      (`gooey.geometry.Rect`, `gooey.animation.lerp`, \u2026). A namespace is the
 //!      source-of-truth home; the curated-core flat names are
 //!      re-exports for ergonomics only.
 //!
@@ -96,9 +96,9 @@ pub const Cx = @import("app.zig").Cx;
 pub const Window = @import("context/mod.zig").Window;
 
 /// Literal-friendly color value used inside render fns (`Color.rgb(\u2026)`).
-/// `Rect` / `Size` / `Bounds` live under `gooey.core` since they are
+/// `Rect` / `Size` / `Bounds` live under `gooey.geometry` since they are
 /// almost always layout return values, never typed explicitly.
-pub const Color = @import("core/mod.zig").Color;
+pub const Color = @import("geometry/mod.zig").Color;
 
 /// Platform-aware logger. Works on native and WASM without
 /// `std_options`. Pair with the `gooey.std_options` one-liner if you
@@ -129,13 +129,17 @@ else
 // =============================================================================
 //
 // Each namespace below is the canonical home for the types underneath
-// it. Examples reach for `gooey.core.Rect`, `gooey.animation.lerp`, etc.
+// it. Examples reach for `gooey.geometry.Rect`, `gooey.animation.lerp`, etc.
 // Their types are not duplicated as flat aliases (`gooey.Button`,
 // `gooey.Rect`, \u2026) next to these namespaces.
 
-/// Core primitives: geometry (`Point` / `Rect` / `Bounds`), color,
-/// element IDs, custom shaders.
+/// Core primitives: resource limits, the fixed-capacity array, custom
+/// shaders, and compile-time interface checks.
 pub const core = @import("core/mod.zig");
+
+/// Geometry and path math: `Point` / `Size` / `Rect` / `Bounds` / `Edges` /
+/// `Corners`, `Color`, `Vec2`, the triangulator, and stroke expansion.
+pub const geometry = @import("geometry/mod.zig");
 
 /// Input events: keycodes, mouse buttons, modifiers, event phases.
 pub const input = @import("input/mod.zig");
@@ -411,7 +415,7 @@ test {
 
         // UI / core leaves.
         @import("ui/primitives.zig"),
-        @import("core/triangulator.zig"),
+        @import("geometry/triangulator.zig"),
         @import("validation.zig"),
 
         // Tier-1 public-API pin list. Lives in the

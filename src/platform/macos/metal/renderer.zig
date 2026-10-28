@@ -5,7 +5,7 @@ const assert = std.debug.assert;
 const objc = @import("objc");
 
 const interface_verify = @import("../../../core/interface_verify.zig");
-const geometry = @import("../../../core/geometry.zig");
+const geometry = @import("../../../geometry/geometry.zig");
 const scene_mod = @import("../../../scene/mod.zig");
 const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const mtl = @import("api.zig");

@@ -311,7 +311,7 @@ test "MeshRef toGpuRef" {
 }
 
 test "MeshPool persistent caching" {
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
@@ -338,7 +338,7 @@ test "MeshPool persistent caching" {
 }
 
 test "MeshPool frame allocation" {
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
@@ -367,7 +367,7 @@ test "MeshPool frame allocation" {
 }
 
 test "MeshPool hasPersistent" {
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
@@ -412,7 +412,7 @@ test "MeshPool lazy allocation" {
     try std.testing.expect(!stats1.frame_allocated);
 
     // After using persistent, only persistent should be allocated
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
     const triangle = [_]vec2_mod.Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },

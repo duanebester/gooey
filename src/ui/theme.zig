@@ -16,7 +16,7 @@
 //! TextInput{ .id = "special", .background = Color.red }
 //! ```
 
-const Color = @import("../core/geometry.zig").Color;
+const Color = @import("../geometry/geometry.zig").Color;
 
 /// Standard theme interface for semantic colors and styling.
 /// Components resolve null color fields against the current theme.

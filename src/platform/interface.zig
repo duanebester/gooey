@@ -34,7 +34,7 @@
 //! - Tests: `src/testing/test_backend.zig`
 
 const std = @import("std");
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
 const window_registry = @import("window_registry.zig");
 

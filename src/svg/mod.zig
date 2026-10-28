@@ -26,7 +26,7 @@ const builtin = @import("builtin");
 //
 // Path parser, element parser (circle/rect/line/polyline/polygon/ellipse),
 // bezier flattening, and arc flattening. They live here so the codebase has
-// exactly one SVG module. Vector math reuses `core.Vec2` / `core.IndexSlice`
+// exactly one SVG module. Vector math reuses `geometry.Vec2` / `geometry.IndexSlice`
 // rather than declaring a parallel `Vec2`.
 
 pub const path = @import("path.zig");

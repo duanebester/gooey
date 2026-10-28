@@ -11,7 +11,7 @@
 //! - handleKeyboardEvent: key routing to focused widgets
 
 const std = @import("std");
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 
 // Core imports
 const window_mod = @import("../context/window.zig");

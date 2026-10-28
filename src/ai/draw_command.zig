@@ -18,7 +18,7 @@
 //! - Direct mapping to JSON objects with a `"tool"` discriminator
 
 const std = @import("std");
-const Color = @import("../core/geometry.zig").Color;
+const Color = @import("../geometry/geometry.zig").Color;
 const ThemeColor = @import("theme_color.zig").ThemeColor;
 const SemanticToken = @import("theme_color.zig").SemanticToken;
 

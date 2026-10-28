@@ -18,11 +18,11 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const vec2_mod = @import("../core/vec2.zig");
+const vec2_mod = @import("../geometry/vec2.zig");
 const fixed_array_mod = @import("../core/fixed_array.zig");
 const path_mesh = @import("path_mesh.zig");
 const mesh_pool = @import("mesh_pool.zig");
-const stroke_mod = @import("../core/stroke.zig");
+const stroke_mod = @import("../geometry/stroke.zig");
 
 const Vec2 = vec2_mod.Vec2;
 const IndexSlice = vec2_mod.IndexSlice;

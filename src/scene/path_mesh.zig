@@ -6,9 +6,9 @@
 
 const std = @import("std");
 const scene = @import("scene.zig");
-const triangulator = @import("../core/triangulator.zig");
-const vec2_mod = @import("../core/vec2.zig");
-const stroke = @import("../core/stroke.zig");
+const triangulator = @import("../geometry/triangulator.zig");
+const vec2_mod = @import("../geometry/vec2.zig");
+const stroke = @import("../geometry/stroke.zig");
 const limits = @import("../core/limits.zig");
 const FixedArray = @import("../core/fixed_array.zig").FixedArray;
 
