@@ -708,7 +708,7 @@ pub const LinuxPlatform = struct {
             samples[found] = .{
                 .open = !window.isClosed(),
                 .has_queued_work = window.needs_redraw or window.continuous_render or
-                    window.pending_resize,
+                    window.pending_resize or window.hasPendingAtlasUploads(),
                 .waiting_for_frame = window.frame_callback != null,
                 .render_deadline_ms = window.render_deadline_ms,
             };

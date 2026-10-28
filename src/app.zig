@@ -383,9 +383,15 @@ pub fn WebApp(
                 }
             }
 
-            // Upload initial atlases
-            g_renderer.?.uploadAtlas(g_window.?.resources.text_system);
-            g_renderer.?.uploadSvgAtlas(g_window.?.resources.svg_atlas);
+            // Atlas textures exist once, at the budget sizes; the window
+            // registered its platform window as the atlas upload consumer.
+            g_renderer.?.initAtlases(.{
+                .uploads = g_window.?.resources.atlas_uploads,
+                .key = @intFromPtr(g_platform_window.?),
+                .text_size = resource_limits.atlas.text_size,
+                .svg_size = resource_limits.atlas.svg_size,
+                .image_size = resource_limits.atlas.image_size,
+            });
 
             g_initialized = true;
 
@@ -474,10 +480,8 @@ pub fn WebApp(
             const vw: f32 = @floatCast(w.size.width);
             const vh: f32 = @floatCast(w.size.height);
 
-            // Sync atlas textures if glyphs/icons/images were added
-            g_renderer.?.syncAtlas(g_window.?.resources.text_system);
-            g_renderer.?.syncSvgAtlas(g_window.?.resources.svg_atlas);
-            g_renderer.?.syncImageAtlas(g_window.?.resources.image_atlas);
+            // Upload glyphs, icons, and images placed since the last frame.
+            g_renderer.?.uploadAtlasRegions();
 
             // Render to GPU.
             //

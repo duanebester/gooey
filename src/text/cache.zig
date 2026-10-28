@@ -14,6 +14,15 @@ const platform = @import("../platform/mod.zig");
 
 const Atlas = @import("atlas.zig").Atlas;
 const Region = @import("atlas.zig").Region;
+const AtlasUploads = @import("atlas.zig").AtlasUploads;
+const limits = @import("../core/limits.zig");
+
+/// Where the glyph atlas comes from: its fixed side and the shared upload journal.
+pub const AtlasOptions = struct {
+    /// `AtlasLimits.text_size`.
+    size: u32,
+    uploads: *AtlasUploads,
+};
 
 const FontFace = font_face_mod.FontFace;
 const RasterizedGlyph = types.RasterizedGlyph;
@@ -110,22 +119,33 @@ pub const CachedGlyph = struct {
     advance_x: f32,
     /// Whether this glyph uses the color atlas (emoji)
     is_color: bool,
-    /// Atlas size when this glyph was cached (for thread-safe UV calculation)
-    /// In multi-window scenarios, the atlas may grow between glyph caching and
-    /// UV calculation; storing the size ensures correct UVs.
+    /// Side of the atlas the region lies in; fixed for the atlas's lifetime.
     atlas_size: u32,
 
-    /// Calculate UV coordinates using the cached atlas size
+    /// UV coordinates of the region.
     pub fn uv(self: CachedGlyph) atlas_mod.UVCoords {
         return self.region.uv(self.atlas_size);
     }
 };
 
-/// Entry in the glyph cache
+/// Entry in the glyph cache. `shelf` and `generation` locate the glyph's atlas
+/// shelf; when the atlas evicts that shelf the entry is stale and re-rendered.
 const GlyphEntry = struct {
     key: GlyphKey,
     glyph: CachedGlyph,
+    shelf: u16,
+    generation: u32,
     valid: bool,
+    /// Frame in which a hit last proved this entry live and stamped its shelf
+    /// used; 0 when none has. See `GlyphCache.lookupHit`.
+    frame_verified: u64,
+};
+
+/// Why `lookupHit` found no live glyph: where `store` puts the re-render.
+const Lookup = union(enum) {
+    /// The key is cached but its atlas pixels were evicted; re-render in place.
+    stale: u16,
+    miss,
 };
 
 /// Glyph cache with atlas management - fixed capacity, zero runtime allocation
@@ -145,14 +165,12 @@ pub const GlyphCache = struct {
     ///
     /// INVARIANT: Any code path that sets `entry.valid = false` on an individual entry
     /// MUST push that entry's index back onto this free list (set `free_chain[idx] =
-    /// next_free; next_free = idx`).  Currently only bulk `clear()` and `initFreeList()`
-    /// rebuild the list — no individual eviction path exists.  If one is added without
-    /// maintaining this invariant, the freed slot becomes permanently lost until `clear()`.
+    /// next_free; next_free = idx`). `reclaimStale` and bulk `clear()` do.
     free_chain: [MAX_CACHED_GLYPHS]u16,
     /// Head of the free list (EMPTY_SLOT = cache full, no free slots).
     next_free: u16,
 
-    /// Grayscale atlas for regular text
+    /// Grayscale atlas for regular text, fixed at `AtlasLimits.text_size`.
     grayscale_atlas: Atlas,
 
     /// Reusable bitmap buffer for rendering
@@ -167,7 +185,7 @@ pub const GlyphCache = struct {
     const HASH_TABLE_SIZE: usize = 8192; // 2x entries for low collision rate
     const MAX_PROBE_LENGTH: usize = 64;
     const EMPTY_SLOT: u16 = 0xFFFF;
-    const RENDER_BUFFER_SIZE: u32 = 256; // Max glyph size
+    const RENDER_BUFFER_SIZE: u32 = limits.MAX_GLYPH_SIZE; // Max glyph size
 
     // Compile-time verification
     comptime {
@@ -177,50 +195,27 @@ pub const GlyphCache = struct {
         std.debug.assert(MAX_CACHED_GLYPHS <= std.math.maxInt(u16));
     }
 
-    pub fn init(allocator: std.mem.Allocator, scale: f32) !Self {
-        std.debug.assert(scale > 0);
-        std.debug.assert(scale <= 4.0);
-
-        const buffer_bytes = RENDER_BUFFER_SIZE * RENDER_BUFFER_SIZE;
-        const render_buffer = try allocator.alloc(u8, buffer_bytes);
-        @memset(render_buffer, 0);
-
-        var self = Self{
-            .allocator = allocator,
-            .entries = undefined,
-            .hash_table = @as([HASH_TABLE_SIZE]u16, @splat(EMPTY_SLOT)),
-            .entry_count = 0,
-            .free_chain = undefined,
-            .next_free = 0,
-            .grayscale_atlas = try Atlas.init(allocator, .grayscale),
-            .render_buffer = render_buffer,
-            .render_buffer_size = buffer_bytes,
-            .scale_factor = scale,
-        };
-
-        // Initialize all entries as invalid
-        for (&self.entries) |*entry| {
-            entry.valid = false;
-        }
-
-        // Chain every slot into the free list: 0 → 1 → 2 → ... → EMPTY_SLOT.
-        self.initFreeList();
-
-        std.debug.assert(self.entry_count == 0);
-        std.debug.assert(self.next_free == 0);
-        return self;
-    }
-
     /// Initialize GlyphCache in-place using out-pointer pattern.
     /// Avoids stack overflow on WASM where GlyphCache is ~200KB.
     /// Marked noinline to prevent stack accumulation in WASM builds.
-    pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator, scale: f32) !void {
+    pub noinline fn initInPlace(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        scale: f32,
+        atlas_options: AtlasOptions,
+    ) !void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0);
 
         const buffer_bytes = RENDER_BUFFER_SIZE * RENDER_BUFFER_SIZE;
         const render_buffer = try allocator.alloc(u8, buffer_bytes);
-        @memset(render_buffer, 0);
+        errdefer allocator.free(render_buffer);
+
+        try self.grayscale_atlas.init(allocator, .{
+            .kind = .text,
+            .size = atlas_options.size,
+            .uploads = atlas_options.uploads,
+        });
 
         self.allocator = allocator;
         self.entry_count = 0;
@@ -239,9 +234,6 @@ pub const GlyphCache = struct {
         // Chain every slot into the free list: 0 → 1 → 2 → ... → EMPTY_SLOT.
         self.next_free = 0;
         self.initFreeList();
-
-        // Initialize atlas in-place
-        self.grayscale_atlas = try Atlas.init(allocator, .grayscale);
 
         std.debug.assert(self.entry_count == 0);
         std.debug.assert(self.next_free == 0);
@@ -276,11 +268,51 @@ pub const GlyphCache = struct {
         std.debug.assert(self.free_chain[MAX_CACHED_GLYPHS - 1] == EMPTY_SLOT);
     }
 
-    /// Get a cached glyph, or null if not cached
-    fn getFromCache(self: *Self, key: GlyphKey) ?CachedGlyph {
+    /// Classify a key `lookupHit` did not return: absent, or cached with
+    /// evicted pixels.
+    fn lookup(self: *Self, key: GlyphKey) Lookup {
         std.debug.assert(key.font_ptr != 0);
         std.debug.assert(key.subpixel_x < SUBPIXEL_VARIANTS_X);
 
+        const index = self.findEntry(key) orelse return .miss;
+        const entry = &self.entries[index];
+        std.debug.assert(!self.grayscale_atlas.isLive(entry.shelf, entry.generation));
+        return .{ .stale = index };
+    }
+
+    /// The cached glyph for `key` when its pixels are live, marking its shelf
+    /// used this frame. Null on a miss or a stale entry; `lookup` tells which.
+    /// This runs for every glyph drawn, so it returns a pointer: returning the
+    /// glyph by value as an optional copied it through the stack twice and
+    /// doubled the cost of a hit.
+    ///
+    /// Only the first hit on an entry in each frame checks its shelf and
+    /// stamps it used; repeat hits that frame return at once. That is exact:
+    /// the first hit stamped the shelf with `frame`, eviction takes only
+    /// shelves used before every open frame, and the clock has not passed
+    /// `frame` while the caller still holds it, since eviction and `clear` run
+    /// under the same text system mutex as the caller's lookup. `clear` also
+    /// drops every entry, and `store` resets the stamp.
+    inline fn lookupHit(self: *Self, key: GlyphKey, frame: u64) ?*const CachedGlyph {
+        std.debug.assert(frame > 0);
+        const index = self.findEntry(key) orelse return null;
+        const entry = &self.entries[index];
+        if (entry.frame_verified == frame) {
+            // Checked only with runtime safety: the hit path must not load
+            // the shelf, and ReleaseFast may keep loads an assert needs.
+            if (std.debug.runtime_safety) {
+                std.debug.assert(self.grayscale_atlas.isLive(entry.shelf, entry.generation));
+            }
+            return &entry.glyph;
+        }
+        if (!self.grayscale_atlas.isLive(entry.shelf, entry.generation)) return null;
+        self.grayscale_atlas.touch(entry.shelf, frame);
+        entry.frame_verified = frame;
+        return &entry.glyph;
+    }
+
+    /// Index of the valid entry holding `key`, if any.
+    inline fn findEntry(self: *const Self, key: GlyphKey) ?u16 {
         const key_hash = key.hash();
         const start_slot = @as(usize, @truncate(key_hash)) % HASH_TABLE_SIZE;
         var probe: usize = start_slot;
@@ -296,7 +328,7 @@ pub const GlyphCache = struct {
             const entry = &self.entries[entry_idx];
 
             if (entry.valid and GlyphKey.eql(entry.key, key)) {
-                return entry.glyph;
+                return entry_idx;
             }
 
             probe = (probe + 1) % HASH_TABLE_SIZE;
@@ -305,31 +337,83 @@ pub const GlyphCache = struct {
         return null; // Max probe length reached
     }
 
-    /// Store a glyph in the cache using O(1) free list pop.
-    fn putInCache(self: *Self, key: GlyphKey, glyph: CachedGlyph) void {
+    /// Store a rendered glyph: overwrite a stale entry for the same key in
+    /// place, or pop a free slot. When the table is full, reclaim entries whose
+    /// shelves were evicted, evicting the least recently used shelf if none are.
+    fn store(self: *Self, key: GlyphKey, lookup_result: Lookup, rendered: Rendered) void {
         std.debug.assert(key.font_ptr != 0);
         std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
+        const entry: GlyphEntry = .{
+            .key = key,
+            .glyph = rendered.glyph,
+            .shelf = rendered.shelf,
+            .generation = rendered.generation,
+            .valid = true,
+            .frame_verified = 0,
+        };
+        switch (lookup_result) {
+            .stale => |index| {
+                std.debug.assert(GlyphKey.eql(self.entries[index].key, key));
+                self.entries[index] = entry;
+                return;
+            },
+            .miss => {},
+        }
+        if (self.next_free == EMPTY_SLOT) self.makeRoom();
 
         // Pop the head of the free list — O(1) instead of O(N) linear scan.
-        if (self.next_free == EMPTY_SLOT) {
-            return; // Cache full (atlas eviction handles this case).
-        }
-
         const idx = self.next_free;
+        std.debug.assert(idx != EMPTY_SLOT);
         self.next_free = self.free_chain[idx];
-
         std.debug.assert(!self.entries[idx].valid);
 
-        self.entries[idx] = .{
-            .key = key,
-            .glyph = glyph,
-            .valid = true,
-        };
+        self.entries[idx] = entry;
         self.entry_count += 1;
-
         self.insertIntoHashTable(key, idx);
 
         std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
+    }
+
+    /// Free at least one entry slot. Entries whose shelves were evicted go
+    /// first; otherwise the least recently used unprotected shelf is evicted.
+    /// A full table with every shelf in use this frame fails fast.
+    fn makeRoom(self: *Self) void {
+        std.debug.assert(self.next_free == EMPTY_SLOT);
+        // Each eviction frees one shelf, so the loop ends within the shelf count.
+        var attempt: usize = 0;
+        while (attempt <= self.grayscale_atlas.shelves.len) : (attempt += 1) {
+            if (self.reclaimStale() > 0) return;
+            if (!self.grayscale_atlas.evictOne()) break;
+        }
+        std.debug.panic("GlyphCache pool 'entries' exhausted: capacity {d}, {d} in use, " ++
+            "1 requested, every glyph used since frame {d}.", .{
+            MAX_CACHED_GLYPHS,
+            self.entry_count,
+            self.grayscale_atlas.uploads.frameCurrent(),
+        });
+    }
+
+    /// Drop every entry whose atlas pixels were evicted and rebuild the hash
+    /// table (linear probing cannot delete in place). Returns the count freed.
+    /// O(MAX_CACHED_GLYPHS + HASH_TABLE_SIZE); runs only when the table is full.
+    fn reclaimStale(self: *Self) u32 {
+        var freed: u32 = 0;
+        for (&self.entries, 0..) |*entry, index| {
+            if (!entry.valid) continue;
+            if (self.grayscale_atlas.isLive(entry.shelf, entry.generation)) continue;
+            entry.valid = false;
+            self.free_chain[index] = self.next_free;
+            self.next_free = @intCast(index);
+            freed += 1;
+        }
+        if (freed == 0) return 0;
+        std.debug.assert(self.entry_count >= freed);
+        self.entry_count -= freed;
+        @memset(&self.hash_table, EMPTY_SLOT);
+        for (&self.entries, 0..) |*entry, index| {
+            if (entry.valid) self.insertIntoHashTable(entry.key, @intCast(index));
+        }
+        return freed;
     }
 
     /// Insert entry into hash table using linear probing
@@ -353,74 +437,14 @@ pub const GlyphCache = struct {
         std.debug.assert(false); // Should not happen with proper sizing
     }
 
-    /// Try to reserve space, clearing atlas on SkylineFull error.
-    /// Returns region on success, null if no space, or propagates other errors.
-    fn reserveOrClearOnSkylineFull(self: *Self, width: u32, height: u32) !?Region {
-        return self.grayscale_atlas.reserve(width, height) catch |err| {
-            if (err == error.SkylineFull) {
-                // Too many skyline nodes - clear atlas and retry
-                self.clear();
-
-                // Assert atlas is truly empty after clear
-                std.debug.assert(self.entry_count == 0);
-                std.debug.assert(self.grayscale_atlas.node_count == 1);
-
-                return try self.grayscale_atlas.reserve(width, height);
-            }
-            return err;
-        };
-    }
-
-    /// Reserve space in the atlas, with eviction on overflow.
-    /// When the atlas is at max size and can't fit the glyph,
-    /// clears the entire cache and tries again.
-    fn reserveWithEviction(self: *Self, width: u32, height: u32) !Region {
-        std.debug.assert(width > 0);
-        std.debug.assert(height > 0);
-
-        // First attempt: try to reserve directly
-        if (try self.reserveOrClearOnSkylineFull(width, height)) |region| {
-            return region;
-        }
-
-        // No space - try to grow the atlas
-        self.grayscale_atlas.grow() catch |err| {
-            if (err == error.AtlasFull) {
-                // Atlas is at max size and full - evict everything and retry
-                self.clear();
-
-                // After clearing, we should definitely have space
-                if (try self.grayscale_atlas.reserve(width, height)) |region| {
-                    return region;
-                }
-                // If we still can't fit after clearing, the glyph is too large
-                return error.GlyphTooLarge;
-            }
-            return err;
-        };
-
-        // Growth succeeded - update atlas_size in all cached entries
-        // This is critical: cached glyphs store atlas_size for UV calculation.
-        // When atlas grows, pixel positions stay the same but UVs change.
-        self.updateAtlasSizeInCache();
-
-        // Growth succeeded - try reserve again
-        return try self.reserveOrClearOnSkylineFull(width, height) orelse error.GlyphTooLarge;
-    }
-
-    /// Update atlas_size in all cached entries after atlas growth.
-    /// When the atlas grows, pixel positions are preserved but UV coordinates
-    /// change (e.g., x=100 in 512px atlas is UV=0.195, but in 1024px is UV=0.098).
-    /// This updates all cached glyphs to use the new atlas size for correct UVs.
-    fn updateAtlasSizeInCache(self: *Self) void {
-        const new_size = self.grayscale_atlas.size;
-
-        for (&self.entries) |*entry| {
-            if (entry.valid) {
-                entry.glyph.atlas_size = new_size;
-            }
-        }
-    }
+    /// A rendered glyph and the shelf that holds its pixels.
+    const Rendered = struct {
+        glyph: CachedGlyph,
+        shelf: u16,
+        generation: u32,
+        /// False when the upload budget was full: draw nothing, do not cache.
+        cached: bool,
+    };
 
     /// Get a cached glyph with subpixel variant, or render and cache it
     pub inline fn getOrRenderSubpixel(
@@ -432,14 +456,56 @@ pub const GlyphCache = struct {
         subpixel_y: u8,
     ) !CachedGlyph {
         const key = GlyphKey.init(face, glyph_id, font_size, self.scale_factor, subpixel_x, subpixel_y);
+        return self.getOrRenderKey(face, key, font_size, self.frameCurrent());
+    }
 
-        if (self.getFromCache(key)) |cached| {
-            return cached;
-        }
+    /// The atlas frame clock, for `getOrRenderKey`.
+    pub inline fn frameCurrent(self: *const Self) u64 {
+        return self.grayscale_atlas.uploads.frameCurrent();
+    }
 
-        const glyph = try self.renderGlyphSubpixel(face, glyph_id, font_size, subpixel_x, subpixel_y);
-        self.putInCache(key, glyph);
-        return glyph;
+    /// `getOrRenderSubpixel` for a key and frame the caller built. A batch
+    /// builds the loop-invariant key fields (face, size, scale) and reads the
+    /// frame clock once: a hit can store the shelf's frame stamp, and the
+    /// compiler cannot prove that store leaves `scale_factor` or the clock's
+    /// pointers unchanged, so values read inside the loop are reloaded and the
+    /// scale re-converted on every glyph, at the head of the hash chain.
+    pub inline fn getOrRenderKey(
+        self: *Self,
+        face: FontFace,
+        key: GlyphKey,
+        font_size: f32,
+        frame: u64,
+    ) !CachedGlyph {
+        std.debug.assert(key.font_ptr == @intFromPtr(face.ptr));
+        std.debug.assert(key.size_fixed == @as(u16, @intFromFloat(font_size * 64.0)));
+        if (self.lookupHit(key, frame)) |glyph| return glyph.*;
+        return self.renderAndStore(face, key.glyph_id, font_size, key.subpixel_x, key.subpixel_y);
+    }
+
+    /// The miss and stale paths of `getOrRenderSubpixel`, kept out of line so
+    /// the hit path stays a plain hash probe: the key is rebuilt here rather
+    /// than passed, so the hit path never spills it to memory.
+    noinline fn renderAndStore(
+        self: *Self,
+        face: FontFace,
+        glyph_id: u16,
+        font_size: f32,
+        subpixel_x: u8,
+        subpixel_y: u8,
+    ) !CachedGlyph {
+        const scale = self.scale_factor;
+        const key = GlyphKey.init(face, glyph_id, font_size, scale, subpixel_x, subpixel_y);
+        const found = self.lookup(key);
+        const rendered = try self.renderGlyphSubpixel(
+            face,
+            glyph_id,
+            font_size,
+            subpixel_x,
+            subpixel_y,
+        );
+        if (rendered.cached) self.store(key, found, rendered);
+        return rendered.glyph;
     }
 
     fn renderGlyphSubpixel(
@@ -449,7 +515,7 @@ pub const GlyphCache = struct {
         font_size: f32,
         subpixel_x: u8,
         subpixel_y: u8,
-    ) !CachedGlyph {
+    ) !Rendered {
         std.debug.assert(subpixel_x < SUBPIXEL_VARIANTS_X);
         std.debug.assert(subpixel_y < SUBPIXEL_VARIANTS_Y);
 
@@ -469,36 +535,41 @@ pub const GlyphCache = struct {
             self.render_buffer,
             self.render_buffer_size,
         );
+        return self.placeRasterized(rasterized);
+    }
 
-        // Handle empty glyphs (spaces, etc.)
-        if (rasterized.width == 0 or rasterized.height == 0) {
-            return CachedGlyph{
+    /// Place a rasterized glyph from `render_buffer` in the atlas.
+    fn placeRasterized(self: *Self, rasterized: RasterizedGlyph) Rendered {
+        var rendered: Rendered = .{
+            .glyph = .{
                 .region = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
                 .offset_x = rasterized.offset_x,
                 .offset_y = rasterized.offset_y,
                 .advance_x = rasterized.advance_x,
                 .is_color = rasterized.is_color,
                 .atlas_size = self.grayscale_atlas.size,
-            };
-        }
-
-        // Reserve space in atlas with eviction support
-        const region = try self.reserveWithEviction(rasterized.width, rasterized.height);
-
-        // Copy rasterized data to atlas
-        self.grayscale_atlas.set(region, self.render_buffer[0 .. rasterized.width * rasterized.height]);
-
-        // Capture atlas size AFTER reservation (may have grown)
-        const current_atlas_size = self.grayscale_atlas.size;
-
-        return CachedGlyph{
-            .region = region,
-            .offset_x = rasterized.offset_x,
-            .offset_y = rasterized.offset_y,
-            .advance_x = rasterized.advance_x,
-            .is_color = rasterized.is_color,
-            .atlas_size = current_atlas_size,
+            },
+            .shelf = atlas_mod.shelf_none,
+            .generation = 0,
+            .cached = true,
         };
+
+        // Empty glyphs (spaces, etc.) occupy no atlas space.
+        if (rasterized.width == 0 or rasterized.height == 0) return rendered;
+        std.debug.assert(rasterized.width <= RENDER_BUFFER_SIZE);
+        std.debug.assert(rasterized.height <= RENDER_BUFFER_SIZE);
+
+        const width = rasterized.width;
+        const height = rasterized.height;
+        const pixels = self.render_buffer[0 .. width * height];
+        const placement = self.grayscale_atlas.insert(width, height, pixels) orelse {
+            rendered.cached = false;
+            return rendered;
+        };
+        rendered.glyph.region = placement.region;
+        rendered.shelf = placement.shelf;
+        rendered.generation = placement.generation;
+        return rendered;
     }
 
     /// Get a cached glyph for a fallback font (specified by raw CTFontRef)
@@ -519,13 +590,18 @@ pub const GlyphCache = struct {
             subpixel_y,
         );
 
-        if (self.getFromCache(key)) |cached| {
-            return cached;
-        }
+        if (self.lookupHit(key, self.frameCurrent())) |glyph| return glyph.*;
+        const found = self.lookup(key);
 
-        const glyph = try self.renderFallbackGlyph(font_ptr, glyph_id, font_size, subpixel_x, subpixel_y);
-        self.putInCache(key, glyph);
-        return glyph;
+        const rendered = try self.renderFallbackGlyph(
+            font_ptr,
+            glyph_id,
+            font_size,
+            subpixel_x,
+            subpixel_y,
+        );
+        if (rendered.cached) self.store(key, found, rendered);
+        return rendered.glyph;
     }
 
     fn renderFallbackGlyph(
@@ -535,7 +611,7 @@ pub const GlyphCache = struct {
         font_size: f32,
         subpixel_x: u8,
         subpixel_y: u8,
-    ) !CachedGlyph {
+    ) !Rendered {
         std.debug.assert(font_size > 0);
         // Fallback fonts are only supported on native platforms
         // On web, the browser handles font fallback automatically
@@ -577,39 +653,11 @@ pub const GlyphCache = struct {
                 self.render_buffer_size,
             );
         };
-
-        // Handle empty glyphs
-        if (rasterized.width == 0 or rasterized.height == 0) {
-            return CachedGlyph{
-                .region = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-                .offset_x = rasterized.offset_x,
-                .offset_y = rasterized.offset_y,
-                .advance_x = rasterized.advance_x,
-                .is_color = rasterized.is_color,
-                .atlas_size = self.grayscale_atlas.size,
-            };
-        }
-
-        // Reserve space in atlas with eviction support
-        const region = try self.reserveWithEviction(rasterized.width, rasterized.height);
-
-        // Copy rasterized data to atlas
-        self.grayscale_atlas.set(region, self.render_buffer[0 .. rasterized.width * rasterized.height]);
-
-        // Capture atlas size AFTER reservation (may have grown)
-        const current_atlas_size = self.grayscale_atlas.size;
-
-        return CachedGlyph{
-            .region = region,
-            .offset_x = rasterized.offset_x,
-            .offset_y = rasterized.offset_y,
-            .advance_x = rasterized.advance_x,
-            .is_color = rasterized.is_color,
-            .atlas_size = current_atlas_size,
-        };
+        return self.placeRasterized(rasterized);
     }
 
-    /// Clear the cache (call when changing fonts).
+    /// Clear the cache (call when changing fonts or scale). The atlas condemns
+    /// every shelf; their space returns once no open frame still uses it.
     pub fn clear(self: *Self) void {
         for (&self.entries) |*entry| {
             entry.valid = false;

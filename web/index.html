@@ -1419,31 +1419,31 @@
           view.setFloat32(outBearingY, -(ascent - 1), true);
           view.setFloat32(outAdvance, advance, true);
         },
-        createTexture: (width, height, dataPtr, dataLen) => {
-          const data = new Uint8Array(
-            wasmInstance.exports.memory.buffer,
-            dataPtr,
-            dataLen,
-          );
+        // Atlas textures are created once at their budget size. WebGPU
+        // zero-initializes them; pixels arrive through writeAtlasRegion.
+        createAtlasTexture: (width, height, bytesPerPixel) => {
           const texture = device.createTexture({
             size: { width, height },
-            format: "r8unorm",
+            format: bytesPerPixel === 1 ? "r8unorm" : "rgba8unorm",
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
           });
-          queue.writeTexture(
-            { texture },
-            data,
-            { bytesPerRow: width },
-            { width, height },
-          );
           return allocHandle(handles.textures, texture);
         },
 
-        updateTexture: (textureHandle, width, height, dataPtr, dataLen) => {
+        writeAtlasRegion: (
+          textureHandle,
+          x,
+          y,
+          width,
+          height,
+          bytesPerPixel,
+          dataPtr,
+          dataLen,
+        ) => {
           const texture = handles.textures.get(textureHandle);
           if (!texture) {
             console.error(
-              "updateTexture: invalid texture handle",
+              "writeAtlasRegion: invalid texture handle",
               textureHandle,
             );
             return;
@@ -1454,9 +1454,9 @@
             dataLen,
           );
           queue.writeTexture(
-            { texture },
+            { texture, origin: { x, y } },
             data,
-            { bytesPerRow: width },
+            { bytesPerRow: width * bytesPerPixel },
             { width, height },
           );
         },
@@ -1549,50 +1549,6 @@
             console.error("rasterizeSvgPath failed:", e);
             return false;
           }
-        },
-
-        // Create an RGBA texture (for SVG atlas)
-        createRgbaTexture: (width, height, dataPtr, dataLen) => {
-          const data = new Uint8Array(
-            wasmInstance.exports.memory.buffer,
-            dataPtr,
-            dataLen,
-          );
-          const texture = device.createTexture({
-            size: { width, height },
-            format: "rgba8unorm", // RGBA format for SVG atlas
-            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-          });
-          queue.writeTexture(
-            { texture },
-            data,
-            { bytesPerRow: width * 4 }, // 4 bytes per pixel (RGBA)
-            { width, height },
-          );
-          return allocHandle(handles.textures, texture);
-        },
-
-        // Update an existing RGBA texture
-        updateRgbaTexture: (textureHandle, width, height, dataPtr, dataLen) => {
-          const texture = handles.textures.get(textureHandle);
-          if (!texture) {
-            console.error(
-              "updateRgbaTexture: invalid texture handle",
-              textureHandle,
-            );
-            return;
-          }
-          const data = new Uint8Array(
-            wasmInstance.exports.memory.buffer,
-            dataPtr,
-            dataLen,
-          );
-          queue.writeTexture(
-            { texture },
-            data,
-            { bytesPerRow: width * 4 }, // 4 bytes per pixel (RGBA)
-            { width, height },
-          );
         },
 
         // Create bind group for SVG pipeline (same layout as text)

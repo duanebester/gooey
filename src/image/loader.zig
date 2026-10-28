@@ -841,9 +841,17 @@ pub fn createCheckerboard(
 test "ImageLoader: pending and failed bookkeeping" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
+    const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 
     // Set up a real ImageAtlas — `ImageLoader` borrows it for `drain`.
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, testing.io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     var loader: ImageLoader = undefined;
@@ -880,8 +888,16 @@ test "ImageLoader: pending and failed bookkeeping" {
 test "ImageLoader: hasRoom flips at capacity" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
+    const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, testing.io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     var loader: ImageLoader = undefined;
@@ -905,8 +921,16 @@ test "ImageLoader: hasRoom flips at capacity" {
 test "ImageLoader: fixupQueue restores the queue pointer after a copy" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
+    const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, testing.io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     // Build a loader at one address …

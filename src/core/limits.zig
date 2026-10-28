@@ -104,6 +104,26 @@ pub const MAX_FRAMES_IN_FLIGHT: u32 = 3;
 /// Metal's `maximumDrawableCount` accepts only 2 or 3, which the range matches.
 pub const MIN_FRAMES_IN_FLIGHT: u32 = 2;
 
+/// Largest atlas side, in pixels, any atlas budget may declare. 4096² RGBA is 64 MiB.
+pub const MAX_ATLAS_SIZE: u32 = 4096;
+
+/// Smallest atlas side. Atlas sides are multiples of the shelf height quantum.
+pub const MIN_ATLAS_SIZE: u32 = 64;
+
+/// Largest SVG icon side, in device pixels, any atlas budget may rasterize.
+pub const MAX_SVG_ICON_SIZE: u32 = 256;
+
+/// Largest glyph bitmap side, in device pixels (the glyph render buffer).
+pub const MAX_GLYPH_SIZE: u32 = 256;
+
+/// Most rasterized atlas bytes any budget may upload in one frame: one 4096² R8
+/// atlas plus two 4096² RGBA atlases spread over three frames.
+pub const MAX_ATLAS_UPLOAD_BYTES_PER_FRAME: u32 = 48 * 1024 * 1024;
+
+comptime {
+    assert(MAX_ATLAS_UPLOAD_BYTES_PER_FRAME * 3 == MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 9);
+}
+
 // =============================================================================
 // Application Resource Budget
 // =============================================================================
@@ -603,61 +623,178 @@ pub const FrameLimits = struct {
     }
 };
 
-/// Per-window atlas budgets.
+/// Per-application atlas budgets: the glyph, SVG, and image atlases are square
+/// textures of a fixed side, reserved once at initialization and never grown
+/// (CLAUDE.md §2). When one is full it evicts its least recently used shelf;
+/// items used in the current frame are never evicted, and a frame whose live
+/// set does not fit fails fast with the atlas name.
 ///
-/// `upload_bytes_frame_max` bounds the atlas pixels one frame copies to the GPU.
-/// The Vulkan renderer reserves one staging lane of this size per frame in
-/// flight and splits a larger dirty region across frames, so the staging buffer
-/// scales with the profile instead of holding three maximum-size atlases
-/// (144 MiB before this budget existed). Metal uploads straight into shared
-/// textures and the CPU renderer samples atlases in place; neither reads it yet.
-///
-/// Latency sketch: a full 1024² RGBA atlas (4 MiB) reaches the GPU in 4 frames
-/// at `standard`; a full 512² R8 text atlas (256 KiB) in one.
+/// GPU backends keep no CPU copy of atlas pixels. Rasterized pixels travel to
+/// the texture through one bounded staging journal of `upload_bytes_frame_max`
+/// bytes shared by the three atlases; work past it waits for the next frame.
+/// The CPU renderer keeps its atlases in CPU memory, because they are its
+/// textures. Values come from `docs/v0.4.0-memory-budget.md` §4.
 pub const AtlasLimits = struct {
+    /// Rasterized bytes all three atlases may stage for upload in one frame.
+    /// GPU backends reserve this much staging per frame in flight.
     upload_bytes_frame_max: u32,
+    /// Glyph atlas side in pixels (R8, 1 B per pixel).
+    text_size: u32,
+    /// SVG icon atlas side in pixels (RGBA, 4 B per pixel).
+    svg_size: u32,
+    /// Image atlas side in pixels (RGBA, 4 B per pixel).
+    image_size: u32,
+    /// Largest SVG icon side in device pixels; sizes the SVG raster buffer.
+    svg_icon_size_max: u32,
 
-    /// 256 KiB per frame, 0.5 MiB of Vulkan staging with two frames in flight.
-    /// A full nano atlas set (0.75 MiB) uploads within three frames.
-    pub const nano: AtlasLimits = .{ .upload_bytes_frame_max = 256 * 1024 };
-
-    /// 1 MiB per frame, 2 MiB of Vulkan staging with two frames in flight.
-    pub const small: AtlasLimits = .{ .upload_bytes_frame_max = 1024 * 1024 };
-
-    /// 1 MiB per frame, 3 MiB of Vulkan staging with three frames in flight.
-    pub const standard: AtlasLimits = .{ .upload_bytes_frame_max = 1024 * 1024 };
-
-    /// 16 MiB per frame, 48 MiB of Vulkan staging.
-    pub const large: AtlasLimits = .{ .upload_bytes_frame_max = 16 * 1024 * 1024 };
-
-    /// The framework ceiling: one 4096² R8 atlas plus two 4096² RGBA atlases
-    /// divided over three frames, the most the old fixed staging buffer held.
-    pub const ceiling: AtlasLimits = .{
-        .upload_bytes_frame_max = MAX_ATLAS_UPLOAD_BYTES_PER_FRAME,
+    /// Counter-class apps: counter's glyphs hold 144 of 512 text-atlas rows at
+    /// 1x and 280 at 2x (measured with shelf packing), and no nano example draws
+    /// icons or images. Textures: 0.25 + 0.25 + 0.25 MiB.
+    /// A full nano atlas set uploads within 3 frames.
+    pub const nano: AtlasLimits = .{
+        .upload_bytes_frame_max = 256 * 1024,
+        .text_size = 512,
+        .svg_size = 256,
+        .image_size = 256,
+        .svg_icon_size_max = 64,
     };
 
-    /// First violated rule, or null. A frame must be able to upload at least one
-    /// full-width row of the widest RGBA atlas, or a dirty row could never land.
+    /// Forms and lists: todo holds 48 of 1024 text rows at 1x and 120 at 2x.
+    /// Textures: 1 + 1 + 1 MiB.
+    pub const small: AtlasLimits = .{
+        .upload_bytes_frame_max = 1024 * 1024,
+        .text_size = 1_024,
+        .svg_size = 512,
+        .image_size = 512,
+        .svg_icon_size_max = 128,
+    };
+
+    /// The glyph atlas is 2048² for Retina display text: a frame of 70 distinct
+    /// 52 pt glyphs at 2x needs more than 1024 shelf rows once glyphs are cached
+    /// per subpixel variant. Showcase holds 132 glyph rows at 1x and 480 at 2x,
+    /// 44 SVG rows, and 324 of 1024 image rows. Textures: 4 + 4 + 4 MiB. A full
+    /// 1024² RGBA atlas uploads in 4 frames.
+    pub const standard: AtlasLimits = .{
+        .upload_bytes_frame_max = 1024 * 1024,
+        .text_size = 2_048,
+        .svg_size = 1_024,
+        .image_size = 1_024,
+        .svg_icon_size_max = 256,
+    };
+
+    /// lucide-demo's visible icons hold 520 of 2048 SVG rows at 2x, and the
+    /// images example's logo copies hold 516 of 4096 image rows. Textures:
+    /// 16 + 16 + 64 MiB.
+    pub const large: AtlasLimits = .{
+        .upload_bytes_frame_max = 16 * 1024 * 1024,
+        .text_size = 4_096,
+        .svg_size = 2_048,
+        .image_size = 4_096,
+        .svg_icon_size_max = 256,
+    };
+
+    /// The framework ceilings themselves. Textures: 16 + 64 + 64 MiB.
+    pub const ceiling: AtlasLimits = .{
+        .upload_bytes_frame_max = MAX_ATLAS_UPLOAD_BYTES_PER_FRAME,
+        .text_size = MAX_ATLAS_SIZE,
+        .svg_size = MAX_ATLAS_SIZE,
+        .image_size = MAX_ATLAS_SIZE,
+        .svg_icon_size_max = MAX_SVG_ICON_SIZE,
+    };
+
+    /// First violated rule, or null. Every field must be in `1..=ceiling`;
+    /// atlas sides are multiples of `MIN_ATLAS_SIZE`; the largest icon fits its
+    /// atlas; and one frame can stage the largest glyph and the largest icon.
     pub fn check(self: *const AtlasLimits) ?Violation {
-        if (self.upload_bytes_frame_max < MAX_ATLAS_ROW_BYTES) {
+        inline for (@typeInfo(AtlasLimits).@"struct".field_names) |field_name| {
+            const value: u32 = @field(self, field_name);
+            const bound: u32 = @field(ceiling, field_name);
+            if (value == 0) {
+                return .{
+                    .budget = .atlas,
+                    .field = field_name,
+                    .rule = .zero,
+                    .value = 0,
+                    .bound = 1,
+                };
+            }
+            if (value > bound) {
+                return .{
+                    .budget = .atlas,
+                    .field = field_name,
+                    .rule = .above_ceiling,
+                    .value = value,
+                    .bound = bound,
+                };
+            }
+        }
+        inline for (.{ "text_size", "svg_size", "image_size" }) |field_name| {
+            const value: u32 = @field(self, field_name);
+            if (value % MIN_ATLAS_SIZE != 0) {
+                return .{
+                    .budget = .atlas,
+                    .field = field_name,
+                    .rule = .not_multiple,
+                    .value = value,
+                    .bound = MIN_ATLAS_SIZE,
+                };
+            }
+        }
+        return self.checkRelationships();
+    }
+
+    /// Runtime check for budgets that are not comptime-known.
+    pub fn assertValid(self: *const AtlasLimits) void {
+        if (self.check()) |violation| {
+            std.debug.panic("invalid ResourceLimits.atlas.{s} = {d}: rule {t}, bound {d}", .{
+                violation.field,
+                violation.value,
+                violation.rule,
+                violation.bound,
+            });
+        }
+    }
+
+    /// Cross-field rules. Every atlas item carries a 1 px border on each side.
+    fn checkRelationships(self: *const AtlasLimits) ?Violation {
+        if (self.svg_size < self.svg_icon_size_max + 2) {
+            return .{
+                .budget = .atlas,
+                .field = "svg_size",
+                .rule = .below_relationship,
+                .value = self.svg_size,
+                .bound = self.svg_icon_size_max + 2,
+            };
+        }
+        if (self.upload_bytes_frame_max < self.itemUploadBytesMax()) {
             return .{
                 .budget = .atlas,
                 .field = "upload_bytes_frame_max",
                 .rule = .below_relationship,
                 .value = self.upload_bytes_frame_max,
-                .bound = MAX_ATLAS_ROW_BYTES,
-            };
-        }
-        if (self.upload_bytes_frame_max > MAX_ATLAS_UPLOAD_BYTES_PER_FRAME) {
-            return .{
-                .budget = .atlas,
-                .field = "upload_bytes_frame_max",
-                .rule = .above_ceiling,
-                .value = self.upload_bytes_frame_max,
-                .bound = MAX_ATLAS_UPLOAD_BYTES_PER_FRAME,
+                .bound = self.itemUploadBytesMax(),
             };
         }
         return null;
+    }
+
+    /// Staged bytes of the largest glyph or icon, border included. Images have
+    /// no budget-wide bound; an image larger than the staging journal fails fast.
+    pub fn itemUploadBytesMax(self: *const AtlasLimits) u32 {
+        assert(self.svg_icon_size_max <= MAX_SVG_ICON_SIZE);
+        const glyph_side: u32 = MAX_GLYPH_SIZE + 2;
+        const icon_side: u32 = self.svg_icon_size_max + 2;
+        return @max(glyph_side * glyph_side, icon_side * icon_side * 4);
+    }
+
+    /// Bytes of the three atlas textures (GPU) or pixel stores (CPU renderer).
+    pub fn textureBytes(self: *const AtlasLimits) u64 {
+        assert(self.text_size <= MAX_ATLAS_SIZE);
+        assert(self.image_size <= MAX_ATLAS_SIZE);
+        var bytes: u64 = @as(u64, self.text_size) * self.text_size;
+        bytes += @as(u64, self.svg_size) * self.svg_size * 4;
+        bytes += @as(u64, self.image_size) * self.image_size * 4;
+        return bytes;
     }
 
     comptime {
@@ -669,21 +806,6 @@ pub const AtlasLimits = struct {
     }
 };
 
-/// Widest atlas edge, in pixels, matching `Atlas.MAX_SIZE`; the Vulkan atlas
-/// upload path asserts the two agree.
-pub const MAX_ATLAS_DIMENSION: u32 = 4096;
-
-/// One full-width row of the widest RGBA atlas: the smallest useful upload.
-pub const MAX_ATLAS_ROW_BYTES: u32 = MAX_ATLAS_DIMENSION * 4;
-
-/// Ceiling for `AtlasLimits.upload_bytes_frame_max`: 4096² × (1 + 4 + 4) bytes
-/// spread over three frames.
-pub const MAX_ATLAS_UPLOAD_BYTES_PER_FRAME: u32 = 48 * 1024 * 1024;
-
-comptime {
-    assert(MAX_ATLAS_UPLOAD_BYTES_PER_FRAME * 3 == MAX_ATLAS_DIMENSION * MAX_ATLAS_DIMENSION * 9);
-}
-
 /// A broken budget rule, precise enough to name in a compile error.
 pub const Violation = struct {
     budget: Budget,
@@ -694,7 +816,7 @@ pub const Violation = struct {
 
     /// The `ResourceLimits` field holding the broken rule.
     pub const Budget = enum { scene, window, frame, atlas };
-    pub const Rule = enum { zero, above_ceiling, below_relationship };
+    pub const Rule = enum { zero, above_ceiling, below_relationship, not_multiple };
 
     /// Human-readable message. Comptime only: used by `ResourceLimits.validate`.
     pub fn describe(comptime self: Violation) []const u8 {
@@ -709,6 +831,10 @@ pub const Violation = struct {
             ),
             .below_relationship => std.fmt.comptimePrint(
                 "ResourceLimits.{t}.{s} = {d} is below the required minimum {d}",
+                .{ self.budget, self.field, self.value, self.bound },
+            ),
+            .not_multiple => std.fmt.comptimePrint(
+                "ResourceLimits.{t}.{s} = {d} is not a multiple of {d}",
                 .{ self.budget, self.field, self.value, self.bound },
             ),
         };
@@ -1139,13 +1265,16 @@ test "check reports each negative case precisely" {
         try std.testing.expectEqualStrings(field, limits.check().?.field);
     }
 
-    // The atlas upload budget must hold one full-width RGBA row and stay under
-    // its ceiling; both ends are checked one past the boundary.
+    // The atlas upload budget must stage the largest glyph or icon in one frame
+    // and stay under its ceiling; both ends are checked one past the boundary.
+    // At `standard` the largest item is a 256² RGBA icon plus its border.
     limits = ResourceLimits.standard;
-    limits.atlas.upload_bytes_frame_max = MAX_ATLAS_ROW_BYTES - 1;
+    const item_bytes_max = limits.atlas.itemUploadBytesMax();
+    try std.testing.expectEqual(@as(u32, 258 * 258 * 4), item_bytes_max);
+    limits.atlas.upload_bytes_frame_max = item_bytes_max - 1;
     try std.testing.expectEqual(Violation.Budget.atlas, limits.check().?.budget);
     try std.testing.expectEqual(Violation.Rule.below_relationship, limits.check().?.rule);
-    limits.atlas.upload_bytes_frame_max = MAX_ATLAS_ROW_BYTES;
+    limits.atlas.upload_bytes_frame_max = item_bytes_max;
     try std.testing.expect(limits.check() == null);
     limits.atlas.upload_bytes_frame_max = MAX_ATLAS_UPLOAD_BYTES_PER_FRAME;
     try std.testing.expect(limits.check() == null);

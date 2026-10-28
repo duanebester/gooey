@@ -22,7 +22,8 @@ const path_pipeline = @import("path_pipeline.zig");
 const polyline_pipeline = @import("polyline_pipeline.zig");
 const point_cloud_pipeline = @import("point_cloud_pipeline.zig");
 const colored_point_cloud_pipeline = @import("colored_point_cloud_pipeline.zig");
-const Atlas = @import("../../../text/mod.zig").Atlas;
+const atlas_textures = @import("atlas_textures.zig");
+const AtlasUploads = @import("../../../text/mod.zig").AtlasUploads;
 
 pub const Vertex = extern struct {
     position: [2]f32,
@@ -45,6 +46,8 @@ pub const Renderer = struct {
     // Single unified pipeline for quads + shadows
     unified_pipeline_state: ?objc.Object,
     unified_primitive_ring: scene_renderer.UnifiedPrimitiveRing,
+    /// Fixed-size atlas textures and their upload staging, created at init.
+    atlas_textures: atlas_textures.AtlasTextures,
     text_pipeline_state: ?text_pipeline.TextPipeline,
     svg_pipeline_state: ?svg_pipeline.SvgPipeline,
     image_pipeline_state: ?image_pipeline.ImagePipeline,
@@ -69,6 +72,8 @@ pub const Renderer = struct {
     /// and the mesh pipelines' per-frame geometry buffers are reserved from it
     /// instead of the framework ceilings, once per frame in flight, and the layer
     /// keeps exactly that many drawables.
+    /// The atlas textures and their upload staging come from `limits.atlas`,
+    /// created here once and never recreated.
     pub fn init(
         allocator: std.mem.Allocator,
         layer: objc.Object,
@@ -84,27 +89,16 @@ pub const Renderer = struct {
         const unified_memory = device.msgSend(bool, "hasUnifiedMemory", .{});
         const command_queue = device.msgSend(objc.Object, "newCommandQueue", .{});
 
-        layer.msgSend(void, "setDevice:", .{device.value});
-        layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
-            .width = size.width * scale_factor,
-            .height = size.height * scale_factor,
-        }});
-
+        configureLayer(layer, device, size, scale_factor, limits.frame.in_flight_count);
         const sample_count: u32 = 4;
 
-        // The rings' in-flight safety proof relies on every frame holding one of at most
-        // `frame_count` drawables (see `UnifiedPrimitiveRing`). CAMetalLayer accepts 2 or
-        // 3, the same range `FrameLimits.check` enforces. Two drawables at `nano` and
-        // `small` drop one window-sized surface; three is the layer's default, kept at
-        // `standard` and above.
-        const frame_count = limits.frame.in_flight_count;
-        layer.msgSend(void, "setMaximumDrawableCount:", .{@as(c_ulong, frame_count)});
-        const drawable_count_max = layer.msgSend(c_ulong, "maximumDrawableCount", .{});
-        assert(drawable_count_max >= 2);
-        assert(drawable_count_max == frame_count);
-
-        const unified_primitive_ring =
+        var unified_primitive_ring =
             try scene_renderer.UnifiedPrimitiveRing.init(device, limits);
+        // Not an `errdefer`: once `self` exists, its `deinit` releases the ring.
+        const textures = atlas_textures.AtlasTextures.init(device, limits) catch |err| {
+            unified_primitive_ring.deinit();
+            return err;
+        };
 
         var self = Self{
             .device = device,
@@ -113,6 +107,7 @@ pub const Renderer = struct {
             .unified_memory = unified_memory,
             .unified_pipeline_state = null,
             .unified_primitive_ring = unified_primitive_ring,
+            .atlas_textures = textures,
             .text_pipeline_state = null,
             .svg_pipeline_state = null,
             .image_pipeline_state = null,
@@ -148,6 +143,33 @@ pub const Renderer = struct {
         return self;
     }
 
+    /// Bind `layer` to `device`, size its drawables, and cap them at the budget's
+    /// frames in flight.
+    fn configureLayer(
+        layer: objc.Object,
+        device: objc.Object,
+        size: geometry.Size(f64),
+        scale_factor: f64,
+        frame_count: u32,
+    ) void {
+        assert(scale_factor > 0.0);
+        layer.msgSend(void, "setDevice:", .{device.value});
+        layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
+            .width = size.width * scale_factor,
+            .height = size.height * scale_factor,
+        }});
+
+        // The rings' in-flight safety proof relies on every frame holding one of at most
+        // `frame_count` drawables (see `UnifiedPrimitiveRing`). CAMetalLayer accepts 2 or
+        // 3, the same range `FrameLimits.check` enforces. Two drawables at `nano` and
+        // `small` drop one window-sized surface; three is the layer's default, kept at
+        // `standard` and above.
+        layer.msgSend(void, "setMaximumDrawableCount:", .{@as(c_ulong, frame_count)});
+        const drawable_count_max = layer.msgSend(c_ulong, "maximumDrawableCount", .{});
+        assert(drawable_count_max >= 2);
+        assert(drawable_count_max == frame_count);
+    }
+
     /// Create the text, SVG and image pipelines with their per-frame instance
     /// buffers sized from `limits`. A failure here is fatal rather than
     /// skipped: a missing pipeline would silently drop primitives the scene
@@ -165,18 +187,19 @@ pub const Renderer = struct {
             mtl.MTLPixelFormat.bgra8unorm,
             sample_count,
             limits,
+            self.atlas_textures.text,
         );
         self.svg_pipeline_state = try svg_pipeline.SvgPipeline.init(
-            self.allocator,
             device,
             sample_count,
             limits,
+            self.atlas_textures.svg,
         );
         self.image_pipeline_state = try image_pipeline.ImagePipeline.init(
-            self.allocator,
             device,
             sample_count,
             limits,
+            self.atlas_textures.image,
         );
     }
 
@@ -255,6 +278,7 @@ pub const Renderer = struct {
         if (self.msaa_texture) |tex| tex.release();
         if (self.unified_pipeline_state) |ps| ps.release();
         self.unified_primitive_ring.deinit();
+        self.atlas_textures.deinit();
         if (self.quad_unit_vertex_buffer) |vb| vb.release();
         if (self.text_pipeline_state) |*tp| tp.deinit();
         if (self.svg_pipeline_state) |*sp| sp.deinit();
@@ -322,6 +346,7 @@ pub const Renderer = struct {
             self.quad_unit_vertex_buffer.?,
             self.unified_pipeline_state,
             &self.unified_primitive_ring,
+            &self.atlas_textures,
             if (self.text_pipeline_state) |*tp| tp else null,
             if (self.svg_pipeline_state) |*sp| sp else null,
             pp,
@@ -372,20 +397,15 @@ pub const Renderer = struct {
         ) catch return;
     }
 
-    pub fn updateTextAtlas(self: *Self, atlas: *const Atlas) !void {
-        if (self.text_pipeline_state) |*tp| try tp.updateAtlas(atlas);
+    /// Bind the atlas journal this renderer consumes, keyed by its platform
+    /// window (the key `Window` registered). Call before the first render.
+    pub fn bindAtlasUploads(self: *Self, uploads: *AtlasUploads, key: usize) void {
+        self.atlas_textures.bind(uploads, key);
     }
 
-    pub fn prepareSvgAtlas(self: *Self, atlas: *const Atlas) void {
-        if (self.svg_pipeline_state) |*sp| {
-            sp.prepareFrame(atlas);
-        }
-    }
-
-    pub fn prepareImageAtlas(self: *Self, atlas: *const Atlas) void {
-        if (self.image_pipeline_state) |*ip| {
-            ip.prepareFrame(atlas);
-        }
+    /// True when atlas records are waiting for this renderer's next frame.
+    pub fn hasPendingAtlasUploads(self: *const Self) bool {
+        return self.atlas_textures.hasPending();
     }
 
     pub fn setScissor(encoder: objc.Object, rect: ScissorRect) void {
@@ -434,6 +454,7 @@ pub const Renderer = struct {
         assert(self.text_pipeline_state != null);
         assert(self.path_pipeline_state != null);
         self.unified_primitive_ring.nextFrame();
+        self.atlas_textures.nextFrame();
         if (self.text_pipeline_state) |*tp| tp.nextFrame();
         if (self.svg_pipeline_state) |*sp| sp.nextFrame();
         if (self.image_pipeline_state) |*ip| ip.nextFrame();
@@ -463,6 +484,8 @@ pub const Renderer = struct {
         }) orelse return;
 
         const command_buffer = self.command_queue.msgSend(objc.Object, "commandBuffer", .{});
+        // Atlas blits precede the render pass in the same command buffer.
+        self.atlas_textures.encodeUploads(command_buffer);
         const encoder = render_pass.createEncoder(command_buffer, rp) orelse return;
 
         render_pass.setViewport(encoder, self.size.width, self.size.height, self.scale_factor);

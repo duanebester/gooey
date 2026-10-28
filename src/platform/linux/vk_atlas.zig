@@ -1,18 +1,16 @@
 //! Atlas texture management for Vulkan renderer.
 //!
 //! One generic implementation, parameterized by pixel format, serves all three
-//! atlas upload paths (text, SVG, image). Each atlas follows the same
-//! lifecycle: create image → clear it on the GPU → stage dirty rows into the
-//! frame's staging lane → barrier → copy → barrier, inside the frame's command
-//! buffer. The renderer bounds the rows staged per frame by
-//! `ResourceLimits.atlas.upload_bytes_frame_max`.
+//! atlases (text, SVG, image). Each atlas image is created once at init at its
+//! `AtlasLimits` size and never recreated (CLAUDE.md §2). The renderer keeps no
+//! CPU copy of atlas pixels: each frame it copies the records its window has not
+//! uploaded from the shared `AtlasUploads` journal into its staging lane, and
+//! records one barrier, one batched copy, and one barrier per changed atlas.
 //!
 //! Axes of variation across the three atlases:
 //!   1. Pixel format — R8 (text) vs RGBA8 (SVG, image)
 //!   2. Which AtlasResources instance to target
 //!   3. Which descriptor set / storage buffer to bind
-//!
-//! Everything else (image creation, staging, barriers, submit) is identical.
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
@@ -21,23 +19,8 @@ const vk = @import("vulkan.zig");
 // Limits (CLAUDE.md Rule #4)
 // =============================================================================
 
-/// Maximum atlas dimension in either axis.
-/// 4096×4096 supports ~16M pixels per atlas — plenty for UI workloads.
-/// Back-of-envelope (CLAUDE.md Rule #7): 4096² × 4 = 64MB per RGBA atlas.
-pub const MAX_ATLAS_DIMENSION: u32 = 4096;
-
-/// Staged copies start at this byte alignment: `vkCmdCopyBufferToImage`
-/// requires `bufferOffset` to be a multiple of 4 and of the texel size, and an
-/// R8 text band can end at any byte.
-pub const STAGING_COPY_ALIGNMENT_BYTES: vk.DeviceSize = 4;
-
-comptime {
-    const limits = @import("../../core/limits.zig");
-    std.debug.assert(MAX_ATLAS_DIMENSION == limits.MAX_ATLAS_DIMENSION);
-    std.debug.assert(MAX_ATLAS_DIMENSION == @import("../../text/atlas.zig").Atlas.MAX_SIZE);
-    // The smallest valid lane holds one aligned full-width RGBA row.
-    std.debug.assert(limits.MAX_ATLAS_ROW_BYTES == MAX_ATLAS_DIMENSION * 4);
-}
+/// Regions recorded per `vkCmdCopyBufferToImage` call; larger batches split.
+pub const copy_region_count_max: u32 = 64;
 
 // =============================================================================
 // Public Types
@@ -73,7 +56,9 @@ pub const AtlasResources = struct {
     view: vk.ImageView = null,
     width: u32 = 0,
     height: u32 = 0,
-    generation: u32 = 0,
+    format: AtlasFormat = .r8,
+    /// False until the first upload moves the image out of `UNDEFINED`.
+    layout_ready: bool = false,
 
     /// Destroy all Vulkan objects owned by this atlas. Safe with null handles.
     pub fn destroy(self: *AtlasResources, device: vk.Device) void {
@@ -90,15 +75,6 @@ pub const AtlasError = error{
     AtlasMemoryAllocationFailed,
     AtlasImageViewCreationFailed,
     NoSuitableMemoryType,
-};
-
-/// Sub-region of an atlas that needs GPU upload.
-/// Coordinates are in atlas pixels (not bytes).
-pub const DirtyRegion = struct {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
 };
 
 // =============================================================================
@@ -151,133 +127,92 @@ pub fn updateAtlasDescriptorSet(
 }
 
 // =============================================================================
-// Public API — Async Partial Atlas Uploads (ring staging, no sync fence)
+// Public API — Atlas images and batched uploads
 // =============================================================================
 
-/// Ensure an atlas VkImage exists at the given dimensions.
-/// (Re)creates the image if dimensions changed or image doesn't exist yet.
-/// Returns `true` if the image was (re)created — caller must update
-/// descriptor sets for ALL frames, initialize the image, and upload every row.
-pub fn ensureAtlasImage(
+/// Create an atlas image at its budget size. Called once at init; the image is
+/// never recreated. Its contents start undefined: every uploaded item carries
+/// its own zero border, and nothing outside items is ever sampled.
+pub fn createAtlas(
     resources: *AtlasResources,
-    width: u32,
-    height: u32,
+    size: u32,
     format: AtlasFormat,
     device: vk.Device,
     mem_properties: *const vk.PhysicalDeviceMemoryProperties,
-) AtlasError!bool {
-    std.debug.assert(width > 0 and width <= MAX_ATLAS_DIMENSION);
-    std.debug.assert(height > 0 and height <= MAX_ATLAS_DIMENSION);
-
-    const same_size = resources.width == width and
-        resources.height == height and
-        resources.image != null;
-    if (same_size) return false;
-
-    resources.destroy(device);
-    try createAtlasImage(device, resources, width, height, format, mem_properties);
-    return true;
+) AtlasError!void {
+    std.debug.assert(size > 0);
+    std.debug.assert(resources.image == null);
+    try createAtlasImage(device, resources, size, size, format, mem_properties);
+    resources.format = format;
+    resources.layout_ready = false;
+    std.debug.assert(resources.view != null);
 }
 
-/// Copy dirty atlas rows into a staging buffer at the given offset.
+/// Record one atlas's uploads for this frame: a barrier into `TRANSFER_DST`, the
+/// copies in batches of `copy_region_count_max`, and a barrier back to shader
+/// reads. Regions never overlap: the atlas does not reuse a region until every
+/// renderer has uploaded the records written into it.
 ///
-/// Only the dirty region's pixel rows are copied, tightly packed in the
-/// staging buffer (no atlas-stride padding). This is what
-/// `vkCmdCopyBufferToImage` expects when `bufferRowLength = 0`.
-///
-/// Returns the number of bytes staged.
-pub fn stageDirtyRegion(
-    staging_ptr: [*]u8,
-    staging_offset: vk.DeviceSize,
-    atlas_data: []const u8,
-    atlas_width: u32,
-    format: AtlasFormat,
-    dirty: DirtyRegion,
-) vk.DeviceSize {
-    std.debug.assert(dirty.width > 0 and dirty.height > 0);
-    std.debug.assert(dirty.x + dirty.width <= atlas_width);
-
-    const bpp: usize = format.bytesPerPixel();
-    const atlas_height: u32 = @intCast(atlas_data.len / (@as(usize, atlas_width) * bpp));
-    std.debug.assert(dirty.y + dirty.height <= atlas_height);
-    const row_bytes: usize = @as(usize, dirty.width) * bpp;
-    const atlas_stride: usize = @as(usize, atlas_width) * bpp;
-    var dest_cursor: usize = @intCast(staging_offset);
-
-    for (0..dirty.height) |row| {
-        const src_y = @as(usize, dirty.y) + row;
-        const src_offset = src_y * atlas_stride + @as(usize, dirty.x) * bpp;
-        @memcpy(staging_ptr[dest_cursor..][0..row_bytes], atlas_data[src_offset..][0..row_bytes]);
-        dest_cursor += row_bytes;
-    }
-
-    const total: vk.DeviceSize = @intCast(dest_cursor - @as(usize, @intCast(staging_offset)));
-    std.debug.assert(total == @as(vk.DeviceSize, dirty.width) * @as(vk.DeviceSize, dirty.height) * @as(vk.DeviceSize, bpp));
-    return total;
-}
-
-/// One staged band of atlas rows and where it lives in the staging buffer.
-pub const StagedCopy = struct {
-    staging_offset: vk.DeviceSize,
-    region: DirtyRegion,
-};
-
-/// Record one atlas's transfer commands for this frame.
-///
-/// `initialize` is set on the first frame after the image was (re)created: the
-/// image moves from UNDEFINED and is cleared to zero on the GPU, so rows that
-/// have not been uploaded yet sample as transparent rather than as stale
-/// memory. Otherwise the image moves from SHADER_READ_ONLY and keeps its
-/// pixels. `copy` is the band of rows staged this frame, if any; the budget may
-/// leave none for this atlas this frame. Both end in SHADER_READ_ONLY.
-pub fn recordAtlasTransfer(
+/// The first upload transitions from `UNDEFINED`, which discards nothing that
+/// was ever written; later uploads preserve the existing contents.
+pub fn recordAtlasCopies(
     cmd: vk.CommandBuffer,
-    image: vk.Image,
+    resources: *AtlasResources,
     staging_buffer: vk.Buffer,
-    copy: ?StagedCopy,
-    initialize: bool,
+    regions: []const vk.BufferImageCopy,
 ) void {
     std.debug.assert(cmd != null);
-    std.debug.assert(image != null);
+    std.debug.assert(resources.image != null);
     std.debug.assert(staging_buffer != null);
-    std.debug.assert(initialize or copy != null);
+    if (regions.len == 0) return;
 
-    if (initialize) {
-        recordBarrier(cmd, image, &undefined_state, &transfer_state);
-        const zero = vk.ClearColorValue{ .float32 = .{ 0, 0, 0, 0 } };
-        const layout = transfer_state.layout;
-        vk.vkCmdClearColorImage(cmd, image, layout, &zero, 1, (&color_range)[0..1]);
-    } else {
-        recordBarrier(cmd, image, &sampled_state, &transfer_state);
+    // The first upload discards the image's undefined contents; later ones
+    // wait for the previous frames' shader reads and keep the pixels.
+    const from = if (resources.layout_ready) &sampled_state else &undefined_state;
+    recordBarrier(cmd, resources.image, from, &transfer_state);
+
+    var start: usize = 0;
+    while (start < regions.len) {
+        const count = @min(regions.len - start, copy_region_count_max);
+        vk.vkCmdCopyBufferToImage(
+            cmd,
+            staging_buffer,
+            resources.image,
+            transfer_state.layout,
+            @intCast(count),
+            regions[start..].ptr,
+        );
+        start += count;
     }
+    std.debug.assert(start == regions.len);
 
-    if (copy) |band| {
-        std.debug.assert(band.region.width > 0 and band.region.height > 0);
-        std.debug.assert(band.staging_offset % STAGING_COPY_ALIGNMENT_BYTES == 0);
-        // The clear and the copy both write the image in the transfer stage.
-        if (initialize) recordBarrier(cmd, image, &transfer_state, &transfer_state);
-        const region = vk.BufferImageCopy{
-            .bufferOffset = band.staging_offset,
-            .bufferRowLength = 0, // tightly packed (row length = imageExtent.width)
-            .bufferImageHeight = 0, // tightly packed (height = imageExtent.height)
-            .imageSubresource = .{
-                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = .{ .x = @intCast(band.region.x), .y = @intCast(band.region.y), .z = 0 },
-            .imageExtent = .{
-                .width = band.region.width,
-                .height = band.region.height,
-                .depth = 1,
-            },
-        };
-        const layout = transfer_state.layout;
-        vk.vkCmdCopyBufferToImage(cmd, staging_buffer, image, layout, 1, (&region)[0..1]);
-    }
+    recordBarrier(cmd, resources.image, &transfer_state, &sampled_state);
+    resources.layout_ready = true;
+}
 
-    recordBarrier(cmd, image, &transfer_state, &sampled_state);
+/// The copy region for one staged record at `staging_offset` in the buffer.
+pub fn copyRegion(
+    staging_offset: vk.DeviceSize,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) vk.BufferImageCopy {
+    std.debug.assert(width > 0);
+    std.debug.assert(height > 0);
+    return .{
+        .bufferOffset = staging_offset,
+        .bufferRowLength = 0, // tightly packed (row length = imageExtent.width)
+        .bufferImageHeight = 0, // tightly packed (height = imageExtent.height)
+        .imageSubresource = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .imageOffset = .{ .x = @intCast(x), .y = @intCast(y), .z = 0 },
+        .imageExtent = .{ .width = width, .height = height, .depth = 1 },
+    };
 }
 
 /// One side of an atlas image barrier: the stage and access that last touched
@@ -295,7 +230,7 @@ const undefined_state = ImageState{
     .layout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
 };
 
-/// Being cleared or written by a buffer copy.
+/// Written by a buffer copy.
 const transfer_state = ImageState{
     .stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
     .access = vk.VK_ACCESS_TRANSFER_WRITE_BIT,

@@ -15,7 +15,6 @@ const InstancePool = scene.InstancePool;
 const SceneLimits = scene.SceneLimits;
 const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const SvgInstance = @import("../../../scene/svg_instance.zig").SvgInstance;
-const Atlas = @import("../../../text/atlas.zig").Atlas;
 
 pub const svg_shader_source =
     \\#include <metal_stdlib>
@@ -161,20 +160,14 @@ pub const SvgPipeline = struct {
     /// SVGs claimed this frame; also the slot's write offset.
     instance_usage: InstanceCounts,
 
-    // Atlas texture management
-    atlas_texture: ?objc.Object,
-    atlas_generation: u32,
-
-    // Atlas reference for current frame (set during prepareFrame)
-    current_atlas: ?*const Atlas,
-
-    allocator: std.mem.Allocator,
+    /// The renderer's SVG atlas texture (`AtlasTextures`); not owned.
+    atlas_texture: objc.Object,
 
     pub fn init(
-        allocator: std.mem.Allocator,
         device: objc.Object,
         sample_count: u32,
         limits: *const ResourceLimits,
+        atlas_texture: objc.Object,
     ) !SvgPipeline {
         const scene_limits = &limits.scene;
         assert(sample_count > 0);
@@ -208,10 +201,7 @@ pub const SvgPipeline = struct {
             .frame_index = 0,
             .instance_budget = budget,
             .instance_usage = .{},
-            .atlas_texture = null,
-            .atlas_generation = 0,
-            .current_atlas = null,
-            .allocator = allocator,
+            .atlas_texture = atlas_texture,
         };
     }
 
@@ -219,7 +209,6 @@ pub const SvgPipeline = struct {
         self.pipeline_state.release();
         self.unit_vertex_buffer.release();
         self.instance_buffers.release();
-        if (self.atlas_texture) |tex| tex.release();
     }
 
     /// Advance to the next frame-in-flight slot and release the previous frame's
@@ -229,12 +218,6 @@ pub const SvgPipeline = struct {
         self.instance_usage = .{};
     }
 
-    /// Bind this frame's atlas. Its texture is uploaded by the first batch.
-    pub fn prepareFrame(self: *SvgPipeline, atlas: *const Atlas) void {
-        assert(atlas.size > 0);
-        self.current_atlas = atlas;
-    }
-
     /// Render a batch of SVG instances, appended to this frame's slot after the
     /// SVGs already claimed. Safe for multiple calls per frame.
     pub fn renderBatch(
@@ -242,19 +225,14 @@ pub const SvgPipeline = struct {
         encoder: objc.Object,
         instances: []const SvgInstance,
         options: struct { viewport_size: [2]f32, frame: u64 },
-    ) !void {
+    ) void {
         assert(instances.len > 0);
         assert(instances.len <= scene.MAX_SVGS_PER_FRAME);
-        // Claimed even when no atlas is bound yet, so the count matches the scene.
         const first = self.instance_usage.claim(&self.instance_budget, .{
             .pool = .svgs,
             .requested = @intCast(instances.len),
             .frame = options.frame,
         });
-        const atlas = self.current_atlas orelse return;
-
-        // Update atlas texture if needed (only once per frame typically)
-        try self.updateAtlasTexture(atlas);
 
         const idx = self.frame_index;
         const byte_offset = @as(c_ulong, first) * @sizeOf(SvgInstance);
@@ -284,10 +262,10 @@ pub const SvgPipeline = struct {
             @as(c_ulong, 2),
         });
 
-        // Bind atlas texture
-        if (self.atlas_texture) |tex| {
-            encoder.msgSend(void, "setFragmentTexture:atIndex:", .{ tex.value, @as(c_ulong, 0) });
-        }
+        encoder.msgSend(void, "setFragmentTexture:atIndex:", .{
+            self.atlas_texture.value,
+            @as(c_ulong, 0),
+        });
 
         // Draw
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
@@ -296,47 +274,6 @@ pub const SvgPipeline = struct {
             @as(c_ulong, 6),
             @as(c_ulong, instances.len),
         });
-    }
-
-    fn updateAtlasTexture(self: *SvgPipeline, atlas: *const Atlas) !void {
-        if (self.atlas_generation == atlas.generation and self.atlas_texture != null) {
-            return;
-        }
-
-        // Release old texture
-        if (self.atlas_texture) |tex| {
-            tex.release();
-            self.atlas_texture = null;
-        }
-
-        // Create texture descriptor
-        const MTLTextureDescriptor = objc.getClass("MTLTextureDescriptor") orelse return error.ClassNotFound;
-        const desc = MTLTextureDescriptor.msgSend(objc.Object, "texture2DDescriptorWithPixelFormat:width:height:mipmapped:", .{
-            @backingInt(mtl.MTLPixelFormat.rgba8unorm),
-            @as(c_ulong, atlas.size),
-            @as(c_ulong, atlas.size),
-            false,
-        });
-        desc.msgSend(void, "setUsage:", .{@as(c_ulong, 0x01)}); // ShaderRead
-
-        const tex_ptr = self.device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{desc.value}) orelse
-            return error.TextureCreationFailed;
-        const texture = objc.Object.fromId(tex_ptr);
-
-        // Upload atlas data
-        const region = mtl.MTLRegion{
-            .origin = .{ .x = 0, .y = 0, .z = 0 },
-            .size = .{ .width = atlas.size, .height = atlas.size, .depth = 1 },
-        };
-        texture.msgSend(void, "replaceRegion:mipmapLevel:withBytes:bytesPerRow:", .{
-            region,
-            @as(c_ulong, 0),
-            @as(*const anyopaque, @ptrCast(atlas.data.ptr)),
-            @as(c_ulong, atlas.size * 4), // RGBA = 4 bytes per pixel
-        });
-
-        self.atlas_texture = texture;
-        self.atlas_generation = atlas.generation;
     }
 };
 

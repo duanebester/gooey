@@ -15,6 +15,7 @@ const std = @import("std");
 const Atlas = @import("../text/atlas.zig").Atlas;
 const Region = @import("../text/atlas.zig").Region;
 const UVCoords = @import("../text/atlas.zig").UVCoords;
+const AtlasUploads = @import("../text/atlas.zig").AtlasUploads;
 const rasterizer = @import("rasterizer.zig");
 
 /// Cache key for SVG lookup
@@ -50,12 +51,13 @@ pub const CachedSvg = struct {
     /// Offset from logical position (device pixels)
     offset_x: i16,
     offset_y: i16,
-    /// Atlas size when this SVG was cached (for thread-safe UV calculation)
-    /// In multi-window scenarios, the atlas may grow between caching and
-    /// UV calculation; storing the size ensures correct UVs.
+    /// Side of the atlas the region lies in; fixed for the atlas's lifetime.
     atlas_size: u32,
+    /// Atlas shelf holding the pixels; the entry is stale once it is evicted.
+    shelf: u16,
+    generation: u32,
 
-    /// Calculate UV coordinates using the cached atlas size
+    /// UV coordinates of the region.
     pub fn uv(self: CachedSvg) UVCoords {
         return self.region.uv(self.atlas_size);
     }
@@ -64,11 +66,12 @@ pub const CachedSvg = struct {
 /// SVG texture atlas with caching
 pub const SvgAtlas = struct {
     allocator: std.mem.Allocator,
-    /// RGBA texture atlas
+    /// RGBA texture atlas, fixed at `AtlasLimits.svg_size`.
     atlas: Atlas,
-    /// Cache map
+    /// Cache map. Capacity is reserved at init and never grows: a full map
+    /// reclaims entries whose shelves were evicted (CLAUDE.md §2).
     cache: std.AutoHashMap(SvgKey, CachedSvg),
-    /// Reusable rasterization buffer
+    /// Reusable rasterization buffer, `svg_icon_size_max²` RGBA pixels.
     render_buffer: []u8,
     render_buffer_size: u32,
     /// Current scale factor
@@ -97,7 +100,9 @@ pub const SvgAtlas = struct {
     deferred_this_frame: bool = false,
 
     const Self = @This();
-    const MAX_ICON_SIZE: u32 = 256;
+
+    /// Cached icons. lucide-demo, the largest measured user, draws 400.
+    pub const entry_count_max: u32 = 4096;
 
     /// Maximum software rasterizations allowed per frame.
     ///
@@ -109,23 +114,46 @@ pub const SvgAtlas = struct {
     /// of stalling a single frame for 8–32ms of pure rasterization.
     const MAX_RASTERIZATIONS_PER_FRAME: u32 = 4;
 
-    pub fn init(allocator: std.mem.Allocator, scale_factor: f64, io: std.Io) !Self {
-        // Buffer for largest possible icon (256x256 RGBA)
-        const buffer_size = MAX_ICON_SIZE * MAX_ICON_SIZE * 4;
-        const render_buffer = try allocator.alloc(u8, buffer_size);
+    pub const Options = struct {
+        /// `AtlasLimits.svg_size`.
+        size: u32,
+        /// `AtlasLimits.svg_icon_size_max`.
+        icon_size_max: u32,
+        uploads: *AtlasUploads,
+    };
 
-        return .{
-            .allocator = allocator,
-            .atlas = try Atlas.initWithSize(allocator, .rgba, 512),
-            .cache = std.AutoHashMap(SvgKey, CachedSvg).init(allocator),
-            .render_buffer = render_buffer,
-            .render_buffer_size = MAX_ICON_SIZE,
-            .scale_factor = scale_factor,
-            .io = io,
-            .mutex = .init,
-            .rasterizations_this_frame = 0,
-            .deferred_this_frame = false,
-        };
+    /// Initialize in place: `Atlas` is reserved at its final address.
+    pub fn initInPlace(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        scale_factor: f64,
+        io: std.Io,
+        options: Options,
+    ) !void {
+        std.debug.assert(options.icon_size_max > 0);
+        std.debug.assert(options.icon_size_max + 2 <= options.size);
+        const buffer_size = options.icon_size_max * options.icon_size_max * 4;
+        self.render_buffer = try allocator.alloc(u8, buffer_size);
+        errdefer allocator.free(self.render_buffer);
+
+        try self.atlas.init(
+            allocator,
+            .{ .kind = .svg, .size = options.size, .uploads = options.uploads },
+        );
+        errdefer self.atlas.deinit();
+
+        self.cache = std.AutoHashMap(SvgKey, CachedSvg).init(allocator);
+        errdefer self.cache.deinit();
+        try self.cache.ensureTotalCapacity(entry_count_max);
+
+        self.allocator = allocator;
+        self.render_buffer_size = options.icon_size_max;
+        self.scale_factor = scale_factor;
+        self.io = io;
+        self.mutex = .init;
+        self.rasterizations_this_frame = 0;
+        self.deferred_this_frame = false;
+        std.debug.assert(self.cache.capacity() >= entry_count_max);
     }
 
     pub fn deinit(self: *Self) void {
@@ -167,9 +195,9 @@ pub const SvgAtlas = struct {
     ///
     /// Thread-safe: protected by mutex for multi-window scenarios.
     ///
-    /// If the per-frame rasterization budget is exhausted, returns
-    /// `error.RasterizationDeferred` — the icon won't render this frame
-    /// but will be picked up on the next frame.
+    /// If the per-frame rasterization budget or the upload staging is
+    /// exhausted, returns `error.RasterizationDeferred` — the icon won't render
+    /// this frame but will be picked up on the next frame.
     pub fn getOrRasterize(
         self: *Self,
         path_data: []const u8,
@@ -184,7 +212,10 @@ pub const SvgAtlas = struct {
         const key = SvgKey.init(path_data, logical_size, self.scale_factor, has_fill, stroke_width);
 
         if (self.cache.get(key)) |cached| {
-            return cached;
+            if (self.atlas.isLive(cached.shelf, cached.generation)) {
+                self.atlas.touch(cached.shelf, self.atlas.uploads.frameCurrent());
+                return cached;
+            }
         }
 
         // Cache miss — check per-frame budget before doing expensive work.
@@ -195,11 +226,9 @@ pub const SvgAtlas = struct {
             return error.RasterizationDeferred;
         }
 
-        // Rasterize
+        // Rasterize at most `svg_icon_size_max` device pixels.
         const device_size = key.device_size;
-        if (device_size > self.render_buffer_size) {
-            return error.IconTooLarge;
-        }
+        if (device_size > self.render_buffer_size) return error.IconTooLarge;
 
         @memset(self.render_buffer, 0);
 
@@ -224,90 +253,165 @@ pub const SvgAtlas = struct {
 
         self.rasterizations_this_frame += 1;
 
-        // Reserve atlas space
-        const region = try self.reserveWithEviction(rasterized.width, rasterized.height);
-
-        // Copy to atlas
         const pixel_count = rasterized.width * rasterized.height * 4;
-        self.atlas.set(region, self.render_buffer[0..pixel_count]);
-
-        // Capture atlas size AFTER reservation (may have grown)
-        const current_atlas_size = self.atlas.size;
-
-        const cached = CachedSvg{
-            .region = region,
-            .offset_x = rasterized.offset_x,
-            .offset_y = rasterized.offset_y,
-            .atlas_size = current_atlas_size,
+        const placement = self.atlas.insert(
+            rasterized.width,
+            rasterized.height,
+            self.render_buffer[0..pixel_count],
+        ) orelse {
+            self.deferred_this_frame = true;
+            return error.RasterizationDeferred;
         };
 
-        try self.cache.put(key, cached);
+        const cached = CachedSvg{
+            .region = placement.region,
+            .offset_x = rasterized.offset_x,
+            .offset_y = rasterized.offset_y,
+            .atlas_size = self.atlas.size,
+            .shelf = placement.shelf,
+            .generation = placement.generation,
+        };
+
+        self.makeRoom(key);
+        self.cache.putAssumeCapacity(key, cached);
         return cached;
     }
 
-    fn reserveWithEviction(self: *Self, width: u32, height: u32) !Region {
-        if (try self.atlas.reserve(width, height)) |region| {
-            return region;
+    /// Ensure `key` can be stored without growing the map: drop entries whose
+    /// shelves were evicted, evicting the least recently used shelf if none
+    /// were. A map full of icons used this frame fails fast.
+    fn makeRoom(self: *Self, key: SvgKey) void {
+        if (self.cache.contains(key)) return;
+        if (self.cache.count() < entry_count_max) return;
+        var attempt: usize = 0;
+        while (attempt <= self.atlas.shelves.len) : (attempt += 1) {
+            if (self.reclaimStale() > 0) return;
+            if (!self.atlas.evictOne()) break;
         }
-
-        // Try growing
-        self.atlas.grow() catch |err| {
-            if (err == error.AtlasFull) {
-                self.clear();
-                if (try self.atlas.reserve(width, height)) |region| {
-                    return region;
-                }
-                return error.IconTooLarge;
-            }
-            return err;
-        };
-
-        // Growth succeeded - update atlas_size in all cached entries
-        // This is critical: cached SVGs store atlas_size for UV calculation.
-        // When atlas grows, pixel positions stay the same but UVs change.
-        self.updateAtlasSizeInCache();
-
-        return try self.atlas.reserve(width, height) orelse error.IconTooLarge;
+        std.debug.panic("SvgAtlas pool 'cache' exhausted: capacity {d}, {d} in use, " ++
+            "1 requested, every icon used since frame {d}.", .{
+            entry_count_max,
+            self.cache.count(),
+            self.atlas.uploads.frameCurrent(),
+        });
     }
 
-    /// Update atlas_size in all cached entries after atlas growth.
-    /// When the atlas grows, pixel positions are preserved but UV coordinates
-    /// change (e.g., x=100 in 512px atlas is UV=0.195, but in 1024px is UV=0.098).
-    fn updateAtlasSizeInCache(self: *Self) void {
-        const new_size = self.atlas.size;
-
-        var it = self.cache.valueIterator();
-        while (it.next()) |cached| {
-            cached.atlas_size = new_size;
+    /// Remove entries whose atlas pixels were evicted. Bounded by the map size.
+    fn reclaimStale(self: *Self) u32 {
+        var freed: u32 = 0;
+        var it = self.cache.iterator();
+        while (it.next()) |entry| {
+            const cached = entry.value_ptr.*;
+            if (self.atlas.isLive(cached.shelf, cached.generation)) continue;
+            self.cache.removeByPtr(entry.key_ptr);
+            freed += 1;
         }
+        return freed;
     }
 
     pub fn clear(self: *Self) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.cache.clearRetainingCapacity();
         self.atlas.clear();
     }
 
-    /// Get the underlying atlas for GPU upload.
-    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
+    /// The atlas the renderers sample. Its pixels reach GPU textures through
+    /// `AtlasUploads`, so renderers read only its fixed size and format here.
     pub fn getAtlas(self: *const Self) *const Atlas {
         return &self.atlas;
     }
-
-    pub fn getGeneration(self: *const Self) u32 {
-        return self.atlas.generation;
-    }
-
-    /// Thread-safe atlas access for GPU upload.
-    /// Holds the mutex while calling the callback, ensuring no other
-    /// thread can modify the atlas during the upload.
-    pub fn withAtlasLocked(
-        self: *Self,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
-    ) !void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return callback(ctx, &self.atlas);
-    }
 };
+
+test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
+    // A 64² atlas holds four 30 px icons, two per 32-row shelf. Frames 2-5
+    // rasterize a, b (top shelf) and c, d (bottom shelf); frame 6 touches a
+    // and adds e, which evicts the bottom shelf and lands where c was. Asking
+    // for c again must re-rasterize c's own pixels, not return e's region.
+    const testing = std.testing;
+    var uploads: AtlasUploads = undefined;
+    try uploads.init(
+        testing.allocator,
+        testing.io,
+        .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 },
+    );
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const svg_atlas = try testing.allocator.create(SvgAtlas);
+    defer testing.allocator.destroy(svg_atlas);
+    try svg_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 64,
+        .icon_size_max = 32,
+        .uploads = &uploads,
+    });
+    defer svg_atlas.deinit();
+
+    // Distinct shapes with the same bounding box, so equal sizes but different pixels.
+    const paths = [_][]const u8{
+        "M0 0L24 0L0 24Z",       "M0 0L24 0L24 24Z", "M0 0L24 24L0 24Z", "M24 0L24 24L0 24Z",
+        "M0 0L24 0L24 24L0 24Z",
+    };
+    var saved: [paths.len][32 * 32 * 4]u8 = undefined;
+    var placed: [paths.len]CachedSvg = undefined;
+    const Harness = struct {
+        fn frame(journal: *AtlasUploads, atlas: *SvgAtlas) void {
+            _ = journal.beginFrame(consumer);
+            _ = journal.consumeBegin(consumer);
+            journal.consumeEnd(consumer);
+            atlas.resetFrameBudget();
+        }
+        fn icon(atlas: *SvgAtlas, path: []const u8) !CachedSvg {
+            return atlas.getOrRasterize(path, 24, 30, true, null);
+        }
+        fn copy(atlas: *const Atlas, region: Region, out: []u8) []const u8 {
+            const row_bytes = @as(usize, region.width) * 4;
+            var row: usize = 0;
+            while (row < region.height) : (row += 1) {
+                const source = ((@as(usize, region.y) + row) * atlas.size + region.x) * 4;
+                @memcpy(
+                    out[row * row_bytes ..][0..row_bytes],
+                    atlas.getData()[source..][0..row_bytes],
+                );
+            }
+            return out[0 .. row_bytes * region.height];
+        }
+    };
+
+    for (paths[0..4], 0..) |path, index| {
+        Harness.frame(&uploads, svg_atlas);
+        placed[index] = try Harness.icon(svg_atlas, path);
+        _ = Harness.copy(&svg_atlas.atlas, placed[index].region, &saved[index]);
+    }
+    try testing.expectEqual(placed[0].region.y, placed[1].region.y);
+    try testing.expectEqual(placed[2].region.y, placed[3].region.y);
+    try testing.expect(placed[0].region.y != placed[2].region.y);
+
+    Harness.frame(&uploads, svg_atlas);
+    _ = try Harness.icon(svg_atlas, paths[0]);
+    placed[4] = try Harness.icon(svg_atlas, paths[4]);
+    try testing.expectEqual(placed[2].region.x, placed[4].region.x);
+    try testing.expectEqual(placed[2].region.y, placed[4].region.y);
+
+    Harness.frame(&uploads, svg_atlas);
+    const again = try Harness.icon(svg_atlas, paths[2]);
+    var current: [32 * 32 * 4]u8 = undefined;
+    const original = saved[2][0 .. @as(usize, placed[2].region.width) *
+        placed[2].region.height * 4];
+    try testing.expectEqualSlices(
+        u8,
+        original,
+        Harness.copy(&svg_atlas.atlas, again.region, &current),
+    );
+    // The top shelf was in use when e arrived, so a kept its pixels.
+    const a = try Harness.icon(svg_atlas, paths[0]);
+    const original_a = saved[0][0 .. @as(usize, placed[0].region.width) *
+        placed[0].region.height * 4];
+    try testing.expectEqualSlices(
+        u8,
+        original_a,
+        Harness.copy(&svg_atlas.atlas, a.region, &current),
+    );
+}

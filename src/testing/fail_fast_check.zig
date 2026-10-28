@@ -17,6 +17,8 @@
 //! - `builder-canvas`: registers one canvas past `Builder.MAX_PENDING_CANVAS`.
 //! - `builder-layout`: renders text when the layout text arena cannot allocate.
 //! - `font-variant`: measures text in a font variant the face set did not load.
+//! - `atlas-item`: inserts one item larger than its fixed atlas.
+//! - `atlas-live-set`: fills an atlas with items used this frame and inserts one more.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -31,6 +33,8 @@ const Mode = enum {
     @"builder-canvas",
     @"builder-layout",
     @"font-variant",
+    @"atlas-item",
+    @"atlas-live-set",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -52,6 +56,8 @@ pub fn main(init: std.process.Init) !void {
         .@"builder-canvas" => builderCanvas(init.gpa),
         .@"builder-layout" => builderLayout(init.gpa, oom),
         .@"font-variant" => fontVariant(init.gpa, init.io),
+        .@"atlas-item" => atlasItem(init.gpa, init.io),
+        .@"atlas-live-set" => atlasLiveSet(init.gpa, init.io),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -147,7 +153,14 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
     const text_system = gpa.create(text.TextSystem) catch |err| {
         std.debug.panic("setup: TextSystem allocation failed: {s}", .{@errorName(err)});
     };
-    text_system.initInPlace(gpa, 1.0, io, &text.FontLimits.standard) catch |err| {
+    const uploads = gpa.create(text.AtlasUploads) catch |err| {
+        std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
+    };
+    uploads.initHeadless(gpa, io) catch |err| {
+        std.debug.panic("setup: AtlasUploads.initHeadless failed: {s}", .{@errorName(err)});
+    };
+    const atlas_options: text.AtlasOptions = .{ .size = 1024, .uploads = uploads };
+    text_system.initInPlace(gpa, 1.0, io, &text.FontLimits.standard, atlas_options) catch |err| {
         std.debug.panic("setup: TextSystem.initInPlace failed: {s}", .{@errorName(err)});
     };
     text_system.loadSystemFont(.sans_serif, 16) catch |err| {
@@ -156,6 +169,46 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
     _ = text_system.measureText("Total", .light) catch |err| {
         std.debug.panic("measureText failed instead of panicking: {s}", .{@errorName(err)});
     };
+}
+
+/// A 64² CPU-texture atlas of `kind` over its own journal, at frame 2.
+fn atlasHarness(gpa: std.mem.Allocator, io: std.Io, kind: gooey.text.AtlasKind) *gooey.text.Atlas {
+    const text = gooey.text;
+    const uploads = gpa.create(text.AtlasUploads) catch |err| {
+        std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
+    };
+    uploads.init(gpa, io, .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 }) catch |err| {
+        std.debug.panic("setup: AtlasUploads.init failed: {s}", .{@errorName(err)});
+    };
+    const atlas = gpa.create(text.Atlas) catch |err| {
+        std.debug.panic("setup: Atlas allocation failed: {s}", .{@errorName(err)});
+    };
+    atlas.init(gpa, .{ .kind = kind, .size = 64, .uploads = uploads }) catch |err| {
+        std.debug.panic("setup: Atlas.init failed: {s}", .{@errorName(err)});
+    };
+    const frame = uploads.beginFrame(1);
+    std.debug.assert(frame == 2);
+    return atlas;
+}
+
+fn atlasItem(gpa: std.mem.Allocator, io: std.Io) void {
+    // 63 px fits a 64 px atlas only without its 1 px border on each side.
+    const atlas = atlasHarness(gpa, io, .text);
+    var pixels: [63 * 4]u8 = @splat(1);
+    _ = atlas.insert(63, 4, &pixels);
+}
+
+fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
+    // Four 62×14 icons fill the four 16-row shelves exactly, all in frame 2;
+    // none may be evicted for a fifth in the same frame.
+    const atlas = atlasHarness(gpa, io, .svg);
+    var pixels: [62 * 14 * 4]u8 = @splat(1);
+    var index: u32 = 0;
+    while (index < 4) : (index += 1) {
+        std.debug.assert(atlas.insert(62, 14, &pixels) != null);
+    }
+    std.debug.assert(atlas.rows_active == 64);
+    _ = atlas.insert(62, 14, &pixels);
 }
 
 /// A `Builder` over a real layout engine, an empty scene, and a dispatch tree.

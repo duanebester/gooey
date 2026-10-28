@@ -14,7 +14,6 @@ const InstanceCounts = scene.InstanceCounts;
 const InstancePool = scene.InstancePool;
 const SceneLimits = scene.SceneLimits;
 const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
-const Atlas = @import("../../../text/mod.zig").Atlas;
 
 /// Metal shader for text rendering
 pub const text_shader_source =
@@ -154,8 +153,8 @@ pub const TextPipeline = struct {
     /// Glyphs claimed this frame; also the slot's write offset.
     instance_usage: InstanceCounts,
 
-    atlas_texture: ?objc.Object,
-    atlas_generation: u32,
+    /// The renderer's glyph atlas texture (`AtlasTextures`); not owned.
+    atlas_texture: objc.Object,
     sampler_state: objc.Object,
 
     const Self = @This();
@@ -165,6 +164,7 @@ pub const TextPipeline = struct {
         pixel_format: mtl.MTLPixelFormat,
         sample_count: u32,
         limits: *const ResourceLimits,
+        atlas_texture: objc.Object,
     ) !Self {
         const scene_limits = &limits.scene;
         assert(sample_count > 0);
@@ -204,8 +204,7 @@ pub const TextPipeline = struct {
             .frame_index = 0,
             .instance_budget = budget,
             .instance_usage = .{},
-            .atlas_texture = null,
-            .atlas_generation = 0,
+            .atlas_texture = atlas_texture,
             .sampler_state = sampler_state,
         };
     }
@@ -215,7 +214,6 @@ pub const TextPipeline = struct {
         self.unit_vertex_buffer.release();
         self.instance_buffers.release();
         self.sampler_state.release();
-        if (self.atlas_texture) |tex| tex.release();
         self.* = undefined;
     }
 
@@ -224,58 +222,6 @@ pub const TextPipeline = struct {
     pub fn nextFrame(self: *Self) void {
         self.frame_index = self.instance_buffers.nextIndex(self.frame_index);
         self.instance_usage = .{};
-    }
-
-    /// Update atlas texture if generation changed
-    pub fn updateAtlas(self: *Self, atlas: *const Atlas) !void {
-        if (self.atlas_generation == atlas.generation and self.atlas_texture != null) {
-            return; // Already up to date
-        }
-
-        // Release old texture
-        if (self.atlas_texture) |tex| {
-            tex.release();
-            self.atlas_texture = null;
-        }
-
-        // Create texture descriptor
-        const MTLTextureDescriptor = objc.getClass("MTLTextureDescriptor") orelse
-            return error.ClassNotFound;
-        const tex_desc = MTLTextureDescriptor.msgSend(objc.Object, "alloc", .{})
-            .msgSend(objc.Object, "init", .{});
-        defer tex_desc.release();
-
-        tex_desc.msgSend(void, "setTextureType:", .{@backingInt(mtl.MTLTextureType.type_2d)});
-        tex_desc.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.r8unorm)});
-        tex_desc.msgSend(void, "setWidth:", .{@as(c_ulong, atlas.size)});
-        tex_desc.msgSend(void, "setHeight:", .{@as(c_ulong, atlas.size)});
-        tex_desc.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(mtl.MTLTextureUsage.shader_read_only))});
-
-        const texture_ptr = self.device.msgSend(
-            ?*anyopaque,
-            "newTextureWithDescriptor:",
-            .{tex_desc.value},
-        ) orelse {
-            std.debug.print("Failed to create atlas texture\n", .{});
-            return error.TextureCreationFailed;
-        };
-        const texture = objc.Object.fromId(texture_ptr);
-
-        // Upload data
-        const region = mtl.MTLRegion{
-            .origin = .{ .x = 0, .y = 0, .z = 0 },
-            .size = .{ .width = atlas.size, .height = atlas.size, .depth = 1 },
-        };
-
-        texture.msgSend(void, "replaceRegion:mipmapLevel:withBytes:bytesPerRow:", .{
-            region,
-            @as(c_ulong, 0),
-            @as(*const anyopaque, @ptrCast(atlas.data.ptr)),
-            @as(c_ulong, atlas.size),
-        });
-
-        self.atlas_texture = texture;
-        self.atlas_generation = atlas.generation;
     }
 
     /// Render a batch of glyphs, appended to this frame's slot after the glyphs
@@ -288,13 +234,11 @@ pub const TextPipeline = struct {
     ) void {
         assert(glyphs.len > 0);
         assert(glyphs.len <= scene.MAX_GLYPHS_PER_FRAME);
-        // Claimed even when no atlas is bound yet, so the count matches the scene.
         const first = self.instance_usage.claim(&self.instance_budget, .{
             .pool = .glyphs,
             .requested = @intCast(glyphs.len),
             .frame = options.frame,
         });
-        if (self.atlas_texture == null) return;
 
         const idx = self.frame_index;
         const byte_offset = @as(c_ulong, first) * @sizeOf(scene.GlyphInstance);
@@ -327,7 +271,7 @@ pub const TextPipeline = struct {
 
         // Set fragment texture
         encoder.msgSend(void, "setFragmentTexture:atIndex:", .{
-            self.atlas_texture.?,
+            self.atlas_texture,
             @as(c_ulong, 0),
         });
         encoder.msgSend(void, "setFragmentSamplerState:atIndex:", .{

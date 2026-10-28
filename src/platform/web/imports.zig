@@ -218,11 +218,22 @@ pub extern "env" fn rasterizeGlyphSubpixel(
     out_advance: *f32,
 ) void;
 
-/// Create a texture from pixel data
-pub extern "env" fn createTexture(width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) u32;
+/// Create a zero-initialized atlas texture: R8 when `bytes_per_pixel` is 1,
+/// RGBA8 when it is 4. Called once per atlas at its budget size.
+pub extern "env" fn createAtlasTexture(width: u32, height: u32, bytes_per_pixel: u32) u32;
 
-/// Update an existing texture with new pixel data
-pub extern "env" fn updateTexture(handle: u32, width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) void;
+/// Write tightly packed rows of `width × bytes_per_pixel` bytes into the
+/// rectangle at `(x, y)` of an atlas texture.
+pub extern "env" fn writeAtlasRegion(
+    handle: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u32,
+    data_ptr: [*]const u8,
+    data_len: u32,
+) void;
 
 /// Create a sampler
 pub extern "env" fn createSampler() u32;
@@ -257,12 +268,6 @@ pub extern "env" fn rasterizeSvgPath(
     out_offset_x: *i16,
     out_offset_y: *i16,
 ) bool;
-
-/// Create an RGBA texture (for SVG atlas, unlike text atlas which is R8)
-pub extern "env" fn createRgbaTexture(width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) u32;
-
-/// Update an existing RGBA texture with new pixel data
-pub extern "env" fn updateRgbaTexture(handle: u32, width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) void;
 
 /// Create bind group for SVG pipeline (same layout as text but uses RGBA texture)
 pub extern "env" fn createSvgBindGroup(

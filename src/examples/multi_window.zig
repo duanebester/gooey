@@ -404,9 +404,14 @@ pub fn main() !void {
     // `app` lives in this frame, which outlives the event loop.
     const io = std.Io.Threaded.global_single_threaded.io();
     var app: MultiWindowApp = undefined;
-    // One `small` budget for every window: the faces are shared app-wide and
-    // each window's scenes and renderer are reserved from `.limits` below.
-    try app.initInPlace(allocator, .{ .font_size = 16.0, .limits = .small }, io);
+    // One `small` budget for every window: the faces and atlases are shared
+    // app-wide and each window's scenes and renderer are reserved from `.limits`.
+    try app.initInPlace(
+        allocator,
+        .{ .font_size = 16.0, .limits = .small },
+        &gooey.ResourceLimits.small.atlas,
+        io,
+    );
     defer app.deinit();
 
     // Create main window state with app reference

@@ -16,7 +16,7 @@
 //!
 //! ```zig
 //! var app: App = undefined;
-//! try app.initInPlace(allocator, .{ .font_size = 16.0 }, io);
+//! try app.initInPlace(allocator, .{ .font_size = 16.0 }, &AtlasLimits.standard, io);
 //! defer app.deinit();
 //!
 //! const main_handle = try app.openWindow(MainState, &main_state, mainRender, .{
@@ -35,6 +35,7 @@
 
 const std = @import("std");
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
+const AtlasLimits = @import("../core/limits.zig").AtlasLimits;
 const Allocator = std.mem.Allocator;
 
 // Platform
@@ -94,6 +95,11 @@ const InputEvent = input_mod.InputEvent;
 /// identity, so admitting a window the platform cannot register would fail
 /// deeper in the stack with a worse diagnostic.
 pub const MAX_WINDOWS: u32 = WindowRegistry.MAX_WINDOWS;
+
+comptime {
+    // Every window's renderer is a consumer of the shared atlas uploads.
+    std.debug.assert(MAX_WINDOWS <= @import("../text/atlas_uploads.zig").consumer_count_max);
+}
 
 /// Default window dimensions
 const DEFAULT_WIDTH: f64 = 800;
@@ -244,15 +250,20 @@ pub const App = struct {
     /// by-value `App.init` that returned a `Self` literal left those listeners
     /// pointing into a dead stack frame. That is also why no struct literal is
     /// built below — a literal would be a movable stack temporary.
+    /// `atlas_limits` sizes the atlases every window shares. Each window's
+    /// `AppWindowOptions.limits.atlas` must equal it, because every window's
+    /// renderer reserves textures of these sizes.
     pub fn initInPlace(
         self: *Self,
         allocator: Allocator,
         font_config: FontConfig,
+        atlas_limits: *const AtlasLimits,
         io: std.Io,
     ) !void {
         std.debug.assert(@intFromPtr(self) != 0);
         std.debug.assert(font_config.font_size > 0);
         std.debug.assert(font_config.font_size < 1000);
+        atlas_limits.assertValid();
 
         try self.platform.initInPlace(allocator);
         errdefer self.platform.deinit();
@@ -264,7 +275,7 @@ pub const App = struct {
             .font_name = font_config.font_name,
             .font_size = font_config.font_size,
             .limits = font_config.limits,
-        });
+        }, atlas_limits);
         errdefer self.resources.deinit();
 
         // May fail with `OutOfMemory` (it registers an owned `Keymap` in

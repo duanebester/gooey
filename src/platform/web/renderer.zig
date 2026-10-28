@@ -4,6 +4,7 @@
 //! of the Metal renderer on macOS.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const imports = @import("imports.zig");
 const unified = @import("../unified.zig");
 const interface_verify = @import("../../core/interface_verify.zig");
@@ -11,8 +12,6 @@ const scene_mod = @import("../../scene/mod.zig");
 const GradientUniforms = scene_mod.GradientUniforms;
 const batch_iter = @import("../../scene/batch_iterator.zig");
 const text_mod = @import("../../text/mod.zig");
-const svg_mod = @import("../../svg/mod.zig");
-const image_mod = @import("../../image/mod.zig");
 const custom_shader = @import("custom_shader.zig");
 const path_mesh_mod = @import("../../scene/path_mesh.zig");
 const path_instance_mod = @import("../../scene/path_instance.zig");
@@ -22,9 +21,6 @@ const point_cloud_mod = @import("../../scene/point_cloud.zig");
 
 const Scene = scene_mod.Scene;
 const SvgInstance = scene_mod.SvgInstance;
-const TextSystem = text_mod.TextSystem;
-const SvgAtlas = svg_mod.SvgAtlas;
-const ImageAtlas = image_mod.ImageAtlas;
 const ImageInstance = scene_mod.ImageInstance;
 const PostProcessState = custom_shader.PostProcessState;
 const PathInstance = path_instance_mod.PathInstance;
@@ -518,8 +514,6 @@ pub const WebRenderer = struct {
     glyph_buffer: u32 = 0,
     text_bind_group: u32 = 0,
     atlas_texture: u32 = 0,
-    atlas_generation: u32 = 0,
-    atlas_texture_size: u32 = 0,
     gpu_glyphs: [MAX_GLYPHS]GpuGlyph = undefined,
 
     // SVG rendering
@@ -527,8 +521,6 @@ pub const WebRenderer = struct {
     svg_buffer: u32 = 0,
     svg_bind_group: u32 = 0,
     svg_atlas_texture: u32 = 0,
-    svg_atlas_generation: u32 = 0,
-    svg_atlas_texture_size: u32 = 0,
     gpu_svgs: [MAX_SVGS]GpuSvgInstance = undefined,
 
     // Image rendering
@@ -536,8 +528,9 @@ pub const WebRenderer = struct {
     image_buffer: u32 = 0,
     image_bind_group: u32 = 0,
     image_atlas_texture: u32 = 0,
-    image_atlas_generation: u32 = 0,
-    image_atlas_texture_size: u32 = 0,
+    /// Atlas upload journal and this window's consumer key (`initAtlases`).
+    atlas_uploads: ?*text_mod.AtlasUploads = null,
+    atlas_key: usize = 0,
     gpu_images: [MAX_IMAGES]ImageInstance = undefined,
 
     // Path rendering (triangulated meshes)
@@ -648,17 +641,16 @@ pub const WebRenderer = struct {
         self.glyph_buffer = 0;
         self.text_bind_group = 0;
         self.atlas_texture = 0;
-        self.atlas_generation = 0;
         self.svg_pipeline = 0;
         self.svg_buffer = 0;
         self.svg_bind_group = 0;
         self.svg_atlas_texture = 0;
-        self.svg_atlas_generation = 0;
         self.image_pipeline = 0;
         self.image_buffer = 0;
         self.image_bind_group = 0;
         self.image_atlas_texture = 0;
-        self.image_atlas_generation = 0;
+        self.atlas_uploads = null;
+        self.atlas_key = 0;
         self.path_pipeline = 0;
         self.path_vertex_buffer = 0;
         self.path_index_buffer = 0;
@@ -856,18 +848,30 @@ pub const WebRenderer = struct {
     }
 
     // =========================================================================
-    // Text Atlas Management
+    // Atlas Textures
     // =========================================================================
 
-    pub fn uploadAtlas(self: *Self, text_system: *TextSystem) void {
-        const atlas = text_system.getAtlas();
-        const pixels = atlas.getData();
-        const size = atlas.size;
+    /// Create the three atlas textures once, at their budget sizes, and bind
+    /// them (memory-budget decisions 6 and 8). WebGPU zero-initializes new
+    /// textures, and pixels arrive only through `uploadAtlasRegions`, so the
+    /// textures are never recreated and no CPU copy of them exists.
+    pub fn initAtlases(self: *Self, options: AtlasOptions) void {
+        assert(options.key != 0);
+        assert(self.atlas_texture == 0);
+        assert(options.uploads.storage == .gpu_upload);
+        self.atlas_uploads = options.uploads;
+        self.atlas_key = options.key;
 
-        if (self.atlas_texture == 0) {
-            self.atlas_texture = imports.createTexture(size, size, pixels.ptr, @intCast(pixels.len));
-            self.atlas_texture_size = size;
-        }
+        self.atlas_texture = imports.createAtlasTexture(options.text_size, options.text_size, 1);
+        self.svg_atlas_texture = imports.createAtlasTexture(options.svg_size, options.svg_size, 4);
+        self.image_atlas_texture = imports.createAtlasTexture(
+            options.image_size,
+            options.image_size,
+            4,
+        );
+        assert(self.atlas_texture != 0);
+        assert(self.svg_atlas_texture != 0);
+        assert(self.image_atlas_texture != 0);
 
         self.text_bind_group = imports.createTextBindGroup(
             self.text_pipeline,
@@ -877,55 +881,6 @@ pub const WebRenderer = struct {
             self.atlas_texture,
             self.sampler,
         );
-    }
-
-    pub fn syncAtlas(self: *Self, text_system: *TextSystem) void {
-        const atlas = text_system.getAtlas();
-
-        // Only update if generation changed
-        if (atlas.generation == self.atlas_generation) return;
-
-        if (self.atlas_texture != 0) {
-            const pixels = atlas.getData();
-            const size = atlas.size;
-
-            // Check if atlas size changed - need to recreate texture
-            if (size != self.atlas_texture_size) {
-                imports.destroyTexture(self.atlas_texture);
-                self.atlas_texture = imports.createTexture(size, size, pixels.ptr, @intCast(pixels.len));
-                self.atlas_texture_size = size;
-
-                // Recreate bind group with new texture
-                self.text_bind_group = imports.createTextBindGroup(
-                    self.text_pipeline,
-                    0,
-                    self.glyph_buffer,
-                    self.uniform_buffer,
-                    self.atlas_texture,
-                    self.sampler,
-                );
-            } else {
-                imports.updateTexture(self.atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
-            }
-            self.atlas_generation = atlas.generation;
-        }
-    }
-
-    // =========================================================================
-    // SVG Atlas Management
-    // =========================================================================
-
-    pub fn uploadSvgAtlas(self: *Self, svg_atlas: *SvgAtlas) void {
-        const atlas = svg_atlas.getAtlas();
-        const pixels = atlas.getData();
-        const size = atlas.size;
-
-        if (self.svg_atlas_texture == 0) {
-            // SVG atlas uses RGBA format
-            self.svg_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-            self.svg_atlas_texture_size = size;
-        }
-
         self.svg_bind_group = imports.createSvgBindGroup(
             self.svg_pipeline,
             0,
@@ -934,61 +889,6 @@ pub const WebRenderer = struct {
             self.svg_atlas_texture,
             self.sampler,
         );
-
-        self.svg_atlas_generation = atlas.generation;
-    }
-
-    pub fn syncSvgAtlas(self: *Self, svg_atlas: *SvgAtlas) void {
-        const atlas = svg_atlas.getAtlas();
-        const generation = svg_atlas.getGeneration();
-
-        // Only update if generation changed
-        if (generation == self.svg_atlas_generation) return;
-
-        if (self.svg_atlas_texture != 0) {
-            const pixels = atlas.getData();
-            const size = atlas.size;
-
-            // Check if atlas size changed - need to recreate texture
-            if (size != self.svg_atlas_texture_size) {
-                imports.destroyTexture(self.svg_atlas_texture);
-                self.svg_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-                self.svg_atlas_texture_size = size;
-
-                // Recreate bind group with new texture
-                self.svg_bind_group = imports.createSvgBindGroup(
-                    self.svg_pipeline,
-                    0,
-                    self.svg_buffer,
-                    self.uniform_buffer,
-                    self.svg_atlas_texture,
-                    self.sampler,
-                );
-            } else {
-                imports.updateRgbaTexture(self.svg_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
-            }
-            self.svg_atlas_generation = generation;
-        } else {
-            // First time - create the texture
-            self.uploadSvgAtlas(svg_atlas);
-        }
-    }
-
-    // =========================================================================
-    // Image Atlas Management
-    // =========================================================================
-
-    pub fn uploadImageAtlas(self: *Self, image_atlas: *ImageAtlas) void {
-        const atlas = image_atlas.getAtlas();
-        const pixels = atlas.getData();
-        const size = atlas.size;
-
-        if (self.image_atlas_texture == 0) {
-            // Image atlas uses RGBA format
-            self.image_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-            self.image_atlas_texture_size = size;
-        }
-
         self.image_bind_group = imports.createImageBindGroup(
             self.image_pipeline,
             0,
@@ -997,43 +897,44 @@ pub const WebRenderer = struct {
             self.image_atlas_texture,
             self.sampler,
         );
-
-        self.image_atlas_generation = atlas.generation;
     }
 
-    pub fn syncImageAtlas(self: *Self, image_atlas: *ImageAtlas) void {
-        const atlas = image_atlas.getAtlas();
-        const generation = image_atlas.getGeneration();
+    pub const AtlasOptions = struct {
+        uploads: *text_mod.AtlasUploads,
+        /// Consumer key registered for this window (its platform window).
+        key: usize,
+        text_size: u32,
+        svg_size: u32,
+        image_size: u32,
+    };
 
-        // Only update if generation changed
-        if (generation == self.image_atlas_generation) return;
-
-        if (self.image_atlas_texture != 0) {
-            const pixels = atlas.getData();
-            const size = atlas.size;
-
-            // Check if atlas size changed - need to recreate texture
-            if (size != self.image_atlas_texture_size) {
-                imports.destroyTexture(self.image_atlas_texture);
-                self.image_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-                self.image_atlas_texture_size = size;
-
-                // Recreate bind group with new texture
-                self.image_bind_group = imports.createImageBindGroup(
-                    self.image_pipeline,
-                    0,
-                    self.image_buffer,
-                    self.uniform_buffer,
-                    self.image_atlas_texture,
-                    self.sampler,
-                );
-            } else {
-                imports.updateRgbaTexture(self.image_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
-            }
-            self.image_atlas_generation = generation;
-        } else {
-            // First time - create the texture
-            self.uploadImageAtlas(image_atlas);
+    /// Write every atlas record this renderer has not seen into its texture.
+    /// `queue.writeTexture` copies the bytes before returning, so the journal
+    /// is the only staging; at most `upload_bytes_frame_max` bytes per frame.
+    pub fn uploadAtlasRegions(self: *Self) void {
+        const uploads = self.atlas_uploads orelse return;
+        assert(self.atlas_key != 0);
+        const pending = uploads.consumeBegin(self.atlas_key);
+        defer uploads.consumeEnd(self.atlas_key);
+        for (pending.records) |record| {
+            const byte_count = record.byteCount();
+            assert(record.offset <= pending.bytes.len);
+            assert(byte_count <= pending.bytes.len - record.offset);
+            const texture = switch (record.kind) {
+                .text => self.atlas_texture,
+                .svg => self.svg_atlas_texture,
+                .image => self.image_atlas_texture,
+            };
+            imports.writeAtlasRegion(
+                texture,
+                record.x,
+                record.y,
+                record.width,
+                record.height,
+                record.kind.bytesPerPixel(),
+                pending.bytes[record.offset..].ptr,
+                byte_count,
+            );
         }
     }
 

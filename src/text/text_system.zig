@@ -16,7 +16,8 @@ const platform = @import("../platform/mod.zig");
 const render_stats = @import("../debug/render_stats.zig");
 const RenderStats = render_stats.RenderStats;
 
-const Atlas = @import("atlas.zig").Atlas;
+const atlas_mod = @import("atlas.zig");
+const Atlas = atlas_mod.Atlas;
 
 // =============================================================================
 // Shaped Run Cache - Fixed Capacity, Zero Runtime Allocation
@@ -656,6 +657,7 @@ pub const SystemFont = types.SystemFont;
 pub const FontVariant = types.FontVariant;
 pub const FontLimits = @import("../core/limits.zig").FontLimits;
 pub const CachedGlyph = cache_mod.CachedGlyph;
+pub const AtlasOptions = cache_mod.AtlasOptions;
 pub const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
 
 /// High-level text system
@@ -719,6 +721,7 @@ pub const TextSystem = struct {
         scale: f32,
         io: std.Io,
         font_limits: *const FontLimits,
+        atlas_options: cache_mod.AtlasOptions,
     ) !void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
@@ -744,7 +747,8 @@ pub const TextSystem = struct {
         self.io = io;
 
         // Initialize caches in-place to avoid large stack temporaries
-        try self.cache.initInPlace(allocator, scale);
+        try self.cache.initInPlace(allocator, scale, atlas_options);
+        errdefer self.cache.deinit();
         self.shape_cache.initInPlace();
         self.measure_cache.initInPlace();
         self.shape_cache_mutex = .init;
@@ -869,6 +873,15 @@ pub const TextSystem = struct {
         }
         self.faces_loaded = true;
         std.debug.assert(loaded_count == self.faces.len);
+    }
+
+    /// Drop every cached glyph; the atlas condemns their pixels. Called when a
+    /// renderer whose texture starts empty begins drawing from the atlas.
+    pub fn clearGlyphCache(self: *Self) void {
+        self.glyph_cache_mutex.lockUncancelable(self.io);
+        defer self.glyph_cache_mutex.unlock(self.io);
+        self.cache.clear();
+        std.debug.assert(self.cache.entry_count == 0);
     }
 
     /// Faces reuse their slot addresses across reloads, so the keyed pointers
@@ -1225,23 +1238,10 @@ pub const TextSystem = struct {
         return measureGlyphRun(run.glyphs, text, run.width, max_width, line_height);
     }
 
-    /// Get the glyph atlas for GPU upload
-    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
+    /// The glyph atlas. Its size, kind, and upload journal are fixed at init;
+    /// placement state is guarded by `glyph_cache_mutex`.
     pub inline fn getAtlas(self: *const Self) *const Atlas {
         return self.cache.getAtlas();
-    }
-
-    /// Thread-safe atlas access with user data for GPU upload.
-    /// Holds the glyph_cache_mutex while calling the callback.
-    pub fn withAtlasLockedCtx(
-        self: *Self,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
-    ) !void {
-        self.glyph_cache_mutex.lockUncancelable(self.io);
-        defer self.glyph_cache_mutex.unlock(self.io);
-        return callback(ctx, self.cache.getAtlas());
     }
 
     /// Batch resolve glyphs under a single glyph_cache_mutex lock.
@@ -1274,11 +1274,19 @@ pub const TextSystem = struct {
         self.glyph_cache_mutex.lockUncancelable(self.io);
         defer self.glyph_cache_mutex.unlock(self.io);
 
+        // Build the key's loop-invariant fields and read the frame clock once,
+        // under the lock that keeps `scale_factor` stable; see
+        // `GlyphCache.getOrRenderKey`.
+        const key_base = cache_mod.GlyphKey.init(face, 0, font_size, self.cache.scale_factor, 0, 0);
+        const frame = self.cache.frameCurrent();
         for (0..glyphs.len) |i| {
             if (glyphs[i].font_ref) |fallback_font| {
                 out_cached[i] = try self.cache.getOrRenderFallback(fallback_font, glyphs[i].glyph_id, font_size, subpixel_xs[i], 0);
             } else {
-                out_cached[i] = try self.cache.getOrRenderSubpixel(face, glyphs[i].glyph_id, font_size, subpixel_xs[i], 0);
+                var key = key_base;
+                key.glyph_id = glyphs[i].glyph_id;
+                key.subpixel_x = subpixel_xs[i];
+                out_cached[i] = try self.cache.getOrRenderKey(face, key, font_size, frame);
             }
         }
     }
@@ -1923,4 +1931,143 @@ test "MeasureCache never returns a stale width under eviction pressure" {
     fillTestText(&buf, insert_count - 1);
     const newest = ShapedRunKey.init(&buf, font_ptr, 16.0);
     try testing.expectEqual(@as(f32, @floatFromInt(insert_count - 1)), cache.get(newest).?);
+}
+
+test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
+    // Goal: a cached glyph never points at evicted pixels. Methodology: a 64²
+    // CPU atlas holds only a few 40 px glyphs. Render 'A' and save its pixels,
+    // then render one other glyph per frame until far more than the atlas
+    // holds have passed, so LRU eviction must have reclaimed 'A's shelf.
+    // Asking for 'A' again must return a region holding 'A's own pixels, not
+    // the pixels of whichever glyph took its place.
+    const testing = std.testing;
+    var uploads: atlas_mod.AtlasUploads = undefined;
+    try uploads.init(testing.allocator, testing.io, .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 64,
+    });
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+        .size = 64,
+        .uploads = &uploads,
+    });
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 40);
+
+    const letters = "ABCDEFGHKMNOPQRSUVWXYZ";
+    var run = try text_system.shapeText(letters, .regular, null);
+    defer run.deinit(testing.allocator);
+    try testing.expectEqual(letters.len, run.glyphs.len);
+
+    const atlas = text_system.getAtlas();
+    var saved: [64 * 64]u8 = undefined;
+    _ = uploads.beginFrame(consumer);
+    const first = try text_system.getGlyphSubpixel(run.glyphs[0].glyph_id, 40, 0, 0);
+    try testing.expect(first.region.width > 8);
+    const saved_len = copyRegion(atlas, first.region, &saved);
+
+    for (run.glyphs[1..]) |glyph| {
+        _ = uploads.beginFrame(consumer);
+        _ = uploads.consumeBegin(consumer);
+        uploads.consumeEnd(consumer);
+        _ = try text_system.getGlyphSubpixel(glyph.glyph_id, 40, 0, 0);
+    }
+    // Twenty-one glyphs of about 30² with borders do not fit four times over in
+    // 64²; the atlas must have evicted and reused space, including 'A's.
+    try testing.expect(atlas.rows_active <= 64);
+
+    _ = uploads.beginFrame(consumer);
+    const again = try text_system.getGlyphSubpixel(run.glyphs[0].glyph_id, 40, 0, 0);
+    var current: [64 * 64]u8 = undefined;
+    const current_len = copyRegion(atlas, again.region, &current);
+    try testing.expectEqual(first.region.width, again.region.width);
+    try testing.expectEqual(first.region.height, again.region.height);
+    try testing.expectEqualSlices(u8, saved[0..saved_len], current[0..current_len]);
+}
+
+test "glyph cache hits protect their shelf in every frame they are used" {
+    // Goal: a glyph used in the current frame is never evicted, although only
+    // its first hit in each frame stamps its shelf. Methodology: 'A' at 20 px
+    // and 'B' at 40 px take separate shelves in frame 1, and 'A' is hit there
+    // too, so a stamp that is merely non-zero would look current. In frame 2
+    // 'A' is hit twice in one batch, uploads are consumed, and every
+    // unprotected shelf is evicted. 'B's shelf (lowest y on a tie would be
+    // 'A's) must go; 'A' must keep its region and pixels.
+    const testing = std.testing;
+    var uploads: atlas_mod.AtlasUploads = undefined;
+    try uploads.init(testing.allocator, testing.io, .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 4096,
+    });
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+        .size = 128,
+        .uploads = &uploads,
+    });
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 40);
+
+    var run = try text_system.shapeText("AB", .regular, null);
+    defer run.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), run.glyphs.len);
+    const id_a = run.glyphs[0].glyph_id;
+    const id_b = run.glyphs[1].glyph_id;
+    const atlas = text_system.getAtlas();
+
+    _ = uploads.beginFrame(consumer);
+    const first = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    _ = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    const tall = try text_system.getGlyphSubpixel(id_b, 40, 0, 0);
+    try testing.expect(tall.region.y > first.region.y);
+    var saved: [128 * 128]u8 = undefined;
+    const saved_len = copyRegion(atlas, first.region, &saved);
+    const rows_frame_1 = atlas.rows_active;
+
+    _ = uploads.beginFrame(consumer);
+    const pair = [_]types.ShapedGlyph{ run.glyphs[0], run.glyphs[0] };
+    const subpixels = [_]u8{ 0, 0 };
+    var resolved: [2]CachedGlyph = undefined;
+    try text_system.resolveGlyphBatch(&pair, .regular, 20, &subpixels, &resolved);
+    try testing.expectEqual(first.region.y, resolved[1].region.y);
+    _ = uploads.consumeBegin(consumer);
+    uploads.consumeEnd(consumer);
+
+    // Each eviction frees one shelf, so the shelf count bounds the loop.
+    var evicted: u32 = 0;
+    while (evicted < atlas.shelves.len) : (evicted += 1) {
+        if (!text_system.cache.grayscale_atlas.evictOne()) break;
+    }
+    try testing.expectEqual(@as(u32, 1), evicted);
+    try testing.expect(atlas.rows_active < rows_frame_1);
+
+    const again = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    try testing.expectEqual(first.region.x, again.region.x);
+    try testing.expectEqual(first.region.y, again.region.y);
+    var current: [128 * 128]u8 = undefined;
+    const current_len = copyRegion(atlas, again.region, &current);
+    try testing.expectEqualSlices(u8, saved[0..saved_len], current[0..current_len]);
+}
+
+/// Copy a region of a CPU grayscale atlas into `out`, row by row (test helper).
+fn copyRegion(atlas: *const Atlas, region: atlas_mod.Region, out: []u8) usize {
+    std.debug.assert(atlas.format == .grayscale);
+    const data = atlas.getData();
+    var row: usize = 0;
+    while (row < region.height) : (row += 1) {
+        const source = (@as(usize, region.y) + row) * atlas.size + region.x;
+        @memcpy(out[row * region.width ..][0..region.width], data[source..][0..region.width]);
+    }
+    return @as(usize, region.width) * region.height;
 }

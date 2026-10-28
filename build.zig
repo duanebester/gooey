@@ -1469,6 +1469,11 @@ fn addFailFastChecks(
         .{ .mode = "font-variant", .stderr = "TextSystem: font variant 'light' (font_id 4) " ++
             "is not loaded; FontLimits.variants loads 6 faces: regular, medium, semibold, bold, " ++
             "italic, bold_italic." },
+        .{ .mode = "atlas-item", .stderr = "Atlas pool 'text' cannot hold one item: " ++
+            "capacity 64x64 px, requested 65x6 px (1 px border included), frame 2." },
+        .{ .mode = "atlas-live-set", .stderr = "Atlas pool 'svg' exhausted: capacity 64x64 px, " ++
+            "64 rows held by items in use since frame 2, requested 64x16 px " ++
+            "(1 px border included), frame 2." },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);

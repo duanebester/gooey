@@ -15,7 +15,6 @@ const InstancePool = scene.InstancePool;
 const SceneLimits = scene.SceneLimits;
 const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const ImageInstance = @import("../../../scene/image_instance.zig").ImageInstance;
-const Atlas = @import("../../../text/atlas.zig").Atlas;
 
 pub const image_shader_source =
     \\#include <metal_stdlib>
@@ -206,20 +205,14 @@ pub const ImagePipeline = struct {
     /// Images claimed this frame; also the slot's write offset.
     instance_usage: InstanceCounts,
 
-    // Atlas texture
-    atlas_texture: ?objc.Object,
-    atlas_generation: u32,
-
-    // Reference to current atlas
-    current_atlas: ?*const Atlas,
-
-    allocator: std.mem.Allocator,
+    /// The renderer's image atlas texture (`AtlasTextures`); not owned.
+    atlas_texture: objc.Object,
 
     pub fn init(
-        allocator: std.mem.Allocator,
         device: objc.Object,
         sample_count: u32,
         limits: *const ResourceLimits,
+        atlas_texture: objc.Object,
     ) !ImagePipeline {
         const scene_limits = &limits.scene;
         assert(sample_count > 0);
@@ -257,10 +250,7 @@ pub const ImagePipeline = struct {
             .frame_index = 0,
             .instance_budget = budget,
             .instance_usage = .{},
-            .atlas_texture = null,
-            .atlas_generation = 0,
-            .current_atlas = null,
-            .allocator = allocator,
+            .atlas_texture = atlas_texture,
         };
     }
 
@@ -268,7 +258,6 @@ pub const ImagePipeline = struct {
         self.instance_buffers.release();
         self.unit_vertex_buffer.release();
         self.pipeline_state.release();
-        if (self.atlas_texture) |tex| tex.release();
     }
 
     /// Advance to the next frame-in-flight slot and release the previous frame's
@@ -276,12 +265,6 @@ pub const ImagePipeline = struct {
     pub fn nextFrame(self: *ImagePipeline) void {
         self.frame_index = self.instance_buffers.nextIndex(self.frame_index);
         self.instance_usage = .{};
-    }
-
-    /// Bind this frame's atlas and upload it if its generation changed.
-    pub fn prepareFrame(self: *ImagePipeline, atlas: *const Atlas) void {
-        assert(atlas.size > 0);
-        self.updateAtlasTexture(atlas);
     }
 
     /// Render a batch of images, appended to this frame's slot after the images
@@ -294,13 +277,12 @@ pub const ImagePipeline = struct {
     ) void {
         assert(images.len > 0);
         assert(images.len <= scene.MAX_IMAGES_PER_FRAME);
-        // Claimed even when no atlas is bound yet, so the count matches the scene.
         const first = self.instance_usage.claim(&self.instance_budget, .{
             .pool = .images,
             .requested = @intCast(images.len),
             .frame = options.frame,
         });
-        const atlas_texture = self.atlas_texture orelse return;
+        const atlas_texture = self.atlas_texture;
 
         const buffer = self.instance_buffers.at(self.frame_index);
         const base = pipelines.frameBufferContents(ImageInstance, buffer);
@@ -333,60 +315,6 @@ pub const ImagePipeline = struct {
             @as(c_ulong, 6),
             @as(c_ulong, images.len),
         });
-    }
-
-    fn updateAtlasTexture(self: *ImagePipeline, atlas: *const Atlas) void {
-        self.current_atlas = atlas;
-
-        // Check if we need to update
-        if (self.atlas_texture != null and self.atlas_generation == atlas.generation) {
-            return;
-        }
-
-        const size = atlas.size;
-        const data = atlas.getData();
-
-        // Release old texture if size changed
-        if (self.atlas_texture) |old_tex| {
-            const old_width = old_tex.msgSend(c_ulong, "width", .{});
-            if (old_width != size) {
-                old_tex.release();
-                self.atlas_texture = null;
-            }
-        }
-
-        if (self.atlas_texture == null) {
-            // Create new texture (RGBA format for images)
-            const MTLTextureDescriptor = objc.getClass("MTLTextureDescriptor") orelse return;
-            const desc = MTLTextureDescriptor.msgSend(
-                objc.Object,
-                "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
-                .{
-                    @backingInt(mtl.MTLPixelFormat.rgba8unorm),
-                    @as(c_ulong, size),
-                    @as(c_ulong, size),
-                    @as(bool, false),
-                },
-            );
-            desc.msgSend(void, "setUsage:", .{@as(c_ulong, 0x0001)}); // MTLTextureUsageShaderRead
-            self.atlas_texture = self.device.msgSend(objc.Object, "newTextureWithDescriptor:", .{desc.value});
-        }
-
-        // Upload data
-        if (self.atlas_texture) |tex| {
-            const region = mtl.MTLRegion{
-                .origin = .{ .x = 0, .y = 0, .z = 0 },
-                .size = .{ .width = size, .height = size, .depth = 1 },
-            };
-            tex.msgSend(void, "replaceRegion:mipmapLevel:withBytes:bytesPerRow:", .{
-                region,
-                @as(c_ulong, 0),
-                @as(*const anyopaque, @ptrCast(data.ptr)),
-                @as(c_ulong, size * 4), // RGBA = 4 bytes per pixel
-            });
-        }
-
-        self.atlas_generation = atlas.generation;
     }
 };
 

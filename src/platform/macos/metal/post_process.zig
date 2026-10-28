@@ -14,6 +14,7 @@ const geometry = @import("../../../core/geometry.zig");
 const custom_shader = @import("custom_shader.zig");
 const text_pipeline = @import("text.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
+const AtlasTextures = @import("atlas_textures.zig").AtlasTextures;
 
 /// Render the complete post-process pipeline in a single command buffer.
 /// This is the main entry point - one command buffer rather than one per pass.
@@ -26,6 +27,7 @@ pub fn renderFullPipeline(
     unit_vertex_buffer: objc.Object,
     unified_pipeline: ?objc.Object,
     unified_ring: *scene_renderer.UnifiedPrimitiveRing,
+    atlas_textures: *AtlasTextures,
     tp: ?*text_pipeline.TextPipeline,
     sp: ?*svg_pipeline.SvgPipeline,
     pp: *custom_shader.PostProcessState,
@@ -37,6 +39,8 @@ pub fn renderFullPipeline(
 
     // Single command buffer for entire pipeline
     const command_buffer = command_queue.msgSend(objc.Object, "commandBuffer", .{});
+    // Atlas blits precede every pass that samples the atlases.
+    atlas_textures.encodeUploads(command_buffer);
 
     // === Pass 1: Render scene to front_texture (with MSAA resolve) ===
     {

@@ -11,7 +11,8 @@
 //! The text system is designed with platform abstraction in mind:
 //! - `types.zig` - Platform-agnostic data types
 //! - `font_face.zig` - FontFace interface (trait)
-//! - `atlas.zig` - Platform-agnostic texture atlas
+//! - `atlas.zig` - Fixed-size texture atlas with LRU shelf eviction
+//! - `atlas_uploads.zig` - Upload journal and frame clock shared by the atlases
 //! - `cache.zig` - Glyph cache using FontFace interface
 //! - `text_system.zig` - High-level unified API
 //! - `backends/` - Platform-specific implementations
@@ -20,7 +21,10 @@
 //!
 //! ```zig
 //! const text = try allocator.create(TextSystem);
-//! try text.initInPlace(allocator, 1.0, io, &FontLimits.standard);
+//! try text.initInPlace(allocator, 1.0, io, &FontLimits.standard, .{
+//!     .size = AtlasLimits.standard.text_size,
+//!     .uploads = uploads, // shared `AtlasUploads`
+//! });
 //! defer text.deinit();
 //!
 //! try text.loadSystemFont(.monospace, 14.0);
@@ -56,6 +60,11 @@ pub const FontFace = font_face.FontFace;
 // Infrastructure
 pub const Atlas = @import("atlas.zig").Atlas;
 pub const Region = @import("atlas.zig").Region;
+pub const AtlasUploads = @import("atlas_uploads.zig").AtlasUploads;
+pub const AtlasKind = @import("atlas_uploads.zig").AtlasKind;
+pub const AtlasStorage = @import("atlas_uploads.zig").AtlasStorage;
+pub const AtlasUpload = @import("atlas_uploads.zig").Upload;
+pub const AtlasOptions = @import("cache.zig").AtlasOptions;
 pub const cache = @import("cache.zig");
 
 // Text rendering utility
