@@ -3,6 +3,7 @@
 //! Routes to platform-specific image loading backends:
 //! - CoreGraphics (macOS) - ImageIO/CoreGraphics
 //! - libpng (Linux) - PNG decoding via libpng
+//! - WIC (Windows) - Windows Imaging Component
 //! - null (other platforms) - Returns UnsupportedSource
 //!
 //! Note: WASM image loading is async and handled separately in
@@ -24,6 +25,7 @@ const backend = if (is_wasm)
 else switch (builtin.os.tag) {
     .macos => @import("backends/coregraphics.zig"),
     .linux => @import("backends/libpng.zig"),
+    .windows => @import("backends/wic/decoder.zig"),
     else => @import("backends/null.zig"),
 };
 

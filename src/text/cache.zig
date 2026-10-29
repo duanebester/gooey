@@ -31,6 +31,7 @@ const SUBPIXEL_VARIANTS_Y = types.SUBPIXEL_VARIANTS_Y;
 
 const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
+const is_windows = platform.is_windows;
 
 /// Key for glyph lookup - includes subpixel variant
 pub const GlyphKey = struct {
@@ -616,6 +617,11 @@ pub const GlyphCache = struct {
         // Fallback fonts are only supported on native platforms
         // On web, the browser handles font fallback automatically
         if (is_wasm) {
+            return error.FallbackNotSupported;
+        }
+        // The DirectWrite shaper does not substitute fonts yet, so it never
+        // sets `font_ref` and no Windows glyph reaches this path.
+        if (is_windows) {
             return error.FallbackNotSupported;
         }
 

@@ -81,6 +81,9 @@ pub fn build(b: *std.Build) void {
     // Platform detection
     const is_native_macos = target.result.os.tag == .macos;
     const is_native_linux = target.result.os.tag == .linux;
+    const is_native_windows = target.result.os.tag == .windows;
+
+    if (is_native_windows) addWindowsBuilds(b, target, optimize);
 
     if (is_native_macos) {
         // Local, zero-dependency Objective-C runtime wrapper (a trimmed in-tree
@@ -1228,6 +1231,193 @@ pub fn build(b: *std.Build) void {
 
     addWasmBuilds(b);
     addLinuxTypecheck(b);
+    addWindowsTypecheck(b);
+}
+
+// =============================================================================
+// Windows Builds (Win32 + Vulkan)
+// =============================================================================
+
+/// Adds the Windows targets: the `gooey` and `gooey-components` modules, the
+/// `windows-demo` platform example, the `gooey.App` examples that run on
+/// Windows, and `test-windows` for the backend, DirectWrite, and WIC tests. See
+/// `docs/windows-port.md`.
+fn addWindowsBuilds(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+) void {
+    std.debug.assert(target.result.os.tag == .windows);
+    std.debug.assert(target.result.cpu.arch == .x86_64);
+
+    const vulkan_import_library = addVulkanImportLibrary(b);
+    const mod = b.addModule("gooey", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addObjectFile(vulkan_import_library);
+
+    const exe = b.addExecutable(.{
+        .name = "windows-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/windows_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "gooey", .module = mod }},
+        }),
+    });
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.addPassthruArgs();
+    run_cmd.step.dependOn(b.getInstallStep());
+    b.step("run-windows-demo", "Run the Windows platform demo").dependOn(&run_cmd.step);
+
+    const components_mod = b.addModule("gooey-components", .{
+        .root_source_file = b.path("components/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    components_mod.addImport("gooey", mod);
+
+    const examples = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "counter", .source = "src/examples/counter.zig" },
+        .{ .name = "showcase", .source = "src/examples/showcase.zig" },
+        .{ .name = "todo", .source = "src/examples/todo.zig" },
+        .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+        .{ .name = "layout", .source = "src/examples/layout.zig" },
+        .{ .name = "animation", .source = "src/examples/animation.zig" },
+        .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
+        .{ .name = "images", .source = "src/examples/images.zig" },
+        .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+        .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+    };
+    for (examples) |example| {
+        addWindowsExample(b, mod, components_mod, target, optimize, example.name, example.source);
+    }
+
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/windows_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.step("test-windows", "Run the Windows backend tests").dependOn(&b.addRunArtifact(tests).step);
+}
+
+/// Adds a `gooey.App` example as `gooey-<name>.exe` and its `run-<name>` step.
+fn addWindowsExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    name: []const u8,
+    source: []const u8,
+) void {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(target.result.os.tag == .windows);
+
+    const exe = b.addExecutable(.{
+        .name = b.fmt("gooey-{s}", .{name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
+            },
+        }),
+    });
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.setCwd(b.path(".")); // Run from the project root so assets/ can be found.
+    run_cmd.addPassthruArgs();
+    run_cmd.step.dependOn(b.getInstallStep());
+    b.step(b.fmt("run-{s}", .{name}), b.fmt("Run the {s} example", .{name}))
+        .dependOn(&run_cmd.step);
+}
+
+/// Generates `vulkan-1.lib`, the import library for the system Vulkan loader,
+/// from `src/platform/windows/vulkan-1.def` with the bundled `zig dlltool`.
+///
+/// This is what lets a Windows build link Vulkan with only the loader that
+/// GPU drivers install (`System32/vulkan-1.dll`), without the Vulkan SDK.
+fn addVulkanImportLibrary(b: *std.Build) std.Build.LazyPath {
+    const dlltool = b.addSystemCommand(&.{ b.graph.zig_exe, "dlltool", "-m", "i386:x86-64" });
+    dlltool.addArg("-d");
+    dlltool.addFileArg(b.path("src/platform/windows/vulkan-1.def"));
+    dlltool.addArg("-l");
+    return dlltool.addOutputFileArg("vulkan-1.lib");
+}
+
+/// Adds `typecheck-windows`: semantic analysis of the Windows backend from
+/// any host, with no linking, for the same reasons as `typecheck-linux`.
+/// Every Win32 and Vulkan binding is a plain `extern`, so analysis needs no
+/// SDK and no import library.
+fn addWindowsTypecheck(b: *std.Build) void {
+    const step = b.step(
+        "typecheck-windows",
+        "Semantically analyze the Windows backend from any host",
+    );
+    const windows_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+        .abi = .gnu,
+    });
+    std.debug.assert(windows_target.result.os.tag == .windows);
+
+    const gooey_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = windows_target,
+        .optimize = .debug,
+    });
+    const demo = b.addExecutable(.{
+        .name = "typecheck-windows-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/windows_demo.zig"),
+            .target = windows_target,
+            .optimize = .debug,
+            .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
+        }),
+    });
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/windows_tests.zig"),
+            .target = windows_target,
+            .optimize = .debug,
+        }),
+    });
+
+    // A `gooey.App` example reaches the runtime, text, and component layers
+    // that the platform demo does not.
+    const components_mod = b.createModule(.{
+        .root_source_file = b.path("components/src/root.zig"),
+        .target = windows_target,
+        .optimize = .debug,
+        .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
+    });
+    const app = b.addExecutable(.{
+        .name = "typecheck-windows-showcase",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/showcase.zig"),
+            .target = windows_target,
+            .optimize = .debug,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_mod },
+                .{ .name = "gooey-components", .module = components_mod },
+            },
+        }),
+    });
+
+    // Depend on the compile steps only; see `addLinuxTypecheckRoot`.
+    step.dependOn(&demo.step);
+    step.dependOn(&tests.step);
+    step.dependOn(&app.step);
 }
 
 // =============================================================================

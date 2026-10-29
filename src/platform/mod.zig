@@ -93,6 +93,8 @@ pub const is_linux = builtin.os.tag == .linux;
 /// by backend selection, which goes through `backend` below.
 pub const is_macos = builtin.os.tag == .macos;
 
+pub const is_windows = builtin.os.tag == .windows;
+
 pub const backend = if (is_wasm)
     @import("web/mod.zig")
 else switch (builtin.os.tag) {
@@ -103,6 +105,7 @@ else switch (builtin.os.tag) {
         .wayland_vulkan, .wayland_cpu => @import("linux/mod.zig"),
         .fbdev => @import("fbdev/mod.zig"),
     },
+    .windows => @import("windows/mod.zig"),
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
@@ -159,19 +162,17 @@ pub const PlatformWindow = backend.PlatformWindow;
 /// local of that frame. See `docs/platform_interface_design.md`, "Known gaps".
 pub const drive_model: DriveModel = backend.drive_model;
 
-/// DisplayLink for vsync (native only, not available on Linux)
-pub const DisplayLink = if (is_wasm)
-    void // Not applicable on web
-else if (is_linux)
-    void // Linux uses Wayland frame callbacks
+/// DisplayLink for vsync (macOS only)
+pub const DisplayLink = if (is_macos)
+    backend.DisplayLink
 else
-    backend.DisplayLink;
+    void; // Web, Linux, and Windows pace frames in their own loops.
 
 // =============================================================================
 // Platform-specific modules (for advanced usage)
 // =============================================================================
 
-pub const macos = if (!is_wasm and !is_linux) @import("macos/mod.zig") else struct {};
+pub const macos = if (is_macos) @import("macos/mod.zig") else struct {};
 
 // Short alias for `macos`, kept so existing callers compile.
 pub const mac = macos;

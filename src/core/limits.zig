@@ -897,9 +897,10 @@ pub const MAX_TEXT_LEN: u32 = 512;
 /// through `FontConfig.limits` to every text system it creates.
 ///
 /// Gooey-owned cost per face, allocated at init: FreeType 16,976 B (mostly a
-/// 4,096-entry advance cache), web 1,460 B, CoreText 56 B. The platform library
-/// keeps its own state per open face; FreeType, HarfBuzz, and Fontconfig used
-/// 24-38 KiB of heap per DejaVu face at init, measured with `mallinfo2`.
+/// 4,096-entry advance cache), web 1,460 B, DirectWrite 80 B, CoreText 56 B.
+/// The platform library keeps its own state per open face; FreeType, HarfBuzz,
+/// and Fontconfig used 24-38 KiB of heap per DejaVu face at init, measured
+/// with `mallinfo2`.
 /// Shaped-run, width, and glyph caches are shared by all faces, not per face.
 pub const FontLimits = struct {
     /// Distinct variants; must include `.regular`, which supplies line metrics.

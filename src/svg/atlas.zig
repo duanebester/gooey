@@ -17,6 +17,7 @@ const Region = @import("../text/atlas.zig").Region;
 const UVCoords = @import("../text/atlas.zig").UVCoords;
 const AtlasUploads = @import("../text/atlas.zig").AtlasUploads;
 const rasterizer = @import("rasterizer.zig");
+const limits = @import("../core/limits.zig");
 
 /// Cache key for SVG lookup
 pub const SvgKey = struct {
@@ -74,6 +75,10 @@ pub const SvgAtlas = struct {
     /// Reusable rasterization buffer, `svg_icon_size_max²` RGBA pixels.
     render_buffer: []u8,
     render_buffer_size: u32,
+    /// Arena for the rasterizer's parsed path, flattened polygons, edge
+    /// tables, and stroke buffer. Reserved at init and reset before every
+    /// rasterization, so a cache miss never reaches the heap (CLAUDE.md §2).
+    raster_scratch: []u8,
     /// Current scale factor
     scale_factor: f64,
     /// IO instance for mutex operations. Stored on the struct because lock
@@ -114,6 +119,30 @@ pub const SvgAtlas = struct {
     /// of stalling a single frame for 8–32ms of pure rasterization.
     const MAX_RASTERIZATIONS_PER_FRAME: u32 = 4;
 
+    /// Scratch for one rasterization: the stroke buffer is one RGBA icon, and
+    /// path geometry grows with the side because curves flatten to a tolerance
+    /// of half a device pixel. Measured over all 1,701 Lucide icons with fill
+    /// and stroke, the heaviest (`loader_pinwheel`) needs 18,876 B at 24 px,
+    /// 118,156 B at 96 px, and 445,532 B at 256 px: about 700 B per pixel of
+    /// side plus 10 KiB beyond the stroke buffer. These constants allow
+    /// roughly three times that geometry, 800 KiB at the 256 px ceiling.
+    const raster_scratch_bytes_per_side: u32 = 2_048;
+    const raster_scratch_bytes_base: u32 = 32 * 1024;
+
+    /// Scratch bytes reserved for icons of at most `icon_size_max` pixels.
+    pub fn rasterScratchBytes(icon_size_max: u32) u32 {
+        std.debug.assert(icon_size_max > 0);
+        std.debug.assert(icon_size_max <= limits.MAX_SVG_ICON_SIZE);
+        const stroke_buffer_bytes = icon_size_max * icon_size_max * 4;
+        const geometry_bytes = icon_size_max * raster_scratch_bytes_per_side;
+        return stroke_buffer_bytes + geometry_bytes + raster_scratch_bytes_base;
+    }
+
+    comptime {
+        // The ceiling's scratch must stay small next to the atlas textures.
+        std.debug.assert(rasterScratchBytes(limits.MAX_SVG_ICON_SIZE) <= 1024 * 1024);
+    }
+
     pub const Options = struct {
         /// `AtlasLimits.svg_size`.
         size: u32,
@@ -135,6 +164,9 @@ pub const SvgAtlas = struct {
         const buffer_size = options.icon_size_max * options.icon_size_max * 4;
         self.render_buffer = try allocator.alloc(u8, buffer_size);
         errdefer allocator.free(self.render_buffer);
+
+        self.raster_scratch = try allocator.alloc(u8, rasterScratchBytes(options.icon_size_max));
+        errdefer allocator.free(self.raster_scratch);
 
         try self.atlas.init(
             allocator,
@@ -159,6 +191,7 @@ pub const SvgAtlas = struct {
     pub fn deinit(self: *Self) void {
         self.cache.deinit();
         self.atlas.deinit();
+        self.allocator.free(self.raster_scratch);
         self.allocator.free(self.render_buffer);
     }
 
@@ -238,8 +271,9 @@ pub const SvgAtlas = struct {
         else
             0;
 
-        const rasterized = try rasterizer.rasterizeWithOptions(
-            self.allocator,
+        var scratch = std.heap.FixedBufferAllocator.init(self.raster_scratch);
+        const rasterized = rasterizer.rasterizeWithOptions(
+            scratch.allocator(),
             path_data,
             viewbox,
             device_size,
@@ -249,7 +283,23 @@ pub const SvgAtlas = struct {
                 .enabled = stroke_width != null and stroke_width.? > 0,
                 .width = device_stroke_width,
             },
-        );
+        ) catch |err| switch (err) {
+            // The arena is the only allocator the rasterizer sees, so this is
+            // a capacity-planning error, not a transient one.
+            error.OutOfMemory => std.debug.panic(
+                "SvgAtlas pool 'raster_scratch' exhausted: capacity {d} B, " ++
+                    "path {d} B at {d} px, frame {d}.",
+                .{
+                    self.raster_scratch.len,
+                    path_data.len,
+                    device_size,
+                    self.atlas.uploads.frameCurrent(),
+                },
+            ),
+            else => |e| return e,
+        };
+        std.debug.assert(scratch.end_index <= self.raster_scratch.len);
+        std.debug.assert(rasterized.width <= self.render_buffer_size);
 
         self.rasterizations_this_frame += 1;
 
@@ -322,6 +372,50 @@ pub const SvgAtlas = struct {
         return &self.atlas;
     }
 };
+
+test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within its scratch" {
+    // `loader_pinwheel` needs the most scratch of every Lucide icon. Filling
+    // and stroking it at `MAX_SVG_ICON_SIZE` must fit the reserved arena with
+    // the documented margin, and must produce coverage in both channels.
+    const testing = std.testing;
+    const loader_pinwheel = "<path d=\"M22 12a1 1 0 0 1-10 0 1 1 0 0 0-10 0\"/>" ++
+        "<path d=\"M7 20.7a1 1 0 1 1 5-8.7 1 1 0 1 0 5-8.6\"/>" ++
+        "<path d=\"M7 3.3a1 1 0 1 1 5 8.6 1 1 0 1 0 5 8.6\"/>" ++
+        "<circle cx=\"12\" cy=\"12\" r=\"10\"/>";
+    const side = limits.MAX_SVG_ICON_SIZE;
+    const scratch = try testing.allocator.alloc(u8, SvgAtlas.rasterScratchBytes(side));
+    defer testing.allocator.free(scratch);
+
+    const pixels = try testing.allocator.alloc(u8, side * side * 4);
+    defer testing.allocator.free(pixels);
+
+    var arena = std.heap.FixedBufferAllocator.init(scratch);
+    const rasterized = rasterizer.rasterizeWithOptions(
+        arena.allocator(),
+        loader_pinwheel,
+        24,
+        side,
+        pixels,
+        true,
+        .{ .enabled = true, .width = @as(f32, @floatFromInt(side)) / 12.0 },
+    ) catch |err| switch (err) {
+        // The null and canvas backends rasterize nothing natively.
+        error.PlatformNotSupported => return error.SkipZigTest,
+        else => |e| return e,
+    };
+    try testing.expectEqual(side, rasterized.width);
+    try testing.expect(arena.end_index * 3 <= scratch.len * 2);
+
+    var fill_max: u8 = 0;
+    var stroke_max: u8 = 0;
+    var index: usize = 0;
+    while (index < pixels.len) : (index += 4) {
+        fill_max = @max(fill_max, pixels[index]);
+        stroke_max = @max(stroke_max, pixels[index + 1]);
+    }
+    try testing.expectEqual(@as(u8, 255), fill_max);
+    try testing.expectEqual(@as(u8, 255), stroke_max);
+}
 
 test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
     // A 64² atlas holds four 30 px icons, two per 32-row shelf. Frames 2-5

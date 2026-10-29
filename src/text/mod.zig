@@ -86,6 +86,7 @@ const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;
 
 const is_linux = platform.is_linux;
+const is_windows = platform.is_windows;
 
 pub const backends = if (is_wasm)
     struct {
@@ -94,6 +95,10 @@ pub const backends = if (is_wasm)
 else if (is_linux)
     struct {
         pub const freetype = @import("backends/freetype/mod.zig");
+    }
+else if (is_windows)
+    struct {
+        pub const directwrite = @import("backends/directwrite/mod.zig");
     }
 else
     struct {

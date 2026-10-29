@@ -619,11 +619,14 @@ pub const MeasureCache = struct {
 
 const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
+const is_windows = platform.is_windows;
 
 const backend = if (is_wasm)
     @import("backends/web/mod.zig")
 else if (is_linux)
     @import("backends/freetype/mod.zig")
+else if (is_windows)
+    @import("backends/directwrite/mod.zig")
 else
     @import("backends/coretext/mod.zig");
 
@@ -632,6 +635,8 @@ const PlatformFace = if (is_wasm)
     backend.WebFontFace
 else if (is_linux)
     backend.FreeTypeFace
+else if (is_windows)
+    backend.DirectWriteFace
 else
     backend.CoreTextFace;
 
@@ -640,6 +645,8 @@ const PlatformShaper = if (is_wasm)
     backend.WebShaper
 else if (is_linux)
     backend.HarfBuzzShaper
+else if (is_windows)
+    backend.DirectWriteShaper
 else
     backend.CoreTextShaper;
 

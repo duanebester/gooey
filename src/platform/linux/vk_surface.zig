@@ -16,6 +16,7 @@ const contract = @import("../contract.zig");
 /// The presentation surface for the target OS, selected like `platform.backend`.
 pub const NativeSurface = switch (builtin.os.tag) {
     .linux => @import("vk_surface_wayland.zig").WaylandSurface,
+    .windows => @import("../windows/vk_surface_win32.zig").Win32Surface,
     else => @compileError("No Vulkan presentation surface for " ++ @tagName(builtin.os.tag)),
 };
 
