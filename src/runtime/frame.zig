@@ -108,7 +108,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.pending_scrolls.clearRetainingCapacity();
     builder.pending_canvas.clearRetainingCapacity();
     builder.pending_scrolls_by_layout_id.clearRetainingCapacity();
-    builder.active_scroll_drag_id = null;
     builder.hover_cursor = null;
 
     // Call user's render function with Cx — time tree construction separately
