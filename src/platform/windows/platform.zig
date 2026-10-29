@@ -1,8 +1,8 @@
 //! WindowsPlatform - Win32 host loop for the Windows backend.
 //!
-//! Owns the window class, the stock cursors, and the bounded window registry,
-//! and runs the message loop. Windows are rendered on the main thread with
-//! Vulkan (`window.zig`).
+//! Owns the window class, the stock cursors, the bounded window registry, and
+//! the clipboard's owner window, and runs the message loop. Windows are
+//! rendered on the main thread with Vulkan (`window.zig`).
 //!
 //! ## Loop turn
 //!
@@ -37,6 +37,7 @@ const std = @import("std");
 const interface_mod = @import("../interface.zig");
 const window_registry = @import("../window_registry.zig");
 const win32 = @import("win32.zig");
+const clipboard = @import("clipboard.zig");
 const windows_input = @import("input.zig");
 const windows_window = @import("window.zig");
 const WindowsWindow = windows_window.Window;
@@ -84,7 +85,7 @@ pub const WindowsPlatform = struct {
         .display_link = false,
         .can_close_window = true,
         .glass_effects = false,
-        .clipboard = false,
+        .clipboard = true,
         .file_dialogs = false,
         .ime = false,
         .custom_cursors = true,
@@ -136,6 +137,9 @@ pub const WindowsPlatform = struct {
             std.log.err("windows: RegisterClassExW failed (error {d})", .{win32.GetLastError()});
             return error.WindowClassRegistrationFailed;
         }
+        errdefer self.unregisterClass();
+
+        try clipboard.init(hinstance);
 
         assert(!self.running);
         assert(self.window_registry.count() == 0);
@@ -144,12 +148,18 @@ pub const WindowsPlatform = struct {
     pub fn deinit(self: *Self) void {
         assert(!self.running);
         assert(self.window_registry.count() == 0);
-        // Fails only while a window of the class exists, which the assertion
-        // above excludes; the class dies with the process regardless.
+        clipboard.deinit();
+        self.unregisterClass();
+        self.window_registry.deinit();
+    }
+
+    /// Fails only while a window of the class exists, which `deinit` asserts
+    /// against; the class dies with the process regardless.
+    fn unregisterClass(self: *const Self) void {
+        assert(self.window_registry.count() == 0);
         if (win32.UnregisterClassW(class_name, self.hinstance) == win32.FALSE) {
             std.log.warn("windows: UnregisterClassW failed (error {d})", .{win32.GetLastError()});
         }
-        self.window_registry.deinit();
     }
 
     /// The cursor for a shape. Falls back to the arrow when a stock cursor

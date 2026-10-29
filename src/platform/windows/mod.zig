@@ -14,6 +14,7 @@ const interface = @import("../interface.zig");
 pub const platform = @import("platform.zig");
 pub const window = @import("window.zig");
 pub const input = @import("input.zig");
+pub const clipboard = @import("clipboard.zig");
 pub const win32 = @import("win32.zig");
 pub const vk_surface_win32 = @import("vk_surface_win32.zig");
 

@@ -4,6 +4,30 @@
 //! shared between TextInput (single-line) and TextArea (multi-line).
 
 const std = @import("std");
+const builtin = @import("builtin");
+const Modifiers = @import("../input/events.zig").Modifiers;
+
+// =============================================================================
+// Edit Commands
+// =============================================================================
+
+/// Whether `mods` holds the modifier for select all, copy, cut, paste, undo,
+/// and redo. Windows uses Ctrl: the Win key is the shell's (Win+V opens
+/// clipboard history), and Windows reports it as `cmd`. Elsewhere it is
+/// `cmd`, as on macOS.
+pub fn hasEditCommandModifier(mods: Modifiers) bool {
+    if (builtin.os.tag == .windows) return mods.ctrl;
+    return mods.cmd;
+}
+
+test "edit commands use the platform's command modifier" {
+    const ctrl: Modifiers = .{ .ctrl = true };
+    const cmd: Modifiers = .{ .cmd = true };
+    const is_windows = builtin.os.tag == .windows;
+    try std.testing.expectEqual(is_windows, hasEditCommandModifier(ctrl));
+    try std.testing.expectEqual(!is_windows, hasEditCommandModifier(cmd));
+    try std.testing.expect(!hasEditCommandModifier(.{ .shift = true, .alt = true }));
+}
 
 // =============================================================================
 // UTF-8 Navigation

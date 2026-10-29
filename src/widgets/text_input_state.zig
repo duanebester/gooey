@@ -40,6 +40,8 @@ else if (builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
     @import("../platform/web/clipboard.zig")
 else if (builtin.os.tag == .linux)
     @import("../platform/linux_backend.zig").clipboard
+else if (builtin.os.tag == .windows)
+    @import("../platform/windows/clipboard.zig")
 else
     struct {
         pub fn getText(_: std.mem.Allocator) ?[]const u8 {
@@ -542,14 +544,14 @@ pub const TextInputState = struct {
                 }
             },
             .a => {
-                if (mods.cmd) {
+                if (common.hasEditCommandModifier(mods)) {
                     // Select all
                     self.selection_anchor = 0;
                     self.cursor_byte = self.buffer.items.len;
                 }
             },
             .c => {
-                if (mods.cmd and self.hasSelection()) {
+                if (common.hasEditCommandModifier(mods) and self.hasSelection()) {
                     // Copy selection to clipboard
                     const start = self.selectionStart();
                     const end = self.selectionEnd();
@@ -558,7 +560,7 @@ pub const TextInputState = struct {
                 }
             },
             .v => {
-                if (mods.cmd) {
+                if (common.hasEditCommandModifier(mods)) {
                     // Paste from clipboard
                     if (clipboard.getText(self.allocator)) |text| {
                         defer self.allocator.free(text);
@@ -567,7 +569,7 @@ pub const TextInputState = struct {
                 }
             },
             .x => {
-                if (mods.cmd and self.hasSelection()) {
+                if (common.hasEditCommandModifier(mods) and self.hasSelection()) {
                     // Cut = Copy + Delete
                     const start = self.selectionStart();
                     const end = self.selectionEnd();
@@ -577,10 +579,10 @@ pub const TextInputState = struct {
                 }
             },
             .z => {
-                if (mods.cmd and !mods.shift) {
+                if (common.hasEditCommandModifier(mods) and !mods.shift) {
                     // Undo
                     self.applyUndo();
-                } else if (mods.cmd and mods.shift) {
+                } else if (common.hasEditCommandModifier(mods) and mods.shift) {
                     // Redo
                     self.applyRedo();
                 }

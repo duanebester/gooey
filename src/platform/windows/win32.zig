@@ -35,6 +35,8 @@ pub const HCURSOR = *opaque {};
 pub const HICON = *opaque {};
 pub const HBRUSH = *opaque {};
 pub const HMENU = *opaque {};
+/// A movable global memory block, the only kind the clipboard accepts.
+pub const HGLOBAL = *opaque {};
 
 pub const WNDPROC = *const fn (HWND, u32, WPARAM, LPARAM) callconv(.winapi) LRESULT;
 
@@ -135,6 +137,17 @@ pub const SWP_NOACTIVATE: u32 = 0x0010;
 // `GetWindowLongPtrW` indices.
 pub const GWLP_USERDATA: i32 = -21;
 
+// `CreateWindowExW` parent that makes a message-only window: never shown,
+// never enumerated, and receiving no broadcasts. A pseudo-handle, -3.
+pub const HWND_MESSAGE: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
+
+// Clipboard formats.
+pub const CF_UNICODETEXT: u32 = 13;
+
+// `GlobalAlloc` flags.
+pub const GMEM_MOVEABLE: u32 = 0x0002;
+pub const GMEM_ZEROINIT: u32 = 0x0040;
+
 // `PeekMessageW` and `MsgWaitForMultipleObjectsEx`.
 pub const PM_REMOVE: u32 = 0x0001;
 pub const QS_ALLINPUT: u32 = 0x04FF;
@@ -215,6 +228,12 @@ pub const VK_RWIN: i32 = 0x5C;
 
 pub extern "kernel32" fn GetModuleHandleW(lpModuleName: ?LPCWSTR) callconv(.winapi) ?HINSTANCE;
 pub extern "kernel32" fn GetLastError() callconv(.winapi) u32;
+pub extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.winapi) void;
+pub extern "kernel32" fn GlobalAlloc(uFlags: u32, dwBytes: usize) callconv(.winapi) ?HGLOBAL;
+pub extern "kernel32" fn GlobalFree(hMem: HGLOBAL) callconv(.winapi) ?HGLOBAL;
+pub extern "kernel32" fn GlobalLock(hMem: HGLOBAL) callconv(.winapi) ?*anyopaque;
+pub extern "kernel32" fn GlobalUnlock(hMem: HGLOBAL) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GlobalSize(hMem: HGLOBAL) callconv(.winapi) usize;
 
 pub extern "user32" fn RegisterClassExW(lpwcx: *const WNDCLASSEXW) callconv(.winapi) ATOM;
 pub extern "user32" fn UnregisterClassW(
@@ -308,6 +327,12 @@ pub extern "user32" fn TrackMouseEvent(lpEventTrack: *TRACKMOUSEEVENT) callconv(
 pub extern "user32" fn SetCapture(hWnd: HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
 pub extern "user32" fn GetKeyState(nVirtKey: i32) callconv(.winapi) i16;
+
+pub extern "user32" fn OpenClipboard(hWndNewOwner: ?HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
+pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
+pub extern "user32" fn GetClipboardData(uFormat: u32) callconv(.winapi) ?HGLOBAL;
+pub extern "user32" fn SetClipboardData(uFormat: u32, hMem: HGLOBAL) callconv(.winapi) ?HGLOBAL;
 
 // =============================================================================
 // Parameter decoding

@@ -3,13 +3,14 @@
 ## Status
 
 `gooey.App` examples run on Windows: a Win32 window, DirectWrite text, WIC images, the
-software SVG rasterizer, and the shared Vulkan renderer. Verified on an Intel UHD 620 at
-150% scale. The [checklist](#win32-checklist) has what remains.
+software SVG rasterizer, the system clipboard, and the shared Vulkan renderer. Verified on
+an Intel UHD 620 at 150% scale. The [checklist](#win32-checklist) has what remains.
 
 ```sh
 zig build run-showcase       # a gooey.App example (others listed in addWindowsBuilds)
+zig build run-clipboard      # copy and paste through TextInput and TextArea
 zig build run-windows-demo   # the platform-layer demo, no text
-zig build test-windows       # backend, DirectWrite, WIC, and SVG atlas tests
+zig build test-windows       # backend, clipboard, DirectWrite, WIC, and SVG atlas tests
 zig build typecheck-windows  # analyze the backend and showcase for x86_64-windows
 ```
 
@@ -52,8 +53,9 @@ file dialogs, cursors, accessibility (UI Automation), and frame pacing on a rend
   entry.
 - **Shared edits.** Keep them to one `.windows` arm per dispatcher: `platform/mod.zig`,
   `linux/vk_surface.zig`, `text/mod.zig`, `text_system.zig`, `text/cache.zig`,
-  `image/loader.zig`, and the Windows functions in `build.zig`. Everything else lives in
-  `src/platform/windows/` or a backend directory.
+  `image/loader.zig`, the clipboard selection in `widgets/text_input_state.zig` and
+  `widgets/text_area_state.zig`, and the Windows functions in `build.zig`. Everything else
+  lives in `src/platform/windows/` or a backend directory.
 - **Boundary.** The Windows `mod.zig` pins `contract.verifyBackend(@This())`, so every
   contract change in 0.4.0 is a compile error naming the declaration.
 - **Separate PRs.** Moving the Vulkan renderer out of `src/platform/linux/` and renaming
@@ -116,10 +118,42 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   opens on a monitor whose DPI differs from the system DPI is resized once.
 - **Close.** `WM_CLOSE` runs the veto, records the close, and hides the window. The `HWND`
   is destroyed in `deinit`, never from inside its own dispatch.
-- **Unimplemented features** (IME, clipboard, file dialogs, dark title bars) are reported
-  as unavailable in `capabilities`, not faked.
+- **Unimplemented features** (IME, file dialogs, dark title bars) are reported as
+  unavailable in `capabilities`, not faked.
 - `platform/mod.zig` keys `DisplayLink` and the `macos` namespace on `is_macos`, not "not
   web and not Linux", which would select macOS code on Windows.
+
+### Clipboard
+
+`src/platform/windows/clipboard.zig` reads and writes `CF_UNICODETEXT` with the same
+`getText(allocator)` and `setText(text)` API as the Linux and macOS clipboards, so the text
+widgets select it with one `.windows` arm.
+
+- **Owner.** `SetClipboardData` fails without an owner window, so `WindowsPlatform` creates
+  a message-only `STATIC` window in `initInPlace` and destroys it in `deinit`. Copying does
+  not depend on an application window staying open.
+- **Line endings.** Copy expands each lone LF to CR LF; paste collapses CR LF to LF, so a
+  `TextArea` never receives CR and other applications see its line breaks. Unpaired
+  surrogates from other applications paste as U+FFFD.
+- **Bounds.** 64 KiB of UTF-8 in each direction, as on Linux and fbdev; longer text is
+  refused with a warning, never truncated. Paste scans at most 128 Ki units. A clipboard
+  held by another process gets 5 attempts 5 ms apart, so it stalls the UI thread for at
+  most 20 ms.
+- **Allocation.** The system clipboard takes ownership of a `GlobalAlloc` block the copying
+  process fills, so copy makes one allocation of at most 256 KiB, freed on every failure
+  path. Paste returns caller-allocated text because the shared `getText` contract does.
+  Both conflict with section 2 and belong to the phase 6 services redesign
+  (`docs/platform_interface_design.md`), which no backend has done yet.
+- **Shortcuts.** The text widgets read edit commands (select all, copy, cut, paste, undo,
+  redo) through `text_common.hasEditCommandModifier`: Ctrl on Windows, `cmd` elsewhere.
+  Windows reports the Win key as `cmd`, and the shell owns Win+V. Line and document
+  navigation still use `cmd`, the macOS mapping.
+- **Tests.** The `test-windows` clipboard tests use the real system clipboard and replace
+  its contents.
+- **Example.** `zig build run-clipboard` (`src/examples/clipboard.zig`, Windows build only)
+  shows a `TextInput` and a `TextArea` with byte, LF, and CR counts. Verified by hand:
+  copying between the two widgets works and the pasted text holds no CR. Not yet checked
+  by hand: CR LF text from Notepad, copying back into Notepad, and emoji.
 
 ### Text (DirectWrite)
 
@@ -237,6 +271,26 @@ rasterizer in place of resvg.
 - **Line width.** `SvgKey.init`'s signature in `src/svg/atlas.zig` is 121 columns
   (section 25). It predates the port; a trailing comma lets `zig fmt` wrap it.
 
+## Framework gaps seen from Windows
+
+These are not Windows defects and need no backend work; they are recorded here because
+they surface while testing the port.
+
+- **Mouse text selection.** Not implemented on any platform. A click in a `TextInput` or
+  `TextArea` only focuses it (`handleTextAreaClick` in `src/runtime/input.zig`), drags
+  reach only scrollbars and drag-and-drop (`handleMouseMoveEvent` discards `is_drag`), and
+  no text API maps a point to a byte offset. The Windows translator already reports
+  `mouse_down` with a click count and `mouse_dragged` while a button is held, so the
+  feature needs only shared work: point to byte offset from shaped advances, caret
+  placement and Shift+click, drag-extend from an anchor, and double- and triple-click
+  word and line selection. `src/runtime/input.zig` is rewritten in phases 3–6, so decide
+  whether it lands before or as part of that rewrite.
+- **Linux edit shortcuts.** `linux/input.zig` maps Super to `cmd`, and the text widgets'
+  edit commands use `cmd` outside Windows, so Linux text fields appear to copy with
+  Super+C rather than Ctrl+C. Inferred from the code, not tried on Linux.
+- **Build output.** `zig build test-windows` prints `failed command: ...test.exe` whenever
+  a test logs a warning, even though the summary reports every test passing.
+
 ## Win32 checklist
 
 Each item must honour `ResourceLimits` and the static-allocation rule (CLAUDE.md section 2):
@@ -251,14 +305,16 @@ the event loop.
 - [x] `build.zig` Windows targets and `typecheck-windows`.
 - [x] Text (DirectWrite: discovery, shaping, grayscale rasterization).
 - [x] Image decoding (WIC).
-- [ ] CI: run `typecheck-windows` on Linux CI, modelled on `typecheck-linux`.
+- [ ] CI: run `typecheck-windows` next to `typecheck-linux`, which runs in the macOS job
+      of `.github/workflows/ci.yml`.
 - [ ] Wire `root.zig`'s test block up for Windows; `test-windows` covers only the
       backends.
 - [x] SVG rasterization (software rasterizer, fixed scratch arena).
 - [ ] Text: font fallback (`IDWriteFontFallback::MapCharacters` can reuse the analysis
       source), bidi, color glyphs.
 - [ ] IME (`WM_IME_*`, caret rect from the read-only query).
-- [ ] Clipboard.
+- [x] Clipboard (`CF_UNICODETEXT`, Ctrl edit shortcuts in the text widgets,
+      `run-clipboard`).
 - [ ] File dialogs.
 - [ ] Accessibility through UI Automation.
 - [ ] Frame pacing on a render thread.
