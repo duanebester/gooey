@@ -2,7 +2,8 @@
 //!
 //! Takes a gooey Scene and renders it using Vulkan directly.
 //! Delegates to one module per subsystem:
-//!   - `vk_instance`    : Instance, device, surface, debug messenger
+//!   - `vk_instance`    : Instance, device, debug messenger
+//!   - `vk_surface`     : Window-system surface and its swapchain teardown
 //!   - `vk_swapchain`   : Swapchain lifecycle, render pass, framebuffers
 //!   - `vk_buffers`     : Buffer, command pool, command buffer, sync object creation
 //!   - `vk_descriptors` : Descriptor layouts, pool, sets, sampler, updates
@@ -12,7 +13,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
-const wayland = @import("wayland.zig");
 const interface_verify = @import("../../core/interface_verify.zig");
 const unified = @import("../unified.zig");
 const scene_mod = @import("../../scene/mod.zig");
@@ -28,6 +28,7 @@ const vk_instance = @import("vk_instance.zig");
 const vk_swapchain = @import("vk_swapchain.zig");
 const vk_buffers = @import("vk_buffers.zig");
 const vk_descriptors = @import("vk_descriptors.zig");
+const NativeSurface = @import("vk_surface.zig").NativeSurface;
 
 const SvgInstance = svg_instance_mod.SvgInstance;
 const ImageInstance = image_instance_mod.ImageInstance;
@@ -49,6 +50,20 @@ const Allocator = std.mem.Allocator;
 
 /// Enable Vulkan validation layers in debug builds.
 pub const enable_validation_layers = vk_instance.enable_validation_layers;
+
+/// Report custom shaders the Vulkan renderer cannot run. Custom shaders ship
+/// as MSL (Metal) or WGSL (WebGPU) only, so a window that asks for them draws
+/// without them; the window warns once at init, naming the count and the
+/// platform, instead of dropping them silently.
+pub fn warnCustomShadersUnsupported(shader_count: usize, platform_name: []const u8) void {
+    assert(platform_name.len > 0);
+    if (shader_count == 0) return;
+    std.log.warn(
+        "Vulkan ({s}): {d} custom shader(s) requested, but custom shaders are not " ++
+            "supported on the Vulkan backend yet; drawing without them",
+        .{ platform_name, shader_count },
+    );
+}
 
 // =============================================================================
 // Re-exported types and constants from vk_types.zig
@@ -134,8 +149,9 @@ pub const VulkanRenderer = struct {
 
     allocator: Allocator,
 
-    // Wayland display reference (for roundtrip during cleanup)
-    wl_display: ?*wayland.Display = null,
+    // Window-system objects the surface was created from; consulted again
+    // around swapchain destruction.
+    native_surface: ?NativeSurface = null,
 
     // Core Vulkan objects
     instance: vk.Instance = null,
@@ -201,7 +217,7 @@ pub const VulkanRenderer = struct {
     // reads frame N. Declared at the ceiling; only `frame_count` are created.
     frames: [frame_count_max]FrameResources = @splat(.{}),
     // The window budget's `ResourceLimits.frame.in_flight_count`, set once in
-    // `initWithWaylandSurface` before any per-frame resource is created.
+    // `initWithNativeSurface` before any per-frame resource is created.
     frame_count: u32 = 0,
 
     // Staging buffer for atlas uploads: one lane of `staging_lane_bytes`
@@ -235,7 +251,7 @@ pub const VulkanRenderer = struct {
     allocation_bytes_max: vk.DeviceSize = 0,
 
     // Per-frame instance buffer capacities, from the window's `ResourceLimits.scene`.
-    // Set once in `initWithWaylandSurface` before any buffer is created; read-only
+    // Set once in `initWithNativeSurface` before any buffer is created; read-only
     // afterwards (buffers never grow). Meaningful only while `initialized`.
     instance_capacity: InstanceCapacity = undefined,
 
@@ -338,33 +354,13 @@ pub const VulkanRenderer = struct {
             _ = vk.vkDeviceWaitIdle(dev);
         }
 
-        // Flush pending Wayland requests before destroying swapchain
-        if (self.wl_display) |display| {
-            _ = wayland.wl_display_flush(display);
-            _ = wayland.wl_display_roundtrip(display);
-        }
+        if (self.native_surface) |native| native.swapchainDestroyBegin();
 
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
         if (self.swapchain) |sc| vk.vkDestroySwapchainKHR(self.device, sc, null);
         self.swapchain = null;
 
-        // Roundtrip after destroying swapchain to process compositor release events
-        //
-        // NOTE: A "queue destroyed while proxies still attached" warning may still appear.
-        // This is a KNOWN LIMITATION of Mesa's Vulkan Wayland WSI implementation:
-        // - Mesa creates internal wl_buffer objects for each swapchain image
-        // - When the swapchain is destroyed, Mesa destroys these wl_buffers
-        // - The compositor may still hold references, sending wl_buffer.release later
-        // - If the app exits before processing release events, the warning appears
-        //
-        // This warning is HARMLESS - the compositor cleans up properly regardless.
-        // It's a libwayland-client debugging message, not an actual resource leak.
-        // The roundtrips here minimize but cannot fully eliminate this race condition.
-        if (self.wl_display) |display| {
-            _ = wayland.wl_display_flush(display);
-            _ = wayland.wl_display_roundtrip(display);
-            _ = wayland.wl_display_roundtrip(display);
-        }
+        if (self.native_surface) |native| native.swapchainDestroyEnd();
     }
 
     fn destroyFrameResources(self: *Self) void {
@@ -452,16 +448,16 @@ pub const VulkanRenderer = struct {
     // Initialization
     // =========================================================================
 
-    pub fn initWithWaylandSurface(
+    pub fn initWithNativeSurface(
         self: *Self,
-        wl_display: *anyopaque,
-        wl_surface: *anyopaque,
+        native_surface: NativeSurface,
         width: u32,
         height: u32,
         scale_factor: f64,
         limits: *const ResourceLimits,
     ) !void {
         std.debug.assert(!self.initialized);
+        std.debug.assert(self.native_surface == null);
         std.debug.assert(limits.check() == null);
 
         // Every per-frame buffer and the staging lanes are sized from the
@@ -473,14 +469,16 @@ pub const VulkanRenderer = struct {
         assert(self.frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
         assert(self.frame_count <= frame_count_max);
 
-        // Store Wayland display reference for cleanup roundtrips
-        self.wl_display = @ptrCast(wl_display);
+        // Registered first so it runs last: swapchain errdefers below still
+        // bracket their teardown with it.
+        self.native_surface = native_surface;
+        errdefer self.native_surface = null;
 
         // Store scale factor
         self.scale_factor = scale_factor;
 
         // ---- Instance + debug messenger (vk_instance) ----
-        const inst = try vk_instance.createInstance();
+        const inst = try vk_instance.createInstance(NativeSurface.instance_extension_name);
         self.instance = inst.instance;
         self.debug_messenger = inst.debug_messenger;
         errdefer {
@@ -489,8 +487,8 @@ pub const VulkanRenderer = struct {
             self.instance = null;
         }
 
-        // ---- Wayland surface (vk_instance) ----
-        self.surface = try vk_instance.createWaylandSurface(self.instance, wl_display, wl_surface);
+        // ---- Presentation surface (vk_surface) ----
+        self.surface = try native_surface.create(self.instance);
         errdefer {
             if (self.surface) |surf| vk.vkDestroySurfaceKHR(self.instance, surf, null);
             self.surface = null;
@@ -1213,15 +1211,21 @@ pub const VulkanRenderer = struct {
         // Wait only for THIS frame's fence — GPU is done reading this
         // frame's staging lane and command buffer.
         _ = vk.vkWaitForFences(self.device, 1, (&frame.fence)[0..1], vk.TRUE, std.math.maxInt(u64));
-        _ = vk.vkResetFences(self.device, 1, (&frame.fence)[0..1]);
 
-        // Acquire swapchain image
+        // Acquire swapchain image. The fence is reset only once this frame is
+        // certain to be submitted: a skipped frame that left it unsignalled
+        // would make the next wait on it (here, in `resize`, or before a
+        // recreate) block forever.
         var image_index: u32 = 0;
         switch (self.acquireNextImage(frame, &image_index)) {
             .ok => {},
-            .out_of_date => return,
-            .fatal => unreachable,
+            .out_of_date => {
+                assert(self.swapchain_needs_recreate);
+                return;
+            },
         }
+        assert(image_index < self.swapchain_image_count);
+        _ = vk.vkResetFences(self.device, 1, (&frame.fence)[0..1]);
 
         // Record command buffer: atlas transfers → render pass → draw
         const cmd = frame.command_buffer;
@@ -1246,10 +1250,13 @@ pub const VulkanRenderer = struct {
         std.debug.assert(scene_limits.image_count_frame_max <= capacity.image_count_max);
     }
 
-    const AcquireResult = enum { ok, out_of_date, fatal };
+    const AcquireResult = enum { ok, out_of_date };
 
     /// Acquire the next swapchain image. Returns `.out_of_date` if the
-    /// swapchain needs recreation (caller should skip this frame).
+    /// swapchain needs recreation (caller should skip this frame, leaving the
+    /// frame fence signalled). A lost device or surface, or any other error,
+    /// fails fast with the result code: recovering needs a new device or
+    /// surface, which the renderer does not support.
     fn acquireNextImage(self: *Self, frame: *const FrameResources, image_index: *u32) AcquireResult {
         const result = vk.vkAcquireNextImageKHR(
             self.device,
@@ -1270,14 +1277,27 @@ pub const VulkanRenderer = struct {
                 return .out_of_date;
             },
             vk.TIMEOUT, vk.NOT_READY => {
+                // Unreachable with an infinite timeout, but harmless: no image
+                // was acquired and the semaphore is unsignalled, so retry.
                 std.debug.print("vkAcquireNextImageKHR returned unexpected timeout/not_ready\n", .{});
+                self.swapchain_needs_recreate = true;
                 return .out_of_date;
             },
-            else => {
-                std.debug.print("vkAcquireNextImageKHR failed: {}\n", .{result});
-                return .fatal;
-            },
+            else => failFast("vkAcquireNextImageKHR", result),
         }
+    }
+
+    /// Fail fast on a Vulkan error the renderer cannot recover from, naming
+    /// the call and the result. Unlike `unreachable`, this stops every build
+    /// mode, including ReleaseFast.
+    fn failFast(call: []const u8, result: vk.Result) noreturn {
+        assert(call.len > 0);
+        assert(!vk.succeeded(result));
+        std.debug.panic("Vulkan: {s} failed with {s} ({d}); the renderer cannot recover", .{
+            call,
+            vk.resultName(result),
+            result,
+        });
     }
 
     /// Record the full frame command buffer: atlas transfers + render pass + scene draw.
@@ -1385,7 +1405,13 @@ pub const VulkanRenderer = struct {
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = (&frame.render_finished_semaphore)[0..1],
         };
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, (&submit_info)[0..1], frame.fence);
+        const submit_result = vk.vkQueueSubmit(
+            self.graphics_queue,
+            1,
+            (&submit_info)[0..1],
+            frame.fence,
+        );
+        if (submit_result != vk.SUCCESS) failFast("vkQueueSubmit", submit_result);
 
         const present_info = vk.PresentInfoKHR{
             .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -1403,10 +1429,7 @@ pub const VulkanRenderer = struct {
             vk.SUBOPTIMAL_KHR, vk.ERROR_OUT_OF_DATE_KHR => {
                 self.swapchain_needs_recreate = true;
             },
-            else => {
-                std.debug.print("vkQueuePresentKHR failed: {}\n", .{present_result});
-                unreachable;
-            },
+            else => failFast("vkQueuePresentKHR", present_result),
         }
     }
 };

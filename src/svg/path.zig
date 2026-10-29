@@ -9,6 +9,9 @@
 
 const std = @import("std");
 const vec2_mod = @import("../geometry/vec2.zig");
+const limits = @import("../core/limits.zig");
+
+const assert = std.debug.assert;
 
 /// Re-exported here so existing call sites
 /// (`svg_mod.Vec2`, `svg.flattenPath(... Vec2 ...)`) keep compiling
@@ -1345,8 +1348,175 @@ pub fn flattenPath(
 }
 
 // ============================================================================
+// Bounded parsing and flattening
+// ============================================================================
+
+/// Per-icon bounds a rasterizer works within, from `ResourceLimits.atlas`.
+pub const RasterBudget = struct {
+    /// `AtlasLimits.svg_path_bytes_max`: bytes of one icon's path data.
+    path_bytes_max: u32,
+    /// `AtlasLimits.svg_path_vertex_count_max`: flattened vertices per icon.
+    vertex_count_max: u32,
+
+    /// Commands and numbers reserved per byte of path data. Every command
+    /// letter and number takes at least one byte of source, and the shape
+    /// elements expand to fewer than these: a rounded `<rect>` of 35 bytes
+    /// is 13 commands and 38 numbers.
+    pub const commands_per_byte: u32 = 1;
+    pub const numbers_per_byte: u32 = 2;
+
+    /// For callers of the convenience `rasterize`, which allocate from their
+    /// own allocator rather than an atlas's scratch.
+    pub const ceiling: RasterBudget = .{
+        .path_bytes_max = limits.MAX_SVG_PATH_BYTES,
+        .vertex_count_max = limits.MAX_SVG_PATH_VERTEX_COUNT,
+    };
+
+    /// Scratch bytes `parseBounded` reserves for `path_bytes` of path data.
+    pub fn parseBytes(path_bytes: u32) u32 {
+        assert(path_bytes <= limits.MAX_SVG_PATH_BYTES);
+        const command_bytes = path_bytes * commands_per_byte * @sizeOf(PathCommand);
+        return command_bytes + path_bytes * numbers_per_byte * @sizeOf(f32);
+    }
+
+    /// Scratch bytes `flattenBounded` reserves: the points, and at most one
+    /// polygon per two points (a polygon needs two).
+    pub fn flattenBytes(self: RasterBudget) u32 {
+        assert(self.vertex_count_max > 0);
+        assert(self.vertex_count_max <= limits.MAX_SVG_PATH_VERTEX_COUNT);
+        const polygon_count_max = @divFloor(self.vertex_count_max, 2);
+        return self.vertex_count_max * @sizeOf(Vec2) + polygon_count_max * @sizeOf(IndexSlice);
+    }
+};
+
+/// Growth allocator for lists whose capacity was reserved from another
+/// allocator: every request to allocate, resize or remap fails, so a full list
+/// returns OutOfMemory instead of growing. `std.mem.Allocator.failing` cannot
+/// serve here because its remap is unreachable, and a full list remaps first.
+/// It never succeeds in allocating, so it never has anything to free.
+const reserved_only: std.mem.Allocator = .{
+    .ptr = undefined,
+    .vtable = &.{
+        .alloc = std.mem.Allocator.noAlloc,
+        .resize = std.mem.Allocator.noResize,
+        .remap = std.mem.Allocator.noRemap,
+        .free = std.mem.Allocator.noFree,
+    },
+};
+
+pub const BoundedError = error{
+    /// The path parsed to no commands, or did not parse.
+    EmptyPath,
+    /// The path needs more commands, numbers, or vertices than reserved.
+    PathTooComplex,
+};
+
+/// Parse `source` into `path` without growing it past the capacity reserved
+/// here from `scratch`, so parsing allocates exactly `parseBytes` and a
+/// malformed or hostile path cannot exhaust the scratch. `path` must be empty.
+pub fn parseBounded(
+    scratch: std.mem.Allocator,
+    path: *SvgPath,
+    source: []const u8,
+) BoundedError!void {
+    assert(source.len <= limits.MAX_SVG_PATH_BYTES);
+    assert(path.commands.capacity == 0);
+    assert(path.data.capacity == 0);
+    const length: u32 = @intCast(source.len);
+    const command_count_max = length * RasterBudget.commands_per_byte;
+    const number_count_max = length * RasterBudget.numbers_per_byte;
+    path.commands.ensureTotalCapacityPrecise(scratch, command_count_max) catch
+        return error.PathTooComplex;
+    path.data.ensureTotalCapacityPrecise(scratch, number_count_max) catch
+        return error.PathTooComplex;
+
+    // The parser appends through `reserved_only`, so a path past its
+    // reservation stops here instead of growing into the scratch.
+    var parser = SvgElementParser.init(reserved_only);
+    parser.parse(path, source) catch |err| {
+        if (err == error.OutOfMemory) return error.PathTooComplex;
+        return error.EmptyPath;
+    };
+    if (path.commands.items.len == 0) return error.EmptyPath;
+    assert(path.commands.items.len <= command_count_max);
+    assert(path.data.items.len <= number_count_max);
+}
+
+/// Flatten `path` into `points` and `polygons`, both empty, reserving their
+/// capacity from `scratch` for `budget.vertex_count_max` vertices and never
+/// growing past it. Curves subdivide to `tolerance`, so a path's vertex count
+/// grows with the icon's device size.
+pub fn flattenBounded(
+    scratch: std.mem.Allocator,
+    path: *const SvgPath,
+    tolerance: f32,
+    points: *std.ArrayList(Vec2),
+    polygons: *std.ArrayList(IndexSlice),
+    budget: RasterBudget,
+) BoundedError!void {
+    assert(tolerance > 0);
+    assert(points.capacity == 0);
+    assert(polygons.capacity == 0);
+    const polygon_count_max = @divFloor(budget.vertex_count_max, 2);
+    points.ensureTotalCapacityPrecise(scratch, budget.vertex_count_max) catch
+        return error.PathTooComplex;
+    polygons.ensureTotalCapacityPrecise(scratch, polygon_count_max) catch
+        return error.PathTooComplex;
+
+    flattenPath(reserved_only, path, tolerance, points, polygons) catch
+        return error.PathTooComplex;
+    assert(points.items.len <= budget.vertex_count_max);
+    assert(polygons.items.len <= polygon_count_max);
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
+
+test "flattenBounded fills its vertex budget exactly and refuses one more" {
+    // Methodology: count the vertices a curved path flattens to with the
+    // ceiling budget, then flatten it again with exactly that many (accepted)
+    // and one fewer (refused with PathTooComplex, never growing the lists).
+    const gpa = std.testing.allocator;
+    const source = "<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M2 2q10 20 20 0\"/>";
+    var path = SvgPath.init(gpa);
+    defer path.deinit();
+    try parseBounded(gpa, &path, source);
+
+    const vertex_count = try testFlattenCount(&path, limits.MAX_SVG_PATH_VERTEX_COUNT);
+    // Enough vertices that the boundary is not a degenerate case.
+    try std.testing.expect(vertex_count > 100);
+    try std.testing.expectEqual(vertex_count, try testFlattenCount(&path, vertex_count));
+    try std.testing.expectError(error.PathTooComplex, testFlattenCount(&path, vertex_count - 1));
+}
+
+/// Flatten `path` within `vertex_count_max` and return the vertex count,
+/// checking the lists never grew past their reservation.
+fn testFlattenCount(path: *const SvgPath, vertex_count_max: u32) BoundedError!u32 {
+    const gpa = std.testing.allocator;
+    const budget = RasterBudget{
+        .path_bytes_max = limits.MAX_SVG_PATH_BYTES,
+        .vertex_count_max = vertex_count_max,
+    };
+    var points: std.ArrayList(Vec2) = .empty;
+    defer points.deinit(gpa);
+    var polygons: std.ArrayList(IndexSlice) = .empty;
+    defer polygons.deinit(gpa);
+    defer assert(points.capacity == vertex_count_max);
+    try flattenBounded(gpa, path, 0.05, &points, &polygons, budget);
+    return @intCast(points.items.len);
+}
+
+test "parseBounded rejects empty and unparsable paths without growing" {
+    const gpa = std.testing.allocator;
+    const sources = [_][]const u8{ "   ", "<unknown/>" };
+    for (sources) |source| {
+        var path = SvgPath.init(gpa);
+        defer path.deinit();
+        try std.testing.expectError(error.EmptyPath, parseBounded(gpa, &path, source));
+        try std.testing.expectEqual(source.len, path.commands.capacity);
+    }
+}
 
 test "parse simple path" {
     const allocator = std.testing.allocator;

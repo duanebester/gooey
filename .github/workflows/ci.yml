@@ -152,6 +152,11 @@ jobs:
       - name: Typecheck Linux backend
         run: zig build typecheck-linux
 
+      # The Win32 and Vulkan bindings are plain externs too, so the Windows
+      # backend can be analyzed from macOS with no SDK or import libraries.
+      - name: Typecheck Windows backend
+        run: zig build typecheck-windows
+
   # ==========================================================================
   # Linux Build (Multiple Optimization Levels)
   # ==========================================================================

@@ -1,4 +1,7 @@
-//! Vulkan instance, device, surface, and debug messenger creation.
+//! Vulkan instance, device, and debug messenger creation.
+//!
+//! The presentation surface is window-system specific and lives behind
+//! `vk_surface`; this module only needs its instance extension name.
 //!
 //! Free functions with targeted parameters — each takes only what it needs,
 //! not the entire VulkanRenderer. One-time initialization code that won't be
@@ -53,10 +56,6 @@ pub const InstanceError = error{
     VulkanInstanceCreationFailed,
 };
 
-pub const SurfaceError = error{
-    WaylandSurfaceCreationFailed,
-};
-
 pub const DeviceSelectionError = error{
     NoVulkanDevicesFound,
     NoSuitableVulkanDevice,
@@ -75,7 +74,12 @@ pub const DeviceCreationError = error{
 /// When validation layers are enabled and available, the debug messenger is
 /// chained into instance creation via pNext and also created as a persistent
 /// object for runtime validation messages.
-pub fn createInstance() InstanceError!InstanceResult {
+///
+/// `surface_extension_name` is the window system's `VK_KHR_*_surface`
+/// extension, enabled beside `VK_KHR_surface`.
+pub fn createInstance(surface_extension_name: [*:0]const u8) InstanceError!InstanceResult {
+    std.debug.assert(std.mem.startsWith(u8, std.mem.span(surface_extension_name), "VK_KHR_"));
+    std.debug.assert(std.mem.endsWith(u8, std.mem.span(surface_extension_name), "_surface"));
     const app_info = vk.ApplicationInfo{
         .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pNext = null,
@@ -92,7 +96,14 @@ pub fn createInstance() InstanceError!InstanceResult {
         std.log.warn("Validation layers requested but VK_LAYER_KHRONOS_validation not available", .{});
     }
 
-    const extensions = instanceExtensions(use_validation);
+    // `VK_EXT_debug_utils` is last so dropping it is a shorter count.
+    const extensions = [_][*:0]const u8{
+        "VK_KHR_surface",
+        surface_extension_name,
+        "VK_EXT_debug_utils",
+    };
+    const extension_count: u32 = if (use_validation) extensions.len else extensions.len - 1;
+    std.debug.assert(extension_count <= extensions.len);
     const validation_layers = [_][*:0]const u8{vk.VALIDATION_LAYER_NAME};
 
     var debug_create_info = debugMessengerCreateInfo();
@@ -104,8 +115,8 @@ pub fn createInstance() InstanceError!InstanceResult {
         .pApplicationInfo = &app_info,
         .enabledLayerCount = if (use_validation) validation_layers.len else 0,
         .ppEnabledLayerNames = if (use_validation) &validation_layers else null,
-        .enabledExtensionCount = @intCast(extensions.count),
-        .ppEnabledExtensionNames = extensions.ptr,
+        .enabledExtensionCount = extension_count,
+        .ppEnabledExtensionNames = &extensions,
     };
 
     var instance: vk.Instance = null;
@@ -139,33 +150,6 @@ pub fn destroyDebugMessenger(instance: vk.Instance, messenger: vk.DebugUtilsMess
         const destroy_fn: vk.PFN_vkDestroyDebugUtilsMessengerEXT = @ptrCast(address);
         destroy_fn(instance, messenger, null);
     }
-}
-
-/// Create a Wayland surface for presentation.
-pub fn createWaylandSurface(
-    instance: vk.Instance,
-    wl_display: *anyopaque,
-    wl_surface: *anyopaque,
-) SurfaceError!vk.Surface {
-    std.debug.assert(instance != null);
-
-    const create_info = vk.WaylandSurfaceCreateInfoKHR{
-        .sType = vk.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
-        .pNext = null,
-        .flags = 0,
-        .display = @ptrCast(wl_display),
-        .surface = @ptrCast(wl_surface),
-    };
-
-    var surface: vk.Surface = null;
-    const result = vk.vkCreateWaylandSurfaceKHR(instance, &create_info, null, &surface);
-    if (!vk.succeeded(result)) {
-        std.log.err("Failed to create Wayland surface: {}", .{result});
-        return SurfaceError.WaylandSurfaceCreationFailed;
-    }
-
-    std.debug.assert(surface != null);
-    return surface;
 }
 
 /// Pick a suitable physical device and identify its queue families.
@@ -382,28 +366,4 @@ fn createDebugMessenger(
     }
 
     return null;
-}
-
-/// Instance extensions, parameterized by whether validation is active.
-const ExtensionList = struct {
-    ptr: [*]const [*:0]const u8,
-    count: u32,
-};
-
-fn instanceExtensions(use_validation: bool) ExtensionList {
-    const base = [_][*:0]const u8{
-        "VK_KHR_surface",
-        "VK_KHR_wayland_surface",
-    };
-    const debug = [_][*:0]const u8{
-        "VK_KHR_surface",
-        "VK_KHR_wayland_surface",
-        "VK_EXT_debug_utils",
-    };
-
-    if (use_validation) {
-        return .{ .ptr = &debug, .count = debug.len };
-    } else {
-        return .{ .ptr = &base, .count = base.len };
-    }
 }

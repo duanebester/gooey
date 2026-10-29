@@ -24,7 +24,9 @@ pub const Bridge = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Sync dirty elements to platform. Called at end of frame.
+        /// Sync dirty elements to platform. Called at the end of every
+        /// synced frame, with an empty list when no element changed, so a
+        /// pull-based bridge (Windows) can refresh bounds that moved.
         /// Receives only indices of elements that changed.
         syncDirty: *const fn (
             ptr: *anyopaque,
@@ -118,11 +120,9 @@ pub const Bridge = struct {
         // Only sync if screen reader is active
         if (!self.isActive()) return;
 
-        // Sync dirty elements (new or changed)
-        const dirty = tree.getDirtyElements();
-        if (dirty.len > 0) {
-            self.syncDirty(tree, dirty);
-        }
+        // Sync dirty elements (new or changed). Called even when none are,
+        // see `VTable.syncDirty`.
+        self.syncDirty(tree, tree.getDirtyElements());
 
         // Remove elements that no longer exist
         const removed = tree.getRemovedFingerprints();

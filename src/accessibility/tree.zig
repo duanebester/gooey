@@ -18,10 +18,18 @@ const engine_mod = @import("../layout/engine.zig");
 pub const Element = element_mod.Element;
 pub const Fingerprint = fingerprint_mod.Fingerprint;
 
+/// Odd (golden-ratio) multiplier that spreads a duplicate fingerprint's
+/// retry count across its name hash; see `Tree.uniqueFingerprint`.
+const fingerprint_salt_multiplier: u32 = 0x9E3779B1;
+comptime {
+    std.debug.assert(fingerprint_salt_multiplier % 2 == 1);
+}
+
 /// Hash map for O(1) fingerprint → index lookups.
 /// Uses open addressing with linear probing.
 /// Bucket count is power of 2 for fast modulo via bitmask.
-const FingerprintMap = struct {
+/// Public for the Windows bridge, whose snapshot indexes the same fingerprints.
+pub const FingerprintMap = struct {
     const BUCKET_COUNT: u16 = 4096; // Power of 2, ~2x MAX_ELEMENTS for low collision rate
     const BUCKET_MASK: u64 = BUCKET_COUNT - 1;
     const EMPTY: u16 = 0xFFFF; // Sentinel for empty bucket
@@ -109,8 +117,14 @@ pub const Tree = struct {
     parent_stack: [constants.MAX_DEPTH]u16 = undefined,
     stack_depth: u8 = 0,
 
-    /// Child position counters (for fingerprinting)
-    child_positions: [constants.MAX_DEPTH]u8 = undefined,
+    /// Child position counters (for fingerprinting), one per open parent.
+    /// A position never exceeds the element count, so it is always below
+    /// `fingerprint.position_count_max` and never saturates.
+    child_positions: [constants.MAX_DEPTH]u16 = undefined,
+    /// Position counter for top-level elements, which have no parent on the
+    /// stack. Without it every top-level element took position 0, so two
+    /// top-level siblings with the same role and name shared a fingerprint.
+    root_child_position: u16 = 0,
 
     // =========================================================================
     // Cross-Frame State
@@ -180,6 +194,7 @@ pub const Tree = struct {
         // Zero all fields explicitly to avoid stack temporary
         self.element_count = 0;
         self.stack_depth = 0;
+        self.root_child_position = 0;
         self.prev_count = 0;
         self.dirty_count = 0;
         self.removed_count = 0;
@@ -225,6 +240,7 @@ pub const Tree = struct {
         // Reset current frame
         self.element_count = 0;
         self.stack_depth = 0;
+        self.root_child_position = 0;
         self.dirty_count = 0;
         self.removed_count = 0;
         self.announcement_count = 0;
@@ -357,12 +373,7 @@ pub const Tree = struct {
         const index = self.element_count;
         const parent_idx = self.currentParent();
 
-        // Get position in parent for fingerprint
-        const position: u8 = if (self.stack_depth > 0) blk: {
-            const pos = self.child_positions[self.stack_depth - 1];
-            self.child_positions[self.stack_depth - 1] = pos +| 1; // saturating add
-            break :blk pos;
-        } else 0;
+        const position = self.claimChildPosition();
 
         // Get parent fingerprint
         const parent_fp: ?Fingerprint = if (parent_idx) |pi|
@@ -370,13 +381,12 @@ pub const Tree = struct {
         else
             null;
 
-        // Compute fingerprint
-        const fp = fingerprint_mod.compute(
+        const fp = self.uniqueFingerprint(fingerprint_mod.compute(
             config.role,
             config.name,
             parent_fp,
             position,
-        );
+        ));
 
         // Initialize element
         self.elements[index] = .{
@@ -411,6 +421,52 @@ pub const Tree = struct {
         self.advanceStack(index);
 
         return index;
+    }
+
+    /// Claim the next position under the current parent, or at the top level
+    /// when no parent is open, so siblings never share a position.
+    fn claimChildPosition(self: *Self) u16 {
+        std.debug.assert(self.element_count < constants.MAX_ELEMENTS);
+        std.debug.assert(self.stack_depth <= constants.MAX_DEPTH);
+
+        const counter = if (self.stack_depth > 0)
+            &self.child_positions[self.stack_depth - 1]
+        else
+            &self.root_child_position;
+        const position = counter.*;
+        // Every position claimed this frame belongs to a distinct element.
+        std.debug.assert(position <= self.element_count);
+        std.debug.assert(position < fingerprint_mod.position_count_max);
+        counter.* = position + 1;
+        return position;
+    }
+
+    /// Return `computed`, or a deterministic variant of it when an element of
+    /// this frame already holds it. Siblings never collide, because their
+    /// positions differ, but two subtrees whose 16-bit parent contributions
+    /// coincide can still yield the same role, name, and position. Bridges
+    /// key element identity on the fingerprint, so a duplicate would alias two
+    /// elements: UI Automation sibling navigation would loop between them.
+    /// The variant depends only on pre-order, so it is as stable across
+    /// frames as the tree itself.
+    fn uniqueFingerprint(self: *const Self, computed: Fingerprint) Fingerprint {
+        std.debug.assert(computed.isValid());
+        std.debug.assert(self.element_count < constants.MAX_ELEMENTS);
+
+        // Each attempt flips the name hash by a distinct value (an odd
+        // multiplier is a bijection modulo 2^32). At most `element_count`
+        // fingerprints are taken and one candidate may be INVALID, so
+        // `element_count + 2` attempts always find a free one.
+        const attempt_count_max: u32 = @as(u32, self.element_count) + 2;
+        var attempt: u32 = 0;
+        while (attempt < attempt_count_max) : (attempt += 1) {
+            var candidate = computed;
+            candidate.name_hash ^= attempt *% fingerprint_salt_multiplier;
+            if (candidate.isValid()) {
+                if (self.current_fingerprint_map.find(candidate) == null) return candidate;
+            }
+        }
+        unreachable;
     }
 
     /// Link new element to its parent in the tree structure
@@ -887,6 +943,52 @@ test "tree fingerprint stability across frames" {
     tree.endFrame();
 
     try std.testing.expect(fp1.eql(fp2));
+}
+
+test "top-level siblings with the same role and name keep distinct, stable fingerprints" {
+    // Regression: every top-level element used to take position 0, so two
+    // "Delete" buttons shared one identity and bridges aliased them. Build
+    // the same two-button frame twice: the fingerprints must differ within a
+    // frame, each must map back to its own index, and both must be stable.
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
+
+    var fingerprints: [2][2]Fingerprint = undefined;
+    for (&fingerprints) |*frame| {
+        tree.beginFrame();
+        for (frame, 0..) |*fingerprint, index| {
+            const pushed = tree.pushElement(.{ .role = .button, .name = "Delete" }).?;
+            try std.testing.expectEqual(@as(u16, @intCast(index)), pushed);
+            fingerprint.* = tree.getElement(pushed).?.fingerprint;
+            const found = tree.current_fingerprint_map.find(fingerprint.*);
+            try std.testing.expectEqual(@as(?u16, pushed), found);
+            tree.popElement();
+        }
+        tree.endFrame();
+    }
+
+    try std.testing.expect(!fingerprints[0][0].eql(fingerprints[0][1]));
+    try std.testing.expect(fingerprints[0][0].eql(fingerprints[1][0]));
+    try std.testing.expect(fingerprints[0][1].eql(fingerprints[1][1]));
+    try std.testing.expectEqual(@as(u16, 0), tree.dirty_count);
+}
+
+test "a fingerprint already held this frame is replaced by a free, stable variant" {
+    // Siblings cannot collide, but subtrees whose parent contributions
+    // coincide can. Force that case by asking for a fingerprint the frame
+    // already holds: the result must be valid, free, and deterministic.
+    const tree = try createTestTree();
+    defer destroyTestTree(tree);
+
+    tree.beginFrame();
+    const held = tree.getElement(tree.pushElement(.{ .role = .button, .name = "Ok" }).?).?;
+    tree.popElement();
+    const variant = tree.uniqueFingerprint(held.fingerprint);
+    try std.testing.expect(variant.isValid());
+    try std.testing.expect(!variant.eql(held.fingerprint));
+    try std.testing.expectEqual(@as(?u16, null), tree.current_fingerprint_map.find(variant));
+    try std.testing.expect(variant.eql(tree.uniqueFingerprint(held.fingerprint)));
+    tree.endFrame();
 }
 
 test "fingerprint map basic operations" {

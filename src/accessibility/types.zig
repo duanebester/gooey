@@ -155,6 +155,52 @@ pub const Role = enum(u8) {
         };
     }
 
+    /// Convert to a UI Automation control type id (Windows). Follows the ARIA
+    /// mapping browsers use: a switch is a toggle button, a dialog is a pane
+    /// that reports `IsDialog`, and a heading is text with a heading level.
+    pub fn toUiaControlType(self: Role) i32 {
+        return switch (self) {
+            .button => 50000, // UIA_ButtonControlTypeId
+            .checkbox => 50002, // UIA_CheckBoxControlTypeId
+            .radio => 50013, // UIA_RadioButtonControlTypeId
+            .switch_ => 50000, // UIA_ButtonControlTypeId
+            .link => 50005, // UIA_HyperlinkControlTypeId
+            .textbox => 50004, // UIA_EditControlTypeId
+            .textarea => 50004, // UIA_EditControlTypeId
+            .searchbox => 50004, // UIA_EditControlTypeId
+            .spinbutton => 50016, // UIA_SpinnerControlTypeId
+            .combobox => 50003, // UIA_ComboBoxControlTypeId
+            .listbox => 50008, // UIA_ListControlTypeId
+            .option => 50007, // UIA_ListItemControlTypeId
+            .menu => 50009, // UIA_MenuControlTypeId
+            .menuitem => 50011, // UIA_MenuItemControlTypeId
+            .menubar => 50010, // UIA_MenuBarControlTypeId
+            .tab => 50019, // UIA_TabItemControlTypeId
+            .tablist => 50018, // UIA_TabControlTypeId
+            .tabpanel => 50033, // UIA_PaneControlTypeId
+            .tree => 50023, // UIA_TreeControlTypeId
+            .treeitem => 50024, // UIA_TreeItemControlTypeId
+            .slider => 50015, // UIA_SliderControlTypeId
+            .scrollbar => 50014, // UIA_ScrollBarControlTypeId
+            .group => 50026, // UIA_GroupControlTypeId
+            .region => 50026, // UIA_GroupControlTypeId
+            .dialog => 50033, // UIA_PaneControlTypeId
+            .alertdialog => 50033, // UIA_PaneControlTypeId
+            .toolbar => 50021, // UIA_ToolBarControlTypeId
+            .tooltip => 50022, // UIA_ToolTipControlTypeId
+            .alert => 50020, // UIA_TextControlTypeId
+            .status => 50017, // UIA_StatusBarControlTypeId
+            .progressbar => 50012, // UIA_ProgressBarControlTypeId
+            .heading => 50020, // UIA_TextControlTypeId
+            .paragraph => 50026, // UIA_GroupControlTypeId
+            .list => 50008, // UIA_ListControlTypeId
+            .listitem => 50007, // UIA_ListItemControlTypeId
+            .img => 50006, // UIA_ImageControlTypeId
+            .separator => 50038, // UIA_SeparatorControlTypeId
+            .presentation, .none => 50026, // UIA_GroupControlTypeId
+        };
+    }
+
     /// Convert to ARIA role string (Web)
     pub fn toAriaRole(self: Role) []const u8 {
         return switch (self) {
@@ -401,6 +447,8 @@ test "role conversions" {
     try std.testing.expectEqualStrings("AXButton", Role.button.toNSRole());
     try std.testing.expectEqualStrings("button", Role.button.toAriaRole());
     try std.testing.expectEqual(@as(u32, 25), Role.button.toAtspiRole());
+    try std.testing.expectEqual(@as(i32, 50000), Role.button.toUiaControlType());
+    try std.testing.expectEqual(@as(i32, 50004), Role.textarea.toUiaControlType());
 }
 
 test "live aria conversion" {

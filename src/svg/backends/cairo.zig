@@ -1,10 +1,18 @@
-//! SVG Rasterizer for Linux - Software rendering
+//! SVG Rasterizer for Linux and Windows - Software rendering
 //!
 //! Rasterizes SVG path data to RGBA buffers using a scanline fill algorithm.
 //! Output format: R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke)
+//!
+//! Every allocation comes from the caller's allocator, reserved up front from
+//! `RasterBudget` and the icon's side, and nothing grows after that: the
+//! total is exactly what `scratchBytes` reports, so an `SvgAtlas` scratch of
+//! that size is never exhausted. A path past its budget fails with
+//! `PathTooComplex` before it can use more.
 
 const std = @import("std");
 const svg_mod = @import("../path.zig");
+
+const assert = std.debug.assert;
 
 pub const RasterizedSvg = struct {
     width: u32,
@@ -20,11 +28,16 @@ pub const RasterizeError = error{
     OutOfMemory,
     /// Invalid or empty path data
     EmptyPath,
+    /// The path exceeds `RasterBudget`: too many bytes, or too many vertices
+    /// once flattened at this size.
+    PathTooComplex,
     /// Graphics error during rasterization
     GraphicsError,
     /// Buffer too small for requested size
     BufferTooSmall,
 };
+
+pub const RasterBudget = svg_mod.RasterBudget;
 
 /// Stroke options for SVG rendering
 pub const StrokeOptions = struct {
@@ -56,6 +69,24 @@ const ActiveEdge = struct {
     }
 };
 
+/// Alignment padding between the reservations: at most `@alignOf - 1` bytes
+/// before each of the eight, all aligned to at most 4.
+const scratch_alignment_slack_bytes: u32 = 8 * 3;
+
+/// Bytes one rasterization of an icon at most `device_size_max` pixels on a
+/// side allocates: the parsed path, the flattened points and polygons, one
+/// edge and one active edge per point (each point starts one segment), a row
+/// of coverage, and the stroke buffer used when fill and stroke combine.
+pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
+    assert(device_size_max > 0);
+    assert(budget.vertex_count_max > 0);
+    const edge_bytes = budget.vertex_count_max * (@sizeOf(Edge) + @sizeOf(ActiveEdge));
+    const row_coverage_bytes = device_size_max * @sizeOf(f32);
+    const stroke_buffer_bytes = device_size_max * device_size_max * 4;
+    return RasterBudget.parseBytes(budget.path_bytes_max) + budget.flattenBytes() +
+        edge_bytes + row_coverage_bytes + stroke_buffer_bytes + scratch_alignment_slack_bytes;
+}
+
 /// Rasterize SVG path data to RGBA buffer (simple version)
 pub fn rasterize(
     allocator: std.mem.Allocator,
@@ -64,7 +95,16 @@ pub fn rasterize(
     device_size: u32,
     buffer: []u8,
 ) RasterizeError!RasterizedSvg {
-    return rasterizeWithOptions(allocator, path_data, viewbox, device_size, buffer, true, .{});
+    return rasterizeWithOptions(
+        allocator,
+        path_data,
+        viewbox,
+        device_size,
+        buffer,
+        true,
+        .{},
+        RasterBudget.ceiling,
+    );
 }
 
 /// Rasterize SVG path data with extended options
@@ -76,8 +116,12 @@ pub fn rasterizeWithOptions(
     buffer: []u8,
     fill: bool,
     stroke: StrokeOptions,
+    budget: RasterBudget,
 ) RasterizeError!RasterizedSvg {
+    assert(viewbox > 0);
+    assert(device_size > 0);
     if (path_data.len == 0) return error.EmptyPath;
+    if (path_data.len > budget.path_bytes_max) return error.PathTooComplex;
 
     const pixel_count = device_size * device_size;
     const required_size = pixel_count * 4;
@@ -87,71 +131,33 @@ pub fn rasterizeWithOptions(
     @memset(buffer[0..required_size], 0);
 
     // Parse SVG path (supports both raw path data and SVG elements like circle, rect, etc.)
-    var parser = svg_mod.SvgElementParser.init(allocator);
     var path = svg_mod.SvgPath.init(allocator);
     defer path.deinit();
+    try svg_mod.parseBounded(allocator, &path, path_data);
 
-    parser.parse(&path, path_data) catch return error.EmptyPath;
-
-    if (path.commands.items.len == 0) return error.EmptyPath;
-
-    // Flatten path to polygons
+    // Flatten to polygons with a tolerance of half a device pixel.
     var points: std.ArrayList(svg_mod.Vec2) = .empty;
     defer points.deinit(allocator);
     var polygons: std.ArrayList(svg_mod.IndexSlice) = .empty;
     defer polygons.deinit(allocator);
 
-    // Use tolerance based on device size for good quality curves
     const tolerance: f32 = viewbox / @as(f32, @floatFromInt(device_size * 2));
-    svg_mod.flattenPath(allocator, &path, tolerance, &points, &polygons) catch return error.OutOfMemory;
+    try svg_mod.flattenBounded(allocator, &path, tolerance, &points, &polygons, budget);
 
-    const scale: f32 = @as(f32, @floatFromInt(device_size)) / viewbox;
-    const size_i: i32 = @intCast(device_size);
-
+    const geometry = Geometry{
+        .points = &points,
+        .polygons = &polygons,
+        .scale = @as(f32, @floatFromInt(device_size)) / viewbox,
+        .size = @intCast(device_size),
+    };
     if (fill and stroke.enabled) {
-        // Two-channel mode: fill in R, stroke in G
-        const stroke_buffer = allocator.alloc(u8, required_size) catch return error.OutOfMemory;
-        defer allocator.free(stroke_buffer);
-        @memset(stroke_buffer, 0);
-
-        // Render fill
-        renderPolygonsFill(allocator, &points, &polygons, scale, size_i, buffer) catch return error.OutOfMemory;
-
-        // Render stroke
-        renderPolygonsStroke(&points, &polygons, scale, size_i, stroke.width, stroke_buffer);
-
-        // Combine: R = fill alpha, G = stroke alpha, A = max
-        for (0..pixel_count) |i| {
-            const idx = i * 4;
-            const fill_a = buffer[idx + 3];
-            const stroke_a = stroke_buffer[idx + 3];
-            buffer[idx + 0] = fill_a;
-            buffer[idx + 1] = stroke_a;
-            buffer[idx + 2] = 0;
-            buffer[idx + 3] = @max(fill_a, stroke_a);
-        }
+        try renderFillAndStroke(allocator, &geometry, stroke.width, buffer[0..required_size]);
     } else if (fill) {
-        // Fill only
-        renderPolygonsFill(allocator, &points, &polygons, scale, size_i, buffer) catch return error.OutOfMemory;
-
-        // R = fill alpha, G = 0
-        for (0..pixel_count) |i| {
-            const idx = i * 4;
-            buffer[idx + 0] = buffer[idx + 3];
-            buffer[idx + 1] = 0;
-            buffer[idx + 2] = 0;
-        }
+        try renderPolygonsFill(allocator, &geometry, buffer);
+        moveAlphaToChannel(buffer[0..required_size], 0);
     } else if (stroke.enabled) {
-        // Stroke only
-        renderPolygonsStroke(&points, &polygons, scale, size_i, stroke.width, buffer);
-
-        // R = 0, G = stroke alpha
-        for (0..pixel_count) |i| {
-            const idx = i * 4;
-            buffer[idx + 1] = buffer[idx + 3];
-            buffer[idx + 0] = 0;
-            buffer[idx + 2] = 0;
-        }
+        renderPolygonsStroke(&geometry, stroke.width, buffer);
+        moveAlphaToChannel(buffer[0..required_size], 1);
     }
 
     return RasterizedSvg{
@@ -162,114 +168,171 @@ pub fn rasterizeWithOptions(
     };
 }
 
-/// Render polygons with anti-aliased scanline fill algorithm using vertical supersampling
-fn renderPolygonsFill(
-    allocator: std.mem.Allocator,
+/// A flattened icon and how it maps to device pixels.
+const Geometry = struct {
     points: *const std.ArrayList(svg_mod.Vec2),
     polygons: *const std.ArrayList(svg_mod.IndexSlice),
+    /// Device pixels per viewbox unit.
     scale: f32,
+    /// Icon side in device pixels.
     size: i32,
-    buffer: []u8,
-) !void {
-    // Number of vertical samples per pixel for anti-aliasing
-    const Y_SAMPLES: i32 = 4;
-    const Y_SAMPLES_F: f32 = @floatFromInt(Y_SAMPLES);
-    const supersample_height = size * Y_SAMPLES;
+};
 
-    // Build edge table for all polygons (at supersampled resolution)
+/// Two-channel mode: fill into `buffer`, stroke into a scratch buffer, then
+/// R = fill alpha, G = stroke alpha, A = their maximum.
+fn renderFillAndStroke(
+    allocator: std.mem.Allocator,
+    geometry: *const Geometry,
+    stroke_width: f32,
+    buffer: []u8,
+) RasterizeError!void {
+    assert(geometry.size > 0);
+    const size_u: u32 = @intCast(geometry.size);
+    assert(buffer.len == size_u * size_u * 4);
+    const stroke_buffer = allocator.alloc(u8, buffer.len) catch return error.OutOfMemory;
+    defer allocator.free(stroke_buffer);
+    @memset(stroke_buffer, 0);
+
+    try renderPolygonsFill(allocator, geometry, buffer);
+    renderPolygonsStroke(geometry, stroke_width, stroke_buffer);
+
+    var index: usize = 0;
+    while (index < buffer.len) : (index += 4) {
+        const fill_alpha = buffer[index + 3];
+        const stroke_alpha = stroke_buffer[index + 3];
+        buffer[index + 0] = fill_alpha;
+        buffer[index + 1] = stroke_alpha;
+        buffer[index + 2] = 0;
+        buffer[index + 3] = @max(fill_alpha, stroke_alpha);
+    }
+    assert(index == buffer.len);
+}
+
+/// Single-channel mode: copy each pixel's alpha into `channel` (0 for fill,
+/// 1 for stroke) and clear the other two color channels.
+fn moveAlphaToChannel(buffer: []u8, channel: u2) void {
+    assert(channel <= 1);
+    assert(buffer.len % 4 == 0);
+    var index: usize = 0;
+    while (index < buffer.len) : (index += 4) {
+        const alpha = buffer[index + 3];
+        buffer[index + 0] = 0;
+        buffer[index + 1] = 0;
+        buffer[index + 2] = 0;
+        buffer[index + channel] = alpha;
+    }
+    assert(index == buffer.len);
+}
+
+/// Vertical samples per pixel for the fill's anti-aliasing.
+const fill_samples_y: i32 = 4;
+
+/// Render polygons with anti-aliased scanline fill algorithm using vertical
+/// supersampling. Allocates one edge and one active edge per point and a row
+/// of coverage, all reserved before the scan, so the scan cannot allocate.
+fn renderPolygonsFill(
+    allocator: std.mem.Allocator,
+    geometry: *const Geometry,
+    buffer: []u8,
+) RasterizeError!void {
+    assert(geometry.size > 0);
+    const size_u: u32 = @intCast(geometry.size);
+    assert(buffer.len >= size_u * size_u * 4);
+
+    // Each polygon's points start one segment each, and polygons do not share
+    // points, so no path has more edges than points.
     var edges: std.ArrayList(Edge) = .empty;
     defer edges.deinit(allocator);
+    edges.ensureTotalCapacityPrecise(allocator, geometry.points.items.len) catch
+        return error.OutOfMemory;
+    appendEdges(geometry, &edges);
+    if (edges.items.len == 0) return;
+    std.sort.pdq(Edge, edges.items, {}, Edge.lessThan);
 
-    for (polygons.items) |poly| {
-        const start = poly.start;
-        const end = poly.end;
-        if (end <= start + 2) continue; // Need at least 3 points
+    var active_edges: std.ArrayList(ActiveEdge) = .empty;
+    defer active_edges.deinit(allocator);
+    active_edges.ensureTotalCapacityPrecise(allocator, edges.items.len) catch
+        return error.OutOfMemory;
 
-        const pts = points.items[start..end];
+    const row_coverage = allocator.alloc(f32, size_u) catch return error.OutOfMemory;
+    defer allocator.free(row_coverage);
 
+    scanFill(edges.items, &active_edges, row_coverage, buffer);
+}
+
+/// Build the edge table at supersampled resolution, skipping horizontal edges
+/// and polygons of fewer than three points. `edges` has room for every point.
+fn appendEdges(geometry: *const Geometry, edges: *std.ArrayList(Edge)) void {
+    assert(edges.items.len == 0);
+    assert(edges.capacity >= geometry.points.items.len);
+    const samples_f: f32 = @floatFromInt(fill_samples_y);
+    const supersample_height = geometry.size * fill_samples_y;
+    const scale = geometry.scale;
+    for (geometry.polygons.items) |poly| {
+        if (poly.end <= poly.start + 2) continue; // Need at least 3 points
+        const pts = geometry.points.items[poly.start..poly.end];
         for (0..pts.len) |i| {
             const p0 = pts[i];
             const p1 = pts[(i + 1) % pts.len];
-
             // Scale to device coordinates (Y is supersampled)
             const x0 = p0.x * scale;
-            const y0 = p0.y * scale * Y_SAMPLES_F;
+            const y0 = p0.y * scale * samples_f;
             const x1 = p1.x * scale;
-            const y1 = p1.y * scale * Y_SAMPLES_F;
+            const y1 = p1.y * scale * samples_f;
 
             // Skip horizontal edges (they don't contribute to fill)
             const dy = y1 - y0;
             if (@abs(dy) < 0.0001) continue;
 
-            // Determine which point is top and bottom
             const is_down = y1 > y0;
             const top_x = if (is_down) x0 else x1;
             const top_y = if (is_down) y0 else y1;
             const bot_y = if (is_down) y1 else y0;
 
-            // Convert to scanline coordinates (integer y values at supersample resolution)
+            // Integer scanlines at supersample resolution.
             const y_min: i32 = @max(0, @as(i32, @intFromFloat(@ceil(top_y))));
             const y_max: i32 = @min(supersample_height, @as(i32, @intFromFloat(@ceil(bot_y))));
-
             if (y_min >= y_max) continue;
 
-            // Calculate inverse slope (change in x per unit y)
             const inv_slope = (x1 - x0) / dy;
-
-            // Calculate x at the first scanline
             const scanline_y = @as(f32, @floatFromInt(y_min)) + 0.5;
-            const x_at_scanline = top_x + inv_slope * (scanline_y - top_y);
-
-            try edges.append(allocator, .{
+            edges.appendAssumeCapacity(.{
                 .y_min = y_min,
                 .y_max = y_max,
-                .x_at_y_min = x_at_scanline,
+                .x_at_y_min = top_x + inv_slope * (scanline_y - top_y),
                 .inv_slope = inv_slope,
             });
         }
     }
+    assert(edges.items.len <= geometry.points.items.len);
+}
 
-    if (edges.items.len == 0) return;
-
-    // Sort edges by y_min, then by x
-    std.sort.pdq(Edge, edges.items, {}, Edge.lessThan);
-
-    // Active edge table
-    var active_edges: std.ArrayList(ActiveEdge) = .empty;
-    defer active_edges.deinit(allocator);
-
-    // Coverage accumulator for current pixel row
-    const size_u: u32 = @intCast(size);
-    var row_coverage = allocator.alloc(f32, size_u) catch return error.OutOfMemory;
-    defer allocator.free(row_coverage);
-
-    var edge_idx: usize = 0;
+/// Scan the sorted edges one supersampled row at a time, accumulating each
+/// pixel row's coverage and writing it to the alpha channel.
+fn scanFill(
+    edges: []const Edge,
+    active_edges: *std.ArrayList(ActiveEdge),
+    row_coverage: []f32,
+    buffer: []u8,
+) void {
+    assert(edges.len > 0);
+    assert(active_edges.capacity >= edges.len);
+    const size: i32 = @intCast(row_coverage.len);
+    const supersample_height: usize = @intCast(size * fill_samples_y);
+    var edge_index: usize = 0;
     var current_pixel_row: i32 = -1;
 
-    // Scanline loop (at supersample resolution)
-    for (0..@as(usize, @intCast(supersample_height))) |y_super_usize| {
+    for (0..supersample_height) |y_super_usize| {
         const y_super: i32 = @intCast(y_super_usize);
-        const pixel_row: i32 = @divFloor(y_super, Y_SAMPLES);
-
-        // When moving to a new pixel row, write accumulated coverage
+        const pixel_row: i32 = @divFloor(y_super, fill_samples_y);
         if (pixel_row != current_pixel_row) {
-            if (current_pixel_row >= 0 and current_pixel_row < size) {
-                const row_offset: usize = @intCast(current_pixel_row);
-                for (0..size_u) |x| {
-                    const coverage = row_coverage[x] / Y_SAMPLES_F;
-                    if (coverage > 0.0) {
-                        const alpha: u8 = @intFromFloat(@min(255.0, coverage * 255.0));
-                        const idx = (row_offset * size_u + x) * 4;
-                        buffer[idx + 3] = @max(buffer[idx + 3], alpha);
-                    }
-                }
-            }
-            // Reset coverage for new row
+            if (current_pixel_row >= 0) writeRowCoverage(row_coverage, current_pixel_row, buffer);
             @memset(row_coverage, 0.0);
             current_pixel_row = pixel_row;
         }
 
-        // Remove edges that end at or before this scanline
+        // Remove edges that end at or before this scanline. Each pass either
+        // removes one or advances, so it is bounded by the active count.
         var i: usize = 0;
         while (i < active_edges.items.len) {
             if (active_edges.items[i].y_max <= y_super) {
@@ -279,87 +342,89 @@ fn renderPolygonsFill(
             }
         }
 
-        // Add edges that start at this scanline
-        while (edge_idx < edges.items.len and edges.items[edge_idx].y_min <= y_super) {
-            const e = edges.items[edge_idx];
-            edge_idx += 1;
+        // Add edges that start at this scanline; each edge is added once.
+        while (edge_index < edges.len and edges[edge_index].y_min <= y_super) {
+            const e = edges[edge_index];
+            edge_index += 1;
             if (e.y_max > y_super) {
-                try active_edges.append(allocator, .{
+                active_edges.appendAssumeCapacity(.{
                     .x = e.x_at_y_min + e.inv_slope * @as(f32, @floatFromInt(y_super - e.y_min)),
                     .inv_slope = e.inv_slope,
                     .y_max = e.y_max,
                 });
             }
         }
-
+        assert(edge_index <= edges.len);
         if (active_edges.items.len < 2) continue;
 
-        // Sort active edges by x coordinate
         std.sort.pdq(ActiveEdge, active_edges.items, {}, ActiveEdge.lessThan);
+        accumulateSpans(active_edges.items, row_coverage);
+        for (active_edges.items) |*active| active.x += active.inv_slope;
+    }
+    if (current_pixel_row >= 0) writeRowCoverage(row_coverage, current_pixel_row, buffer);
+}
 
-        // Accumulate coverage between pairs of edges (even-odd rule) with X anti-aliasing
-        var pair_idx: usize = 0;
-        while (pair_idx + 1 < active_edges.items.len) : (pair_idx += 2) {
-            const x0_f = active_edges.items[pair_idx].x;
-            const x1_f = active_edges.items[pair_idx + 1].x;
+/// Add the horizontal coverage between each pair of sorted active edges
+/// (even-odd rule), anti-aliased in x.
+fn accumulateSpans(active_edges: []const ActiveEdge, row_coverage: []f32) void {
+    assert(active_edges.len >= 2);
+    assert(row_coverage.len > 0);
+    const size_f: f32 = @floatFromInt(row_coverage.len);
+    var pair_index: usize = 0;
+    while (pair_index + 1 < active_edges.len) : (pair_index += 2) {
+        const x0_f = active_edges[pair_index].x;
+        const x1_f = active_edges[pair_index + 1].x;
 
-            // Clamp bounds in float space first to avoid @intFromFloat panics
-            // on NaN/Inf/out-of-range values, then convert to integer.
-            const size_f: f32 = @floatFromInt(size);
-            const x_start_f = @max(@as(f32, 0.0), @floor(x0_f));
-            const x_end_f = @min(size_f, @ceil(x1_f));
+        // Clamp in float space first: `@intFromFloat` of NaN, infinity, or an
+        // out-of-range value is illegal behavior.
+        const x_start_f = @max(@as(f32, 0.0), @floor(x0_f));
+        const x_end_f = @min(size_f, @ceil(x1_f));
+        if (!(x_start_f < x_end_f)) continue;
 
-            if (x_start_f < x_end_f) {
-                const x_start: usize = @intFromFloat(x_start_f);
-                const x_end: usize = @intFromFloat(x_end_f);
-                for (x_start..x_end) |x| {
-                    const x_f: f32 = @floatFromInt(x);
-
-                    // Calculate coverage: how much of pixel [x, x+1] is covered by [x0_f, x1_f]
-                    const left_edge = @max(x_f, x0_f);
-                    const right_edge = @min(x_f + 1.0, x1_f);
-                    const coverage = @max(0.0, right_edge - left_edge);
-
-                    row_coverage[x] += coverage;
-                }
-            }
-        }
-
-        // Update x coordinates for next scanline
-        for (active_edges.items) |*ae| {
-            ae.x += ae.inv_slope;
+        const x_start: usize = @intFromFloat(x_start_f);
+        const x_end: usize = @intFromFloat(x_end_f);
+        assert(x_end <= row_coverage.len);
+        for (x_start..x_end) |x| {
+            const x_f: f32 = @floatFromInt(x);
+            // How much of pixel [x, x+1] lies within [x0_f, x1_f].
+            const left_edge = @max(x_f, x0_f);
+            const right_edge = @min(x_f + 1.0, x1_f);
+            row_coverage[x] += @max(0.0, right_edge - left_edge);
         }
     }
+}
 
-    // Write final row coverage
-    if (current_pixel_row >= 0 and current_pixel_row < size) {
-        const row_offset: usize = @intCast(current_pixel_row);
-        for (0..size_u) |x| {
-            const coverage = row_coverage[x] / Y_SAMPLES_F;
-            if (coverage > 0.0) {
-                const alpha: u8 = @intFromFloat(@min(255.0, coverage * 255.0));
-                const idx = (row_offset * size_u + x) * 4;
-                buffer[idx + 3] = @max(buffer[idx + 3], alpha);
-            }
+/// Write one pixel row's accumulated coverage into the alpha channel, keeping
+/// the larger of the existing and new alpha.
+fn writeRowCoverage(row_coverage: []const f32, pixel_row: i32, buffer: []u8) void {
+    assert(pixel_row >= 0);
+    const size_u: usize = row_coverage.len;
+    const row: usize = @intCast(pixel_row);
+    if (row >= size_u) return;
+    assert(buffer.len >= size_u * size_u * 4);
+    const samples_f: f32 = @floatFromInt(fill_samples_y);
+    for (row_coverage, 0..) |sum, x| {
+        const coverage = sum / samples_f;
+        if (coverage > 0.0) {
+            const alpha: u8 = @intFromFloat(@min(255.0, coverage * 255.0));
+            const index = (row * size_u + x) * 4;
+            buffer[index + 3] = @max(buffer[index + 3], alpha);
         }
     }
 }
 
 /// Render polygon strokes with anti-aliased lines
-fn renderPolygonsStroke(
-    points: *const std.ArrayList(svg_mod.Vec2),
-    polygons: *const std.ArrayList(svg_mod.IndexSlice),
-    scale: f32,
-    size: i32,
-    stroke_width: f32,
-    buffer: []u8,
-) void {
-    const size_u: u32 = @intCast(size);
+fn renderPolygonsStroke(geometry: *const Geometry, stroke_width: f32, buffer: []u8) void {
+    assert(geometry.size > 0);
+    assert(stroke_width >= 0);
+    const points = geometry.points;
+    const scale = geometry.scale;
+    const size_u: u32 = @intCast(geometry.size);
     const half_width = stroke_width * 0.5;
 
-    const size_f: f32 = @floatFromInt(size);
+    const size_f: f32 = @floatFromInt(geometry.size);
 
-    for (polygons.items) |poly| {
+    for (geometry.polygons.items) |poly| {
         const start = poly.start;
         const end = poly.end;
         if (end <= start + 1) continue;

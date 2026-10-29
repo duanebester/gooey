@@ -152,6 +152,10 @@ pub const AppResources = struct {
         try svg_atlas.initInPlace(allocator, scale, io, .{
             .size = atlas_limits.svg_size,
             .icon_size_max = atlas_limits.svg_icon_size_max,
+            .raster_budget = .{
+                .path_bytes_max = atlas_limits.svg_path_bytes_max,
+                .vertex_count_max = atlas_limits.svg_path_vertex_count_max,
+            },
             .uploads = atlas_uploads,
         });
         errdefer svg_atlas.deinit();
@@ -195,6 +199,18 @@ pub const AppResources = struct {
         self.text_system.clearGlyphCache();
         self.svg_atlas.clear();
         self.image_atlas.clear();
+    }
+
+    /// Rasterize glyphs, icons, and images at `scale` device pixels per
+    /// logical pixel from now on. Each cache condemns what it holds only when
+    /// its scale changes, so repeating the current scale costs nothing.
+    pub fn setScaleFactor(self: *const Self, scale: f64) void {
+        std.debug.assert(scale > 0);
+        std.debug.assert(std.math.isFinite(scale));
+        const scale_f32: f32 = @floatCast(scale);
+        self.text_system.setScaleFactor(scale_f32);
+        self.svg_atlas.setScaleFactor(scale_f32);
+        self.image_atlas.setScaleFactor(scale);
     }
 
     pub fn unregisterAtlasConsumer(self: *const Self, key: usize) void {

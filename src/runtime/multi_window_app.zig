@@ -433,10 +433,7 @@ pub const App = struct {
         std.debug.assert(scale_factor > 0);
         std.debug.assert(scale_factor <= SCALE_FACTOR_MAX);
 
-        const scale: f32 = @floatCast(scale_factor);
-        self.resources.text_system.setScaleFactor(scale);
-        self.resources.svg_atlas.setScaleFactor(scale);
-        self.resources.image_atlas.setScaleFactor(scale_factor); // ImageAtlas uses f64
+        self.resources.setScaleFactor(scale_factor);
     }
 
     /// Ask a window to close, then reclaim every window whose close completed.

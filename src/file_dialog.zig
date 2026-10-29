@@ -5,6 +5,8 @@
 //!
 //! - **macOS**: NSOpenPanel / NSSavePanel (blocking/modal)
 //! - **Linux**: XDG Desktop Portal via D-Bus (blocking/modal)
+//! - **Windows**: Common Item Dialog, `IFileOpenDialog` / `IFileSaveDialog`
+//!   (blocking/modal)
 //! - **WASM**: Returns `null` — browsers cannot show blocking file dialogs.
 //!   Use `gooey.platform.web.file_dialog` for the async callback-based API.
 //!
@@ -55,8 +57,18 @@ pub const SavePromptOptions = interface_mod.SavePromptOptions;
 const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 const is_linux = builtin.os.tag == .linux;
 const is_macos = builtin.os.tag == .macos;
+const is_windows = builtin.os.tag == .windows;
 
-const has_native_backend = is_macos or is_linux;
+const has_native_backend = is_macos or is_linux or is_windows;
+
+/// The blocking backend for this target. Only analyzed when
+/// `has_native_backend` is true.
+const backend = if (is_macos)
+    @import("platform/macos/file_dialog.zig")
+else if (is_windows)
+    @import("platform/windows/file_dialog.zig")
+else
+    @import("platform/linux/file_dialog.zig");
 
 /// Whether the current platform supports synchronous (blocking) file dialogs.
 ///
@@ -84,10 +96,6 @@ pub fn promptForPaths(
     std.debug.assert(!(options.directories and options.allowed_extensions != null)); // Extensions don't apply to directories
 
     if (comptime has_native_backend) {
-        const backend = if (is_macos)
-            @import("platform/macos/file_dialog.zig")
-        else
-            @import("platform/linux/file_dialog.zig");
         return backend.promptForPaths(allocator, options);
     }
     return null;
@@ -113,10 +121,6 @@ pub fn promptForNewPath(
     std.debug.assert(options.suggested_name == null or options.suggested_name.?.len > 0); // If provided, name must be non-empty
 
     if (comptime has_native_backend) {
-        const backend = if (is_macos)
-            @import("platform/macos/file_dialog.zig")
-        else
-            @import("platform/linux/file_dialog.zig");
         return backend.promptForNewPath(allocator, options);
     }
     return null;
@@ -147,7 +151,7 @@ test "SavePromptOptions defaults are valid for promptForNewPath" {
 test "supported flag matches platform" {
     if (comptime is_wasm) {
         try std.testing.expect(!supported);
-    } else if (comptime is_macos or is_linux) {
+    } else if (comptime is_macos or is_linux or is_windows) {
         try std.testing.expect(supported);
     }
 }
