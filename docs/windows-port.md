@@ -3,14 +3,16 @@
 ## Status
 
 `gooey.App` examples run on Windows: a Win32 window, DirectWrite text, WIC images, the
-software SVG rasterizer, the system clipboard, and the shared Vulkan renderer. Verified on
-an Intel UHD 620 at 150% scale. The [checklist](#win32-checklist) has what remains.
+software SVG rasterizer, the system clipboard, native file dialogs, and the shared Vulkan
+renderer. Verified on an Intel UHD 620 at 150% scale. The [checklist](#win32-checklist) has
+what remains.
 
 ```sh
 zig build run-showcase       # a gooey.App example (others listed in addWindowsBuilds)
 zig build run-clipboard      # copy and paste through TextInput and TextArea
+zig build run-file-dialog    # open, multi-select, folder, and save dialogs
 zig build run-windows-demo   # the platform-layer demo, no text
-zig build test-windows       # backend, clipboard, DirectWrite, WIC, and SVG atlas tests
+zig build test-windows       # backend, clipboard, file dialog, DirectWrite, WIC, SVG tests
 zig build typecheck-windows  # analyze the backend and showcase for x86_64-windows
 ```
 
@@ -118,8 +120,8 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   opens on a monitor whose DPI differs from the system DPI is resized once.
 - **Close.** `WM_CLOSE` runs the veto, records the close, and hides the window. The `HWND`
   is destroyed in `deinit`, never from inside its own dispatch.
-- **Unimplemented features** (IME, file dialogs, dark title bars) are reported as
-  unavailable in `capabilities`, not faked.
+- **Unimplemented features** (IME, dark title bars) are reported as unavailable in
+  `capabilities`, not faked.
 - `platform/mod.zig` keys `DisplayLink` and the `macos` namespace on `is_macos`, not "not
   web and not Linux", which would select macOS code on Windows.
 
@@ -154,6 +156,38 @@ widgets select it with one `.windows` arm.
   shows a `TextInput` and a `TextArea` with byte, LF, and CR counts. Verified by hand:
   copying between the two widgets works and the pasted text holds no CR. Not yet checked
   by hand: CR LF text from Notepad, copying back into Notepad, and emoji.
+
+### File dialogs
+
+`src/platform/windows/file_dialog.zig` implements `promptForPaths` and `promptForNewPath`
+with the Common Item Dialog (`IFileOpenDialog`, `IFileSaveDialog`), and `gooey.file_dialog`
+selects it with one `.windows` arm. The COM bindings are in `src/platform/windows/shell.zig`,
+with every called slot pinned as in the WIC bindings.
+
+- **Modality.** The dialog is owned by `GetActiveWindow()`. Its modal loop dispatches
+  `WM_PAINT`, so Gooey windows keep drawing, but the platform loop does not turn. Open it
+  from `cx.deferCommand`, which runs after input handling (`on_post_input`), not from
+  inside a click handler; `src/examples/file_dialog.zig` now does this on every platform.
+- **Options.** `message` is the title, `prompt` the OK button label, and
+  `allowed_extensions` one filter (`*.zig;*.txt`) that is also the save dialog's default
+  extension. `directories` picks folders only, as on Linux. `can_create_directories` is
+  ignored: the dialog always offers a new folder. An unresolvable starting folder is
+  logged and ignored, as on macOS. `FOS_NOCHANGEDIR` keeps the working directory, which
+  examples use to find `assets/`.
+- **Paths.** Results are WTF-8, the encoding Zig's file APIs take on Windows, so a name
+  with an unpaired surrogate still opens.
+- **COM.** Each call enters a single-threaded apartment and balances it; a thread already
+  in the multithreaded apartment keeps it.
+- **Bounds.** Labels and names 512 UTF-16 units, paths 32,767, at most 64 extensions in
+  2,048 units, and at most 1,024 selected paths. Longer input fails the call with a
+  warning; a larger selection is refused, never truncated. Scratch is about 72 KiB of
+  stack per call. The returned paths are heap-allocated because the shared contract
+  returns caller-owned paths; that conflicts with section 2 and belongs to the phase 6
+  services redesign, like the clipboard.
+- **Tests.** `test-windows` configures real dialogs with every option without showing
+  them, reads the options back, and round-trips the working directory through an
+  `IShellItem`. Showing a dialog needs a person: `zig build run-file-dialog`. Not yet
+  checked by hand.
 
 ### Text (DirectWrite)
 
@@ -315,6 +349,6 @@ the event loop.
 - [ ] IME (`WM_IME_*`, caret rect from the read-only query).
 - [x] Clipboard (`CF_UNICODETEXT`, Ctrl edit shortcuts in the text widgets,
       `run-clipboard`).
-- [ ] File dialogs.
+- [x] File dialogs (Common Item Dialog, `run-file-dialog`).
 - [ ] Accessibility through UI Automation.
 - [ ] Frame pacing on a render thread.

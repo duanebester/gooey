@@ -274,6 +274,7 @@ pub extern "user32" fn SetWindowPos(
     uFlags: u32,
 ) callconv(.winapi) BOOL;
 pub extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn GetActiveWindow() callconv(.winapi) ?HWND;
 pub extern "user32" fn SetWindowLongPtrW(
     hWnd: HWND,
     nIndex: i32,

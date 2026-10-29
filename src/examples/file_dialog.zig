@@ -24,6 +24,25 @@ const AppState = struct {
     path_lens: [10]usize = @splat(0),
     path_count: usize = 0,
 
+    // Modal dialogs run a nested event loop, so the buttons defer them until
+    // event handling completes rather than opening them mid-event.
+
+    pub fn requestOpenSingleFile(_: *AppState, g: *gooey.Window) void {
+        g.deferCommand(AppState.openSingleFile, .{});
+    }
+
+    pub fn requestOpenMultipleFiles(_: *AppState, g: *gooey.Window) void {
+        g.deferCommand(AppState.openMultipleFiles, .{});
+    }
+
+    pub fn requestOpenDirectory(_: *AppState, g: *gooey.Window) void {
+        g.deferCommand(AppState.openDirectory, .{});
+    }
+
+    pub fn requestSaveFile(_: *AppState, g: *gooey.Window) void {
+        g.deferCommand(AppState.saveFile, .{});
+    }
+
     pub fn openSingleFile(self: *AppState) void {
         self.clearPaths();
 
@@ -187,22 +206,22 @@ const ButtonRow = struct {
             Button{
                 .label = "Open File",
                 .variant = .primary,
-                .on_click = cx.on(AppState.openSingleFile, .{}),
+                .on_click = cx.on(AppState.requestOpenSingleFile, .{}),
             },
             Button{
                 .label = "Open Multiple",
                 .variant = .primary,
-                .on_click = cx.on(AppState.openMultipleFiles, .{}),
+                .on_click = cx.on(AppState.requestOpenMultipleFiles, .{}),
             },
             Button{
                 .label = "Open Directory",
                 .variant = .secondary,
-                .on_click = cx.on(AppState.openDirectory, .{}),
+                .on_click = cx.on(AppState.requestOpenDirectory, .{}),
             },
             Button{
                 .label = "Save As...",
                 .variant = .secondary,
-                .on_click = cx.on(AppState.saveFile, .{}),
+                .on_click = cx.on(AppState.requestSaveFile, .{}),
             },
         }));
     }

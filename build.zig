@@ -1293,6 +1293,7 @@ fn addWindowsBuilds(
         .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
         .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
         .{ .name = "clipboard", .source = "src/examples/clipboard.zig" },
+        .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
     };
     for (examples) |example| {
         addWindowsExample(b, mod, components_mod, target, optimize, example.name, example.source);
