@@ -2,7 +2,8 @@
 //!
 //! Takes a gooey Scene and renders it using Vulkan directly.
 //! Delegates to one module per subsystem:
-//!   - `vk_instance`    : Instance, device, surface, debug messenger
+//!   - `vk_instance`    : Instance, device, debug messenger
+//!   - `vk_surface`     : Window-system surface and its swapchain teardown
 //!   - `vk_swapchain`   : Swapchain lifecycle, render pass, framebuffers
 //!   - `vk_buffers`     : Buffer, command pool, command buffer, sync object creation
 //!   - `vk_descriptors` : Descriptor layouts, pool, sets, sampler, updates
@@ -12,7 +13,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
-const wayland = @import("wayland.zig");
 const interface_verify = @import("../../core/interface_verify.zig");
 const unified = @import("../unified.zig");
 const scene_mod = @import("../../scene/mod.zig");
@@ -28,6 +28,7 @@ const vk_instance = @import("vk_instance.zig");
 const vk_swapchain = @import("vk_swapchain.zig");
 const vk_buffers = @import("vk_buffers.zig");
 const vk_descriptors = @import("vk_descriptors.zig");
+const NativeSurface = @import("vk_surface.zig").NativeSurface;
 
 const SvgInstance = svg_instance_mod.SvgInstance;
 const ImageInstance = image_instance_mod.ImageInstance;
@@ -134,8 +135,9 @@ pub const VulkanRenderer = struct {
 
     allocator: Allocator,
 
-    // Wayland display reference (for roundtrip during cleanup)
-    wl_display: ?*wayland.Display = null,
+    // Window-system objects the surface was created from; consulted again
+    // around swapchain destruction.
+    native_surface: ?NativeSurface = null,
 
     // Core Vulkan objects
     instance: vk.Instance = null,
@@ -201,7 +203,7 @@ pub const VulkanRenderer = struct {
     // reads frame N. Declared at the ceiling; only `frame_count` are created.
     frames: [frame_count_max]FrameResources = @splat(.{}),
     // The window budget's `ResourceLimits.frame.in_flight_count`, set once in
-    // `initWithWaylandSurface` before any per-frame resource is created.
+    // `initWithNativeSurface` before any per-frame resource is created.
     frame_count: u32 = 0,
 
     // Staging buffer for atlas uploads: one lane of `staging_lane_bytes`
@@ -235,7 +237,7 @@ pub const VulkanRenderer = struct {
     allocation_bytes_max: vk.DeviceSize = 0,
 
     // Per-frame instance buffer capacities, from the window's `ResourceLimits.scene`.
-    // Set once in `initWithWaylandSurface` before any buffer is created; read-only
+    // Set once in `initWithNativeSurface` before any buffer is created; read-only
     // afterwards (buffers never grow). Meaningful only while `initialized`.
     instance_capacity: InstanceCapacity = undefined,
 
@@ -338,33 +340,13 @@ pub const VulkanRenderer = struct {
             _ = vk.vkDeviceWaitIdle(dev);
         }
 
-        // Flush pending Wayland requests before destroying swapchain
-        if (self.wl_display) |display| {
-            _ = wayland.wl_display_flush(display);
-            _ = wayland.wl_display_roundtrip(display);
-        }
+        if (self.native_surface) |native| native.swapchainDestroyBegin();
 
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
         if (self.swapchain) |sc| vk.vkDestroySwapchainKHR(self.device, sc, null);
         self.swapchain = null;
 
-        // Roundtrip after destroying swapchain to process compositor release events
-        //
-        // NOTE: A "queue destroyed while proxies still attached" warning may still appear.
-        // This is a KNOWN LIMITATION of Mesa's Vulkan Wayland WSI implementation:
-        // - Mesa creates internal wl_buffer objects for each swapchain image
-        // - When the swapchain is destroyed, Mesa destroys these wl_buffers
-        // - The compositor may still hold references, sending wl_buffer.release later
-        // - If the app exits before processing release events, the warning appears
-        //
-        // This warning is HARMLESS - the compositor cleans up properly regardless.
-        // It's a libwayland-client debugging message, not an actual resource leak.
-        // The roundtrips here minimize but cannot fully eliminate this race condition.
-        if (self.wl_display) |display| {
-            _ = wayland.wl_display_flush(display);
-            _ = wayland.wl_display_roundtrip(display);
-            _ = wayland.wl_display_roundtrip(display);
-        }
+        if (self.native_surface) |native| native.swapchainDestroyEnd();
     }
 
     fn destroyFrameResources(self: *Self) void {
@@ -452,16 +434,16 @@ pub const VulkanRenderer = struct {
     // Initialization
     // =========================================================================
 
-    pub fn initWithWaylandSurface(
+    pub fn initWithNativeSurface(
         self: *Self,
-        wl_display: *anyopaque,
-        wl_surface: *anyopaque,
+        native_surface: NativeSurface,
         width: u32,
         height: u32,
         scale_factor: f64,
         limits: *const ResourceLimits,
     ) !void {
         std.debug.assert(!self.initialized);
+        std.debug.assert(self.native_surface == null);
         std.debug.assert(limits.check() == null);
 
         // Every per-frame buffer and the staging lanes are sized from the
@@ -473,14 +455,16 @@ pub const VulkanRenderer = struct {
         assert(self.frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
         assert(self.frame_count <= frame_count_max);
 
-        // Store Wayland display reference for cleanup roundtrips
-        self.wl_display = @ptrCast(wl_display);
+        // Registered first so it runs last: swapchain errdefers below still
+        // bracket their teardown with it.
+        self.native_surface = native_surface;
+        errdefer self.native_surface = null;
 
         // Store scale factor
         self.scale_factor = scale_factor;
 
         // ---- Instance + debug messenger (vk_instance) ----
-        const inst = try vk_instance.createInstance();
+        const inst = try vk_instance.createInstance(NativeSurface.instance_extension_name);
         self.instance = inst.instance;
         self.debug_messenger = inst.debug_messenger;
         errdefer {
@@ -489,8 +473,8 @@ pub const VulkanRenderer = struct {
             self.instance = null;
         }
 
-        // ---- Wayland surface (vk_instance) ----
-        self.surface = try vk_instance.createWaylandSurface(self.instance, wl_display, wl_surface);
+        // ---- Presentation surface (vk_surface) ----
+        self.surface = try native_surface.create(self.instance);
         errdefer {
             if (self.surface) |surf| vk.vkDestroySurfaceKHR(self.instance, surf, null);
             self.surface = null;

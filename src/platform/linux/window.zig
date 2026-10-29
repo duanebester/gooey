@@ -442,9 +442,8 @@ pub const Window = struct {
             );
         } else {
             const wl_display = plat.getDisplay() orelse return error.NoDisplay;
-            try self.renderer.initWithWaylandSurface(
-                wl_display,
-                @ptrCast(self.wl_surface),
+            try self.renderer.initWithNativeSurface(
+                .{ .display = @ptrCast(wl_display), .surface = self.wl_surface.? },
                 self.width_px,
                 self.height_px,
                 self.scale_factor,
