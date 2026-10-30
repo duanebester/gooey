@@ -157,6 +157,12 @@ pub const ResourceLimits = struct {
     window: WindowLimits,
     frame: FrameLimits,
     atlas: AtlasLimits,
+    build: BuildLimits,
+    records: RecordLimits,
+    retained: RetainedLimits,
+    events: EventLimits,
+    text: TextLimits,
+    entities: EntityLimits,
 
     /// Every profile name `gooey.App(.., .{ .limits = ... })` accepts, smallest first.
     /// `FontLimits` has a profile of each name, so one name selects both budgets.
@@ -168,6 +174,12 @@ pub const ResourceLimits = struct {
         .window = WindowLimits.nano,
         .frame = FrameLimits.nano,
         .atlas = AtlasLimits.nano,
+        .build = BuildLimits.nano,
+        .records = RecordLimits.nano,
+        .retained = RetainedLimits.nano,
+        .events = EventLimits.nano,
+        .text = TextLimits.nano,
+        .entities = EntityLimits.nano,
     };
 
     /// Single-screen forms and lists, two frames in flight.
@@ -176,6 +188,12 @@ pub const ResourceLimits = struct {
         .window = WindowLimits.small,
         .frame = FrameLimits.small,
         .atlas = AtlasLimits.small,
+        .build = BuildLimits.small,
+        .records = RecordLimits.small,
+        .retained = RetainedLimits.small,
+        .events = EventLimits.small,
+        .text = TextLimits.small,
+        .entities = EntityLimits.small,
     };
 
     /// Ordinary multi-panel UI apps. See `SceneLimits.standard`.
@@ -184,6 +202,12 @@ pub const ResourceLimits = struct {
         .window = WindowLimits.standard,
         .frame = FrameLimits.standard,
         .atlas = AtlasLimits.standard,
+        .build = BuildLimits.standard,
+        .records = RecordLimits.standard,
+        .retained = RetainedLimits.standard,
+        .events = EventLimits.standard,
+        .text = TextLimits.standard,
+        .entities = EntityLimits.standard,
     };
 
     /// Dense-content apps: big tables, treemaps, full-screen editors, charts,
@@ -193,6 +217,12 @@ pub const ResourceLimits = struct {
         .window = WindowLimits.large,
         .frame = FrameLimits.large,
         .atlas = AtlasLimits.large,
+        .build = BuildLimits.large,
+        .records = RecordLimits.large,
+        .retained = RetainedLimits.large,
+        .events = EventLimits.large,
+        .text = TextLimits.large,
+        .entities = EntityLimits.large,
     };
 
     /// Every capacity at its framework ceiling. For stress tests and benchmarks;
@@ -205,6 +235,12 @@ pub const ResourceLimits = struct {
         .window = WindowLimits.ceiling,
         .frame = FrameLimits.ceiling,
         .atlas = AtlasLimits.ceiling,
+        .build = BuildLimits.ceiling,
+        .records = RecordLimits.ceiling,
+        .retained = RetainedLimits.ceiling,
+        .events = EventLimits.ceiling,
+        .text = TextLimits.ceiling,
+        .entities = EntityLimits.ceiling,
     };
 
     /// First violated rule, or null when the budget is valid. Shared by the
@@ -213,7 +249,55 @@ pub const ResourceLimits = struct {
         if (self.scene.check()) |violation| return violation;
         if (self.window.check()) |violation| return violation;
         if (self.frame.check()) |violation| return violation;
-        return self.atlas.check();
+        if (self.atlas.check()) |violation| return violation;
+        if (checkCeilings(BuildLimits, .build, &self.build)) |violation| return violation;
+        if (checkCeilings(RecordLimits, .records, &self.records)) |violation| return violation;
+        if (checkCeilings(RetainedLimits, .retained, &self.retained)) |violation| return violation;
+        if (checkCeilings(EventLimits, .events, &self.events)) |violation| return violation;
+        if (self.text.check()) |violation| return violation;
+        if (checkCeilings(EntityLimits, .entities, &self.entities)) |violation| return violation;
+        return self.checkCoreRelationships();
+    }
+
+    /// Rules between the core's budgets. A hit record and a handler belong to
+    /// an element, so neither can outnumber elements; the layout engine stores
+    /// at most `MAX_LAYOUT_ENGINE_ELEMENTS` per frame.
+    fn checkCoreRelationships(self: *const ResourceLimits) ?Violation {
+        const element_count = self.build.element_count_frame_max;
+        if (self.records.hit_record_count_frame_max > element_count) {
+            return relationship(
+                .records,
+                "hit_record_count_frame_max",
+                self.records.hit_record_count_frame_max,
+                element_count,
+            );
+        }
+        if (self.records.handler_count_frame_max > element_count * handler_count_element_max) {
+            return relationship(
+                .records,
+                "handler_count_frame_max",
+                self.records.handler_count_frame_max,
+                element_count * handler_count_element_max,
+            );
+        }
+        if (self.build.key_count_frame_max > element_count) {
+            return relationship(
+                .build,
+                "key_count_frame_max",
+                self.build.key_count_frame_max,
+                element_count,
+            );
+        }
+        if (self.records.paint_record_count_frame_max < element_count) {
+            return .{
+                .budget = .records,
+                .field = "paint_record_count_frame_max",
+                .rule = .below_relationship,
+                .value = self.records.paint_record_count_frame_max,
+                .bound = element_count,
+            };
+        }
+        return null;
     }
 
     /// Runtime counterpart of `validate` for budgets that are not comptime-known
@@ -834,6 +918,326 @@ pub const AtlasLimits = struct {
     }
 };
 
+// =============================================================================
+// Core budgets (0.4.0 contract, "ResourceLimits")
+// =============================================================================
+//
+// Per-window capacities of the 0.4.0 core. Every pool is reserved from these
+// at initialization (contract rule 4); exhausting one panics with the pool's
+// name, capacity, requested count, and frame. The `standard` row matches the
+// contract's performance sketch; the other rungs scale it to their example
+// class. `ceiling` holds the framework maxima `check` enforces.
+
+/// Elements the layout engine stores per frame (`layout/engine.zig`).
+pub const MAX_LAYOUT_ENGINE_ELEMENTS: u32 = 16_384;
+
+/// Most handlers one element can register (click, click-outside, key).
+pub const handler_count_element_max: u32 = 3;
+
+/// Approved decision 1: component recursion is bounded, default 64, ceiling 128.
+pub const MAX_COMPONENT_DEPTH: u32 = 128;
+
+/// Build-phase capacities: the element tree one frame may describe.
+pub const BuildLimits = struct {
+    /// Elements (`box`, `text`, `paint`) per frame.
+    element_count_frame_max: u32,
+    /// Nested `cx.render` calls (approved decision 1).
+    component_depth_max: u32,
+    /// Keyed elements per frame, for duplicate-key detection.
+    key_count_frame_max: u32,
+    /// Bytes of text and accessibility strings copied per frame (rule 6).
+    text_bytes_frame_max: u32,
+
+    pub const nano: BuildLimits = .{
+        .element_count_frame_max = 512,
+        .component_depth_max = 64,
+        .key_count_frame_max = 256,
+        .text_bytes_frame_max = 16 * 1024,
+    };
+    pub const small: BuildLimits = .{
+        .element_count_frame_max = 2_048,
+        .component_depth_max = 64,
+        .key_count_frame_max = 1_024,
+        .text_bytes_frame_max = 64 * 1024,
+    };
+    pub const standard: BuildLimits = .{
+        .element_count_frame_max = 4_096,
+        .component_depth_max = 64,
+        .key_count_frame_max = 4_096,
+        .text_bytes_frame_max = 256 * 1024,
+    };
+    pub const large: BuildLimits = .{
+        .element_count_frame_max = 16_384,
+        .component_depth_max = 64,
+        .key_count_frame_max = 16_384,
+        .text_bytes_frame_max = 1024 * 1024,
+    };
+    pub const ceiling: BuildLimits = .{
+        .element_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
+        .component_depth_max = MAX_COMPONENT_DEPTH,
+        .key_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
+        .text_bytes_frame_max = 4 * 1024 * 1024,
+    };
+};
+
+/// Emit-phase capacities: records one frame may hold, per record buffer.
+pub const RecordLimits = struct {
+    /// Paint records (quads, sprites, meshes, clips) across all fragments.
+    paint_record_count_frame_max: u32,
+    /// Hit records: interactive or keyed boxes.
+    hit_record_count_frame_max: u32,
+    /// Handlers bound by `cx.on` during build.
+    handler_count_frame_max: u32,
+
+    pub const nano: RecordLimits = .{
+        .paint_record_count_frame_max = 4_096,
+        .hit_record_count_frame_max = 512,
+        .handler_count_frame_max = 512,
+    };
+    pub const small: RecordLimits = .{
+        .paint_record_count_frame_max = 8_192,
+        .hit_record_count_frame_max = 2_048,
+        .handler_count_frame_max = 2_048,
+    };
+    pub const standard: RecordLimits = .{
+        .paint_record_count_frame_max = 28_672,
+        .hit_record_count_frame_max = 4_096,
+        .handler_count_frame_max = 4_096,
+    };
+    pub const large: RecordLimits = .{
+        .paint_record_count_frame_max = 65_536,
+        .hit_record_count_frame_max = 16_384,
+        .handler_count_frame_max = 16_384,
+    };
+    pub const ceiling: RecordLimits = .{
+        .paint_record_count_frame_max = 262_144,
+        .hit_record_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
+        .handler_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS * handler_count_element_max,
+    };
+};
+
+/// Retained-store slabs, one per size class (contract §3).
+pub const RetainedLimits = struct {
+    slot_count_64: u32,
+    slot_count_256: u32,
+    slot_count_1024: u32,
+    slot_count_4096: u32,
+    /// Untouched frames before a `.frame` entry is released.
+    sweep_delay_frames: u32,
+
+    pub const nano: RetainedLimits = .{
+        .slot_count_64 = 128,
+        .slot_count_256 = 64,
+        .slot_count_1024 = 16,
+        .slot_count_4096 = 4,
+        .sweep_delay_frames = 8,
+    };
+    pub const small: RetainedLimits = .{
+        .slot_count_64 = 512,
+        .slot_count_256 = 256,
+        .slot_count_1024 = 64,
+        .slot_count_4096 = 16,
+        .sweep_delay_frames = 8,
+    };
+    pub const standard: RetainedLimits = .{
+        .slot_count_64 = 2_048,
+        .slot_count_256 = 1_024,
+        .slot_count_1024 = 256,
+        .slot_count_4096 = 64,
+        .sweep_delay_frames = 8,
+    };
+    pub const large: RetainedLimits = .{
+        .slot_count_64 = 8_192,
+        .slot_count_256 = 4_096,
+        .slot_count_1024 = 1_024,
+        .slot_count_4096 = 256,
+        .sweep_delay_frames = 8,
+    };
+    pub const ceiling: RetainedLimits = .{
+        .slot_count_64 = 65_536,
+        .slot_count_256 = 16_384,
+        .slot_count_1024 = 4_096,
+        .slot_count_4096 = 1_024,
+        .sweep_delay_frames = 600,
+    };
+};
+
+/// Event queue, completion ring, and timer table (contract §5).
+pub const EventLimits = struct {
+    queue_count_max: u32,
+    completion_count_max: u32,
+    timer_count_max: u32,
+    /// Bytes of event text (IME and typed text, dialog paths) in flight.
+    text_bytes_max: u32,
+
+    pub const nano: EventLimits = .{
+        .queue_count_max = 64,
+        .completion_count_max = 16,
+        .timer_count_max = 8,
+        .text_bytes_max = 4 * 1024,
+    };
+    pub const small: EventLimits = .{
+        .queue_count_max = 128,
+        .completion_count_max = 32,
+        .timer_count_max = 16,
+        .text_bytes_max = 8 * 1024,
+    };
+    pub const standard: EventLimits = .{
+        .queue_count_max = 256,
+        .completion_count_max = 64,
+        .timer_count_max = 32,
+        .text_bytes_max = 16 * 1024,
+    };
+    pub const large: EventLimits = .{
+        .queue_count_max = 512,
+        .completion_count_max = 128,
+        .timer_count_max = 64,
+        .text_bytes_max = 64 * 1024,
+    };
+    pub const ceiling: EventLimits = .{
+        .queue_count_max = 4_096,
+        .completion_count_max = 1_024,
+        .timer_count_max = 256,
+        .text_bytes_max = 1024 * 1024,
+    };
+};
+
+/// One text-engine pool (contract §3, approved decision 6). A count of 0
+/// reserves nothing; bytes and undo depth are then unused but still bounded.
+pub const TextKindLimits = struct {
+    count_max: u32,
+    bytes_max: u32,
+    undo_depth_max: u32,
+};
+
+/// The three text-engine pools: single-line inputs, multi-line areas, and code
+/// editors. Milestone 1 implements inputs; `area` and `editor` reserve nothing
+/// until phase 4 ports those engines, so every profile sets their count to 0.
+pub const TextLimits = struct {
+    input: TextKindLimits,
+    area: TextKindLimits,
+    editor: TextKindLimits,
+
+    pub const nano: TextLimits = .{
+        .input = .{ .count_max = 4, .bytes_max = 1024, .undo_depth_max = 32 },
+        .area = .{ .count_max = 0, .bytes_max = 16 * 1024, .undo_depth_max = 32 },
+        .editor = .{ .count_max = 0, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
+    };
+    pub const small: TextLimits = .{
+        .input = .{ .count_max = 16, .bytes_max = 4 * 1024, .undo_depth_max = 64 },
+        .area = .{ .count_max = 0, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
+        .editor = .{ .count_max = 0, .bytes_max = 256 * 1024, .undo_depth_max = 128 },
+    };
+    pub const standard: TextLimits = .{
+        .input = .{ .count_max = 64, .bytes_max = 8 * 1024, .undo_depth_max = 64 },
+        .area = .{ .count_max = 0, .bytes_max = 128 * 1024, .undo_depth_max = 128 },
+        .editor = .{ .count_max = 0, .bytes_max = 1024 * 1024, .undo_depth_max = 256 },
+    };
+    pub const large: TextLimits = .{
+        .input = .{ .count_max = 128, .bytes_max = 8 * 1024, .undo_depth_max = 128 },
+        .area = .{ .count_max = 0, .bytes_max = 128 * 1024, .undo_depth_max = 256 },
+        .editor = .{ .count_max = 0, .bytes_max = 4 * 1024 * 1024, .undo_depth_max = 512 },
+    };
+    pub const ceiling: TextLimits = .{
+        .input = .{ .count_max = 1_024, .bytes_max = 64 * 1024, .undo_depth_max = 1_024 },
+        .area = .{ .count_max = 256, .bytes_max = 1024 * 1024, .undo_depth_max = 1_024 },
+        .editor = .{ .count_max = 64, .bytes_max = 16 * 1024 * 1024, .undo_depth_max = 4_096 },
+    };
+
+    /// Counts may be 0; bytes and undo depth must be in `1..=ceiling`.
+    pub fn check(self: *const TextLimits) ?Violation {
+        inline for (.{ "input", "area", "editor" }) |kind| {
+            const value: *const TextKindLimits = &@field(self, kind);
+            const bound: *const TextKindLimits = &@field(ceiling, kind);
+            inline for (@typeInfo(TextKindLimits).@"struct".field_names) |field_name| {
+                const field_value: u32 = @field(value, field_name);
+                const field_bound: u32 = @field(bound, field_name);
+                const zero_allowed = comptime std.mem.eql(u8, field_name, "count_max");
+                if (field_value == 0 and !zero_allowed) {
+                    return .{
+                        .budget = .text,
+                        .field = kind ++ "." ++ field_name,
+                        .rule = .zero,
+                        .value = 0,
+                        .bound = 1,
+                    };
+                }
+                if (field_value > field_bound) {
+                    return .{
+                        .budget = .text,
+                        .field = kind ++ "." ++ field_name,
+                        .rule = .above_ceiling,
+                        .value = field_value,
+                        .bound = field_bound,
+                    };
+                }
+            }
+        }
+        return null;
+    }
+};
+
+/// Entity pools: every type in `Config.entities` gets one pool of this many.
+pub const EntityLimits = struct {
+    count_per_type_max: u32,
+
+    pub const nano: EntityLimits = .{ .count_per_type_max = 16 };
+    pub const small: EntityLimits = .{ .count_per_type_max = 64 };
+    pub const standard: EntityLimits = .{ .count_per_type_max = 256 };
+    pub const large: EntityLimits = .{ .count_per_type_max = 1_024 };
+    pub const ceiling: EntityLimits = .{ .count_per_type_max = 4_096 };
+};
+
+/// Every `u32` field of a flat budget must be in `1..=ceiling`.
+fn checkCeilings(comptime T: type, comptime budget: Violation.Budget, self: *const T) ?Violation {
+    inline for (@typeInfo(T).@"struct".field_names) |field_name| {
+        const value: u32 = @field(self, field_name);
+        const bound: u32 = @field(T.ceiling, field_name);
+        if (value == 0) {
+            return .{
+                .budget = budget,
+                .field = field_name,
+                .rule = .zero,
+                .value = 0,
+                .bound = 1,
+            };
+        }
+        if (value > bound) {
+            return .{
+                .budget = budget,
+                .field = field_name,
+                .rule = .above_ceiling,
+                .value = value,
+                .bound = bound,
+            };
+        }
+    }
+    return null;
+}
+
+fn relationship(
+    comptime budget: Violation.Budget,
+    comptime field: []const u8,
+    value: u32,
+    bound: u32,
+) Violation {
+    return .{
+        .budget = budget,
+        .field = field,
+        .rule = .above_relationship,
+        .value = value,
+        .bound = bound,
+    };
+}
+
+comptime {
+    for (ResourceLimits.profile_names) |name| {
+        assert(@field(ResourceLimits, name).check() == null);
+    }
+    assert(BuildLimits.standard.component_depth_max == 64);
+    assert(BuildLimits.ceiling.component_depth_max == 128);
+}
+
 /// A broken budget rule, precise enough to name in a compile error.
 pub const Violation = struct {
     budget: Budget,
@@ -843,8 +1247,25 @@ pub const Violation = struct {
     bound: u32,
 
     /// The `ResourceLimits` field holding the broken rule.
-    pub const Budget = enum { scene, window, frame, atlas };
-    pub const Rule = enum { zero, above_ceiling, below_relationship, not_multiple };
+    pub const Budget = enum {
+        scene,
+        window,
+        frame,
+        atlas,
+        build,
+        records,
+        retained,
+        events,
+        text,
+        entities,
+    };
+    pub const Rule = enum {
+        zero,
+        above_ceiling,
+        below_relationship,
+        above_relationship,
+        not_multiple,
+    };
 
     /// Human-readable message. Comptime only: used by `ResourceLimits.validate`.
     pub fn describe(comptime self: Violation) []const u8 {
@@ -859,6 +1280,10 @@ pub const Violation = struct {
             ),
             .below_relationship => std.fmt.comptimePrint(
                 "ResourceLimits.{t}.{s} = {d} is below the required minimum {d}",
+                .{ self.budget, self.field, self.value, self.bound },
+            ),
+            .above_relationship => std.fmt.comptimePrint(
+                "ResourceLimits.{t}.{s} = {d} exceeds {d}, set by a related budget",
                 .{ self.budget, self.field, self.value, self.bound },
             ),
             .not_multiple => std.fmt.comptimePrint(

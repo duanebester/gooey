@@ -25,6 +25,30 @@ pub const limits = @import("limits.zig");
 pub const backend = @import("backend.zig");
 
 // =============================================================================
+// The 0.4.0 core (contract "Shape"): runs beside the 0.3.1 middle until
+// phase 6. `root.zig` is its public surface.
+// =============================================================================
+
+const surface = @import("root.zig");
+pub const App = surface.App;
+pub const Config = surface.Config;
+pub const Cx = surface.Cx;
+pub const ui = surface.ui;
+pub const Handler = surface.Handler;
+pub const Effects = surface.Effects;
+pub const Entity = surface.Entity;
+pub const ElementId = surface.ElementId;
+pub const Key = surface.Key;
+pub const Lifetime = surface.Lifetime;
+pub const Handle = surface.Handle;
+pub const Query = surface.Query;
+pub const Theme = surface.Theme;
+pub const Painter = surface.Painter;
+pub const InputEngine = surface.InputEngine;
+pub const ResourceLimits = surface.ResourceLimits;
+pub const internals = surface;
+
+// =============================================================================
 // Custom Shaders
 // =============================================================================
 
@@ -55,4 +79,5 @@ pub const verifyFocusableInterface = interface_verify.verifyFocusableInterface;
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("root.zig");
 }

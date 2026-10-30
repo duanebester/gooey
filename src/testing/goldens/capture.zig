@@ -7,6 +7,7 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const legacy = @import("legacy.zig");
+const core = @import("core.zig");
 const goldens_test = @import("goldens_test.zig");
 
 const TextBuffer = gooey.testing.record_dump.TextBuffer;
@@ -19,6 +20,8 @@ const Golden = struct { file_name: []const u8, capture: Capture };
 const goldens = [_]Golden{
     .{ .file_name = "legacy_counter.txt", .capture = legacy.captureCounter },
     .{ .file_name = "legacy_todo.txt", .capture = legacy.captureTodo },
+    .{ .file_name = "core_counter.txt", .capture = core.captureCounter },
+    .{ .file_name = "core_todo.txt", .capture = core.captureTodo },
 };
 
 pub fn main(init: std.process.Init) !void {

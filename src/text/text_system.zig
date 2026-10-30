@@ -680,6 +680,11 @@ pub const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
 /// High-level text system
 pub const TextSystem = struct {
     allocator: std.mem.Allocator,
+    /// Owns every `ShapedRun` a shape miss returns; callers free runs with it.
+    /// It is `allocator` unless a caller with reserved scratch storage sets it
+    /// (`useRunAllocator`), so a shape miss after initialization claims that
+    /// storage instead of the heap (CLAUDE.md §2; the 0.4.0 core does this).
+    run_allocator: std.mem.Allocator,
     cache: cache_mod.GlyphCache,
     /// One face per variant in `FontLimits.variants`, allocated at init and
     /// reloaded in place by `loadFont`. Slot addresses never change, so
@@ -759,6 +764,7 @@ pub const TextSystem = struct {
         self.loaded_source.name_len = 0;
         self.loaded_source.size = 0;
         self.allocator = allocator;
+        self.run_allocator = allocator;
         self.shaper = null;
         self.scale_factor = scale;
         self.io = io;
@@ -774,6 +780,15 @@ pub const TextSystem = struct {
         std.debug.assert(self.faces.len == font_limits.variants.len);
         const regular_slot = self.face_slot_by_variant[@backingInt(FontVariant.regular)];
         std.debug.assert(regular_slot < self.faces.len);
+    }
+
+    /// Make `run_allocator` own shaped runs from now on, and create the
+    /// shaper now so its lazy creation cannot happen after initialization.
+    pub fn useRunAllocator(self: *Self, run_allocator: std.mem.Allocator) void {
+        std.debug.assert(self.faces_loaded);
+        if (self.shaper == null) self.shaper = PlatformShaper.init(self.allocator);
+        self.run_allocator = run_allocator;
+        std.debug.assert(self.shaper != null);
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
@@ -1013,7 +1028,8 @@ pub const TextSystem = struct {
                 // Copy glyphs to owned memory to prevent use-after-free race.
                 // The cache entry may be evicted by another thread after we release
                 // shape_cache_mutex, so we must not return a slice pointing into cache memory.
-                const glyphs_copy = try self.allocator.alloc(types.ShapedGlyph, cached_run.glyphs.len);
+                const glyph_count = cached_run.glyphs.len;
+                const glyphs_copy = try self.run_allocator.alloc(types.ShapedGlyph, glyph_count);
                 @memcpy(glyphs_copy, cached_run.glyphs);
                 return types.ShapedRun{
                     .glyphs = glyphs_copy,
@@ -1033,7 +1049,7 @@ pub const TextSystem = struct {
         // Time the shaping call for stats (native only — skip the JS FFI clock
         // read on WASM's hot path). Monotonic `.awake` keeps `elapsed` >= 0.
         const start_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
-        const result = try self.shaper.?.shape(face, text, self.allocator);
+        const result = try self.shaper.?.shape(face, text, self.run_allocator);
         const end_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
 
         std.debug.assert(result.width >= 0);
@@ -1068,7 +1084,7 @@ pub const TextSystem = struct {
     ///
     ///   var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
     ///   var shaped = try ts.shapeTextInto(text, .regular, stats, &buf);
-    ///   defer if (shaped.owned) shaped.deinit(ts.allocator);
+    ///   defer if (shaped.owned) shaped.deinit(ts.run_allocator);
     pub fn shapeTextInto(
         self: *Self,
         text: []const u8,
@@ -1112,7 +1128,7 @@ pub const TextSystem = struct {
         }
 
         // Cold path (or buffer overflow): delegate to heap-allocating shapeText.
-        // Returns owned = true; caller must deinit with self.allocator.
+        // Returns owned = true; caller must deinit with self.run_allocator.
         return self.shapeText(text, variant, stats);
     }
 
@@ -1160,7 +1176,7 @@ pub const TextSystem = struct {
             // far rarer than the 129..512 band that `MeasureCache` covers.
             if (text.len > ShapedRunCache.MAX_TEXT_LEN) {
                 var shaped_long = try self.shapeText(text, variant, &render_stats.frame_stats);
-                defer shaped_long.deinit(self.allocator);
+                defer shaped_long.deinit(self.run_allocator);
                 return shaped_long.width;
             }
 
@@ -1201,7 +1217,7 @@ pub const TextSystem = struct {
             // building -- the same thread that resets `frame_stats` in
             // `beginFrame` -- so the unsynchronised increment is safe here.
             var shaped = try self.shapeText(text, variant, &render_stats.frame_stats);
-            defer shaped.deinit(self.allocator);
+            defer shaped.deinit(self.run_allocator);
             std.debug.assert(shaped.width >= 0);
 
             {
@@ -1251,7 +1267,7 @@ pub const TextSystem = struct {
         // Cache miss: full shape via CoreText/HarfBuzz, measure, free.
         // The shapeText call also populates the cache for next time.
         var run = try self.shapeText(text, variant, null);
-        defer run.deinit(self.allocator);
+        defer run.deinit(self.run_allocator);
         return measureGlyphRun(run.glyphs, text, run.width, max_width, line_height);
     }
 

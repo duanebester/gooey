@@ -146,6 +146,12 @@ fn cpuMissingAtlas(gpa: std.mem.Allocator) !void {
             .window = .{ .framebuffer_width_max = 8, .framebuffer_height_max = 8 },
             .frame = gooey.ResourceLimits.nano.frame,
             .atlas = gooey.ResourceLimits.standard.atlas,
+            .build = gooey.ResourceLimits.nano.build,
+            .records = gooey.ResourceLimits.nano.records,
+            .retained = gooey.ResourceLimits.nano.retained,
+            .events = gooey.ResourceLimits.nano.events,
+            .text = gooey.ResourceLimits.nano.text,
+            .entities = gooey.ResourceLimits.nano.entities,
         };
         var scene = try Scene.initCapacity(gpa, &limits.scene);
         defer scene.deinit();
