@@ -556,7 +556,7 @@ fn benchShapeCold(
 
     const warmup_iters = getWarmupIterations(1);
     const min_iters = getMinSampleIterations(1);
-    const allocator = text_sys.allocator;
+    const allocator = text_sys.run_allocator;
 
     // Warmup: verify shaping works, populate platform shaper internals.
     for (0..warmup_iters) |_| {
@@ -617,7 +617,7 @@ fn benchShapeWarm(
 
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
-    const allocator = text_sys.allocator;
+    const allocator = text_sys.run_allocator;
 
     // Prime the shape cache with this text.
     {
@@ -671,7 +671,7 @@ fn benchShapeWarm(
 
 /// Benchmark warm text shaping with an arena allocator instead of GPA.
 /// On a shape cache hit, shapeText allocates only the glyph array copy
-/// from self.allocator.  Swapping the allocator to an arena makes alloc a
+/// from self.run_allocator.  Swapping it to an arena makes alloc a
 /// pointer bump and free a no-op — isolating the true cache lookup cost from
 /// the GPA alloc/free overhead that dominates the warm GPA path.
 fn benchShapeWarmArena(
@@ -683,7 +683,7 @@ fn benchShapeWarmArena(
     std.debug.assert(bench_text.len > 0);
     std.debug.assert(count > 0);
 
-    const gpa = text_sys.allocator;
+    const gpa = text_sys.run_allocator;
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
@@ -699,12 +699,12 @@ fn benchShapeWarmArena(
 
     // Warmup.
     for (0..warmup_iters) |_| {
-        text_sys.allocator = arena_alloc;
+        text_sys.run_allocator = arena_alloc;
         for (0..count) |_| {
             var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
             run.deinit(arena_alloc);
         }
-        text_sys.allocator = gpa;
+        text_sys.run_allocator = gpa;
         _ = arena.reset(.retain_capacity);
     }
 
@@ -715,7 +715,7 @@ fn benchShapeWarmArena(
     var last_width: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        text_sys.allocator = arena_alloc;
+        text_sys.run_allocator = arena_alloc;
         const start = time.Instant.now();
         for (0..count) |_| {
             var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
@@ -723,7 +723,7 @@ fn benchShapeWarmArena(
             run.deinit(arena_alloc);
         }
         const end = time.Instant.now();
-        text_sys.allocator = gpa;
+        text_sys.run_allocator = gpa;
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -759,7 +759,7 @@ fn benchShapeWarmInto(
     std.debug.assert(bench_text.len > 0);
     std.debug.assert(count > 0);
 
-    const allocator = text_sys.allocator;
+    const allocator = text_sys.run_allocator;
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
