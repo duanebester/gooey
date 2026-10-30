@@ -1,0 +1,102 @@
+# =============================================================================
+# Gooey site (GitHub Pages)
+# =============================================================================
+# Builds the browser showcase (`zig build wasm`) into a Pages artifact and
+# reports its size. See docs/v0.4.0-showcase.md, section 4.
+#
+# Deployment is off until the repository owner opts in:
+#   1. Settings -> Pages -> Source: GitHub Actions.
+#   2. Settings -> Variables -> Actions: GOOEY_PAGES_ENABLED = true.
+# Until both are done the deploy job is skipped, so this workflow never
+# publishes anything or changes repository settings on its own.
+# =============================================================================
+
+name: Pages
+
+on:
+  pull_request:
+    branches: [main, "integration/**"]
+    paths:
+      - "web/**"
+      - "src/platform/web/**"
+      - "src/examples/showcase.zig"
+      - "assets/**"
+      - "build.zig"
+      - ".github/workflows/pages.yml"
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push supersedes a queued build.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must be >= 0.17.0: build.zig.zon sets minimum_zig_version to 0.17.0.
+  ZIG_VERSION: "0.17.0"
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache
+          key: zig-cache-pages-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-pages-
+
+      - name: Build browser showcase
+        run: zig build wasm -Dskip-shader-compile=true
+
+      - name: Report site size
+        run: |
+          {
+            echo "### Site size"
+            echo
+            echo "| File | Raw bytes | gzip -9 bytes |"
+            echo "| --- | ---: | ---: |"
+            for file in app.wasm index.html; do
+              raw=$(stat --format=%s "zig-out/web/${file}")
+              compressed=$(gzip -9 --stdout "zig-out/web/${file}" | wc --bytes)
+              echo "| \`${file}\` | ${raw} | ${compressed} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: zig-out/web/
+          retention-days: 7
+
+  deploy:
+    name: Deploy site
+    needs: build
+    if: github.event_name != 'pull_request' && vars.GOOEY_PAGES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
