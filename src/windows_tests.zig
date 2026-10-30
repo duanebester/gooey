@@ -9,9 +9,11 @@
 //! clipboard and replace its contents. The file dialog tests create and
 //! configure real Common Item Dialogs without showing them. The accessibility
 //! tests drive the providers through their COM vtables against hidden
-//! windows. `root.zig`'s test block is not wired up for Windows yet. This root
-//! lives in `src/` because a module cannot import files above its root's
-//! directory.
+//! windows. The shared tests run from `root.zig` in a separate binary on the
+//! `gooey` module. That binary reaches some of these files too, but this root
+//! names the Windows set explicitly so its coverage does not depend on what
+//! `root.zig`'s discovery chain happens to reach. It lives in `src/` because a
+//! module cannot import files above its root's directory.
 
 test {
     _ = @import("platform/windows/clipboard.zig");

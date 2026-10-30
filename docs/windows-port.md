@@ -13,8 +13,8 @@ zig build run-clipboard      # copy and paste through TextInput and TextArea
 zig build run-file-dialog    # open, multi-select, folder, and save dialogs
 zig build run-accessible-form # UI Automation: Narrator, NVDA, or Inspect
 zig build run-windows-demo   # the platform-layer demo, no text
-zig build test-windows       # backend, clipboard, dialogs, IME, a11y, DirectWrite, WIC, SVG
-zig build typecheck-windows  # analyze the backend and showcase for x86_64-windows
+zig build test-windows       # shared root.zig tests, then the Windows backend tests
+zig build typecheck-windows  # analyze the backend, showcase, and tests for x86_64-windows
 ```
 
 Toolchain: Zig 0.17.0. Scope: 64-bit Windows only. `vulkan.zig` declares every handle,
@@ -56,8 +56,9 @@ file dialogs, cursors, accessibility (UI Automation), and frame pacing on a rend
   entry.
 - **Shared edits.** Keep them to one `.windows` arm per dispatcher: `platform/mod.zig`,
   `linux/vk_surface.zig`, `text/mod.zig`, `text_system.zig`, `text/cache.zig`,
-  `image/loader.zig`, the clipboard selection in `widgets/text_input_state.zig` and
-  `widgets/text_area_state.zig`, and the Windows functions in `build.zig`. Everything else
+  `image/loader.zig`, `platform/mutex.zig`, the clipboard selection in
+  `widgets/text_input_state.zig` and `widgets/text_area_state.zig`, and the Windows
+  functions in `build.zig`. Everything else
   lives in `src/platform/windows/` or a backend directory.
 - **Boundary.** The Windows `mod.zig` pins `contract.verifyBackend(@This())`, so every
   contract change in 0.4.0 is a compile error naming the declaration.
@@ -436,6 +437,23 @@ they surface while testing the port.
 - **Build output.** `zig build test-windows` prints `failed command: ...test.exe` whenever
   a test logs a warning, even though the summary reports every test passing.
 
+## Tests and CI
+
+- **`test-windows`** builds two binaries, as macOS and Linux do. The first runs
+  `root.zig`'s tests on the same `gooey` module the examples link (Vulkan import library
+  included). The second runs `src/windows_tests.zig`, which names the Windows backend set
+  explicitly so its coverage does not depend on what `root.zig`'s discovery chain reaches
+  during the 0.4.0 rewrite. A few Windows files (DirectWrite, clipboard, UIA, SVG atlas)
+  run in both, about a second of overlap. 1545 tests: 1209 shared, 336 backend.
+- **Mutex.** Wiring the shared tests found that `platform/mutex.zig` fell through to
+  `PosixMutex` on Windows, where `pthread_mutex_t` is `void`. Its `.windows` arm is an
+  `SRWLOCK`: zero means unlocked, and like `os_unfair_lock` it is not recursive.
+- **`typecheck-windows`** also analyzes the `root.zig` test root, as `typecheck-linux`
+  does.
+- **CI.** The `test-macos` job in `.github/workflows/ci.yml` runs `typecheck-windows`
+  after `typecheck-linux`, so a 0.4.0 contract change that breaks the Windows backend
+  fails CI. Nothing runs the Windows tests in CI yet; that needs a Windows runner.
+
 ## Win32 checklist
 
 Each item must honour `ResourceLimits` and the static-allocation rule (CLAUDE.md section 2):
@@ -450,10 +468,10 @@ the event loop.
 - [x] `build.zig` Windows targets and `typecheck-windows`.
 - [x] Text (DirectWrite: discovery, shaping, grayscale rasterization).
 - [x] Image decoding (WIC).
-- [ ] CI: run `typecheck-windows` next to `typecheck-linux`, which runs in the macOS job
-      of `.github/workflows/ci.yml`.
-- [ ] Wire `root.zig`'s test block up for Windows; `test-windows` covers only the
-      backends.
+- [x] CI: `typecheck-windows` next to `typecheck-linux` in the macOS job of
+      `.github/workflows/ci.yml`.
+- [x] `root.zig`'s tests run on Windows in `test-windows`.
+- [ ] CI: run `test-windows` on a Windows runner.
 - [x] SVG rasterization (software rasterizer, fixed scratch arena).
 - [ ] Text: font fallback (`IDWriteFontFallback::MapCharacters` can reuse the analysis
       source), bidi, color glyphs.

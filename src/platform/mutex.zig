@@ -21,6 +21,7 @@
 //!
 //!   • macOS / Darwin  — `os_unfair_lock`  (the primitive behind Zig 0.15's `std.Thread.Mutex`)
 //!   • Linux / POSIX   — `pthread_mutex_t` (libc is always linked on Linux)
+//!   • Windows         — `SRWLOCK` (no libc; `pthread_mutex_t` is `void` there)
 //!   • WASM            — no-op (single-threaded; no render thread at all)
 //!
 //! ## Why not `std.atomic.Mutex`?
@@ -45,6 +46,7 @@ const builtin = @import("builtin");
 pub const Mutex = switch (builtin.os.tag) {
     .macos => DarwinMutex,
     .linux => PosixMutex,
+    .windows => WindowsMutex,
     else => if (builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64)
         NoOpMutex
     else
@@ -111,6 +113,41 @@ const PosixMutex = struct {
     }
 
     pub fn heldByCurrentThread(self: *const PosixMutex) bool {
+        return self.owner.isCurrentThread();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Windows: SRWLOCK
+// ---------------------------------------------------------------------------
+
+// An exclusive SRW lock is non-recursive like `os_unfair_lock`, and its zero
+// state is unlocked, so a default-initialised field needs no init call. The
+// `ntdll` entry points are the ones the kernel32 `*SRWLock*` exports forward
+// to, already declared by the standard library.
+const WindowsMutex = struct {
+    inner: std.os.windows.SRWLOCK = std.os.windows.SRWLOCK_INIT,
+    owner: Owner = .{},
+
+    pub fn lock(self: *WindowsMutex) void {
+        std.os.windows.ntdll.RtlAcquireSRWLockExclusive(&self.inner);
+        self.owner.claim();
+    }
+
+    pub fn unlock(self: *WindowsMutex) void {
+        self.owner.release();
+        std.os.windows.ntdll.RtlReleaseSRWLockExclusive(&self.inner);
+    }
+
+    pub fn tryLock(self: *WindowsMutex) bool {
+        if (!std.os.windows.ntdll.RtlTryAcquireSRWLockExclusive(&self.inner).toBool()) {
+            return false;
+        }
+        self.owner.claim();
+        return true;
+    }
+
+    pub fn heldByCurrentThread(self: *const WindowsMutex) bool {
         return self.owner.isCurrentThread();
     }
 };

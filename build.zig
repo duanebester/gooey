@@ -1240,8 +1240,8 @@ pub fn build(b: *std.Build) void {
 
 /// Adds the Windows targets: the `gooey` and `gooey-components` modules, the
 /// `windows-demo` platform example, the `gooey.App` examples that run on
-/// Windows, and `test-windows` for the backend, DirectWrite, and WIC tests. See
-/// `docs/windows-port.md`.
+/// Windows, and `test-windows` for the shared `root.zig` tests plus the backend,
+/// DirectWrite, and WIC tests. See `docs/windows-port.md`.
 fn addWindowsBuilds(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -1299,14 +1299,21 @@ fn addWindowsBuilds(
         addWindowsExample(b, mod, components_mod, target, optimize, example.name, example.source);
     }
 
-    const tests = b.addTest(.{
+    // Two binaries, as on macOS and Linux: the shared tests run against the
+    // same `gooey` module the examples link, so they see the Vulkan import
+    // library. `windows_tests.zig` keeps the Windows-only set explicit rather
+    // than relying on what `root.zig`'s discovery chain happens to reach.
+    const shared_tests = b.addTest(.{ .root_module = mod });
+    const backend_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/windows_tests.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    b.step("test-windows", "Run the Windows backend tests").dependOn(&b.addRunArtifact(tests).step);
+    const step = b.step("test-windows", "Run the shared and Windows backend tests");
+    step.dependOn(&b.addRunArtifact(shared_tests).step);
+    step.dependOn(&b.addRunArtifact(backend_tests).step);
 }
 
 /// Adds a `gooey.App` example as `gooey-<name>.exe` and its `run-<name>` step.
@@ -1394,6 +1401,9 @@ fn addWindowsTypecheck(b: *std.Build) void {
             .optimize = .debug,
         }),
     });
+    // Every shared `test {}` block and the `refAllDecls` discovery chain, the
+    // same coverage `typecheck-linux` gets from its `root.zig` test root.
+    const shared_tests = b.addTest(.{ .root_module = gooey_mod });
 
     // A `gooey.App` example reaches the runtime, text, and component layers
     // that the platform demo does not.
@@ -1419,6 +1429,7 @@ fn addWindowsTypecheck(b: *std.Build) void {
     // Depend on the compile steps only; see `addLinuxTypecheckRoot`.
     step.dependOn(&demo.step);
     step.dependOn(&tests.step);
+    step.dependOn(&shared_tests.step);
     step.dependOn(&app.step);
 }
 
