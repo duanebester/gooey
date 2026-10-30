@@ -54,6 +54,10 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
         window.resources.setScaleFactor(window.scale_factor);
     }
     window.frame_number += 1;
+    // Open this build's atlas frame: items used from here on stay resident
+    // until the renderer uploads them, and items only older frames used may
+    // be evicted. Without it every glyph stays protected and the atlas fills.
+    window.atlas_frame = window.resources.atlas_uploads.beginFrame(window.atlas_consumer_key);
     window.built().reset(window.frame_number, .{
         .width = window.width,
         .height = window.height,
@@ -79,6 +83,11 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
         &window.keys,
     );
     window.setPhase(.emit, .idle);
+    // An item skipped because this frame's upload staging was full is staged
+    // by the next frame (`AtlasLimits.upload_bytes_frame_max`).
+    if (window.resources.atlas_uploads.deferredSince(window.atlas_frame)) {
+        window.render_requested = true;
+    }
     publish(window);
     return true;
 }

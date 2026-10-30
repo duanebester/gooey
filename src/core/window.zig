@@ -215,6 +215,12 @@ pub const Window = struct {
     awaiting_flip: bool,
     /// The render side's phase (idle, pack, draw); only that side touches it.
     render_phase: Phase,
+    /// This window's key in the shared atlas upload journal: its platform
+    /// window's address once a host registers it as a consumer, else its own.
+    atlas_consumer_key: usize,
+    /// The atlas frame the last build opened; glyphs used since stay resident
+    /// until the consumer has uploaded it, older ones may be evicted.
+    atlas_frame: u64,
     frame_number: u64,
     render_requested: bool,
     quit_requested: bool,
@@ -323,6 +329,8 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.frame_in_flight = .init(false);
     self.awaiting_flip = false;
     self.render_phase = .idle;
+    self.atlas_consumer_key = @intFromPtr(self);
+    self.atlas_frame = 0;
     self.frame_number = 0;
     self.render_requested = true;
     self.quit_requested = false;

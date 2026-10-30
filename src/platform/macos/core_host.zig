@@ -29,6 +29,7 @@ const objc = @import("objc");
 const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
 const file_dialog = @import("file_dialog.zig");
+const appkit = @import("appkit.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
@@ -172,6 +173,7 @@ pub const Host = struct {
         const resources = self.core.resources;
         const key = @intFromPtr(self.window);
         resources.registerAtlasConsumer(key);
+        self.core.atlas_consumer_key = key;
         self.window.setTextAtlas(resources.text_system.getAtlas());
         self.window.setSvgAtlas(resources.svg_atlas.getAtlas());
         self.window.setImageAtlas(resources.image_atlas.getAtlas());
@@ -247,7 +249,34 @@ fn onClose(window: *PlatformWindow) bool {
     const host = active_host.load(.acquire) orelse return true;
     assert(host.window == window);
     host.stop();
+    postWakeEvent(host.platform);
     return true;
+}
+
+/// Wake the event loop so `onLoopTurn` runs even when the close did not
+/// arrive as an event (`performClose:` from a script or a menu item): the
+/// loop blocks in `nextEventMatchingMask:` and turns only after an event.
+fn postWakeEvent(platform: *MacPlatform) void {
+    const NSEvent = objc.getClass("NSEvent") orelse return;
+    const ns_event_type_application_defined: u64 = 15;
+    const event = NSEvent.msgSend(
+        objc.Object,
+        "otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:" ++
+            "subtype:data1:data2:",
+        .{
+            ns_event_type_application_defined,
+            appkit.NSPoint{ .x = 0, .y = 0 },
+            @as(u64, 0),
+            @as(f64, 0),
+            @as(i64, 0),
+            @as(objc.c.id, null),
+            @as(i16, 0),
+            @as(i64, 0),
+            @as(i64, 0),
+        },
+    );
+    assert(event.value != null);
+    platform.app.msgSend(void, "postEvent:atStart:", .{ event.value, true });
 }
 
 /// After AppKit has unwound a titlebar close, quit: the app has one window.

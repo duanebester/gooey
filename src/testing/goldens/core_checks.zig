@@ -255,3 +255,29 @@ test "a frame in flight defers the next build while input keeps draining" {
     try testing.expectEqual(first + 2, window.built().frame_number);
     tick.presentBuilt(window);
 }
+
+test "every build opens an atlas frame so the glyph LRU can evict" {
+    // Goal: regression for the Mac run that exhausted counter's nano text
+    // atlas: the core never opened atlas frames, so every glyph stayed
+    // protected "since frame 1" and the LRU never evicted. Methodology: the
+    // synthetic face's glyphs are too few to fill the atlas, so check the
+    // mechanism directly: each built frame advances the atlas frame clock,
+    // and a tick that builds nothing leaves it alone.
+    const Driver = core_driver.CoreDriver(counter.App, counter.render);
+    const driver = try testing.allocator.create(Driver);
+    defer testing.allocator.destroy(driver);
+    try driver.initInPlace(testing.allocator, testing.io, &traces.counter);
+    defer driver.deinit();
+    const uploads = driver.app.resources.atlas_uploads;
+    driver.frame();
+    const first = uploads.frameCurrent();
+    try testing.expect(first > 0);
+    var click: u32 = 0;
+    while (click < 3) : (click += 1) {
+        driver.deliver(.{ .mouse_down = mouse(155, 245) });
+        driver.frame();
+    }
+    try testing.expectEqual(first + 3, uploads.frameCurrent());
+    driver.frame(); // Nothing requested a render.
+    try testing.expectEqual(first + 3, uploads.frameCurrent());
+}
