@@ -155,7 +155,14 @@ pub const KeySet = struct {
 /// window binds its renderer. One call per tick (bounded dispatch, §6).
 pub const Presenter = struct {
     context: *anyopaque,
-    draw: *const fn (context: *anyopaque, frame: *const Scene, window: *const Window) void,
+    /// Runs on the render side. Reads only its arguments: the main thread
+    /// may be draining events into the window meanwhile.
+    draw: *const fn (
+        context: *anyopaque,
+        scene: *const Scene,
+        frame: *const Frame,
+        clear: records.Color,
+    ) void,
 };
 
 /// Runs a file dialog on the main thread and returns its outcome. Bound per
@@ -199,6 +206,21 @@ pub const Window = struct {
     pointer: ?struct { x: f32, y: f32 },
     // Tick state.
     phase: Phase,
+    /// Set by the main thread when a built frame is complete and cleared by
+    /// the render side once it has drawn it (contract rule 1). The only field
+    /// both threads touch: its release and acquire order the frame contents,
+    /// and while it is set the main thread neither builds nor flips frames.
+    frame_in_flight: std.atomic.Value(bool),
+    /// The main thread published a frame and has not yet made it `rendered`.
+    awaiting_flip: bool,
+    /// The render side's phase (idle, pack, draw); only that side touches it.
+    render_phase: Phase,
+    /// This window's key in the shared atlas upload journal: its platform
+    /// window's address once a host registers it as a consumer, else its own.
+    atlas_consumer_key: usize,
+    /// The atlas frame the last build opened; glyphs used since stay resident
+    /// until the consumer has uploaded it, older ones may be evicted.
+    atlas_frame: u64,
     frame_number: u64,
     render_requested: bool,
     quit_requested: bool,
@@ -304,6 +326,11 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.hover_len = 0;
     self.pointer = null;
     self.phase = .idle;
+    self.frame_in_flight = .init(false);
+    self.awaiting_flip = false;
+    self.render_phase = .idle;
+    self.atlas_consumer_key = @intFromPtr(self);
+    self.atlas_frame = 0;
     self.frame_number = 0;
     self.render_requested = true;
     self.quit_requested = false;

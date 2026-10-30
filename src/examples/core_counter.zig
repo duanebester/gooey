@@ -56,6 +56,9 @@ pub const App = core.App(State, .{
     .on_init = null,
 });
 
+/// The generated entry point (contract §7).
+pub const main = App.main;
+
 const background = ui.Color.rgb(0.95, 0.95, 0.95);
 
 pub fn render(cx: *Cx) void {
