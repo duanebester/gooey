@@ -3,8 +3,8 @@
 //! The button's handler only requests the dialog through `Effects`. The
 //! window opens it on the main thread after the drain, outside any handler,
 //! and the next drain delivers the outcome to `completed` as a selected
-//! path, a cancellation, or a failure. The completion handler is built while
-//! rendering, like every handler (`cx.on`), and kept in the state.
+//! path, a cancellation, or a failure. The request names its completion
+//! handler directly with `effects.handler` (decision 7).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -23,14 +23,13 @@ pub const State = struct {
     path_bytes: [path_bytes_max]u8 = @splat(0),
     path_len: u32 = 0,
     status: []const u8 = "No file chosen yet.",
-    on_complete: ?core.Handler = null,
 
-    pub fn open(self: *State, effects: *Effects) void {
-        effects.openFileDialog(.{ .kind = .open, .on_complete = self.on_complete.? });
+    pub fn open(_: *State, effects: *Effects) void {
+        effects.openFileDialog(.{ .kind = .open, .on_complete = effects.handler(State.completed) });
     }
 
-    pub fn save(self: *State, effects: *Effects) void {
-        effects.openFileDialog(.{ .kind = .save, .on_complete = self.on_complete.? });
+    pub fn save(_: *State, effects: *Effects) void {
+        effects.openFileDialog(.{ .kind = .save, .on_complete = effects.handler(State.completed) });
     }
 
     pub fn completed(self: *State, effects: *Effects) void {
@@ -61,7 +60,7 @@ fn keptLength(value: []const u8) usize {
     return end;
 }
 
-pub const App = core.App(State, .{
+pub const App = core.App(State, render, .{
     .title = "File dialog",
     .width = 520,
     .height = 220,
@@ -77,7 +76,6 @@ pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
     const s = cx.state(State);
-    s.on_complete = cx.on(State.completed, .{});
     cx.render(ui.box(.{ .style = .{
         .width = .{ .grow = 1 },
         .height = .{ .grow = 1 },

@@ -26,7 +26,7 @@ const Window = core.internals.window.Window;
 /// One frame per 60 Hz refresh, so ticks see a moving clock.
 const frame_interval_ns: u64 = 16_666_667;
 
-pub fn CoreDriver(comptime App: type, comptime render: fn (cx: *core.Cx) void) type {
+pub fn CoreDriver(comptime App: type) type {
     return struct {
         app: App,
         renderer: NullRenderer,
@@ -40,7 +40,7 @@ pub fn CoreDriver(comptime App: type, comptime render: fn (cx: *core.Cx) void) t
 
         pub fn frame(self: *Self) void {
             self.now_ns += frame_interval_ns;
-            self.app.tickWith(render, self.now_ns);
+            self.app.tick(self.now_ns);
             assert(self.renderer.draw_count > 0);
         }
 
@@ -139,11 +139,10 @@ fn capture(
     allocator: std.mem.Allocator,
     io: std.Io,
     comptime App: type,
-    comptime render: fn (cx: *core.Cx) void,
     trace: *const trace_mod.Trace,
     out: *TextBuffer,
 ) !void {
-    const Driver = CoreDriver(App, render);
+    const Driver = CoreDriver(App);
     const driver = try allocator.create(Driver);
     defer allocator.destroy(driver);
     try driver.initInPlace(allocator, io, trace);
@@ -152,9 +151,9 @@ fn capture(
 }
 
 pub fn captureCounter(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
-    try capture(allocator, io, counter.App, counter.render, &traces.counter, out);
+    try capture(allocator, io, counter.App, &traces.counter, out);
 }
 
 pub fn captureTodo(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
-    try capture(allocator, io, todo.App, todo.render, &traces.todo, out);
+    try capture(allocator, io, todo.App, &traces.todo, out);
 }

@@ -2,9 +2,8 @@
 //!
 //! `App(State, config)` owns the root state, the store handlers resolve
 //! against, the shared atlases and text system, and the window. The root
-//! render function is the root file's `pub fn render(cx: *Cx) void`, the
-//! same function the contract's acceptance example declares; tests and the
-//! goldens pass it explicitly through `Headless`.
+//! render function is `App`'s second argument, passed positionally as in
+//! 0.3.1's `gooey.App` (contract §7, decision 7); nothing is found by name.
 //!
 //! Initialization runs through the lifecycle guard. Everything the app will
 //! ever use is reserved before `on_init` returns; the guard then enters
@@ -56,7 +55,11 @@ pub fn fontLimitsFor(comptime limits: ResourceLimits) FontLimits {
     return FontLimits.standard;
 }
 
-pub fn App(comptime State: type, comptime config: Config(State)) type {
+pub fn App(
+    comptime State: type,
+    comptime render_fn: fn (cx: *Cx) void,
+    comptime config: Config(State),
+) type {
     comptime {
         if (config.limits.check()) |violation| @compileError(violation.message());
         if (config.keymap.len > 0) @compileError("gooey.App: keymaps arrive in phase 4");
@@ -80,14 +83,9 @@ pub fn App(comptime State: type, comptime config: Config(State)) type {
         pub const height = config.height;
         pub const font_limits = fontLimitsFor(config.limits);
 
-        /// The root render function, from the root file.
+        /// The root render function.
         pub fn render(cx: *Cx) void {
-            const root = @import("root");
-            if (!@hasDecl(root, "render")) {
-                @compileError("gooey.App needs `pub fn render(cx: *gooey.Cx) void` " ++
-                    "in the root file");
-            }
-            root.render(cx);
+            render_fn(cx);
         }
 
         pub const HeadlessOptions = struct {
@@ -174,18 +172,6 @@ pub fn App(comptime State: type, comptime config: Config(State)) type {
             self.guard.enterDeinitializing();
             window_mod.deinit(&self.window);
             self.resources.deinit();
-        }
-
-        /// One tick with `render_fn` as the root render function.
-        pub fn tickWith(self: *Self, comptime render_fn: fn (cx: *Cx) void, now_ns: u64) void {
-            assert(self.guard.lifecycle == .running);
-            const Root = struct {
-                pub fn render(cx: *Cx) void {
-                    render_fn(cx);
-                }
-            };
-            var root = Root{};
-            tick_mod.tick(&root, &self.window, now_ns);
         }
 
         pub fn tick(self: *Self, now_ns: u64) void {

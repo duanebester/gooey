@@ -212,6 +212,16 @@ pub const Effects = struct {
         assert(self.file_dialog == null);
         self.file_dialog = request;
     }
+
+    /// A handler for `method` on the root state, for a request's completion
+    /// (`.on_complete = effects.handler(State.onPicked)`), so completion
+    /// handlers need not be built during render (decision 7). The router
+    /// checks the state type when the request is applied.
+    pub fn handler(_: *const Effects, comptime method: anytype) Handler {
+        const built = bind(method, .{});
+        assert(built.target.isRoot());
+        return built;
+    }
 };
 
 // =============================================================================

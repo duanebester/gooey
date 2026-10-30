@@ -102,7 +102,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, .{
+pub const App = core.App(State, render, .{
     .title = "Todos",
     .width = 480,
     .height = 560,
