@@ -2,7 +2,8 @@
 //! image backend, the software SVG rasterizer behind the SVG atlas, and the
 //! UI Automation accessibility bridge.
 //!
-//! The input translation and binding tests call no Win32 functions. The
+//! The input translation, IME encoding and placement, and binding tests call
+//! no Win32 functions. The
 //! DirectWrite and WIC tests call the system's real DirectWrite and WIC, so
 //! they run on any Windows host. The clipboard tests use the real system
 //! clipboard and replace its contents. The file dialog tests create and
@@ -16,6 +17,7 @@ test {
     _ = @import("platform/windows/clipboard.zig");
     _ = @import("platform/windows/file_dialog.zig");
     _ = @import("platform/windows/shell.zig");
+    _ = @import("platform/windows/ime.zig");
     _ = @import("platform/windows/input.zig");
     _ = @import("platform/windows/uia.zig");
     _ = @import("platform/windows/win32.zig");

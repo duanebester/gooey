@@ -3,9 +3,9 @@
 ## Status
 
 `gooey.App` examples run on Windows: a Win32 window, DirectWrite text, WIC images, the
-software SVG rasterizer, the system clipboard, native file dialogs, UI Automation
-accessibility, and the shared Vulkan renderer. Verified on an Intel UHD 620 at 150% scale.
-The [checklist](#win32-checklist) has what remains.
+software SVG rasterizer, the system clipboard, native file dialogs, IME composition, UI
+Automation accessibility, and the shared Vulkan renderer. Verified on an Intel UHD 620 at
+150% scale. The [checklist](#win32-checklist) has what remains.
 
 ```sh
 zig build run-showcase       # a gooey.App example (others listed in addWindowsBuilds)
@@ -13,7 +13,7 @@ zig build run-clipboard      # copy and paste through TextInput and TextArea
 zig build run-file-dialog    # open, multi-select, folder, and save dialogs
 zig build run-accessible-form # UI Automation: Narrator, NVDA, or Inspect
 zig build run-windows-demo   # the platform-layer demo, no text
-zig build test-windows       # backend, clipboard, dialogs, a11y, DirectWrite, WIC, SVG
+zig build test-windows       # backend, clipboard, dialogs, IME, a11y, DirectWrite, WIC, SVG
 zig build typecheck-windows  # analyze the backend and showcase for x86_64-windows
 ```
 
@@ -101,6 +101,7 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
 | --- | --- |
 | `src/platform/windows/win32.zig` | Hand-written `kernel32`/`user32` bindings, layouts pinned |
 | `src/platform/windows/input.zig` | `Translator.translate`: one `WM_*` → one Gooey event |
+| `src/platform/windows/ime.zig` | IMM32 bindings, composition decoding, candidate placement |
 | `src/platform/windows/platform.zig` | `WindowsPlatform`: window class, cursors, message loop |
 | `src/platform/windows/window.zig` | `Window` and `windowProc`: `HWND`, renderer, contract |
 | `src/platform/windows/mod.zig` | Backend namespace; `contract.verifyBackend`, 64-bit check |
@@ -121,7 +122,7 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   opens on a monitor whose DPI differs from the system DPI is resized once.
 - **Close.** `WM_CLOSE` runs the veto, records the close, and hides the window. The `HWND`
   is destroyed in `deinit`, never from inside its own dispatch.
-- **Unimplemented features** (IME, dark title bars) are reported as unavailable in
+- **Unimplemented features** (dark title bars) are reported as unavailable in
   `capabilities`, not faked.
 - `platform/mod.zig` keys `DisplayLink` and the `macos` namespace on `is_macos`, not "not
   web and not Linux", which would select macOS code on Windows.
@@ -157,6 +158,37 @@ widgets select it with one `.windows` arm.
   shows a `TextInput` and a `TextArea` with byte, LF, and CR counts. Verified by hand:
   copying between the two widgets works and the pasted text holds no CR. Not yet checked
   by hand: CR LF text from Notepad, copying back into Notepad, and emoji.
+
+### IME
+
+`src/platform/windows/ime.zig` reads `WM_IME_COMPOSITION` through IMM32 and the window
+delivers it as the shared `text_input` (committed) and `composition` (preedit) events, the
+same pair Wayland and macOS produce, so the text widgets need no Windows code.
+
+- **Inline composition.** `WM_IME_SETCONTEXT` clears `ISC_SHOWUICOMPOSITIONWINDOW` and
+  `WM_IME_STARTCOMPOSITION` is not passed on, so the IME draws no composition window; the
+  widgets draw the preedit. The candidate list stays the IME's.
+- **Order.** One message can commit text and start a new composition; the commit is
+  delivered first, as on Wayland. A message with neither flag, or an empty preedit, is a
+  cancellation and reports an empty composition. `WM_IME_ENDCOMPOSITION` reports one only
+  if a preedit is still shown.
+- **Keys.** `WM_KEYDOWN`/`WM_KEYUP` with `VK_PROCESSKEY` produce no key event: the IME
+  consumed the key, so Enter accepting a candidate does not also reach a keymap.
+- **Candidate placement.** The runtime already publishes the focused widget's caret every
+  frame through `setImeCursorRect`; the window passes it to `ImmSetCandidateWindow`
+  (`CFS_EXCLUDE`) and `ImmSetCompositionWindow` (`CFS_POINT`) when it moves and when a
+  composition starts. Phase 4 swaps the source for `Query.imeCursorRect`.
+- **Bounds.** Strings are at most `ime.units_max` (1024) UTF-16 units, read into fixed
+  per-window buffers (8 KiB) after asking IMM for the size. A longer result goes to
+  `DefWindowProcW`, which delivers it as `WM_CHAR` without loss; a longer preedit is
+  logged and the previous one stays. Unpaired surrogates become U+FFFD.
+- **Not yet.** The caret position inside the composition (`GCS_CURSORPOS`) and clause
+  attributes, because `CompositionEvent` carries only text; reconversion; and TSF. The
+  shared widgets' `setComposition` and `insertText` still grow an `ArrayList`, a section 2
+  violation that the phase 3–6 text rewrite owns.
+- **Tests.** UTF-16 decoding, the exact-capacity case, flag decoding, placement scaling
+  and saturation, and `VK_PROCESSKEY` suppression run in `test-windows` with no IME.
+  Not yet checked by hand with a real IME (Microsoft Japanese, Pinyin, Korean).
 
 ### File dialogs
 
@@ -425,7 +457,9 @@ the event loop.
 - [x] SVG rasterization (software rasterizer, fixed scratch arena).
 - [ ] Text: font fallback (`IDWriteFontFallback::MapCharacters` can reuse the analysis
       source), bidi, color glyphs.
-- [ ] IME (`WM_IME_*`, caret rect from the read-only query).
+- [x] IME (`WM_IME_*` inline composition, candidate placement from the caret rect).
+- [ ] IME: composition caret and clause attributes, which need shared `CompositionEvent`
+      fields.
 - [x] Clipboard (`CF_UNICODETEXT`, Ctrl edit shortcuts in the text widgets,
       `run-clipboard`).
 - [x] File dialogs (Common Item Dialog, `run-file-dialog`).

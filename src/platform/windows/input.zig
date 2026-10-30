@@ -101,8 +101,11 @@ pub const Translator = struct {
             win32.WM_MBUTTONUP => self.buttonUp(.middle, message.lparam, context),
             win32.WM_MOUSEWHEEL => wheel(.vertical, message.wparam, context),
             win32.WM_MOUSEHWHEEL => wheel(.horizontal, message.wparam, context),
-            win32.WM_KEYDOWN, win32.WM_SYSKEYDOWN => .{ .key_down = keyEvent(message, context) },
-            win32.WM_KEYUP, win32.WM_SYSKEYUP => .{ .key_up = keyEvent(message, context) },
+            win32.WM_KEYDOWN,
+            win32.WM_SYSKEYDOWN,
+            win32.WM_KEYUP,
+            win32.WM_SYSKEYUP,
+            => keyMessage(message, context),
             win32.WM_CHAR => self.character(@truncate(message.wparam)),
             else => null,
         };
@@ -244,6 +247,19 @@ fn wheel(axis: WheelAxis, wparam: win32.WPARAM, context: *const Context) input.I
         .delta = delta,
         .modifiers = context.modifiers,
     } };
+}
+
+/// `VK_PROCESSKEY`: the IME consumed the key, and its effect arrives as
+/// `WM_IME_COMPOSITION`. Reporting it would let a keymap act on a keystroke
+/// that only edited the composition, such as Enter accepting a candidate.
+const virtual_key_ime_processed: u8 = 0xE5;
+
+fn keyMessage(message: Message, context: *const Context) ?input.InputEvent {
+    const virtual_key: u8 = @truncate(message.wparam);
+    if (virtual_key == virtual_key_ime_processed) return null;
+    const is_press = message.id == win32.WM_KEYDOWN or message.id == win32.WM_SYSKEYDOWN;
+    if (is_press) return .{ .key_down = keyEvent(message, context) };
+    return .{ .key_up = keyEvent(message, context) };
 }
 
 fn keyEvent(message: Message, context: *const Context) input.KeyEvent {
@@ -484,6 +500,22 @@ test "wheel detents scroll toward the content end when turned toward the user" {
     try testing.expectEqual(wheel_detent_px, scroll.delta.y);
     try testing.expectEqual(@as(f64, 0), scroll.delta.x);
     try testing.expectEqual(@as(f64, 10), scroll.position.x);
+}
+
+test "keys the IME consumed produce no key events" {
+    var translator = Translator.init(test_settings);
+    const context = testContext(0);
+    const processed: win32.WPARAM = virtual_key_ime_processed;
+    const press = Message{ .id = win32.WM_KEYDOWN, .wparam = processed, .lparam = 0 };
+    const release = Message{ .id = win32.WM_KEYUP, .wparam = processed, .lparam = 0 };
+    try testing.expect(translator.translate(press, &context) == null);
+    try testing.expect(translator.translate(release, &context) == null);
+
+    // Negative space: the neighbouring codes still translate.
+    const before = Message{ .id = win32.WM_KEYDOWN, .wparam = processed - 1, .lparam = 0 };
+    const after = Message{ .id = win32.WM_KEYUP, .wparam = processed + 1, .lparam = 0 };
+    try testing.expect(translator.translate(before, &context).? == .key_down);
+    try testing.expect(translator.translate(after, &context).? == .key_up);
 }
 
 test "key repeat is reported only for presses" {

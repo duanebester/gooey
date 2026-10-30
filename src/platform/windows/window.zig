@@ -30,6 +30,7 @@ const input = @import("../../input/events.zig");
 const VulkanRenderer = @import("../linux/vk_renderer.zig").VulkanRenderer;
 const win32 = @import("win32.zig");
 const uia = @import("uia.zig");
+const ime = @import("ime.zig");
 const windows_input = @import("input.zig");
 const windows_platform = @import("platform.zig");
 const WindowsPlatform = windows_platform.WindowsPlatform;
@@ -98,8 +99,10 @@ pub const Window = struct {
     mouse_inside: bool = false,
     translator: windows_input.Translator,
 
-    // IME state. Composition through `WM_IME_*` is a later item of the port;
-    // the contract's bridge still stores what callers hand it.
+    // IME state; see `ime.zig`. `WM_IME_COMPOSITION` reads into `ime_units`
+    // and encodes into the marked (preedit) and inserted (committed) buffers,
+    // which the contract's bridge also writes.
+    ime_units: [ime.units_max]u16 = undefined,
     marked_text_buffer: [ime_bytes_max]u8 = undefined,
     marked_text_len: usize = 0,
     inserted_text_buffer: [ime_bytes_max]u8 = undefined,
@@ -130,7 +133,7 @@ pub const Window = struct {
     pub const PostInputCallback = *const fn (*Self) void;
 
     pub const title_bytes_max: usize = 255;
-    pub const ime_bytes_max: usize = 256;
+    pub const ime_bytes_max: usize = ime.bytes_max;
 
     const Self = @This();
 
@@ -664,8 +667,112 @@ pub const Window = struct {
         return self.marked_text_len > 0;
     }
 
+    /// Called every frame while a text widget has focus. The IME is told only
+    /// when the caret moved, and again when a composition starts.
     pub fn setImeCursorRect(self: *Self, x: f32, y: f32, w: f32, h: f32) void {
-        self.ime_cursor_rect = geometry.RectF.init(x, y, w, h);
+        assert(w >= 0);
+        assert(h >= 0);
+        const rect = geometry.RectF.init(x, y, w, h);
+        if (std.meta.eql(rect, self.ime_cursor_rect)) return;
+        self.ime_cursor_rect = rect;
+        self.applyImePlacement();
+    }
+
+    /// Place the IME's candidate list against the caret.
+    fn applyImePlacement(self: *Self) void {
+        const hwnd = self.hwnd orelse return;
+        // No context: IME is disabled for this window, so nothing to place.
+        const context = ime.ImmGetContext(hwnd) orelse return;
+        defer _ = ime.ImmReleaseContext(hwnd, context);
+
+        const placement = ime.Placement.fromCaret(self.ime_cursor_rect, self.scale_factor);
+        if (ime.ImmSetCompositionWindow(context, &placement.composition) == win32.FALSE) {
+            std.log.warn("windows: ImmSetCompositionWindow failed", .{});
+        }
+        if (ime.ImmSetCandidateWindow(context, &placement.candidate) == win32.FALSE) {
+            std.log.warn("windows: ImmSetCandidateWindow failed", .{});
+        }
+    }
+
+    /// Hide the IME's composition window, because the text widgets draw the
+    /// composition inline as preedit. The candidate list stays.
+    fn handleImeSetContext(self: *Self, message: windows_input.Message) win32.LRESULT {
+        assert(message.id == win32.WM_IME_SETCONTEXT);
+        assert(self.hwnd != null);
+        const flags: usize = @bitCast(message.lparam);
+        const lparam: win32.LPARAM = @bitCast(flags & ~ime.ISC_SHOWUICOMPOSITIONWINDOW);
+        return win32.DefWindowProcW(self.hwnd.?, message.id, message.wparam, lparam);
+    }
+
+    /// Deliver one composition update: committed text first, then the new
+    /// preedit, the order the Wayland backend uses. Returns null to let
+    /// `DefWindowProcW` deliver a result too long for `ime.units_max`.
+    fn handleImeComposition(self: *Self, lparam: win32.LPARAM) ?win32.LRESULT {
+        assert(self.hwnd != null);
+        const hwnd = self.hwnd.?;
+        const changes = ime.Changes.fromLParam(lparam);
+        const context = ime.ImmGetContext(hwnd) orelse return null;
+        defer _ = ime.ImmReleaseContext(hwnd, context);
+
+        if (changes.result) {
+            const units = ime.readString(context, ime.GCS_RESULTSTR, &self.ime_units) orelse {
+                // `DefWindowProcW` turns the result into `WM_CHAR`, which
+                // loses nothing. The preedit is cleared first so the
+                // characters do not land inside it; the next update redraws
+                // any new composition.
+                self.clearImeComposition();
+                return null;
+            };
+            self.commitImeComposition(units);
+        }
+        if (changes.preedit) {
+            // Unreadable or oversized preedit was logged; the last one stays.
+            const units = ime.readString(context, ime.GCS_COMPSTR, &self.ime_units) orelse
+                return 0;
+            self.updateImeComposition(units);
+        } else {
+            // Neither string changed: the IME cancelled the composition.
+            if (!changes.result) self.clearImeComposition();
+        }
+        return 0;
+    }
+
+    fn commitImeComposition(self: *Self, units: []const u16) void {
+        assert(units.len <= ime.units_max);
+        if (units.len == 0) {
+            self.clearImeComposition();
+            return;
+        }
+        // The widgets drop their preedit when committed text arrives.
+        self.marked_text_len = 0;
+        self.inserted_text_len = ime.utf8FromUtf16(&self.inserted_text_buffer, units);
+        assert(self.inserted_text_len > 0);
+        if (self.closed) return;
+        const text = self.inserted_text_buffer[0..self.inserted_text_len];
+        _ = self.handleInput(.{ .text_input = .{ .text = text } });
+    }
+
+    fn updateImeComposition(self: *Self, units: []const u16) void {
+        assert(units.len <= ime.units_max);
+        if (units.len == 0) {
+            self.clearImeComposition();
+            return;
+        }
+        self.marked_text_len = ime.utf8FromUtf16(&self.marked_text_buffer, units);
+        assert(self.marked_text_len > 0);
+        if (self.closed) return;
+        const text = self.marked_text_buffer[0..self.marked_text_len];
+        _ = self.handleInput(.{ .composition = .{ .text = text } });
+    }
+
+    /// Remove a shown preedit. Also the `WM_IME_ENDCOMPOSITION` handler: after
+    /// a commit nothing is shown, so only a cancelled composition reports.
+    fn clearImeComposition(self: *Self) void {
+        if (self.marked_text_len == 0) return;
+        assert(self.marked_text_len <= ime_bytes_max);
+        self.marked_text_len = 0;
+        if (self.closed) return;
+        _ = self.handleInput(.{ .composition = .{ .text = "" } });
     }
 
     // =========================================================================
@@ -806,6 +913,11 @@ pub const Window = struct {
             win32.WM_KEYUP,
             win32.WM_CHAR,
             => self.translateAndDeliver(message),
+            win32.WM_IME_SETCONTEXT => return self.handleImeSetContext(message),
+            // Handled, not passed on, so the IME draws no composition window.
+            win32.WM_IME_STARTCOMPOSITION => self.applyImePlacement(),
+            win32.WM_IME_COMPOSITION => return self.handleImeComposition(message.lparam),
+            win32.WM_IME_ENDCOMPOSITION => self.clearImeComposition(),
             win32.WM_SYSKEYDOWN, win32.WM_SYSKEYUP => {
                 // Delivered, then also left to the system so Alt+F4 and
                 // Alt+Space keep working.
