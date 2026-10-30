@@ -420,6 +420,10 @@ pub const Window = struct {
             self.renderer.render(&empty_scene);
         }
         self.last_frame_ns = frameSlotNs(self.last_frame_ns, windows_platform.nowNanoseconds());
+        // An out-of-date or suboptimal swapchain skips or degrades this frame
+        // and is rebuilt at the start of the next, so ask for that frame now:
+        // otherwise an idle window keeps its last image until other input.
+        if (self.renderer.swapchain_needs_recreate) self.requestRender();
         if (self.uia_activation_frames > 0) {
             self.uia_activation_frames -= 1;
             self.requestRender();

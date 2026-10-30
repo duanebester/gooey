@@ -1197,15 +1197,21 @@ pub const VulkanRenderer = struct {
         // Wait only for THIS frame's fence — GPU is done reading this
         // frame's staging lane and command buffer.
         _ = vk.vkWaitForFences(self.device, 1, (&frame.fence)[0..1], vk.TRUE, std.math.maxInt(u64));
-        _ = vk.vkResetFences(self.device, 1, (&frame.fence)[0..1]);
 
-        // Acquire swapchain image
+        // Acquire swapchain image. The fence is reset only once this frame is
+        // certain to be submitted: a skipped frame that left it unsignalled
+        // would make the next wait on it (here, in `resize`, or before a
+        // recreate) block forever.
         var image_index: u32 = 0;
         switch (self.acquireNextImage(frame, &image_index)) {
             .ok => {},
-            .out_of_date => return,
-            .fatal => unreachable,
+            .out_of_date => {
+                assert(self.swapchain_needs_recreate);
+                return;
+            },
         }
+        assert(image_index < self.swapchain_image_count);
+        _ = vk.vkResetFences(self.device, 1, (&frame.fence)[0..1]);
 
         // Record command buffer: atlas transfers → render pass → draw
         const cmd = frame.command_buffer;
@@ -1230,10 +1236,13 @@ pub const VulkanRenderer = struct {
         std.debug.assert(scene_limits.image_count_frame_max <= capacity.image_count_max);
     }
 
-    const AcquireResult = enum { ok, out_of_date, fatal };
+    const AcquireResult = enum { ok, out_of_date };
 
     /// Acquire the next swapchain image. Returns `.out_of_date` if the
-    /// swapchain needs recreation (caller should skip this frame).
+    /// swapchain needs recreation (caller should skip this frame, leaving the
+    /// frame fence signalled). A lost device or surface, or any other error,
+    /// fails fast with the result code: recovering needs a new device or
+    /// surface, which the renderer does not support.
     fn acquireNextImage(self: *Self, frame: *const FrameResources, image_index: *u32) AcquireResult {
         const result = vk.vkAcquireNextImageKHR(
             self.device,
@@ -1254,14 +1263,27 @@ pub const VulkanRenderer = struct {
                 return .out_of_date;
             },
             vk.TIMEOUT, vk.NOT_READY => {
+                // Unreachable with an infinite timeout, but harmless: no image
+                // was acquired and the semaphore is unsignalled, so retry.
                 std.debug.print("vkAcquireNextImageKHR returned unexpected timeout/not_ready\n", .{});
+                self.swapchain_needs_recreate = true;
                 return .out_of_date;
             },
-            else => {
-                std.debug.print("vkAcquireNextImageKHR failed: {}\n", .{result});
-                return .fatal;
-            },
+            else => failFast("vkAcquireNextImageKHR", result),
         }
+    }
+
+    /// Fail fast on a Vulkan error the renderer cannot recover from, naming
+    /// the call and the result. Unlike `unreachable`, this stops every build
+    /// mode, including ReleaseFast.
+    fn failFast(call: []const u8, result: vk.Result) noreturn {
+        assert(call.len > 0);
+        assert(!vk.succeeded(result));
+        std.debug.panic("Vulkan: {s} failed with {s} ({d}); the renderer cannot recover", .{
+            call,
+            vk.resultName(result),
+            result,
+        });
     }
 
     /// Record the full frame command buffer: atlas transfers + render pass + scene draw.
@@ -1369,7 +1391,13 @@ pub const VulkanRenderer = struct {
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = (&frame.render_finished_semaphore)[0..1],
         };
-        _ = vk.vkQueueSubmit(self.graphics_queue, 1, (&submit_info)[0..1], frame.fence);
+        const submit_result = vk.vkQueueSubmit(
+            self.graphics_queue,
+            1,
+            (&submit_info)[0..1],
+            frame.fence,
+        );
+        if (submit_result != vk.SUCCESS) failFast("vkQueueSubmit", submit_result);
 
         const present_info = vk.PresentInfoKHR{
             .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -1387,10 +1415,7 @@ pub const VulkanRenderer = struct {
             vk.SUBOPTIMAL_KHR, vk.ERROR_OUT_OF_DATE_KHR => {
                 self.swapchain_needs_recreate = true;
             },
-            else => {
-                std.debug.print("vkQueuePresentKHR failed: {}\n", .{present_result});
-                unreachable;
-            },
+            else => failFast("vkQueuePresentKHR", present_result),
         }
     }
 };

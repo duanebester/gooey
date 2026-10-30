@@ -223,10 +223,30 @@ pub const SUCCESS: Result = 0;
 pub const NOT_READY: Result = 1;
 pub const TIMEOUT: Result = 2;
 pub const SUBOPTIMAL_KHR: Result = 1000001003;
+pub const ERROR_OUT_OF_HOST_MEMORY: Result = -1;
+pub const ERROR_OUT_OF_DEVICE_MEMORY: Result = -2;
+pub const ERROR_DEVICE_LOST: Result = -4;
+pub const ERROR_SURFACE_LOST_KHR: Result = -1000000000;
 pub const ERROR_OUT_OF_DATE_KHR: Result = -1000001004;
 
 pub fn succeeded(result: Result) bool {
     return result >= 0;
+}
+
+/// The specification's name for the results Gooey reports when it fails fast.
+pub fn resultName(result: Result) []const u8 {
+    return switch (result) {
+        SUCCESS => "VK_SUCCESS",
+        NOT_READY => "VK_NOT_READY",
+        TIMEOUT => "VK_TIMEOUT",
+        SUBOPTIMAL_KHR => "VK_SUBOPTIMAL_KHR",
+        ERROR_OUT_OF_HOST_MEMORY => "VK_ERROR_OUT_OF_HOST_MEMORY",
+        ERROR_OUT_OF_DEVICE_MEMORY => "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+        ERROR_DEVICE_LOST => "VK_ERROR_DEVICE_LOST",
+        ERROR_SURFACE_LOST_KHR => "VK_ERROR_SURFACE_LOST_KHR",
+        ERROR_OUT_OF_DATE_KHR => "VK_ERROR_OUT_OF_DATE_KHR",
+        else => "an unlisted VkResult",
+    };
 }
 
 // =============================================================================
