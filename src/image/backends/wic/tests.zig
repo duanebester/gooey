@@ -190,8 +190,9 @@ test "empty and unrecognized data are invalid formats" {
 test "truncated PNG keeps its decoded rows and zeroes the rest" {
     // Goal: WIC accepts a PNG cut inside its pixel data (and even corrupt
     // deflate data), so the rows it never decoded must be deterministic.
-    // Methodology: cut a 16x16 PNG midway through its IDAT; the first row must survive and the last must be
-    // transparent black, not stale allocator bytes.
+    // Methodology: cut a 16x16 PNG midway through its IDAT; the first row
+    // must survive and the last must be transparent black, not stale
+    // allocator bytes.
     var pixels: [16 * 16 * 4]u8 = undefined;
     for (&pixels, 0..) |*byte, index| byte.* = @truncate(index | 1);
     const png = try encodePng(.{ .width = 16, .height = 16, .color_type = .rgba }, &pixels);

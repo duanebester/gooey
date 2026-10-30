@@ -151,9 +151,19 @@ pub const WindowsBridge = struct {
         if (live == .off) return;
 
         const length = snapshot_mod.utf8PrefixLength(message, announcement_bytes_max);
-        const display = provider_mod.bstrFromUtf8(message[0..length]) catch return;
+        assert(length <= message.len);
+        // `SysAllocStringLen` fails only when the process heap is exhausted;
+        // the announcement is lost, so say so rather than drop it silently.
+        const display = provider_mod.bstrFromUtf8(message[0..length]) catch |err| {
+            std.log.warn("accessibility: announcement dropped: {s}", .{@errorName(err)});
+            return;
+        };
         defer uia.SysFreeString(display);
-        const activity = provider_mod.bstrFromUtf8(announcement_activity_id) catch return;
+
+        const activity = provider_mod.bstrFromUtf8(announcement_activity_id) catch |err| {
+            std.log.warn("accessibility: announcement dropped: {s}", .{@errorName(err)});
+            return;
+        };
         defer uia.SysFreeString(activity);
 
         const processing = switch (live) {
@@ -227,6 +237,7 @@ pub const WindowsBridge = struct {
 /// The lock must be held.
 fn claimIfPresent(server: *Server, fingerprint: Fingerprint) ?*Provider {
     assert(fingerprint.isValid());
+    assert(server.locked);
     _ = server.snapshot.find(fingerprint) orelse return null;
     return server.claim(fingerprint);
 }
@@ -241,8 +252,16 @@ fn raisePropertyChanged(server: *Server, change: snapshot_mod.Change) void {
     if (provider != null) {
         const index = server.snapshot.find(change.fingerprint).?;
         const entry = server.snapshot.entry(index);
-        value = provider_mod.elementProperty(&server.snapshot, entry, property_id) catch
-            uia.VARIANT.empty;
+        // Out of memory for the BSTR: the event still fires, and clients that
+        // need the value read it back through the provider.
+        const snapshot = &server.snapshot;
+        value = provider_mod.elementProperty(snapshot, entry, property_id) catch |err| blk: {
+            std.log.warn(
+                "accessibility: property {d} change raised without its value: {s}",
+                .{ property_id, @errorName(err) },
+            );
+            break :blk uia.VARIANT.empty;
+        };
     }
     server.unlockExclusive();
 

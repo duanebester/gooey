@@ -69,6 +69,10 @@ const framework_id = "Gooey";
 /// pool. Reserved by the bridge at init; providers point here.
 pub const Server = struct {
     lock: uia.SRWLOCK,
+    /// True while a thread holds `lock`. Written only by the holder, so it
+    /// lets methods that need the lock assert it, and lets acquisition
+    /// assert it is not re-entered: `SRWLOCK` is not reentrant.
+    locked: bool,
     hwnd: win32.HWND,
     /// False once the bridge has shut down. Later calls report the element
     /// gone instead of reading the snapshot.
@@ -91,6 +95,7 @@ pub const Server = struct {
         errdefer reservation.release(Provider, self.providers, 0);
 
         self.lock = .{};
+        self.locked = false;
         self.hwnd = hwnd;
         self.alive = true;
         self.exhaustion_logged = false;
@@ -106,6 +111,7 @@ pub const Server = struct {
     /// Free the storage. Only after `shutdown` reported every provider released.
     pub fn deinit(self: *Self) void {
         assert(!self.alive);
+        assert(!self.locked);
         assert(self.live_count == 0);
         reservation.release(Provider, self.providers, self.provider_high_water);
         self.snapshot.deinit();
@@ -114,9 +120,15 @@ pub const Server = struct {
 
     pub fn lockExclusive(self: *Self) void {
         uia.AcquireSRWLockExclusive(&self.lock);
+        // Set only under the lock, so a holder on this thread would show.
+        assert(!self.locked);
+        self.locked = true;
     }
 
     pub fn unlockExclusive(self: *Self) void {
+        assert(self.locked);
+        assert(self.live_count <= self.provider_high_water);
+        self.locked = false;
         uia.ReleaseSRWLockExclusive(&self.lock);
     }
 
@@ -124,13 +136,18 @@ pub const Server = struct {
     /// bridge's own reference to the root. Returns whether every provider is
     /// now released, which is what makes freeing the storage safe.
     pub fn shutdown(self: *Self) bool {
+        assert(self.alive);
         self.lockExclusive();
         self.alive = false;
         const high_water = self.provider_high_water;
         self.unlockExclusive();
+        assert(high_water <= provider_count_max);
 
         // Outside the lock: a disconnect releases references, and the last
-        // release takes the lock to reclaim its slot.
+        // release takes the lock to reclaim its slot. The root has no
+        // runtime id of its own (the host window supplies it), so its
+        // disconnect may fail; `UiaReturnRawElementProvider(hwnd, 0, 0,
+        // null)` in the bridge already withdrew it, so the result is moot.
         _ = uia.UiaDisconnectProvider(self.root.simpleInterface());
         var slot: u16 = 0;
         while (slot < high_water) : (slot += 1) {
@@ -149,6 +166,7 @@ pub const Server = struct {
     /// Claim a provider for the element with `fingerprint`, holding one
     /// reference for the caller. The lock must be held.
     pub fn claim(self: *Self, fingerprint: Fingerprint) ?*Provider {
+        assert(self.locked);
         assert(fingerprint.isValid());
         assert(self.live_count <= self.provider_high_water);
         const slot = self.claimSlot() orelse {
@@ -159,16 +177,22 @@ pub const Server = struct {
         provider.initIn(self, .element, fingerprint);
         self.live_count += 1;
         assert(self.live_count <= provider_count_max);
+        assert(provider.reference_count.load(.monotonic) == 1);
         return provider;
     }
 
     fn claimSlot(self: *Self) ?u16 {
+        assert(self.locked);
+        assert(self.provider_high_water <= provider_count_max);
         if (self.free_head != index_none) {
             const slot = self.free_head;
+            assert(slot < self.provider_high_water);
             assert(self.providers[slot].kind == .free);
             self.free_head = self.providers[slot].next_free;
             return slot;
         }
+        // Every claimed slot below the high-water mark is live.
+        assert(self.live_count == self.provider_high_water);
         if (self.provider_high_water < provider_count_max) {
             const slot = self.provider_high_water;
             self.provider_high_water += 1;
@@ -179,6 +203,8 @@ pub const Server = struct {
 
     /// Return a provider whose last reference was released. Lock held.
     fn reclaim(self: *Self, provider: *Provider) void {
+        assert(self.locked);
+        assert(self.live_count > 0);
         assert(provider.kind == .element);
         assert(provider.reference_count.load(.acquire) == 0);
         const offset = @intFromPtr(provider) - @intFromPtr(self.providers.ptr);
@@ -198,6 +224,8 @@ pub const Server = struct {
     /// Logged once per window, at the level the backend uses for other
     /// requests it refuses.
     fn reportExhaustion(self: *Self) void {
+        assert(self.locked);
+        assert(self.free_head == index_none);
         if (self.exhaustion_logged) return;
         self.exhaustion_logged = true;
         std.log.warn(
@@ -252,10 +280,14 @@ pub const Provider = struct {
     }
 
     pub fn simpleInterface(self: *Provider) *Simple {
+        assert(self.kind != .free);
+        assert(self.simple == &simple_vtable);
         return @ptrCast(&self.simple);
     }
 
     pub fn fragmentInterface(self: *Provider) *Fragment {
+        assert(self.kind != .free);
+        assert(self.fragment == &fragment_vtable);
         return @ptrCast(&self.fragment);
     }
 
@@ -290,10 +322,15 @@ pub const Provider = struct {
     /// released when the element is gone or the bridge has shut down.
     fn lockIndex(self: *Provider) ?u16 {
         assert(self.kind == .element);
+        assert(self.fingerprint.isValid());
         const server = self.server;
         server.lockExclusive();
         if (server.alive) {
-            if (server.snapshot.find(self.fingerprint)) |index| return index;
+            if (server.snapshot.find(self.fingerprint)) |index| {
+                assert(index < server.snapshot.entry_count);
+                assert(server.snapshot.entry(index).fingerprint.eql(self.fingerprint));
+                return index;
+            }
         }
         server.unlockExclusive();
         return null;
@@ -302,6 +339,7 @@ pub const Provider = struct {
     /// The root's counterpart of `lockIndex`: true with the lock held.
     fn lockRoot(self: *Provider) bool {
         assert(self.kind == .root);
+        assert(self == &self.server.root);
         const server = self.server;
         server.lockExclusive();
         if (server.alive) return true;
@@ -310,16 +348,20 @@ pub const Provider = struct {
     }
 
     fn queryInterface(self: *Provider, iid: ?*const uia.GUID, out: ?*?*anyopaque) HRESULT {
+        assert(self.kind != .free);
         const target = out orelse return uia.E_POINTER;
         target.* = null;
         const requested = iid orelse return uia.E_POINTER;
         const interface = self.interfaceFor(requested) orelse return uia.E_NOINTERFACE;
         _ = self.addRef();
         target.* = interface;
+        assert(self.reference_count.load(.monotonic) >= 2);
         return uia.S_OK;
     }
 
     fn interfaceFor(self: *Provider, iid: *const uia.GUID) ?*anyopaque {
+        assert(self.kind != .free);
+        assert(self.reference_count.load(.monotonic) > 0);
         if (uia.guidEql(iid, &uia.IID_IUnknown)) return @ptrCast(&self.simple);
         if (uia.guidEql(iid, &uia.IID_IRawElementProviderSimple)) return @ptrCast(&self.simple);
         if (uia.guidEql(iid, &uia.IID_IRawElementProviderFragment)) return @ptrCast(&self.fragment);
@@ -335,8 +377,10 @@ pub const Provider = struct {
     /// The pattern interface for `pattern_id`, or null when the element's role
     /// does not support it. Fixed per role, as COM identity requires.
     fn patternInterface(self: *Provider, pattern_id: i32) ?*anyopaque {
+        assert(self.kind != .free);
         if (self.kind != .element) return null;
         const role = self.elementRole();
+        assert(@backingInt(role) == self.fingerprint.role);
         switch (pattern_id) {
             uia.UIA_ValuePatternId => if (snapshot_mod.supportsValue(role)) {
                 return @ptrCast(&self.value);
@@ -373,17 +417,23 @@ fn providerFrom(comptime field: []const u8, interface: anytype) *Provider {
     const field_pointer: *@FieldType(Provider, field) = @ptrCast(@alignCast(interface));
     const provider: *Provider = @fieldParentPtr(field, field_pointer);
     assert(provider.kind != .free);
+    // A caller holds the interface pointer, and with it a reference.
+    assert(provider.reference_count.load(.monotonic) > 0);
+    if (provider.kind == .element) assert(provider.fingerprint.isValid());
     return provider;
 }
 
 /// Hand out a provider for the element at `index`, or nothing for
 /// `index_none`. The lock must be held.
 fn claimInto(server: *Server, index: u16, target: *?*Fragment) HRESULT {
+    assert(server.locked);
     assert(target.* == null);
     if (index == index_none) return uia.S_OK;
+    assert(index < server.snapshot.entry_count);
     const fingerprint = server.snapshot.entry(index).fingerprint;
     const provider = server.claim(fingerprint) orelse return uia.E_OUTOFMEMORY;
     target.* = provider.fragmentInterface();
+    assert(provider.fingerprint.eql(fingerprint));
     return uia.S_OK;
 }
 
@@ -423,9 +473,12 @@ fn NotSupported(comptime Interface: type) type {
 // IRawElementProviderSimple
 // =============================================================================
 
-fn simpleProviderOptions(_: *Simple, out: ?*i32) callconv(.winapi) HRESULT {
+fn simpleProviderOptions(this: *Simple, out: ?*i32) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
+    const provider = providerFrom("simple", this);
+    assert(provider.kind != .free);
     target.* = uia.ProviderOptions_ServerSideProvider | uia.ProviderOptions_UseComThreading;
+    assert(target.* & uia.ProviderOptions_UseComThreading != 0);
     return uia.S_OK;
 }
 
@@ -437,7 +490,11 @@ fn simplePatternProvider(
     const target = out orelse return uia.E_POINTER;
     const provider = providerFrom("simple", this);
     target.* = provider.patternInterface(pattern_id);
-    if (target.* != null) _ = provider.addRef();
+    if (target.* != null) {
+        // Only elements carry patterns; the host window serves the root's.
+        assert(provider.kind == .element);
+        _ = provider.addRef();
+    }
     return uia.S_OK;
 }
 
@@ -453,6 +510,7 @@ fn simplePropertyValue(
     if (provider.kind == .root) return uia.S_OK;
     const index = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE;
     defer provider.server.unlockExclusive();
+    assert(provider.server.locked);
     const snapshot = &provider.server.snapshot;
     target.* = elementProperty(snapshot, snapshot.entry(index), property_id) catch
         return uia.E_OUTOFMEMORY;
@@ -464,6 +522,7 @@ fn simpleHostProvider(this: *Simple, out: ?*?*Simple) callconv(.winapi) HRESULT 
     target.* = null;
     const provider = providerFrom("simple", this);
     if (provider.kind != .root) return uia.S_OK;
+    assert(provider == &provider.server.root);
     // `hwnd` never changes after init, so this needs no lock.
     return uia.UiaHostProviderFromHwnd(provider.server.hwnd, target);
 }
@@ -496,9 +555,12 @@ fn fragmentNavigate(this: *Fragment, direction: i32, out: ?*?*Fragment) callconv
 }
 
 fn navigateRoot(root: *Provider, direction: i32, target: *?*Fragment) HRESULT {
+    assert(direction >= uia.NavigateDirection_Parent);
+    assert(direction <= uia.NavigateDirection_LastChild);
     if (!root.lockRoot()) return uia.UIA_E_ELEMENTNOTAVAILABLE;
     const server = root.server;
     defer server.unlockExclusive();
+    assert(server.locked);
     const index = switch (direction) {
         uia.NavigateDirection_FirstChild => server.snapshot.root_first_child,
         uia.NavigateDirection_LastChild => server.snapshot.root_last_child,
@@ -509,10 +571,15 @@ fn navigateRoot(root: *Provider, direction: i32, target: *?*Fragment) HRESULT {
 }
 
 fn navigateElement(provider: *Provider, direction: i32, target: *?*Fragment) HRESULT {
+    assert(direction >= uia.NavigateDirection_Parent);
+    assert(direction <= uia.NavigateDirection_LastChild);
     const index = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE;
     const server = provider.server;
     defer server.unlockExclusive();
     const entry = server.snapshot.entry(index);
+    // Siblings are distinct elements, so navigation never returns to itself.
+    assert(entry.next_sibling != index);
+    assert(entry.previous_sibling != index);
     const target_index = switch (direction) {
         uia.NavigateDirection_Parent => entry.parent,
         uia.NavigateDirection_NextSibling => entry.next_sibling,
@@ -535,8 +602,10 @@ fn fragmentRuntimeId(this: *Fragment, out: ?*?*uia.SAFEARRAY) callconv(.winapi) 
     const provider = providerFrom("fragment", this);
     // The host window supplies the root's runtime id.
     if (provider.kind == .root) return uia.S_OK;
+    assert(provider.kind == .element);
     const ids = runtimeId(provider.fingerprint);
     target.* = runtimeIdArray(&ids) orelse return uia.E_OUTOFMEMORY;
+    assert(target.* != null);
     return uia.S_OK;
 }
 
@@ -551,12 +620,16 @@ fn fragmentBoundingRectangle(this: *Fragment, out: ?*uia.UiaRect) callconv(.wina
     defer server.unlockExclusive();
     const entry = server.snapshot.entry(index);
     if (entry.isExposed()) target.* = screenRect(server.hwnd, entry.bounds);
+    assert(target.width >= 0);
+    assert(target.height >= 0);
     return uia.S_OK;
 }
 
-fn fragmentEmbeddedRoots(_: *Fragment, out: ?*?*uia.SAFEARRAY) callconv(.winapi) HRESULT {
+fn fragmentEmbeddedRoots(this: *Fragment, out: ?*?*uia.SAFEARRAY) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
     target.* = null;
+    // No element hosts another window's provider tree.
+    assert(providerFrom("fragment", this).kind != .free);
     return uia.S_OK;
 }
 
@@ -607,11 +680,13 @@ fn rootElementFromPoint(
     const target = out orelse return uia.E_POINTER;
     target.* = null;
     const root = providerFrom("fragment_root", this);
+    assert(root.kind == .root);
     const point = clientPoint(root.server.hwnd, x, y) orelse return uia.S_OK;
     if (!root.lockRoot()) return uia.UIA_E_ELEMENTNOTAVAILABLE;
     defer root.server.unlockExclusive();
     // No element under the point means the point is on the root itself.
     const index = root.server.snapshot.hitTest(point[0], point[1]) orelse return uia.S_OK;
+    assert(index < root.server.snapshot.entry_count);
     return claimInto(root.server, index, target);
 }
 
@@ -619,9 +694,12 @@ fn rootFocus(this: *FragmentRoot, out: ?*?*Fragment) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
     target.* = null;
     const root = providerFrom("fragment_root", this);
+    assert(root.kind == .root);
     if (!root.lockRoot()) return uia.UIA_E_ELEMENTNOTAVAILABLE;
     defer root.server.unlockExclusive();
-    return claimInto(root.server, root.server.snapshot.focused, target);
+    const focused = root.server.snapshot.focused;
+    if (focused != index_none) assert(focused < root.server.snapshot.entry_count);
+    return claimInto(root.server, focused, target);
 }
 
 const fragment_root_vtable: FragmentRoot.VTable = .{
@@ -647,8 +725,11 @@ fn Getter(
         fn get(this: *Interface, out: ?*T) callconv(.winapi) HRESULT {
             const target = out orelse return uia.E_POINTER;
             const provider = providerFrom(field, this);
+            // Pattern interfaces exist only on elements, never on the root.
+            assert(provider.kind == .element);
             const index = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE;
             defer provider.server.unlockExclusive();
+            assert(provider.server.locked);
             const snapshot = &provider.server.snapshot;
             target.* = read(snapshot, snapshot.entry(index));
             return uia.S_OK;
@@ -664,15 +745,19 @@ fn valueGet(this: *uia.IValueProvider, out: ?*?uia.BSTR) callconv(.winapi) HRESU
     const target = out orelse return uia.E_POINTER;
     target.* = null;
     const provider = providerFrom("value", this);
+    assert(provider.kind == .element);
     const index = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE;
     defer provider.server.unlockExclusive();
     const snapshot = &provider.server.snapshot;
-    const text = snapshot.textOf(snapshot.entry(index).value);
-    target.* = bstrFromUtf8(text) catch return uia.E_OUTOFMEMORY;
+    const entry = snapshot.entry(index);
+    assert(snapshot_mod.supportsValue(entry.role));
+    target.* = bstrFromUtf8(snapshot.textOf(entry.value)) catch return uia.E_OUTOFMEMORY;
+    assert(target.* != null);
     return uia.S_OK;
 }
 
 fn readReadOnly(_: *const Snapshot, entry: *const Entry) win32.BOOL {
+    assert(snapshot_mod.supportsValue(entry.role));
     return toBool(entry.state.readonly);
 }
 
@@ -690,23 +775,28 @@ fn rangeSet(_: *uia.IRangeValueProvider, _: f64) callconv(.winapi) HRESULT {
 }
 
 fn readRangeValue(_: *const Snapshot, entry: *const Entry) f64 {
+    assert(snapshot_mod.supportsRangeValue(entry.role));
     return entry.value_now;
 }
 
 fn readRangeReadOnly(_: *const Snapshot, entry: *const Entry) win32.BOOL {
+    assert(snapshot_mod.supportsRangeValue(entry.role));
     return toBool(entry.state.readonly or entry.role == .progressbar);
 }
 
 fn readRangeMaximum(_: *const Snapshot, entry: *const Entry) f64 {
+    assert(snapshot_mod.supportsRangeValue(entry.role));
     return entry.value_max;
 }
 
 fn readRangeMinimum(_: *const Snapshot, entry: *const Entry) f64 {
+    assert(snapshot_mod.supportsRangeValue(entry.role));
     return entry.value_min;
 }
 
 /// UI Automation accepts NaN for a step size the control does not define.
-fn readRangeStep(_: *const Snapshot, _: *const Entry) f64 {
+fn readRangeStep(_: *const Snapshot, entry: *const Entry) f64 {
+    assert(snapshot_mod.supportsRangeValue(entry.role));
     return std.math.nan(f64);
 }
 
@@ -757,12 +847,17 @@ const expand_collapse_vtable: ExpandCollapse.VTable = .{
 };
 
 fn readIsSelected(_: *const Snapshot, entry: *const Entry) win32.BOOL {
+    assert(snapshot_mod.supportsSelectionItem(entry.role));
     return toBool(snapshot_mod.isSelected(entry.role, entry.state));
 }
 
-fn selectionContainer(_: *uia.ISelectionItemProvider, out: ?*?*Simple) callconv(.winapi) HRESULT {
+fn selectionContainer(
+    this: *uia.ISelectionItemProvider,
+    out: ?*?*Simple,
+) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
     target.* = null; // The tree has no selection containers to point to.
+    assert(providerFrom("selection_item", this).kind == .element);
     return uia.S_OK;
 }
 
@@ -819,6 +914,9 @@ fn patternProperty(
     entry: *const Entry,
     property_id: i32,
 ) error{OutOfMemory}!uia.VARIANT {
+    assert(entry.fingerprint.isValid());
+    // Core properties are answered by `elementProperty` before reaching here.
+    assert(property_id != uia.UIA_NamePropertyId);
     const role = entry.role;
     switch (property_id) {
         uia.UIA_ValueValuePropertyId => if (snapshot_mod.supportsValue(role)) {
@@ -880,6 +978,7 @@ fn liveSetting(entry: *const Entry) i32 {
         .status => .polite,
         else => .off,
     };
+    if (entry.live != .off) assert(live == entry.live);
     return switch (live) {
         .off => uia.LiveSetting_Off,
         .polite => uia.LiveSetting_Polite,
@@ -955,6 +1054,7 @@ fn variantCount(count: u16) uia.VARIANT {
 }
 
 fn variantText(text: []const u8) error{OutOfMemory}!uia.VARIANT {
+    assert(text.len <= bstr_bytes_max);
     var variant = uia.VARIANT.empty;
     variant.vt = uia.VT_BSTR;
     variant.value.bstrVal = try bstrFromUtf8(text);
@@ -965,6 +1065,7 @@ fn variantText(text: []const u8) error{OutOfMemory}!uia.VARIANT {
 pub fn variantFree(variant: *uia.VARIANT) void {
     if (variant.vt == uia.VT_BSTR) uia.SysFreeString(variant.value.bstrVal);
     variant.* = uia.VARIANT.empty;
+    assert(variant.vt == uia.VT_EMPTY);
 }
 
 /// A `BSTR` holding `text`, which the caller (or COM) frees. Invalid UTF-8 is
@@ -985,7 +1086,10 @@ fn windowScale(hwnd: win32.HWND) ?f64 {
     const dpi = win32.GetDpiForWindow(hwnd);
     if (dpi == 0) return null;
     const dpi_default: f64 = @floatFromInt(win32.USER_DEFAULT_SCREEN_DPI);
-    return @as(f64, @floatFromInt(dpi)) / dpi_default;
+    const scale = @as(f64, @floatFromInt(dpi)) / dpi_default;
+    assert(scale > 0);
+    assert(std.math.isFinite(scale));
+    return scale;
 }
 
 /// The client area's top-left corner in screen pixels.
@@ -1002,6 +1106,7 @@ fn screenRect(hwnd: win32.HWND, bounds: layout.BoundingBox) uia.UiaRect {
     assert(bounds.height >= 0);
     const scale = windowScale(hwnd) orelse return uia.UiaRect.empty;
     const origin = clientOrigin(hwnd) orelse return uia.UiaRect.empty;
+    assert(scale > 0);
     return .{
         .left = @as(f64, @floatFromInt(origin.x)) + bounds.x * scale,
         .top = @as(f64, @floatFromInt(origin.y)) + bounds.y * scale,

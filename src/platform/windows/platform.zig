@@ -299,8 +299,10 @@ pub const WindowsPlatform = struct {
     /// How long the loop may sleep: until the earliest due frame or timed
     /// redraw, never longer than `idle_wait_ns_max`.
     fn waitTimeoutNs(self: *const Self) u64 {
+        assert(self.running);
         var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
         const found = self.snapshotWindowIds(&ids);
+        assert(found <= WindowRegistry.MAX_WINDOWS);
         const clock = windows_window.WaitClock{
             .now_ns = nowNanoseconds(),
             .now_ms = nowMilliseconds(),
@@ -321,7 +323,9 @@ pub const WindowsPlatform = struct {
         assert(now_ms >= 0);
         var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
         const found = self.snapshotWindowIds(&ids);
+        assert(found <= WindowRegistry.MAX_WINDOWS);
         for (ids[0..found]) |id| {
+            assert(id.isValid());
             const window = self.window_registry.getTyped(WindowsWindow, id) orelse continue;
             window.fireRenderDeadline(now_ms);
         }
@@ -332,6 +336,8 @@ pub const WindowsPlatform = struct {
     /// Ids are copied out first and re-resolved per window: the render
     /// callback may open or close windows, which rehashes the registry map.
     fn renderDueWindows(self: *Self, now_ns: u64) void {
+        assert(self.running);
+        assert(now_ns > 0);
         var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
         const found = self.snapshotWindowIds(&ids);
         for (ids[0..found]) |id| {
@@ -514,7 +520,14 @@ fn clickSettings() windows_input.ClickSettings {
     const height_px = win32.GetSystemMetrics(win32.SM_CYDOUBLECLK);
     // The metrics give the size of the whole rectangle around the first click.
     const distance_px_max: u32 = @intCast(@max(1, @divFloor(@max(width_px, height_px), 2)));
-    return .{ .time_ms_max = @max(1, time_ms_max), .distance_px_max = distance_px_max };
+    const settings = windows_input.ClickSettings{
+        .time_ms_max = @max(1, time_ms_max),
+        .distance_px_max = distance_px_max,
+    };
+    // Zero would make every second click a double click, or none.
+    assert(settings.time_ms_max > 0);
+    assert(settings.distance_px_max > 0);
+    return settings;
 }
 
 /// Milliseconds on the `.awake` clock, for timed-redraw deadlines.

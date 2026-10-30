@@ -161,6 +161,8 @@ pub const DirectWriteShaper = struct {
         var byte_offset: u32 = 0;
         // One codepoint per iteration, so at most `text.len` iterations.
         while (iterator.nextCodepoint()) |codepoint| {
+            assert(iterator.i <= text.len);
+            assert(count < text.len);
             const unit_count: u32 = if (codepoint < 0x1_0000) 1 else 2;
             if (count + unit_count > text_utf16_count_max) {
                 log.warn("text of {d} bytes exceeds text_utf16_count_max ({d})", .{
@@ -450,7 +452,13 @@ fn shaperFromSink(sink: *dw.IDWriteTextAnalysisSink) *DirectWriteShaper {
     return shaper;
 }
 
+/// The source and sink live inside the shaper, so each reference DirectWrite
+/// takes is one of a handful held only for the duration of one analysis.
+const reference_count_max: u32 = 64;
+
 fn addReference(shaper: *DirectWriteShaper) u32 {
+    assert(shaper.reference_count >= 1);
+    assert(shaper.reference_count < reference_count_max);
     shaper.reference_count += 1;
     return shaper.reference_count;
 }
@@ -459,12 +467,16 @@ fn releaseReference(shaper: *DirectWriteShaper) u32 {
     // The shaper's own reference is never released through COM.
     assert(shaper.reference_count > 1);
     shaper.reference_count -= 1;
+    assert(shaper.reference_count >= 1);
     return shaper.reference_count;
 }
 
-/// Units from `position` to the end of the text, or 0 past the end.
+/// Units from `position` to the end of the text. DirectWrite asks only about
+/// positions within the range `AnalyzeScript` was given, up to its end.
 fn remainingLength(shaper: *const DirectWriteShaper, position: u32) u32 {
-    return if (position < shaper.text_utf16_count) shaper.text_utf16_count - position else 0;
+    assert(shaper.text_utf16_count <= text_utf16_count_max);
+    assert(position <= shaper.text_utf16_count);
+    return shaper.text_utf16_count - position;
 }
 
 fn sourceQueryInterface(
@@ -496,8 +508,10 @@ fn sourceGetTextAtPosition(
     text_length: *u32,
 ) callconv(.winapi) dw.HRESULT {
     const shaper = shaperFromSource(source);
+    assert(shaper.text_utf16_count > 0);
     text_length.* = remainingLength(shaper, position);
     text.* = if (text_length.* > 0) shaper.text_utf16[position..].ptr else null;
+    assert(position + text_length.* == shaper.text_utf16_count);
     return dw.S_OK;
 }
 
@@ -508,7 +522,9 @@ fn sourceGetTextBeforePosition(
     text_length: *u32,
 ) callconv(.winapi) dw.HRESULT {
     const shaper = shaperFromSource(source);
-    if (position > 0 and position <= shaper.text_utf16_count) {
+    assert(shaper.text_utf16_count > 0);
+    assert(position <= shaper.text_utf16_count);
+    if (position > 0) {
         text.* = &shaper.text_utf16;
         text_length.* = position;
     } else {
@@ -521,7 +537,8 @@ fn sourceGetTextBeforePosition(
 fn sourceGetParagraphReadingDirection(
     source: *dw.IDWriteTextAnalysisSource,
 ) callconv(.winapi) u32 {
-    _ = shaperFromSource(source);
+    // Asked only while analyzing converted text; bidi is not resolved yet.
+    assert(shaperFromSource(source).text_utf16_count > 0);
     return dw.DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
 }
 
@@ -531,8 +548,12 @@ fn sourceGetLocaleName(
     text_length: *u32,
     locale_name: *?[*:0]const u16,
 ) callconv(.winapi) dw.HRESULT {
-    text_length.* = remainingLength(shaperFromSource(source), position);
+    const shaper = shaperFromSource(source);
+    assert(shaper.text_utf16_count > 0);
+    // One locale covers the rest of the text.
+    text_length.* = remainingLength(shaper, position);
     locale_name.* = &locale_name_empty;
+    assert(position + text_length.* == shaper.text_utf16_count);
     return dw.S_OK;
 }
 
@@ -542,8 +563,11 @@ fn sourceGetNumberSubstitution(
     text_length: *u32,
     substitution: *?*anyopaque,
 ) callconv(.winapi) dw.HRESULT {
-    text_length.* = remainingLength(shaperFromSource(source), position);
+    const shaper = shaperFromSource(source);
+    assert(shaper.text_utf16_count > 0);
+    text_length.* = remainingLength(shaper, position);
     substitution.* = null;
+    assert(position + text_length.* == shaper.text_utf16_count);
     return dw.S_OK;
 }
 
@@ -577,7 +601,9 @@ fn sinkSetScriptAnalysis(
 ) callconv(.winapi) dw.HRESULT {
     const shaper = shaperFromSink(sink);
     assert(length > 0);
-    assert(position + length <= shaper.text_utf16_count);
+    assert(position < shaper.text_utf16_count);
+    assert(length <= shaper.text_utf16_count - position);
+    assert(shaper.script_run_count <= script_run_count_max);
     if (shaper.script_run_count < script_run_count_max) {
         shaper.script_runs[shaper.script_run_count] = .{
             .position = position,
@@ -600,7 +626,10 @@ fn sinkSetLineBreakpoints(
     length: u32,
     breakpoints: *const anyopaque,
 ) callconv(.winapi) dw.HRESULT {
-    _ = .{ shaperFromSink(sink), position, length, breakpoints };
+    const shaper = shaperFromSink(sink);
+    assert(position <= shaper.text_utf16_count);
+    assert(length <= shaper.text_utf16_count - position);
+    _ = breakpoints;
     return dw.S_OK;
 }
 
@@ -611,7 +640,10 @@ fn sinkSetBidiLevel(
     explicit_level: u8,
     resolved_level: u8,
 ) callconv(.winapi) dw.HRESULT {
-    _ = .{ shaperFromSink(sink), position, length, explicit_level, resolved_level };
+    const shaper = shaperFromSink(sink);
+    assert(position <= shaper.text_utf16_count);
+    assert(length <= shaper.text_utf16_count - position);
+    _ = .{ explicit_level, resolved_level };
     return dw.S_OK;
 }
 
@@ -621,7 +653,10 @@ fn sinkSetNumberSubstitution(
     length: u32,
     substitution: ?*anyopaque,
 ) callconv(.winapi) dw.HRESULT {
-    _ = .{ shaperFromSink(sink), position, length, substitution };
+    const shaper = shaperFromSink(sink);
+    assert(position <= shaper.text_utf16_count);
+    assert(length <= shaper.text_utf16_count - position);
+    _ = substitution;
     return dw.S_OK;
 }
 

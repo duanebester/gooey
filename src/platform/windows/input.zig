@@ -462,6 +462,8 @@ fn keyMessage(
 fn keyEvent(message: *const Message, context: *const Context) input.KeyEvent {
     assert(message.id == win32.WM_KEYDOWN or message.id == win32.WM_KEYUP or
         message.id == win32.WM_SYSKEYDOWN or message.id == win32.WM_SYSKEYUP);
+    // Virtual-key codes are one byte; the rest of the word is unused.
+    assert(message.wparam <= std.math.maxInt(u8));
     const flags: usize = @bitCast(message.lparam);
     // Bit 30: the key was already down. Always set on release, so only a
     // press can be a repeat.

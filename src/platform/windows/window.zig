@@ -458,9 +458,11 @@ pub const Window = struct {
     /// Whether the loop should render this window now: it asked for a frame,
     /// can show one, and its previous frame is at least one period old.
     pub fn isFrameDue(self: *const Self, now_ns: u64) bool {
+        assert(now_ns > 0);
         if (!self.isFrameRequested()) return false;
         const last_ns = self.last_frame_ns orelse return true;
-        if (now_ns < last_ns) return false;
+        // The monotonic clock never runs backwards within one process.
+        assert(now_ns >= last_ns);
         return now_ns - last_ns >= windows_platform.frame_period_ns_min;
     }
 
@@ -478,6 +480,8 @@ pub const Window = struct {
     /// (a restore animation, a shell that collapses the window), and the
     /// renderer cannot build a swapchain with a zero extent.
     fn isPresentable(self: *const Self) bool {
+        assert(self.client_width_px <= client_px_max_u32);
+        assert(self.client_height_px <= client_px_max_u32);
         if (self.closed or self.minimized) return false;
         return self.client_width_px > 0 and self.client_height_px > 0;
     }
@@ -631,6 +635,7 @@ pub const Window = struct {
     /// scale.
     fn swapchainMatchesClient(self: *const Self) bool {
         assert(self.scale_factor > 0);
+        assert(self.renderer.initialized);
         if (self.client_width_px != self.swapchain_width_px) return false;
         if (self.client_height_px != self.swapchain_height_px) return false;
         return self.scale_factor == self.swapchain_scale_factor;
@@ -671,11 +676,13 @@ pub const Window = struct {
     /// `docs/windows-port.md`.
     fn rendererWidth(self: *const Self) u32 {
         assert(self.size.width > 0);
+        assert(self.size.width <= client_px_max_u32);
         return @intFromFloat(@ceil(self.size.width));
     }
 
     fn rendererHeight(self: *const Self) u32 {
         assert(self.size.height > 0);
+        assert(self.size.height <= client_px_max_u32);
         return @intFromFloat(@ceil(self.size.height));
     }
 
@@ -772,10 +779,13 @@ pub const Window = struct {
             .mouse_exited => self.mouse_inside = false,
             else => {},
         }
+        if (event == .mouse_exited) assert(!self.mouse_inside);
         var handled = false;
         if (self.on_input) |callback| handled = callback(self, event);
         if (self.on_post_input) |callback| callback(self);
         self.requestRender();
+        // A callback may close the window; an open one always redraws.
+        if (!self.closed) assert(self.needs_redraw);
         return handled;
     }
 
@@ -811,6 +821,8 @@ pub const Window = struct {
     }
 
     pub fn getSize(self: *const Self) geometry.Size(f64) {
+        assert(self.size.width >= 0);
+        assert(self.size.height >= 0);
         return self.size;
     }
 
@@ -832,6 +844,7 @@ pub const Window = struct {
             return;
         }
         const hwnd = self.hwnd orelse return;
+        assert(titleTerminated(&self.title_buffer));
         if (win32.SetWindowTextW(hwnd, @ptrCast(&self.title_buffer)) == win32.FALSE) {
             std.log.warn("windows: SetWindowTextW failed (error {d})", .{win32.GetLastError()});
         }
@@ -864,6 +877,7 @@ pub const Window = struct {
     /// Applied on the next `WM_SETCURSOR`, which Windows sends on every
     /// pointer move.
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
+        if (self.mouse_inside) assert(self.hwnd != null);
         self.cursor_shape = shape;
         if (self.mouse_inside) _ = win32.SetCursor(self.platform.cursor(shape));
         assert(self.cursor_shape == shape);
@@ -901,6 +915,8 @@ pub const Window = struct {
 
     pub fn requestRender(self: *Self) void {
         if (self.closed) return;
+        // An open window keeps its `HWND` until `deinit`.
+        assert(self.hwnd != null);
         self.needs_redraw = true;
         assert(self.needs_redraw);
     }
@@ -936,6 +952,7 @@ pub const Window = struct {
 
     pub fn focus(self: *Self) void {
         assert(!self.closed);
+        assert(self.hwnd != null);
         // Windows may refuse to steal focus from another process and flash
         // the taskbar button instead; that is the system's policy to apply.
         _ = win32.SetForegroundWindow(self.hwnd.?);
@@ -960,6 +977,7 @@ pub const Window = struct {
             self.platform.setActiveWindowId(null);
         }
         assert(self.isClosed());
+        assert(!self.needs_redraw);
     }
 
     pub fn isClosed(self: *const Self) bool {
@@ -1009,7 +1027,9 @@ pub const Window = struct {
     }
 
     pub fn clearMarkedText(self: *Self) void {
+        assert(self.marked_text_len <= ime_bytes_max);
         self.marked_text_len = 0;
+        assert(!self.hasMarkedText());
     }
 
     pub fn setInsertedText(self: *Self, text: []const u8) void {
@@ -1020,6 +1040,7 @@ pub const Window = struct {
     }
 
     pub fn hasMarkedText(self: *const Self) bool {
+        assert(self.marked_text_len <= ime_bytes_max);
         return self.marked_text_len > 0;
     }
 
@@ -1036,6 +1057,8 @@ pub const Window = struct {
 
     /// Place the IME's candidate list against the caret.
     fn applyImePlacement(self: *Self) void {
+        assert(self.scale_factor > 0);
+        assert(self.ime_cursor_rect.size.width >= 0);
         const hwnd = self.hwnd orelse return;
         // No context: IME is disabled for this window, so nothing to place.
         const context = ime.ImmGetContext(hwnd) orelse return;

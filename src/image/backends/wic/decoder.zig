@@ -57,11 +57,14 @@ pub const DecodedImage = struct {
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *DecodedImage) void {
+        assert(self.pixels.len == pixelBytes(.{ .width = self.width, .height = self.height }));
         self.allocator.free(self.pixels);
         self.* = undefined;
     }
 
     pub fn toImageData(self: *const DecodedImage) ImageData {
+        assert(self.width > 0);
+        assert(self.pixels.len == pixelBytes(.{ .width = self.width, .height = self.height }));
         return .{
             .width = self.width,
             .height = self.height,
@@ -118,13 +121,23 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
     const converter = try createConverter(factory, frame);
     defer converter.release();
 
-    return copyPixels(allocator, converter, size);
+    const image = try copyPixels(allocator, converter, size);
+    assert(image.width == size.width);
+    assert(image.height == size.height);
+    return image;
 }
 
 const FrameSize = struct {
     width: u32,
     height: u32,
 };
+
+/// Bytes in a tightly packed RGBA frame; `image_side_max` keeps it in `u32`.
+fn pixelBytes(size: FrameSize) usize {
+    assert(size.width <= image_side_max);
+    assert(size.height <= image_side_max);
+    return @as(usize, size.width) * size.height * bytes_per_pixel;
+}
 
 /// Enters COM on the calling thread. Returns whether the caller must balance
 /// the entry with `CoUninitialize`: every successful `CoInitializeEx`,
@@ -151,6 +164,8 @@ fn createFactory() LoadError!*wic.IWICImagingFactory {
     );
     if (!wic.succeeded(result)) return loadError("CoCreateInstance", result);
     assert(factory != null);
+    // COM interface pointers point at a vtable pointer, so they are aligned.
+    assert(std.mem.isAligned(@intFromPtr(factory.?), @alignOf(wic.IWICImagingFactory)));
     return @ptrCast(@alignCast(factory.?));
 }
 
@@ -209,6 +224,7 @@ fn frameSize(frame: *wic.IWICBitmapFrameDecode) LoadError!FrameSize {
     if (height == 0) return error.DecodeFailed;
     if (width > image_side_max) return error.UnsupportedSource;
     if (height > image_side_max) return error.UnsupportedSource;
+    assert(pixelBytes(.{ .width = width, .height = height }) <= std.math.maxInt(u32));
     return .{ .width = width, .height = height };
 }
 
@@ -269,7 +285,7 @@ fn copyPixels(
     );
     if (!wic.succeeded(result)) return loadError("CopyPixels", result);
 
-    assert(pixels.len == @as(usize, size.width) * size.height * bytes_per_pixel);
+    assert(pixels.len == pixelBytes(size));
     return .{
         .width = size.width,
         .height = size.height,
