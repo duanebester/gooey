@@ -4,8 +4,16 @@
 //! transition asserted. Drain routes every queued event against the rendered
 //! frame and then opens at most one requested file dialog, on the main
 //! thread, outside any handler. Build through draw run only when something
-//! requested a render. Milestone 1 packs and draws on the calling thread; the
-//! render thread of contract rule 1 arrives with the macOS display link.
+//! requested a render.
+//!
+//! Two sides, one owner each (contract rule 1). `tickMain` runs on the main
+//! thread: drain, build, layout, emit, then it publishes the built frame by
+//! setting `frame_in_flight`. `presentBuilt` runs on the render side: pack,
+//! draw, then it clears the flag. While a frame is in flight the main thread
+//! still drains (handlers read only the rendered frame) but neither builds
+//! nor flips, so the frame, the atlases, and their upload journal each have
+//! one writer at a time. The main thread makes a drawn frame `rendered` at
+//! its next tick. TestBackend runs both sides in order on one thread.
 
 const std = @import("std");
 const records = @import("records.zig");
@@ -19,18 +27,32 @@ const assert = std.debug.assert;
 
 const Window = window_mod.Window;
 
-/// Run one tick of `window` for `app`, whose type declares the root
-/// `render` function.
+/// One synchronous tick: both sides on the calling thread (TestBackend).
 pub fn tick(app: anytype, window: *Window, now_ns: u64) void {
+    if (tickMain(app, window, now_ns)) presentBuilt(window);
+    flipPresented(window);
+}
+
+/// The main-thread side. Returns true when it published a frame that the
+/// render side must present. A render requested while a frame is in flight
+/// stays requested for a later tick.
+pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     const App = @TypeOf(app.*);
     assert(now_ns >= window.now_ns);
     window.now_ns = now_ns;
-    window.text_scratch_allocator.reset();
+    flipPresented(window);
+    const in_flight = window.frame_in_flight.load(.acquire);
+    // Shaped runs of the frame in flight may still sit in the scratch.
+    if (!in_flight) window.text_scratch_allocator.reset();
     drain(window);
-    if (!window.render_requested) return;
+    if (!window.render_requested) return false;
+    if (in_flight) return false;
     window.render_requested = false;
 
     window.setPhase(.idle, .build);
+    if (window.resources.text_system.scale_factor != window.scale_factor) {
+        window.resources.setScaleFactor(window.scale_factor);
+    }
     window.frame_number += 1;
     window.built().reset(window.frame_number, .{
         .width = window.width,
@@ -56,15 +78,43 @@ pub fn tick(app: anytype, window: *Window, now_ns: u64) void {
         window.limits.retained.sweep_delay_frames,
         &window.keys,
     );
+    window.setPhase(.emit, .idle);
+    publish(window);
+    return true;
+}
 
-    window.setPhase(.emit, .pack);
-    pack_mod.pack(window.built(), window.scene);
+/// The render side: pack the published frame, draw it, and hand it back.
+/// Reads only the built frame, which the main thread leaves alone while it is
+/// in flight, and writes only the scene and the presenter's renderer.
+pub fn presentBuilt(window: *Window) void {
+    assert(window.frame_in_flight.load(.acquire));
+    assert(window.render_phase == .idle);
+    const frame = &window.frames[window.built_index];
+    window.render_phase = .pack;
+    pack_mod.pack(frame, window.scene);
+    window.render_phase = .draw;
+    if (window.presenter) |presenter| {
+        presenter.draw(presenter.context, window.scene, frame, window.clear_color);
+    }
+    window.render_phase = .idle;
+    window.frame_in_flight.store(false, .release);
+}
 
-    window.setPhase(.pack, .draw);
-    if (window.presenter) |presenter| presenter.draw(presenter.context, window.scene, window);
+fn publish(window: *Window) void {
+    assert(!window.awaiting_flip);
+    assert(!window.frame_in_flight.load(.monotonic));
+    window.awaiting_flip = true;
+    window.frame_in_flight.store(true, .release);
+}
+
+/// Make the last presented frame `rendered`, on the main thread. The new
+/// frame may have moved what the pointer is over.
+fn flipPresented(window: *Window) void {
+    assert(window.phase == .idle);
+    if (!window.awaiting_flip) return;
+    if (window.frame_in_flight.load(.acquire)) return;
+    window.awaiting_flip = false;
     window.built_index ^= 1;
-    window.setPhase(.draw, .idle);
-    // The new frame may have moved what the pointer is over.
     router.updateHover(window);
 }
 

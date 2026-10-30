@@ -204,6 +204,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "glass", .source = "src/examples/glass.zig" },
             .{ .name = "counter", .source = "src/examples/counter.zig" },
             .{ .name = "todo", .source = "src/examples/todo.zig" },
+            .{ .name = "core-counter", .source = "src/examples/core_counter.zig" },
+            .{ .name = "core-todo", .source = "src/examples/core_todo.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
@@ -1483,6 +1485,40 @@ fn addMacosTypecheck(b: *std.Build) void {
         });
         // Depend on the compile step only; see `addLinuxTypecheckRoot`.
         step.dependOn(&tests.step);
+        if (text_backend == .platform) addMacosCoreExampleTypecheck(b, step, gooey_mod);
+    }
+}
+
+/// The 0.4.0 core examples' `App.main` reaches the macOS host only from an
+/// executable root, so analyze each as one. Nothing links: no binary is
+/// requested.
+fn addMacosCoreExampleTypecheck(
+    b: *std.Build,
+    step: *std.Build.Step,
+    gooey_mod: *std.Build.Module,
+) void {
+    const target = gooey_mod.resolved_target.?;
+    const components_mod = b.createModule(.{
+        .root_source_file = b.path("components/src/root.zig"),
+        .target = target,
+        .optimize = .debug,
+    });
+    components_mod.addImport("gooey", gooey_mod);
+    const examples = [_][]const u8{ "core_counter", "core_todo" };
+    for (examples) |name| {
+        const exe = b.addExecutable(.{
+            .name = b.fmt("typecheck-macos-{s}", .{name}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("src/examples/{s}.zig", .{name})),
+                .target = target,
+                .optimize = .debug,
+                .imports = &.{
+                    .{ .name = "gooey", .module = gooey_mod },
+                    .{ .name = "gooey-components", .module = components_mod },
+                },
+            }),
+        });
+        step.dependOn(&exe.step);
     }
 }
 

@@ -75,6 +75,7 @@ pub fn App(comptime State: type, comptime config: Config(State)) type {
 
         pub const limits = config.limits;
         pub const title = config.title;
+        pub const theme = config.theme;
         pub const width = config.width;
         pub const height = config.height;
         pub const font_limits = fontLimitsFor(config.limits);
@@ -102,11 +103,41 @@ pub fn App(comptime State: type, comptime config: Config(State)) type {
             options: HeadlessOptions,
         ) !void {
             assert(options.scale_factor > 0);
+            self.beginInit(backing);
+            try self.initCore(io, options.scale_factor);
+            self.finishInit();
+        }
+
+        /// The generated entry point (contract §7): `pub const main =
+        /// App.main;` in the root file. Milestone 1 runs on macOS; Linux,
+        /// Windows, and the web move onto the core in phase 4.
+        pub fn main(init: std.process.Init) !void {
+            if (comptime builtin.os.tag != .macos) {
+                @compileError("gooey.App.main runs on macOS in milestone 1; other " ++
+                    "platforms move onto the core in phase 4");
+            }
+            const host = @import("../platform/macos/core_host.zig");
+            const self = try init.gpa.create(Self);
+            defer init.gpa.destroy(self);
+            try host.run(Self, self, init.gpa, init.io);
+        }
+
+        /// Start initialization: every allocation from here to `finishInit`
+        /// goes through the guard, including a platform window's.
+        pub fn beginInit(self: *Self, backing: std.mem.Allocator) void {
             self.guard = lifecycle.LifecycleGuard.init(backing);
+            assert(self.guard.lifecycle == .initializing);
+        }
+
+        /// Reserve the core's storage: state, store, shared resources, and
+        /// the window, at `scale_factor` device pixels per logical pixel.
+        pub fn initCore(self: *Self, io: std.Io, scale_factor: f32) !void {
+            assert(self.guard.lifecycle == .initializing);
+            assert(scale_factor > 0);
             const gpa = self.guard.allocator();
             self.state = .{};
             self.store = handler_mod.Store.init(State, &self.state);
-            try self.resources.initOwnedInPlace(gpa, io, options.scale_factor, .{
+            try self.resources.initOwnedInPlace(gpa, io, scale_factor, .{
                 .font_name = null,
                 .font_size = @floatFromInt(config.theme.font_size_base),
                 .limits = font_limits,
@@ -115,13 +146,18 @@ pub fn App(comptime State: type, comptime config: Config(State)) type {
             try window_mod.initInPlace(&self.window, gpa, &.{
                 .width = @floatFromInt(config.width),
                 .height = @floatFromInt(config.height),
-                .scale_factor = options.scale_factor,
+                .scale_factor = scale_factor,
                 .limits = &config.limits,
                 .theme = config.theme,
                 .store = &self.store,
                 .resources = &self.resources,
             });
-            errdefer window_mod.deinit(&self.window);
+        }
+
+        /// Run `on_init`, the last initialization work, then enter `running`:
+        /// any later allocation through the guard panics.
+        pub fn finishInit(self: *Self) void {
+            assert(self.guard.lifecycle == .initializing);
             if (config.on_init) |on_init| {
                 var effects = Effects.init(null, .root);
                 on_init(&self.state, &effects);
@@ -131,8 +167,10 @@ pub fn App(comptime State: type, comptime config: Config(State)) type {
             assert(self.guard.lifecycle == .running);
         }
 
+        /// Free everything `initCore` reserved; also valid when a later init
+        /// step failed before `finishInit`.
         pub fn deinit(self: *Self) void {
-            assert(self.guard.lifecycle == .running);
+            assert(self.guard.lifecycle != .deinitializing);
             self.guard.enterDeinitializing();
             window_mod.deinit(&self.window);
             self.resources.deinit();
@@ -153,6 +191,14 @@ pub fn App(comptime State: type, comptime config: Config(State)) type {
         pub fn tick(self: *Self, now_ns: u64) void {
             assert(self.guard.lifecycle == .running);
             tick_mod.tick(self, &self.window, now_ns);
+        }
+
+        /// The main-thread side of a tick, for a host with a render thread.
+        /// Type-erased so the host is not generic over the app.
+        pub fn tickMainErased(context: *anyopaque, now_ns: u64) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            assert(self.guard.lifecycle == .running);
+            _ = tick_mod.tickMain(self, &self.window, now_ns);
         }
     };
 }

@@ -2,11 +2,13 @@
 //! Implements NSTextInputClient for IME support (emoji, dead keys, CJK input)
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 const input = @import("../../input/events.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const appkit = @import("appkit.zig");
 const Window = @import("window.zig").Window;
+const CoreBinding = @import("window.zig").CoreBinding;
 
 const NSRect = appkit.NSRect;
 const NSPoint = appkit.NSPoint;
@@ -483,8 +485,9 @@ fn firstRectForCharacterRange(
     }
     const ns_window = objc.Object.fromId(ns_window_id);
 
-    // Use the IME cursor rect set by the focused TextInput
-    const view_rect = window.ime_cursor_rect;
+    // A core app answers from its rendered frame (contract §5 `Query`);
+    // the 0.3.1 runtime sets the rect from the focused TextInput.
+    const view_rect = if (window.core) |binding| coreImeRect(binding) else window.ime_cursor_rect;
 
     // Convert from view coordinates to window coordinates, then to screen coordinates
     const window_rect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
@@ -493,10 +496,26 @@ fn firstRectForCharacterRange(
     return screen_rect;
 }
 
+/// The caret rect of the rendered frame in view coordinates (the view is
+/// flipped, like the core's), or a caret-sized rect at the origin.
+fn coreImeRect(binding: CoreBinding) NSRect {
+    const rect = binding.query.imeCursorRect() orelse {
+        return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } };
+    };
+    assert(rect.width >= 0);
+    assert(rect.height >= 0);
+    return .{
+        .origin = .{ .x = rect.x, .y = rect.y },
+        .size = .{ .width = rect.width, .height = rect.height },
+    };
+}
+
 fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, selector: objc.c.SEL) callconv(.c) void {
     std.debug.print("doCommandBySelector called: {*}\n", .{selector});
 
     const window = getWindow(self) orelse return;
+    // A core app already queued this key from `keyDown:`.
+    if (window.core != null) return;
 
     if (window.pending_key_event) |event_id| {
         if (parseKeyEvent(event_id)) |key_event| {

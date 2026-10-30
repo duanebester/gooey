@@ -113,6 +113,9 @@ pub const App = core.App(State, .{
     .on_init = null,
 });
 
+/// The generated entry point (contract §7).
+pub const main = App.main;
+
 const spacer = ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{});
 
 pub fn render(cx: *Cx) void {

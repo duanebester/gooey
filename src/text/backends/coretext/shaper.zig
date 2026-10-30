@@ -14,8 +14,11 @@ const ShapedRun = types.ShapedRun;
 /// CoreText-backed text shaper
 pub const CoreTextShaper = struct {
     allocator: std.mem.Allocator,
-    /// Reusable UTF-16 buffer
-    utf16_buffer: std.ArrayList(ct.UniChar),
+    /// UTF-16 units of the text being shaped. Fixed, like the buffers below:
+    /// shaping runs every frame, after initialization, and must not allocate
+    /// (CLAUDE.md §2). Each unit has one cluster entry, so `MAX_CLUSTER_MAP`
+    /// bounds both.
+    utf16_buf: [MAX_CLUSTER_MAP]ct.UniChar,
 
     /// Pre-allocated buffers for glyph data (eliminates per-shape allocations)
     glyph_buf: [MAX_GLYPHS_PER_RUN]ct.CGGlyph,
@@ -36,7 +39,7 @@ pub const CoreTextShaper = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .utf16_buffer = .empty,
+            .utf16_buf = undefined,
             .glyph_buf = undefined,
             .position_buf = undefined,
             .advance_buf = undefined,
@@ -46,7 +49,6 @@ pub const CoreTextShaper = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.utf16_buffer.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -56,8 +58,7 @@ pub const CoreTextShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        // Convert UTF-8 to UTF-16 using pre-allocated cluster buffer
-        self.utf16_buffer.clearRetainingCapacity();
+        // Convert UTF-8 to UTF-16 into the fixed buffers.
         var cluster_count: usize = 0;
 
         var byte_idx: u32 = 0;
@@ -67,15 +68,15 @@ pub const CoreTextShaper = struct {
             byte_idx = @intCast(iter.i);
 
             if (cp <= 0xFFFF) {
-                try self.utf16_buffer.append(self.allocator, @intCast(cp));
                 if (cluster_count >= MAX_CLUSTER_MAP) return error.TextTooLong;
+                self.utf16_buf[cluster_count] = @intCast(cp);
                 self.cluster_buf[cluster_count] = start_byte;
                 cluster_count += 1;
             } else {
                 const adjusted = cp - 0x10000;
-                try self.utf16_buffer.append(self.allocator, @intCast(0xD800 + (adjusted >> 10)));
-                try self.utf16_buffer.append(self.allocator, @intCast(0xDC00 + (adjusted & 0x3FF)));
                 if (cluster_count + 1 >= MAX_CLUSTER_MAP) return error.TextTooLong;
+                self.utf16_buf[cluster_count] = @intCast(0xD800 + (adjusted >> 10));
+                self.utf16_buf[cluster_count + 1] = @intCast(0xDC00 + (adjusted & 0x3FF));
                 self.cluster_buf[cluster_count] = start_byte;
                 self.cluster_buf[cluster_count + 1] = start_byte;
                 cluster_count += 2;
@@ -84,7 +85,8 @@ pub const CoreTextShaper = struct {
 
         const cluster_map = self.cluster_buf[0..cluster_count];
 
-        const utf16_len = self.utf16_buffer.items.len;
+        const utf16_len = cluster_count;
+        std.debug.assert(utf16_len <= MAX_CLUSTER_MAP);
         if (utf16_len == 0) {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
@@ -100,7 +102,7 @@ pub const CoreTextShaper = struct {
             ).msgSend(
                 objc.Object,
                 "initWithCharacters:length:",
-                .{ self.utf16_buffer.items.ptr, utf16_len },
+                .{ &self.utf16_buf, utf16_len },
             );
             break :blk @as(ct.CFStringRef, @ptrCast(ns_string.value));
         };

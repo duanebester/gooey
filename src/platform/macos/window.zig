@@ -23,6 +23,22 @@ const interface_mod = @import("../interface.zig");
 const WindowId = interface_mod.WindowId;
 const GlassStyle = interface_mod.GlassStyle;
 const WindowOptions = interface_mod.WindowOptions;
+const core_events = @import("../../core/events.zig");
+const core_router = @import("../../core/router.zig");
+
+/// How a 0.4.0 core app drives this window (contract §9): the window pushes
+/// input and resizes into the core's queue and asks the host for a tick, and
+/// AppKit's synchronous questions (the IME rect, whether a key is claimed)
+/// go to the read-only query. No `on_input` or `on_render` callback and no
+/// CVDisplayLink run; the host's render thread draws.
+pub const CoreBinding = struct {
+    queue: *core_events.EventQueue,
+    query: *const core_router.Query,
+    context: *anyopaque,
+    /// Ask the host for a main-thread tick. Called on the main thread after
+    /// every push.
+    schedule_tick: *const fn (context: *anyopaque) void,
+};
 
 /// Maximum window title length in bytes, excluding the NUL terminator.
 ///
@@ -167,6 +183,9 @@ pub const Window = struct {
 
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
+
+    /// Set when a 0.4.0 core app drives this window; see `CoreBinding`.
+    core: ?CoreBinding = null,
 
     // =========================================================================
     // Convenience accessors (so user code doesn't need to convert)
@@ -645,6 +664,7 @@ pub const Window = struct {
             },
             else => {},
         }
+        if (self.core) |binding| return pushCoreInput(binding, event);
 
         var handled = false;
         if (self.on_input) |callback| {
@@ -664,6 +684,26 @@ pub const Window = struct {
         }
         self.requestRender();
         return handled;
+    }
+
+    /// Queue `event` for the core's next drain. Only a key the keymap claims
+    /// counts as handled, so every other key still reaches the IME.
+    fn pushCoreInput(binding: CoreBinding, event: input.InputEvent) bool {
+        binding.queue.push(.{ .input = event });
+        binding.schedule_tick(binding.context);
+        return switch (event) {
+            .key_down => |key| binding.query.keymapClaims(key),
+            else => false,
+        };
+    }
+
+    /// Bind a core app. Call once, before the host's render thread starts.
+    pub fn bindCore(self: *Self, binding: CoreBinding) void {
+        assert(self.core == null);
+        assert(self.display_link == null);
+        assert(self.on_input == null);
+        assert(self.on_render == null);
+        self.core = binding;
     }
 
     /// Get current mouse position
@@ -806,6 +846,11 @@ pub const Window = struct {
             return;
         }
 
+        if (self.core) |binding| {
+            self.resizeCore(binding, geometry.Size(f64).init(new_width, new_height), new_scale);
+            return;
+        }
+
         // Acquire render mutex to safely modify size/scale while DisplayLink might be reading.
         self.render_mutex.lock();
         defer self.render_mutex.unlock();
@@ -858,6 +903,24 @@ pub const Window = struct {
         }
     }
 
+    /// A core app resizes through its queue: the next built frame carries the
+    /// new viewport and the render thread resizes the drawable before drawing
+    /// it, so the main thread never touches the renderer.
+    fn resizeCore(self: *Self, binding: CoreBinding, size: geometry.Size(f64), scale: f64) void {
+        assert(size.width >= 1);
+        assert(size.height >= 1);
+        assert(scale > 0);
+        self.size = size;
+        self.scale_factor = scale;
+        self.metal_layer.msgSend(void, "setContentsScale:", .{scale});
+        binding.queue.push(.{ .window = .{ .resized = .{
+            .width = @floatCast(size.width),
+            .height = @floatCast(size.height),
+            .scale_factor = @floatCast(scale),
+        } } });
+        binding.schedule_tick(binding.context);
+    }
+
     /// Handle window close. Returns true if close should proceed, false to cancel.
     pub fn handleClose(self: *Self) bool {
         // Call user callback first - they can prevent close by returning false
@@ -883,11 +946,15 @@ pub const Window = struct {
 
     pub fn handleLiveResizeStart(self: *Self) void {
         self.in_live_resize.store(true, .release);
+        // Presenting with a transaction ties presents to the main thread's
+        // commits; a core app presents from its render thread.
+        if (self.core != null) return;
         self.metal_layer.msgSend(void, "setPresentsWithTransaction:", .{true});
     }
 
     pub fn handleLiveResizeEnd(self: *Self) void {
         self.in_live_resize.store(false, .release);
+        if (self.core != null) return;
         self.metal_layer.msgSend(void, "setPresentsWithTransaction:", .{false});
         self.requestRender();
     }
