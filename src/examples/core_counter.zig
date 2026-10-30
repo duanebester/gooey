@@ -45,7 +45,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, .{
+pub const App = core.App(State, render, .{
     .title = "Counter",
     .width = 500,
     .height = 350,

@@ -1770,6 +1770,8 @@ fn addFailFastChecks(
         .{ .mode = "core-allocation", .stderr = "allocation after initialization: alloc of " ++
             "16 bytes while the lifecycle is running" },
         .{ .mode = "core-duplicate-key", .stderr = "duplicate key \"twin\" under element" },
+        .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
+            "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
     };

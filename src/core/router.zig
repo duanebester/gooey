@@ -10,7 +10,8 @@
 //!
 //! Work per event is bounded: a hit test or click-outside scan visits at most
 //! `records.hit_record_count_frame_max` records, and a bubble at most the box
-//! depth. Clicks fire on press, as in 0.3.1.
+//! depth. A press focuses and runs click-outside handlers; the click fires
+//! on release, over a record the press also landed in (decision 7).
 
 const std = @import("std");
 const records = @import("records.zig");
@@ -107,6 +108,11 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             window.pointer = .{ .x = point.x, .y = point.y };
             press(window, event, point);
         },
+        .mouse_up => |mouse| {
+            const point = pointOf(mouse.position);
+            window.pointer = .{ .x = point.x, .y = point.y };
+            release(window, event, point);
+        },
         .mouse_moved, .mouse_dragged => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
@@ -128,11 +134,12 @@ fn pointOf(position: anytype) Point {
     return point;
 }
 
-/// A press: click-outside handlers, focus, then click handlers bubbling
-/// from the target.
+/// A press: click-outside handlers and focus now; the click itself fires on
+/// release (decision 7), so the press records the path it landed on.
 fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = hitIndex(frame, point);
+    window.press_len = pathOf(frame, target, &window.press_path);
     clickOutside(window, event, target);
     var focus_id: ElementId = .root;
     var index = target;
@@ -146,7 +153,42 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
         index = frame.hits[index].parent;
     }
     setFocus(window, focus_id);
-    bubble(window, event, target, .click);
+}
+
+/// A release: click handlers bubbling from the record under the pointer,
+/// limited to records the press also landed in. Pressing one button and
+/// releasing over another clicks neither; releasing over the pressed
+/// button's child clicks the button.
+fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
+    const pressed = window.press_path[0..window.press_len];
+    defer window.press_len = 0;
+    if (pressed.len == 0) return;
+    const frame = window.rendered();
+    var index = hitIndex(frame, point);
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        const record = &frame.hits[index];
+        if (std.mem.indexOfScalar(ElementId, pressed, record.id) != null) {
+            if (frame.handlerAt(record.on_click)) |handler| {
+                if (invoke(window, handler, event, null, record.id)) return;
+            }
+        }
+        index = record.parent;
+    }
+}
+
+/// The ids from `index` up to the root; returns the count written.
+fn pathOf(frame: *const records.Frame, index_start: u32, path: []ElementId) u32 {
+    var index = index_start;
+    var len: u32 = 0;
+    while (index != index_none) : (len += 1) {
+        assert(len < path.len);
+        path[len] = frame.hits[index].id;
+        index = frame.hits[index].parent;
+    }
+    assert(len <= path.len);
+    return len;
 }
 
 fn clickOutside(window: *Window, event: *const input.InputEvent, target: u32) void {
@@ -253,6 +295,13 @@ fn invoke(
 }
 
 fn requestDialog(window: *Window, request: handler_mod.FileDialogRequest) void {
+    const target = request.on_complete.target;
+    if (target.isRoot() and target.type_id != window.store.root_type_id) {
+        std.debug.panic("file dialog on_complete targets {s}; the root state is {s}", .{
+            handler_mod.typeName(target.type_id),
+            handler_mod.typeName(window.store.root_type_id),
+        });
+    }
     if (window.pending_dialog != null) {
         std.debug.panic("a second file dialog was requested in frame {d}; one opens per tick", .{
             window.frame_number,
