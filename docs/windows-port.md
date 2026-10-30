@@ -147,14 +147,40 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   `resize` swallows swapchain errors, so the window checks the swapchain's framebuffers
   afterwards and, on failure, logs once and retries the rebuild once per frame period
   instead of drawing into it.
-- **Live resize.** Dragging an edge runs a modal loop inside `DefWindowProcW`, so
-  `WM_PAINT` renders while the platform loop is blocked. Timed redraws do not fire then.
+- **Live move and resize.** Dragging the title bar or an edge runs a modal loop inside
+  `DefWindowProcW`, with the platform loop blocked in `DispatchMessageW` below it.
+  `WM_ENTERSIZEMOVE` starts a 10 ms window timer and `WM_EXITSIZEMOVE` kills it; each
+  `WM_TIMER` runs `WindowsPlatform.runModalTurn` (the owner's hook, timed redraws, and
+  every requested frame), so animations and async completions continue during the drag.
+  A window closed mid-drag stops its timer before the hook can reclaim it.
+- **Window size budget.** A Win32 surface's swapchain extent is always the client size,
+  so the budget is enforced on the window: `WM_GETMINMAXINFO` caps the track and
+  maximized sizes at `ResourceLimits.window` (framebuffer maximum at the current DPI),
+  then `max_size`; `min_size` yields to that cap. A new window opens at the requested
+  size fitted to the monitor's work area, then raised to `min_size` and capped by the
+  budget and `max_size` (`openingOuterSize`), because Windows sends the first
+  `WM_GETMINMAXINFO` before `WM_NCCREATE` binds the window. Centering clamps to the work
+  area on both axes.
+- **Focus loss.** `WM_KILLFOCUS` releases every held button (ending a drag), then every
+  held key, with no modifiers, and drops the click sequence and any pending surrogate;
+  the real releases go to the window that took focus.
 - **DPI.** Per-monitor v2. `size` is the client area in device pixels divided by
   `dpi / 96`. `WM_DPICHANGED` adopts the new scale and suggested rectangle; a window that
-  opens on a monitor whose DPI differs from the system DPI is resized once.
-  `min_size` and `max_size` become track sizes. An infinite `max_size` axis means no
+  opens on a monitor whose DPI differs from the system DPI is resized once. The next
+  frame's `WindowContext.syncWindowMetrics` passes the new scale to
+  `AppResources.setScaleFactor`, so glyphs, icons, and images rasterize at it. The
+  atlases are shared by every window, so with windows on monitors of different DPI the
+  last window to change scale wins (a follow-up). An infinite `max_size` axis means no
   limit, and every client extent is clamped to 32,767 device pixels (`WM_SIZE` and mouse
   messages carry 16-bit sizes and coordinates).
+- **Swapchain loss.** The shared renderer resets a frame's fence only after acquiring an
+  image, so an out-of-date acquire skips the frame without leaving the fence unsignalled
+  (which hung the next `render` or `resize`); the window requests the frame that
+  rebuilds the swapchain. `VK_ERROR_DEVICE_LOST` and `VK_ERROR_SURFACE_LOST_KHR` panic
+  with the result code instead of reaching `unreachable`. Shared with Linux.
+- **Custom shaders.** The Vulkan renderer does not run `WindowOptions.custom_shaders`;
+  window init logs a warning naming the shader count and the backend (Linux does the
+  same).
 - **Fractional scale.** The swapchain matches the client area exactly, but the shared
   renderer takes the viewport as whole logical pixels, so the window passes
   `ceil(size)`. At 150% a 1001 px client draws 668 logical px rather than 667.33
@@ -343,10 +369,14 @@ checked against Zig's bundled `uiautomationcore.h`.
   (`LabeledBy`, `DescribedBy`, `ControllerFor`); they need provider-valued properties.
 - **Selection containers.** `SelectionContainer` returns null and lists, tab lists, and
   radio groups do not implement the Selection pattern.
-- **Fingerprint collisions.** Every top-level element has position 0 in its fingerprint,
-  so two top-level elements with the same role and name share a runtime id and the
-  snapshot resolves both to the first. A tree-wide issue; the flat example tree below
-  makes it more likely.
+- **Fingerprints.** Fixed: top-level elements now count positions like children do, and
+  `Tree` salts any remaining duplicate (a 16-bit parent-hash collision) deterministically,
+  so two top-level "Delete" buttons get distinct runtime ids and sibling navigation
+  terminates. The snapshot asserts there are no duplicates.
+- **Shutdown race (multithreaded apartment only).** `Server.shutdown` reads a slot's
+  reference count before disconnecting it, without holding a reference; a client on
+  another COM thread releasing the last reference in between would leave UI Automation
+  calling a reclaimed slot. Unreachable in the single-threaded apartment the bridge uses.
 - **Old values.** Property-changed events carry the new value and `VT_EMPTY` as the old.
 - **Render thread.** The snapshot lock already covers a frame built off the window's
   thread; `uia.Host.client_requested` would then need to become atomic.
@@ -381,7 +411,12 @@ discovery, shaping, and rasterization without Direct2D or GDI. Requires Windows 
   it.
 - **Rasterization.** `CreateGlyphRunAnalysis` with grayscale antialiasing, symmetric
   natural rendering, and grid fitting disabled, so outlines follow the cache's subpixel
-  origin. A glyph over `MAX_GLYPH_SIZE` fails with `GlyphTooLarge` rather than cropping.
+  origin. A glyph over `MAX_GLYPH_SIZE` (256 device px) is drawn blank with its advance,
+  logged once, and cached, so only that glyph is missing rather than the whole run.
+  `GlyphTooLarge` now means only that the caller's target buffer is too small.
+- **Not yet.** Font fallback (`IDWriteFontFallback::MapCharacters`), so emoji such as 📂
+  render as a box; bidi (`AnalyzeBidi`), so right-to-left text is drawn in logical order;
+  and color glyphs.
 - **Coordinates.** The subpixel shift passed to `renderGlyphSubpixel` is in device pixels,
   and `render.zig` adds `y_offset` to a y-down baseline, so DirectWrite's upward
   `ascenderOffset` is negated. (The FreeType backend scales the shift a second time.)
@@ -426,12 +461,19 @@ is the mask the shaders expect: R is fill alpha, G is stroke alpha, A is their m
   `RasterScratch` over it, reset per rasterization: a `FixedBufferAllocator` wrapper that
   records the high-water mark (the arena's `end_index` falls again as the backend frees)
   and the size of the last refused request. This applies on every platform.
-- **Budget.** `SvgAtlas.rasterScratchBytes(icon_size_max)` is one RGBA icon for the stroke
-  buffer, 2,048 B per pixel of side for geometry, and 32 KiB: 800 KiB at the 256 px
-  ceiling. The heaviest Lucide icon (`loader_pinwheel`, fill and stroke) peaks at
-  445,868 B at 256 px, and a test pins that peak below two thirds of the reservation; it
-  runs only where `rasterizer.zig` selects the software backend. Exhaustion panics naming
-  the pool, capacity, peak, requested bytes, path length, size, and frame.
+- **Budget.** The scratch is sized from declared limits, not from measured icons:
+  `ResourceLimits.atlas.svg_path_bytes_max` and `svg_path_vertex_count_max` (2 KiB and
+  4,096 vertices for `nano` up to 64 KiB and 32,768 at the ceiling) plus one RGBA icon at
+  `svg_icon_size_max` for the stroke buffer. `rasterScratchBytes` reserves exactly what
+  one icon within those limits can use, 0.20–2.13 MiB across the profiles
+  (`docs/v0.4.0-memory-budget.md`). Parsing and flattening reserve their full capacity
+  up front and append through an allocator that cannot grow, so a longer path fails with
+  `PathTooComplex` instead of exhausting the arena. `SvgAtlas` fails fast on it, naming
+  the `ResourceLimits` field to raise, the configured value, and the icon. Linux and
+  Windows use this full budget; CoreGraphics parses within the byte limit and strokes
+  within the icon buffer; Canvas reserves nothing. The heaviest Lucide icon
+  (`loader_pinwheel`) flattens to 8,530 vertices at 256 px, within `standard`'s 16,384;
+  a test pins that and the refusal of the same icon under a smaller vertex budget.
 - **Quality.** Fill is 4× vertical supersampling with exact horizontal coverage, even-odd;
   stroke is a distance-to-segment pass with round joins and caps. Lucide at 150% looks
   correct. Not yet compared side by side with the CoreGraphics output; nonzero winding,
@@ -453,9 +495,10 @@ rasterizer in place of resvg.
 - **Recursive flattening.** `CubicBez.flattenRecursive` and
   `QuadraticBez.flattenRecursive` in `src/svg/path.zig` split curves recursively to depth
   16 (CLAUDE.md section 6). The stack is not the risk; the work bound is: levels 0–16 can
-  all split, so one curve may emit 2^17 = 131,072 points, about 1 MiB, which exhausts the
-  800 KiB scratch and panics. Lucide stops after a few levels. Inferred from the code, not
-  tested: a NaN coordinate fails `flatness <= tol_sq` at every level and reaches full depth.
+  all split, so one curve may emit 2^17 = 131,072 points. The vertex limit now turns that
+  into `PathTooComplex` when it fills, so memory is bounded, but the recursion remains.
+  Lucide stops after a few levels. Inferred from the code, not tested: a NaN coordinate
+  fails `flatness <= tol_sq` at every level and reaches full depth.
   Fix: a fixed 17-entry explicit stack (push right, then left, to keep point order), a
   depth cap derived from the scratch budget and pinned by a comptime assertion, and
   rejection of non-finite coordinates before flattening. `path.zig` is shared with the
@@ -501,7 +544,7 @@ they surface while testing the port.
   included). The second runs `src/windows_tests.zig`, which names the Windows backend set
   explicitly so its coverage does not depend on what `root.zig`'s discovery chain reaches
   during the 0.4.0 rewrite. A few Windows files (DirectWrite, clipboard, UIA, SVG atlas)
-  run in both, about a second of overlap. 1545 tests: 1209 shared, 336 backend.
+  run in both, about a second of overlap. 1606 tests: 1246 shared, 360 backend.
 - **Mutex.** Wiring the shared tests found that `platform/mutex.zig` fell through to
   `PosixMutex` on Windows, where `pthread_mutex_t` is `void`. Its `.windows` arm is an
   `SRWLOCK`: zero means unlocked, and like `os_unfair_lock` it is not recursive.
@@ -539,4 +582,14 @@ the event loop.
       `run-clipboard`).
 - [x] File dialogs (Common Item Dialog, `run-file-dialog`).
 - [x] Accessibility through UI Automation (read-only; see the section above).
-- [ ] Frame pacing on a render thread.
+- [x] Window budget, `min_size`/`max_size` at creation, work-area clamping, frames during
+      move and resize, focus-loss release, scale changes reaching the atlases.
+- [ ] Frame pacing on a render thread paced by the display, matching the macOS decision
+      (today: a 60 Hz cap on the window thread, wrong on 50, 120, and 144 Hz displays).
+- [ ] Dark title bar and appearance (`DwmSetWindowAttribute`, theme-change tracking).
+- [ ] Custom title-bar hit testing (`WM_NCHITTEST`).
+- [ ] CPU fallback renderer for machines without a Vulkan driver (some VMs, RDP).
+- [ ] Writable UI Automation (actions; needs the framework path described above).
+- [ ] Clipboard, file dialog, and UI Automation allocations (phase 6 services redesign).
+- [ ] Custom shaders on Vulkan (shared with Linux; warned at init).
+- [ ] Per-window atlas scale for windows on monitors of different DPI.

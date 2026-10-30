@@ -1,7 +1,7 @@
 //! Windows Demo - the platform layer alone: a Win32 window drawn with Vulkan.
 //!
-//! Exercises the Windows backend without the text system, which has no
-//! Windows implementation yet: a few static quads, a circle that follows the
+//! Exercises the Windows window, input, and renderer layer without the text,
+//! SVG, or image systems: a few static quads, a circle that follows the
 //! pointer, a box that animates through timed redraws, and resize, DPI, and
 //! close handling. Every input event is logged.
 //!
