@@ -27,7 +27,8 @@ const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
 const input = @import("../../input/events.zig");
-const VulkanRenderer = @import("../linux/vk_renderer.zig").VulkanRenderer;
+const vk_renderer = @import("../linux/vk_renderer.zig");
+const VulkanRenderer = vk_renderer.VulkanRenderer;
 const win32 = @import("win32.zig");
 const uia = @import("uia.zig");
 const ime = @import("ime.zig");
@@ -211,6 +212,7 @@ pub const Window = struct {
         plat: *WindowsPlatform,
         options: *const WindowOptions,
     ) void {
+        vk_renderer.warnCustomShadersUnsupported(options.custom_shaders.len, "Windows");
         // A field added to `Window` must be initialized here too.
         comptime assert(@typeInfo(Self).@"struct".field_names.len == 48);
         self.allocator = allocator;

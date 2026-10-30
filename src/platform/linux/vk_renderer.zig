@@ -51,6 +51,20 @@ const Allocator = std.mem.Allocator;
 /// Enable Vulkan validation layers in debug builds.
 pub const enable_validation_layers = vk_instance.enable_validation_layers;
 
+/// Report custom shaders the Vulkan renderer cannot run. Custom shaders ship
+/// as MSL (Metal) or WGSL (WebGPU) only, so a window that asks for them draws
+/// without them; the window warns once at init, naming the count and the
+/// platform, instead of dropping them silently.
+pub fn warnCustomShadersUnsupported(shader_count: usize, platform_name: []const u8) void {
+    assert(platform_name.len > 0);
+    if (shader_count == 0) return;
+    std.log.warn(
+        "Vulkan ({s}): {d} custom shader(s) requested, but custom shaders are not " ++
+            "supported on the Vulkan backend yet; drawing without them",
+        .{ platform_name, shader_count },
+    );
+}
+
 // =============================================================================
 // Re-exported types and constants from vk_types.zig
 // =============================================================================

@@ -292,7 +292,8 @@ pub const WindowOptions = struct {
     /// Start the window centered on screen.
     centered: bool = true,
 
-    /// Custom shaders (MSL on macOS, WGSL on web, ignored on Linux).
+    /// Custom shaders (MSL on macOS, WGSL on web). The Vulkan backends on
+    /// Linux and Windows cannot run them and warn once at window init.
     custom_shaders: []const @import("../core/shader.zig").CustomShader = &.{},
 
     /// Background opacity (0.0 = fully transparent, 1.0 = opaque).

@@ -6,7 +6,8 @@
 
 const std = @import("std");
 const wayland = @import("wayland.zig");
-const VulkanRenderer = @import("vk_renderer.zig").VulkanRenderer;
+const vk_renderer = @import("vk_renderer.zig");
+const VulkanRenderer = vk_renderer.VulkanRenderer;
 const ShmRenderer = @import("shm_renderer.zig").ShmRenderer;
 const linux_backend = @import("../linux_backend.zig");
 const LinuxPlatform = @import("platform.zig").LinuxPlatform;
@@ -403,7 +404,7 @@ pub const Window = struct {
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
-        try self.initRenderer(plat, &options.limits);
+        try self.initRenderer(plat, options);
 
         // Final commit after Vulkan initialization
         wayland.surfaceCommit(self.wl_surface.?);
@@ -425,7 +426,7 @@ pub const Window = struct {
 
     /// Bind the renderer to the Wayland surface. Both renderers create their
     /// frames at physical pixel resolution.
-    fn initRenderer(self: *Self, plat: *LinuxPlatform, limits: *const ResourceLimits) !void {
+    fn initRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
         std.debug.assert(self.wl_surface != null);
         std.debug.assert(self.width_px > 0);
         std.debug.assert(self.height_px > 0);
@@ -438,16 +439,17 @@ pub const Window = struct {
                 self.width_px,
                 self.height_px,
                 self.scale_factor,
-                limits,
+                &options.limits,
             );
         } else {
+            vk_renderer.warnCustomShadersUnsupported(options.custom_shaders.len, "Linux");
             const wl_display = plat.getDisplay() orelse return error.NoDisplay;
             try self.renderer.initWithNativeSurface(
                 .{ .display = @ptrCast(wl_display), .surface = self.wl_surface.? },
                 self.width_px,
                 self.height_px,
                 self.scale_factor,
-                limits,
+                &options.limits,
             );
         }
     }
