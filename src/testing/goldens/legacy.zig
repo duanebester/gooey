@@ -93,6 +93,7 @@ fn capture(
     };
     try driver.renderer.initInPlace(&surface, &render_limits);
     defer driver.renderer.deinit();
+    driver.renderer.observeGlyphAtlas(driver.harness.glyphAtlas());
 
     trace_mod.run(driver, trace, out);
 }

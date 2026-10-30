@@ -3,26 +3,26 @@ trace todo 480x560@2.00
 == step 0: initial frame
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
-  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=ce8a8a7f
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
+  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=db63eebf
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=f8459782
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -41,26 +41,26 @@ a11y
 == step 1: click the draft input
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
-  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=ce8a8a7f
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
+  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=db63eebf
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=f8459782
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
   quad (33.00 83.60 1.50 19.20) fill=#4c4f69ff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -80,26 +80,26 @@ a11y
 == step 2: type "buy milk"
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
-  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=ce8a8a7f
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
+  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=db63eebf
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=f8459782
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=8 (33.00 86.50 55.00 11.50) color=#4c4f69ff hash=86dd42e1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=8 (33.00 86.50 55.00 11.50) color=#4c4f69ff hash=08e1a1fc clip=(33.00 83.60 342.00 19.20)
   quad (89.80 83.60 1.50 19.20) fill=#4c4f69ff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -119,26 +119,26 @@ a11y
 == step 3: backspace
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
-  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=ce8a8a7f
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
+  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=db63eebf
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=f8459782
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=7 (33.00 86.50 48.00 11.50) color=#4c4f69ff hash=211f9985 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=7 (33.00 86.50 48.00 11.50) color=#4c4f69ff hash=c05b3dfb clip=(33.00 83.60 342.00 19.20)
   quad (81.80 83.60 1.50 19.20) fill=#4c4f69ff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -158,26 +158,26 @@ a11y
 == step 4: type "k"
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
-  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=ce8a8a7f
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
+  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=db63eebf
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=f8459782
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=8 (33.00 86.50 55.00 11.50) color=#4c4f69ff hash=86dd42e1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=8 (33.00 86.50 55.00 11.50) color=#4c4f69ff hash=08e1a1fc clip=(33.00 83.60 342.00 19.20)
   quad (89.80 83.60 1.50 19.20) fill=#4c4f69ff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -197,33 +197,33 @@ a11y
 == step 5: click Add
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -246,33 +246,33 @@ a11y
 == step 6: click the draft input again
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
   quad (33.00 83.60 1.50 19.20) fill=#4c4f69ff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -296,33 +296,33 @@ a11y
 == step 7: compose "ca"
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=2 (33.00 86.50 14.50 11.50) color=#4c4f69ff hash=984c3485 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=2 (33.00 86.50 14.50 11.50) color=#4c4f69ff hash=79613927 clip=(33.00 83.60 342.00 19.20)
   quad (33.00 100.00 16.00 1.00) fill=#4d4d4dff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -346,33 +346,33 @@ a11y
 == step 8: compose "caf"
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=3 (33.00 86.50 22.50 11.50) color=#4c4f69ff hash=1c4cab17 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=3 (33.00 86.50 22.50 11.50) color=#4c4f69ff hash=35ab97e1 clip=(33.00 83.60 342.00 19.20)
   quad (33.00 100.00 24.00 1.00) fill=#4d4d4dff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -396,33 +396,33 @@ a11y
 == step 9: end the composition
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
   quad (33.00 83.60 1.50 19.20) fill=#4c4f69ff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -446,33 +446,33 @@ a11y
 == step 10: commit "café"
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #1e66f5ff radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=4 (33.00 86.50 33.00 11.50) color=#4c4f69ff hash=ff9a9463 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=4 (33.00 86.50 33.00 11.50) color=#4c4f69ff hash=515889bc clip=(33.00 83.60 342.00 19.20)
   quad (68.20 83.60 1.50 19.20) fill=#4c4f69ff
 hits
   hit (24.00 74.60 360.00 37.20) focus
@@ -496,40 +496,40 @@ a11y
 == step 11: click Add again
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 105.60) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#1a1a1aff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 230.40 173.80 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000
   quad (34.00 245.80 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=6fa0e234
+  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=5466d89b
   quad (123.20 240.40 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=eed0db58
+  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=2d5160b3
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=937813e8
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -556,20 +556,20 @@ a11y
 == step 12: check the first row
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 105.60) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
@@ -578,21 +578,21 @@ packed 960x1120@2.00 clear=#f2f2f2ff
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   svg (36.50 191.50 12.60 12.60) fill=#ffffffff stroke=#00000000
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 230.40 173.80 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000
   quad (34.00 245.80 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=6fa0e234
+  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=5466d89b
   quad (123.20 240.40 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=eed0db58
+  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=2d5160b3
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -620,33 +620,33 @@ a11y
 == step 13: filter Active
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#4c4f69ff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#4c4f69ff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#ffffffff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#ffffffff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 173.80 48.80) fill=#00000000
   quad (24.00 173.60 173.80 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
   quad (34.00 189.00 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=4 (64.00 189.50 33.00 11.50) color=#1a1a1aff hash=f6300524
+  glyphs n=4 (64.00 189.50 33.00 11.50) color=#1a1a1aff hash=8d5bbc97
   quad (123.20 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (135.00 190.50 39.50 10.00) color=#ffffffff hash=50a4c008
+  glyphs n=6 (135.00 190.50 39.50 10.00) color=#ffffffff hash=feb88217
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -669,20 +669,20 @@ a11y
 == step 14: filter Done
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#4c4f69ff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#4c4f69ff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#ffffffff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#ffffffff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
@@ -691,14 +691,14 @@ packed 960x1120@2.00 clear=#f2f2f2ff
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   svg (36.50 191.50 12.60 12.60) fill=#ffffffff stroke=#00000000
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -722,20 +722,20 @@ a11y
 == step 15: filter All
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 105.60) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
@@ -744,21 +744,21 @@ packed 960x1120@2.00 clear=#f2f2f2ff
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   svg (36.50 191.50 12.60 12.60) fill=#ffffffff stroke=#00000000
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 230.40 173.80 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000
   quad (34.00 245.80 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=6fa0e234
+  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=5466d89b
   quad (123.20 240.40 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=eed0db58
+  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=2d5160b3
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -786,20 +786,20 @@ a11y
 == step 16: hover the second Delete
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 105.60) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
@@ -808,21 +808,21 @@ packed 960x1120@2.00 clear=#f2f2f2ff
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   svg (36.50 191.50 12.60 12.60) fill=#ffffffff stroke=#00000000
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 230.40 173.80 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000
   quad (34.00 245.80 18.00 18.00) fill=#e6e9eeff radius=4.00,4.00,4.00,4.00
   quad (34.00 245.80 18.00 18.00) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=4.00,4.00,4.00,4.00
-  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=6fa0e234
+  glyphs n=4 (64.00 246.50 33.00 11.50) color=#1a1a1aff hash=5466d89b
   quad (123.20 240.40 64.60 28.80) fill=#d13d3dd9 radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=eed0db58
+  glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=2d5160b3
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=00600293
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -850,20 +850,20 @@ a11y
 == step 17: delete the second row
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
   quad (24.00 173.60 195.40 48.80) fill=#00000000
   quad (24.00 173.60 195.40 48.80) fill=#ffffffff radius=8.00,8.00,8.00,8.00
   quad (34.00 189.00 18.00 18.00) fill=#00000000
@@ -872,14 +872,14 @@ packed 960x1120@2.00 clear=#f2f2f2ff
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   quad (36.70 191.70 12.60 12.60) fill=#00000000
   svg (36.50 191.50 12.60 12.60) fill=#ffffffff stroke=#00000000
-  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=751a0e92
+  glyphs n=8 (64.00 189.50 55.00 11.50) color=#999999ff hash=96c1db0f
   quad (144.80 183.60 64.60 28.80) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=411f6a21
+  glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=f8459782
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click
@@ -903,26 +903,26 @@ a11y
 == step 18: clear completed
 packed 960x1120@2.00 clear=#f2f2f2ff
   quad (0.00 0.00 480.00 560.00) fill=#f5f5f7ff
-  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=24d389f8
+  glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b
   quad (24.00 73.60 442.40 39.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#00000000
   quad (24.00 74.60 360.00 37.20) fill=#e6e9eeff radius=8.00,8.00,8.00,8.00
   quad (24.00 74.60 360.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #9b9eb14d radius=8.00,8.00,8.00,8.00
   quad (392.00 73.60 74.40 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=5dd42312
+  glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f
   quad (24.00 128.80 174.80 28.80) fill=#00000000
   quad (24.00 128.80 40.10 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
-  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=7f4b3a0e
+  glyphs n=3 (36.00 136.00 15.50 10.00) color=#ffffffff hash=651127d9
   quad (72.10 128.80 64.60 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=5336b1ea
+  glyphs n=6 (84.00 136.00 39.50 10.00) color=#4c4f69ff hash=6e9543ae
   quad (144.70 128.80 54.10 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=87845043
-  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=ce8a8a7f
+  glyphs n=4 (156.50 136.00 29.00 10.00) color=#4c4f69ff hash=725a7edb
+  glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=db63eebf
   quad (24.00 507.20 184.50 28.80) fill=#00000000
-  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=ee814131
+  glyphs n=6 (24.00 514.00 34.50 10.00) color=#666673ff hash=f8459782
   quad (83.70 507.20 124.80 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
-  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=91790640
-  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=9fbd7fa1 clip=(33.00 83.60 342.00 19.20)
+  glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
+  glyphs n=17 (33.00 86.50 126.00 11.50) color=#9b9eb1ff hash=406f5cfc clip=(33.00 83.60 342.00 19.20)
 hits
   hit (24.00 74.60 360.00 37.20) focus
   hit (392.00 73.60 74.40 39.20) click

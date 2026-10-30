@@ -8,8 +8,11 @@
 //!
 //! Glyphs are folded into runs (consecutive glyphs sharing a colour, clip,
 //! and top edge). A run prints its glyph count, its union bounds, and a hash
-//! of every glyph's position and size. Atlas UVs are left out: they record
-//! where a rasterizer packed a glyph, which is not behaviour a port must keep.
+//! of every glyph's position, size, and, when the caller passes the glyph
+//! atlas, the coverage at the centre of its atlas region. Atlas UVs are left
+//! out: they record where a rasterizer packed a glyph, which is not behaviour
+//! a port must keep. The synthetic text backend shades each glyph by its id
+//! (`glyphShade`), so the sampled coverage tells "0" from "1" at one position.
 //!
 //! Storage is one fixed buffer reserved by the owner; writing past it panics
 //! with the buffer's name and capacity (CLAUDE.md §2, §4).
@@ -60,7 +63,27 @@ pub const TextBuffer = struct {
 };
 
 /// Write every primitive of a finished scene in draw order.
-pub fn writeScene(out: *TextBuffer, scene: *const Scene) void {
+/// A read-only view of a single-channel glyph atlas, `size` pixels square.
+pub const GlyphAtlasView = struct {
+    pixels: []const u8,
+    size: u32,
+
+    /// Coverage at the centre of a glyph's UV rectangle.
+    fn sample(self: *const GlyphAtlasView, glyph: *const scene_mod.GlyphInstance) u8 {
+        assert(self.size > 0);
+        assert(self.pixels.len >= @as(u64, self.size) * self.size);
+        const size: f32 = @floatFromInt(self.size);
+        const u = (glyph.uv_left + glyph.uv_right) * 0.5;
+        const v = (glyph.uv_top + glyph.uv_bottom) * 0.5;
+        assert(u >= 0 and u <= 1);
+        assert(v >= 0 and v <= 1);
+        const x: u32 = @min(self.size - 1, @as(u32, @intFromFloat(u * size)));
+        const y: u32 = @min(self.size - 1, @as(u32, @intFromFloat(v * size)));
+        return self.pixels[@as(usize, y) * self.size + x];
+    }
+};
+
+pub fn writeScene(out: *TextBuffer, scene: *const Scene, atlas: ?*const GlyphAtlasView) void {
     assert(scene.viewport_width >= 0);
     var iterator = BatchIterator.init(scene);
     var batch_count: u32 = 0;
@@ -69,7 +92,7 @@ pub fn writeScene(out: *TextBuffer, scene: *const Scene) void {
         switch (batch) {
             .shadow => |shadows| for (shadows) |*shadow| writeShadow(out, shadow),
             .quad => |quads| for (quads) |*quad| writeQuad(out, quad),
-            .glyph => |glyphs| writeGlyphRuns(out, glyphs),
+            .glyph => |glyphs| writeGlyphRuns(out, glyphs, atlas),
             .svg => |svgs| for (svgs) |*svg| writeSvg(out, svg),
             .image => |images| for (images) |*image| writeImage(out, image),
             .path => |paths| out.print("  path count={d}\n", .{paths.len}),
@@ -154,14 +177,18 @@ fn writeImage(out: *TextBuffer, image: *const scene_mod.ImageInstance) void {
 }
 
 /// Fold consecutive glyphs into runs; see the file comment.
-fn writeGlyphRuns(out: *TextBuffer, glyphs: []const scene_mod.GlyphInstance) void {
+fn writeGlyphRuns(
+    out: *TextBuffer,
+    glyphs: []const scene_mod.GlyphInstance,
+    atlas: ?*const GlyphAtlasView,
+) void {
     assert(glyphs.len > 0);
     var start: usize = 0;
     while (start < glyphs.len) {
         var end = start + 1;
         while (end < glyphs.len and sameRun(&glyphs[start], &glyphs[end])) end += 1;
         assert(end > start);
-        writeGlyphRun(out, glyphs[start..end]);
+        writeGlyphRun(out, glyphs[start..end], atlas);
         start = end;
     }
 }
@@ -173,7 +200,11 @@ fn sameRun(first: *const scene_mod.GlyphInstance, next: *const scene_mod.GlyphIn
     return std.meta.eql(first.color, next.color);
 }
 
-fn writeGlyphRun(out: *TextBuffer, run: []const scene_mod.GlyphInstance) void {
+fn writeGlyphRun(
+    out: *TextBuffer,
+    run: []const scene_mod.GlyphInstance,
+    atlas: ?*const GlyphAtlasView,
+) void {
     assert(run.len > 0);
     var hasher = std.hash.Fnv1a_32.init();
     var left: f32 = run[0].pos_x;
@@ -192,6 +223,7 @@ fn writeGlyphRun(out: *TextBuffer, run: []const scene_mod.GlyphInstance) void {
             quantize(glyph.size_y),
         };
         hasher.update(std.mem.asBytes(&quantized));
+        if (atlas) |view| hasher.update(&.{view.sample(glyph)});
     }
     assert(right >= left);
     out.print("  glyphs n={d} {f} color={f} hash={x:0>8}", .{

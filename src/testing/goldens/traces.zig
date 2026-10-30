@@ -18,8 +18,10 @@ pub const counter = trace.Trace{
         .{ .label = "click step 5", .step = .{ .click = .{ .x = 130, .y = 304 } } },
         .{ .label = "click + with step 5", .step = .{ .click = .{ .x = 155, .y = 245 } } },
         .{ .label = "hover Reset", .step = .{ .move = .{ .x = 260, .y = 245 } } },
+        // The reset message adds a line, so the controls move up 26 px until
+        // `setStep` clears the message again.
         .{ .label = "click Reset", .step = .{ .click = .{ .x = 260, .y = 245 } } },
-        .{ .label = "click step 10", .step = .{ .click = .{ .x = 174, .y = 304 } } },
+        .{ .label = "click step 10", .step = .{ .click = .{ .x = 174, .y = 272 } } },
         .{ .label = "click - into negative", .step = .{ .click = .{ .x = 70, .y = 245 } } },
         .{ .label = "click Reset & Blur", .step = .{ .click = .{ .x = 384, .y = 245 } } },
     },

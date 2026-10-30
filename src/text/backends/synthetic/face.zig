@@ -111,8 +111,10 @@ pub const SyntheticFace = struct {
         };
     }
 
-    /// Rasterize a solid box covering 80% of the advance and the cap height.
-    /// Subpixel offsets are ignored, so every variant has the same pixels.
+    /// Rasterize a solid box covering 80% of the advance and the cap height,
+    /// filled with `glyphShade(glyph_id)` so a golden can tell glyphs of equal
+    /// advance apart by their pixels. Subpixel offsets are ignored, so every
+    /// variant has the same pixels.
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
@@ -136,7 +138,7 @@ pub const SyntheticFace = struct {
         if (byte_count > buffer_size) return error.GlyphTooLarge;
         assert(byte_count <= buffer.len);
 
-        @memset(buffer[0..@intCast(byte_count)], 0xFF);
+        @memset(buffer[0..@intCast(byte_count)], glyphShade(glyph_id));
         return .{
             .width = width,
             .height = height,
@@ -147,6 +149,15 @@ pub const SyntheticFace = struct {
         };
     }
 };
+
+/// The coverage every pixel of `glyph_id` gets: 64 plus the id modulo 192, so
+/// all printable ASCII glyphs have distinct shades and none is blank.
+pub fn glyphShade(glyph_id: u16) u8 {
+    const shade: u16 = 64 + glyph_id % 192;
+    assert(shade >= 64);
+    assert(shade <= 255);
+    return @intCast(shade);
+}
 
 /// Advance in ems by character class. Whitespace and the glyph for a
 /// missing character still advance, so no input measures zero by accident.

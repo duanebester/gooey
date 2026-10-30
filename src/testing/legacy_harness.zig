@@ -171,6 +171,13 @@ pub const LegacyHarness = struct {
         return self.window.rendered_frame.scene;
     }
 
+    /// The text system's glyph atlas, for the dump's glyph identity.
+    pub fn glyphAtlas(self: *const Self) record_dump.GlyphAtlasView {
+        const atlas = self.window.resources.text_system.getAtlas();
+        assert(atlas.format == .grayscale);
+        return .{ .pixels = atlas.getData(), .size = atlas.size };
+    }
+
     pub fn viewportSize(self: *const Self) struct { width: f32, height: f32, scale: f32 } {
         assert(self.window.width > 0);
         return .{

@@ -1583,6 +1583,11 @@ pub const NullRenderer = struct {
     last_clear: geometry.Color,
     dump_bytes: [null_renderer_dump_bytes_max]u8,
     dump_len: u32,
+    /// The glyph atlas the dump samples to identify glyphs. A GPU renderer
+    /// receives atlas pixels through `uploadAtlas` into its own texture; the
+    /// null renderer has no texture, so a test driver lends it the text
+    /// system's CPU atlas instead (`observeGlyphAtlas`).
+    glyph_atlas: ?record_dump.GlyphAtlasView,
 
     const Self = @This();
 
@@ -1613,7 +1618,15 @@ pub const NullRenderer = struct {
         self.last_viewport = .{ .size_px = surface.size_px, .scale_factor = surface.scale_factor };
         self.last_clear = geometry.Color.transparent;
         self.dump_len = 0;
+        self.glyph_atlas = null;
         assert(self.draw_count == 0);
+    }
+
+    /// Lend the dump a view of the glyph atlas; see `glyph_atlas`.
+    pub fn observeGlyphAtlas(self: *Self, view: record_dump.GlyphAtlasView) void {
+        assert(self.lifecycle == .running);
+        assert(view.pixels.len >= @as(u64, view.size) * view.size);
+        self.glyph_atlas = view;
     }
 
     pub fn uploadAtlas(
@@ -1649,7 +1662,7 @@ pub const NullRenderer = struct {
             viewport.scale_factor,
             record_dump.Rgba{ .color = scene_mod.Hsla.fromColor(clear) },
         });
-        record_dump.writeScene(&out, frame);
+        record_dump.writeScene(&out, frame, if (self.glyph_atlas) |*view| view else null);
         self.dump_len = out.len;
         assert(self.dump_len <= self.dump_bytes.len);
     }
