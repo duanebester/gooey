@@ -138,7 +138,13 @@ fn writeQuad(out: *TextBuffer, quad: *const scene_mod.Quad) void {
             radii.bottom_left,
         });
     }
-    writeClip(out, quad.clip_origin_x, quad.clip_origin_y, quad.clip_size_width, quad.clip_size_height);
+    writeClip(
+        out,
+        quad.clip_origin_x,
+        quad.clip_origin_y,
+        quad.clip_size_width,
+        quad.clip_size_height,
+    );
     out.print("\n", .{});
 }
 

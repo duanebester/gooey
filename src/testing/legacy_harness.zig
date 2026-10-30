@@ -200,7 +200,12 @@ pub const LegacyHarness = struct {
             const focus = node.focus_id != null;
             if (!click and !key and !focus) continue;
             out.print("  hit {f}{s}{s}{s}\n", .{
-                record_dump.Rect{ .x = bounds.x, .y = bounds.y, .w = bounds.width, .h = bounds.height },
+                record_dump.Rect{
+                    .x = bounds.x,
+                    .y = bounds.y,
+                    .w = bounds.width,
+                    .h = bounds.height,
+                },
                 if (click) " click" else "",
                 if (focus) " focus" else "",
                 if (key) " key" else "",

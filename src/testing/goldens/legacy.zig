@@ -99,7 +99,16 @@ fn capture(
 }
 
 pub fn captureCounter(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
-    try capture(allocator, io, counter.AppState, counter.render, .nano, .nano, &traces.counter, out);
+    try capture(
+        allocator,
+        io,
+        counter.AppState,
+        counter.render,
+        .nano,
+        .nano,
+        &traces.counter,
+        out,
+    );
 }
 
 pub fn captureTodo(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {

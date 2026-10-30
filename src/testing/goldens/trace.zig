@@ -23,7 +23,8 @@ const TextBuffer = gooey.testing.record_dump.TextBuffer;
 pub const Point = struct { x: f32, y: f32 };
 
 pub const Step = union(enum) {
-    /// A primary-button press and release at one point.
+    /// A pointer move to one point, then a primary-button press and release
+    /// there, as a platform reports a click after the pointer travels.
     click: Point,
     /// A pointer move with no button down.
     move: Point,
@@ -78,6 +79,7 @@ pub fn run(driver: anytype, trace: *const Trace, out: *TextBuffer) void {
 fn deliverStep(driver: anytype, step: Step) void {
     switch (step) {
         .click => |point| {
+            driver.deliver(.{ .mouse_moved = mouseEvent(point, 0) });
             driver.deliver(.{ .mouse_down = mouseEvent(point, 1) });
             driver.deliver(.{ .mouse_up = mouseEvent(point, 1) });
         },
