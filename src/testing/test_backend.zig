@@ -61,6 +61,8 @@ const text_mod = @import("../text/mod.zig");
 const input = @import("../input/mod.zig");
 const interface = @import("../platform/interface.zig");
 const contract = @import("../platform/contract.zig");
+const core_backend = @import("../core/backend.zig");
+const record_dump = @import("record_dump.zig");
 
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
@@ -1555,6 +1557,129 @@ pub const TestWindow = struct {
 };
 
 // =============================================================================
+// NullRenderer
+// =============================================================================
+
+/// Bytes of packed-frame dump the null renderer keeps: the most recent frame
+/// only. A todo frame dumps to about 8 KiB, so 64 KiB leaves headroom for the
+/// kept examples without making the renderer large on the stack.
+pub const null_renderer_dump_bytes_max: u32 = 64 * 1024;
+
+/// A renderer that draws nothing and records what it was asked to draw.
+///
+/// It satisfies the contract §9 `Renderer` signatures, so the core's pack and
+/// draw stages run end to end on `TestBackend`. `draw` writes the packed frame
+/// as text (`record_dump.writeScene`), which is what goldens compare. Every
+/// buffer is inline: `initInPlace` takes no allocator by contract, so the
+/// renderer cannot allocate at all.
+pub const NullRenderer = struct {
+    lifecycle: Lifecycle,
+    size_px: core_backend.SizePx,
+    limits: core_backend.RenderLimits,
+    draw_count: u64,
+    upload_count: [4]u64,
+    upload_bytes: u64,
+    last_viewport: core_backend.Viewport,
+    last_clear: geometry.Color,
+    dump_bytes: [null_renderer_dump_bytes_max]u8,
+    dump_len: u32,
+
+    const Self = @This();
+
+    comptime {
+        core_backend.verifyRenderer(Self);
+        assert(@sizeOf(Self) <= 80 * 1024);
+    }
+
+    pub noinline fn initInPlace(
+        self: *Self,
+        surface: *const core_backend.Surface,
+        render_limits: *const core_backend.RenderLimits,
+    ) error{WindowTooLarge}!void {
+        assert(surface.scale_factor > 0);
+        assert(render_limits.window.framebuffer_width_max > 0);
+        if (surface.size_px.width > render_limits.window.framebuffer_width_max) {
+            return error.WindowTooLarge;
+        }
+        if (surface.size_px.height > render_limits.window.framebuffer_height_max) {
+            return error.WindowTooLarge;
+        }
+        self.lifecycle = .running;
+        self.size_px = surface.size_px;
+        self.limits = render_limits.*;
+        self.draw_count = 0;
+        self.upload_count = @splat(0);
+        self.upload_bytes = 0;
+        self.last_viewport = .{ .size_px = surface.size_px, .scale_factor = surface.scale_factor };
+        self.last_clear = geometry.Color.transparent;
+        self.dump_len = 0;
+        assert(self.draw_count == 0);
+    }
+
+    pub fn uploadAtlas(
+        self: *Self,
+        atlas: core_backend.AtlasKind,
+        dirty: core_backend.RectPx,
+        pixels: []const u8,
+    ) void {
+        assert(self.lifecycle == .running);
+        assert(pixels.len >= @as(u64, dirty.width) * dirty.height);
+        self.upload_count[@backingInt(atlas)] += 1;
+        self.upload_bytes += pixels.len;
+    }
+
+    /// Record `frame` as text, replacing the previous frame's dump.
+    pub fn draw(
+        self: *Self,
+        frame: *const core_backend.PackedFrame,
+        viewport: core_backend.Viewport,
+        clear: geometry.Color,
+    ) void {
+        assert(self.lifecycle == .running);
+        assert(viewport.size_px.width <= self.limits.window.framebuffer_width_max);
+        assert(viewport.size_px.height <= self.limits.window.framebuffer_height_max);
+        self.draw_count += 1;
+        self.last_viewport = viewport;
+        self.last_clear = clear;
+
+        var out = record_dump.TextBuffer.init(&self.dump_bytes, "NullRenderer frame dump");
+        out.print("packed {d}x{d}@{d:.2} clear={f}\n", .{
+            viewport.size_px.width,
+            viewport.size_px.height,
+            viewport.scale_factor,
+            record_dump.Rgba{ .color = scene_mod.Hsla.fromColor(clear) },
+        });
+        record_dump.writeScene(&out, frame);
+        self.dump_len = out.len;
+        assert(self.dump_len <= self.dump_bytes.len);
+    }
+
+    /// The most recent frame's dump.
+    pub fn frameDump(self: *const Self) []const u8 {
+        assert(self.draw_count > 0);
+        assert(self.dump_len <= self.dump_bytes.len);
+        return self.dump_bytes[0..self.dump_len];
+    }
+
+    pub fn resize(self: *Self, size_px: core_backend.SizePx) void {
+        assert(self.lifecycle == .running);
+        assert(size_px.width <= self.limits.window.framebuffer_width_max);
+        assert(size_px.height <= self.limits.window.framebuffer_height_max);
+        self.size_px = size_px;
+    }
+
+    pub fn capabilities(self: *const Self) core_backend.Capabilities {
+        assert(self.lifecycle == .running);
+        return .{ .post_process = false, .custom_shaders = false, .meshes = true };
+    }
+
+    pub fn deinit(self: *Self) void {
+        assert(self.lifecycle == .running);
+        self.lifecycle = .deinitialized;
+    }
+};
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -2643,4 +2768,39 @@ test "capabilities advertise only what a headless backend can honour" {
     try testing.expect(!TestPlatform.capabilities.clipboard);
     try testing.expect(TestPlatform.capabilities.ime);
     try testing.expectEqualStrings("test-headless", TestPlatform.capabilities.name);
+}
+
+test "NullRenderer records the packed frame it is asked to draw" {
+    // Goal: draw writes a dump of exactly the submitted frame, and resize past
+    // the window budget is rejected at init. Methodology: draw a one-quad
+    // scene and read the dump back.
+    const render_limits = core_backend.RenderLimits.fromResourceLimits(&.nano);
+    const renderer = try testing.allocator.create(NullRenderer);
+    defer testing.allocator.destroy(renderer);
+    const too_wide = core_backend.Surface{
+        .native = null,
+        .size_px = .{ .width = render_limits.window.framebuffer_width_max + 1, .height = 10 },
+        .scale_factor = 1,
+    };
+    try testing.expectError(error.WindowTooLarge, renderer.initInPlace(&too_wide, &render_limits));
+
+    const surface = core_backend.Surface{
+        .native = null,
+        .size_px = .{ .width = 200, .height = 100 },
+        .scale_factor = 2,
+    };
+    try renderer.initInPlace(&surface, &render_limits);
+    defer renderer.deinit();
+
+    var frame = try scene_mod.Scene.initCapacity(testing.allocator, &render_limits.scene);
+    defer frame.deinit();
+    try frame.insertQuad(scene_mod.Quad.filled(1, 2, 30, 40, scene_mod.Hsla.fromRgba(1, 0, 0, 1)));
+    frame.finish();
+    renderer.draw(&frame, .{ .size_px = surface.size_px, .scale_factor = 2 }, geometry.Color.white);
+
+    try testing.expectEqualStrings(
+        "packed 200x100@2.00 clear=#ffffffff\n  quad (1.00 2.00 30.00 40.00) fill=#ff0000ff\n",
+        renderer.frameDump(),
+    );
+    try testing.expectEqual(@as(u64, 1), renderer.draw_count);
 }

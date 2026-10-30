@@ -621,7 +621,13 @@ const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
 const is_windows = platform.is_windows;
 
-const backend = if (is_wasm)
+/// `text_backend = .synthetic` replaces the platform's fonts with derived
+/// metrics on every target, so headless goldens match across hosts.
+pub const is_synthetic = @import("gooey_build_options").text_backend == .synthetic;
+
+const backend = if (is_synthetic)
+    @import("backends/synthetic/mod.zig")
+else if (is_wasm)
     @import("backends/web/mod.zig")
 else if (is_linux)
     @import("backends/freetype/mod.zig")
@@ -631,7 +637,9 @@ else
     @import("backends/coretext/mod.zig");
 
 /// Platform-specific font face type
-const PlatformFace = if (is_wasm)
+const PlatformFace = if (is_synthetic)
+    backend.SyntheticFace
+else if (is_wasm)
     backend.WebFontFace
 else if (is_linux)
     backend.FreeTypeFace
@@ -641,7 +649,9 @@ else
     backend.CoreTextFace;
 
 /// Platform-specific shaper type
-const PlatformShaper = if (is_wasm)
+const PlatformShaper = if (is_synthetic)
+    backend.SyntheticShaper
+else if (is_wasm)
     backend.WebShaper
 else if (is_linux)
     backend.HarfBuzzShaper
@@ -1129,7 +1139,7 @@ pub const TextSystem = struct {
         // The width comes from the face that renders the text: a bold run is
         // wider than the same string in regular, so layout must measure it bold.
         const face = self.faceFor(variant);
-        if (is_wasm) {
+        if (is_wasm and !is_synthetic) {
             // Web optimization: single JS call to measure entire string.
             // This avoids N boundary crossings for N characters.
             const font_name = face.font_name_buf[0..face.font_name_len];

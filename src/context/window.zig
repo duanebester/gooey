@@ -509,7 +509,61 @@ pub const Window = struct {
         resource_limits: *const ResourceLimits,
         io: std.Io,
     ) !void {
+        const metrics = HeadlessMetrics{
+            .width = @floatCast(platform_window.size.width),
+            .height = @floatCast(platform_window.size.height),
+            .scale_factor = @floatCast(platform_window.scale_factor),
+        };
+        try self.initOwnedFields(allocator, platform_window, metrics, font_config, resource_limits, io);
+        assert(self.platform_window == platform_window);
+        assert(self.width == metrics.width);
+    }
+
+    /// Logical size and scale of a window that has no platform window.
+    pub const HeadlessMetrics = struct {
+        width: f32,
+        height: f32,
+        scale_factor: f32,
+    };
+
+    /// Initialize an owning `Window` with no platform window, for headless
+    /// drivers such as the goldens harness (`src/testing/legacy_harness.zig`).
+    /// Every path that reaches the platform already handles a null
+    /// `platform_window`: frames are not handed to a renderer, and render
+    /// requests only set `needs_render`.
+    pub noinline fn initHeadlessPtr(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        metrics: HeadlessMetrics,
+        font_config: FontConfig,
+        resource_limits: *const ResourceLimits,
+        io: std.Io,
+    ) !void {
+        assert(metrics.width > 0);
+        assert(metrics.height > 0);
+        try self.initOwnedFields(allocator, null, metrics, font_config, resource_limits, io);
+        assert(self.platform_window == null);
+    }
+
+    /// The atlas-consumer key: the platform window, or `self` when headless.
+    fn atlasConsumerKey(self: *const Self) usize {
+        const key = if (self.platform_window) |pw| @intFromPtr(pw) else @intFromPtr(self);
+        assert(key != 0);
+        return key;
+    }
+
+    /// Shared body of `initOwnedPtr` and `initHeadlessPtr`.
+    noinline fn initOwnedFields(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        platform_window_or_null: ?*PlatformWindow,
+        metrics: HeadlessMetrics,
+        font_config: FontConfig,
+        resource_limits: *const ResourceLimits,
+        io: std.Io,
+    ) !void {
         assert(resource_limits.check() == null);
+        assert(metrics.scale_factor > 0);
         // Create layout engine
         const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
         errdefer allocator.destroy(layout_engine);
@@ -526,16 +580,16 @@ pub const Window = struct {
         try self.next_frame.initOwnedInPlace(
             allocator,
             &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
+            metrics.width,
+            metrics.height,
         );
         errdefer self.next_frame.deinit();
 
         try self.rendered_frame.initOwnedInPlace(
             allocator,
             &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
+            metrics.width,
+            metrics.height,
         );
         errdefer self.rendered_frame.deinit();
 
@@ -546,7 +600,7 @@ pub const Window = struct {
         try self.resources.initOwnedInPlace(
             allocator,
             io,
-            @floatCast(platform_window.scale_factor),
+            metrics.scale_factor,
             .{
                 .font_name = font_config.font_name,
                 .font_size = font_config.font_size,
@@ -568,7 +622,7 @@ pub const Window = struct {
         // sites reach through `self.next_frame.*`, input hit-test sites
         // through `self.rendered_frame.dispatch`. Shared atlases are reached
         // through `self.resources.*`.
-        self.platform_window = platform_window;
+        self.platform_window = platform_window_or_null;
 
         // `self.app` is left `undefined` here; the caller
         // (`runtime/window_context.zig` on the WASM Ptr path) assigns it
@@ -599,9 +653,9 @@ pub const Window = struct {
         self.current_phase = .none;
 
         // Scalar fields
-        self.width = @floatCast(platform_window.size.width);
-        self.height = @floatCast(platform_window.size.height);
-        self.scale_factor = @floatCast(platform_window.scale_factor);
+        self.width = metrics.width;
+        self.height = metrics.height;
+        self.scale_factor = metrics.scale_factor;
         self.frame_count = 0;
         self.needs_render = false;
         // `debugger` registered into `globals` below.
@@ -630,20 +684,24 @@ pub const Window = struct {
         // bridge dispatcher captures `&self.a11y.platform_bridge`,
         // which is correct here because `self` is at its final heap
         // address.
-        const window_obj = switch (builtin.os.tag) {
-            .macos => platform_window.ns_window,
-            .windows => &platform_window.uia_host,
-            else => null,
-        };
-        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
-        self.a11y.initInPlace(window_obj, view_obj);
+        if (platform_window_or_null) |platform_window| {
+            const window_obj = switch (builtin.os.tag) {
+                .macos => platform_window.ns_window,
+                .windows => &platform_window.uia_host,
+                else => null,
+            };
+            const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
+            self.a11y.initInPlace(window_obj, view_obj);
+        } else {
+            self.a11y.initHeadlessInPlace();
+        }
 
         // `image_loader` is app-scoped: the caller binds it after this
         // returns and `window.app` is wired.
 
         // This window's renderer draws from the atlases from its first frame.
-        self.resources.registerAtlasConsumer(@intFromPtr(platform_window));
-        errdefer self.resources.unregisterAtlasConsumer(@intFromPtr(platform_window));
+        self.resources.registerAtlasConsumer(self.atlasConsumerKey());
+        errdefer self.resources.unregisterAtlasConsumer(self.atlasConsumerKey());
 
         // Per-window globals hold `Debugger` only (`Keymap` is on
         // `App.globals`). `self` is at its final heap address, so `setOwned`
@@ -829,8 +887,8 @@ pub const Window = struct {
         // multi-window case where one `App` outlives many `Window`s.
 
         // The renderer stops drawing from the atlases with its window.
-        if (self.platform_window) |platform_window| {
-            self.resources.unregisterAtlasConsumer(@intFromPtr(platform_window));
+        if (self.platform_window != null or self.resources.owned) {
+            self.resources.unregisterAtlasConsumer(self.atlasConsumerKey());
         }
 
         // Single teardown call covers text_system + svg_atlas + image_atlas.

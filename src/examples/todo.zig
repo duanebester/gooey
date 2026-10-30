@@ -61,7 +61,8 @@ const Filter = enum { all, active, done };
 // Application State — pure, fully testable without any UI
 // =============================================================================
 
-const AppState = struct {
+/// Public so the goldens (`src/testing/goldens/`) can replay this example.
+pub const AppState = struct {
     todos: [MAX_TODOS]Todo = @splat(.{}),
     count: usize = 0,
     /// Bound to the TextInput through a controlled two-way binding.
@@ -173,7 +174,7 @@ pub fn main(init: std.process.Init) !void {
 // Render
 // =============================================================================
 
-fn render(cx: *Cx) void {
+pub fn render(cx: *Cx) void {
     cx.render(ui.root(.{
         .direction = .column,
         .padding = .{ .all = 24 },

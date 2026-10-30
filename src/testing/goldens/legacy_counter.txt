@@ -1,0 +1,445 @@
+trace counter 500x350@2.00
+
+== step 0: initial frame
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=2194afb8
+  quad (32.00 221.63 419.70 48.32) fill=#00000000
+  quad (32.00 220.99 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 236.00 10.50 13.00) color=#ffffffff hash=8791bbdb
+  quad (120.60 220.99 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 236.00 5.50 13.00) color=#ffffffff hash=73447411
+  quad (214.90 226.19 90.40 39.20) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 237.00 41.00 11.50) color=#4c4f69ff hash=d9c6f1f5
+  quad (317.30 226.19 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 237.00 85.00 11.50) color=#ffffffff hash=e620fdb0
+  quad (32.00 289.94 161.80 28.06) fill=#00000000
+  glyphs n=5 (32.00 296.50 34.00 10.00) color=#808080ff hash=ff043717
+  quad (75.00 289.57 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 296.50 6.50 10.00) color=#ffffffff hash=6015c584
+  quad (114.70 289.57 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 296.50 6.50 10.00) color=#4c4f69ff hash=e0b5e5be
+  quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=ca0cf92c
+hits
+  hit (32.00 220.99 76.60 49.60) click
+  hit (120.60 220.99 70.30 49.60) click
+  hit (214.90 226.19 90.40 39.20) click
+  hit (317.30 226.19 134.40 39.20) click
+  hit (75.00 289.57 31.70 28.80) click
+  hit (114.70 289.57 31.70 28.80) click
+  hit (154.40 289.57 39.40 28.80) click
+a11y
+  button (32.00 220.99 76.60 49.60) name="−"
+  button (120.60 220.99 70.30 49.60) name="+"
+  button (214.90 226.19 90.40 39.20) name="Reset"
+  button (317.30 226.19 134.40 39.20) name="Reset & Blur"
+  button (75.00 289.57 31.70 28.80) name="1"
+  button (114.70 289.57 31.70 28.80) name="5"
+  button (154.40 289.57 39.40 28.80) name="10"
+
+== step 1: click +
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=2194afb8
+  quad (32.00 221.63 419.70 48.32) fill=#00000000
+  quad (32.00 220.99 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 236.00 10.50 13.00) color=#ffffffff hash=8791bbdb
+  quad (120.60 220.99 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 236.00 5.50 13.00) color=#ffffffff hash=73447411
+  quad (214.90 226.19 90.40 39.20) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 237.00 41.00 11.50) color=#4c4f69ff hash=d9c6f1f5
+  quad (317.30 226.19 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 237.00 85.00 11.50) color=#ffffffff hash=e620fdb0
+  quad (32.00 289.94 161.80 28.06) fill=#00000000
+  glyphs n=5 (32.00 296.50 34.00 10.00) color=#808080ff hash=ff043717
+  quad (75.00 289.57 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 296.50 6.50 10.00) color=#ffffffff hash=6015c584
+  quad (114.70 289.57 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 296.50 6.50 10.00) color=#4c4f69ff hash=e0b5e5be
+  quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=ca0cf92c
+hits
+  hit (32.00 220.99 76.60 49.60) click
+  hit (120.60 220.99 70.30 49.60) click
+  hit (214.90 226.19 90.40 39.20) click
+  hit (317.30 226.19 134.40 39.20) click
+  hit (75.00 289.57 31.70 28.80) click
+  hit (114.70 289.57 31.70 28.80) click
+  hit (154.40 289.57 39.40 28.80) click
+a11y
+  button (32.00 220.99 76.60 49.60) name="−"
+  button (120.60 220.99 70.30 49.60) name="+"
+  button (214.90 226.19 90.40 39.20) name="Reset"
+  button (317.30 226.19 134.40 39.20) name="Reset & Blur"
+  button (75.00 289.57 31.70 28.80) name="1"
+  button (114.70 289.57 31.70 28.80) name="5"
+  button (154.40 289.57 39.40 28.80) name="10"
+
+== step 2: click + again
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=2194afb8
+  quad (32.00 221.63 419.70 48.32) fill=#00000000
+  quad (32.00 220.99 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 236.00 10.50 13.00) color=#ffffffff hash=8791bbdb
+  quad (120.60 220.99 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 236.00 5.50 13.00) color=#ffffffff hash=73447411
+  quad (214.90 226.19 90.40 39.20) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 237.00 41.00 11.50) color=#4c4f69ff hash=d9c6f1f5
+  quad (317.30 226.19 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 237.00 85.00 11.50) color=#ffffffff hash=e620fdb0
+  quad (32.00 289.94 161.80 28.06) fill=#00000000
+  glyphs n=5 (32.00 296.50 34.00 10.00) color=#808080ff hash=ff043717
+  quad (75.00 289.57 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 296.50 6.50 10.00) color=#ffffffff hash=6015c584
+  quad (114.70 289.57 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 296.50 6.50 10.00) color=#4c4f69ff hash=e0b5e5be
+  quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=ca0cf92c
+hits
+  hit (32.00 220.99 76.60 49.60) click
+  hit (120.60 220.99 70.30 49.60) click
+  hit (214.90 226.19 90.40 39.20) click
+  hit (317.30 226.19 134.40 39.20) click
+  hit (75.00 289.57 31.70 28.80) click
+  hit (114.70 289.57 31.70 28.80) click
+  hit (154.40 289.57 39.40 28.80) click
+a11y
+  button (32.00 220.99 76.60 49.60) name="−"
+  button (120.60 220.99 70.30 49.60) name="+"
+  button (214.90 226.19 90.40 39.20) name="Reset"
+  button (317.30 226.19 134.40 39.20) name="Reset & Blur"
+  button (75.00 289.57 31.70 28.80) name="1"
+  button (114.70 289.57 31.70 28.80) name="5"
+  button (154.40 289.57 39.40 28.80) name="10"
+
+== step 3: click -
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=2194afb8
+  quad (32.00 221.63 419.70 48.32) fill=#00000000
+  quad (32.00 220.99 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 236.00 10.50 13.00) color=#ffffffff hash=8791bbdb
+  quad (120.60 220.99 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 236.00 5.50 13.00) color=#ffffffff hash=73447411
+  quad (214.90 226.19 90.40 39.20) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 237.00 41.00 11.50) color=#4c4f69ff hash=d9c6f1f5
+  quad (317.30 226.19 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 237.00 85.00 11.50) color=#ffffffff hash=e620fdb0
+  quad (32.00 289.94 161.80 28.06) fill=#00000000
+  glyphs n=5 (32.00 296.50 34.00 10.00) color=#808080ff hash=ff043717
+  quad (75.00 289.57 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 296.50 6.50 10.00) color=#ffffffff hash=6015c584
+  quad (114.70 289.57 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 296.50 6.50 10.00) color=#4c4f69ff hash=e0b5e5be
+  quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=ca0cf92c
+hits
+  hit (32.00 220.99 76.60 49.60) click
+  hit (120.60 220.99 70.30 49.60) click
+  hit (214.90 226.19 90.40 39.20) click
+  hit (317.30 226.19 134.40 39.20) click
+  hit (75.00 289.57 31.70 28.80) click
+  hit (114.70 289.57 31.70 28.80) click
+  hit (154.40 289.57 39.40 28.80) click
+a11y
+  button (32.00 220.99 76.60 49.60) name="−"
+  button (120.60 220.99 70.30 49.60) name="+"
+  button (214.90 226.19 90.40 39.20) name="Reset"
+  button (317.30 226.19 134.40 39.20) name="Reset & Blur"
+  button (75.00 289.57 31.70 28.80) name="1"
+  button (114.70 289.57 31.70 28.80) name="5"
+  button (154.40 289.57 39.40 28.80) name="10"
+
+== step 4: click step 5
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=2194afb8
+  quad (32.00 221.63 419.70 48.32) fill=#00000000
+  quad (32.00 220.99 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 236.00 10.50 13.00) color=#ffffffff hash=8791bbdb
+  quad (120.60 220.99 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 236.00 5.50 13.00) color=#ffffffff hash=73447411
+  quad (214.90 226.19 90.40 39.20) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 237.00 41.00 11.50) color=#4c4f69ff hash=d9c6f1f5
+  quad (317.30 226.19 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 237.00 85.00 11.50) color=#ffffffff hash=e620fdb0
+  quad (32.00 289.94 161.80 28.06) fill=#00000000
+  glyphs n=5 (32.00 296.50 34.00 10.00) color=#808080ff hash=ff043717
+  quad (75.00 289.57 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 296.50 6.50 10.00) color=#4c4f69ff hash=6015c584
+  quad (114.70 289.57 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 296.50 6.50 10.00) color=#ffffffff hash=e0b5e5be
+  quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=ca0cf92c
+hits
+  hit (32.00 220.99 76.60 49.60) click
+  hit (120.60 220.99 70.30 49.60) click
+  hit (214.90 226.19 90.40 39.20) click
+  hit (317.30 226.19 134.40 39.20) click
+  hit (75.00 289.57 31.70 28.80) click
+  hit (114.70 289.57 31.70 28.80) click
+  hit (154.40 289.57 39.40 28.80) click
+a11y
+  button (32.00 220.99 76.60 49.60) name="−"
+  button (120.60 220.99 70.30 49.60) name="+"
+  button (214.90 226.19 90.40 39.20) name="Reset"
+  button (317.30 226.19 134.40 39.20) name="Reset & Blur"
+  button (75.00 289.57 31.70 28.80) name="1"
+  button (114.70 289.57 31.70 28.80) name="5"
+  button (154.40 289.57 39.40 28.80) name="10"
+
+== step 5: click + with step 5
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=2194afb8
+  quad (32.00 221.63 419.70 48.32) fill=#00000000
+  quad (32.00 220.99 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 236.00 10.50 13.00) color=#ffffffff hash=8791bbdb
+  quad (120.60 220.99 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 236.00 5.50 13.00) color=#ffffffff hash=73447411
+  quad (214.90 226.19 90.40 39.20) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 237.00 41.00 11.50) color=#4c4f69ff hash=d9c6f1f5
+  quad (317.30 226.19 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 237.00 85.00 11.50) color=#ffffffff hash=e620fdb0
+  quad (32.00 289.94 161.80 28.06) fill=#00000000
+  glyphs n=5 (32.00 296.50 34.00 10.00) color=#808080ff hash=ff043717
+  quad (75.00 289.57 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 296.50 6.50 10.00) color=#4c4f69ff hash=6015c584
+  quad (114.70 289.57 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 296.50 6.50 10.00) color=#ffffffff hash=e0b5e5be
+  quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=ca0cf92c
+hits
+  hit (32.00 220.99 76.60 49.60) click
+  hit (120.60 220.99 70.30 49.60) click
+  hit (214.90 226.19 90.40 39.20) click
+  hit (317.30 226.19 134.40 39.20) click
+  hit (75.00 289.57 31.70 28.80) click
+  hit (114.70 289.57 31.70 28.80) click
+  hit (154.40 289.57 39.40 28.80) click
+a11y
+  button (32.00 220.99 76.60 49.60) name="−"
+  button (120.60 220.99 70.30 49.60) name="+"
+  button (214.90 226.19 90.40 39.20) name="Reset"
+  button (317.30 226.19 134.40 39.20) name="Reset & Blur"
+  button (75.00 289.57 31.70 28.80) name="1"
+  button (114.70 289.57 31.70 28.80) name="5"
+  button (154.40 289.57 39.40 28.80) name="10"
+
+== step 6: hover Reset
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=2194afb8
+  quad (32.00 221.63 419.70 48.32) fill=#00000000
+  quad (32.00 220.99 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 236.00 10.50 13.00) color=#ffffffff hash=8791bbdb
+  quad (120.60 220.99 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 236.00 5.50 13.00) color=#ffffffff hash=73447411
+  quad (214.90 226.19 90.40 39.20) fill=#839496d9 radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 237.00 41.00 11.50) color=#4c4f69ff hash=d9c6f1f5
+  quad (317.30 226.19 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 237.00 85.00 11.50) color=#ffffffff hash=e620fdb0
+  quad (32.00 289.94 161.80 28.06) fill=#00000000
+  glyphs n=5 (32.00 296.50 34.00 10.00) color=#808080ff hash=ff043717
+  quad (75.00 289.57 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 296.50 6.50 10.00) color=#4c4f69ff hash=6015c584
+  quad (114.70 289.57 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 296.50 6.50 10.00) color=#ffffffff hash=e0b5e5be
+  quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=ca0cf92c
+hits
+  hit (32.00 220.99 76.60 49.60) click
+  hit (120.60 220.99 70.30 49.60) click
+  hit (214.90 226.19 90.40 39.20) click
+  hit (317.30 226.19 134.40 39.20) click
+  hit (75.00 289.57 31.70 28.80) click
+  hit (114.70 289.57 31.70 28.80) click
+  hit (154.40 289.57 39.40 28.80) click
+a11y
+  button (32.00 220.99 76.60 49.60) name="−"
+  button (120.60 220.99 70.30 49.60) name="+"
+  button (214.90 226.19 90.40 39.20) name="Reset"
+  button (317.30 226.19 134.40 39.20) name="Reset & Blur"
+  button (75.00 289.57 31.70 28.80) name="1"
+  button (114.70 289.57 31.70 28.80) name="5"
+  button (154.40 289.57 39.40 28.80) name="10"
+
+== step 7: click Reset
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 75.85 83.20 103.33) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 106.00 28.50 45.00) color=#3380ccff hash=2e8f10a5
+  quad (32.00 199.18 419.70 41.07) fill=#00000000
+  quad (32.00 194.91 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 210.00 10.50 13.00) color=#ffffffff hash=f6f67af5
+  quad (120.60 194.91 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 210.00 5.50 13.00) color=#ffffffff hash=37022e37
+  quad (214.90 200.11 90.40 39.20) fill=#839496d9 radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 211.00 41.00 11.50) color=#4c4f69ff hash=3d5d762b
+  quad (317.30 200.11 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 211.00 85.00 11.50) color=#ffffffff hash=70f2ecd8
+  quad (32.00 260.24 161.80 23.85) fill=#00000000
+  glyphs n=5 (32.00 264.50 34.00 10.00) color=#808080ff hash=b3780b0b
+  quad (75.00 257.77 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 264.50 6.50 10.00) color=#4c4f69ff hash=6ce4aec8
+  quad (114.70 257.77 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 264.50 6.50 10.00) color=#ffffffff hash=392be4da
+  quad (154.40 257.77 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 264.50 14.50 10.00) color=#4c4f69ff hash=0c860f1c
+  glyphs n=14 (32.00 305.00 93.50 10.00) color=#4d994dff hash=67c1a5cb
+hits
+  hit (32.00 194.91 76.60 49.60) click
+  hit (120.60 194.91 70.30 49.60) click
+  hit (214.90 200.11 90.40 39.20) click
+  hit (317.30 200.11 134.40 39.20) click
+  hit (75.00 257.77 31.70 28.80) click
+  hit (114.70 257.77 31.70 28.80) click
+  hit (154.40 257.77 39.40 28.80) click
+a11y
+  button (32.00 194.91 76.60 49.60) name="−"
+  button (120.60 194.91 70.30 49.60) name="+"
+  button (214.90 200.11 90.40 39.20) name="Reset"
+  button (317.30 200.11 134.40 39.20) name="Reset & Blur"
+  button (75.00 257.77 31.70 28.80) name="1"
+  button (114.70 257.77 31.70 28.80) name="5"
+  button (154.40 257.77 39.40 28.80) name="10"
+
+== step 8: click step 10
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 75.85 83.20 103.33) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 106.00 28.50 45.00) color=#3380ccff hash=2e8f10a5
+  quad (32.00 199.18 419.70 41.07) fill=#00000000
+  quad (32.00 194.91 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 210.00 10.50 13.00) color=#ffffffff hash=f6f67af5
+  quad (120.60 194.91 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 210.00 5.50 13.00) color=#ffffffff hash=37022e37
+  quad (214.90 200.11 90.40 39.20) fill=#839496d9 radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 211.00 41.00 11.50) color=#4c4f69ff hash=3d5d762b
+  quad (317.30 200.11 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 211.00 85.00 11.50) color=#ffffffff hash=70f2ecd8
+  quad (32.00 260.24 161.80 23.85) fill=#00000000
+  glyphs n=5 (32.00 264.50 34.00 10.00) color=#808080ff hash=b3780b0b
+  quad (75.00 257.77 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 264.50 6.50 10.00) color=#4c4f69ff hash=6ce4aec8
+  quad (114.70 257.77 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 264.50 6.50 10.00) color=#ffffffff hash=392be4da
+  quad (154.40 257.77 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 264.50 14.50 10.00) color=#4c4f69ff hash=0c860f1c
+  glyphs n=14 (32.00 305.00 93.50 10.00) color=#4d994dff hash=67c1a5cb
+hits
+  hit (32.00 194.91 76.60 49.60) click
+  hit (120.60 194.91 70.30 49.60) click
+  hit (214.90 200.11 90.40 39.20) click
+  hit (317.30 200.11 134.40 39.20) click
+  hit (75.00 257.77 31.70 28.80) click
+  hit (114.70 257.77 31.70 28.80) click
+  hit (154.40 257.77 39.40 28.80) click
+a11y
+  button (32.00 194.91 76.60 49.60) name="−"
+  button (120.60 194.91 70.30 49.60) name="+"
+  button (214.90 200.11 90.40 39.20) name="Reset"
+  button (317.30 200.11 134.40 39.20) name="Reset & Blur"
+  button (75.00 257.77 31.70 28.80) name="1"
+  button (114.70 257.77 31.70 28.80) name="5"
+  button (154.40 257.77 39.40 28.80) name="10"
+
+== step 9: click - into negative
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 75.85 83.20 103.33) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 106.00 28.50 45.00) color=#3380ccff hash=2e8f10a5
+  quad (32.00 199.18 419.70 41.07) fill=#00000000
+  quad (32.00 194.91 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 210.00 10.50 13.00) color=#ffffffff hash=f6f67af5
+  quad (120.60 194.91 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 210.00 5.50 13.00) color=#ffffffff hash=37022e37
+  quad (214.90 200.11 90.40 39.20) fill=#839496d9 radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 211.00 41.00 11.50) color=#4c4f69ff hash=3d5d762b
+  quad (317.30 200.11 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 211.00 85.00 11.50) color=#ffffffff hash=70f2ecd8
+  quad (32.00 260.24 161.80 23.85) fill=#00000000
+  glyphs n=5 (32.00 264.50 34.00 10.00) color=#808080ff hash=b3780b0b
+  quad (75.00 257.77 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 264.50 6.50 10.00) color=#4c4f69ff hash=6ce4aec8
+  quad (114.70 257.77 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 264.50 6.50 10.00) color=#ffffffff hash=392be4da
+  quad (154.40 257.77 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 264.50 14.50 10.00) color=#4c4f69ff hash=0c860f1c
+  glyphs n=14 (32.00 305.00 93.50 10.00) color=#4d994dff hash=67c1a5cb
+hits
+  hit (32.00 194.91 76.60 49.60) click
+  hit (120.60 194.91 70.30 49.60) click
+  hit (214.90 200.11 90.40 39.20) click
+  hit (317.30 200.11 134.40 39.20) click
+  hit (75.00 257.77 31.70 28.80) click
+  hit (114.70 257.77 31.70 28.80) click
+  hit (154.40 257.77 39.40 28.80) click
+a11y
+  button (32.00 194.91 76.60 49.60) name="−"
+  button (120.60 194.91 70.30 49.60) name="+"
+  button (214.90 200.11 90.40 39.20) name="Reset"
+  button (317.30 200.11 134.40 39.20) name="Reset & Blur"
+  button (75.00 257.77 31.70 28.80) name="1"
+  button (114.70 257.77 31.70 28.80) name="5"
+  button (154.40 257.77 39.40 28.80) name="10"
+
+== step 10: click Reset & Blur
+packed 1000x700@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+  glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=f9e36423
+  quad (32.00 75.85 83.20 103.33) fill=#ffffffff radius=12.00,12.00,12.00,12.00
+  glyphs n=1 (56.00 106.00 28.50 45.00) color=#3380ccff hash=2e8f10a5
+  quad (32.00 199.18 419.70 41.07) fill=#00000000
+  quad (32.00 194.91 76.60 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (64.00 210.00 10.50 13.00) color=#ffffffff hash=f6f67af5
+  quad (120.60 194.91 70.30 49.60) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (152.50 210.00 5.50 13.00) color=#ffffffff hash=37022e37
+  quad (214.90 200.11 90.40 39.20) fill=#839496d9 radius=8.00,8.00,8.00,8.00
+  glyphs n=5 (238.50 211.00 41.00 11.50) color=#4c4f69ff hash=3d5d762b
+  quad (317.30 200.11 134.40 39.20) fill=#d13d3dff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (341.00 211.00 85.00 11.50) color=#ffffffff hash=70f2ecd8
+  quad (32.00 260.24 161.80 23.85) fill=#00000000
+  glyphs n=5 (32.00 264.50 34.00 10.00) color=#808080ff hash=b3780b0b
+  quad (75.00 257.77 31.70 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (87.00 264.50 6.50 10.00) color=#4c4f69ff hash=6ce4aec8
+  quad (114.70 257.77 31.70 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=1 (126.50 264.50 6.50 10.00) color=#ffffffff hash=392be4da
+  quad (154.40 257.77 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
+  glyphs n=2 (166.00 264.50 14.50 10.00) color=#4c4f69ff hash=0c860f1c
+  glyphs n=14 (32.00 305.00 93.50 10.00) color=#4d994dff hash=67c1a5cb
+hits
+  hit (32.00 194.91 76.60 49.60) click
+  hit (120.60 194.91 70.30 49.60) click
+  hit (214.90 200.11 90.40 39.20) click
+  hit (317.30 200.11 134.40 39.20) click
+  hit (75.00 257.77 31.70 28.80) click
+  hit (114.70 257.77 31.70 28.80) click
+  hit (154.40 257.77 39.40 28.80) click
+a11y
+  button (32.00 194.91 76.60 49.60) name="−"
+  button (120.60 194.91 70.30 49.60) name="+"
+  button (214.90 200.11 90.40 39.20) name="Reset"
+  button (317.30 200.11 134.40 39.20) name="Reset & Blur"
+  button (75.00 257.77 31.70 28.80) name="1"
+  button (114.70 257.77 31.70 28.80) name="5"
+  button (154.40 257.77 39.40 28.80) name="10"
