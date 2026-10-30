@@ -38,7 +38,7 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     // an answer without a tick. Methodology: focus todo's draft, compose, and
     // query between ticks. Expected rects come from the synthetic face: "ca"
     // is two 0.5 em glyphs at 16 px, 16 px wide, after the 9 px inset at x 24.
-    const Driver = core_driver.CoreDriver(todo.App, todo.render);
+    const Driver = core_driver.CoreDriver(todo.App);
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.todo);
@@ -90,7 +90,7 @@ const DialogState = struct {
     }
 };
 
-const DialogApp = core.App(DialogState, .{
+const DialogApp = core.App(DialogState, dialogRender, .{
     .title = "Dialog",
     .width = 200,
     .height = 100,
@@ -101,17 +101,15 @@ const DialogApp = core.App(DialogState, .{
     .on_init = null,
 });
 
-var dialog_on_complete: ?core.Handler = null;
-
 fn dialogRender(cx: *Cx) void {
-    dialog_on_complete = cx.on(DialogState.completed, .{});
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
         components.core.Button{ .label = "Open", .on_click = cx.on(openDialog, .{}) },
     }));
 }
 
 fn openDialog(_: *DialogState, effects: *Effects) void {
-    effects.openFileDialog(.{ .kind = .open, .on_complete = dialog_on_complete.? });
+    const on_complete = effects.handler(DialogState.completed);
+    effects.openFileDialog(.{ .kind = .open, .on_complete = on_complete });
 }
 
 /// A dialog service that records where it ran and answers from a script.
@@ -160,14 +158,15 @@ test "a file dialog opened from a handler runs on the main thread after the hand
     app.window.file_dialog = .{ .context = &service, .open = ScriptedDialog.open };
 
     var now: u64 = 0;
-    app.tickWith(dialogRender, now);
+    app.tick(now);
     var round: u32 = 0;
     while (round < 3) : (round += 1) {
         app.window.queue.push(.{ .input = .{ .mouse_down = mouse(20, 20) } });
+        app.window.queue.push(.{ .input = .{ .mouse_up = mouse(20, 20) } });
         now += 1;
-        app.tickWith(dialogRender, now); // The click opens the dialog after the drain.
+        app.tick(now); // The click opens the dialog after the drain.
         now += 1;
-        app.tickWith(dialogRender, now); // The next drain delivers the outcome.
+        app.tick(now); // The next drain delivers the outcome.
     }
     try testing.expectEqual(@as(u32, 3), service.opened_on_main);
     try testing.expectEqual(@as(u32, 3), service.opened_in_drain);
@@ -185,7 +184,7 @@ test "counter and todo run their traces with no allocation after init" {
         .{ counter.App, counter.render, &traces.counter },
         .{ todo.App, todo.render, &traces.todo },
     }) |case| {
-        const Driver = core_driver.CoreDriver(case[0], case[1]);
+        const Driver = core_driver.CoreDriver(case[0]);
         const driver = try testing.allocator.create(Driver);
         defer testing.allocator.destroy(driver);
         try driver.initInPlace(testing.allocator, testing.io, case[2]);
@@ -218,30 +217,26 @@ test "a frame in flight defers the next build while input keeps draining" {
     // still reach its handler (against the rendered frame) but must neither
     // build nor flip until the render side presents, and the main thread
     // flips and builds at its next tick.
-    const Driver = core_driver.CoreDriver(counter.App, counter.render);
+    const Driver = core_driver.CoreDriver(counter.App);
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.counter);
     defer driver.deinit();
     const tick = core.internals.tick;
-    const Root = struct {
-        pub fn render(cx: *Cx) void {
-            counter.render(cx);
-        }
-    };
-    var root = Root{};
     const window = &driver.app.window;
     driver.frame();
     const first = window.rendered().frame_number;
     const now = driver.now_ns;
 
     window.queue.push(.{ .input = .{ .mouse_down = mouse(155, 245) } });
-    try testing.expect(tick.tickMain(&root, window, now + 1));
+    window.queue.push(.{ .input = .{ .mouse_up = mouse(155, 245) } });
+    try testing.expect(tick.tickMain(&driver.app, window, now + 1));
     try testing.expect(window.frame_in_flight.load(.acquire));
     try testing.expectEqual(@as(i32, 1), driver.app.state.count);
 
     window.queue.push(.{ .input = .{ .mouse_down = mouse(155, 245) } });
-    try testing.expect(!tick.tickMain(&root, window, now + 2));
+    window.queue.push(.{ .input = .{ .mouse_up = mouse(155, 245) } });
+    try testing.expect(!tick.tickMain(&driver.app, window, now + 2));
     try testing.expectEqual(@as(i32, 2), driver.app.state.count);
     try testing.expect(window.render_requested);
     try testing.expectEqual(first, window.rendered().frame_number);
@@ -250,7 +245,7 @@ test "a frame in flight defers the next build while input keeps draining" {
     try testing.expect(!window.frame_in_flight.load(.acquire));
     // Presented but not yet flipped: the query still sees the old frame.
     try testing.expectEqual(first, window.rendered().frame_number);
-    try testing.expect(tick.tickMain(&root, window, now + 3));
+    try testing.expect(tick.tickMain(&driver.app, window, now + 3));
     try testing.expectEqual(first + 1, window.rendered().frame_number);
     try testing.expectEqual(first + 2, window.built().frame_number);
     tick.presentBuilt(window);
@@ -263,7 +258,7 @@ test "every build opens an atlas frame so the glyph LRU can evict" {
     // synthetic face's glyphs are too few to fill the atlas, so check the
     // mechanism directly: each built frame advances the atlas frame clock,
     // and a tick that builds nothing leaves it alone.
-    const Driver = core_driver.CoreDriver(counter.App, counter.render);
+    const Driver = core_driver.CoreDriver(counter.App);
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.counter);
@@ -275,9 +270,40 @@ test "every build opens an atlas frame so the glyph LRU can evict" {
     var click: u32 = 0;
     while (click < 3) : (click += 1) {
         driver.deliver(.{ .mouse_down = mouse(155, 245) });
+        driver.deliver(.{ .mouse_up = mouse(155, 245) });
         driver.frame();
     }
     try testing.expectEqual(first + 3, uploads.frameCurrent());
     driver.frame(); // Nothing requested a render.
     try testing.expectEqual(first + 3, uploads.frameCurrent());
+}
+
+test "clicks fire on release over the pressed control" {
+    // Goal: decision 7's click-on-release rule. Methodology: on counter, a
+    // press alone must not click; releasing over the pressed "+" clicks it
+    // once; pressing "+" and releasing over "-" clicks neither; a release
+    // with no press clicks nothing. Expected counts follow from step 1.
+    const Driver = core_driver.CoreDriver(counter.App);
+    const driver = try testing.allocator.create(Driver);
+    defer testing.allocator.destroy(driver);
+    try driver.initInPlace(testing.allocator, testing.io, &traces.counter);
+    defer driver.deinit();
+    const state = &driver.app.state;
+    driver.frame();
+
+    driver.deliver(.{ .mouse_down = mouse(155, 245) });
+    driver.frame();
+    try testing.expectEqual(@as(i32, 0), state.count);
+    driver.deliver(.{ .mouse_up = mouse(160, 250) });
+    driver.frame();
+    try testing.expectEqual(@as(i32, 1), state.count);
+
+    driver.deliver(.{ .mouse_down = mouse(155, 245) });
+    driver.deliver(.{ .mouse_up = mouse(70, 245) });
+    driver.frame();
+    try testing.expectEqual(@as(i32, 1), state.count);
+
+    driver.deliver(.{ .mouse_up = mouse(155, 245) });
+    driver.frame();
+    try testing.expectEqual(@as(i32, 1), state.count);
 }

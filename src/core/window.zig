@@ -203,6 +203,11 @@ pub const Window = struct {
     focus: ElementId,
     hover_path: [box_depth_max]ElementId,
     hover_len: u32,
+    /// Ids from the pressed record up to the root, captured on press. A
+    /// release fires the click handlers of records in this path only, so a
+    /// press that slides off a button does not click it (decision 7).
+    press_path: [box_depth_max]ElementId,
+    press_len: u32,
     pointer: ?struct { x: f32, y: f32 },
     // Tick state.
     phase: Phase,
@@ -324,6 +329,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.file_dialog = null;
     self.focus = .root;
     self.hover_len = 0;
+    self.press_len = 0;
     self.pointer = null;
     self.phase = .idle;
     self.frame_in_flight = .init(false);

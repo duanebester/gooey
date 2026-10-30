@@ -22,6 +22,7 @@
 //! - `core-allocation`: allocates through the 0.4.0 core's lifecycle guard after init.
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
+//! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -41,6 +42,7 @@ const Mode = enum {
     @"core-allocation",
     @"core-duplicate-key",
     @"core-component-depth",
+    @"core-dialog-target",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -67,6 +69,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-allocation" => coreAllocation(init.gpa, init.io),
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
+        .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -245,17 +248,21 @@ const core = gooey.core;
 
 const CoreState = struct {};
 
+const core_config: core.Config(CoreState) = .{
+    .title = "fail-fast",
+    .width = 100,
+    .height = 100,
+    .limits = .nano,
+    .theme = &core.Theme.light,
+    .keymap = &.{},
+    .entities = &.{},
+    .on_init = null,
+};
+
 const CoreApp = struct {
-    const App = core.App(CoreState, .{
-        .title = "fail-fast",
-        .width = 100,
-        .height = 100,
-        .limits = .nano,
-        .theme = &core.Theme.light,
-        .keymap = &.{},
-        .entities = &.{},
-        .on_init = null,
-    });
+    fn empty(cx: *core.Cx) void {
+        cx.render(core.ui.box(.{}, .{}));
+    }
 
     fn duplicateKey(cx: *core.Cx) void {
         cx.render(.{
@@ -275,10 +282,29 @@ const CoreApp = struct {
     fn nested(cx: *core.Cx) void {
         cx.render(Nest{});
     }
+
+    /// A window-sized box whose click requests a dialog completing on a
+    /// state type that is not the root state.
+    fn dialogButton(cx: *core.Cx) void {
+        cx.render(core.ui.box(.{
+            .key = .{ .name = "open" },
+            .on_click = cx.on(requestDialog, .{}),
+            .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+        }, .{}));
+    }
+
+    fn requestDialog(_: *CoreState, effects: *core.Effects) void {
+        const on_complete = effects.handler(Stranger.picked);
+        effects.openFileDialog(.{ .kind = .open, .on_complete = on_complete });
+    }
+
+    const Stranger = struct {
+        fn picked(_: *Stranger) void {}
+    };
 };
 
-fn initCoreApp(gpa: std.mem.Allocator, io: std.Io) *CoreApp.App {
-    const app = gpa.create(CoreApp.App) catch |err| {
+fn initCoreApp(comptime App: type, gpa: std.mem.Allocator, io: std.Io) *App {
+    const app = gpa.create(App) catch |err| {
         std.debug.panic("setup: core app allocation failed: {s}", .{@errorName(err)});
     };
     app.initHeadless(gpa, io, .{ .scale_factor = 1 }) catch |err| {
@@ -288,12 +314,26 @@ fn initCoreApp(gpa: std.mem.Allocator, io: std.Io) *CoreApp.App {
 }
 
 fn coreAllocation(gpa: std.mem.Allocator, io: std.Io) void {
-    const app = initCoreApp(gpa, io);
+    const app = initCoreApp(core.App(CoreState, CoreApp.empty, core_config), gpa, io);
     const bytes = app.guard.allocator().alloc(u8, 16) catch return;
     _ = bytes;
 }
 
+fn coreDialogTarget(gpa: std.mem.Allocator, io: std.Io) void {
+    const app = initCoreApp(core.App(CoreState, CoreApp.dialogButton, core_config), gpa, io);
+    app.tick(1);
+    const point = gooey.input.MouseEvent{
+        .position = .{ .x = 50, .y = 50 },
+        .button = .left,
+        .click_count = 1,
+        .modifiers = .{},
+    };
+    app.window.queue.push(.{ .input = .{ .mouse_down = point } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = point } });
+    app.tick(2);
+}
+
 fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*core.Cx) void) void {
-    const app = initCoreApp(gpa, io);
-    app.tickWith(render, 1);
+    const app = initCoreApp(core.App(CoreState, render, core_config), gpa, io);
+    app.tick(1);
 }
