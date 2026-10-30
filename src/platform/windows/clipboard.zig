@@ -15,9 +15,10 @@
 //!
 //! `SetClipboardData` needs an owner window: with a null owner,
 //! `EmptyClipboard` leaves the clipboard ownerless and `SetClipboardData`
-//! fails. `WindowsPlatform` creates a message-only owner in `init` and destroys
-//! it in `deinit`, so copying does not depend on any application window
-//! staying open.
+//! fails. `WindowsPlatform.initInPlace` calls `init`, which creates a
+//! message-only owner, and `WindowsPlatform.deinit` calls `deinit`, which
+//! destroys it, so copying does not depend on any application window staying
+//! open.
 //!
 //! ## Allocation (CLAUDE.md section 2)
 //!
@@ -152,8 +153,10 @@ pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
 }
 
 /// Replace the clipboard text. Returns false, leaving the clipboard as it
-/// was, when the text is longer than `text_bytes_max`, is not UTF-8, or the
-/// clipboard is busy.
+/// was, when the text is longer than `text_bytes_max`, is not UTF-8, the copy
+/// block cannot be allocated, or the clipboard is busy. Returns false with the
+/// clipboard left empty when `SetClipboardData` fails after `EmptyClipboard`;
+/// see `clipboardPublish`.
 pub fn setText(text: []const u8) bool {
     const owner = owner_hwnd orelse unreachable; // Copy before `init`.
     if (text.len > text_bytes_max) {
@@ -212,7 +215,8 @@ fn copyBlockCreate(text: []const u8) ?win32.HGLOBAL {
 }
 
 /// Hand `block` to the system clipboard. On success the system owns it; on
-/// failure the caller still does.
+/// failure the caller still does. A failure after `EmptyClipboard` leaves the
+/// clipboard empty: the previous contents are gone and cannot be restored.
 fn clipboardPublish(owner: win32.HWND, block: win32.HGLOBAL) bool {
     if (!clipboardOpenAs(owner)) return false;
     defer clipboardClose();

@@ -14,9 +14,10 @@ const Modifiers = @import("../input/events.zig").Modifiers;
 /// Whether `mods` holds the modifier for select all, copy, cut, paste, undo,
 /// and redo. Windows uses Ctrl: the Win key is the shell's (Win+V opens
 /// clipboard history), and Windows reports it as `cmd`. Elsewhere it is
-/// `cmd`, as on macOS.
+/// `cmd`, as on macOS. Windows reports AltGr as Ctrl+Alt, so Ctrl with Alt is
+/// a character on many layouts (AltGr+A is `ą` in Polish), never an edit command.
 pub fn hasEditCommandModifier(mods: Modifiers) bool {
-    if (builtin.os.tag == .windows) return mods.ctrl;
+    if (builtin.os.tag == .windows) return mods.ctrl and !mods.alt;
     return mods.cmd;
 }
 
@@ -27,6 +28,11 @@ test "edit commands use the platform's command modifier" {
     try std.testing.expectEqual(is_windows, hasEditCommandModifier(ctrl));
     try std.testing.expectEqual(!is_windows, hasEditCommandModifier(cmd));
     try std.testing.expect(!hasEditCommandModifier(.{ .shift = true, .alt = true }));
+    // AltGr arrives as Ctrl+Alt on Windows and must type, not edit.
+    const altgr: Modifiers = .{ .ctrl = true, .alt = true };
+    try std.testing.expect(!hasEditCommandModifier(altgr));
+    const ctrl_shift: Modifiers = .{ .ctrl = true, .shift = true };
+    try std.testing.expectEqual(is_windows, hasEditCommandModifier(ctrl_shift));
 }
 
 // =============================================================================

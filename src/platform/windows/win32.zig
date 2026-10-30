@@ -37,6 +37,8 @@ pub const HBRUSH = *opaque {};
 pub const HMENU = *opaque {};
 /// A movable global memory block, the only kind the clipboard accepts.
 pub const HGLOBAL = *opaque {};
+/// A kernel object handle; here, only the loop's waitable timer.
+pub const HANDLE = *opaque {};
 
 pub const WNDPROC = *const fn (HWND, u32, WPARAM, LPARAM) callconv(.winapi) LRESULT;
 
@@ -150,9 +152,20 @@ pub const GMEM_ZEROINIT: u32 = 0x0040;
 
 // `PeekMessageW` and `MsgWaitForMultipleObjectsEx`.
 pub const PM_REMOVE: u32 = 0x0001;
-pub const QS_ALLINPUT: u32 = 0x04FF;
+// Windows 8 and later add `QS_TOUCH | QS_POINTER` to `QS_INPUT`; without them
+// touch and pen input would not wake the loop.
+pub const QS_ALLINPUT: u32 = 0x1CFF;
 pub const MWMO_INPUTAVAILABLE: u32 = 0x0004;
 pub const WAIT_FAILED: u32 = 0xFFFF_FFFF;
+pub const WAIT_OBJECT_0: u32 = 0x0000_0000;
+pub const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+// `CreateWaitableTimerExW` flags (synchapi.h). High resolution needs Windows 10
+// 1803; earlier systems reject the flag with `ERROR_INVALID_PARAMETER`.
+pub const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: u32 = 0x0000_0002;
+// `STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | TIMER_QUERY_STATE |
+// TIMER_MODIFY_STATE` (winnt.h).
+pub const TIMER_ALL_ACCESS: u32 = 0x001F_0003;
 
 // `WM_SIZE` request types.
 pub const SIZE_MINIMIZED: usize = 1;
@@ -215,15 +228,24 @@ pub const WM_MBUTTONDOWN: u32 = 0x0207;
 pub const WM_MBUTTONUP: u32 = 0x0208;
 pub const WM_MOUSEWHEEL: u32 = 0x020A;
 pub const WM_MOUSEHWHEEL: u32 = 0x020E;
+pub const WM_CAPTURECHANGED: u32 = 0x0215;
 pub const WM_IME_SETCONTEXT: u32 = 0x0281;
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
 pub const WM_DPICHANGED: u32 = 0x02E0;
 
-// Virtual-key codes read through `GetKeyState`. The full translation table
-// lives in `input.zig`.
+// Mouse message `wParam` flags for the buttons held when the message was sent.
+pub const MK_LBUTTON: usize = 0x0001;
+pub const MK_RBUTTON: usize = 0x0002;
+pub const MK_MBUTTON: usize = 0x0010;
+
+// Virtual-key codes read through `GetKeyState` or routed by the window. The
+// full translation table lives in `input.zig`.
 pub const VK_SHIFT: i32 = 0x10;
 pub const VK_CONTROL: i32 = 0x11;
 pub const VK_MENU: i32 = 0x12;
+pub const VK_SPACE: i32 = 0x20;
+pub const VK_F4: i32 = 0x73;
+pub const VK_F10: i32 = 0x79;
 pub const VK_LWIN: i32 = 0x5B;
 pub const VK_RWIN: i32 = 0x5C;
 
@@ -239,6 +261,22 @@ pub extern "kernel32" fn GlobalFree(hMem: HGLOBAL) callconv(.winapi) ?HGLOBAL;
 pub extern "kernel32" fn GlobalLock(hMem: HGLOBAL) callconv(.winapi) ?*anyopaque;
 pub extern "kernel32" fn GlobalUnlock(hMem: HGLOBAL) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GlobalSize(hMem: HGLOBAL) callconv(.winapi) usize;
+pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CreateWaitableTimerExW(
+    lpTimerAttributes: ?*anyopaque,
+    lpTimerName: ?LPCWSTR,
+    dwFlags: u32,
+    dwDesiredAccess: u32,
+) callconv(.winapi) ?HANDLE;
+/// `lpDueTime` is a `LARGE_INTEGER` in 100 ns units: negative is relative.
+pub extern "kernel32" fn SetWaitableTimer(
+    hTimer: HANDLE,
+    lpDueTime: *const i64,
+    lPeriod: i32,
+    pfnCompletionRoutine: ?*const anyopaque,
+    lpArgToCompletionRoutine: ?*anyopaque,
+    fResume: BOOL,
+) callconv(.winapi) BOOL;
 
 pub extern "user32" fn RegisterClassExW(lpwcx: *const WNDCLASSEXW) callconv(.winapi) ATOM;
 pub extern "user32" fn UnregisterClassW(
@@ -269,6 +307,7 @@ pub extern "user32" fn DefWindowProcW(
 pub extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(.winapi) BOOL;
 pub extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: LPCWSTR) callconv(.winapi) BOOL;
 pub extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
+pub extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn ClientToScreen(hWnd: HWND, lpPoint: *POINT) callconv(.winapi) BOOL;
 
 pub extern "user32" fn SetWindowPos(
@@ -300,7 +339,7 @@ pub extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) BOO
 pub extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) LRESULT;
 pub extern "user32" fn MsgWaitForMultipleObjectsEx(
     nCount: u32,
-    pHandles: ?*const anyopaque,
+    pHandles: ?[*]const HANDLE,
     dwMilliseconds: u32,
     dwWakeMask: u32,
     dwFlags: u32,

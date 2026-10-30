@@ -63,9 +63,31 @@ pub const CANDIDATEFORM = extern struct {
     rcArea: win32.RECT,
 };
 
-// `WM_IME_COMPOSITION` flags and `ImmGetCompositionStringW` indices.
+// `WM_IME_COMPOSITION` flags and `ImmGetCompositionStringW` indices, as in
+// `imm.h`.
+pub const GCS_COMPREADSTR: u32 = 0x0001;
+pub const GCS_COMPREADATTR: u32 = 0x0002;
+pub const GCS_COMPREADCLAUSE: u32 = 0x0004;
 pub const GCS_COMPSTR: u32 = 0x0008;
+pub const GCS_COMPATTR: u32 = 0x0010;
+pub const GCS_COMPCLAUSE: u32 = 0x0020;
+pub const GCS_CURSORPOS: u32 = 0x0080;
+pub const GCS_DELTASTART: u32 = 0x0100;
+pub const GCS_RESULTREADSTR: u32 = 0x0200;
+pub const GCS_RESULTREADCLAUSE: u32 = 0x0400;
 pub const GCS_RESULTSTR: u32 = 0x0800;
+pub const GCS_RESULTCLAUSE: u32 = 0x1000;
+
+// `WM_IME_COMPOSITION` modifiers of `GCS_COMPSTR` (Korean IMEs). They
+// describe how to show the string, not which strings changed.
+pub const CS_INSERTCHAR: u32 = 0x2000;
+pub const CS_NOMOVECARET: u32 = 0x4000;
+
+/// Every flag that reports a composition or result change. A message with
+/// none of them is a cancellation.
+const composition_flags_all: u32 = GCS_COMPREADSTR | GCS_COMPREADATTR | GCS_COMPREADCLAUSE |
+    GCS_COMPSTR | GCS_COMPATTR | GCS_COMPCLAUSE | GCS_CURSORPOS | GCS_DELTASTART |
+    GCS_RESULTREADSTR | GCS_RESULTREADCLAUSE | GCS_RESULTSTR | GCS_RESULTCLAUSE;
 
 // `WM_IME_SETCONTEXT` flag that asks the default IME window to draw the
 // composition string itself.
@@ -103,24 +125,35 @@ comptime {
     assert(@offsetOf(CANDIDATEFORM, "rcArea") == 16);
     // `ImmGetCompositionStringW` takes the buffer size in bytes as a `u32`.
     assert(units_max * @sizeOf(u16) <= std.math.maxInt(u32));
+    // Twelve distinct `GCS_*` bits; 0x0040 is unassigned.
+    assert(@popCount(composition_flags_all) == 12);
+    assert(composition_flags_all == 0x1FBF);
+    assert(composition_flags_all & (CS_INSERTCHAR | CS_NOMOVECARET) == 0);
 }
 
 // =============================================================================
 // Composition messages
 // =============================================================================
 
-/// Which strings one `WM_IME_COMPOSITION` changed. Neither set means the IME
-/// cancelled the composition.
+/// Which strings one `WM_IME_COMPOSITION` changed.
 pub const Changes = struct {
     result: bool,
     preedit: bool,
+    /// No composition flag at all (`lParam` 0 in practice): the IME cancelled
+    /// the composition. A message that changes only the cursor, attributes,
+    /// clauses, or reading string is not a cancellation; the preedit stays.
+    cancelled: bool,
 
     pub fn fromLParam(lparam: win32.LPARAM) Changes {
         const flags: usize = @bitCast(lparam);
-        return .{
+        const changes = Changes{
             .result = flags & GCS_RESULTSTR != 0,
             .preedit = flags & GCS_COMPSTR != 0,
+            .cancelled = flags & composition_flags_all == 0,
         };
+        if (changes.cancelled) assert(!changes.result);
+        if (changes.cancelled) assert(!changes.preedit);
+        return changes;
     }
 };
 
@@ -296,15 +329,44 @@ test "composition flags report result, preedit, and cancellation" {
     const both = Changes.fromLParam(@intCast(GCS_RESULTSTR | GCS_COMPSTR));
     try testing.expect(both.result);
     try testing.expect(both.preedit);
+    try testing.expect(!both.cancelled);
 
-    const preedit = Changes.fromLParam(@intCast(GCS_COMPSTR | 0x0080)); // GCS_CURSORPOS
+    const preedit = Changes.fromLParam(@intCast(GCS_COMPSTR | GCS_CURSORPOS));
     try testing.expect(!preedit.result);
     try testing.expect(preedit.preedit);
+    try testing.expect(!preedit.cancelled);
+
+    const korean = Changes.fromLParam(@intCast(GCS_COMPSTR | CS_INSERTCHAR | CS_NOMOVECARET));
+    try testing.expect(korean.preedit);
+    try testing.expect(!korean.cancelled);
 
     // Negative space: no flags is a cancellation, not an update.
     const cancelled = Changes.fromLParam(0);
     try testing.expect(!cancelled.result);
     try testing.expect(!cancelled.preedit);
+    try testing.expect(cancelled.cancelled);
+}
+
+test "every composition flag alone keeps the preedit; anything else cancels" {
+    // Methodology: each `GCS_*` bit by itself, such as a cursor or clause
+    // move, changes neither string and must not cancel. Then the bits that
+    // carry no change (the unassigned 0x0040, the `CS_*` modifiers, and
+    // everything above `GCS_RESULTCLAUSE`) each count as no flag at all.
+    const flags = [_]u32{
+        GCS_COMPREADSTR,      GCS_COMPREADATTR, GCS_COMPREADCLAUSE, GCS_COMPATTR,
+        GCS_COMPCLAUSE,       GCS_CURSORPOS,    GCS_DELTASTART,     GCS_RESULTREADSTR,
+        GCS_RESULTREADCLAUSE, GCS_RESULTCLAUSE,
+    };
+    for (flags) |flag| {
+        const changes = Changes.fromLParam(@intCast(flag));
+        try testing.expect(!changes.cancelled);
+        try testing.expect(!changes.result);
+        try testing.expect(!changes.preedit);
+    }
+    const no_change = [_]u32{ 0x0040, CS_INSERTCHAR, CS_NOMOVECARET, 0x8000 };
+    for (no_change) |flag| {
+        try testing.expect(Changes.fromLParam(@intCast(flag)).cancelled);
+    }
 }
 
 test "UTF-16 composition text encodes as UTF-8 with U+FFFD for unpaired surrogates" {

@@ -54,12 +54,27 @@ file dialogs, cursors, accessibility (UI Automation), and frame pacing on a rend
 - **Seam 2 (phase 5).** The renderer draws a `PackedFrame` instead of the 0.3.1 `Scene`.
   The window draws only through `VulkanRenderer.render(scene)`, so phase 5 swaps that one
   entry.
-- **Shared edits.** Keep them to one `.windows` arm per dispatcher: `platform/mod.zig`,
-  `linux/vk_surface.zig`, `text/mod.zig`, `text_system.zig`, `text/cache.zig`,
-  `image/loader.zig`, `platform/mutex.zig`, the clipboard selection in
-  `widgets/text_input_state.zig` and `widgets/text_area_state.zig`, and the Windows
-  functions in `build.zig`. Everything else
-  lives in `src/platform/windows/` or a backend directory.
+- **Shared edits.** Keep them to one `.windows` arm per dispatcher. Against
+  `origin/integration/v0.4.0` (`git diff --stat`), the existing files outside
+  `src/platform/windows/` this branch changes are:
+  - Dispatch arms: `platform/mod.zig`, `platform/mutex.zig`, `file_dialog.zig`,
+    `image/loader.zig`, `text/mod.zig`, `text/text_system.zig`, `text/cache.zig`,
+    `svg/rasterizer.zig`, `context/window.zig`, and `accessibility/{accessibility,bridge,
+    mod}.zig`.
+  - Widgets: the clipboard selection in `widgets/text_input_state.zig` and
+    `widgets/text_area_state.zig`; Ctrl as the edit-command modifier in
+    `widgets/text_common.zig`.
+  - Accessibility: `Role.toUiaControlType` in `accessibility/types.zig`; `FingerprintMap`
+    made public in `accessibility/tree.zig`.
+  - Vulkan surface split: `linux/vk_surface.zig` and `linux/vk_surface_wayland.zig` (new),
+    `linux/vk_instance.zig`, `linux/vk_renderer.zig`, `linux/window.zig`.
+  - Other: `svg/atlas.zig` (reserved raster scratch), `core/limits.zig` (a comment),
+    `examples/file_dialog.zig` (deferred dialog commands), the Windows functions in
+    `build.zig`, and `.github/workflows/ci.yml`.
+
+  Everything else is new and Windows-only: `src/platform/windows/`,
+  `text/backends/directwrite/`, `image/backends/wic/`, `accessibility/windows_*.zig`,
+  `examples/windows_demo.zig`, `examples/clipboard.zig`, and `src/windows_tests.zig`.
 - **Boundary.** The Windows `mod.zig` pins `contract.verifyBackend(@This())`, so every
   contract change in 0.4.0 is a compile error naming the declaration.
 - **Separate PRs.** Moving the Vulkan renderer out of `src/platform/linux/` and renaming
@@ -112,19 +127,47 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
 - **Loop turn.** Each turn of `run` does bounded work: the owner's hook, at most
   `message_batch_max` (256) messages, timed-redraw deadlines, then at most one frame per
   open window. It sleeps in `MsgWaitForMultipleObjectsEx` until the next message, due
-  frame, or deadline, 16 ms at most.
+  frame, or deadline, 16 ms at most. The wake mask is `QS_ALLINPUT` including
+  `QS_TOUCH | QS_POINTER` (0x1CFF), so touch and pen input wake the loop too.
 - **Pacing.** The swapchain prefers mailbox presentation, which never blocks, so a 60 Hz
   cap (`frame_period_ns_min`) keeps an animating window from saturating the GPU.
-  Rendering is otherwise on demand.
+  Rendering is otherwise on demand. The wait ends on a waitable timer armed each turn
+  for the exact deadline, created with `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`
+  (Windows 10 1803+). A millisecond timeout alone expires on the 15.6 ms system tick,
+  which turned a 16.7 ms frame wait into 31 ms. Older systems fall back, with a warning,
+  to a regular timer on the tick. `timeBeginPeriod` is avoided: it changes the tick for
+  the whole system. Frames are paced on a slot grid (`frameSlotNs`): a frame that
+  finishes late within its period keeps its slot, so render time and wake-up latency
+  do not stretch the period; a stall restarts the grid instead of bursting. Measured
+  on the UHD 620, maximized at 1920x974 device pixels and 150%, continuously animating
+  `showcase` in ReleaseFast: 57 fps before the slot grid, 60.0 fps after, the panel's
+  maximum (1920x1080 at 60 Hz).
+- **Presentable.** A window renders only while open, not minimized, and with a nonzero
+  client area; a zero-area client is treated like a minimized one. The shared renderer's
+  `resize` swallows swapchain errors, so the window checks the swapchain's framebuffers
+  afterwards and, on failure, logs once and retries the rebuild once per frame period
+  instead of drawing into it.
 - **Live resize.** Dragging an edge runs a modal loop inside `DefWindowProcW`, so
   `WM_PAINT` renders while the platform loop is blocked. Timed redraws do not fire then.
 - **DPI.** Per-monitor v2. `size` is the client area in device pixels divided by
   `dpi / 96`. `WM_DPICHANGED` adopts the new scale and suggested rectangle; a window that
   opens on a monitor whose DPI differs from the system DPI is resized once.
+  `min_size` and `max_size` become track sizes. An infinite `max_size` axis means no
+  limit, and every client extent is clamped to 32,767 device pixels (`WM_SIZE` and mouse
+  messages carry 16-bit sizes and coordinates).
+- **Fractional scale.** The swapchain matches the client area exactly, but the shared
+  renderer takes the viewport as whole logical pixels, so the window passes
+  `ceil(size)`. At 150% a 1001 px client draws 668 logical px rather than 667.33
+  (effective scale 1.4985): content shrinks by under one logical pixel, leaving a sliver
+  at the right and bottom edges. Fixing it needs the shared `VulkanRenderer` to take a
+  fractional logical viewport (or derive it from the swapchain extent and scale); there
+  is no exact answer through its current API.
 - **Close.** `WM_CLOSE` runs the veto, records the close, and hides the window. The `HWND`
   is destroyed in `deinit`, never from inside its own dispatch.
-- **Unimplemented features** (dark title bars) are reported as unavailable in
-  `capabilities`, not faked.
+- **Appearance.** `setAppearance` stores the request and does nothing else: the frame
+  follows the system theme, and dark title bars (`DwmSetWindowAttribute`) are not
+  implemented. `PlatformCapabilities` has no appearance flag, so callers cannot detect
+  this.
 - `platform/mod.zig` keys `DisplayLink` and the `macos` namespace on `is_macos`, not "not
   web and not Linux", which would select macOS code on Windows.
 
@@ -134,12 +177,17 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
 `getText(allocator)` and `setText(text)` API as the Linux and macOS clipboards, so the text
 widgets select it with one `.windows` arm.
 
-- **Owner.** `SetClipboardData` fails without an owner window, so `WindowsPlatform` creates
-  a message-only `STATIC` window in `initInPlace` and destroys it in `deinit`. Copying does
-  not depend on an application window staying open.
-- **Line endings.** Copy expands each lone LF to CR LF; paste collapses CR LF to LF, so a
-  `TextArea` never receives CR and other applications see its line breaks. Unpaired
-  surrogates from other applications paste as U+FFFD.
+- **Owner.** `SetClipboardData` fails without an owner window, so
+  `WindowsPlatform.initInPlace` calls `clipboard.init`, which creates a message-only
+  `STATIC` window; `WindowsPlatform.deinit` destroys it through `clipboard.deinit`. Copying
+  does not depend on an application window staying open.
+- **Line endings.** Copy expands each lone LF to CR LF; paste collapses CR LF to LF, so CR
+  LF never reaches a `TextArea` and other applications see its line breaks. A lone CR
+  passes through unchanged in both directions. Unpaired surrogates from other applications
+  paste as U+FFFD.
+- **Failure.** A refused copy (too long, invalid UTF-8, clipboard busy) leaves the clipboard
+  as it was. If `EmptyClipboard` succeeds and `SetClipboardData` then fails, the clipboard
+  is left empty; `setText` still returns false and frees the block.
 - **Bounds.** 64 KiB of UTF-8 in each direction, as on Linux and fbdev; longer text is
   refused with a warning, never truncated. Paste scans at most 128 Ki units. A clipboard
   held by another process gets 5 attempts 5 ms apart, so it stalls the UI thread for at
@@ -170,9 +218,12 @@ same pair Wayland and macOS produce, so the text widgets need no Windows code.
   `WM_IME_STARTCOMPOSITION` is not passed on, so the IME draws no composition window; the
   widgets draw the preedit. The candidate list stays the IME's.
 - **Order.** One message can commit text and start a new composition; the commit is
-  delivered first, as on Wayland. A message with neither flag, or an empty preedit, is a
-  cancellation and reports an empty composition. `WM_IME_ENDCOMPOSITION` reports one only
-  if a preedit is still shown.
+  delivered first, as on Wayland. A message with no composition flag at all (none of the
+  `GCS_COMPREAD*`, `GCS_COMP*`, `GCS_CURSORPOS`, `GCS_DELTASTART`, or `GCS_RESULT*` bits;
+  `lParam` 0 in practice), or an empty preedit, is a cancellation and reports an empty
+  composition. A message that only moves the cursor or clauses (`GCS_CURSORPOS`,
+  `GCS_COMPATTR`, `GCS_COMPCLAUSE`) keeps the current preedit. `WM_IME_ENDCOMPOSITION`
+  reports one only if a preedit is still shown.
 - **Keys.** `WM_KEYDOWN`/`WM_KEYUP` with `VK_PROCESSKEY` produce no key event: the IME
   consumed the key, so Enter accepting a candidate does not also reach a keymap.
 - **Candidate placement.** The runtime already publishes the focused widget's caret every
@@ -182,13 +233,17 @@ same pair Wayland and macOS produce, so the text widgets need no Windows code.
 - **Bounds.** Strings are at most `ime.units_max` (1024) UTF-16 units, read into fixed
   per-window buffers (8 KiB) after asking IMM for the size. A longer result goes to
   `DefWindowProcW`, which delivers it as `WM_CHAR` without loss; a longer preedit is
-  logged and the previous one stays. Unpaired surrogates become U+FFFD.
+  logged and the previous one stays. Unpaired surrogates become U+FFFD. 1024 units encode
+  to at most 3072 UTF-8 bytes, which the marked and inserted buffers (`ime.bytes_max`)
+  hold exactly, so `setMarkedText` and `setInsertedText` assert the length instead of
+  truncating.
 - **Not yet.** The caret position inside the composition (`GCS_CURSORPOS`) and clause
   attributes, because `CompositionEvent` carries only text; reconversion; and TSF. The
   shared widgets' `setComposition` and `insertText` still grow an `ArrayList`, a section 2
   violation that the phase 3–6 text rewrite owns.
-- **Tests.** UTF-16 decoding, the exact-capacity case, flag decoding, placement scaling
-  and saturation, and `VK_PROCESSKEY` suppression run in `test-windows` with no IME.
+- **Tests.** UTF-16 decoding, the exact-capacity case, flag decoding (each `GCS_*` bit
+  alone, cursor-only updates, `lParam` 0), placement scaling and saturation, and
+  `VK_PROCESSKEY` suppression run in `test-windows` with no IME.
   Not yet checked by hand with a real IME (Microsoft Japanese, Pinyin, Korean).
 
 ### File dialogs

@@ -15,7 +15,7 @@
 //! 4. At most one frame per open window, and none sooner than
 //!    `frame_period_ns_min` after that window's previous frame.
 //! 5. A wait for the next message, bounded by the earliest frame or deadline
-//!    and by `idle_wait_ms_max`, so the hook sees async completions promptly.
+//!    and by `idle_wait_ns_max`, so the hook sees async completions promptly.
 //!
 //! ## Frame pacing
 //!
@@ -24,6 +24,12 @@
 //! fast as the GPU allows. Rendering is otherwise on demand: an idle window
 //! draws nothing. Display-synchronized pacing on a render thread is a separate
 //! item in `docs/windows-port.md`.
+//!
+//! The wait ends on `frame_timer`, a high-resolution waitable timer armed
+//! for the exact deadline each turn. A millisecond timeout alone expires on
+//! the system tick (15.6 ms by default), so a 16.7 ms wait would last two
+//! ticks and cap animation near 32 fps. `timeBeginPeriod` would also fix it,
+//! but it raises the tick rate for the whole system.
 //!
 //! ## Resource sketch (CLAUDE.md §7)
 //!
@@ -54,8 +60,11 @@ pub const message_batch_max: u32 = 256;
 pub const frame_period_ns_min: u64 = 16_666_667;
 
 /// Longest wait for a message while nothing is due, matching the fbdev
-/// backend's idle cadence for the owner's loop-turn hook.
-const idle_wait_ms_max: u32 = 16;
+/// backend's 16 ms idle cadence for the owner's loop-turn hook.
+const idle_wait_ns_max: u64 = 16 * std.time.ns_per_ms;
+
+/// Waitable timer due times are counted in 100 ns intervals.
+const timer_interval_ns: u64 = 100;
 
 /// UTF-16 name of the one window class every Gooey window uses.
 pub const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GooeyWindow");
@@ -70,6 +79,8 @@ pub const WindowsPlatform = struct {
     /// resources: they are never destroyed.
     cursors: [cursor_shape_count]?win32.HCURSOR,
     click_settings: windows_input.ClickSettings,
+    /// Ends each loop wait at its deadline; see "Frame pacing". Owned.
+    frame_timer: win32.HANDLE,
     loop_turn_callback: ?LoopTurnCallback = null,
 
     const Self = @This();
@@ -110,12 +121,17 @@ pub const WindowsPlatform = struct {
         }
 
         const hinstance = win32.GetModuleHandleW(null) orelse return error.NoModuleHandle;
+
+        const frame_timer = try createFrameTimer();
+        errdefer closeFrameTimer(frame_timer);
+
         self.* = .{
             .allocator = allocator,
             .window_registry = WindowRegistry.init(allocator),
             .hinstance = hinstance,
             .cursors = loadCursors(),
             .click_settings = clickSettings(),
+            .frame_timer = frame_timer,
         };
         errdefer self.window_registry.deinit();
 
@@ -150,6 +166,7 @@ pub const WindowsPlatform = struct {
         assert(self.window_registry.count() == 0);
         clipboard.deinit();
         self.unregisterClass();
+        closeFrameTimer(self.frame_timer);
         self.window_registry.deinit();
     }
 
@@ -195,7 +212,7 @@ pub const WindowsPlatform = struct {
             if (!self.dispatchMessages()) break;
             self.fireRenderDeadlines(nowMilliseconds());
             self.renderDueWindows(nowNanoseconds());
-            if (!self.waitForMessages(self.waitTimeoutMs())) break;
+            if (!self.waitForMessages(self.waitTimeoutNs())) break;
         }
     }
 
@@ -226,16 +243,28 @@ pub const WindowsPlatform = struct {
         return true;
     }
 
-    /// Block until a message arrives or `timeout_ms` passes. Returns false if
+    /// Block until a message arrives or `timeout_ns` passes. Returns false if
     /// the wait itself failed, which leaves no way to learn of new input.
-    fn waitForMessages(self: *const Self, timeout_ms: u32) bool {
+    ///
+    /// `frame_timer` ends the wait at the deadline. The millisecond timeout,
+    /// rounded up, is a backstop that cannot end it earlier; arming the timer
+    /// again cancels a pending expiry and resets its signal.
+    fn waitForMessages(self: *const Self, timeout_ns: u64) bool {
         assert(self.running);
-        assert(timeout_ms <= idle_wait_ms_max);
-        if (timeout_ms == 0) return true;
+        assert(timeout_ns <= idle_wait_ns_max);
+        if (timeout_ns == 0) return true;
+        const due_time = timerDueTime(timeout_ns);
+        if (win32.SetWaitableTimer(self.frame_timer, &due_time, 0, null, null, win32.FALSE) ==
+            win32.FALSE)
+        {
+            std.log.err("windows: SetWaitableTimer failed (error {d})", .{win32.GetLastError()});
+            return false;
+        }
+        const handles = [1]win32.HANDLE{self.frame_timer};
         const result = win32.MsgWaitForMultipleObjectsEx(
-            0,
-            null,
-            timeout_ms,
+            handles.len,
+            &handles,
+            waitBackstopMs(timeout_ns),
             win32.QS_ALLINPUT,
             win32.MWMO_INPUTAVAILABLE,
         );
@@ -245,24 +274,28 @@ pub const WindowsPlatform = struct {
             });
             return false;
         }
+        // The timer, input (index `handles.len`), or the backstop. Abandoned
+        // and alertable results need a mutex or `MWMO_ALERTABLE`.
+        assert(result <= win32.WAIT_OBJECT_0 + handles.len or result == win32.WAIT_TIMEOUT);
         return true;
     }
 
     /// How long the loop may sleep: until the earliest due frame or timed
-    /// redraw, never longer than `idle_wait_ms_max`.
-    fn waitTimeoutMs(self: *const Self) u32 {
+    /// redraw, never longer than `idle_wait_ns_max`.
+    fn waitTimeoutNs(self: *const Self) u64 {
         var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
         const found = self.snapshotWindowIds(&ids);
         const now_ns = nowNanoseconds();
         const now_ms = nowMilliseconds();
-        var timeout_ms: u32 = idle_wait_ms_max;
+        var timeout_ns: u64 = idle_wait_ns_max;
         for (ids[0..found]) |id| {
             const window = self.window_registry.getTyped(WindowsWindow, id) orelse continue;
             if (window.isClosed()) continue;
-            timeout_ms = @min(timeout_ms, window.waitTimeoutMs(now_ns, now_ms, idle_wait_ms_max));
+            const window_ns = window.waitTimeoutNs(now_ns, now_ms, idle_wait_ns_max);
+            timeout_ns = @min(timeout_ns, window_ns);
         }
-        assert(timeout_ms <= idle_wait_ms_max);
-        return timeout_ms;
+        assert(timeout_ns <= idle_wait_ns_max);
+        return timeout_ns;
     }
 
     fn fireRenderDeadlines(self: *Self, now_ms: i64) void {
@@ -369,6 +402,61 @@ pub const WindowsPlatform = struct {
     }
 };
 
+/// Create the loop's waitable timer, high resolution where the system has
+/// it (Windows 10 1803 and later). The regular fallback still works but
+/// expires on the system tick, so frames below 60 Hz may pace coarsely.
+fn createFrameTimer() !win32.HANDLE {
+    comptime assert(win32.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION == 0x2);
+    comptime assert(win32.TIMER_ALL_ACCESS == 0x001F_0003);
+    const access = win32.TIMER_ALL_ACCESS;
+    const high_resolution = win32.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION;
+    if (win32.CreateWaitableTimerExW(null, null, high_resolution, access)) |timer| {
+        return timer;
+    }
+    std.log.warn(
+        "windows: high-resolution waitable timer unavailable (error {d}); " ++
+            "frame pacing follows the system timer tick",
+        .{win32.GetLastError()},
+    );
+    return win32.CreateWaitableTimerExW(null, null, 0, access) orelse {
+        std.log.err("windows: CreateWaitableTimerExW failed (error {d})", .{
+            win32.GetLastError(),
+        });
+        return error.FrameTimerCreationFailed;
+    };
+}
+
+fn closeFrameTimer(timer: win32.HANDLE) void {
+    assert(@intFromPtr(timer) != 0);
+    if (win32.CloseHandle(timer) == win32.FALSE) {
+        std.log.warn("windows: CloseHandle(frame timer) failed (error {d})", .{
+            win32.GetLastError(),
+        });
+    }
+}
+
+/// `SetWaitableTimer` due time for a wait of `timeout_ns`: negative for
+/// relative, in 100 ns intervals rounded up so the timer never expires early.
+fn timerDueTime(timeout_ns: u64) i64 {
+    assert(timeout_ns > 0);
+    assert(timeout_ns <= idle_wait_ns_max);
+    const intervals = std.math.divCeil(u64, timeout_ns, timer_interval_ns) catch
+        unreachable; // The divisor is a nonzero constant.
+    assert(intervals > 0);
+    return -@as(i64, @intCast(intervals));
+}
+
+/// The millisecond backstop for a wait of `timeout_ns`, rounded up so it
+/// never ends a wait before the timer's deadline.
+fn waitBackstopMs(timeout_ns: u64) u32 {
+    assert(timeout_ns > 0);
+    assert(timeout_ns <= idle_wait_ns_max);
+    const backstop_ms = std.math.divCeil(u64, timeout_ns, std.time.ns_per_ms) catch
+        unreachable; // The divisor is a nonzero constant.
+    assert(backstop_ms > 0);
+    return @intCast(backstop_ms);
+}
+
 fn loadCursors() [WindowsPlatform.cursor_shape_count]?win32.HCURSOR {
     var cursors: [WindowsPlatform.cursor_shape_count]?win32.HCURSOR = undefined;
     for (&cursors, 0..) |*slot, index| {
@@ -418,6 +506,43 @@ comptime {
     // input feel broken.
     assert(frame_period_ns_min > 0);
     assert(frame_period_ns_min < std.time.ns_per_s);
-    assert(idle_wait_ms_max > 0);
+    assert(idle_wait_ns_max > 0);
+    // The backstop timeout is a `u32` of milliseconds, never `INFINITE`.
+    assert(@divFloor(idle_wait_ns_max, std.time.ns_per_ms) < std.math.maxInt(u32));
     assert(message_batch_max > 0);
+}
+
+test "timer due times round up to 100 ns and stay relative" {
+    // Methodology: the smallest wait, both sides of a 100 ns boundary, and
+    // the longest wait. A due time must be negative (relative) and never
+    // shorter than the wait it encodes.
+    try std.testing.expectEqual(@as(i64, -1), timerDueTime(1));
+    try std.testing.expectEqual(@as(i64, -1), timerDueTime(100));
+    try std.testing.expectEqual(@as(i64, -2), timerDueTime(101));
+    try std.testing.expectEqual(@as(i64, -160_000), timerDueTime(idle_wait_ns_max - 1));
+    try std.testing.expectEqual(@as(i64, -160_000), timerDueTime(idle_wait_ns_max));
+}
+
+test "wait backstops round up to whole milliseconds" {
+    // Methodology: a backstop shorter than the timer's deadline would end
+    // the wait early, so every partial millisecond rounds up.
+    try std.testing.expectEqual(@as(u32, 1), waitBackstopMs(1));
+    try std.testing.expectEqual(@as(u32, 1), waitBackstopMs(std.time.ns_per_ms));
+    try std.testing.expectEqual(@as(u32, 2), waitBackstopMs(std.time.ns_per_ms + 1));
+    try std.testing.expectEqual(@as(u32, 16), waitBackstopMs(idle_wait_ns_max));
+}
+
+test "frame timer arms, signals, and closes" {
+    // Methodology: create the real timer, arm it for 1 ms, and wait for it
+    // with a generous backstop; the timer, not the backstop, must end the
+    // wait. Covers the externs' signatures against the real kernel32.
+    const timer = try createFrameTimer();
+    defer closeFrameTimer(timer);
+
+    const due_time = timerDueTime(std.time.ns_per_ms);
+    try std.testing.expect(win32.SetWaitableTimer(timer, &due_time, 0, null, null, 0) != 0);
+    const handles = [1]win32.HANDLE{timer};
+    // No input mask: only the timer or the backstop can end this wait.
+    const result = win32.MsgWaitForMultipleObjectsEx(handles.len, &handles, 1_000, 0, 0);
+    try std.testing.expectEqual(win32.WAIT_OBJECT_0, result);
 }

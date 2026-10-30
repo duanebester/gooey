@@ -560,12 +560,25 @@ fn fragmentEmbeddedRoots(_: *Fragment, out: ?*?*uia.SAFEARRAY) callconv(.winapi)
     return uia.S_OK;
 }
 
+/// The root's reference count is nonzero only while the bridge holds its own
+/// reference, which `shutdown` drops after clearing `alive` under the lock. A
+/// client may still hold an element provider then, so the root is handed out
+/// only with the lock held and the server alive.
 fn fragmentRoot(this: *Fragment, out: ?*?*FragmentRoot) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
-    const root = &providerFrom("fragment", this).server.root;
-    assert(root.kind == .root);
-    _ = root.addRef();
-    target.* = @ptrCast(&root.fragment_root);
+    target.* = null;
+    const provider = providerFrom("fragment", this);
+    const server = provider.server;
+    switch (provider.kind) {
+        .root => if (!provider.lockRoot()) return uia.UIA_E_ELEMENTNOTAVAILABLE,
+        .element => _ = provider.lockIndex() orelse return uia.UIA_E_ELEMENTNOTAVAILABLE,
+        .free => unreachable, // A client reference keeps its slot claimed.
+    }
+    defer server.unlockExclusive();
+    assert(server.alive);
+    assert(server.root.kind == .root);
+    _ = server.root.addRef();
+    target.* = @ptrCast(&server.root.fragment_root);
     return uia.S_OK;
 }
 
@@ -1212,6 +1225,37 @@ test "a removed element reports itself unavailable, and its provider is reclaime
     release(group);
     try testing.expectEqual(@as(u16, 0), fixture.server.live_count);
     try testing.expectEqual(@as(u16, 0), fixture.server.free_head);
+}
+
+test "an element outliving shutdown reports its fragment root unavailable" {
+    // Goal: `shutdown` drops the bridge's root reference while a client may
+    // still hold an element, so `get_FragmentRoot` must not resurrect the
+    // root. Methodology: hold one element across a real shutdown, ask for its
+    // root before and after, then release it and free the storage by hand,
+    // because the fixture's `destroy` would release the root a second time.
+    var fixture = try TestFixture.create();
+    fixture.buildForm();
+    const group = (try navigate(fixture.rootFragment(), uia.NavigateDirection_FirstChild)).?;
+
+    var root: ?*FragmentRoot = null;
+    try testing.expectEqual(uia.S_OK, group.vtable.get_FragmentRoot(group, &root));
+    const root_expected: *FragmentRoot = @ptrCast(&fixture.server.root.fragment_root);
+    try testing.expectEqual(root_expected, root.?);
+    release(root.?);
+
+    try testing.expect(!fixture.server.shutdown());
+    root = null;
+    const result = group.vtable.get_FragmentRoot(group, &root);
+    try testing.expectEqual(uia.UIA_E_ELEMENTNOTAVAILABLE, result);
+    try testing.expectEqual(@as(?*FragmentRoot, null), root);
+    try testing.expectEqual(@as(u32, 0), fixture.server.root.reference_count.load(.acquire));
+
+    release(group);
+    try testing.expectEqual(@as(u16, 0), fixture.server.live_count);
+    fixture.server.deinit();
+    testing.allocator.destroy(fixture.server);
+    testing.allocator.destroy(fixture.tree);
+    _ = win32.DestroyWindow(fixture.hwnd);
 }
 
 test "the provider pool fills exactly, refuses one more, and reuses a released slot" {
