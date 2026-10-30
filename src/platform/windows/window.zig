@@ -34,6 +34,7 @@ const uia = @import("uia.zig");
 const ime = @import("ime.zig");
 const windows_input = @import("input.zig");
 const windows_platform = @import("platform.zig");
+const limits_mod = @import("../../core/limits.zig");
 const WindowsPlatform = windows_platform.WindowsPlatform;
 
 const assert = std.debug.assert;
@@ -53,6 +54,28 @@ const ime_cursor_rect_initial = geometry.RectF{
 /// Window style for every Gooey window: a standard resizable frame.
 const window_style: u32 = win32.WS_OVERLAPPEDWINDOW;
 const window_style_extended: u32 = win32.WS_EX_APPWINDOW;
+
+/// `SetTimer` id of the loop turns run while a move or resize holds the
+/// thread in `DefWindowProcW`'s modal loop; see `handleEnterSizeMove`.
+const modal_turn_timer_id: usize = 1;
+/// Period of those turns. Windows rounds a timer up to the system tick
+/// (15.6 ms by default), so this asks for one turn per tick, close to the
+/// 60 Hz frame cap; frames are drawn on every turn that has one requested.
+const modal_turn_period_ms: u32 = 10;
+
+/// The loop's clock for `Window.waitTimeoutNs`, named because two fields
+/// share a type.
+pub const WaitClock = struct {
+    now_ns: u64,
+    now_ms: i64,
+    timeout_ns_max: u64,
+};
+
+/// A client area in device pixels, as `WM_SIZE` and `GetClientRect` report.
+const ClientSize = struct {
+    width_px: u32,
+    height_px: u32,
+};
 
 pub const Window = struct {
     allocator: Allocator,
@@ -78,6 +101,13 @@ pub const Window = struct {
     minimized: bool = false,
     min_size: ?geometry.Size(f64),
     max_size: ?geometry.Size(f64),
+    /// `ResourceLimits.window`. A Win32 swapchain's extent is the client
+    /// area, whatever extent the renderer asks for, so `WM_GETMINMAXINFO`
+    /// caps the client area at this budget instead.
+    window_limits: limits_mod.WindowLimits,
+    /// Set between `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE` while the modal
+    /// turn timer runs.
+    modal_turn_active: bool = false,
 
     renderer: VulkanRenderer,
     background_color: geometry.Color,
@@ -182,6 +212,7 @@ pub const Window = struct {
 
         self.adoptWindowDpi(options);
         self.readClientSize();
+        vk_renderer.warnCustomShadersUnsupported(options.custom_shaders.len, "Windows");
         try self.renderer.initWithNativeSurface(
             .{ .hinstance = plat.hinstance, .hwnd = self.hwnd.? },
             self.rendererWidth(),
@@ -212,9 +243,8 @@ pub const Window = struct {
         plat: *WindowsPlatform,
         options: *const WindowOptions,
     ) void {
-        vk_renderer.warnCustomShadersUnsupported(options.custom_shaders.len, "Windows");
         // A field added to `Window` must be initialized here too.
-        comptime assert(@typeInfo(Self).@"struct".field_names.len == 48);
+        comptime assert(@typeInfo(Self).@"struct".field_names.len == 50);
         self.allocator = allocator;
         self.platform = plat;
         self.window_id = .invalid;
@@ -230,6 +260,8 @@ pub const Window = struct {
         self.minimized = false;
         self.min_size = options.min_size;
         self.max_size = options.max_size;
+        self.window_limits = options.limits.window;
+        self.modal_turn_active = false;
         self.renderer = VulkanRenderer.init(allocator);
         self.background_color = options.background_color;
         self.glass_style = options.glass_style;
@@ -269,16 +301,22 @@ pub const Window = struct {
         assert(!self.renderer.initialized);
         assert(titleTerminated(&self.title_buffer));
         assert(self.uia_host.root == null);
+        assert(self.window_limits.framebuffer_width_max > 0);
     }
 
     /// Create the `HWND` with an outer size that gives the requested logical
-    /// client size at the system DPI. `adoptWindowDpi` corrects it when the
-    /// window opens on a monitor with a different DPI.
+    /// client size at the system DPI, within the window's limits and the
+    /// primary work area (see `openingOuterSize`). `adoptWindowDpi` corrects
+    /// it when the window opens on a monitor with a different DPI.
     fn createNativeWindow(self: *Self, options: *const WindowOptions) !void {
         assert(self.hwnd == null);
         assert(self.scale_factor > 0);
-        const outer = outerSize(options.width, options.height, dpiFromScale(self.scale_factor));
-        const origin = if (options.centered) centeredOrigin(outer) else win32.POINT{
+        const work_area = workArea(null);
+        const outer = self.openingOuterSize(options, .{
+            .dpi = dpiFromScale(self.scale_factor),
+            .work_area = work_area,
+        });
+        const origin = if (options.centered) centeredOrigin(outer, work_area) else win32.POINT{
             .x = win32.CW_USEDEFAULT,
             .y = win32.CW_USEDEFAULT,
         };
@@ -308,25 +346,93 @@ pub const Window = struct {
     /// `DestroyWindow` sends reach `DefWindowProcW` rather than a window that
     /// is being torn down.
     fn destroyNativeWindow(self: *Self) void {
+        // The accessibility bridge withdraws its root before the window goes.
+        assert(self.uia_host.root == null);
+        assert(!self.modal_turn_active);
         const hwnd = self.hwnd orelse return;
-        _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, 0);
+        // `bindWindow` logs a failure; teardown continues regardless.
+        _ = bindWindow(hwnd, 0);
         if (win32.DestroyWindow(hwnd) == win32.FALSE) {
             std.log.warn("windows: DestroyWindow failed (error {d})", .{win32.GetLastError()});
         }
         self.hwnd = null;
+        assert(self.hwnd == null);
     }
 
     /// Resize the new window for its monitor's DPI when that differs from the
-    /// system DPI it was sized for, keeping the requested logical size.
+    /// system DPI it was sized for, keeping the requested logical size within
+    /// the limits and that monitor's work area.
     fn adoptWindowDpi(self: *Self, options: *const WindowOptions) void {
         const hwnd = self.hwnd.?;
         const scale = scaleFromDpi(win32.GetDpiForWindow(hwnd));
         if (scale == self.scale_factor) return;
         self.scale_factor = scale;
-        const outer = outerSize(options.width, options.height, dpiFromScale(scale));
+        const outer = self.openingOuterSize(options, .{
+            .dpi = dpiFromScale(scale),
+            .work_area = workArea(hwnd),
+        });
         const flags = win32.SWP_NOZORDER | win32.SWP_NOACTIVATE | win32.SWP_NOMOVE;
-        _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.x, outer.y, flags);
+        if (win32.SetWindowPos(hwnd, null, 0, 0, outer.x, outer.y, flags) == win32.FALSE) {
+            std.log.warn("windows: SetWindowPos for the monitor's DPI failed (error {d})", .{
+                win32.GetLastError(),
+            });
+        }
         assert(self.scale_factor == scale);
+    }
+
+    /// The outer size a new window opens at: the requested logical client
+    /// size within `min_size` and `max_size`, fitted to the work area, and
+    /// never past the budget (`trackLimits`). `WM_GETMINMAXINFO` cannot apply
+    /// these limits at creation, because Windows sends it before
+    /// `WM_NCCREATE` binds the window, so `DefWindowProcW` answers it.
+    fn openingOuterSize(
+        self: *const Self,
+        options: *const WindowOptions,
+        placement: OpeningPlacement,
+    ) win32.POINT {
+        assert(options.width > 0);
+        assert(options.height > 0);
+        const requested = geometry.Size(f64){ .width = options.width, .height = options.height };
+        var outer = outerSize(requested, placement.dpi);
+        if (placement.work_area) |area| {
+            outer.x = @min(outer.x, area.right - area.left);
+            outer.y = @min(outer.y, area.bottom - area.top);
+        }
+        const limits = self.trackLimits(placement.dpi);
+        if (limits.min) |min| {
+            outer.x = @max(outer.x, min.x);
+            outer.y = @max(outer.y, min.y);
+        }
+        outer.x = @min(outer.x, limits.max.x);
+        outer.y = @min(outer.y, limits.max.y);
+        assert(outer.x > 0);
+        assert(outer.y > 0);
+        return outer;
+    }
+
+    /// Outer track sizes at `dpi`: `min_size`, and the smaller of `max_size`
+    /// and the client area `ResourceLimits.window` allows. The minimum never
+    /// exceeds the maximum, so a `min_size` beyond the budget yields to it.
+    fn trackLimits(self: *const Self, dpi: u32) TrackLimits {
+        assert(dpi > 0);
+        assert(self.window_limits.framebuffer_height_max > 0);
+        var max = outerFromClient(.{
+            .x = @intCast(@min(self.window_limits.framebuffer_width_max, client_px_max_u32)),
+            .y = @intCast(@min(self.window_limits.framebuffer_height_max, client_px_max_u32)),
+        }, dpi);
+        if (self.max_size) |max_size| {
+            const outer = outerSize(max_size, dpi);
+            if (std.math.isFinite(max_size.width)) max.x = @min(max.x, outer.x);
+            if (std.math.isFinite(max_size.height)) max.y = @min(max.y, outer.y);
+        }
+        const min: ?win32.POINT = if (self.min_size) |min_size| blk: {
+            assert(std.math.isFinite(min_size.width));
+            assert(std.math.isFinite(min_size.height));
+            const outer = outerSize(min_size, dpi);
+            break :blk .{ .x = @min(outer.x, max.x), .y = @min(outer.y, max.y) };
+        } else null;
+        if (min) |value| assert(value.x <= max.x);
+        return .{ .min = min, .max = max };
     }
 
     pub fn deinit(self: *Self) void {
@@ -352,10 +458,19 @@ pub const Window = struct {
     /// Whether the loop should render this window now: it asked for a frame,
     /// can show one, and its previous frame is at least one period old.
     pub fn isFrameDue(self: *const Self, now_ns: u64) bool {
-        if (!self.isPresentable() or self.rendering) return false;
-        if (!self.needs_redraw and !self.renderer.hasPendingAtlasUploads()) return false;
+        if (!self.isFrameRequested()) return false;
         const last_ns = self.last_frame_ns orelse return true;
-        return now_ns -| last_ns >= windows_platform.frame_period_ns_min;
+        if (now_ns < last_ns) return false;
+        return now_ns - last_ns >= windows_platform.frame_period_ns_min;
+    }
+
+    /// Whether the window asked for a frame and can show one now, regardless
+    /// of pacing. A modal move or resize loop renders on this alone: its
+    /// timer already paces turns to the system tick.
+    pub fn isFrameRequested(self: *const Self) bool {
+        if (!self.isPresentable() or self.rendering) return false;
+        assert(self.renderer.initialized);
+        return self.needs_redraw or self.renderer.hasPendingAtlasUploads();
     }
 
     /// Whether a frame can be shown: the window is open, not minimized, and
@@ -369,19 +484,20 @@ pub const Window = struct {
 
     /// How long, in nanoseconds, the loop may wait before this window needs
     /// attention.
-    pub fn waitTimeoutNs(self: *const Self, now_ns: u64, now_ms: i64, timeout_ns_max: u64) u64 {
+    pub fn waitTimeoutNs(self: *const Self, clock: *const WaitClock) u64 {
         assert(!self.closed);
-        assert(now_ms >= 0);
-        if (!self.isPresentable()) return timeout_ns_max;
+        assert(clock.now_ms >= 0);
+        assert(clock.timeout_ns_max > 0);
+        if (!self.isPresentable()) return clock.timeout_ns_max;
         const wait_ns = frameWaitNs(&.{
             .needs_redraw = self.needs_redraw,
             .last_frame_ns = self.last_frame_ns,
             .render_deadline_ms = self.render_deadline_ms,
-            .now_ns = now_ns,
-            .now_ms = now_ms,
-            .timeout_ns_max = timeout_ns_max,
+            .now_ns = clock.now_ns,
+            .now_ms = clock.now_ms,
+            .timeout_ns_max = clock.timeout_ns_max,
         });
-        assert(wait_ns <= timeout_ns_max);
+        assert(wait_ns <= clock.timeout_ns_max);
         return wait_ns;
     }
 
@@ -435,19 +551,22 @@ pub const Window = struct {
 
     /// Adopt the client size `WM_SIZE` reported and rebuild the swapchain
     /// when the device-pixel size or the scale changed.
-    fn applyClientSize(self: *Self, width_px: u32, height_px: u32) void {
+    fn applyClientSize(self: *Self, client: ClientSize) void {
         assert(self.scale_factor > 0);
+        assert(client.width_px <= client_px_max_u32);
+        assert(client.height_px <= client_px_max_u32);
         const had_area = self.client_width_px > 0 and self.client_height_px > 0;
-        self.client_width_px = width_px;
-        self.client_height_px = height_px;
+        self.client_width_px = client.width_px;
+        self.client_height_px = client.height_px;
         // No area: `isPresentable` keeps frames off the stale swapchain, and
         // `size` keeps the last real size until the client grows again.
-        if (width_px == 0 or height_px == 0) return;
+        if (client.width_px == 0 or client.height_px == 0) return;
+        self.checkClientBudget();
 
         const old_size = self.size;
         self.size = .{
-            .width = @as(f64, @floatFromInt(width_px)) / self.scale_factor,
-            .height = @as(f64, @floatFromInt(height_px)) / self.scale_factor,
+            .width = @as(f64, @floatFromInt(client.width_px)) / self.scale_factor,
+            .height = @as(f64, @floatFromInt(client.height_px)) / self.scale_factor,
         };
         if (!self.renderer.initialized) return;
         if (!had_area) self.requestRender();
@@ -458,6 +577,24 @@ pub const Window = struct {
         if (old_size.width != self.size.width or old_size.height != self.size.height) {
             if (self.on_resize) |callback| callback(self, self.size.width, self.size.height);
         }
+    }
+
+    /// Report a client area past `ResourceLimits.window`, whose swapchain
+    /// would exceed the budget: the Win32 surface fixes the extent to the
+    /// client area. `trackLimits` keeps every resize within it, so this
+    /// reports a path that bypassed `WM_GETMINMAXINFO`.
+    fn checkClientBudget(self: *const Self) void {
+        assert(self.client_width_px > 0);
+        assert(self.client_height_px > 0);
+        const width_max = self.window_limits.framebuffer_width_max;
+        const height_max = self.window_limits.framebuffer_height_max;
+        if (self.client_width_px <= width_max and self.client_height_px <= height_max) return;
+        std.log.err("windows: client area {d}x{d} px exceeds ResourceLimits.window ({d}x{d})", .{
+            self.client_width_px,
+            self.client_height_px,
+            width_max,
+            height_max,
+        });
     }
 
     /// Rebuild the swapchain for the client size and scale. The shared
@@ -507,7 +644,10 @@ pub const Window = struct {
         }
         assert(rect.right >= rect.left);
         assert(rect.bottom >= rect.top);
-        self.applyClientSize(@intCast(rect.right - rect.left), @intCast(rect.bottom - rect.top));
+        self.applyClientSize(.{
+            .width_px = @intCast(rect.right - rect.left),
+            .height_px = @intCast(rect.bottom - rect.top),
+        });
     }
 
     fn recordSwapchainSize(self: *Self) void {
@@ -544,8 +684,9 @@ pub const Window = struct {
     // =========================================================================
 
     /// Translate one input message and deliver the events it produces: at
-    /// most one, except a capture loss, which releases each held button.
-    fn translateAndDeliver(self: *Self, message: windows_input.Message) void {
+    /// most one, except a capture loss, which releases each held button, and
+    /// a focus loss, which releases each held button and key.
+    fn translateAndDeliver(self: *Self, message: *const windows_input.Message) void {
         assert(self.hwnd != null);
         assert(self.scale_factor > 0);
         const context = windows_input.Context{
@@ -554,8 +695,11 @@ pub const Window = struct {
             .time_ms = @bitCast(win32.GetMessageTime()),
             .pointer = self.messagePointer(message),
         };
-        const lost_capture = message.id == win32.WM_CAPTURECHANGED;
-        const event_count_max: u32 = if (lost_capture) windows_input.mouse_button_count else 1;
+        const event_count_max: u32 = switch (message.id) {
+            win32.WM_CAPTURECHANGED => windows_input.mouse_button_count,
+            win32.WM_KILLFOCUS => windows_input.focus_lost_event_count_max,
+            else => 1,
+        };
         var event_count: u32 = 0;
         while (event_count < event_count_max) : (event_count += 1) {
             const event = self.translator.translate(message, &context) orelse return;
@@ -564,14 +708,18 @@ pub const Window = struct {
             _ = self.handleInput(event);
         }
         assert(event_count == event_count_max);
-        if (lost_capture) assert(self.translator.buttons_held == 0);
+        // A loss fills its bound only by releasing every held button.
+        if (event_count_max > 1) assert(self.translator.buttons_held == 0);
     }
 
     /// The pointer position `Context` reports for `message`, in logical
     /// client pixels. Wheel messages carry screen coordinates, converted here
     /// so the translator stays free of Win32 calls; every other message uses
     /// the last known position.
-    fn messagePointer(self: *const Self, message: windows_input.Message) geometry.Point(f64) {
+    fn messagePointer(
+        self: *const Self,
+        message: *const windows_input.Message,
+    ) geometry.Point(f64) {
         assert(self.hwnd != null);
         assert(self.scale_factor > 0);
         const last_known = geometry.Point(f64){ .x = self.mouse_x, .y = self.mouse_y };
@@ -588,7 +736,7 @@ pub const Window = struct {
             });
             return last_known;
         }
-        return windows_input.logicalFromDevice(point.x, point.y, self.scale_factor);
+        return windows_input.logicalFromDevice(point, self.scale_factor);
     }
 
     /// Make the capture and leave-tracking calls `pointerActions` decided.
@@ -633,6 +781,10 @@ pub const Window = struct {
 
     /// Ask for one `WM_MOUSELEAVE` when the pointer next leaves the client.
     fn trackPointerLeave(self: *Self) void {
+        assert(self.hwnd != null);
+        // Armed only for an arrival, or after a release with the pointer
+        // still reported inside; see `Translator.pointerActions`.
+        assert(self.translator.pointer_inside);
         var request = win32.TRACKMOUSEEVENT{
             .cbSize = @sizeOf(win32.TRACKMOUSEEVENT),
             .dwFlags = win32.TME_LEAVE,
@@ -900,7 +1052,7 @@ pub const Window = struct {
 
     /// Hide the IME's composition window, because the text widgets draw the
     /// composition inline as preedit. The candidate list stays.
-    fn handleImeSetContext(self: *Self, message: windows_input.Message) win32.LRESULT {
+    fn handleImeSetContext(self: *Self, message: *const windows_input.Message) win32.LRESULT {
         assert(message.id == win32.WM_IME_SETCONTEXT);
         assert(self.hwnd != null);
         const flags: usize = @bitCast(message.lparam);
@@ -1020,23 +1172,33 @@ pub const Window = struct {
     // =========================================================================
 
     fn handleSize(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) void {
+        assert(self.hwnd != null);
+        // `SIZE_RESTORED` (0) through `SIZE_MAXHIDE` (4).
+        assert(wparam <= 4);
         const was_minimized = self.minimized;
         self.minimized = wparam == win32.SIZE_MINIMIZED;
         if (self.minimized) return;
         const size_bits: usize = @bitCast(lparam);
-        self.applyClientSize(win32.loWord(size_bits), win32.hiWord(size_bits));
+        self.applyClientSize(.{
+            .width_px = win32.loWord(size_bits),
+            .height_px = win32.hiWord(size_bits),
+        });
         if (was_minimized) self.requestRender();
     }
 
     /// Adopt the new monitor's scale and move to the rectangle Windows
-    /// suggests, which keeps the logical size. The resulting `WM_SIZE`
-    /// rebuilds the swapchain at the new scale.
+    /// suggests, which keeps the logical size. The scale is set first, so
+    /// the `WM_GETMINMAXINFO` the move sends computes limits for the new DPI.
+    /// The resulting `WM_SIZE` rebuilds the swapchain at the new scale, and
+    /// the next frame rasterizes text at it (`WindowContext.beginFrame`).
     fn handleDpiChanged(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) void {
+        assert(self.hwnd != null);
         const dpi = win32.loWord(wparam);
         assert(dpi > 0);
         self.scale_factor = scaleFromDpi(dpi);
         const suggested: *const win32.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
-        _ = win32.SetWindowPos(
+        assert(suggested.right > suggested.left);
+        const moved = win32.SetWindowPos(
             self.hwnd.?,
             null,
             suggested.left,
@@ -1045,26 +1207,31 @@ pub const Window = struct {
             suggested.bottom - suggested.top,
             win32.SWP_NOZORDER | win32.SWP_NOACTIVATE,
         );
+        if (moved == win32.FALSE) {
+            std.log.warn("windows: SetWindowPos for a DPI change failed (error {d})", .{
+                win32.GetLastError(),
+            });
+        }
         // A move between monitors of equal pixel size changes only the scale.
         self.readClientSize();
+        self.requestRender();
     }
 
-    /// Apply `WindowOptions.min_size` and `max_size` as outer track sizes.
-    /// An infinite maximum on an axis means no limit there, so that axis
-    /// keeps the system's track size; sizes beyond `client_px_max` clamp.
+    /// Apply `trackLimits` as outer track sizes. The maximum also caps the
+    /// maximized size, so neither a drag nor a maximize grows the client
+    /// area, and the swapchain extent that equals it, past the budget.
+    /// Limits the system already sets lower are kept.
     fn handleMinMaxInfo(self: *const Self, info: *win32.MINMAXINFO) void {
         assert(self.scale_factor > 0);
-        const dpi = dpiFromScale(self.scale_factor);
-        if (self.min_size) |min| {
-            assert(std.math.isFinite(min.width));
-            assert(std.math.isFinite(min.height));
-            info.ptMinTrackSize = outerSize(min.width, min.height, dpi);
-        }
-        if (self.max_size) |max| {
-            const outer = outerSize(max.width, max.height, dpi);
-            if (std.math.isFinite(max.width)) info.ptMaxTrackSize.x = outer.x;
-            if (std.math.isFinite(max.height)) info.ptMaxTrackSize.y = outer.y;
-        }
+        assert(self.hwnd != null);
+        const limits = self.trackLimits(dpiFromScale(self.scale_factor));
+        if (limits.min) |min| info.ptMinTrackSize = min;
+        info.ptMaxTrackSize.x = @min(info.ptMaxTrackSize.x, limits.max.x);
+        info.ptMaxTrackSize.y = @min(info.ptMaxTrackSize.y, limits.max.y);
+        info.ptMaxSize.x = @min(info.ptMaxSize.x, limits.max.x);
+        info.ptMaxSize.y = @min(info.ptMaxSize.y, limits.max.y);
+        assert(info.ptMaxTrackSize.x <= limits.max.x);
+        assert(info.ptMaxSize.y <= limits.max.y);
     }
 
     /// Answer a UI Automation client's request for the root provider, and
@@ -1083,14 +1250,73 @@ pub const Window = struct {
     }
 
     fn handleSetFocus(self: *Self) void {
+        assert(self.hwnd != null);
         if (self.closed or !self.window_id.isValid()) return;
         self.platform.setActiveWindowId(self.window_id);
         self.requestRender();
+        assert(self.platform.getActiveWindowId() == self.window_id);
+    }
+
+    /// Release what the window holds: keys and buttons go up and a drag
+    /// ends, because their real releases now reach the window that took
+    /// focus. Redrawn so hover and focus visuals settle.
+    fn handleKillFocus(self: *Self, message: *const windows_input.Message) void {
+        assert(message.id == win32.WM_KILLFOCUS);
+        assert(self.hwnd != null);
+        if (self.closed) return;
+        self.translateAndDeliver(message);
+        if (self.closed) return;
+        assert(self.translator.buttons_held == 0);
+        self.requestRender();
+    }
+
+    /// A move or resize started: `DefWindowProcW` now runs a modal loop until
+    /// the button is released, and `WindowsPlatform.run` sits blocked in
+    /// `DispatchMessageW` below it. A timer keeps loop turns going from
+    /// inside that loop (`handleModalTurnTimer`), so animations, timed
+    /// redraws, and the owner's hook carry on during the drag.
+    fn handleEnterSizeMove(self: *Self) void {
+        assert(self.hwnd != null);
+        assert(!self.modal_turn_active);
+        const timer = win32.SetTimer(self.hwnd.?, modal_turn_timer_id, modal_turn_period_ms, null);
+        if (timer == 0) {
+            std.log.warn("windows: SetTimer for a move or resize failed (error {d}); " ++
+                "frames pause until it ends", .{win32.GetLastError()});
+            return;
+        }
+        assert(timer == modal_turn_timer_id);
+        self.modal_turn_active = true;
+    }
+
+    fn handleExitSizeMove(self: *Self) void {
+        assert(self.hwnd != null);
+        if (!self.modal_turn_active) return;
+        if (win32.KillTimer(self.hwnd.?, modal_turn_timer_id) == win32.FALSE) {
+            std.log.warn("windows: KillTimer failed (error {d})", .{win32.GetLastError()});
+        }
+        self.modal_turn_active = false;
+        assert(!self.modal_turn_active);
+    }
+
+    /// One loop turn from inside the modal move or resize loop. The owner's
+    /// hook may reclaim closed windows; it never reclaims this one, whose
+    /// window procedure is on the stack, because a closed window stops the
+    /// timer here before the hook can run. `self` is not used after the turn.
+    fn handleModalTurnTimer(self: *Self) void {
+        assert(self.hwnd != null);
+        if (!self.modal_turn_active) return;
+        if (self.closed) {
+            self.handleExitSizeMove();
+            return;
+        }
+        self.platform.runModalTurn();
     }
 
     /// Dispatch one message for this window. Returns null to defer to
     /// `DefWindowProcW`.
-    fn handleMessage(self: *Self, message: windows_input.Message) ?win32.LRESULT {
+    fn handleMessage(self: *Self, message: *const windows_input.Message) ?win32.LRESULT {
+        assert(self.hwnd != null);
+        assert(message.id != win32.WM_NCCREATE);
         switch (message.id) {
             win32.WM_CLOSE => self.close(),
             win32.WM_SIZE => self.handleSize(message.wparam, message.lparam),
@@ -1099,12 +1325,19 @@ pub const Window = struct {
                 self.handleMinMaxInfo(@ptrFromInt(@as(usize, @bitCast(message.lparam))));
             },
             win32.WM_SETFOCUS => self.handleSetFocus(),
+            win32.WM_KILLFOCUS => self.handleKillFocus(message),
+            win32.WM_ENTERSIZEMOVE => self.handleEnterSizeMove(),
+            win32.WM_EXITSIZEMOVE => self.handleExitSizeMove(),
+            win32.WM_TIMER => {
+                if (message.wparam != modal_turn_timer_id) return null;
+                self.handleModalTurnTimer();
+            },
             win32.WM_GETOBJECT => return self.handleGetObject(message.wparam, message.lparam),
             win32.WM_ERASEBKGND => return 1, // Vulkan covers every pixel.
             win32.WM_PAINT => {
-                // Live resizing runs a modal loop inside `DefWindowProcW`, so
-                // the platform loop cannot render; this keeps the window
-                // drawn. `DefWindowProcW` then validates the region.
+                // A resize repaints before the next modal turn; drawing here
+                // keeps the new area filled. `DefWindowProcW` then validates
+                // the region.
                 if (self.needs_redraw) self.renderFrame();
                 return null;
             },
@@ -1113,6 +1346,17 @@ pub const Window = struct {
                 _ = win32.SetCursor(self.platform.cursor(self.cursor_shape));
                 return win32.TRUE;
             },
+            else => return self.handleInputMessage(message),
+        }
+        return 0;
+    }
+
+    /// Dispatch one pointer, keyboard, or IME message. Returns null to defer
+    /// to `DefWindowProcW`, including for messages that are none of these.
+    fn handleInputMessage(self: *Self, message: *const windows_input.Message) ?win32.LRESULT {
+        assert(self.hwnd != null);
+        assert(self.scale_factor > 0);
+        switch (message.id) {
             win32.WM_MOUSEMOVE,
             win32.WM_MOUSELEAVE,
             win32.WM_LBUTTONDOWN,
@@ -1171,9 +1415,11 @@ pub fn windowProc(
         const create: *const win32.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lparam)));
         const window: *Window = @ptrCast(@alignCast(create.lpCreateParams.?));
         assert(window.hwnd == null);
+        // An unbound window would route nothing to Gooey; refusing
+        // `WM_NCCREATE` fails `CreateWindowExW`, which `init` reports.
+        if (!bindWindow(hwnd, @bitCast(@intFromPtr(window)))) return 0;
         window.hwnd = hwnd;
         window.uia_host.hwnd = hwnd;
-        _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(window)));
         return win32.DefWindowProcW(hwnd, message_id, wparam, lparam);
     }
     const bound = win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA);
@@ -1182,7 +1428,7 @@ pub fn windowProc(
     const window: *Window = @ptrFromInt(@as(usize, @bitCast(bound)));
     assert(window.hwnd == hwnd);
     const message = windows_input.Message{ .id = message_id, .wparam = wparam, .lparam = lparam };
-    return window.handleMessage(message) orelse
+    return window.handleMessage(&message) orelse
         win32.DefWindowProcW(hwnd, message_id, wparam, lparam);
 }
 
@@ -1325,6 +1571,20 @@ fn dpiFromScale(scale: f64) u32 {
 /// 16-bit client coordinates, so no larger client is usable. It also keeps
 /// `AdjustWindowRectExForDpi`'s frame arithmetic far from `i32` overflow.
 const client_px_max: i32 = std.math.maxInt(i16);
+const client_px_max_u32: u32 = client_px_max;
+
+/// Where a new window opens: the DPI it is sized for and the work area of
+/// the monitor it opens on, null when that could not be read.
+const OpeningPlacement = struct {
+    dpi: u32,
+    work_area: ?win32.RECT,
+};
+
+/// Outer window sizes `WM_GETMINMAXINFO` enforces; see `Window.trackLimits`.
+const TrackLimits = struct {
+    min: ?win32.POINT,
+    max: win32.POINT,
+};
 
 /// Device pixels covering `logical` pixels at `scale`, rounded up and
 /// clamped to `[1, client_px_max]`. Infinity clamps to the maximum.
@@ -1344,18 +1604,26 @@ fn clientPxFromLogical(logical: f64, scale: f64) i32 {
     return 1;
 }
 
-/// The outer window size whose client area is `width` by `height` logical
-/// pixels at `dpi`, each clamped by `clientPxFromLogical`.
-fn outerSize(width: f64, height: f64, dpi: u32) win32.POINT {
-    assert(width > 0);
-    assert(height > 0);
+/// The outer window size whose client area is `size` in logical pixels at
+/// `dpi`, each axis clamped by `clientPxFromLogical`.
+fn outerSize(size: geometry.Size(f64), dpi: u32) win32.POINT {
+    assert(size.width > 0);
+    assert(size.height > 0);
     const scale = scaleFromDpi(dpi);
-    var rect = win32.RECT{
-        .left = 0,
-        .top = 0,
-        .right = clientPxFromLogical(width, scale),
-        .bottom = clientPxFromLogical(height, scale),
-    };
+    return outerFromClient(.{
+        .x = clientPxFromLogical(size.width, scale),
+        .y = clientPxFromLogical(size.height, scale),
+    }, dpi);
+}
+
+/// The outer window size whose client area is `client` device pixels at
+/// `dpi`: the client plus the frame `AdjustWindowRectExForDpi` adds.
+fn outerFromClient(client: win32.POINT, dpi: u32) win32.POINT {
+    assert(client.x > 0);
+    assert(client.x <= client_px_max);
+    assert(client.y > 0);
+    assert(client.y <= client_px_max);
+    var rect = win32.RECT{ .left = 0, .top = 0, .right = client.x, .bottom = client.y };
     const adjusted = win32.AdjustWindowRectExForDpi(
         &rect,
         window_style,
@@ -1374,16 +1642,66 @@ fn outerSize(width: f64, height: f64, dpi: u32) win32.POINT {
     return outer;
 }
 
-/// Top-left corner that centers `outer` in the primary monitor's work area.
-fn centeredOrigin(outer: win32.POINT) win32.POINT {
-    var area: win32.RECT = undefined;
-    if (win32.SystemParametersInfoW(win32.SPI_GETWORKAREA, 0, &area, 0) == win32.FALSE) {
-        return .{ .x = win32.CW_USEDEFAULT, .y = win32.CW_USEDEFAULT };
-    }
+/// Top-left corner that centers `outer` in `work_area`, keeping the title
+/// bar's corner on screen when `outer` is larger. The system places the
+/// window when the work area is unknown.
+fn centeredOrigin(outer: win32.POINT, work_area: ?win32.RECT) win32.POINT {
+    assert(outer.x > 0);
+    assert(outer.y > 0);
+    const area = work_area orelse return .{ .x = win32.CW_USEDEFAULT, .y = win32.CW_USEDEFAULT };
     return .{
-        .x = area.left + @divFloor(area.right - area.left - outer.x, 2),
+        .x = @max(area.left, area.left + @divFloor(area.right - area.left - outer.x, 2)),
         .y = @max(area.top, area.top + @divFloor(area.bottom - area.top - outer.y, 2)),
     };
+}
+
+/// The work area of the monitor `hwnd` is on, or of the primary monitor when
+/// `hwnd` is null (a window not created yet). Null, logged, when it cannot be
+/// read; callers then skip fitting to it.
+fn workArea(hwnd: ?win32.HWND) ?win32.RECT {
+    var area: win32.RECT = undefined;
+    if (hwnd) |window| {
+        const monitor = win32.MonitorFromWindow(window, win32.MONITOR_DEFAULTTONEAREST) orelse
+            return null;
+        var info = win32.MONITORINFO{
+            .cbSize = @sizeOf(win32.MONITORINFO),
+            .rcMonitor = undefined,
+            .rcWork = undefined,
+            .dwFlags = 0,
+        };
+        if (win32.GetMonitorInfoW(monitor, &info) == win32.FALSE) {
+            std.log.warn("windows: GetMonitorInfoW failed (error {d})", .{win32.GetLastError()});
+            return null;
+        }
+        area = info.rcWork;
+    } else {
+        if (win32.SystemParametersInfoW(win32.SPI_GETWORKAREA, 0, &area, 0) == win32.FALSE) {
+            std.log.warn("windows: SPI_GETWORKAREA failed (error {d})", .{win32.GetLastError()});
+            return null;
+        }
+    }
+    assert(area.right >= area.left);
+    assert(area.bottom >= area.top);
+    return area;
+}
+
+/// Store `value` in `hwnd`'s `GWLP_USERDATA`: the window's `*Window`, or 0 to
+/// unbind it. `SetWindowLongPtrW` returns the previous value, which is
+/// legitimately 0 on first bind, so failure is read from the thread's last
+/// error, cleared first. Returns whether the value was stored; a failure is
+/// logged.
+fn bindWindow(hwnd: win32.HWND, value: isize) bool {
+    win32.SetLastError(0);
+    const previous = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, value);
+    if (previous == 0) {
+        const err = win32.GetLastError();
+        if (err != 0) {
+            std.log.err("windows: SetWindowLongPtrW(GWLP_USERDATA) failed (error {d})", .{err});
+            return false;
+        }
+    }
+    assert(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA) == value);
+    return true;
 }
 
 fn testTitleBuffer(initial: []const u8) !TitleBuffer {
@@ -1559,11 +1877,91 @@ test "outer size stays in range for unbounded client sizes" {
     // at least the client extent, which an `i32` overflow would break.
     const dpis = [_]u32{ win32.USER_DEFAULT_SCREEN_DPI, 3 * win32.USER_DEFAULT_SCREEN_DPI };
     for (dpis) |dpi| {
-        const infinite = outerSize(std.math.inf(f64), std.math.inf(f64), dpi);
+        const unbounded = std.math.inf(f64);
+        const infinite = outerSize(.{ .width = unbounded, .height = unbounded }, dpi);
         try std.testing.expect(infinite.x >= client_px_max);
         try std.testing.expect(infinite.y >= client_px_max);
-        const huge = outerSize(std.math.floatMax(f64), 1e12, dpi);
+        const huge = outerSize(.{ .width = std.math.floatMax(f64), .height = 1e12 }, dpi);
         try std.testing.expectEqual(infinite.x, huge.x);
         try std.testing.expectEqual(infinite.y, huge.y);
     }
+}
+
+/// A window with only the fields `trackLimits` and `openingOuterSize` read.
+fn testLimitsWindow(options: *const WindowOptions) Window {
+    var window: Window = undefined;
+    window.window_limits = options.limits.window;
+    window.min_size = options.min_size;
+    window.max_size = options.max_size;
+    return window;
+}
+
+test "track limits cap the client at the window budget, then max_size, then min_size" {
+    // Methodology: a 2560x1600 px budget at 200% (192 DPI). `max_size` is
+    // 1000 logical wide (2000 px, under the budget) and unbounded tall (the
+    // budget applies); `min_size` is 2000 logical wide (4000 px, over the
+    // budget), so the minimum yields to the maximum. Expected outer sizes
+    // come from `outerFromClient`, the real frame arithmetic.
+    const dpi = 2 * win32.USER_DEFAULT_SCREEN_DPI;
+    var options = WindowOptions{
+        .limits = limits_mod.ResourceLimits.standard,
+        .min_size = .{ .width = 2000, .height = 100 },
+        .max_size = .{ .width = 1000, .height = std.math.inf(f64) },
+    };
+    options.limits.window = .{ .framebuffer_width_max = 2560, .framebuffer_height_max = 1600 };
+    const window = testLimitsWindow(&options);
+
+    const limits = window.trackLimits(dpi);
+    try std.testing.expectEqual(outerFromClient(.{ .x = 2000, .y = 1600 }, dpi), limits.max);
+    try std.testing.expectEqual(limits.max.x, limits.min.?.x);
+    try std.testing.expectEqual(outerFromClient(.{ .x = 4000, .y = 200 }, dpi).y, limits.min.?.y);
+
+    // Without `max_size`, the budget alone bounds both axes.
+    options.max_size = null;
+    options.min_size = null;
+    const budget_only = testLimitsWindow(&options).trackLimits(dpi);
+    try std.testing.expectEqual(outerFromClient(.{ .x = 2560, .y = 1600 }, dpi), budget_only.max);
+    try std.testing.expectEqual(@as(?win32.POINT, null), budget_only.min);
+}
+
+test "a new window fits the work area, then grows to min_size, never past the budget" {
+    // Methodology: at 100%, ask for 3000x3000 logical on a 1920x1040 work
+    // area. With no minimum it shrinks to the work area. A 1600x1200 minimum
+    // wins over the work area on height but not past the 1500 px budget.
+    const dpi = win32.USER_DEFAULT_SCREEN_DPI;
+    const work_area = win32.RECT{ .left = 0, .top = 0, .right = 1920, .bottom = 1040 };
+    var options = WindowOptions{
+        .limits = limits_mod.ResourceLimits.standard,
+        .width = 3000,
+        .height = 3000,
+    };
+    options.limits.window = .{ .framebuffer_width_max = 4000, .framebuffer_height_max = 1500 };
+    const placement = OpeningPlacement{ .dpi = dpi, .work_area = work_area };
+
+    const fitted = testLimitsWindow(&options).openingOuterSize(&options, placement);
+    try std.testing.expectEqual(@as(i32, 1920), fitted.x);
+    try std.testing.expectEqual(@as(i32, 1040), fitted.y);
+
+    options.min_size = .{ .width = 1600, .height = 1200 };
+    const grown = testLimitsWindow(&options).openingOuterSize(&options, placement);
+    const min_outer = outerSize(.{ .width = 1600, .height = 1200 }, dpi);
+    try std.testing.expectEqual(@as(i32, 1920), grown.x);
+    try std.testing.expectEqual(min_outer.y, grown.y);
+
+    options.min_size = .{ .width = 1600, .height = 2000 };
+    const capped = testLimitsWindow(&options).openingOuterSize(&options, placement);
+    try std.testing.expectEqual(outerFromClient(.{ .x = 4000, .y = 1500 }, dpi).y, capped.y);
+}
+
+test "centering keeps the window's corner inside the work area" {
+    const area = win32.RECT{ .left = 100, .top = 50, .right = 1100, .bottom = 850 };
+    const small = centeredOrigin(.{ .x = 400, .y = 200 }, area);
+    try std.testing.expectEqual(@as(i32, 400), small.x);
+    try std.testing.expectEqual(@as(i32, 350), small.y);
+    // Larger than the area on both axes: pinned to its top-left corner.
+    const large = centeredOrigin(.{ .x = 1400, .y = 1000 }, area);
+    try std.testing.expectEqual(@as(i32, 100), large.x);
+    try std.testing.expectEqual(@as(i32, 50), large.y);
+    const unknown = centeredOrigin(.{ .x = 400, .y = 200 }, null);
+    try std.testing.expectEqual(win32.CW_USEDEFAULT, unknown.x);
 }

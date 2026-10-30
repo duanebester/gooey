@@ -216,6 +216,22 @@ pub const WindowsPlatform = struct {
         }
     }
 
+    /// One loop turn from inside a modal move or resize loop, driven by the
+    /// moving window's timer while `run` sits blocked in `DispatchMessageW`:
+    /// the owner's hook, passed deadlines, and every requested frame. The
+    /// modal loop dispatches messages and the timer paces turns, so there is
+    /// no dispatch and no wait here. The hook runs inside the moving window's
+    /// procedure, which is safe because it reclaims only closed windows and
+    /// the moving window stops its timer once closed.
+    pub fn runModalTurn(self: *Self) void {
+        assert(self.running);
+        assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+        if (self.loop_turn_callback) |on_turn| on_turn(self);
+        if (!self.running) return;
+        self.fireRenderDeadlines(nowMilliseconds());
+        self.renderRequestedWindows();
+    }
+
     pub fn quit(self: *Self) void {
         self.running = false;
         assert(!self.running);
@@ -285,13 +301,16 @@ pub const WindowsPlatform = struct {
     fn waitTimeoutNs(self: *const Self) u64 {
         var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
         const found = self.snapshotWindowIds(&ids);
-        const now_ns = nowNanoseconds();
-        const now_ms = nowMilliseconds();
+        const clock = windows_window.WaitClock{
+            .now_ns = nowNanoseconds(),
+            .now_ms = nowMilliseconds(),
+            .timeout_ns_max = idle_wait_ns_max,
+        };
         var timeout_ns: u64 = idle_wait_ns_max;
         for (ids[0..found]) |id| {
             const window = self.window_registry.getTyped(WindowsWindow, id) orelse continue;
             if (window.isClosed()) continue;
-            const window_ns = window.waitTimeoutNs(now_ns, now_ms, idle_wait_ns_max);
+            const window_ns = window.waitTimeoutNs(&clock);
             timeout_ns = @min(timeout_ns, window_ns);
         }
         assert(timeout_ns <= idle_wait_ns_max);
@@ -319,6 +338,19 @@ pub const WindowsPlatform = struct {
             assert(id.isValid());
             const window = self.window_registry.getTyped(WindowsWindow, id) orelse continue;
             if (window.isFrameDue(now_ns)) window.renderFrame();
+        }
+    }
+
+    /// `renderDueWindows` without the frame period, for modal turns, whose
+    /// timer fires at most once per system tick.
+    fn renderRequestedWindows(self: *Self) void {
+        var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
+        const found = self.snapshotWindowIds(&ids);
+        assert(found <= WindowRegistry.MAX_WINDOWS);
+        for (ids[0..found]) |id| {
+            assert(id.isValid());
+            const window = self.window_registry.getTyped(WindowsWindow, id) orelse continue;
+            if (window.isFrameRequested()) window.renderFrame();
         }
     }
 

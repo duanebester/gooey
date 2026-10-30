@@ -113,6 +113,15 @@ pub const TRACKMOUSEEVENT = extern struct {
     dwHoverTime: u32,
 };
 
+pub const HMONITOR = *opaque {};
+
+pub const MONITORINFO = extern struct {
+    cbSize: u32,
+    rcMonitor: RECT,
+    rcWork: RECT,
+    dwFlags: u32,
+};
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -189,6 +198,9 @@ pub const USER_DEFAULT_SCREEN_DPI: u32 = 96;
 // `SystemParametersInfoW` actions.
 pub const SPI_GETWORKAREA: u32 = 0x0030;
 
+// `MonitorFromWindow` fallback.
+pub const MONITOR_DEFAULTTONEAREST: u32 = 0x0000_0002;
+
 // `GetSystemMetrics` indices.
 pub const SM_CXDOUBLECLK: i32 = 36;
 pub const SM_CYDOUBLECLK: i32 = 37;
@@ -219,6 +231,7 @@ pub const WM_SYSCHAR: u32 = 0x0106;
 pub const WM_IME_STARTCOMPOSITION: u32 = 0x010D;
 pub const WM_IME_ENDCOMPOSITION: u32 = 0x010E;
 pub const WM_IME_COMPOSITION: u32 = 0x010F;
+pub const WM_TIMER: u32 = 0x0113;
 pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_LBUTTONUP: u32 = 0x0202;
@@ -229,6 +242,8 @@ pub const WM_MBUTTONUP: u32 = 0x0208;
 pub const WM_MOUSEWHEEL: u32 = 0x020A;
 pub const WM_MOUSEHWHEEL: u32 = 0x020E;
 pub const WM_CAPTURECHANGED: u32 = 0x0215;
+pub const WM_ENTERSIZEMOVE: u32 = 0x0231;
+pub const WM_EXITSIZEMOVE: u32 = 0x0232;
 pub const WM_IME_SETCONTEXT: u32 = 0x0281;
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
 pub const WM_DPICHANGED: u32 = 0x02E0;
@@ -255,6 +270,7 @@ pub const VK_RWIN: i32 = 0x5C;
 
 pub extern "kernel32" fn GetModuleHandleW(lpModuleName: ?LPCWSTR) callconv(.winapi) ?HINSTANCE;
 pub extern "kernel32" fn GetLastError() callconv(.winapi) u32;
+pub extern "kernel32" fn SetLastError(dwErrCode: u32) callconv(.winapi) void;
 pub extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.winapi) void;
 pub extern "kernel32" fn GlobalAlloc(uFlags: u32, dwBytes: usize) callconv(.winapi) ?HGLOBAL;
 pub extern "kernel32" fn GlobalFree(hMem: HGLOBAL) callconv(.winapi) ?HGLOBAL;
@@ -363,6 +379,18 @@ pub extern "user32" fn SystemParametersInfoW(
     fWinIni: u32,
 ) callconv(.winapi) BOOL;
 pub extern "user32" fn GetSystemMetrics(nIndex: i32) callconv(.winapi) i32;
+pub extern "user32" fn MonitorFromWindow(hwnd: HWND, dwFlags: u32) callconv(.winapi) ?HMONITOR;
+pub extern "user32" fn GetMonitorInfoW(
+    hMonitor: HMONITOR,
+    lpmi: *MONITORINFO,
+) callconv(.winapi) BOOL;
+pub extern "user32" fn SetTimer(
+    hWnd: ?HWND,
+    nIDEvent: usize,
+    uElapse: u32,
+    lpTimerFunc: ?*const anyopaque,
+) callconv(.winapi) usize;
+pub extern "user32" fn KillTimer(hWnd: ?HWND, uIDEvent: usize) callconv(.winapi) BOOL;
 pub extern "user32" fn GetDoubleClickTime() callconv(.winapi) u32;
 
 pub extern "user32" fn LoadCursorW(
@@ -433,6 +461,8 @@ comptime {
     assert(@offsetOf(CREATESTRUCTW, "dwExStyle") == 72);
     assert(@sizeOf(MINMAXINFO) == 40);
     assert(@sizeOf(TRACKMOUSEEVENT) == 24);
+    assert(@sizeOf(MONITORINFO) == 40);
+    assert(@offsetOf(MONITORINFO, "rcWork") == 20);
 }
 
 test "message parameter decoding keeps the sign of client coordinates" {
