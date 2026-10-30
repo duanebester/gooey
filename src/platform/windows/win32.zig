@@ -195,6 +195,7 @@ pub const WM_QUIT: u32 = 0x0012;
 pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_SETCURSOR: u32 = 0x0020;
 pub const WM_GETMINMAXINFO: u32 = 0x0024;
+pub const WM_GETOBJECT: u32 = 0x003D;
 pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
@@ -264,6 +265,8 @@ pub extern "user32" fn DefWindowProcW(
 pub extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: i32) callconv(.winapi) BOOL;
 pub extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: LPCWSTR) callconv(.winapi) BOOL;
 pub extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
+pub extern "user32" fn ClientToScreen(hWnd: HWND, lpPoint: *POINT) callconv(.winapi) BOOL;
+
 pub extern "user32" fn SetWindowPos(
     hWnd: HWND,
     hWndInsertAfter: ?HWND,

@@ -17,6 +17,7 @@ pub const input = @import("input.zig");
 pub const clipboard = @import("clipboard.zig");
 pub const file_dialog = @import("file_dialog.zig");
 pub const win32 = @import("win32.zig");
+pub const uia = @import("uia.zig");
 pub const vk_surface_win32 = @import("vk_surface_win32.zig");
 
 // Canonical backend contract; see `linux/mod.zig`.
@@ -35,5 +36,6 @@ comptime {
 
 test {
     _ = input;
+    _ = uia;
     _ = win32;
 }

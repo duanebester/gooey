@@ -21,7 +21,8 @@ pub const Fingerprint = fingerprint_mod.Fingerprint;
 /// Hash map for O(1) fingerprint → index lookups.
 /// Uses open addressing with linear probing.
 /// Bucket count is power of 2 for fast modulo via bitmask.
-const FingerprintMap = struct {
+/// Public for the Windows bridge, whose snapshot indexes the same fingerprints.
+pub const FingerprintMap = struct {
     const BUCKET_COUNT: u16 = 4096; // Power of 2, ~2x MAX_ELEMENTS for low collision rate
     const BUCKET_MASK: u64 = BUCKET_COUNT - 1;
     const EMPTY: u16 = 0xFFFF; // Sentinel for empty bucket

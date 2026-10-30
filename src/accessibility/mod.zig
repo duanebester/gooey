@@ -13,6 +13,7 @@
 //! - **macOS**: NSAccessibility protocol via mac_bridge
 //! - **Linux**: AT-SPI2 D-Bus protocol via linux_bridge
 //! - **Web**: ARIA attributes via web_bridge
+//! - **Windows**: UI Automation via windows_bridge
 //!
 //! ## Usage
 //!
@@ -83,6 +84,12 @@ else
 /// Web accessibility bridge (ARIA attributes)
 pub const web_bridge = if (is_wasm)
     @import("web_bridge.zig")
+else
+    struct {};
+
+/// Windows accessibility bridge (UI Automation)
+pub const windows_bridge = if (!is_wasm and builtin.os.tag == .windows)
+    @import("windows_bridge.zig")
 else
     struct {};
 

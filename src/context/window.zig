@@ -630,7 +630,11 @@ pub const Window = struct {
         // bridge dispatcher captures `&self.a11y.platform_bridge`,
         // which is correct here because `self` is at its final heap
         // address.
-        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
+        const window_obj = switch (builtin.os.tag) {
+            .macos => platform_window.ns_window,
+            .windows => &platform_window.uia_host,
+            else => null,
+        };
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 
@@ -767,7 +771,11 @@ pub const Window = struct {
         self.cancel_registry.initInPlace();
 
         // Accessibility (initInPlace avoids ~350KB stack temp)
-        const window_obj = if (builtin.os.tag == .macos) platform_window.ns_window else null;
+        const window_obj = switch (builtin.os.tag) {
+            .macos => platform_window.ns_window,
+            .windows => &platform_window.uia_host,
+            else => null,
+        };
         const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
         self.a11y.initInPlace(window_obj, view_obj);
 

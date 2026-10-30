@@ -29,6 +29,7 @@ const text_mod = @import("../../text/mod.zig");
 const input = @import("../../input/events.zig");
 const VulkanRenderer = @import("../linux/vk_renderer.zig").VulkanRenderer;
 const win32 = @import("win32.zig");
+const uia = @import("uia.zig");
 const windows_input = @import("input.zig");
 const windows_platform = @import("platform.zig");
 const WindowsPlatform = windows_platform.WindowsPlatform;
@@ -107,6 +108,13 @@ pub const Window = struct {
         .origin = .{ .x = 0, .y = 0 },
         .size = .{ .width = 1, .height = 20 },
     },
+
+    /// The accessibility bridge's root provider, published by
+    /// `accessibility/windows_bridge.zig` and served on `WM_GETOBJECT`.
+    uia_host: uia.Host = .{},
+    /// Frames still to render after a UI Automation root request; see
+    /// `uia.activation_frame_count`.
+    uia_activation_frames: u8 = 0,
 
     on_input: ?InputCallback = null,
     on_render: ?RenderCallback = null,
@@ -246,6 +254,8 @@ pub const Window = struct {
     pub fn deinit(self: *Self) void {
         assert(@intFromPtr(self) != 0);
         assert(!self.rendering);
+        // The accessibility bridge withdraws its root before the window goes.
+        assert(self.uia_host.root == null);
         if (self.window_id.isValid()) {
             self.platform.unregisterWindow(self.window_id);
             self.window_id = .invalid;
@@ -317,6 +327,10 @@ pub const Window = struct {
             self.renderer.render(&empty_scene);
         }
         self.last_frame_ns = windows_platform.nowNanoseconds();
+        if (self.uia_activation_frames > 0) {
+            self.uia_activation_frames -= 1;
+            self.requestRender();
+        }
         assert(self.rendering);
     }
 
@@ -732,6 +746,21 @@ pub const Window = struct {
         }
     }
 
+    /// Answer a UI Automation client's request for the root provider, and
+    /// render for one poll interval so the accessibility system notices the
+    /// client even when nothing else would draw. Other object requests (MSAA)
+    /// go to `DefWindowProcW`.
+    fn handleGetObject(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) ?win32.LRESULT {
+        assert(self.hwnd != null);
+        const object_id: i32 = @truncate(lparam);
+        if (object_id != uia.UiaRootObjectId) return null;
+        const root = self.uia_host.root orelse return null;
+        self.uia_host.client_requested = true;
+        self.uia_activation_frames = uia.activation_frame_count;
+        self.requestRender();
+        return uia.UiaReturnRawElementProvider(self.hwnd.?, wparam, lparam, root);
+    }
+
     fn handleSetFocus(self: *Self) void {
         if (self.closed or !self.window_id.isValid()) return;
         self.platform.setActiveWindowId(self.window_id);
@@ -749,6 +778,7 @@ pub const Window = struct {
                 self.handleMinMaxInfo(@ptrFromInt(@as(usize, @bitCast(message.lparam))));
             },
             win32.WM_SETFOCUS => self.handleSetFocus(),
+            win32.WM_GETOBJECT => return self.handleGetObject(message.wparam, message.lparam),
             win32.WM_ERASEBKGND => return 1, // Vulkan covers every pixel.
             win32.WM_PAINT => {
                 // Live resizing runs a modal loop inside `DefWindowProcW`, so
@@ -805,6 +835,7 @@ pub fn windowProc(
         const window: *Window = @ptrCast(@alignCast(create.lpCreateParams.?));
         assert(window.hwnd == null);
         window.hwnd = hwnd;
+        window.uia_host.hwnd = hwnd;
         _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(window)));
         return win32.DefWindowProcW(hwnd, message_id, wparam, lparam);
     }

@@ -3,16 +3,17 @@
 ## Status
 
 `gooey.App` examples run on Windows: a Win32 window, DirectWrite text, WIC images, the
-software SVG rasterizer, the system clipboard, native file dialogs, and the shared Vulkan
-renderer. Verified on an Intel UHD 620 at 150% scale. The [checklist](#win32-checklist) has
-what remains.
+software SVG rasterizer, the system clipboard, native file dialogs, UI Automation
+accessibility, and the shared Vulkan renderer. Verified on an Intel UHD 620 at 150% scale.
+The [checklist](#win32-checklist) has what remains.
 
 ```sh
 zig build run-showcase       # a gooey.App example (others listed in addWindowsBuilds)
 zig build run-clipboard      # copy and paste through TextInput and TextArea
 zig build run-file-dialog    # open, multi-select, folder, and save dialogs
+zig build run-accessible-form # UI Automation: Narrator, NVDA, or Inspect
 zig build run-windows-demo   # the platform-layer demo, no text
-zig build test-windows       # backend, clipboard, file dialog, DirectWrite, WIC, SVG tests
+zig build test-windows       # backend, clipboard, dialogs, a11y, DirectWrite, WIC, SVG
 zig build typecheck-windows  # analyze the backend and showcase for x86_64-windows
 ```
 
@@ -189,6 +190,79 @@ with every called slot pinned as in the WIC bindings.
   `IShellItem`. Showing a dialog needs a person: `zig build run-file-dialog`. Not yet
   checked by hand.
 
+### Accessibility (UI Automation)
+
+`src/accessibility/windows_bridge.zig` implements the shared `Bridge` with UI Automation
+providers, and `createPlatformBridge` selects it with one `.windows` arm. The bindings are
+hand-written in `src/platform/windows/uia.zig`; IIDs, slot orders, and constants were
+checked against Zig's bundled `uiautomationcore.h`.
+
+- **Pull model.** Clients query between frames, after the tree's borrowed strings may be
+  gone, so each synced frame copies the tree into a snapshot the bridge owns
+  (`windows_snapshot.zig`). Providers (`windows_provider.zig`) name elements by
+  fingerprint, read only the snapshot, and report `UIA_E_ELEMENTNOTAVAILABLE` once their
+  element is gone. The runtime id is the fingerprint.
+- **Window.** `Window.uia_host` holds the root provider; `WM_GETOBJECT` with
+  `UiaRootObjectId` returns it and makes the window render for one screen reader poll
+  interval (60 frames), so an idle app activates promptly. The bridge is active once any
+  client asked for the root or while `UiaClientsAreListening` is true.
+- **Exposed.** Control types per role (`Role.toUiaControlType`), name, help text, focus,
+  enabled, required, live setting, heading level, set position and size, ARIA role,
+  bounds in physical screen pixels, hit testing, and focus. Patterns by role: Value, Range
+  Value, Toggle, Expand Collapse, Selection Item. Events: focus, property changes,
+  structure changes, and announcements as notification events (Windows 10 1709).
+- **No actions.** The tree has no path back to the widgets, so `Invoke`, `Toggle`,
+  `SetValue`, `SetFocus`, and similar return `UIA_E_NOTSUPPORTED`; screen readers fall
+  back to keyboard and pointer input. This is a framework gap shared with macOS.
+- **Threading.** The bridge enters an STA on the window's thread and providers report
+  `UseComThreading`, so calls arrive through the message loop. An `SRWLOCK` guards the
+  snapshot either way, and no event is raised while it is held, because a raise may call
+  straight back into a provider. A render thread needs no further change.
+- **Bounds.** 2,048 entries, at most 1 KiB of text per element (name 256 B, value 512 B,
+  description 256 B, truncated at a code point boundary), 4,096 providers, and 128
+  property events per frame; overflow invalidates the whole tree instead. About 2.7 MiB
+  is reserved through `core/reservation.zig` and becomes resident only as it is used.
+  `BSTR`, `SAFEARRAY`, and event marshaling allocate inside `oleaut32` and UI Automation,
+  which the COM contract requires.
+- **Pool exhaustion.** Returns `E_OUTOFMEMORY` to the client and warns once instead of
+  failing fast, against section 2: the demand comes from another process, which must not
+  be able to crash the app. Accepted for now, with the read-only scope and the 1709
+  minimum.
+- **Shared edit.** `Bridge.syncFrame` now calls `syncDirty` every synced frame, with an
+  empty list when nothing changed, so moved bounds reach the snapshot. The other bridges
+  already return early on an empty list.
+- **Tests.** `test-windows` covers the snapshot (linking, copying, truncation, a full tree
+  at every text cap, change detection, hit testing), the providers through their vtables
+  against a hidden window (navigation, names, patterns, focus, screen-pixel hit testing,
+  stale elements, pool exhaustion and reuse), and the bridge lifecycle with real UI
+  Automation calls. Verified with an external client: the .NET `UIAutomationClient` from
+  PowerShell walks `run-accessible-form`'s tree with correct control types, names, states,
+  patterns, and runtime ids, and receives focus events as Tab moves through the fields.
+  Not yet tried with Narrator or NVDA.
+
+**Remaining gaps.** Each is its own commit or PR.
+
+- **Actions.** Needs a framework path from an accessible element back to its widget's
+  handler (press, toggle, set value, expand, select, focus). Shared with macOS, whose
+  bridge exposes no actions either; the Windows pattern methods are where it plugs in.
+- **Screen readers by hand.** Narrator and NVDA, including announcements and live
+  regions, which the PowerShell client did not exercise. Structure-changed events on the
+  root pass no runtime id; whether clients honour that is untested.
+- **Text pattern.** Text fields expose only the Value pattern, so a screen reader reads
+  the whole value but not the caret, selection, or words. Needs caret and selection in the
+  accessibility tree first.
+- **Relationships.** `labelled_by`, `described_by`, and `controls` are not exposed
+  (`LabeledBy`, `DescribedBy`, `ControllerFor`); they need provider-valued properties.
+- **Selection containers.** `SelectionContainer` returns null and lists, tab lists, and
+  radio groups do not implement the Selection pattern.
+- **Fingerprint collisions.** Every top-level element has position 0 in its fingerprint,
+  so two top-level elements with the same role and name share a runtime id and the
+  snapshot resolves both to the first. A tree-wide issue; the flat example tree below
+  makes it more likely.
+- **Old values.** Property-changed events carry the new value and `VT_EMPTY` as the old.
+- **Render thread.** The snapshot lock already covers a frame built off the window's
+  thread; `uia.Host.client_requested` would then need to become atomic.
+
 ### Text (DirectWrite)
 
 DirectWrite ships with Windows, so it needs no package (CLAUDE.md section 12). It covers
@@ -322,6 +396,11 @@ they surface while testing the port.
 - **Linux edit shortcuts.** `linux/input.zig` maps Super to `cmd`, and the text widgets'
   edit commands use `cmd` outside Windows, so Linux text fields appear to copy with
   Super+C rather than Ctrl+C. Inferred from the code, not tried on Linux.
+- **Accessible form example.** `src/examples/accessible_form.zig` closes each accessible
+  element straight after opening it (`defer cx.accessibleEnd()` inside the `if`) and gives
+  most no `layout_id`. The tree comes out flat, and headings, groups, and radio buttons
+  have no bounds, so a screen reader cannot point at them. Inferred from the code and the
+  UI Automation tree; the macOS tree should show the same.
 - **Build output.** `zig build test-windows` prints `failed command: ...test.exe` whenever
   a test logs a warning, even though the summary reports every test passing.
 
@@ -350,5 +429,5 @@ the event loop.
 - [x] Clipboard (`CF_UNICODETEXT`, Ctrl edit shortcuts in the text widgets,
       `run-clipboard`).
 - [x] File dialogs (Common Item Dialog, `run-file-dialog`).
-- [ ] Accessibility through UI Automation.
+- [x] Accessibility through UI Automation (read-only; see the section above).
 - [ ] Frame pacing on a render thread.
